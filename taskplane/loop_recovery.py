@@ -431,6 +431,31 @@ def legacy_continuation(state: Mapping, workspace: str) -> dict | None:
             raise ValueError("legacy continuation identity or policy changed: " + field)
     if receipt.get("artifact_binding_fingerprint") != _fingerprint(state.get("run_artifact_binding")):
         raise ValueError("legacy original artifact binding changed")
+    original_receipt = receipt
+    amendment = state.get("legacy_publication_amendment")
+    if amendment is not None:
+        from taskplane import loop
+        journal = _verified(amendment, "publication amendment")
+        if journal.get("phase") != "applied" or journal.get("revoked") is not False:
+            raise ValueError("publication amendment requires exact interrupted pickup or is revoked")
+        packet = _publication_packet_file(journal["source"], journal["packet_fingerprint"])
+        _publication_plan_and_requirement(loop, packet)
+        if (journal["predecessor_fingerprint"] != receipt["fingerprint"]
+                or packet["continuation_fingerprint"] != receipt["fingerprint"]
+                or packet["before_plan_sha256"] != receipt["after_plan_sha256"]
+                or _fingerprint(json.loads(packet["before_plan_text"])) != receipt["after_plan_fingerprint"]
+                or _requirement_fingerprint(packet["before_requirement"]) != receipt["requirement_fingerprint"]
+                or journal["actor"] != receipt["by"] or journal["actor"] != packet["by"]
+                or journal["request"] != packet["request"]
+                or _fingerprint(journal["historical_submission"]) != packet["before_submission_fingerprint"]
+                or _fingerprint(journal["historical_review_binding"]) != packet["before_review_binding_fingerprint"]
+                or journal["terminal_receipt_fingerprint"] != packet["terminal_receipt_fingerprint"]
+                or _publication_design(loop, workspace) != packet["design_artifacts"]):
+            raise ValueError("publication amendment predecessor or attribution changed")
+        receipt = dict(receipt, after_plan_sha256=packet["after_plan_sha256"],
+            after_plan_fingerprint=packet["after_plan_fingerprint"],
+            requirement_fingerprint=_requirement_fingerprint(packet["after_requirement"]),
+            review_policy_fingerprint=journal["review_policy_fingerprint"])
     path = Path(workspace) / "plan/tasks.json"
     if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != receipt["after_plan_sha256"]:
         raise ValueError("legacy approved Plan bytes changed")
@@ -463,7 +488,256 @@ def legacy_continuation(state: Mapping, workspace: str) -> dict | None:
             or resource.get("authority_fingerprint") != receipt["approval_fingerprint"]
             or resource["fingerprint"] != receipt["resource_policy_fingerprint"]):
         raise ValueError("legacy resource policy is stale or foreign")
-    return receipt
+    if amendment is not None and requirement.get("publication_sequencing_amendment") != \
+            packet["after_requirement"]["publication_sequencing_amendment"]:
+        raise ValueError("publication requirement attribution changed")
+    return original_receipt
+
+
+def _publication_artifact(value: dict) -> None:
+    if not isinstance(value, dict) or set(value) != {"path", "sha256"}:
+        raise ValueError("publication approval artifact is not closed")
+    path = Path(value["path"])
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 131072 \
+            or hashlib.sha256(path.read_bytes()).hexdigest() != value["sha256"]:
+        raise ValueError("publication approval artifact is stale or missing")
+
+
+def _publication_design(runtime, workspace: str) -> dict:
+    contract, errors = runtime._design_contract(workspace)
+    if errors:
+        raise ValueError("original Design is unavailable for publication amendment")
+    result = {}
+    for name in runtime._design_evidence_paths(workspace, contract):
+        path = Path(workspace) / name
+        if not runtime._design_safe_rel(name) or path.is_symlink() or not path.is_file():
+            raise ValueError("original Design artifact is unsafe or missing")
+        result[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
+def _publication_annotation(packet: dict) -> dict:
+    criteria = [item for item in packet["before_requirement"].get("acceptance", [])
+        if isinstance(item, str) and item.startswith("FP-AC17 J6:")]
+    if len(criteria) != 1:
+        raise ValueError("publication amendment requires one exact FP-AC17 criterion")
+    return _sealed({"schema":"taskplane.publication-sequencing/v1", "criterion":"FP-AC17",
+        "status":"pending-post-merge", "by":packet["by"], "request":packet["request"],
+        "approval":packet["approval"], "original_approval":packet["original_approval"],
+        "original_criterion":criteria[0], "acceptance_owner":packet["task_id"],
+        "pre_merge_requirements":"J1, real J6 prefix, all journey selectors, review and CI remain mandatory",
+        "publication_authority":"separate current post-merge authority; no grant or pass supplied"})
+
+
+def _publication_plan_text(before: str, annotation: dict) -> str:
+    head = before.rstrip()
+    if not head.endswith("}"):
+        raise ValueError("publication Plan must be one JSON object")
+    return head[:-1] + ',\n  "publication_sequencing_amendment": ' + json.dumps(annotation) + '\n}' + before[len(head):]
+
+
+def _publication_plan_and_requirement(runtime, packet: dict) -> None:
+    """Validate the sole allowed semantic change, including immutable approvals."""
+    for key in ("approval", "original_approval"):
+        _publication_artifact(packet[key])
+    if not str(packet["by"]).startswith("human:") or not packet["by"][6:].strip() or not packet["request"].strip():
+        raise ValueError("publication amendment requires explicit human attribution")
+    annotation = _publication_annotation(packet)
+    after_req = runtime.reqs.publication_sequence_requirement(packet["before_requirement"], annotation=annotation)
+    before_plan = json.loads(packet["before_plan_text"])
+    if "publication_sequencing_amendment" in before_plan:
+        raise ValueError("publication sequencing cannot renew an earlier amendment")
+    after_plan = {**before_plan, "publication_sequencing_amendment":annotation}
+    for journey in before_plan.get("journeys", []):
+        if journey.get("id") == "J6" and journey.get("task") != packet["task_id"]:
+            raise ValueError("publication amendment cannot move J6 acceptance ownership")
+    expected_text = _publication_plan_text(packet["before_plan_text"], annotation)
+    expected = {"after_requirement":after_req, "after_plan_text":expected_text,
+        "before_requirement_fingerprint":_fingerprint(packet["before_requirement"]),
+        "after_requirement_fingerprint":_fingerprint(after_req),
+        "before_plan_sha256":hashlib.sha256(packet["before_plan_text"].encode()).hexdigest(),
+        "after_plan_sha256":hashlib.sha256(expected_text.encode()).hexdigest(),
+        "before_plan_fingerprint":_fingerprint(before_plan), "after_plan_fingerprint":_fingerprint(after_plan)}
+    if any(packet.get(key) != value for key,value in expected.items()):
+        raise ValueError("publication amendment changed unrelated acceptance, task, scope, tests or Plan fields")
+
+
+def _publication_packet_file(source: str, expected_fingerprint: str) -> dict:
+    path = Path(source)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 4_000_000:
+        raise ValueError("publication packet must be a bounded regular file")
+    packet = json.loads(path.read_bytes())
+    fields = {"schema", "run_id", "requirement_id", "task_id", "baseline", "design_fingerprint",
+        "settings_digest", "continuation_fingerprint", "candidate", "source_fingerprint", "by", "request",
+        "approval", "original_approval", "before_state_fingerprint", "observation_checkpoint",
+        "design_artifacts", "before_submission_fingerprint", "before_review_binding_fingerprint",
+        "terminal_slot", "terminal_contract_fingerprint", "terminal_receipt_fingerprint",
+        "before_requirement", "after_requirement", "before_requirement_fingerprint", "after_requirement_fingerprint",
+        "before_plan_text", "after_plan_text", "before_plan_sha256", "after_plan_sha256",
+        "before_plan_fingerprint", "after_plan_fingerprint"}
+    if (not isinstance(packet, dict) or set(packet) != fields
+            or packet["schema"] != "taskplane.publication-amendment/v1"
+            or _fingerprint(packet) != expected_fingerprint):
+        raise ValueError("publication packet fields or approved fingerprint changed")
+    return packet
+
+
+def _publication_terminal(runtime, workspace: str, state: dict, slot: str) -> dict:
+    if list(runtime.tp._active_worker_contracts(workspace)) or runtime.tp.load_active(workspace):
+        raise ValueError("publication amendment refuses active worker contracts")
+    task = runtime._current_task(state) or {}
+    submission = state.get("_submission") or {}
+    contract = runtime.tp.released_worker_contract(workspace, slot)
+    lifecycle = contract["worker_lifecycle"]
+    binding = runtime.review_kernel_binding(state, "evaluate", task)
+    dispatch = contract.get("producer_dispatch") or {}
+    if (state.get("step") != "evaluate" or state.get("parallel") or not state.get("_build_failed")
+            or task.get("status") != "pending" or submission.get("outcome") != "fail"
+            or submission.get("step") != "evaluate" or submission.get("task") != task.get("id")
+            or os.path.realpath(str(submission.get("workspace"))) != os.path.realpath(workspace)
+            or lifecycle.get("stage") != "evaluate" or lifecycle.get("task") != task.get("id")
+            or lifecycle["terminal"].get("outcome") not in {"failure", "cancellation"}
+            or not binding or dispatch.get("run_id") != binding.get("run_id")
+            or dispatch.get("task_id") != task.get("id") or dispatch.get("stage") != "evaluate"
+            or any(state.get(key) for key in ("attempt_lease", "evaluate_child_evidence"))):
+        raise ValueError("publication amendment lacks exact failed Evaluate and signed adverse retirement")
+    return contract
+
+
+def prepare_publication_amendment(runtime, workspace: str, *, by: str, request: str,
+        approval: dict, original_approval: dict, terminal_slot: str) -> dict:
+    """Read-only packet preparation; callers retain it before human-bound application."""
+    state = runtime._load_raw(workspace)
+    prior = legacy_continuation(state or {}, workspace)
+    if not prior or state.get("legacy_publication_amendment"):
+        raise ValueError("publication amendment requires an unchanged original legacy continuation")
+    contract = _publication_terminal(runtime, workspace, state, terminal_slot)
+    packet = {"schema":"taskplane.publication-amendment/v1",
+        **{k:state[k] for k in ("run_id", "requirement_id", "baseline", "design_fingerprint", "settings_digest")},
+        "task_id":runtime._current_task(state)["id"], "continuation_fingerprint":prior["fingerprint"],
+        "candidate":runtime.tp.git_head(workspace), "source_fingerprint":runtime.tp.workspace_fingerprint(workspace),
+        "by":by, "request":request, "approval":approval, "original_approval":original_approval,
+        "before_state_fingerprint":legacy_state_fingerprint(state),
+        "design_artifacts":_publication_design(runtime, workspace),
+        "before_submission_fingerprint":_fingerprint(state["_submission"]),
+        "before_review_binding_fingerprint":_fingerprint(runtime.review_kernel_binding(state, "evaluate", runtime._current_task(state))),
+        "observation_checkpoint":legacy_observation_checkpoint(state), "terminal_slot":terminal_slot,
+        "terminal_contract_fingerprint":_fingerprint(contract),
+        "terminal_receipt_fingerprint":_fingerprint(contract["worker_lifecycle"]["terminal"]),
+        "before_requirement":runtime.reqs.get_requirement(workspace, state["requirement_id"]),
+        "before_plan_text":(Path(workspace) / "plan/tasks.json").read_bytes().decode("utf-8")}
+    annotation = _publication_annotation(packet)
+    packet["after_requirement"] = runtime.reqs.publication_sequence_requirement(packet["before_requirement"], annotation=annotation)
+    packet["after_plan_text"] = _publication_plan_text(packet["before_plan_text"], annotation)
+    for prefix in ("before", "after"):
+        packet[prefix + "_requirement_fingerprint"] = _fingerprint(packet[prefix + "_requirement"])
+        packet[prefix + "_plan_sha256"] = hashlib.sha256(packet[prefix + "_plan_text"].encode()).hexdigest()
+        packet[prefix + "_plan_fingerprint"] = _fingerprint(json.loads(packet[prefix + "_plan_text"]))
+    _publication_plan_and_requirement(runtime, packet)
+    return packet
+
+
+def amend_delivery(runtime, workspace: str, *, source: str, by: str, request: str,
+        expected_fingerprint: str, check: bool = False, observation_authority: bytes | None = None) -> dict:
+    """Journal one publication-only amendment through existing requirement/Plan/state owners."""
+    from taskplane import delivery_policy
+    try:
+        packet = _publication_packet_file(source, expected_fingerprint)
+        _publication_plan_and_requirement(runtime, packet)
+        if runtime.tp.task_slot() is not None or by != packet["by"] or request != packet["request"]:
+            raise ValueError("publication amendment actor/request or orchestrator identity changed")
+        with runtime.tp.file_lock(os.path.join(runtime.tp.tp_dir(workspace), "controller-operation")):
+            state = runtime._load_raw(workspace) or {}
+            prior = state.get("legacy_publication_amendment")
+            if prior:
+                _verified(prior, "publication journal")
+                if (prior.get("packet_fingerprint") != expected_fingerprint or prior.get("source") != source
+                        or prior.get("actor") != by or prior.get("request") != request or prior.get("revoked") is not False):
+                    raise ValueError("publication amendment replay changed attribution or authority")
+                if prior.get("phase") == "applied":
+                    legacy_continuation(state, workspace)
+                    return {"amended":True, "replay":True, "read_only":True, "dispatch_allowed":False}
+                if prior.get("phase") != "prepared":
+                    raise ValueError("publication journal phase is invalid")
+            base = copy.deepcopy(state)
+            base.pop("legacy_publication_amendment", None)
+            if legacy_state_fingerprint(base) != packet["before_state_fingerprint"]:
+                raise ValueError("publication amendment before-state changed")
+            _validate_observations(base, packet["observation_checkpoint"], observation_authority)
+            if (any(base.get(k) != packet[k] for k in ("run_id", "requirement_id", "baseline", "design_fingerprint", "settings_digest"))
+                    or (base.get("legacy_build_continuation") or {}).get("fingerprint") != packet["continuation_fingerprint"]
+                    or (base.get("legacy_build_continuation") or {}).get("by") != by
+                    or runtime.tp.git_head(workspace) != packet["candidate"]
+                    or runtime.tp.workspace_fingerprint(workspace) != packet["source_fingerprint"]
+                    or _publication_design(runtime, workspace) != packet["design_artifacts"]
+                    or _fingerprint(base["_submission"]) != packet["before_submission_fingerprint"]
+                    or _fingerprint(runtime.review_kernel_binding(base, "evaluate", runtime._current_task(base))) != packet["before_review_binding_fingerprint"]):
+                raise ValueError("publication amendment source, run or predecessor is stale or foreign")
+            contract = _publication_terminal(runtime, workspace, base, packet["terminal_slot"])
+            if (_fingerprint(contract) != packet["terminal_contract_fingerprint"]
+                    or _fingerprint(contract["worker_lifecycle"]["terminal"]) != packet["terminal_receipt_fingerprint"]):
+                raise ValueError("publication terminal proof changed")
+            plan_path = Path(workspace) / "plan/tasks.json"
+            current_plan = plan_path.read_bytes().decode("utf-8")
+            current_req = runtime.reqs.get_requirement(workspace, packet["requirement_id"])
+            allowed_plans = (packet["before_plan_text"], packet["after_plan_text"]) if prior else (packet["before_plan_text"],)
+            allowed_reqs = (packet["before_requirement"], packet["after_requirement"]) if prior else (packet["before_requirement"],)
+            if plan_path.is_symlink() or current_plan not in allowed_plans or current_req not in allowed_reqs:
+                raise ValueError("publication amendment current Plan or requirement changed")
+            if not prior:
+                legacy_continuation(base, workspace)
+            journal = _sealed({"schema":"taskplane.publication-amendment-journal/v1", "phase":"prepared", "revoked":False,
+                "packet_fingerprint":expected_fingerprint, "source":source, "actor":by, "request":request,
+                "predecessor_fingerprint":packet["continuation_fingerprint"],
+                "historical_submission":base["_submission"],
+                "historical_review_binding":base["review_kernel_runs"]["evaluate:" + packet["task_id"]],
+                "terminal_receipt_fingerprint":packet["terminal_receipt_fingerprint"]})
+            if prior and prior != journal:
+                raise ValueError("publication journal historical evidence changed")
+            if check:
+                return {"checked":True, "read_only":True, "dispatch_allowed":False, "publication":"pending-post-merge"}
+            with runtime.mutate(workspace) as locked:
+                observed = copy.deepcopy(locked)
+                observed.pop("legacy_publication_amendment", None)
+                if legacy_state_fingerprint(observed) != packet["before_state_fingerprint"]:
+                    raise ValueError("publication state changed before journal commit")
+                _validate_observations(observed, packet["observation_checkpoint"], observation_authority)
+                locked["legacy_publication_amendment"] = journal
+            runtime.reqs.apply_publication_sequence(workspace, before=packet["before_requirement"], after=packet["after_requirement"])
+            if plan_path.read_bytes().decode("utf-8") not in allowed_plans:
+                raise ValueError("publication Plan changed before commit")
+            runtime.tp.atomic_write_bytes(str(plan_path), packet["after_plan_text"].encode("utf-8"))
+            with runtime.mutate(workspace) as locked:
+                observed = copy.deepcopy(locked)
+                observed.pop("legacy_publication_amendment", None)
+                if (legacy_state_fingerprint(observed) != packet["before_state_fingerprint"]
+                        or locked["legacy_publication_amendment"] != journal
+                        or runtime.tp.git_head(workspace) != packet["candidate"]
+                        or runtime.tp.workspace_fingerprint(workspace) != packet["source_fingerprint"]
+                        or _publication_design(runtime, workspace) != packet["design_artifacts"]
+                        or plan_path.read_bytes().decode("utf-8") != packet["after_plan_text"]
+                        or runtime.reqs.get_requirement(workspace, packet["requirement_id"]) != packet["after_requirement"]
+                        or _fingerprint(_publication_terminal(runtime, workspace, observed, packet["terminal_slot"])) != packet["terminal_contract_fingerprint"]):
+                    raise ValueError("publication amendment changed during commit")
+                _validate_observations(observed, packet["observation_checkpoint"], observation_authority)
+                old_policy = legacy_review_policy(observed)
+                locked.setdefault("review_timing_override_history", []).append(copy.deepcopy(old_policy))
+                policy = _sealed({**{k:v for k,v in old_policy.items() if k != "fingerprint"},
+                    "plan_fingerprint":packet["after_plan_fingerprint"]})
+                locked["review_timing_override"] = policy
+                locked["delivery_mode_receipt"] = delivery_policy.validate_plan_mode(json.loads(packet["after_plan_text"]),
+                    plan_fingerprint=packet["after_plan_fingerprint"], source_sha=packet["candidate"],
+                    predecessor_fingerprint=observed["delivery_mode_receipt"]["fingerprint"])
+                locked["plan_fingerprint"] = packet["after_plan_fingerprint"]
+                locked.pop("_submission")
+                locked["review_kernel_runs"].pop("evaluate:" + packet["task_id"])
+                locked["legacy_publication_amendment"] = _sealed({**{k:v for k,v in journal.items() if k != "fingerprint"},
+                    "phase":"applied", "review_policy_fingerprint":policy["fingerprint"]})
+                legacy_continuation(locked, workspace)
+            return {"amended":True, "replay":False, "dispatch_allowed":False, "step":"evaluate",
+                "publication":"pending-post-merge", "next":"loop next: fresh independent Evaluate attempt"}
+    except (ValueError, TypeError, KeyError, IndexError, OSError, runtime.tp.StateError) as exc:
+        return {"error":"publication amendment refused: " + str(exc), "dispatch_allowed":False}
 
 
 def cancel_worker(runtime, workspace: str, *, source: str, by: str, request: str,

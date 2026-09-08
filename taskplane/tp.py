@@ -3820,9 +3820,10 @@ def cmd_loop(a) -> int:
     elif action == "restore-settings":
         from taskplane import run_context
         out = run_context.restore_settings(loopmod, ws, a.settings_from)
-    elif action in {"continue-build", "cancel-worker"}:
+    elif action in {"continue-build", "cancel-worker", "amend-delivery"}:
         saved = loopmod._load_raw(ws) or {}
-        handler = loopmod.continue_build if action == "continue-build" else loopmod.cancel_worker
+        handler = {"continue-build":loopmod.continue_build, "cancel-worker":loopmod.cancel_worker,
+            "amend-delivery":loopmod.amend_delivery}[action]
         out = handler(ws, source=a.amendment_from, by=a.by,
             request=a.request, expected_fingerprint=a.fingerprint, check=a.check,
             observation_authority=(_transcript_projection_authority(ws, create=False)
@@ -3912,7 +3913,7 @@ def cmd_loop(a) -> int:
     # BYTE-IDENTICAL to the pre-workflow payload (the MANDATORY fallback
     # and the only Codex path — R-0004's core promise).
     if isinstance(out, dict):
-        saved_loop = loopmod._load_raw(ws) if action in {"continue-build", "cancel-worker"} else loopmod.load(ws)
+        saved_loop = loopmod._load_raw(ws) if action in {"continue-build", "cancel-worker", "amend-delivery"} else loopmod.load(ws)
         canonical = enforcement or _saved_enforcement(
             (saved_loop or {}).get("enforcement"))
         if canonical:
@@ -5662,7 +5663,7 @@ def _invoke_run_command(a, workspace: str) -> int:
     # reachable even when the saved configuration is absent or corrupt.
     if a.cmd in {"context", "summary"} or (
             a.cmd == "loop" and getattr(a, "loop_action", None) in {
-                "resume", "status", "restore-settings", "continue-build", "cancel-worker"}):
+                "resume", "status", "restore-settings", "continue-build", "cancel-worker", "amend-delivery"}):
         return a.fn(a)
     from taskplane import run_context, settings
     import loop as loopmod
@@ -8733,6 +8734,13 @@ def main(argv=None) -> int:
     lcancel.add_argument("--fingerprint", required=True, help="canonical cancellation packet SHA-256")
     lcancel.add_argument("--check", action="store_true", help="read-only validation; no terminalization or outbox flush")
     lcancel.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    lamend = lsub.add_parser("amend-delivery", help="human: exact legacy publication-only post-merge sequencing")
+    lamend.add_argument("--from", dest="amendment_from", required=True, help="exact approved publication amendment packet")
+    lamend.add_argument("--by", required=True, help="original human policy owner")
+    lamend.add_argument("--request", required=True, help="publication-only human decision")
+    lamend.add_argument("--fingerprint", required=True, help="canonical approved packet SHA-256")
+    lamend.add_argument("--check", action="store_true", help="read-only validation; no journal, projection or outbox write")
+    lamend.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lr.add_argument("--worker-stopped", action="store_true",
                     help="attest the expired unbound worker is stopped; not a completion or pass")
     lr.add_argument(

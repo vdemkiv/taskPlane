@@ -14,6 +14,234 @@ from taskplane import delivery_policy, loop, loop_recovery, run_context, setting
 
 REAL_GIT_HEAD = loop.tp.git_head
 REAL_WORKSPACE_FINGERPRINT = loop.tp.workspace_fingerprint
+REAL_GET_REQUIREMENT = loop.reqs.get_requirement
+
+
+@pytest.fixture
+def publication_amendment(legacy, monkeypatch):
+    ws, root, _, packet = legacy
+    monkeypatch.setattr(loop.reqs, "get_requirement", REAL_GET_REQUIREMENT)
+    criterion = ("FP-AC17 J6: real finalization: On a supported real host, production Build output "
+        "provides full accessible evidence to fresh Evaluate, independent Engineering review, "
+        "applicable scoped human sign-off, Retro, and the declared Release/Publish/final outcome. "
+        "Verification: Missing downstream evidence/authority blocks at its boundary. "
+        "Prove PR-based delivery and separately authorized publication; Build-only results, documents, "
+        "synthetic terminals, old approval, or skips cannot satisfy the journey.")
+    requirement = loop.reqs.record_requirement(ws, "Original requirement", functional=["works"],
+        acceptance=["J1 requires genuine native evidence", criterion],
+        nfr={"security":"no new trust boundary", "architecture":"local and reversible"},
+        contracts=[{"id":"contract:required", "relation":"changes"}])
+    state = loop._load_raw(ws)
+    original_plan = packet["before_plan"]
+    amended_plan = json.loads((root / "plan/tasks.json").read_text())
+    for i in (11, 14):
+        for target in (state["tasks"][i], original_plan["tasks"][i], amended_plan["tasks"][i]):
+            target.update(criteria=[criterion], acceptance_refs=[criterion])
+    (root / "design").mkdir()
+    (root / "design/contract.json").write_text(json.dumps({"requirement":"R-0001"}))
+    (root / "design/design.md").write_text("Original generated Design; publication authorization remains separate.")
+    state["design_required"] = True
+    state["design_fingerprint"] = loop._design_evidence_fingerprint(ws)
+    original_plan["design_fingerprint"] = amended_plan["design_fingerprint"] = state["design_fingerprint"]
+    policy = state["review_timing_override"]
+    policy = sealed({**{k:v for k,v in policy.items() if k != "fingerprint"},
+        "plan_fingerprint":fingerprint(original_plan), "design_fingerprint":state["design_fingerprint"]})
+    state["review_timing_override"] = policy
+    for task in state["tasks"][2:19]: task["evaluation"]["policy_fingerprint"] = policy["fingerprint"]
+    state["delivery_mode_receipt"] = delivery_policy.validate_plan_mode(original_plan,
+        plan_fingerprint=fingerprint(original_plan), source_sha="a" * 40)
+    loop.save(ws, state)
+    (root / "plan/tasks.json").write_text(json.dumps(amended_plan, indent=2) + "\n")
+    packet.update(before_state_fingerprint=loop_recovery.legacy_state_fingerprint(state),
+        design_fingerprint=state["design_fingerprint"],
+        after_plan_sha256=hashlib.sha256((root / "plan/tasks.json").read_bytes()).hexdigest())
+    packet["requirement_fingerprint"] = loop_recovery._requirement_fingerprint(requirement)
+    assert invoke(legacy)["continued"] is True
+    (root / ".gitignore").write_text(".taskplane/\n.eval/\n")
+    for command in (["git", "init", "-q"], ["git", "add", "."],
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "baseline"]):
+        subprocess.run(command, cwd=ws, check=True, capture_output=True)
+    monkeypatch.setattr(loop.tp, "git_head", REAL_GIT_HEAD)
+    monkeypatch.setattr(loop.tp, "workspace_fingerprint", REAL_WORKSPACE_FINGERPRINT)
+    state = loop._load_raw(ws)
+    state.update(step="evaluate", _build_failed=True, submission_required=True)
+    state["goal"] = "generated publication-only continuity"
+    state["tasks"][19]["failure_routing"] = loop._detected_build_failure_routing(ws,
+        state["tasks"][19], {"outcome":"fail", "fingerprint":REAL_WORKSPACE_FINGERPRINT(ws)}, "execute")
+    state["review_kernel_runs"] = {"evaluate:T19":{"run_id":"e" * 32, "workspace":ws}}
+    loop.save(ws, state)
+    initial_contract = loop.tp.build_contract("Evaluate", read_only=True)
+    initial_contract["producer_dispatch"] = {"run_id":"e" * 32, "task_id":"T19", "stage":"evaluate"}
+    contract = loop.tp.prepare_worker_contract(ws, initial_contract,
+        stage="evaluate", task="T19", task_name="tp_step_evaluator_t19_test", role_marker="taskplane-role:tp-evaluator")
+    contract = loop.tp.bind_submission_contract(contract, ws, task="T19", stage="evaluate",
+        slot=contract["task_slot"], locator={"type":"loop_submission"}, validation_rule="loop-submission/v1")
+    loop.tp.activate(ws, contract, snapshot=REAL_GIT_HEAD(ws), task_slot_override=contract["task_slot"])
+    event = {"cwd":ws, "session_id":"test-root", "agent_id":"test-child", "task_name":"tp_step_evaluator_t19_test"}
+    loop.tp.bind_worker_contract_event(ws, event)
+    (root / ".eval").mkdir()
+    (root / ".eval/verdict.json").write_text('{"verdict":"fail","historical":true}')
+    assert loop.submit.__wrapped__(ws, "fail", note="historical adverse classifier")["submitted"]
+    loop.tp.terminalize_worker_contract(ws, event, outcome="failure", submission_status="producer_error")
+    approval = root / ".taskplane/publication-approval.md"
+    original = root / ".taskplane/original-approval.md"
+    approval.write_text("human:test: publication-only post-merge sequencing approved; review and CI mandatory")
+    original.write_text("human:test: original approved scope retained")
+    artifact = lambda path:{"path":str(path), "sha256":hashlib.sha256(path.read_bytes()).hexdigest()}
+    prepared = loop_recovery.prepare_publication_amendment(loop, ws, by="human:test",
+        request="Move publication only to separately authorized post-merge gate", approval=artifact(approval),
+        original_approval=artifact(original), terminal_slot=contract["task_slot"])
+    source = root / ".taskplane/publication-amendment.json"
+    source.write_text(json.dumps(prepared))
+    return ws, root, prepared, source
+
+
+def apply_publication(fixture, **kwargs):
+    ws, _, packet, source = fixture
+    return loop.amend_delivery(ws, source=str(source), by=kwargs.pop("by", "human:test"),
+        request=packet["request"], expected_fingerprint=loop_recovery._fingerprint(packet), **kwargs)
+
+
+def test_publication_amendment_preserves_failed_build_and_all_retained_work(publication_amendment):
+    ws, root, packet, _ = publication_amendment
+    before = loop._load_raw(ws)
+    files = {p:p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    checked = apply_publication(publication_amendment, check=True)
+    assert checked.get("checked"), checked
+    assert loop._load_raw(ws) == before
+    assert {p:p.read_bytes() for p in files} == files
+    applied = apply_publication(publication_amendment)
+    assert applied.get("amended"), applied
+    after = loop._load_raw(ws)
+    assert after["step"] == "evaluate" and after["_build_failed"] is True
+    assert after["tasks"] == before["tasks"]
+    assert after["legacy_build_continuation"] == before["legacy_build_continuation"]
+    assert after["resource_policy"] == before["resource_policy"]
+    assert "_submission" not in after and "evaluate:T19" not in after["review_kernel_runs"]
+    journal = after["legacy_publication_amendment"]
+    assert journal["historical_submission"] == before["_submission"]
+    assert journal["historical_review_binding"] == before["review_kernel_runs"]["evaluate:T19"]
+    assert loop.reqs.get_requirement(ws, "R-0001") == packet["after_requirement"]
+    assert json.loads((root / "plan/tasks.json").read_text())["tasks"] == json.loads(packet["before_plan_text"])["tasks"]
+    assert loop_recovery.legacy_continuation(after, ws)
+    assert not loop._design_current_errors(ws, after)
+    assert loop._design_evidence_fingerprint(ws) != before["design_fingerprint"]
+    lookup = lambda rid:loop.reqs.get_requirement(ws, rid)
+    assert loop.tp.requirement_coverage_errors(after["tasks"], lookup), "raw historical references unexpectedly accepted"
+    projected = loop.reqs.publication_coverage_tasks(after["tasks"], lookup)
+    assert not loop.tp.requirement_coverage_errors(projected, lookup)
+    current_only = loop.reqs.publication_coverage_tasks(after["tasks"], lookup, require_passed=True)
+    assert any("FP-AC17" in error for error in loop.tp.requirement_coverage_errors(current_only, lookup, require_passed=True))
+    assert after["tasks"] == before["tasks"]
+    assert packet["after_plan_text"].startswith(packet["before_plan_text"].rstrip()[:-1])
+    assert apply_publication(publication_amendment).get("replay") is True
+    assert loop._load_raw(ws) == after
+
+
+@pytest.mark.parametrize("damage", ["acceptance", "task-tests", "task-scope", "retained-result", "foreign-run",
+    "foreign-source", "actor", "approval-file", "original-approval", "terminal-missing", "terminal-forged",
+    "active-worker", "observation", "current-plan", "current-requirement", "design-drift"])
+def test_publication_amendment_refuses_unrelated_or_unproven_changes(publication_amendment, damage):
+    ws, root, packet, source = publication_amendment
+    if damage == "acceptance": packet["after_requirement"]["acceptance"][0] = "J1 waived"
+    if damage in {"task-tests", "task-scope"}:
+        plan = json.loads(packet["after_plan_text"])
+        plan["tasks"][19]["tests" if damage == "task-tests" else "scope"] = "waived"
+        packet["after_plan_text"] = json.dumps(plan)
+    if damage == "retained-result":
+        with loop.mutate(ws) as state: state["tasks"][0]["evaluation"]["verdict"] = "pass"
+    if damage == "foreign-run": packet["run_id"] = "foreign"
+    if damage == "foreign-source": (root / "foreign.py").write_text("unapproved source")
+    if damage == "actor": packet["by"] = "human:other"
+    if damage in {"approval-file", "original-approval"}:
+        Path(packet["approval" if damage == "approval-file" else "original_approval"]["path"]).write_text("changed")
+    if damage.startswith("terminal-"):
+        path = Path(loop.tp._worker_terminal_path(ws, packet["terminal_slot"]))
+        if damage == "terminal-missing": path.unlink()
+        else:
+            terminal = json.loads(path.read_text())
+            terminal["outcome"] = "success"
+            path.write_text(json.dumps(terminal))
+    if damage == "active-worker":
+        contract = loop.tp.prepare_worker_contract(ws, loop.tp.build_contract("Other", read_only=True),
+            stage="evaluate", task="T19", task_name="tp_step_evaluator_other", role_marker="taskplane-role:tp-evaluator")
+        loop.tp.activate(ws, contract, snapshot=REAL_GIT_HEAD(ws), task_slot_override=contract["task_slot"])
+    if damage == "observation": packet["observation_checkpoint"] = {"unauthenticated":True}
+    if damage == "current-plan": (root / "plan/tasks.json").write_text(packet["before_plan_text"] + " ")
+    if damage == "current-requirement": loop.reqs.amend_requirement(ws, "R-0001", functional=["unrelated"])
+    if damage == "design-drift": (root / "design/design.md").write_text("unrelated Design change")
+    source.write_text(json.dumps(packet))
+    before = loop._load_raw(ws)
+    result = apply_publication(publication_amendment)
+    assert result.get("error"), result
+    assert loop._load_raw(ws) == before
+
+
+@pytest.mark.parametrize("boundary", ["requirement", "plan-before", "plan-after", "source-race"])
+def test_publication_amendment_interruption_resumes_exact_journal(publication_amendment, monkeypatch, boundary):
+    ws, root, packet, _ = publication_amendment
+    apply_req = loop.reqs.apply_publication_sequence
+    write = loop.tp.atomic_write_bytes
+    def interrupted_req(*args, **kwargs):
+        if boundary == "requirement": raise OSError("interrupted requirement owner")
+        result = apply_req(*args, **kwargs)
+        if boundary == "source-race": (root / "unapproved.py").write_text("changed during amendment")
+        return result
+    def interrupted_plan(path, *args, **kwargs):
+        target = path == str(root / "plan/tasks.json")
+        if target and boundary == "plan-before": raise OSError("interrupted Plan owner")
+        result = write(path, *args, **kwargs)
+        if target and boundary == "plan-after": raise OSError("interrupted after durable Plan")
+        return result
+    monkeypatch.setattr(loop.reqs, "apply_publication_sequence", interrupted_req)
+    monkeypatch.setattr(loop.tp, "atomic_write_bytes", interrupted_plan)
+    before = loop._load_raw(ws)
+    assert apply_publication(publication_amendment).get("error")
+    interrupted = loop._load_raw(ws)
+    assert interrupted["legacy_publication_amendment"]["phase"] == "prepared"
+    assert interrupted["_submission"] == before["_submission"]
+    with pytest.raises(ValueError, match="interrupted pickup"):
+        loop_recovery.legacy_continuation(interrupted, ws)
+    monkeypatch.setattr(loop.reqs, "apply_publication_sequence", apply_req)
+    monkeypatch.setattr(loop.tp, "atomic_write_bytes", write)
+    if boundary == "source-race":
+        assert apply_publication(publication_amendment, check=True).get("error")
+        (root / "unapproved.py").unlink()
+    assert apply_publication(publication_amendment, check=True).get("checked")
+    assert loop._load_raw(ws) == interrupted
+    resumed = apply_publication(publication_amendment)
+    assert resumed.get("amended"), resumed
+    after = loop._load_raw(ws)
+    assert after["tasks"] == before["tasks"]
+    assert after["_build_failed"] is True and "_submission" not in after
+    assert loop.reqs.get_requirement(ws, "R-0001") == packet["after_requirement"]
+    assert apply_publication(publication_amendment).get("replay")
+    assert loop._load_raw(ws) == after
+
+
+def test_publication_amendment_next_reaches_current_independent_preparation(publication_amendment, monkeypatch):
+    ws, _, packet, _ = publication_amendment
+    assert apply_publication(publication_amendment).get("amended")
+    state = loop._load_raw(ws)
+    design = loop._design_context(ws, state)
+    assert design["approved"] and not design["errors"]
+    assert design["fingerprint"] == packet["design_fingerprint"]
+    assert design["contract"]["requirement"] == packet["requirement_id"]
+    monkeypatch.setattr(loop.tp, "dor_check", lambda *_:(True, [], []))
+    monkeypatch.setattr(loop.depgraph, "scan", lambda *_:None)
+    monkeypatch.setattr(loop.depgraph, "load", lambda *_:{"modules":{}})
+    monkeypatch.setattr(loop, "_diff_files", lambda *_:[])
+    monkeypatch.setattr(loop, "status", lambda *_:{})
+    monkeypatch.setattr(loop, "_run_artifact_root", lambda *_:ws)
+    captured = []
+    def preparation(*args, **kwargs):
+        captured.append(kwargs)
+        raise ValueError("test stops at independent ReviewKernel preparation; no attempt or native evidence minted")
+    monkeypatch.setattr(loop, "_review_kernel", preparation)
+    result = loop.next_action(ws)
+    assert "test stops at independent ReviewKernel preparation" in result.get("error", ""), result
+    assert captured and captured[0]["requirement"]["acceptance"] == packet["after_requirement"]["acceptance"]
+    assert loop._load_raw(ws)["tasks"] == state["tasks"]
 
 
 @pytest.mark.parametrize("size", [977211, 1553457, 2000001])

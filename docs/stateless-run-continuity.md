@@ -20,6 +20,86 @@ measured usage, and run-owned advisory resource policy from the frozen repair.
 No phase edges, automatic lens declarations, evidence requirements, global
 plugin settings, or installed package were changed by the legacy extension.
 
+## Publication-only sequencing amendment
+
+The source-only follow-up on `ebae5882d7e7320a9766f1babc656315ebf53051`
+adds `loop amend-delivery`. It supports only the explicitly attributed legacy
+FP-AC17 publication sequencing decision, not a general acceptance amendment.
+J1, the real pre-merge J6 prefix, review, CI, all original journey tests and
+remaining tasks stay mandatory. Publication remains pending, requiring a
+separate current post-merge authorization and its ordinary artifact, destination,
+freshness and signing checks. No existing pass satisfies that pending obligation.
+
+Preparation uses current production owners and is read-only:
+
+```python
+from taskplane import loop, loop_recovery
+
+packet = loop_recovery.prepare_publication_amendment(
+    loop, workspace,
+    by="human:vdemkiv",
+    request=approved_request,
+    approval={"path":current_approval_path, "sha256":current_approval_sha256},
+    original_approval={"path":original_approval_path, "sha256":original_approval_sha256},
+    terminal_slot="task_9f12293e",
+)
+fingerprint = loop_recovery._fingerprint(packet)
+```
+
+Run from the committed local source with its package importable. Preserve the
+returned packet in a new durable regular JSON file; do not print its historical
+payloads or observation authenticators. The closed schema is
+`taskplane.publication-amendment/v1`. Preparation supplies exact run, requirement,
+task, original baseline/Design/settings, predecessor continuation, current source,
+actor/request, both immutable approval artifacts, semantic state fingerprint,
+authenticated observation checkpoint, actual Design artifact hashes, signed
+retired slot/contract/receipt fingerprints, stale submission/review binding hashes,
+and full before/after requirement and Plan text with canonical and byte hashes.
+Do not hand-edit generated fields, pre-edit the Plan, or reuse another candidate's
+packet. The original approval for R-0001 is
+`R0001-stateless-integration-scope.md` (`de3d0bf0f620260bc795a891312afbc360807d14a223226a5cbe59d1c5fdc5bf`);
+the publication-only approval is `R0001-publication-post-merge-approval.md`
+(`e88fab06458714d2b79d577d24d252b3ca97b872ad4adeb7fc3f1541e4146890`).
+
+Use the same actor, request and canonical fingerprint for check and application:
+
+```text
+python3 taskplane/tp.py loop amend-delivery --workspace WORKSPACE --from PACKET --by human:vdemkiv --request REQUEST --fingerprint FINGERPRINT --check
+python3 taskplane/tp.py loop amend-delivery --workspace WORKSPACE --from PACKET --by human:vdemkiv --request REQUEST --fingerprint FINGERPRINT
+python3 taskplane/tp.py loop next --workspace WORKSPACE
+```
+
+The CLI uses the existing root observation authority, without creating one.
+Check does not write the requirement, Plan, journal, observations or outbox.
+Application refuses active workers and requires the exact signed adverse native
+retirement. It journals before requirement/Plan writes. Interrupted application
+must resume with the same packet; ordinary continuation refuses an incomplete
+journal. Exact completed replay is read-only and renews no dispatch authority.
+Validated monotonic observations arriving meanwhile are preserved, not rolled back.
+
+The Plan's existing text is preserved with one bounded JSON annotation append.
+Task declarations and all historical result/deferred records remain unchanged.
+The requirement owner changes only the exact publication clause and records its
+attribution, without renewing Product or Design approval. Original Design bytes
+and fingerprint remain pinned, alongside the explicit narrow requirement delta.
+Coverage consumers project the exact old FP-AC17 references without rewriting
+T11/T14: only the existing remaining J6 owner can satisfy passed ownership of
+the amended clause. Ordinary substantive acceptance checks are unchanged.
+
+The stale failed submission and attempt binding are retained verbatim in the
+amendment journal and removed only from active use. The run remains Evaluate
+with its failed-Build detection unchanged. `loop next` owns a fresh independent
+attempt; this repair supplies neither missing acceptance evidence nor a direct
+Execute/Fix transition. Original adverse receipts are not rewritten.
+
+Verification: the missing preparation owner was reproduced red after a generated
+real Git workspace, requirement mutation, failed submission and signed adverse
+retirement. Focused current-reference, Design/preparation and interrupted-owner
+checks passed (7 tests in 54.87 seconds). The final declared legacy regression
+file passed **130 tests in 225.07 seconds**. Scoped Ruff, whitespace and public
+parser checks passed. These are isolated source regressions, not native journey
+acceptance; no original run or approval artifact was modified by the worker.
+
 ## Native terminal seam repair after the genuine classifier failure
 
 This source-only follow-up is based on `854b0b72c603522727d4c45a3a45c0f847bb7108`

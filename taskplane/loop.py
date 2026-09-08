@@ -9394,7 +9394,8 @@ def _plan_dor_errors(ws: str, state: dict, apply: bool = False) -> list:
     if apply:
         state["graph_dor"] = graph_dor
     errors.extend("graph DoR: " + e for e in graph_dor.get("errors") or [])
-    errors.extend(tp.requirement_coverage_errors(state.get("tasks") or [],
+    errors.extend(tp.requirement_coverage_errors(reqs.publication_coverage_tasks(
+        state.get("tasks") or [], lambda rid: reqs.get_requirement(ws, rid)),
         lambda rid: reqs.get_requirement(ws, rid), state.get("requirement_id")))
     errors.extend("design DoR: " + e for e in _design_plan_errors(ws, state))
     return errors
@@ -13886,7 +13887,8 @@ def _compute_signoff_dod(
     errors: list = []
     notices: list = []
     errors.extend("requirement DoD: " + e for e in tp.requirement_coverage_errors(
-        state.get("tasks") or [], lambda rid: reqs.get_requirement(ws, rid),
+        reqs.publication_coverage_tasks(state.get("tasks") or [], lambda rid: reqs.get_requirement(ws, rid), require_passed=True),
+        lambda rid: reqs.get_requirement(ws, rid),
         state.get("requirement_id"), require_passed=True))
     if scopes:
         # Aggregate diff-scope, EXCLUDING loop-owned artifacts: they are
@@ -16066,6 +16068,16 @@ def continue_build(ws: str, *, source: str, by: str, request: str,
     return loop_recovery.continue_build(sys.modules[__name__], ws, source=source,
         by=by, request=request, expected_fingerprint=expected_fingerprint, check=check,
         observation_authority=observation_authority)
+
+
+def amend_delivery(ws: str, *, source: str, by: str, request: str,
+                   expected_fingerprint: str, check: bool = False,
+                   observation_authority: bytes | None = None) -> dict:
+    """Exact human publication sequencing; no Build acceptance or dispatch."""
+    import sys
+    return loop_recovery.amend_delivery(sys.modules[__name__], ws, source=source,
+        by=by, request=request, expected_fingerprint=expected_fingerprint,
+        check=check, observation_authority=observation_authority)
 
 
 def replan(ws: str, by: str, reason: str) -> dict:
