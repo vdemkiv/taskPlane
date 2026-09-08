@@ -43,7 +43,8 @@ def _workspace(tmp_path):
 @pytest.mark.parametrize("stage", ["projection", "seed", "capability", "start_seal",
     "observation_seal", "open", "advance", "final_snapshot",
     "start_seal_capability", "start_seal_binding", "start_seal_seed", "start_seal_unexpected",
-    "start_seal_role", "start_seal_resumed", "start_seal_session_binding"])
+    "start_seal_role", "start_seal_resumed", "start_seal_session_binding",
+    "start_seal_host", "start_seal_path", "start_seal_session_missing", "start_seal_time_missing", "start_seal_all_guards"])
 def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monkeypatch, stage):
     """Failure injection into existing hook/audit owners; no native evidence."""
     import loop as hook_loop
@@ -94,6 +95,22 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
     fresh_failures = {"start_seal_role":"root_role_not_root",
         "start_seal_resumed":"root_session_resumed",
         "start_seal_session_binding":"root_session_binding_mismatch"}
+    guard_changes = {
+        "start_seal_host": ({"host":"claude"}, ["root_host_not_codex"]),
+        "start_seal_path": ({"effective_path":"unavailable"}, ["root_path_unavailable"]),
+        "start_seal_session_missing": ({"session_fingerprint":None},
+            ["root_fresh_start", "root_session_binding_mismatch", "root_session_missing"]),
+        "start_seal_time_missing": ({"observed_at":""}, ["root_time_missing"]),
+        "start_seal_all_guards": ({"host":"claude", "effective_path":"unavailable",
+            "session_fingerprint":None, "observed_at":""}, ["root_fresh_start",
+            "root_session_binding_mismatch", "root_host_not_codex", "root_path_unavailable",
+            "root_session_missing", "root_time_missing"]),
+    }
+    host_snapshot = cli._host_capability_snapshot
+    if case in guard_changes:
+        def changed_host(*args, **kwargs):
+            return replace(host_snapshot(*args, **kwargs), **guard_changes[case][0])
+        monkeypatch.setattr(cli, "_host_capability_snapshot", changed_host)
     capability = cli.host_caps.root_session_capability
     def with_missing(*args, **kwargs):
         value = capability(*args, **kwargs)
@@ -104,7 +121,7 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
         if case in messages:
             raise host_native.RootSessionReceiptError(messages[case][0])
         raise RuntimeError(sentinel)
-    if case not in fresh_failures:
+    if case not in fresh_failures and case not in guard_changes:
         monkeypatch.setattr(owner, name, fail)
     cli._observe_active_loop_orchestrator(ws, event)
     text = (Path(cli.tp.tp_dir(ws)) / "trace.jsonl").read_text()
@@ -113,18 +130,21 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
     assert len(failures) == 1
     assert failures[0]["stage"] == ("identity" if case == "start_seal_session_binding" else stage)
     assert failures[0]["failure_code"] == ("ValueError" if case == "start_seal_session_binding"
-        else "root_capability_unsupported" if case in fresh_failures
+        else "root_capability_unsupported" if case in fresh_failures or case in guard_changes
         else messages[case][1] if case in messages else "RuntimeError")
     if case == "start_seal_capability":
         assert failures[0]["tags"] == ["root_fresh_start", "root_turn_mapping"]
     if case in fresh_failures and case != "start_seal_session_binding":
         assert failures[0]["tags"] == ["root_fresh_start", fresh_failures[case]]
+    if case in guard_changes:
+        assert failures[0]["tags"] == guard_changes[case][1]
     assert sentinel not in text
     assert str(transcript) not in json.dumps(failures)
 
 
 @pytest.mark.parametrize("case", ["advisory", "strict", "resumed", "foreign", "missing", "zero",
-    "missing_identity", "conflicting_identity", "foreign_receipt", "foreign_workspace"])
+    "missing_identity", "conflicting_identity", "foreign_receipt", "foreign_workspace",
+    "no_codex_environment", "conflicting_provider"])
 def test_root_hook_respects_saved_advisory_without_reducing_cumulative_usage(tmp_path, monkeypatch, case):
     """Production policy/open owners; generated host metadata, not native proof."""
     from taskplane import tp as cli
@@ -175,8 +195,16 @@ def test_root_hook_respects_saved_advisory_without_reducing_cumulative_usage(tmp
         event.pop("session_id")
     if case == "conflicting_identity":
         event["thread_id"] = "conflicting-session"
-    assert cli._host_capability_snapshot(ws).session_fingerprint == hashlib.sha256(
-        b"stale-inherited-session").hexdigest()  # Ordinary CLI default is unchanged.
+    if case == "conflicting_provider":
+        event["provider"] = "claude"
+    if case == "no_codex_environment":
+        for variable in ("CODEX_HOME", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID"):
+            monkeypatch.delenv(variable, raising=False)
+        assert cli._host_capability_snapshot(ws).host == "claude"
+        assert cli._host_capability_snapshot(ws).session_fingerprint is None
+    else:
+        assert cli._host_capability_snapshot(ws).session_fingerprint == hashlib.sha256(
+            b"stale-inherited-session").hexdigest()  # Ordinary CLI default is unchanged.
     import loop as hook_loop
     open_wave = hook_loop.open_delivery_wave
     open_errors = []
@@ -189,7 +217,7 @@ def test_root_hook_respects_saved_advisory_without_reducing_cumulative_usage(tmp
     monkeypatch.setattr(hook_loop, "open_delivery_wave", observed_open)
     cli._observe_active_loop_orchestrator(ws, event)
     opened = loop.load(ws)["root_hygiene"]
-    if case != "advisory":
+    if case not in {"advisory", "no_codex_environment"}:
         assert opened == prepared
         if case == "strict":
             assert open_errors == ["first observed input exceeds seed budget"]

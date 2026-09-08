@@ -448,14 +448,15 @@ def _prefer_existing_loop_resume(ws: str, projection: dict) -> dict:
 
 
 def _host_capability_snapshot(ws: str, install_context: str | None = None, *,
-                              session_id: str | None = None):
-    """Use a verified hook session when supplied; CLI defaults stay ambient."""
+                              session_id: str | None = None, host: str | None = None):
+    """Use verified hook context when supplied; CLI defaults stay ambient."""
     context = install_context or _install_context()
     bridge = _codex_hooks_report(ws)
     plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     native_manifest = os.path.join(plugin_root, "hooks", "hooks.json")
-    host = ("codex" if (os.environ.get("CODEX_HOME")
-                        or os.environ.get("CODEX_THREAD_ID")) else "claude")
+    if host is None:
+        host = ("codex" if (os.environ.get("CODEX_HOME")
+                            or os.environ.get("CODEX_THREAD_ID")) else "claude")
     version = (os.environ.get("CODEX_VERSION") if host == "codex" else
                os.environ.get("CLAUDE_CODE_VERSION"))
     if session_id is None:
@@ -2943,6 +2944,9 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
             if not event_sessions or any(not isinstance(value, str) or not value or
                     value != snapshot["session_id"] for value in event_sessions):
                 raise ValueError("root hook event and provider session do not agree")
+            if any(not isinstance(event[key], str) or event[key].strip().lower() != "codex"
+                    for key in ("provider", "host") if event.get(key) not in (None, "")):
+                raise ValueError("root hook provider conflicts with Codex native projection")
             stage = "authority"
             authority = _transcript_projection_authority(ws)
             if root.get("status") == "prepared":
@@ -2951,7 +2955,7 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 seed = _root_seed.load_root_seed(
                     ws, str(root.get("seed_ref") or ""))
                 stage = "capability"
-                host_snapshot = _host_capability_snapshot(ws, session_id=snapshot["session_id"])
+                host_snapshot = _host_capability_snapshot(ws, session_id=snapshot["session_id"], host="codex")
                 capability = host_caps.root_session_capability(
                     host_snapshot,
                     settings_digest=settings.digest,
@@ -3044,6 +3048,14 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                             expected_session = hashlib.sha256(native_session.encode("utf-8")).hexdigest() if native_session else None
                             if host_snapshot.session_fingerprint != expected_session:
                                 tags.append("root_session_binding_mismatch")
+                    if host_snapshot.host != "codex":
+                        tags.append("root_host_not_codex")
+                    if host_snapshot.effective_path not in {"native_effective", "bridge_effective"}:
+                        tags.append("root_path_unavailable")
+                    if not host_snapshot.session_fingerprint:
+                        tags.append("root_session_missing")
+                    if not host_snapshot.observed_at:
+                        tags.append("root_time_missing")
             tp.trace(ws, "native_orchestrator_meter_unavailable",
                      error=type(exc).__name__, stage=stage,
                      failure_code=failure_code, tags=tags)
