@@ -1656,15 +1656,16 @@ def cmd_screen_dispatch(a) -> int:
                     "permissionDecision": "deny",
                     "permissionDecisionReason": reason}}))
                 return 0
-        # Design assignments become durable only when this exact native
+        # Focused lens assignments become durable only when this exact native
         # dispatch has passed every role/model/intent check. The append is
         # receipt-idempotent so a hook retry cannot manufacture activity.
-        if ok and exp is not None and exp.get("design_host_authority"):
+        if ok and exp is not None and any(exp.get(key) for key in (
+                "design_host_authority", "plan_host_authority")):
             try:
                 tp.record_design_dispatch_assignment_activity(ws, exp)
             except Exception as activity_error:
                 reason = (
-                    "taskplane Design dispatch activity failed closed for "
+                    "taskplane lens dispatch activity failed closed for "
                     f"{exp.get('ref') or agent!r} "
                     f"({type(activity_error).__name__}: {activity_error}); "
                     "the expectation remains pending for a safe retry.")

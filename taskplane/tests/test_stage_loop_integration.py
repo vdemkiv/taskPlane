@@ -371,6 +371,191 @@ def test_cold_plan_next_ignores_unselected_foreign_repo_inputs_and_replays_root(
 
 
 @pytest.fixture
+def native_plan_lens_action(tmp_path, monkeypatch):
+    from taskplane.tests.test_stage_cross_host import _real_pristine_run, _record_bootstrap_requirement
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    requirement = _record_bootstrap_requirement(workspace)
+    loop.reqs.amend_requirement(str(workspace), requirement["id"], nfr={
+        "security":"review local trust boundaries", "architecture":"reuse current owners"})
+    (workspace / "current-spec.md").write_text("Plan the current local change with independent quick reviews.")
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    # Simulated applicability provider; production policy still chooses its
+    # canonical mandatory set and any fourth risk. No host completion here.
+    monkeypatch.setattr(loop.lens_router, "route", lambda *a, **k:{"lenses":[], "context":{"status":"ready"}})
+    initialized = loop.init(str(workspace), "current Plan with native quick lenses", spec_path="current-spec.md",
+        requirement_id=requirement["id"], by="human:vdemkiv")
+    assert initialized["step"] == "plan", initialized
+    action = loop.next_action.__wrapped__(str(workspace))
+    assert not action.get("error"), action
+    return str(workspace), workspace, store, initial, action
+
+
+def test_public_plan_action_emits_exact_native_lens_team_and_replays_once(native_plan_lens_action):
+    ws, _, store, initial, action = native_plan_lens_action
+    assert "plan_lens_dispatches" in action, "selected Plan lenses have no native contracts or dispatch briefs"
+    workers = action["plan_lens_dispatches"]
+    plan = action["plan_team_plan"]
+    assert len(workers) in {3, 4}
+    assert {row["lens"] for row in workers} == set(action["focused_route"]["dispatchable_selected"])
+    assert len({row["task_name"] for row in workers}) == len({row["task_slot"] for row in workers}) == len(workers)
+    for worker in workers:
+        assert worker["output"] == f"plan/lenses/{worker['lens']}.json"
+        assert worker["dispatch_intent"]["schema"] == "taskplane.plan-lens-dispatch-intent/v1"
+        contract = loop.tp.load_json(loop.tp.active_contract_path(ws, worker["task_slot"]))
+        assert contract["worker_lifecycle"]["stage"] == "plan-lens"
+        assert contract["worker_lifecycle"]["expected_task_name"] == worker["task_name"]
+        assert contract["write_allow"] == [worker["output"]]
+        assert "plan_host_authority" in contract["worker_lifecycle"]
+    before_queue = loop.tp._load_queue_strict(loop.tp._dispatch_path(ws, "expected_dispatch.json"))
+    repeated = loop.next_action.__wrapped__(ws)
+    assert repeated["plan_team_plan"] == plan
+    lens_queue = lambda rows: [row for row in rows if row.get("kind") == "plan-lens"]
+    assert lens_queue(loop.tp._load_queue_strict(loop.tp._dispatch_path(ws, "expected_dispatch.json"))) == lens_queue(before_queue)
+    assert len(store.load(initial["run_id"])["stage_heads"]) == 1
+    assert "phase_runtime" not in action
+
+
+def _finish_plan_lenses(ws, workspace, action, *, usage="unavailable"):
+    """Simulate only native dispatch/start/Stop; use real lifecycle owners."""
+    from taskplane.tests.test_r0002_cross_host_journey import _digest
+    plan = action["plan_team_plan"]
+    events = []
+    for index, worker in enumerate(plan["workers"]):
+        expected = loop.tp.peek_expectation(ws, worker["task_name"], strict=True)
+        loop.tp.record_design_dispatch_assignment_activity(ws, expected)
+        loop.record_native_dispatch_observation(ws, expected=expected,
+            native_task_name=worker["task_name"], observed_at=100 + index)
+        assert loop.tp.commit_dispatch_verification(ws, worker["task_name"], worker["model"],
+            expected, True, worker["reasoning_effort"], strict=True)
+        event = {"cwd":ws, "session_id":"pristine-session", "agent_id":f"plan-child-{index}",
+            "agent_type":worker["task_name"], "task_name":worker["task_name"], "turn_id":f"turn-{index}"}
+        bound = loop.tp.bind_worker_contract_event(ws, event)
+        loop.tp.record_design_worker_start_activity(ws, bound, event)
+        material = {"schema":"taskplane.plan-lens-result/v1", "lens":worker["lens"],
+            "worker_identity":worker["task_name"], "team_plan_fingerprint":plan["fingerprint"],
+            "candidate_fingerprint":plan["candidate_fingerprint"], "outcome":"pass", "findings":[]}
+        path = workspace / worker["output"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({**material, "fingerprint":_digest(material)}))
+        if usage == "measured":
+            loop.record_observed_dispatch_usage(ws, task_id=worker["lens"],
+                native_task_name=worker["task_name"], source_fingerprint="a" * 64,
+                normalized_usage={"schema":loop.spend.USAGE_SCHEMA, "available":True,
+                    "cached_input_tokens":60, "uncached_input_tokens":40, "output_tokens":10,
+                    "raw_total_tokens":110, "reasoning_tokens":5})
+            sealed = loop.finalize_observed_dispatch_usage(ws, task_id=worker["lens"],
+                native_task_name=worker["task_name"], ended_at=110 + index, outcome="success")
+            event["usage_reference"] = {"schema":"taskplane.native-dispatch-usage-reference/v1",
+                "dispatch_receipt":sealed["receipt"]}
+        elif usage != "missing":
+            sealed = loop.finalize_observed_dispatch_usage(ws, task_id=worker["lens"],
+                native_task_name=worker["task_name"], ended_at=110 + index, outcome="success",
+                usage_unavailable=True, unavailable_reason="simulated host has no counter provider")
+            assert sealed["status"] == "unavailable"
+            assert sealed["binding"]["usage"] is None
+        terminal = loop.tp.terminalize_worker_contract(ws, {**event, "outcome":"success"},
+            outcome="success", submission_status="not_required")
+        assert terminal
+        events.append(event)
+    return events
+
+
+def _write_reviewed_plan(ws, workspace):
+    requirement = loop.reqs.get_requirement(ws, loop.load(ws)["requirement_id"])
+    tasks = {"tasks":[{"id":"t01", "scope":["README.md"], "tests":"python3 -c 'assert True'",
+        "deps":[], "new_modules":["(root)"], "criteria":requirement["acceptance"], "acceptance_refs":requirement["acceptance"],
+        "req":requirement["id"], "status":"pending"}]}
+    (workspace / "plan" / "tasks.json").write_text(json.dumps(tasks))
+    (workspace / "plan" / "plan.md").write_text("# Plan\n\nImplement the current bounded requirement.\n")
+
+
+@pytest.mark.parametrize("usage", ["unavailable", "measured"])
+def test_native_plan_results_collect_then_public_gate_with_unknown_usage(native_plan_lens_action, usage):
+    ws, workspace, _, _, action = native_plan_lens_action
+    refused = loop.gate.__wrapped__(ws, "pass")
+    assert refused["error"] == "Plan lens collection is incomplete"
+    _finish_plan_lenses(ws, workspace, action, usage=usage)
+    assert loop._design_team_errors(ws, loop.load(ws), stage="plan") == []
+    _write_reviewed_plan(ws, workspace)
+    gated = loop.gate.__wrapped__(ws, "pass")
+    assert not gated.get("error"), gated
+    assert gated["step"] == "plan_approval"
+    bindings = loop.load(ws)["dispatch_telemetry"]["bindings"]
+    assert all((row["usage"] is None) == (usage == "unavailable") for row in bindings)
+
+
+def test_plan_collection_does_not_mix_same_lens_from_design_team(native_plan_lens_action):
+    from taskplane.tests.test_r0002_cross_host_journey import _worker, _plan, _complete_worker
+    ws, workspace, _, _, action = native_plan_lens_action
+    _finish_plan_lenses(ws, workspace, action)
+    plan = action["plan_team_plan"]
+    # Both teams use the incumbent whole-run artifact owner. This transport
+    # fixture does not claim a Design stage approval or native acceptance.
+    worker = _worker(plan["selected"][0], run_id=plan["run_id"], stage_id=plan["stage_instance_id"],
+        candidate=plan["candidate_fingerprint"], settings=plan["settings_digest"])
+    design = _plan([worker], run_id=plan["run_id"], stage_id=plan["stage_instance_id"],
+        candidate=plan["candidate_fingerprint"], settings=plan["settings_digest"])
+    state = loop.load(ws)
+    authority = loop.tp.register_design_lens_dispatch_plan(ws, design,
+        artifact_root=loop._run_artifact_root(ws, state), artifact_binding=state["run_artifact_binding"])
+    _complete_worker(workspace, design, authority, worker, index=100)
+    collected = loop.tp.validate_design_lens_dispatch_completion(ws, plan, plan["host_authority"])
+    assert collected["valid"], collected
+    # New Design bytes still invalidate the original Plan source binding.
+    assert loop._design_team_errors(ws, loop.load(ws), stage="plan")
+
+
+def test_plan_team_registration_interrupted_replay_preserves_bound_owner(native_plan_lens_action):
+    ws, _, _, _, action = native_plan_lens_action
+    worker = action["plan_lens_dispatches"][0]
+    event = {"cwd":ws, "session_id":"pristine-session", "agent_id":"already-started-child",
+        "agent_type":worker["task_name"], "task_name":worker["task_name"], "turn_id":"started-turn"}
+    loop.tp.bind_worker_contract_event(ws, event)
+    slot_path = Path(loop.tp.active_contract_path(ws, worker["task_slot"]))
+    before = slot_path.read_bytes()
+    with loop.mutate(ws) as state:
+        state.pop("plan_team_plan")  # Simulate interruption before the loop's team write.
+    repeated = loop.next_action.__wrapped__(ws)
+    assert repeated.get("plan_team_plan") == action["plan_team_plan"], repeated
+    assert slot_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("corruption", ["missing", "foreign", "stale", "duplicate", "route", "usage", "changes-required", "result-bytes", "requirement"])
+def test_native_plan_collection_refuses_independent_corruption(native_plan_lens_action, corruption):
+    from taskplane.tests.test_r0002_cross_host_journey import _digest
+    ws, workspace, _, _, action = native_plan_lens_action
+    _finish_plan_lenses(ws, workspace, action, usage="missing" if corruption == "usage" else "unavailable")
+    worker = action["plan_lens_dispatches"][0]
+    path = workspace / worker["output"]
+    if corruption == "missing":
+        path.unlink()
+    elif corruption in {"foreign", "changes-required", "result-bytes"}:
+        result = json.loads(path.read_text())
+        if corruption == "result-bytes":
+            result["findings"] = [{"summary":"Changed after actual terminal"}]
+        else:
+            result["worker_identity" if corruption == "foreign" else "outcome"] = "foreign-worker" if corruption == "foreign" else "changes-required"
+        result["fingerprint"] = _digest({key:value for key,value in result.items() if key != "fingerprint"})
+        path.write_text(json.dumps(result))
+    elif corruption == "stale":
+        (workspace / "README.md").write_text("Unreviewed changed source\n")
+    elif corruption == "requirement":
+        loop.reqs.amend_requirement(ws, loop.load(ws)["requirement_id"], nfr={"security":"new unreviewed boundary"})
+    elif corruption in {"duplicate", "route"}:
+        with loop.mutate(ws) as state:
+            plan = state["plan_team_plan"]
+            if corruption == "duplicate":
+                plan["workers"].append(copy.deepcopy(plan["workers"][0]))
+            else:
+                plan["route_fingerprint"] = "f" * 64
+            plan["fingerprint"] = _digest({key:value for key,value in plan.items() if key not in {"fingerprint", "host_authority"}})
+    refused = loop.gate.__wrapped__(ws, "pass")
+    assert refused.get("error") == "Plan lens collection is incomplete", refused
+    assert loop.load(ws)["step"] == "plan"
+
+
+@pytest.fixture
 def current_focused_plan_inputs(tmp_path, monkeypatch):
     from taskplane import review_evidence
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "disabled")

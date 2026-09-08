@@ -1601,17 +1601,55 @@ def _design_control_plane_errors(ws: str, state: Mapping[str, object]) \
     return errors
 
 
+def _plan_team_binding(ws: str, state: Mapping[str, object]) -> dict:
+    """Bind incumbent Plan reviews to current inputs, not future Plan outputs."""
+    artifact = run_artifacts.validate_binding(state.get("run_artifact_binding"))
+    if artifact.get("run_id") != state.get("run_id"):
+        raise ValueError("Plan team run binding is foreign")
+    requirement = str(state.get("requirement_id") or "")
+    effective = operational_settings.load_settings(environment=os.environ)
+    evidence, _ = _focused_stage_evidence(ws, state, "plan")
+    # Plan DoR legitimately adds task ownership edges to the derived graph.
+    # Bind its source bytes and selected handoff, not this mutable cache's
+    # counters. The original route remains separately signed by team authority.
+    evidence = {key: value for key, value in evidence.items() if key != "dependency_graph"}
+    context = _stage_loop_context(ws, state)
+    current_stage = (context or {}).get("stage") or {}
+    if current_stage and current_stage.get("stage_kind") != "plan":
+        raise ValueError("Plan team foreground stage is foreign")
+    material = {
+        "source": tp.workspace_fingerprint(ws), "evidence": evidence,
+        "stage": {key: current_stage.get(key) for key in (
+            "stage_id", "stage_kind", "input_manifest_ref", "authority")},
+    }
+    return {
+        "run_id": artifact["run_id"],
+        "stage_instance_id": artifact["stage_instance_id"],
+        "candidate_fingerprint": artifact["candidate"]["fingerprint"],
+        "settings_digest": effective.digest,
+        "requirement": requirement,
+        "requirement_fingerprint": _dc.requirement_fingerprint(ws, requirement),
+        "catalog_fingerprint": hashlib.sha256(json.dumps(
+            lens_router.load_catalog(), sort_keys=True).encode()).hexdigest(),
+        "decomposition_fingerprint": hashlib.sha256(json.dumps(
+            material, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    }
+
+
 def _design_team_plan(
     ws: str, state: Mapping[str, object], focused_route: Mapping[str, object],
-    dispatch: Mapping[str, object], *, effective_settings=None,
+    dispatch: Mapping[str, object], *, effective_settings=None, stage: str = "design",
 ) -> dict:
     """Compile and authorize one native quick worker per selected lens."""
-    del dispatch  # Design workers resolve one canonical settings snapshot.
+    del dispatch  # One canonical settings snapshot for this stage.
+    if stage not in {"design", "plan"}:
+        raise ValueError("lens team stage is unsupported")
     selected = [str(value) for value in
                 focused_route.get("dispatchable_selected") or []]
     if not selected or len(selected) != len(set(selected)) or len(selected) > 16:
         raise ValueError("Design lens team must contain 1-16 unique workers")
-    binding = state.get("design_control_plane_binding")
+    binding = (_plan_team_binding(ws, state) if stage == "plan" else
+               state.get("design_control_plane_binding"))
     if not isinstance(binding, Mapping):
         raise ValueError("Design lens team requires a control-plane binding")
     catalog = lens_router.load_catalog()
@@ -1622,7 +1660,7 @@ def _design_team_plan(
     role_reference = tp.portable_role_reference("tp-lens")
     effective = effective_settings or operational_settings.load_settings(
         environment=os.environ)
-    design_stage = effective.stages["design"]
+    design_stage = effective.stages[stage]
     workers = []
     for lens_id in selected:
         # ``tp-lens`` is intentionally host-neutral and therefore has no
@@ -1630,15 +1668,15 @@ def _design_team_plan(
         # fell through to Build settings.  Resolve the explicit Design tier
         # against this same typed settings snapshot instead.
         worker_dispatch = tp.dispatch_fields(
-            "lens", "tp-lens", f"design-{lens_id}", "deep",
-            settings_context=effective)
+            "lens", "tp-lens", f"{stage}-{lens_id}", "deep",
+            settings_context=effective, lens_stage=stage)
         if worker_dispatch.get("model") != design_stage.model or \
                 worker_dispatch.get("reasoning_effort") != \
                 design_stage.reasoning or \
                 worker_dispatch.get("settings_digest") != effective.digest:
             raise ValueError("Design lens dispatch severed canonical settings")
         worker_identity = worker_dispatch["task_name"]
-        result_path = f"design/lenses/{lens_id}.json"
+        result_path = f"{stage}/lenses/{lens_id}.json"
         workers.append({
             "lens": lens_id,
             "task_name": worker_identity,
@@ -1647,18 +1685,24 @@ def _design_team_plan(
             "model_tier": worker_dispatch["model_tier"],
             "model": worker_dispatch.get("model"),
             "reasoning_effort": worker_dispatch["reasoning_effort"],
-            "task_slot": f"design-lens-{lens_id}",
+            "task_slot": f"{stage}-lens-{lens_id}",
             "output": result_path,
             "contract": {
                 "read_only": True,
                 "write_allow": [result_path],
             },
             "brief": briefs[lens_id],
+            "instruction": ("Use the already prepared exact worker slot; do not create or clear a contract. "
+                "Read current stage inputs and write only the declared result. "
+                f"Result schema: taskplane.{stage}-lens-result/v1; include lens, worker_identity, "
+                "team_plan_fingerprint, candidate_fingerprint, outcome (pass or changes-required), "
+                "findings, and canonical JSON SHA256 fingerprint excluding fingerprint. "
+                "Native lifecycle owns terminal and usage evidence."),
         })
     role_reference_fingerprint = role_reference["fingerprint"]
     for worker in workers:
         intent_material = {
-            "schema": "taskplane.design-lens-dispatch-intent/v1",
+            "schema": f"taskplane.{stage}-lens-dispatch-intent/v1",
             "run_id": binding.get("run_id"),
             "stage_instance_id": binding.get("stage_instance_id"),
             "candidate_fingerprint": binding.get("candidate_fingerprint"),
@@ -1680,7 +1724,7 @@ def _design_team_plan(
                     "utf-8")).hexdigest(),
         }
     material = {
-        "schema": "taskplane.design-team-plan/v1",
+        "schema": f"taskplane.{stage}-team-plan/v1",
         "run_id": binding.get("run_id"),
         "stage_instance_id": binding.get("stage_instance_id"),
         "requirement": binding.get("requirement"),
@@ -1700,13 +1744,16 @@ def _design_team_plan(
     plan = {**material, "fingerprint": hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         allow_nan=False).encode("utf-8")).hexdigest()}
-    existing = state.get("design_team_plan")
+    existing = state.get(f"{stage}_team_plan")
     if isinstance(existing, Mapping) and all(
             existing.get(key) == plan.get(key) for key in (
                 "fingerprint", "run_id", "stage_instance_id",
                 "candidate_fingerprint", "settings_digest",
                 "route_fingerprint")):
         return _copy_json(existing)
+
+    if stage == "plan" and existing is not None:
+        raise ValueError("Plan lens team inputs changed; prior authority cannot be reused")
 
     artifact_root = _run_artifact_root(ws, state)
     artifact_binding = state.get("run_artifact_binding")
@@ -1720,12 +1767,12 @@ def _design_team_plan(
     for worker in workers:
         lens_id = str(worker["lens"])
         worker_contract = tp.build_contract(
-            f"DESIGN LENS: {lens_id}", read_only=True,
+            f"{stage.upper()} LENS: {lens_id}", read_only=True,
             write_allow=[str(worker["output"])],
             tools=["Read", "Grep", "Glob", "Write"])
         worker_contract["task_id"] = str(worker["task_slot"])
-        worker_contract["design_team_plan_fingerprint"] = plan["fingerprint"]
-        worker_contract["design_candidate_fingerprint"] = plan[
+        worker_contract[f"{stage}_team_plan_fingerprint"] = plan["fingerprint"]
+        worker_contract[f"{stage}_candidate_fingerprint"] = plan[
             "candidate_fingerprint"]
         # Local lifecycle authority may contain an absolute private root.  It
         # is intentionally absent from the portable team plan and is rejected
@@ -1734,22 +1781,77 @@ def _design_team_plan(
         worker_contract["run_artifact_binding"] = _copy_json(
             artifact_binding)
         prepared = tp.prepare_worker_contract(
-            ws, worker_contract, stage="design-lens", task=lens_id,
+            ws, worker_contract, stage=f"{stage}-lens", task=lens_id,
             task_name=str(worker["task_name"]),
             role_marker=str(worker["role_marker"]))
         prepared = tp.attach_design_lens_host_authority(
             prepared, authority_workers.get(lens_id),
             artifact_root=artifact_root,
             artifact_binding=dict(artifact_binding))
-        tp.activate(
-            ws, prepared, snapshot=snapshot,
-            task_slot_override=str(worker["task_slot"]))
+        if stage == "plan":
+            slot = str(worker["task_slot"])
+            with tp.file_lock(tp.active_contract_path(ws, slot)):
+                prior = tp.load_json(tp.active_contract_path(ws, slot), default=None)
+                if prior is None and os.path.lexists(tp._worker_terminal_path(ws, slot)):
+                    prior = tp.released_worker_contract(ws, slot)
+                if prior is not None:
+                    lifecycle = prior.get("worker_lifecycle") or {}
+                    if (tp.contract_projection(prior) != tp.contract_projection(prepared) or
+                            lifecycle.get("plan_host_authority") != prepared["worker_lifecycle"]["plan_host_authority"] or
+                            lifecycle.get("expected_task_name") != worker["task_name"]):
+                        raise ValueError("Plan lens slot belongs to a different authority")
+                    tp._verify_worker_release_action(ws, slot, lifecycle.get("release_action"), prior)
+                    continue  # Interrupted registration must not reset a bound owner.
+                tp.activate(ws, prepared, snapshot=snapshot, task_slot_override=slot)
+        else:
+            tp.activate(ws, prepared, snapshot=snapshot,
+                        task_slot_override=str(worker["task_slot"]))
     return {**plan, "host_authority": authority}
 
 
-def _design_team_errors(ws: str, state: Mapping[str, object]) -> list[str]:
+def _plan_team_required(ws: str, state: Mapping[str, object]) -> bool:
+    return (state.get("run_artifact_binding") is not None and
+            _phase_bridge_context(ws, state) is None)
+
+
+def _plan_team_usage_errors(ws: str, state: Mapping[str, object], plan: Mapping[str, object]) -> list[str]:
+    """Require current terminal attribution, without inventing numeric usage."""
+    ledger = state.get("dispatch_telemetry")
+    dispatch_telemetry.validate_ledger(ledger)
+    if ledger.get("run_id") != state.get("run_id"):
+        return ["Plan lens usage ledger belongs to another run"]
+    manifest = run_artifacts.load_manifest(_run_artifact_root(ws, state))
+    run_artifacts.verify_manifest(_run_artifact_root(ws, state),
+                                  expected_binding=state["run_artifact_binding"])
+    entries = manifest["classes"]["agent-activity"]["entries"]
+    errors = []
+    for worker in plan["workers"]:
+        rows = [row for row in ledger.get("bindings", [])
+                if row.get("dispatch_id") == worker["dispatch_intent"]["fingerprint"]]
+        if len(rows) != 1 or rows[0].get("thread_id") != worker["task_name"] or rows[0].get("task_id") != worker["lens"]:
+            errors.append(f"Plan lens {worker['lens']} usage binding is missing or foreign")
+            continue
+        binding = rows[0]
+        events = [event for event in binding.get("events", [])
+                  if event.get("kind") in dispatch_telemetry.TERMINAL_EVENT_KINDS]
+        measured = binding.get("finalized_receipt_fingerprint")
+        if measured:
+            receipts = [row for row in ledger["dispatches"] if row.get("fingerprint") == measured]
+            refs = [(row.get("metadata") or {}).get("usage_reference") for row in entries
+                    if (row.get("metadata") or {}).get("event_type") == "terminal" and
+                    ((row.get("metadata") or {}).get("details") or {}).get("team_plan_fingerprint") == plan["fingerprint"] and
+                    (row.get("metadata") or {}).get("lens") == worker["lens"]]
+            if len(receipts) != 1 or len(refs) != 1 or not isinstance(refs[0], Mapping) or refs[0].get("dispatch_receipt") != receipts[0]:
+                errors.append(f"Plan lens {worker['lens']} terminal usage reference is severed")
+        elif (binding.get("usage") is not None or not events or events[-1].get("kind") != "complete" or
+              not (events[-1].get("payload") or {}).get("unavailable_reason")):
+            errors.append(f"Plan lens {worker['lens']} terminal usage observation is missing")
+    return errors
+
+
+def _design_team_errors(ws: str, state: Mapping[str, object], *, stage: str = "design") -> list[str]:
     """Require every selected lens to have one bound terminal result."""
-    plan = state.get("design_team_plan")
+    plan = state.get(f"{stage}_team_plan")
     if not isinstance(plan, Mapping):
         return ["Design lens team plan is missing"]
     material = {str(key): value for key, value in plan.items()
@@ -1758,7 +1860,11 @@ def _design_team_errors(ws: str, state: Mapping[str, object]) -> list[str]:
             material, sort_keys=True, separators=(",", ":"),
             ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest():
         return ["Design lens team plan fingerprint is invalid"]
-    binding = state.get("design_control_plane_binding") or {}
+    try:
+        binding = (_plan_team_binding(ws, state) if stage == "plan" else
+                   state.get("design_control_plane_binding") or {})
+    except (ValueError, OSError) as exc:
+        return [f"{stage.title()} lens inputs are stale or unavailable: {exc}"]
     errors = []
     for key in ("run_id", "stage_instance_id", "requirement",
                 "requirement_fingerprint", "candidate_fingerprint",
@@ -1794,7 +1900,7 @@ def _design_team_errors(ws: str, state: Mapping[str, object]) -> list[str]:
         expected = hashlib.sha256(json.dumps(
             result_material, sort_keys=True, separators=(",", ":"),
             ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
-        if result.get("schema") != "taskplane.design-lens-result/v1" or \
+        if result.get("schema") != f"taskplane.{stage}-lens-result/v1" or \
                 result.get("lens") != worker.get("lens") or \
                 result.get("worker_identity") != worker.get("task_name") or \
                 result.get("team_plan_fingerprint") != plan.get(
@@ -1803,6 +1909,14 @@ def _design_team_errors(ws: str, state: Mapping[str, object]) -> list[str]:
                 result.get("outcome") not in {"pass", "changes-required"} or \
                 result.get("fingerprint") != expected:
             errors.append(f"Design lens {worker.get('lens')} result is invalid")
+    if stage == "plan" and not errors:
+        try:
+            errors.extend(_plan_team_usage_errors(ws, state, plan))
+        except Exception as exc:
+            errors.append(f"Plan lens usage validation failed: {type(exc).__name__}: {exc}")
+        for lens, result in completion.get("workers", {}).items():
+            if result.get("outcome") != "pass":
+                errors.append(f"Plan lens {lens} requires changes")
     return errors
 
 
@@ -7003,11 +7117,12 @@ def record_native_dispatch_observation(
                 locked.get("run_id") or ""):
             raise dispatch_telemetry.DispatchTelemetryError(
                 "native dispatch intent belongs to another governed run")
-        design_authority = expected.get("design_host_authority")
+        lens_stage = "plan" if expected.get("plan_host_authority") is not None else "design"
+        design_authority = expected.get(f"{lens_stage}_host_authority")
         if design_authority is not None:
             if not isinstance(design_authority, Mapping) or \
                     design_authority.get("schema") != \
-                    tp.DESIGN_LENS_HOST_AUTHORITY_SCHEMA:
+                    f"taskplane.{lens_stage}-lens-host-authority/v1":
                 raise dispatch_telemetry.DispatchTelemetryError(
                     "native Design dispatch authority is invalid")
             worker = design_authority.get("worker_binding")
@@ -7021,7 +7136,7 @@ def record_native_dispatch_observation(
             task_slot = str(worker.get("task_slot") or "").strip()
             lens = str(worker.get("lens") or "").strip()
             task_name = str(worker.get("task_name") or "").strip()
-            if (expected.get("kind") != "design-lens" or
+            if (expected.get("kind") != f"{lens_stage}-lens" or
                     expected.get("agent") != "tp-lens" or
                     not task_slot or not lens or not team_plan or
                     dispatch_ref != f"{team_plan}:{lens}" or
@@ -7036,6 +7151,9 @@ def record_native_dispatch_observation(
                     worker.get("reasoning_effort")):
                 raise dispatch_telemetry.DispatchTelemetryError(
                     "native Design dispatch identity is severed")
+            if lens_stage == "plan" and (locked.get("step") != "plan" or
+                    (locked.get("plan_team_plan") or {}).get("fingerprint") != team_plan):
+                raise dispatch_telemetry.DispatchTelemetryError("Plan dispatch team is stale")
             task_id = lens
             dependencies: list[str] = []
             correction_count = 0
@@ -8659,6 +8777,22 @@ def next_action(
                 "step": step, "status": status(ws),
             }
 
+    plan_team_plan = None
+    if step == "plan" and isinstance(focused_route, Mapping):
+        try:
+            with mutate(ws) as fresh:
+                if fresh is None or fresh.get("step") != "plan" or fresh.get(
+                        "run_artifact_binding") != state.get("run_artifact_binding"):
+                    raise ValueError("Plan changed during team selection")
+                plan_team_plan = _design_team_plan(
+                    ws, fresh, focused_route, dispatch,
+                    effective_settings=effective_settings, stage="plan")
+                fresh["plan_team_plan"] = _copy_json(plan_team_plan)
+            state = load(ws) or state
+        except Exception as exc:
+            return {"error": "Plan lens team planning failed closed: "
+                    f"{type(exc).__name__}: {exc}", "step": step}
+
     def heads():                    # lazy: only an emitting branch pays
         # The row must name the same canonical tree that supplied the graph
         # and impact.  A serial loop can retain an old task workspace after
@@ -8943,6 +9077,20 @@ def next_action(
                 "run tp-designer to consolidate the current Design artifact",
             ]}
            if design_team_plan is not None else {}),
+        **({"plan_team_plan": plan_team_plan,
+            "plan_lens_dispatches": [{**worker,
+                "result_binding": {"team_plan_fingerprint": plan_team_plan["fingerprint"],
+                    "candidate_fingerprint": plan_team_plan["candidate_fingerprint"]},
+                "stage_evidence": _copy_json(stage_evidence),
+            } for worker in plan_team_plan["workers"]],
+            "plan_lens_wait_policy": event_wait_policy(
+                "plan-lens-wave", plan_team_plan["selected_count"]),
+            "plan_dispatch_order": [
+                "dispatch the exact selected Plan lens contracts concurrently",
+                "wait for that exact set; collect bound results and terminal usage",
+                "run tp-planner to consolidate the current Plan",
+                "Plan gate validates the complete current collection",
+            ]} if plan_team_plan is not None else {}),
         # cross-host artifact: '/'-shaped out, host-shaped in state
         "task": tp.posix_workspace(task),
         "contract": {"read_only": bool(contract.get("read_only")),
@@ -13319,6 +13467,11 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # Validate the implementation-ready plan while its read-only contract is
     # still active. A rejected plan remains governed for the planner's retry.
     if step == "plan":
+        if _plan_team_required(ws, state):
+            lens_errors = _design_team_errors(ws, state, stage="plan")
+            if lens_errors:
+                return {"error": "Plan lens collection is incomplete", "step": "plan",
+                        "dod": {"passed": False, "errors": lens_errors}}
         _load_tasks(ws, state)
         if outcome != "pass":
             tp.trace(ws, "loop_gate", step=step, outcome="rejected",
@@ -13498,6 +13651,13 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": f"loop advanced to '{state.get('step')}' while "
                              "this gate was validating — run loop next and "
                              "gate again", "step": state.get("step")}
+        if step == "plan" and _plan_team_required(ws, _validated):
+            if state.get("plan_team_plan") != _validated.get("plan_team_plan"):
+                return {"error": "Plan lens team changed during gate validation"}
+            lens_errors = _design_team_errors(ws, state, stage="plan")
+            if lens_errors:
+                return {"error": "Plan lens collection changed during gate validation",
+                        "dod": {"passed": False, "errors": lens_errors}}
         stage_state_before = json.loads(json.dumps(state))
         # v2.3.0: the final staleness re-attest runs INSIDE the state lock,
         # immediately before the transition commits — the old pre-lock check

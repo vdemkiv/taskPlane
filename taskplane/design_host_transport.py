@@ -567,11 +567,23 @@ def _plan_fingerprint(plan: JsonDict) -> str:
                 if key not in {"fingerprint", "host_authority"}})
 
 
+def _team_stage(plan: JsonDict) -> str:
+    schema = plan.get("schema")
+    if schema not in {"taskplane.design-team-plan/v1", "taskplane.plan-team-plan/v1"}:
+        raise ValueError("lens team stage schema is invalid")
+    return "plan" if schema == "taskplane.plan-team-plan/v1" else "design"
+
+
+def _authority_key(lifecycle: JsonDict) -> str:
+    return "plan_host_authority" if lifecycle.get("stage") == "plan-lens" else "design_host_authority"
+
+
 def _validate_plan(kernel: Any, plan: object) -> list[JsonDict]:
     if not isinstance(plan, dict) or not _DIGEST.fullmatch(str(
             plan.get("fingerprint") or "")) or plan.get(
                 "fingerprint") != _plan_fingerprint(plan):
         raise ValueError("Design lens team plan fingerprint is invalid")
+    stage = _team_stage(plan)
     selected = [str(value) for value in plan.get("selected") or []]
     workers = [dict(value) for value in plan.get("workers") or []
                if isinstance(value, dict)]
@@ -586,10 +598,10 @@ def _validate_plan(kernel: Any, plan: object) -> list[JsonDict]:
         task_name = str(worker.get("task_name") or "")
         slot = str(worker.get("task_slot") or "")
         output = str(worker.get("output") or "")
-        expected_output = f"design/lenses/{lens}.json"
+        expected_output = f"{stage}/lenses/{lens}.json"
         if (not lens or not kernel._TASK_SLOT_RE.fullmatch(slot) or
                 task_name != kernel.dispatch_task_name(
-                    "lens", "tp-lens", f"design-{lens}") or
+                    "lens", "tp-lens", f"{stage}-{lens}") or
                 task_name in names or slot in slots or
                 output != expected_output):
             raise ValueError("Design lens worker identity is invalid")
@@ -608,7 +620,7 @@ def _validate_plan(kernel: Any, plan: object) -> list[JsonDict]:
             "reasoning_effort", "settings_digest", "output", "fingerprint",
         }
         if (not isinstance(intent, dict) or set(intent) != intent_fields or
-                intent.get("schema") != DISPATCH_INTENT_SCHEMA or
+                intent.get("schema") != f"taskplane.{stage}-lens-dispatch-intent/v1" or
                 intent.get("fingerprint") != _fp({
                     key: item for key, item in intent.items()
                     if key != "fingerprint"})):
@@ -740,6 +752,8 @@ def register_design_lens_dispatch_plan(
         artifact_binding: JsonDict,
         now: int | None = None) -> JsonDict:
     workers = _validate_plan(kernel, plan)
+    stage = _team_stage(plan)
+    authority_key = f"{stage}_host_authority"
     root, binding = _artifact_store(
         workspace, plan, artifact_root, artifact_binding)
     path = kernel._dispatch_path(workspace, "expected_dispatch.json")
@@ -750,14 +764,14 @@ def register_design_lens_dispatch_plan(
             lens = str(worker["lens"])
             matches = [row for row in queue
                        if row.get("task_name") == worker["task_name"] and
-                       isinstance(row.get("design_host_authority"), dict) and
-                       row["design_host_authority"].get(
+                       isinstance(row.get(authority_key), dict) and
+                       row[authority_key].get(
                            "team_plan_fingerprint") == plan["fingerprint"]]
             if len(matches) > 1:
                 raise kernel._worker_lifecycle_error(
                     workspace, "Design lens dispatch registration is ambiguous")
             if matches:
-                private = dict(matches[0]["design_host_authority"])
+                private = dict(matches[0][authority_key])
                 assignment = verify_worker_host_receipt(
                     kernel, workspace, private.get("assignment_receipt"),
                     event="assignment", plan=plan, worker=worker)
@@ -771,7 +785,7 @@ def register_design_lens_dispatch_plan(
                     kernel, workspace, event="assignment", plan=plan,
                     worker=worker, owner=None, now=now)
                 private = {
-                    "schema": HOST_AUTHORITY_SCHEMA,
+                    "schema": f"taskplane.{stage}-lens-host-authority/v1",
                     "team_plan_fingerprint": plan["fingerprint"],
                     "artifact_root": root, "artifact_binding": binding,
                     "artifact_binding_fingerprint": binding["fingerprint"],
@@ -791,7 +805,7 @@ def register_design_lens_dispatch_plan(
                     "assignment_receipt": assignment,
                 }
                 queue.append({
-                    "ts": kernel._now(), "kind": "design-lens",
+                    "ts": kernel._now(), "kind": f"{stage}-lens",
                     "agent": "tp-lens",
                     "ref": f"{plan['fingerprint']}:{lens}",
                     "task_name": worker["task_name"],
@@ -802,7 +816,7 @@ def register_design_lens_dispatch_plan(
                     "matched": False,
                     "intent_id": worker["dispatch_intent"]["fingerprint"],
                     "intent_run_id": plan.get("run_id"),
-                    "design_host_authority": private,
+                    authority_key: private,
                 })
             authorized[lens] = {
                 "task_name": worker["task_name"],
@@ -815,7 +829,7 @@ def register_design_lens_dispatch_plan(
             }
         kernel._save_queue(path, queue)
     material = {
-        "schema": HOST_AUTHORITY_SCHEMA,
+        "schema": f"taskplane.{stage}-lens-host-authority/v1",
         "team_plan_fingerprint": plan["fingerprint"],
         "run_id": plan.get("run_id"),
         "stage_instance_id": plan.get("stage_instance_id"),
@@ -832,6 +846,9 @@ def attach_design_lens_host_authority(
     if not isinstance(contract, dict) or contract.get("worker_scoped") is not True:
         raise ValueError("Design lens authority needs a prepared worker contract")
     lifecycle = contract.get("worker_lifecycle") or {}
+    if lifecycle.get("stage") not in {"design-lens", "plan-lens"}:
+        raise ValueError("lens authority stage is invalid")
+    stage = str(lifecycle["stage"]).removesuffix("-lens")
     row = dict(worker_authority or {})
     assignment = row.get("assignment_receipt")
     if (not isinstance(assignment, dict) or
@@ -848,8 +865,8 @@ def attach_design_lens_host_authority(
         row.get("dispatch_intent_fingerprint") or "")
     output["worker_lifecycle"]["dispatch_intent_run_id"] = str(
         assignment.get("run_id") or "")
-    output["worker_lifecycle"]["design_host_authority"] = {
-        "schema": HOST_AUTHORITY_SCHEMA,
+    output["worker_lifecycle"][f"{stage}_host_authority"] = {
+        "schema": f"taskplane.{stage}-lens-host-authority/v1",
         "artifact_root": os.path.realpath(os.path.abspath(artifact_root)),
         "artifact_binding": json.loads(json.dumps(artifact_binding)),
         "worker_authority": row,
@@ -859,12 +876,15 @@ def attach_design_lens_host_authority(
 
 def _contract_authority(kernel: Any, workspace: str,
                         contract: JsonDict) -> JsonDict | None:
-    private = (contract.get("worker_lifecycle") or {}).get(
-        "design_host_authority")
+    lifecycle = contract.get("worker_lifecycle") or {}
+    key = _authority_key(lifecycle)
+    if lifecycle.get("plan_host_authority") is not None and key != "plan_host_authority":
+        raise ValueError("Plan lens authority has a foreign lifecycle stage")
+    private = lifecycle.get(key)
     if private is None:
         return None
     if not isinstance(private, dict) or private.get("schema") != \
-            HOST_AUTHORITY_SCHEMA:
+            f"taskplane.{key.removesuffix('_host_authority')}-lens-host-authority/v1":
         raise kernel._worker_lifecycle_error(
             workspace, "Design lens host authority is malformed")
     row = private.get("worker_authority")
@@ -927,7 +947,7 @@ def _append_once(kernel: Any, workspace: str, authority: JsonDict, *,
 
 def record_design_dispatch_assignment_activity(
         kernel: Any, workspace: str, expected: JsonDict) -> JsonDict | None:
-    private = (expected or {}).get("design_host_authority")
+    private = (expected or {}).get("plan_host_authority") or (expected or {}).get("design_host_authority")
     if not isinstance(private, dict):
         return None
     plan = dict(private.get("plan_binding") or {})
@@ -956,7 +976,7 @@ def record_design_worker_start_activity(
         return None
     lifecycle = contract["worker_lifecycle"]
     owner = kernel._worker_event_owner(event)
-    existing = lifecycle.get("design_host_start_receipt")
+    existing = lifecycle.get(_authority_key(lifecycle).replace("authority", "start_receipt"))
     if existing is not None:
         start = _signed(kernel, workspace, existing, event="start")
         if start.get("owner") != owner:
@@ -974,7 +994,7 @@ def record_design_worker_start_activity(
             "task_slot": assignment["task_slot"],
             "role_reference": portable_role_reference("tp-lens"),
         }, owner=owner, now=now)
-        lifecycle["design_host_start_receipt"] = start
+        lifecycle[_authority_key(lifecycle).replace("authority", "start_receipt")] = start
         kernel.atomic_write_json(
             kernel.active_contract_path(workspace, binding["slot"]),
             contract, indent=2)
@@ -1003,7 +1023,7 @@ def record_design_worker_activity(kernel: Any, workspace: str,
     if authority is None:
         return None
     start = _signed(kernel, workspace, contract["worker_lifecycle"].get(
-        "design_host_start_receipt"), event="start")
+        _authority_key(contract["worker_lifecycle"]).replace("authority", "start_receipt")), event="start")
     owner = kernel._worker_event_owner(event)
     message = str(event.get("message") or event.get("reason") or "") \
         .replace("\x00", "")[:2048]
@@ -1011,6 +1031,19 @@ def record_design_worker_activity(kernel: Any, workspace: str,
         kernel, workspace, authority, event_type=event_type, receipt=start,
         owner=owner, details={"message": message,
                               "turn_id": str(event.get("turn_id") or "")[:160]})
+
+
+def _result_sha256(workspace: str, relative: str) -> str | None:
+    path = os.path.abspath(os.path.join(workspace, relative))
+    if os.path.realpath(path) != path or os.path.commonpath([path, os.path.abspath(workspace)]) != os.path.abspath(workspace):
+        raise ValueError("lens result path is indirect or foreign")
+    if not os.path.isfile(path):
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def design_terminal_activity(kernel: Any, workspace: str, contract: JsonDict,
@@ -1029,6 +1062,10 @@ def design_terminal_activity(kernel: Any, workspace: str, contract: JsonDict,
                 if isinstance(item, dict)]
     rows = []
     outcome = receipt.get("outcome")
+    result_details = {}
+    if contract["worker_lifecycle"].get("stage") == "plan-lens":
+        lens = authority["assignment"]["lens"]
+        result_details["result_sha256"] = _result_sha256(workspace, f"plan/lenses/{lens}.json")
     semantic = ({"cancellation": "cancel", "interruption": "interruption",
                  "handoff": "handoff"}.get(outcome)
                 if isinstance(outcome, str) else None)
@@ -1052,7 +1089,7 @@ def design_terminal_activity(kernel: Any, workspace: str, contract: JsonDict,
         owner=owner, usage_reference=usage, evidence_references=evidence,
         details={"outcome": receipt["outcome"],
                  "submission_status": receipt["submission_status"],
-                 "authority": receipt["authority"]}))
+                 "authority": receipt["authority"], **result_details}))
     return rows
 
 
@@ -1063,7 +1100,7 @@ def _authority_projection(kernel: Any, workspace: str, plan: JsonDict,
               "stage_instance_id", "candidate_fingerprint",
               "artifact_binding_fingerprint", "workers", "fingerprint"}
     if (not isinstance(authority, dict) or set(authority) != fields or
-            authority.get("schema") != HOST_AUTHORITY_SCHEMA or
+            authority.get("schema") != f"taskplane.{_team_stage(plan)}-lens-host-authority/v1" or
             authority.get("fingerprint") != _fp({
                 key: item for key, item in authority.items()
                 if key != "fingerprint"})):
@@ -1113,7 +1150,7 @@ def _activities(workspace: str, plan: JsonDict,
 
 
 def _event_receipts(entries: list[JsonDict], event_type: str,
-                    lens: str) -> list[JsonDict]:
+                    lens: str, *, team_fingerprint: str | None = None) -> list[JsonDict]:
     receipts: list[JsonDict] = []
     for entry in entries:
         metadata = entry.get("metadata")
@@ -1121,6 +1158,8 @@ def _event_receipts(entries: list[JsonDict], event_type: str,
             continue
         details = metadata.get("details")
         if not isinstance(details, dict):
+            continue
+        if team_fingerprint is not None and details.get("team_plan_fingerprint") != team_fingerprint:
             continue
         receipt = details.get("receipt")
         if (metadata.get("event_type") == event_type and
@@ -1130,7 +1169,7 @@ def _event_receipts(entries: list[JsonDict], event_type: str,
 
 
 def _terminal(kernel: Any, workspace: str, receipt: object, *,
-              worker: JsonDict, start: JsonDict) -> JsonDict:
+              worker: JsonDict, start: JsonDict, stage: str = "design") -> JsonDict:
     if (not isinstance(receipt, dict) or set(receipt) != TERMINAL_FIELDS or
             receipt.get("schema") != kernel.WORKER_TERMINAL_RECEIPT_SCHEMA):
         raise ValueError("Design lens terminal receipt shape is invalid")
@@ -1144,7 +1183,7 @@ def _terminal(kernel: Any, workspace: str, receipt: object, *,
             kernel._workspace_identity_fingerprint(workspace) or
             receipt.get("slot") != worker.get("task_slot") or
             receipt.get("contract_id") != worker.get("task_slot") or
-            receipt.get("stage") != "design-lens" or
+            receipt.get("stage") != f"{stage}-lens" or
             receipt.get("task") != worker.get("lens") or
             receipt.get("owner") != start.get("owner") or
             receipt.get("authority") != "host-lifecycle" or
@@ -1169,7 +1208,8 @@ def validate_design_lens_dispatch_completion(
     for worker in workers:
         lens = str(worker["lens"])
         try:
-            rows = {event: _event_receipts(entries, event, lens) for event in
+            rows = {event: _event_receipts(entries, event, lens,
+                    team_fingerprint=plan["fingerprint"]) for event in
                     ("assignment", "worker-identity", "start", "terminal")}
             if any(len(value) != 1 for value in rows.values()):
                 raise ValueError(
@@ -1187,7 +1227,7 @@ def validate_design_lens_dispatch_completion(
                 raise ValueError("worker identity and start receipts differ")
             terminal = _terminal(
                 kernel, workspace, rows["terminal"][0], worker=worker,
-                start=start)
+                start=start, stage=_team_stage(plan))
             result = kernel.load_json(
                 os.path.join(workspace, str(worker["output"])), default=None,
                 what="Design lens terminal result")
@@ -1195,7 +1235,7 @@ def validate_design_lens_dispatch_completion(
                          if key != "fingerprint"}
                         if isinstance(result, dict) else {})
             if (not isinstance(result, dict) or
-                    result.get("schema") != "taskplane.design-lens-result/v1" or
+                    result.get("schema") != f"taskplane.{_team_stage(plan)}-lens-result/v1" or
                     result.get("lens") != lens or
                     result.get("worker_identity") != worker["task_name"] or
                     result.get("team_plan_fingerprint") != plan["fingerprint"] or
@@ -1204,6 +1244,12 @@ def validate_design_lens_dispatch_completion(
                     result.get("outcome") not in {"pass", "changes-required"} or
                     result.get("fingerprint") != _fp(material)):
                 raise ValueError("semantic result contract is invalid")
+            if _team_stage(plan) == "plan":
+                recorded = [entry["metadata"]["details"].get("result_sha256") for entry in entries
+                    if (entry.get("metadata") or {}).get("event_type") == "terminal" and
+                    ((entry.get("metadata") or {}).get("details") or {}).get("receipt") == terminal]
+                if recorded != [_result_sha256(workspace, str(worker["output"]))] or not recorded[0]:
+                    raise ValueError("Plan lens result bytes changed after native terminal")
             results[lens] = {
                 "assignment_receipt_id": assignment["receipt_id"],
                 "start_receipt_id": start["receipt_id"],

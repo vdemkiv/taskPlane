@@ -5831,7 +5831,8 @@ def _generic_activity_authority(workspace: str, contract: dict) \
     evidence; it cannot activate, release, gate, or route a worker.
     """
     lifecycle = contract.get("worker_lifecycle") or {}
-    if lifecycle.get("design_host_authority") is not None:
+    if any(lifecycle.get(key) is not None for key in (
+            "design_host_authority", "plan_host_authority")):
         return None
     root = contract.get("run_artifact_root")
     binding = contract.get("run_artifact_binding")
@@ -6992,7 +6993,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
                     model_tier: str, *, capability_snapshot=None,
                     enforcement_mode: str | None = None,
                     observed_route: dict | None = None,
-                    settings_context=None) -> dict:
+                    settings_context=None, lens_stage: str | None = None) -> dict:
     """Resolve one settings snapshot, then delegate pure brief assembly."""
     settings = settings_context or _canonical_operational_settings(
         legacy_environment=True)
@@ -7005,6 +7006,10 @@ def dispatch_fields(kind: str, agent: str, ref: str,
     selected = stage or {
         "cheap": "evaluate", "standard": "build", "deep": "design",
     }.get((model_tier or "standard").strip().lower(), "build")
+    if lens_stage is not None:
+        if agent != "tp-lens" or lens_stage not in {"design", "plan"}:
+            raise ValueError("explicit lens stage must be Design or Plan")
+        selected = lens_stage
     route = None
     if capability_snapshot is not None:
         import host_capabilities
