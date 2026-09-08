@@ -2997,9 +2997,32 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
         # terminal boundaries perform the fail-closed checks; this path keeps
         # the cumulative root meter fresh without inventing broader authority.
         try:
+            failure_code = type(exc).__name__
+            tags = []
+            if stage == "start_seal" and isinstance(exc, _host_native.RootSessionReceiptError):
+                # Match only fixed producer messages. Unexpected text stays
+                # private; this is diagnosis, not another admission check.
+                failure_code = {
+                    "host root-session capability is unsupported": "root_capability_unsupported",
+                    "host root-session start binding does not match the prepared seed": "root_seed_binding_mismatch",
+                    "host root-session issuer sequence must be positive": "root_start_arguments_invalid",
+                    "host root-session pseudonym must be purpose scoped": "root_start_arguments_invalid",
+                    "host root-session start time is invalid": "root_start_arguments_invalid",
+                    "host root-session start time must include a timezone": "root_start_arguments_invalid",
+                    "root-session authority must contain at least 16 bytes": "root_start_arguments_invalid",
+                    "root seed schema is unsupported": "root_seed_invalid",
+                    "root seed version must be 1": "root_seed_invalid",
+                    "root seed content is not canonical": "root_seed_invalid",
+                    "root seed fingerprint does not match its content": "root_seed_invalid",
+                    "root seed exceeds the 65536-byte bound": "root_seed_invalid",
+                }.get(str(exc), failure_code)
+                if failure_code == "root_capability_unsupported":
+                    missing = capability.get("missing") if isinstance(capability, dict) else None
+                    tags = [code for code in ("root_fresh_start", "root_cumulative_meter", "root_turn_mapping")
+                            if isinstance(missing, list) and code in missing]
             tp.trace(ws, "native_orchestrator_meter_unavailable",
                      error=type(exc).__name__, stage=stage,
-                     failure_code=type(exc).__name__)
+                     failure_code=failure_code, tags=tags)
         except Exception:
             pass
 

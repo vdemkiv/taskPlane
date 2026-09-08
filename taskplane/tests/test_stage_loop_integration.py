@@ -41,7 +41,8 @@ def _workspace(tmp_path):
 
 
 @pytest.mark.parametrize("stage", ["projection", "seed", "capability", "start_seal",
-    "observation_seal", "open", "advance", "final_snapshot"])
+    "observation_seal", "open", "advance", "final_snapshot",
+    "start_seal_capability", "start_seal_binding", "start_seal_seed", "start_seal_unexpected"])
 def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monkeypatch, stage):
     """Failure injection into existing hook/audit owners; no native evidence."""
     import loop as hook_loop
@@ -50,6 +51,9 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
     import native_session_meter
     from taskplane import tp as cli
     from taskplane.tests.test_native_root_session import _prepared, _write_root
+    case = stage
+    if case.startswith("start_seal_"):
+        stage = "start_seal"
     ws = str(tmp_path)
     _prepared(tmp_path)
     monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
@@ -74,7 +78,21 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
         "final_snapshot": (hook_loop, "record_native_orchestrator_snapshot"),
     }[stage]
     sentinel = "sensitive-exception-sentinel /private/transcript?secret=do-not-retain"
+    messages = {
+        "start_seal_capability": ("host root-session capability is unsupported", "root_capability_unsupported"),
+        "start_seal_binding": ("host root-session start binding does not match the prepared seed", "root_seed_binding_mismatch"),
+        "start_seal_seed": ("root seed schema is unsupported", "root_seed_invalid"),
+        "start_seal_unexpected": (sentinel, "RootSessionReceiptError"),
+    }
+    capability = cli.host_caps.root_session_capability
+    def with_missing(*args, **kwargs):
+        value = capability(*args, **kwargs)
+        return {**value, "missing":["root_fresh_start", sentinel, "root_turn_mapping"]}
+    if case == "start_seal_capability":
+        monkeypatch.setattr(cli.host_caps, "root_session_capability", with_missing)
     def fail(*args, **kwargs):
+        if case in messages:
+            raise host_native.RootSessionReceiptError(messages[case][0])
         raise RuntimeError(sentinel)
     monkeypatch.setattr(owner, name, fail)
     cli._observe_active_loop_orchestrator(ws, event)
@@ -83,7 +101,9 @@ def test_root_hook_failure_trace_retains_safe_stage_and_code_only(tmp_path, monk
     failures = [row for row in records if row["event"] == "native_orchestrator_meter_unavailable"]
     assert len(failures) == 1
     assert failures[0]["stage"] == stage
-    assert failures[0]["failure_code"] == "RuntimeError"
+    assert failures[0]["failure_code"] == (messages[case][1] if case in messages else "RuntimeError")
+    if case == "start_seal_capability":
+        assert failures[0]["tags"] == ["root_fresh_start", "root_turn_mapping"]
     assert sentinel not in text
     assert str(transcript) not in json.dumps(failures)
 
