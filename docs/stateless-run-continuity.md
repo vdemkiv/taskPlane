@@ -22,6 +22,74 @@ plugin settings, or installed package were changed by the legacy extension.
 
 ## Supported legacy continuation
 
+### Administrative cancellation before continuation
+
+`loop cancel-worker` retires only an exact unavailable/stopped, unbound,
+submission-required legacy Build reservation. The human authorizes cancellation;
+the current controller separately attests its host observation. A missing hook
+does not mean the worker never launched. Cancellation preserves the original
+dispatch ledger, unknown usage, completed task results, and source commits. It
+does not cancel a "never-launched" intent, flush an outbox, grant a new launch,
+or claim native completion. Existing launch/evidence gates remain separate.
+
+Prepare a bounded JSON packet using read-only owners, without copying secrets:
+
+| Field | Value or read-only producer |
+| --- | --- |
+| `schema` | `taskplane.legacy-worker-cancellation/v1` |
+| `run_id`, `task_id` | Original saved run and current pending task |
+| `slot`, `expected_worker` | Exact active lifecycle slot and `expected_task_name` (not a prefixed host path) |
+| `contract_fingerprint` | `loop_recovery._fingerprint(contract)` of the complete loaded active contract; publish only the hash |
+| `before_state_fingerprint` | `loop_recovery.legacy_state_fingerprint(loop._load_raw(workspace))` |
+| `candidate`, `source_fingerprint` | `taskplane_lite.git_head(workspace)` and `workspace_fingerprint(workspace)` |
+| `plan_sha256` | SHA-256 of current exact `plan/tasks.json` bytes |
+| `observation_checkpoint` | `loop_recovery.legacy_observation_checkpoint(saved_state)` |
+| `host_attestation` | `{ "status": "unavailable", "session_id": "<current controller session>", "evidence": "<actual exact host observation and historical-launch uncertainty>" }`; `stopped` also accepted |
+
+The session must equal current `TASKPLANE_SESSION_ID`, then `CODEX_THREAD_ID`,
+then `CLAUDE_SESSION_ID` in that precedence order. Do not attribute the host
+observation to the human. Canonical packet SHA-256 is
+`loop_recovery._fingerprint(packet)`. Read the active contract through
+`taskplane_lite.active_contract_path(workspace, slot)` and the existing JSON
+loader; never print or put its release authenticator into the request packet.
+
+```sh
+PYTHONPATH="$PWD:$PWD/taskplane" python3 taskplane/tp.py loop cancel-worker \
+  --from <cancellation.json> --by human:vdemkiv \
+  --request '<actual human permission to administratively cancel this worker>' \
+  --fingerprint <canonical-packet-sha256> --check \
+  --workspace /Users/vdemkiv/.codex/worktrees/fa56/taskPlane
+```
+
+After a successful check, use the same command without `--check`. The existing
+loop journal commits permission before the lifecycle owner signs administrative
+`cancellation` with `orphan-recovery` authority and quarantines the exact slot.
+Interrupted cleanup replays the exact request, including a receipt persisted
+before its active-file update or quarantine completed before journal completion.
+Different attribution, a live/bound owner, foreign task/run, active effects,
+changed source/Plan/policy, or a replacement slot refuses. Refresh the separate
+continuation packet only after cancellation completes: its semantic before-state
+must include the cancellation journal. Neither command launches a worker.
+
+This bounded follow-up is authorized by
+`.taskplane/human-gates/R0001-stale-worker-continuation.md`, SHA-256
+`a897552bee26999f6821959d9ee84f71f6615361afdca7ad808d0be587cb12c7`.
+It modifies only the recovery owner, loop/CLI adapters, this document and the
+existing legacy regression file; the frozen integration and later J1 additions
+remain intact. This follow-up reconciles the loop/CLI hashes in the source
+table below; its added recovery owner is SHA-256
+`85566e99a57b618fe18e745c976203122c837d39b9f565269c71ea0e8a29ab46`
+and legacy regression file is SHA-256
+`dc10078734955c1e784049860eba2e46d532511b1bdd29518286686ca5133466`.
+Validation: the missing-API regression failed first; 19 initial cancellation
+selectors passed. The CLI apply probe then exposed a dashboard-loader outbox
+side effect; publication is now deferred while cancellation cleanup is pending.
+The corrected 13 retry/journal/CLI selectors passed, followed by the complete
+legacy file: **70 passed in 44.58 seconds**. Scoped Ruff and whitespace checks
+passed. No five-file aggregate was repeated and no real-run action was taken.
+
+### Scope amendment
+
 The compatibility command is separate from `loop replan`. Replan's existing
 independent-pass/reanchor authority checks are unchanged. Legacy continuation
 preserves exact historical non-judged Build results instead of trying to turn
@@ -196,7 +264,7 @@ Additional paired compatibility files are `taskplane/loop_recovery.py`,
 | `taskplane/design_host_transport.py` | `0f0a002cd0d4e984bcebc3a56f33e35f6287ff26562ec99b2cba51083ad6ef16` | `0f0a002cd0d4e984bcebc3a56f33e35f6287ff26562ec99b2cba51083ad6ef16` | exact |
 | `taskplane/dispatch_telemetry.py` | `574c56f068a41cfe259000e3670843339ebf0f68235764044ec48dc6240be61f` | `574c56f068a41cfe259000e3670843339ebf0f68235764044ec48dc6240be61f` | exact |
 | `taskplane/host_capabilities.py` | `3222731240e9f209a307f97cee51209c3137344a9f7236c839894c4ce14f25b7` | `3222731240e9f209a307f97cee51209c3137344a9f7236c839894c4ce14f25b7` | exact |
-| `taskplane/loop.py` | `2026ec0a48d2c0173308fea872fab198215c875a1b26bc3cb3086a77fa277253` | `5b5ed610cc7a4f94ba634e3b2514a4ecc0c3b925d7441f5d2147730862f98845` | reconciled |
+| `taskplane/loop.py` | `2026ec0a48d2c0173308fea872fab198215c875a1b26bc3cb3086a77fa277253` | `f3107bde5be788a68582f06b3c3c8a06fde058ddb858ac81f180af73f1d7d11e` | reconciled |
 | `taskplane/operational-settings.json` | `5d8f8227a8f320168ea511b4f5b6480bc77fd0b7e45bae081f99fb5b09ca9293` | `5d8f8227a8f320168ea511b4f5b6480bc77fd0b7e45bae081f99fb5b09ca9293` | exact |
 | `taskplane/producer_observation.py` | `cf1709640d4541bf5f84d56fafc5244fd08b035726fe1c3abd0d98bea1b2d660` | `cf1709640d4541bf5f84d56fafc5244fd08b035726fe1c3abd0d98bea1b2d660` | exact |
 | `taskplane/settings.py` | `88547c6e0e1c149ea5fd723e2d6f7c0c0426de5e5ded1a484bcfd0977a771418` | `369dfbaf79ca2c20abdfffaf4399646716a524c2886763588e6b5b25ef9b0f68` | reconciled |
@@ -211,7 +279,7 @@ Additional paired compatibility files are `taskplane/loop_recovery.py`,
 | `taskplane/tests/test_r0013_bootstrap_home.py` | `06e738c88fb4467d7fdc6fab2ca2fee7eac23a78ab4319255dc1c2c6306def80` | `06e738c88fb4467d7fdc6fab2ca2fee7eac23a78ab4319255dc1c2c6306def80` | exact |
 | `taskplane/tests/test_r0013_native_budget.py` | `0e0e61d7bbc652a67eca8986de7ec12a11b36a2eae4fc5d5c32d35c006f662d1` | `0e0e61d7bbc652a67eca8986de7ec12a11b36a2eae4fc5d5c32d35c006f662d1` | exact |
 | `taskplane/tests/test_stage_loop_integration.py` | `e842adfe7006b44fd9e70bae596bfe4bb4e0f081f3d97b4beb3712507433ca68` | `e842adfe7006b44fd9e70bae596bfe4bb4e0f081f3d97b4beb3712507433ca68` | exact |
-| `taskplane/tp.py` | `6714d1c9f7b829a977fcde7bc0f629cba712668c7d542c9f9be8679fffa0adaf` | `650b6b105cb635b957b7fa51e620686bb5e22aad4a3e49acbac6032507bb6163` | reconciled |
+| `taskplane/tp.py` | `6714d1c9f7b829a977fcde7bc0f629cba712668c7d542c9f9be8679fffa0adaf` | `8ebd5d6c0a60a6d67755339188e21b7d5de9b0e0540bd22d77fae86f34278b93` | reconciled |
 | `taskplane/codex_identity.py` | `e9d53de94188c4e24be8f7cc3aa69f56a6139f9f75a3f4ee2d4fa24a9a84b62c` | `e9d53de94188c4e24be8f7cc3aa69f56a6139f9f75a3f4ee2d4fa24a9a84b62c` | exact |
 | `taskplane/phase_harness.py` | `da85cf4e163d9ec6d98fb107f43ecf3a771e1c31c3ea5d5325159dfab5d8a051` | `da85cf4e163d9ec6d98fb107f43ecf3a771e1c31c3ea5d5325159dfab5d8a051` | exact |
 | `taskplane/run_context.py` | `64d06821fabe85a7db37ae39e8d53f61248fc518dba5e67d188127f7cc6979de` | `a8f9bb35941b2f249eca821266ac1d900d6e1df5f3217191dc4f1b0f8c520690` | reconciled |

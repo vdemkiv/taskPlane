@@ -466,6 +466,160 @@ def legacy_continuation(state: Mapping, workspace: str) -> dict | None:
     return receipt
 
 
+def cancel_worker(runtime, workspace: str, *, source: str, by: str, request: str,
+                  expected_fingerprint: str, check: bool = False,
+                  observation_authority: bytes | None = None) -> dict:
+    """Retire one unavailable, unbound legacy worker; never infer host success.
+
+    The existing loop journals human permission before the existing lifecycle
+    owner signs cancellation and quarantines the slot. No dispatch queue,
+    ledger, task result, Plan, resource policy or launch authority is changed.
+    """
+    try:
+        if runtime.tp.task_slot() is not None:
+            raise ValueError("legacy cancellation is orchestrator-only")
+        if not isinstance(by, str) or not by.startswith("human:") or not by[6:].strip() or not request.strip():
+            raise ValueError("explicit human --by and --request are required")
+        path = Path(source)
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 4_000_000:
+            raise ValueError("cancellation packet must be a bounded regular file")
+        packet = json.loads(path.read_bytes())
+        fields = {"schema", "run_id", "task_id", "slot", "contract_fingerprint", "expected_worker",
+            "before_state_fingerprint", "candidate", "source_fingerprint", "plan_sha256",
+            "observation_checkpoint", "host_attestation"}
+        if (not isinstance(packet, dict) or set(packet) != fields
+                or packet["schema"] != "taskplane.legacy-worker-cancellation/v1"
+                or _fingerprint(packet) != expected_fingerprint):
+            raise ValueError("cancellation packet fields or fingerprint changed")
+        attestation = packet["host_attestation"]
+        session = os.environ.get("TASKPLANE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+        if (not isinstance(attestation, dict) or set(attestation) != {"status", "session_id", "evidence"}
+                or attestation["status"] not in {"unavailable", "stopped"} or not session
+                or attestation["session_id"] != session or not isinstance(attestation["evidence"], str)
+                or not attestation["evidence"].strip() or len(attestation["evidence"]) > 4096):
+            raise ValueError("explicit attributable current host unavailable/stopped attestation required")
+        slot = packet["slot"]
+        if not isinstance(slot, str) or not runtime.tp._TASK_SLOT_RE.fullmatch(slot):
+            raise ValueError("invalid exact worker slot")
+        decision = _fingerprint({"packet_fingerprint": expected_fingerprint, "by": by, "request": request})
+        submission = "human-cancelled-legacy-worker:" + decision
+        plan_path = Path(workspace) / "plan/tasks.json"
+        journal = {"schema": packet["schema"], "decision_fingerprint": decision,
+            "packet_fingerprint": expected_fingerprint, "by": by, "request": request,
+            "host_attestation": attestation, "run_id": packet["run_id"], "task_id": packet["task_id"],
+            "slot": slot, "contract_fingerprint": packet["contract_fingerprint"],
+            "evidence_status": "host-terminal-missing; usage-unchanged"}
+
+        def validate(state):
+            if not isinstance(state, dict) or state.get("run_id") != packet["run_id"]:
+                raise ValueError("cancellation run changed")
+            policy = legacy_review_policy(state)
+            if policy is None or policy["by"] != by:
+                raise ValueError("cancellation must identify the original human policy owner")
+            current = runtime._current_task(state)
+            if (state.get("step") != "execute" or state.get("parallel") or not current
+                    or current.get("id") != packet["task_id"] or current.get("status") != "pending"):
+                raise ValueError("cancellation requires the exact serial pending Build task")
+            if any(state.get(key) for key in ("_submission", "evaluate_child_evidence", "attempt_lease")):
+                raise ValueError("active effects require reconciliation before cancellation")
+            projected = dict(state)
+            prior = projected.pop("legacy_worker_cancellation", None)
+            if prior is not None:
+                if (not isinstance(prior, dict) or any(prior.get(key) != value for key, value in journal.items())
+                        or prior.get("cleanup") not in {"pending", "completed"}
+                        or set(prior) != set(journal) | {"cleanup"} | (
+                            {"release"} if prior.get("cleanup") == "completed" else set())):
+                    raise ValueError("cancellation approval changed or revoked")
+            if legacy_state_fingerprint(projected) != packet["before_state_fingerprint"]:
+                raise ValueError("cancellation workflow changed")
+            _validate_observations(state, packet["observation_checkpoint"], observation_authority)
+            if (hashlib.sha256(plan_path.read_bytes()).hexdigest() != packet["plan_sha256"]
+                    or runtime.tp.git_head(workspace) != packet["candidate"]
+                    or runtime.tp.workspace_fingerprint(workspace) != packet["source_fingerprint"]):
+                raise ValueError("cancellation Plan or source changed")
+            return prior
+
+        active = runtime.tp.active_contract_path(workspace, slot)
+        with runtime.tp.file_lock(os.path.join(runtime.tp.tp_dir(workspace), "controller-operation")), runtime.tp.file_lock(active):
+            state = runtime._load_raw(workspace)
+            prior = validate(state)
+            contract = runtime.tp.load_json(active, default=None, what="cancellation worker")
+            archived = contract is None
+            if archived:
+                if prior is None:
+                    raise ValueError("exact pending worker is unavailable")
+                terminal = runtime.tp.load_json(runtime.tp._worker_terminal_path(workspace, slot),
+                    default=None, what="cancellation terminal")
+                receipt_id = str((terminal or {}).get("receipt_id") or "")
+                if not re.fullmatch(r"worker-terminal-[a-f0-9]{24}", receipt_id):
+                    raise ValueError("cancellation terminal identity missing")
+                archive = os.path.join(runtime.tp.tp_dir(workspace), "quarantine", "contracts",
+                    f"{slot}-{receipt_id.split('-')[-1]}.json")
+                contract = runtime.tp.load_json(archive, what="cancelled worker quarantine")
+            lifecycle = contract.get("worker_lifecycle") or {}
+            if (contract.get("worker_scoped") is not True or contract.get("task_id") != slot
+                    or (contract.get("submission_contract") or {}).get("required") is not True
+                    or lifecycle.get("schema") != runtime.tp.WORKER_CONTRACT_LIFECYCLE_SCHEMA
+                    or lifecycle.get("slot") != slot or lifecycle.get("stage") != "execute"
+                    or lifecycle.get("task") != packet["task_id"] or lifecycle.get("owner") is not None
+                    or lifecycle.get("expected_task_name") != packet["expected_worker"]
+                    or lifecycle.get("dispatch_intent_run_id") != packet["run_id"]
+                    or not lifecycle.get("dispatch_intent_id")):
+                raise ValueError("worker identity changed or has a bound/live owner")
+            action = lifecycle.get("release_action")
+            runtime.tp._verify_worker_release_action(workspace, slot, action, contract)
+            terminal = lifecycle.get("terminal")
+            if prior is not None and terminal is None:
+                terminal = runtime.tp.load_json(runtime.tp._worker_terminal_path(workspace, slot),
+                    default=None, what="interrupted cancellation terminal")
+            original = copy.deepcopy(contract)
+            if prior is None:
+                if lifecycle.get("status") != "pending" or terminal is not None:
+                    raise ValueError("worker is not an unbound pending reservation")
+            elif terminal is not None:
+                runtime.tp._verify_worker_terminal_receipt(workspace, slot, terminal, contract, action)
+                if (terminal["authority"] != "orphan-recovery" or terminal["outcome"] != "cancellation"
+                        or terminal["submission_status"] != submission or terminal["owner"] is not None
+                        or lifecycle.get("status") not in {"pending", "terminal", "released"}):
+                    raise ValueError("cancellation terminal changed")
+                original["worker_lifecycle"].update(status="pending", terminal=None)
+                original["worker_lifecycle"].pop("released_at", None)
+            elif lifecycle.get("status") != "pending" or archived:
+                raise ValueError("pending cancellation lifecycle changed")
+            if _fingerprint(original) != packet["contract_fingerprint"]:
+                raise ValueError("exact worker contract fingerprint changed")
+            if check:
+                return {"checked": True, "read_only": True, "cancelled": False, "dispatch_allowed": False}
+            if prior is None:
+                prior = dict(journal, cleanup="pending")
+                with runtime.mutate(workspace) as locked:
+                    validate(locked)
+                    locked["legacy_worker_cancellation"] = prior
+            elif prior["cleanup"] == "completed":
+                if not archived:
+                    raise ValueError("completed cancellation has an active replacement")
+                expected_release = {"released": True, "slot": slot, "outcome": "cancellation",
+                    "quarantine": archive, "receipt_id": terminal["receipt_id"]}
+                if prior["release"] != expected_release:
+                    raise ValueError("cancellation release journal changed")
+                return {"cancelled": True, "replay": True, "read_only": True, "dispatch_allowed": False,
+                    "release": prior["release"]}
+            if not archived:
+                if terminal is None:
+                    terminal = runtime.tp.record_worker_terminal(workspace, slot, event=None,
+                        outcome="cancellation", submission_status=submission, authority="orphan-recovery")
+                release = runtime.tp.release_worker_contract(workspace, slot, action=action, terminal_receipt=terminal)
+            else:
+                release = {"released": True, "slot": slot, "outcome": "cancellation",
+                    "quarantine": archive, "receipt_id": terminal["receipt_id"]}
+            with runtime.mutate(workspace) as locked:
+                validate(locked)
+                locked["legacy_worker_cancellation"].update(cleanup="completed", release=release)
+            return {"cancelled": True, "replay": False, "dispatch_allowed": False, "release": release}
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError, OSError) as exc:
+        return {"error": "legacy cancellation refused: " + str(exc), "dispatch_allowed": False}
+
+
 def continue_build(runtime, workspace: str, *, source: str, by: str, request: str,
                    expected_fingerprint: str, check: bool = False,
                    observation_authority: bytes | None = None) -> dict:
@@ -503,6 +657,8 @@ def continue_build(runtime, workspace: str, *, source: str, by: str, request: st
             state = runtime._load_raw(workspace)
             if state is None:
                 raise ValueError("no active legacy loop")
+            if (state.get("legacy_worker_cancellation") or {}).get("cleanup", "completed") != "completed":
+                raise ValueError("finish exact legacy cancellation cleanup before continuation")
             prior = legacy_continuation(state, workspace)
             if prior is not None:
                 if prior["approval_fingerprint"] != approval:

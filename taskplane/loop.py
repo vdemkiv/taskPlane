@@ -15895,6 +15895,16 @@ def resolve(
     return {"step": state["step"], "status": status(ws),
             **({"stage_transition": stage_transition}
                if stage_transition is not None else {})}
+def cancel_worker(ws: str, *, source: str, by: str, request: str,
+                  expected_fingerprint: str, check: bool = False,
+                  observation_authority: bytes | None = None) -> dict:
+    """Human administrative retirement; no host completion or launch grant."""
+    import sys
+    return loop_recovery.cancel_worker(sys.modules[__name__], ws, source=source,
+        by=by, request=request, expected_fingerprint=expected_fingerprint, check=check,
+        observation_authority=observation_authority)
+
+
 def continue_build(ws: str, *, source: str, by: str, request: str,
                    expected_fingerprint: str, check: bool = False,
                    observation_authority: bytes | None = None) -> dict:

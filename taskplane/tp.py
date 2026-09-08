@@ -81,6 +81,12 @@ else:  # pragma: no cover - direct CLI execution
 
 def _publish_worker_dashboard_refresh(workspace: str, **kwargs):
     """Composition-root adapter for the enforcement kernel's refresh intent."""
+    import loop as loopmod
+    if ((loopmod._load_raw(workspace) or {}).get("legacy_worker_cancellation") or {}).get("cleanup") == "pending":
+        # Administrative cancellation owns only its journal and exact slot.
+        # The ordinary dashboard loader may flush the authority outbox; keep
+        # publication deferred until recoverable lifecycle cleanup completes.
+        raise ValueError("dashboard refresh deferred during legacy worker cancellation")
     import loop_status
     return loop_status.refresh_dashboard_snapshot(workspace, **kwargs)
 
@@ -3794,9 +3800,10 @@ def cmd_loop(a) -> int:
     elif action == "restore-settings":
         from taskplane import run_context
         out = run_context.restore_settings(loopmod, ws, a.settings_from)
-    elif action == "continue-build":
+    elif action in {"continue-build", "cancel-worker"}:
         saved = loopmod._load_raw(ws) or {}
-        out = loopmod.continue_build(ws, source=a.amendment_from, by=a.by,
+        handler = loopmod.continue_build if action == "continue-build" else loopmod.cancel_worker
+        out = handler(ws, source=a.amendment_from, by=a.by,
             request=a.request, expected_fingerprint=a.fingerprint, check=a.check,
             observation_authority=(_transcript_projection_authority(ws, create=False)
                 if (saved.get("root_hygiene") or {}).get("meter") else None))
@@ -3885,7 +3892,7 @@ def cmd_loop(a) -> int:
     # BYTE-IDENTICAL to the pre-workflow payload (the MANDATORY fallback
     # and the only Codex path — R-0004's core promise).
     if isinstance(out, dict):
-        saved_loop = loopmod._load_raw(ws) if action == "continue-build" else loopmod.load(ws)
+        saved_loop = loopmod._load_raw(ws) if action in {"continue-build", "cancel-worker"} else loopmod.load(ws)
         canonical = enforcement or _saved_enforcement(
             (saved_loop or {}).get("enforcement"))
         if canonical:
@@ -5635,7 +5642,7 @@ def _invoke_run_command(a, workspace: str) -> int:
     # reachable even when the saved configuration is absent or corrupt.
     if a.cmd in {"context", "summary"} or (
             a.cmd == "loop" and getattr(a, "loop_action", None) in {
-                "resume", "status", "restore-settings", "continue-build"}):
+                "resume", "status", "restore-settings", "continue-build", "cancel-worker"}):
         return a.fn(a)
     from taskplane import run_context, settings
     import loop as loopmod
@@ -8698,6 +8705,14 @@ def main(argv=None) -> int:
     lcontinue.add_argument("--fingerprint", required=True, help="approved canonical amendment packet SHA-256")
     lcontinue.add_argument("--check", action="store_true", help="validate without committing loop state or dispatching")
     lcontinue.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    lcancel = lsub.add_parser("cancel-worker",
+        help="human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion")
+    lcancel.add_argument("--from", dest="amendment_from", required=True, help="exact legacy worker cancellation packet")
+    lcancel.add_argument("--by", required=True, help="original human policy owner")
+    lcancel.add_argument("--request", required=True, help="explicit human cancellation permission")
+    lcancel.add_argument("--fingerprint", required=True, help="canonical cancellation packet SHA-256")
+    lcancel.add_argument("--check", action="store_true", help="read-only validation; no terminalization or outbox flush")
+    lcancel.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lr.add_argument("--worker-stopped", action="store_true",
                     help="attest the expired unbound worker is stopped; not a completion or pass")
     lr.add_argument(

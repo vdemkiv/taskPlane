@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+from pathlib import Path
 from contextlib import contextmanager
 import sys
 from types import SimpleNamespace
@@ -96,6 +97,162 @@ def invoke(legacy, request=None, **kwargs):
         request=kwargs.get("instruction", "Append the exact repair scope; limits are advisory"),
         expected_fingerprint=kwargs.get("expected_fingerprint", fingerprint(supplied)), check=kwargs.get("check", False),
         observation_authority=kwargs.get("observation_authority"))
+
+
+@pytest.fixture
+def cancellation(legacy, monkeypatch):
+    ws, root, state, _ = legacy
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "test-controller")
+    contract = loop.tp.prepare_worker_contract(ws, {"task_id": "task_b2355132",
+        "submission_contract": {"required": True}}, stage="execute", task="T19",
+        task_name="tp_step_executor_t19_attempt_5_0e8d96b7", role_marker="taskplane-role:tp-executor")
+    contract["worker_lifecycle"].update(dispatch_intent_id="intent-test", dispatch_intent_run_id=state["run_id"])
+    path = Path(loop.tp.active_contract_path(ws, contract["task_id"]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(contract))
+    # A historically real spawn with no lifecycle hooks is NOT an unlaunched
+    # attempt: its unknown ledger usage must survive administrative retirement.
+    state["dispatch_telemetry"]["workers"] = {"intent-test": {
+        "task": "T19", "started_at": 0, "ended_at": 0, "usage": None}}
+    loop.save(ws, state)
+    packet = {"schema": "taskplane.legacy-worker-cancellation/v1", "run_id": state["run_id"],
+        "task_id": "T19", "slot": contract["task_id"],
+        "contract_fingerprint": loop_recovery._fingerprint(contract),
+        "expected_worker": contract["worker_lifecycle"]["expected_task_name"],
+        "before_state_fingerprint": loop_recovery.legacy_state_fingerprint(state),
+        "candidate": "a" * 40, "source_fingerprint": "b" * 64,
+        "plan_sha256": hashlib.sha256((root / "plan/tasks.json").read_bytes()).hexdigest(),
+        "observation_checkpoint": None, "host_attestation": {"status": "unavailable",
+            "session_id": "test-controller", "evidence": "Exact native interrupt returned not_found; historical spawn exists"}}
+    return legacy, path, packet
+
+
+def cancel(cancellation, **kwargs):
+    legacy, _, packet = cancellation
+    ws, root, _, _ = legacy
+    source = root / "cancellation.json"
+    source.write_text(json.dumps(packet))
+    return loop.cancel_worker(ws, source=str(source), by=kwargs.pop("by", "human:test"),
+        request=kwargs.pop("request", "Proceed with administrative cancellation, retaining unknown evidence"),
+        expected_fingerprint=loop_recovery._fingerprint(packet), **kwargs)
+
+
+def test_legacy_cancellation_preserves_real_launch_uncertainty_and_results(cancellation):
+    legacy, path, _ = cancellation
+    ws, root, before, _ = legacy
+    raw = path.read_bytes()
+    plan = (root / "plan/tasks.json").read_bytes()
+    assert cancel(cancellation, check=True)["read_only"] is True
+    assert path.read_bytes() == raw and loop._load_raw(ws) == before
+    result = cancel(cancellation)
+    assert result.get("cancelled") is True, result
+    assert result["dispatch_allowed"] is False
+    after = loop._load_raw(ws)
+    receipt = after.pop("legacy_worker_cancellation")
+    assert after == before and receipt["cleanup"] == "completed"
+    assert receipt["evidence_status"] == "host-terminal-missing; usage-unchanged"
+    assert not path.exists() and (root / "plan/tasks.json").read_bytes() == plan
+    archive = json.loads(Path(result["release"]["quarantine"]).read_text())
+    assert archive["worker_lifecycle"]["terminal"]["outcome"] == "cancellation"
+    assert archive["worker_lifecycle"]["terminal"]["authority"] == "orphan-recovery"
+    assert archive["worker_lifecycle"]["terminal"]["owner"] is None
+    saved = loop._load_raw(ws)
+    assert cancel(cancellation)["replay"] is True
+    assert loop._load_raw(ws) == saved
+
+
+def test_legacy_cancellation_public_cli_check_does_not_flush_outbox(cancellation, monkeypatch, capsys):
+    from taskplane import tp as cli
+    legacy, path, packet = cancellation
+    ws, root, before, _ = legacy
+    source = root / "cancellation.json"
+    source.write_text(json.dumps(packet))
+    monkeypatch.setitem(sys.modules, "loop", loop)
+    monkeypatch.setattr(loop, "load", lambda *_: pytest.fail("cancellation flushed authority outbox"))
+    args = SimpleNamespace(cmd="loop", fn=cli.cmd_loop, loop_action="cancel-worker", workspace=ws,
+        amendment_from=str(source), by="human:test", request="Proceed with administrative cancellation",
+        fingerprint=loop_recovery._fingerprint(packet), check=True)
+    assert cli._invoke_run_command(args, ws) == 0
+    assert json.loads(capsys.readouterr().out)["read_only"] is True
+    assert loop._load_raw(ws) == before and path.exists()
+    args.check = False
+    assert cli._invoke_run_command(args, ws) == 0
+    assert json.loads(capsys.readouterr().out)["cancelled"] is True
+
+
+@pytest.mark.parametrize("field", ["by", "request", "host_attestation", "run_id", "task_id", "slot",
+    "contract_fingerprint", "release"])
+def test_legacy_cancellation_replay_refuses_changed_journal(cancellation, field):
+    assert cancel(cancellation)["cancelled"] is True
+    ws = cancellation[0][0]
+    state = loop._load_raw(ws)
+    state["legacy_worker_cancellation"][field] = "forged-audit-value"
+    loop.save(ws, state)
+    assert cancel(cancellation).get("error")
+    assert loop._load_raw(ws) == state
+
+
+@pytest.mark.parametrize("damage", ["owner", "run", "task", "slot", "contract", "worker", "effects",
+    "actor", "request", "attestation", "session", "plan", "policy", "source", "stage"])
+def test_legacy_cancellation_refuses_foreign_or_unsafe_request(cancellation, damage):
+    legacy, path, packet = cancellation
+    ws, root, state, _ = legacy
+    kwargs = {}
+    if damage == "owner":
+        value = json.loads(path.read_text())
+        value["worker_lifecycle"]["owner"] = {"agent_id": "live"}
+        path.write_text(json.dumps(value))
+        packet["contract_fingerprint"] = loop_recovery._fingerprint(value)
+    if damage == "run": packet["run_id"] = "foreign"
+    if damage == "task": packet["task_id"] = "T20"
+    if damage == "slot": packet["slot"] = "task_foreign"
+    if damage == "contract": packet["contract_fingerprint"] = "f" * 64
+    if damage == "worker": packet["expected_worker"] = "foreign"
+    if damage == "effects": state["attempt_lease"] = {"effects": "uncertain"}
+    if damage == "actor": kwargs["by"] = "human:foreign"
+    if damage == "request": kwargs["request"] = ""
+    if damage == "attestation": packet["host_attestation"]["status"] = "completed"
+    if damage == "session": packet["host_attestation"]["session_id"] = "foreign"
+    if damage == "plan": (root / "plan/tasks.json").write_text("{}")
+    if damage == "policy": state["review_timing_override"]["by"] = "human:foreign"
+    if damage == "source": packet["source_fingerprint"] = "f" * 64
+    if damage == "stage": state["_stage_run_binding"] = {"run_id": "stage"}
+    loop.save(ws, state)
+    packet["before_state_fingerprint"] = loop_recovery.legacy_state_fingerprint(state)
+    raw = path.read_bytes()
+    assert cancel(cancellation, **kwargs).get("error")
+    assert loop._load_raw(ws) == state and path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("boundary", ["terminal", "terminal-file", "release", "after-release"])
+def test_legacy_cancellation_interrupted_cleanup_replays_exactly(cancellation, monkeypatch, boundary):
+    legacy, path, _ = cancellation
+    ws = legacy[0]
+    name = "record_worker_terminal" if boundary == "terminal" else "release_worker_contract"
+    original = getattr(loop.tp, name)
+    write = loop.tp.atomic_write_json
+
+    def interrupted(*args, **kwargs):
+        if boundary == "after-release": original(*args, **kwargs)
+        raise OSError("simulated interruption")
+
+    monkeypatch.setattr(loop.tp, name, interrupted)
+    if boundary == "terminal-file":
+        monkeypatch.setattr(loop.tp, name, original)
+
+        def interrupted_write(target, *args, **kwargs):
+            if str(target) == str(path): raise OSError("simulated active lifecycle write failure")
+            return write(target, *args, **kwargs)
+
+        monkeypatch.setattr(loop.tp, "atomic_write_json", interrupted_write)
+    assert cancel(cancellation).get("error")
+    assert loop._load_raw(ws)["legacy_worker_cancellation"]["cleanup"] == "pending"
+    assert cancel(cancellation, request="different approval").get("error")
+    monkeypatch.setattr(loop.tp, name, original)
+    monkeypatch.setattr(loop.tp, "atomic_write_json", write)
+    assert cancel(cancellation)["cancelled"] is True
+    saved = loop._load_raw(ws)
+    assert cancel(cancellation)["replay"] is True and loop._load_raw(ws) == saved
 
 
 def test_actual_legacy_shape_continues_without_reanchoring_deferred_passes(legacy):
