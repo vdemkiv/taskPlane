@@ -10953,14 +10953,25 @@ def _phase_bridge_freshness(ws: str, scopes: list[str]) -> tuple[dict, dict]:
 
 
 def _phase_bridge_signing(ws, material, *, admit=False, authorize=None):
-    from taskplane import design_host_transport
-    freshness, _ = _phase_bridge_freshness(ws, material["signing_scope"])
-    if freshness != material["freshness"]:
+    from taskplane import design_host_transport, review_evidence
+    freshness, current_impact = _phase_bridge_freshness(ws, material["signing_scope"])
+    recorded_impact = review_evidence.ArtifactStore(ws).read(material["impact_reference"])
+    recorded_fingerprint = review_evidence.content_fingerprint(recorded_impact)
+    if recorded_fingerprint != material["freshness"]["impact_manifest_fingerprint"]:
+        raise ValueError("runtime signing recorded impact changed")
+    def impact_content(impact):
+        # These two graph producer timestamps do not alter source, edges,
+        # quality or policy. Keep the full original hash for the signer.
+        return review_evidence.content_fingerprint({**impact, "graph": {
+            key: value for key, value in impact["graph"].items()
+            if key not in {"updated_at", "scanned_at"}}})
+    if ({**freshness, "impact_manifest_fingerprint": recorded_fingerprint} != material["freshness"] or
+            impact_content(current_impact) != impact_content(recorded_impact)):
         raise ValueError("runtime signing current freshness changed")
     run_id = material["bindings"]["run_id"]
     policy = phase_harness.resource_policy(_stage_store(ws, run_id).load(run_id), run_id)
     return design_host_transport.runtime_receipt_authority(tp, ws,
-        bindings=material["bindings"], freshness=freshness, now=int(SystemClock().wall_time()),
+        bindings=material["bindings"], freshness=material["freshness"], now=int(SystemClock().wall_time()),
         admit=admit, authorize=authorize,
         collection_policy=None if policy is None else policy["fingerprint"])
 

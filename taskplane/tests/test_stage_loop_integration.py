@@ -129,6 +129,92 @@ def _initialize_real_new_run(tmp_path, monkeypatch, *, stage_kind="product",
     return str(workspace), store, stage, initialized
 
 
+@pytest.fixture
+def collected_product_handoff(tmp_path, monkeypatch):
+    """Actual producers/collector on a small Git target; host events simulated."""
+    from taskplane import review_evidence
+    from taskplane.tests import test_stage_cross_host as cross_host
+    from taskplane.tests.test_r0001_j1_native import _supporting_pristine_phase_run
+    from taskplane.tests.test_r0001_phase_cutover import _emit_host_hook, _host_event
+    record = cross_host._record_bootstrap_requirement
+    def with_context(workspace):
+        requirement = record(workspace)
+        requirement = loop.reqs.amend_requirement(str(workspace), requirement["id"],
+            context_files=["README.md"], nfr={"security":"retain exact authority",
+                "architecture":"reuse existing owners", "reliability":"preserve accepted evidence"})
+        loop.depgraph.link_requirement(str(workspace), requirement["id"], ["README.md"], kind="planned", replace=True)
+        return requirement
+    monkeypatch.setattr(cross_host, "_record_bootstrap_requirement", with_context)
+    ws, store, run_id, requirement = _supporting_pristine_phase_run(tmp_path, monkeypatch)
+    requested = loop.next_action(ws)
+    assert not requested.get("error"), requested
+    assert _emit_host_hook(ws, requested, "SubagentStart", monkeypatch) == 0
+    path = Path(ws) / requested["phase_runtime"]["outputs"]["requirement"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema":"taskplane.requirement/v1", "id":requirement["id"],
+        "title":requirement["title"], "acceptance_criteria":requirement["acceptance"]}))
+    stop = _host_event(ws, requested, "SubagentStop")
+    slot = requested["contract_bootstrap"]["task_slot"]
+    contract = loop.tp.load_json(loop.tp.active_contract_path(ws, slot))
+    collected = loop.observe_phase_runtime_hook(ws, contract, stop)
+    assert collected["status"] == "collected", collected
+    loop.tp.terminalize_worker_contract(ws, stop, outcome="success", submission_status="not_required")
+    completion = loop.next_action(ws)["phase_runtime"]["completion"]
+    assert completion is not None
+    artifacts = review_evidence.ArtifactStore(ws)
+    material = artifacts.read(completion["preparation"])
+    return ws, store, run_id, completion, material, artifacts
+
+
+def test_collected_product_gate_preserves_signed_handoff_after_graph_refresh(collected_product_handoff, monkeypatch):
+    import types
+    ws, store, run_id, completion, material, artifacts = collected_product_handoff
+    original = {key:artifacts.read(completion[key]) for key in ("preparation", "runtime_result", "runtime_receipt")}
+    impact = artifacts.read(material["impact_reference"])
+    # Only the producer's metadata clock advances; the public gate repeats the
+    # same requirement edge update between its two existing verifier calls.
+    monkeypatch.setattr(loop.depgraph, "time", types.SimpleNamespace(time=lambda: impact["graph"]["updated_at"] + 10))
+    gated = loop.gate(ws, "pass")
+    assert not gated.get("error"), gated
+    assert gated["step"] == "plan"
+    assert {key:artifacts.read(completion[key]) for key in original} == original
+    from taskplane import stage_migration
+    retained = stage_migration.phase_records(store.load(run_id))
+    assert any(row["operation"] == "phase_collect" and row["result"] == completion for row in retained.values())
+
+
+@pytest.mark.parametrize("changed", ["source", "graph-content", "graph-quality", "impact", "policy", "binding", "recorded-impact", "signature"])
+def test_product_handoff_freshness_still_rejects_content_changes(collected_product_handoff, monkeypatch, changed):
+    ws, _, _, completion, material, artifacts = collected_product_handoff
+    signed = artifacts.read(completion["runtime_receipt"])
+    original_material = copy.deepcopy(material)
+    if changed == "source":
+        (Path(ws) / "README.md").write_text("Changed implementation source\n")
+        subprocess.run(["git", "add", "README.md"], cwd=ws, check=True)
+        subprocess.run(["git", "commit", "-qm", "changed source"], cwd=ws, check=True)
+    elif changed in {"graph-content", "graph-quality", "impact", "policy"}:
+        producer = loop.depgraph.impact
+        def changed_impact(*args, **kwargs):
+            value = copy.deepcopy(producer(*args, **kwargs))
+            if changed == "graph-content": value["graph"]["content_fingerprint"] = "f" * 64
+            elif changed == "graph-quality": value["graph"].setdefault("graph_scan_quality", {})["degraded"] = True
+            elif changed == "impact": value["total_impacted"] += 1
+            else: value["policy"]["local_depth"] += 1
+            return value
+        monkeypatch.setattr(loop.depgraph, "impact", changed_impact)
+    elif changed == "binding":
+        material["bindings"]["candidate_fingerprint"] = "f" * 64
+    elif changed == "recorded-impact":
+        altered = artifacts.read(material["impact_reference"])
+        altered["total_impacted"] += 1
+        material["impact_reference"] = artifacts.put("phase-impact", altered)
+    else:
+        signed["signature"] = "corrupt"
+    with pytest.raises(ValueError):
+        loop._phase_bridge_signing(ws, material).verify(signed, store=artifacts)
+    assert artifacts.read(completion["preparation"]) == original_material
+
+
 def _start_real_stage_loop(tmp_path, monkeypatch, *, stage_kind="product",
                            stage_id=None, goal="exercise the real stage loop"):
     workspace, store, stage, _initialized = _initialize_real_new_run(
