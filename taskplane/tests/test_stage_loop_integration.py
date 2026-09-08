@@ -318,6 +318,169 @@ def test_pristine_new_run_next_bootstraps_once_before_public_dispatch(
         "active_stage_ids"] == [root_id]
 
 
+def test_cold_plan_next_ignores_unselected_foreign_repo_inputs_and_replays_root(tmp_path, monkeypatch):
+    from taskplane.tests.test_stage_cross_host import _real_pristine_run, _record_bootstrap_requirement
+    workspace, store, initial = _real_pristine_run(tmp_path)
+    foreign = {
+        "design/contract.json":{"requirement":"R-0002", "summary":"foreign database migration"},
+        "plan/tasks.json":{"requirement":"R-0002", "tasks":[{"id":"foreign", "scope":["foreign.py"],
+            "tests":"foreign suite"}], "plan_route":{"selected":["architecture", "security", "testability", "cost-finops"]}},
+    }
+    for relative, value in foreign.items():
+        path = workspace / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+    subprocess.run(["git", "add", "design/contract.json", "plan/tasks.json"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "unrelated checked-in predecessor artifacts"], cwd=workspace, check=True)
+    preserved = {relative:(workspace / relative).read_bytes() for relative in foreign}
+    requirement = _record_bootstrap_requirement(workspace)
+    requirement = loop.reqs.amend_requirement(str(workspace), requirement["id"], nfr={
+        "security":"local source only", "architecture":"reuse existing owners"})
+    assert loop.reqs.product_dor(requirement)["passed"]
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    (workspace / "current-spec.md").write_text("Current bounded requirement, not the checked-in predecessor Plan.")
+    initialized = loop.init(str(workspace), "current bounded Plan", spec_path="current-spec.md",
+        requirement_id=requirement["id"], by="human:vdemkiv")
+    assert initialized["step"] == "plan", initialized
+    # Stop at the mapper boundary after real root/handoff admission. No native
+    # worker or fake applicability/acceptance receipt is needed for this test.
+    observed = []
+    def mapper(*args, **kwargs):
+        observed.append(kwargs)
+        raise ValueError("test stopped at current Plan mapper boundary")
+    monkeypatch.setattr(loop, "_focused_stage_route", mapper)
+    for _ in range(2):
+        result = loop.next_action.__wrapped__(str(workspace))
+        assert "current Plan mapper boundary" in result.get("error", ""), result
+    assert len(observed) == 2
+    for row in observed:
+        assert row["stage"] == "plan"
+        assert row["mandatory_lenses"] == ["architecture", "project-management", "testability"]
+        assert row["maximum_lenses"] == 4
+        assert row["evidence"]["approved_design"] == {}
+        assert row["evidence"]["task_scopes"] == row["evidence"]["selectors"] == {}
+        assert row["evidence"]["approved_product"]["id"] == requirement["id"]
+        assert "foreign" not in json.dumps(row["evidence"])
+    manifest = store.load(initial["run_id"])
+    assert len(manifest["stage_heads"]) == 1
+    context = loop._stage_loop_context(str(workspace), loop.load(str(workspace)))
+    handoff = loop._verified_stage_handoff(context["lifecycle"], store, manifest, context["stage"])
+    assert handoff["design"] is None and handoff["requirement"]["id"] == requirement["id"]
+    assert {relative:(workspace / relative).read_bytes() for relative in foreign} == preserved
+
+
+@pytest.fixture
+def current_focused_plan_inputs(tmp_path, monkeypatch):
+    from taskplane import review_evidence
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "disabled")
+    ws = _workspace(tmp_path)
+    requirement = loop.reqs.record_requirement(ws, "Current input", functional=["bounded scope"], acceptance=["current evidence"])
+    root = Path(ws)
+    design = {"requirement":requirement["id"], "summary":"Current selected solution"}
+    plan = {"requirement":requirement["id"], "tasks":[{"id":"t1", "req":requirement["id"],
+        "scope":["README.md"], "tests":"true", "acceptance_refs":["current evidence"]}],
+        "plan_route":{"selected":["architecture", "project-management", "testability", "security"]}}
+    for relative, value in (("design/contract.json", design), ("plan/tasks.json", plan)):
+        path = root / relative
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(value))
+    (root / "design/design.md").write_text("Current Design narrative")
+    state = {"step":"plan", "requirement_id":requirement["id"], "design_required":True,
+        "design_fingerprint":loop._design_evidence_fingerprint(ws),
+        "plan_fingerprint":review_evidence.content_fingerprint(plan)}
+    return ws, root, state, design, plan
+
+
+def test_current_bound_plan_selected_choices_do_not_replace_mandatory_settings(current_focused_plan_inputs):
+    ws, _, state, design, plan = current_focused_plan_inputs
+    evidence, mandatory = loop._focused_stage_evidence(ws, state, "plan")
+    assert mandatory is None
+    assert evidence["approved_design"]["summary"] == design["summary"]
+    assert evidence["plan_route"] == plan["plan_route"]
+    assert evidence["selectors"] == {"t1":"true"}
+    assert evidence["task_to_ac_coverage"] == {"t1":["current evidence"]}
+    catalog = {row["id"] for row in loop.lens_router.load_catalog()["lenses"]}
+    policy = load_settings(environment={}).lenses.policy_for("plan", catalog_ids=catalog)
+    assert list(policy.mandatory) == ["architecture", "project-management", "testability"]
+    assert policy.max_count == 4
+
+
+@pytest.mark.parametrize("kind", ["design", "plan"])
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "stale", "foreign", "symlink"])
+def test_bound_plan_inputs_refuse_bad_provenance(current_focused_plan_inputs, kind, damage):
+    from taskplane import review_evidence
+    ws, root, state, _, _ = current_focused_plan_inputs
+    path = root / ("design/contract.json" if kind == "design" else "plan/tasks.json")
+    if damage == "missing": path.unlink()
+    elif damage == "corrupt": path.write_text("{not JSON")
+    elif damage == "symlink":
+        other = root / "aliased.json"
+        other.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(other)
+    else:
+        value = json.loads(path.read_text())
+        value["requirement" if damage == "foreign" else "summary"] = "R-9999" if damage == "foreign" else "changed"
+        path.write_text(json.dumps(value))
+        if damage == "foreign":
+            # A matching content hash must not excuse a foreign requirement.
+            state[kind + "_fingerprint"] = (loop._design_evidence_fingerprint(ws, value) if kind == "design"
+                else review_evidence.content_fingerprint(value))
+    before = _content_inventory(root)
+    with pytest.raises((ValueError, OSError)):
+        loop._focused_stage_evidence(ws, state, "plan")
+    assert _content_inventory(root) == before
+
+
+@pytest.mark.parametrize("damage", [None, "selected-missing", "selected-corrupt", "requirement-stale", "foreign-design"])
+def test_plan_consumes_only_verified_current_design_handoff(tmp_path, monkeypatch, damage):
+    from taskplane.tests.test_stage_cross_host import _real_pristine_run, _record_bootstrap_requirement
+    workspace, store, _ = _real_pristine_run(tmp_path)
+    ws = str(workspace)
+    requirement = _record_bootstrap_requirement(workspace)
+    (workspace / "current-spec.md").write_text("Current Design input")
+    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "pristine-session")
+    state = loop.init(ws, "current Design into Plan", spec_path="current-spec.md", design=True,
+        requirement_id=requirement["id"], by="human:vdemkiv")
+    assert state["step"] == "design", state
+    loop._stage_bootstrap_pristine_root(ws, state)
+    state = loop.load(ws)
+    design_dir = workspace / "design"
+    design_dir.mkdir()
+    design = {"requirement":"R-9999" if damage == "foreign-design" else requirement["id"],
+        "summary":"Selected immutable Design"}
+    (design_dir / "contract.json").write_text(json.dumps(design))
+    (design_dir / "design.md").write_text("Selected narrative")
+    # Exercise real output/handoff owners, not a native Design acceptance claim.
+    completion = loop._stage_loop_gate_completion(ws, state, step="design", outcome="pass")
+    receipt = loop._stage_loop_transition(ws, state, from_step="design", to_step="plan", completion=completion)
+    _, handoff = _successor_handoff(ws, store, receipt)
+    state["step"] = "plan"
+    loop.save(ws, state)
+    context = loop._stage_loop_context(ws, state)
+    if damage in {"selected-missing", "selected-corrupt"}:
+        reference = handoff["selected_artifacts"][0]
+        path = Path(context["lifecycle"]._artifact_store()._path(reference["kind"], reference["fingerprint"]))
+        if damage == "selected-missing": path.unlink()
+        else: path.write_text("corrupt retained selected artifact")
+    elif damage == "requirement-stale":
+        loop.reqs.amend_requirement(ws, requirement["id"], functional=["unrelated changed requirement"])
+    # The source filename is not selection authority. Its unrelated later bytes
+    # must neither substitute for nor corrupt the immutable handoff's content.
+    (design_dir / "contract.json").write_text('{"requirement":"R-8888","summary":"unselected repository content"}')
+    source_before = _content_inventory(design_dir)
+    if damage:
+        with pytest.raises((ValueError, OSError)):
+            loop._focused_stage_evidence(ws, state, "plan")
+    else:
+        evidence, mandatory = loop._focused_stage_evidence(ws, state, "plan")
+        assert evidence["approved_design"]["summary"] == "Selected immutable Design"
+        assert evidence["task_scopes"] == {} and mandatory is None
+    assert _content_inventory(design_dir) == source_before
+
+
 def test_new_run_refuses_unmarked_existing_singleton(
         tmp_path, monkeypatch) -> None:
     from taskplane.tests.test_stage_cross_host import _real_loop_stage

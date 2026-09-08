@@ -997,6 +997,62 @@ def _copy_json(value: object) -> object:
         allow_nan=False))
 
 
+def _focused_plan_inputs(ws: str, state: Mapping[str, object]) -> tuple[dict, dict]:
+    """Read selected immutable inputs, or explicitly fingerprinted legacy inputs."""
+    from taskplane import review_evidence
+    paths = {"design/contract.json":"design", "plan/tasks.json":"plan"}
+    admitted = {}
+    context = _stage_loop_context(ws, state)
+    if context is not None:
+        stage = context.get("stage") or {}
+        if stage.get("stage_kind") != "plan" or stage.get("requirement", {}).get("id") != state.get("requirement_id"):
+            raise ValueError("focused Plan input stage or requirement is foreign")
+        if stage["requirement"]["fingerprint"] != _dc.requirement_fingerprint(ws, state.get("requirement_id")):
+            raise ValueError("focused Plan input requirement is stale")
+        handoff = _verified_stage_handoff(context["lifecycle"], context["store"], context["manifest"], stage)
+        artifact_store = context["lifecycle"]._artifact_store()
+        for reference in handoff["selected_artifacts"]:
+            payload = artifact_store.read(reference)
+            if payload.get("schema") != "taskplane.loop-stage-output-bundle/v1":
+                continue
+            for snapshot in payload.get("files") or []:
+                relative = snapshot.get("path")
+                if relative not in paths:
+                    continue
+                kind = paths[relative]
+                content = snapshot.get("content")
+                if (kind in admitted or not isinstance(content, str) or snapshot.get("encoding") != "utf-8"
+                        or snapshot.get("sha256") != hashlib.sha256(content.encode()).hexdigest()
+                        or snapshot.get("bytes") != len(content.encode())
+                        or payload.get("step") not in ({"design"} if kind == "design" else {"plan", "plan_approval"})):
+                    raise ValueError("focused Plan selected artifact provenance is invalid")
+                admitted[kind] = json.loads(content)
+        if (stage.get("design") or state.get("design_fingerprint")) and "design" not in admitted:
+            raise ValueError("focused Plan selected Design input is missing")
+        if state.get("plan_fingerprint") and "plan" not in admitted:
+            raise ValueError("focused Plan selected Plan input is missing")
+    else:
+        for relative, kind in paths.items():
+            expected = state.get(kind + "_fingerprint")
+            if not expected:
+                continue
+            raw = _stage_loop_read_output_no_follow(ws, relative, required=True,
+                remaining_bytes=_STAGE_OUTPUT_MAX_FILE_BYTES)
+            value = json.loads(raw)
+            actual = (_design_evidence_fingerprint(ws, value) if kind == "design"
+                      else review_evidence.content_fingerprint(value))
+            if actual != expected:
+                raise ValueError("focused Plan bound " + kind + " input is stale")
+            admitted[kind] = value
+    for kind, value in admitted.items():
+        if not isinstance(value, dict) or value.get("requirement") != state.get("requirement_id"):
+            raise ValueError("focused Plan " + kind + " requirement is foreign or missing")
+        if kind == "plan" and any(not isinstance(task, dict) or task.get("req", value["requirement"]) != value["requirement"]
+                for task in value.get("tasks") or []):
+            raise ValueError("focused Plan task requirement is foreign")
+    return admitted.get("design", {}), admitted.get("plan", {})
+
+
 def _focused_stage_evidence(ws: str, state: Mapping[str, object],
                             stage: str
                             ) -> tuple[dict[str, object], list[str] | None]:
@@ -1032,9 +1088,7 @@ def _focused_stage_evidence(ws: str, state: Mapping[str, object],
             "files": files,
         }, None)
 
-    design = tp.load_json(
-        os.path.join(ws, "design", "contract.json"), default={},
-        what="focused Design Contract") if stage != "design" else {}
+    design, plan = _focused_plan_inputs(ws, state) if stage == "plan" else ({}, {})
     design_material = ({
         key: _copy_json(design.get(key))
         for key in ("schema", "summary", "selected_approach", "modules",
@@ -1061,9 +1115,6 @@ def _focused_stage_evidence(ws: str, state: Mapping[str, object],
     if stage != "plan":
         raise lens_route_policy.LensRoutePolicyError(
             "focused evidence stage is unsupported")
-    plan = tp.load_json(
-        os.path.join(ws, "plan", "tasks.json"), default={},
-        what="focused Plan")
     tasks = list(plan.get("tasks") or []) if isinstance(plan, dict) else []
     task_scopes = {str(task.get("id")): _copy_json(task.get("scope") or [])
                    for task in tasks if isinstance(task, dict) and task.get("id")}
@@ -1081,9 +1132,6 @@ def _focused_stage_evidence(ws: str, state: Mapping[str, object],
     declared_route = plan.get("plan_route") \
         if isinstance(plan, dict) and isinstance(plan.get("plan_route"), dict) \
         else {}
-    declared_selected = declared_route.get("selected")
-    mandatory = ([str(lens_id) for lens_id in declared_selected]
-                 if isinstance(declared_selected, list) else None)
     return ({
         "approved_product": req_material,
         "approved_design": design_material,
@@ -1095,8 +1143,9 @@ def _focused_stage_evidence(ws: str, state: Mapping[str, object],
             str(task.get("id")): task.get("tests")
             for task in tasks if isinstance(task, dict) and task.get("id")}),
         "task_to_ac_coverage": task_to_ac,
+        "plan_route": _copy_json(declared_route),
         "files": scope_files,
-    }, mandatory)
+    }, None)
 
 
 def _design_input_fingerprint(ws: str) -> str:
