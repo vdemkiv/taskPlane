@@ -1,4 +1,9 @@
-# R-0013 exact-candidate terminal export
+# Historical terminal-export regression fixture
+
+These retained inputs and the export caller exercise the terminal coordinator
+in `test_em_h3_terminal_export.py`. They are test data, not current release
+evidence. Tests copy them into a disposable repository's `exports/terminal/r0013/`
+to exercise the existing production path contract.
 
 `106af4631ab5b5c041055b9b9b918d78a18ae50b.json` is immutable historical
 evidence. Its original bytes and filename are preserved. The separate

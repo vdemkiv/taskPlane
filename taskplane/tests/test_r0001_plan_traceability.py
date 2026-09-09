@@ -10,7 +10,7 @@ import pytest
 from taskplane import plan_topology
 
 
-ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "r0001"
 
 _SOURCE_LIMITS = {
     "local_depth": 3,
@@ -85,10 +85,10 @@ def _source_observations() -> dict[str, dict]:
 
 def _approved_artifacts() -> tuple[dict, dict]:
     design = json.loads(
-        (ROOT / "design" / "contract.json").read_text(encoding="utf-8")
+        (FIXTURES / "approved-design.json").read_text(encoding="utf-8")
     )
     plan = json.loads(
-        (ROOT / "plan" / "tasks.json").read_text(encoding="utf-8")
+        (FIXTURES / "approved-plan.json").read_text(encoding="utf-8")
     )
     # Apply only the saved withdrawal to this unit input, never the Design file.
     withdrawal = plan["withdrawal_amendment"]

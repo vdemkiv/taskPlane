@@ -16,7 +16,7 @@ from taskplane import delivery_ports, terminal_truth
 
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPORT_ROOT = ROOT / "exports" / "terminal" / "r0013"
+EXPORT_ROOT = Path(__file__).resolve().parent / "fixtures" / "terminal-export"
 STALE_SHA = "106af4631ab5b5c041055b9b9b918d78a18ae50b"
 ORIGINAL_SHA256 = "1e41748672f8d492823824b6e2103ac87484f2687389d80567f231ea4151c459"
 GIT = "/usr/bin/git"
