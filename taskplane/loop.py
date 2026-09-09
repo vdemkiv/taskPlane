@@ -13381,6 +13381,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             with _claimed_execute_suite_binding():
                 dod_errors = _task_dod_errors(
                     wt or ws, state, wt_precheck,
+                    submission.get("snapshot") if submission is not None else
                     _worker_stage_snapshot(wt or ws, step, wt_precheck))
             if dod_errors:
                 tp.trace(ws, "loop_gate_blocked", step=step, task=task_id,
@@ -13600,6 +13601,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         with _claimed_execute_suite_binding():
             dod_errors = _task_dod_errors(
                 act_ws, state, task,
+                submission.get("snapshot") if submission is not None else
                 _worker_stage_snapshot(act_ws, step, task))
         if dod_errors:
             tp.trace(ws, "loop_gate_blocked", step=step, reason="dod",
