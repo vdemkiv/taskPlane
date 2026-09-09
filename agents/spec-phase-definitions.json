@@ -74,7 +74,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "a09fd0c3f046cd0f8785b0e2f616086b37f550f7a9f9cc6c3f12c946d502e9d0",
+    "fingerprint": "3d06fa5ec2d40ca777c4a6a099a066ff9b8fd976af22a8357932b98315de54ae",
     "gate": "human",
     "id": "design",
     "model_tier": "inherit",
@@ -97,7 +97,7 @@
     ],
     "role": "tp-design",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "0fd27ce014006e41215361da6c3972134fd558eb3c7dfab4526f94cff6646bd8",
+    "skill_content_fingerprint": "ab98526dcc3d6d95eacb3da25d502e8e85331259b6c76532b10bd48994f17453",
     "skill_ref": "skills/tp-design/SKILL.md",
     "successors": [
       "plan"
@@ -151,7 +151,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "4e69d6f7accb14cc051486ee58a4232c5f620e4ad36f7d21d6f906ebf185967e",
+    "fingerprint": "7ffab7e9fb5a68cf2c6a49f9725de023abb0ab64a339ddde96516984b09e46af",
     "gate": "human",
     "id": "plan",
     "model_tier": "inherit",
@@ -186,7 +186,7 @@
     ],
     "role": "tp-plan",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "c55871d397dc4049c53c1b373441595146363eda049ec5c34eff25356a187e69",
+    "skill_content_fingerprint": "e634bb60a7f05e683906c7d7b3a78e6577f3829f4d86abeaa9fc91f0ed0c5810",
     "skill_ref": "skills/tp-go/SKILL.md",
     "successors": [
       "build"
@@ -459,7 +459,7 @@
     "edge_conditions": [],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "dfd4ebcb17b9bdf8fa3d0b24049a837163d69b38d3ba0d19ff729640dd69e01c",
+    "fingerprint": "5f60496dadfeeb71e3777b90e2e345ae56682a8c7808aa23176df5e1076a16f6",
     "gate": "human",
     "id": "retro",
     "model_tier": "inherit",
@@ -476,7 +476,7 @@
     ],
     "role": "tp-retro",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "c55871d397dc4049c53c1b373441595146363eda049ec5c34eff25356a187e69",
+    "skill_content_fingerprint": "e634bb60a7f05e683906c7d7b3a78e6577f3829f4d86abeaa9fc91f0ed0c5810",
     "skill_ref": "skills/tp-go/SKILL.md",
     "successors": [],
     "telemetry_scope": [

@@ -220,7 +220,7 @@ explicit approval in conversation. Never run the loop silently.
    `loop next` again while it is running, or replace its contract. The PM
    worker returns one R-id; attach it on its mechanical gate with
    `$TP loop gate pass --req R-XXXX`. Product/planner return artifacts; only
-   design/execute/fix/evaluate/engineering workers submit. Before the Design owner
+   execute/fix/evaluate/engineering workers submit. Before the Design owner
    runs, execute the complete `design_lens_dispatches` set returned by that
    same `loop next`: resolve every package-relative role reference and digest,
    spawn all selected quick lenses concurrently with their exact host fields
@@ -245,7 +245,7 @@ explicit approval in conversation. Never run the loop silently.
    zero lens routes, slots, workers, or verdicts. Engineering uses the same
    canonical context without launching a lens sweep. Full detail:
    `docs/routing-and-flows.md`.
-   Design/execute/fix/evaluate/engineering workers
+   Execute/fix/evaluate/engineering workers
    end with `loop submit` and stop; the orchestrator alone calls `loop gate`
    and trusts only the engine's recomputed evidence — the canonical
    submit/gate/human-checkpoint invariants live in
