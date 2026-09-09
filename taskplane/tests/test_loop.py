@@ -3707,7 +3707,7 @@ class TestReviewBridge(unittest.TestCase):
                     ".", "python3 -m pytest -q")
         self.assertEqual(result.returncode, 0)
         argv = invoked.call_args.args[0]
-        self.assertEqual(argv, ["python3", "-m", "pytest", "-q"])
+        self.assertEqual(argv, tp._checkout_bound_python_args(".", ["-m", "pytest", "-q"]))
         self.assertFalse(invoked.call_args.kwargs["shell"])
 
     def test_review_bridge_execute_gate_accepts_safe_hosted_checks_argv(self):

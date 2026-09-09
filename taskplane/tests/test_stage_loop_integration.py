@@ -27,6 +27,37 @@ def _content_inventory(root: Path) -> dict[str, str]:
     }
 
 
+@pytest.mark.parametrize("claimed,prefix", [
+    (False, ""), (True, ""), (True, "PYTHONDONTWRITEBYTECODE=1 "),
+], ids=["ordinary-plain", "claimed-plain", "claimed-env-prefixed"])
+def test_gate_suite_uses_checkout_with_approved_environment_prefix(tmp_path, claimed, prefix):
+    workspace = tmp_path / "checkout"
+    package = workspace / "taskplane"
+    package.mkdir(parents=True)
+    (package / "probe.py").write_text("VALUE = 'checkout'\n")
+    # Like the actual checkout, taskplane has no __init__.py. An installed
+    # regular package must not select the orchestrator's unrelated source.
+    foreign = tmp_path / "installed"
+    (foreign / "taskplane").mkdir(parents=True)
+    (foreign / "taskplane" / "__init__.py").write_text("")
+    (foreign / "taskplane" / "probe.py").write_text("VALUE = 'foreign'\n")
+    (workspace / "test_checkout.py").write_text(
+        "import os, unittest\nfrom taskplane.probe import VALUE\n"
+        "class Check(unittest.TestCase):\n"
+        "    def test_source(self): self.assertEqual(VALUE, 'checkout')\n" +
+        ("    def test_environment(self): self.assertEqual(os.environ['PYTHONDONTWRITEBYTECODE'], '1')\n"
+         if prefix else ""))
+    env = dict(os.environ, PYTHONPATH=str(foreign))
+    original_env = dict(env)
+    cache_owner = loop.tp.suite_cache_lookup
+    command = prefix + "python3 -m unittest discover -s . -p test_checkout.py"
+    with loop._claimed_execute_suite_binding() if claimed else contextlib.nullcontext():
+        assert loop.tp.suite_cache_lookup is cache_owner
+        result = loop.tp.run_suite_command(str(workspace), command, env=env, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert env == original_env
+
+
 def _workspace(tmp_path):
     workspace = tmp_path / "repo"
     workspace.mkdir()

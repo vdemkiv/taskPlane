@@ -10359,23 +10359,14 @@ def _task_dod_errors(ws: str, state: dict, task: dict,
 
 @contextlib.contextmanager
 def _claimed_execute_suite_binding():
-    """Run claimed EXECUTE/FIX suites from the task checkout namespace.
+    """Keep gate command policy while using the existing checkout runner.
 
-    The orchestrator engine may be older than a task branch that changes the
-    engine itself. ``taskplane_lite.run_suite_command`` deliberately injects
-    the orchestrator's module namespace for ordinary validation, which made
-    an EXECUTE gate test stale engine bytes even though its cwd was the task
-    worktree. A wave gate instead needs the same plain command semantics the
-    executor used in that exact checkout. Force a fresh run so an earlier
-    validator-namespace cache record cannot substitute for that evidence.
-    FIX needs the same binding: a repair can change the engine that runs its
-    declared suite, so injecting the stale orchestrator copy would reject the
-    repair and can widen the gate into a repository-scale baseline run.
+    Leading assignments belong to the child environment, not argv. The
+    incumbent runner owns transitive Python checkout binding and execution.
     """
     import subprocess
 
     original_runner = tp.run_suite_command
-    original_lookup = tp.suite_cache_lookup
 
     def safe_argv(command):
         if isinstance(command, (list, tuple)):
@@ -10405,28 +10396,22 @@ def _claimed_execute_suite_binding():
     def run_claimed(workspace, command, *, env=None, timeout=600):
         try:
             argv = safe_argv(command)
+            child_env = dict(os.environ if env is None else env)
+            while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+                name, value = argv.pop(0).split("=", 1)
+                child_env[name] = value
+            if not argv:
+                raise ValueError("declared suite command has no executable")
         except ValueError as exc:
             return subprocess.CompletedProcess(
                 command, 2, stdout="", stderr=str(exc))
-        return subprocess.run(
-            argv,
-            cwd=workspace,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            encoding="utf-8",
-            errors="replace",
-        )
+        return original_runner(workspace, argv, env=child_env, timeout=timeout)
 
     tp.run_suite_command = run_claimed
-    tp.suite_cache_lookup = lambda workspace, command, env: None
     try:
         yield
     finally:
         tp.run_suite_command = original_runner
-        tp.suite_cache_lookup = original_lookup
 
 
 def collect_review_bridge(review_ws: str, *, publish: bool,
