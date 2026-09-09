@@ -342,21 +342,30 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         with open(os.path.join(ws, "task_test.py"), "w",
                   encoding="utf-8") as handle:
             handle.write("def test_value():\n    assert True\n")
+        unusual = "test_é\nname.py"
+        with open(os.path.join(ws, unusual), "w", encoding="utf-8") as handle:
+            handle.write("UNICODE_SENTINEL = 'é'\n")
         with open(os.path.join(ws, "unrelated.md"), "w",
                   encoding="utf-8") as handle:
             handle.write("x" * 20_000)
 
         rc, patch = review.canonical_diff_patch(
-            ws, base, paths=["task.py", "task_test.py"], max_bytes=4_000)
+            ws, base, paths=["task.py", "task_test.py", unusual], max_bytes=4_000)
 
         self.assertEqual(rc, 0)
         self.assertIn("task.py", patch)
         self.assertIn("task_test.py", patch)
+        self.assertIn("UNICODE_SENTINEL", patch)
+        self.assertIn(unusual, review.canonical_diff_files(ws, base))
+        self.assertEqual(review.select_diff_paths(["src/a.py", "other.py"], ["src/"]), ["src/a.py"])
         self.assertNotIn("unrelated.md", patch)
         overflow_rc, overflow_patch = review.canonical_diff_patch(
-            ws, base, paths=["task.py", "task_test.py"], max_bytes=16)
+            ws, base, paths=["task.py", "task_test.py", unusual], max_bytes=16)
         self.assertEqual(overflow_rc, review.CANONICAL_DIFF_TOO_LARGE)
-        self.assertEqual(overflow_patch, "")
+        refusal = json.loads(overflow_patch)
+        self.assertEqual(refusal["reason_code"], "canonical_diff_too_large")
+        self.assertEqual(refusal["bytes"], len(patch.encode("utf-8")))
+        self.assertEqual(refusal["max_diff_bytes"], 16)
 
     def test_canonical_diff_explicit_empty_scope_stays_empty(self):
         ws = tempfile.mkdtemp(prefix="tp-review-empty-scope-")

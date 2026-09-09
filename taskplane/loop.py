@@ -6151,14 +6151,11 @@ def _review_kernel(ws: str, diff_ws: str, *, base: str, step: str,
              if not f.startswith(lens_router.LOOP_OWNED) and
              (not task or not task.get("scope") or
               runtime_kernel.match_any(f, task.get("scope") or []))]
-    # Delivery retains the whole approved wave artifact; model-facing scoped
-    # views keep their independent 16 KiB bound. Standalone review's default
-    # remains unchanged. Never truncate a larger diff into apparent evidence.
-    diff_byte_limit = 2_000_000
+    diff_byte_limit = review.DEFAULT_MAX_DIFF_BYTES
     diff_rc, patch = review.canonical_diff_patch(
         diff_ws, base, paths=files, max_bytes=diff_byte_limit)
     if diff_rc:
-        reason = (f"canonical governed diff exceeds the {diff_byte_limit}-byte bound"
+        reason = (patch
                   if diff_rc == review.CANONICAL_DIFF_TOO_LARGE else
                   "canonical diff derivation failed")
         raise review.ReviewKernelError(reason)
@@ -14566,7 +14563,8 @@ def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
         state["wave_metrics_receipt"] = wave_metrics.validate_wave_receipt(
             existing)
         state.pop("wave_metrics_unavailable", None)
-        return {"status": "measured",
+        return {"status": ("partial" if wave_metrics.token_usage_projection(
+                    state["wave_metrics_receipt"])["status"] == "partial" else "measured"),
                 "fingerprint": state["wave_metrics_receipt"]["fingerprint"]}
     binding = state.get("run_artifact_binding") or {}
     candidate = str((binding.get("candidate") or {}).get("fingerprint") or "")
@@ -14693,7 +14691,8 @@ def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
                 "reason": unavailable["reason"]}
     state["wave_metrics_receipt"] = receipt
     state.pop("wave_metrics_unavailable", None)
-    return {"status": "measured", "fingerprint": receipt["fingerprint"]}
+    return {"status": ("partial" if wave_metrics.token_usage_projection(receipt)["status"] == "partial"
+                       else "measured"), "fingerprint": receipt["fingerprint"]}
 
 
 def _finalize_owned_run_cleanup(

@@ -36,7 +36,6 @@ STRICT_BOUNDARIES = {
     "taskplane.owned_cleanup",
     "taskplane.review_convergence",
     "taskplane.settings",
-    "taskplane.settings_legacy",
     "taskplane.test_strategy",
     "taskplane.wave_metrics",
 }

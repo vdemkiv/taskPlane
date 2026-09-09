@@ -450,7 +450,7 @@ class ArtifactStore:
             raise ArtifactIntegrityError("artifact reference points outside store")
         return supplied
 
-    def verify(self, ref: dict) -> bool:
+    def _read_verified_bytes(self, ref: dict) -> bytes:
         path = self._validated_path(ref)
         try:
             with open(path, "rb") as stream:
@@ -462,17 +462,18 @@ class ArtifactStore:
             raise ArtifactIntegrityError("artifact digest mismatch")
         if len(data) != ref.get("bytes"):
             raise ArtifactIntegrityError("artifact byte length mismatch")
+        return data
+
+    def verify(self, ref: dict) -> bool:
+        self._read_verified_bytes(ref)
         return True
 
-
     def read(self, ref: dict):
-        path = self._validated_path(ref)
-        self.verify(ref)
-        with open(path, "rb") as stream:
-            try:
-                return json.loads(stream.read().decode("utf-8"))
-            except (UnicodeError, ValueError) as exc:
-                raise ArtifactIntegrityError(f"artifact is not canonical JSON: {exc}")
+        data = self._read_verified_bytes(ref)
+        try:
+            return json.loads(data.decode("utf-8"))
+        except (UnicodeError, ValueError) as exc:
+            raise ArtifactIntegrityError(f"artifact is not canonical JSON: {exc}")
 
     def references(self, kind: str) -> list[dict]:
         kind = self._validate_kind(kind)

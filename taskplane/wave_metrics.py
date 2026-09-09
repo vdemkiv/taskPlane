@@ -355,31 +355,51 @@ def _terminal_attempts(value: object) -> list[dict[str, Any]]:
         row = _mapping(raw, "terminal attempt")
         _exact_keys(row, required, "terminal attempt")
         for field in (
-                "attempt_fingerprint", "worker_fingerprint",
-                "task_fingerprint", "receipt_fingerprint",
-                "usage_source_fingerprint"):
+                "attempt_fingerprint", "worker_fingerprint", "task_fingerprint"):
             _digest(row[field], f"terminal attempt {field}")
         if row["attempt_fingerprint"] in identities:
             raise WaveMetricsError(
                 "terminal attempt attribution contains a duplicate")
         identities.add(row["attempt_fingerprint"])
         if row["thread_type"] not in allowed_threads or \
-                row["outcome"] not in allowed_outcomes:
+                (row["outcome"] is not None and row["outcome"] not in allowed_outcomes):
             raise WaveMetricsError("terminal attempt lifecycle is invalid")
         correction_count = _number(
             row["correction_count"], "terminal attempt correction count")
         if int(correction_count) != correction_count:
             raise WaveMetricsError(
                 "terminal attempt correction count must be an integer")
-        if row["usage_status"] != "measured" or \
-                row["unavailable_reason"] is not None:
-            raise WaveMetricsError(
-                "a sealed terminal receipt may contain only measured attempts")
-        for field in (
-                "total_tokens", "uncached_input_tokens", "effective_tokens"):
-            _number(row[field], f"terminal attempt {field}")
+        measurements = ("total_tokens", "uncached_input_tokens", "effective_tokens")
+        proofs = ("receipt_fingerprint", "usage_source_fingerprint")
+        if row["usage_status"] == "measured":
+            if row["unavailable_reason"] is not None or row["outcome"] is None:
+                raise WaveMetricsError("measured terminal attempt has no terminal outcome")
+            for field in measurements:
+                _number(row[field], f"terminal attempt {field}")
+            for field in proofs:
+                _digest(row[field], f"terminal attempt {field}")
+        elif row["usage_status"] == "unavailable":
+            if not isinstance(row["unavailable_reason"], str) or not row["unavailable_reason"] or \
+                    any(row[field] is not None for field in (*measurements, *proofs)):
+                raise WaveMetricsError("unavailable terminal usage cannot carry measured truth")
+        else:
+            raise WaveMetricsError("terminal usage status is invalid")
         normalized.append(row)
     return normalized
+
+
+def _attempt_coverage(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    measured = [row for row in attempts if row["usage_status"] == "measured"]
+    missing = sorted(row["attempt_fingerprint"] for row in attempts
+                     if row["usage_status"] != "measured")
+    total = sum(row["total_tokens"] for row in measured)
+    root = sum(row["total_tokens"] for row in measured if row["thread_type"] == "main")
+    return {"status": "complete" if attempts and not missing else "partial",
+            "observed_attempts": len(measured), "expected_attempts": len(attempts),
+            "missing_attempts": missing,
+            "percent": 100 * len(measured) / len(attempts) if attempts else None,
+            "root_share_percent": 100 * root / total if total and any(
+                row["thread_type"] == "main" for row in measured) else None}
 
 
 def _normalize_sources(raw: object, candidate: str, opened: str,
@@ -525,12 +545,12 @@ def seal_wave_receipt(evidence: Mapping[str, Any]) -> dict[str, Any]:
         _number(observed["effective_tokens"], "observed effective_tokens")
     if "attempts" in observed:
         attempts = _terminal_attempts(observed["attempts"])
-        if sum(row["total_tokens"] for row in attempts) != \
+        if sum(row["total_tokens"] for row in attempts if row["usage_status"] == "measured") != \
                 observed["total_tokens"] or sum(
-                    row["uncached_input_tokens"] for row in attempts) != \
+                    row["uncached_input_tokens"] for row in attempts if row["usage_status"] == "measured") != \
                 observed["uncached_input_tokens"] or \
                 ("effective_tokens" in observed and sum(
-                    row["effective_tokens"] for row in attempts) !=
+                    row["effective_tokens"] for row in attempts if row["usage_status"] == "measured") !=
                  observed["effective_tokens"]):
             raise WaveMetricsError(
                 "terminal attempt usage contradicts observed totals")
@@ -660,88 +680,32 @@ def token_usage_projection(
         attempts: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """Expose token truth without converting absence into numeric zero."""
     if receipt is None:
-        unavailable_attempts = []
-        identities = set()
-        required = {
-            "attempt_fingerprint", "worker_fingerprint", "task_fingerprint",
-            "thread_type", "outcome", "correction_count", "usage_status",
-            "unavailable_reason", "total_tokens", "uncached_input_tokens",
-            "effective_tokens", "receipt_fingerprint",
-            "usage_source_fingerprint",
-        }
-        for raw in attempts or []:
-            row = _mapping(raw, "unavailable terminal attempt")
-            _exact_keys(row, required, "unavailable terminal attempt")
-            usage_status = row.get("usage_status")
-            if usage_status not in {"measured", "unavailable"}:
-                raise WaveMetricsError(
-                    "unavailable terminal attempt attribution is invalid")
-            if usage_status == "unavailable" and (
-                    not isinstance(row.get("unavailable_reason"), str) or
-                    not row.get("unavailable_reason")):
-                raise WaveMetricsError(
-                    "unavailable terminal attempt attribution is invalid")
-            if usage_status == "measured" and row.get(
-                    "unavailable_reason") is not None:
-                raise WaveMetricsError(
-                    "measured terminal attempt cannot claim unavailability")
-            for field in (
-                    "attempt_fingerprint", "worker_fingerprint",
-                    "task_fingerprint"):
-                _digest(row.get(field), f"unavailable attempt {field}")
-            if row["attempt_fingerprint"] in identities:
-                raise WaveMetricsError(
-                    "unavailable attempt attribution contains a duplicate")
-            identities.add(row["attempt_fingerprint"])
-            if row.get("thread_type") not in {
-                    "main", "worker", "lens", "evaluator", "guardian"} or \
-                    (row.get("outcome") is not None and row.get("outcome")
-                     not in {"complete", "attention", "failed", "cancelled",
-                             "interrupted", "handoff"}):
-                raise WaveMetricsError(
-                    "unavailable terminal attempt lifecycle is invalid")
-            correction_count = _number(
-                row.get("correction_count"),
-                "unavailable attempt correction count")
-            if int(correction_count) != correction_count:
-                raise WaveMetricsError(
-                    "unavailable attempt correction count must be an integer")
-            measurement_fields = (
-                "total_tokens", "uncached_input_tokens", "effective_tokens")
-            proof_fields = ("receipt_fingerprint", "usage_source_fingerprint")
-            if usage_status == "unavailable":
-                if any(row.get(field) is not None
-                       for field in (*measurement_fields, *proof_fields)):
-                    raise WaveMetricsError(
-                        "unavailable terminal usage cannot carry measured truth")
-            else:
-                for field in measurement_fields:
-                    _number(row.get(field), f"measured attempt {field}")
-                for field in proof_fields:
-                    _digest(row.get(field), f"measured attempt {field}")
-            _redaction_check(row)
-            unavailable_attempts.append(row)
+        unavailable_attempts = _terminal_attempts(attempts) if attempts else []
+        coverage = _attempt_coverage(unavailable_attempts)
         return {
             "schema": TOKEN_USAGE_PROJECTION_SCHEMA,
             "status": "unavailable", "total_tokens": None,
             "uncached_input_tokens": None, "effective_tokens": None,
-            "attempts": unavailable_attempts,
+            "attempts": unavailable_attempts, "coverage": coverage,
             "reason": str(reason or
                           "sealed wave metrics receipt is unavailable"),
         }
     sealed = validate_wave_receipt(receipt)
     observed = sealed["usage_truth"]["observed"]
     effective = observed.get("effective_tokens")
+    coverage = _attempt_coverage(observed.get("attempts") or [])
     available = isinstance(effective, (int, float)) and \
         not isinstance(effective, bool)
     return {
         "schema": TOKEN_USAGE_PROJECTION_SCHEMA,
-        "status": "available" if available else "unavailable",
+        "status": ("partial" if coverage["status"] == "partial" else "available") if available else "unavailable",
+        "coverage": coverage,
         "total_tokens": observed["total_tokens"],
         "uncached_input_tokens": observed["uncached_input_tokens"],
         "effective_tokens": effective if available else None,
         "attempts": copy.deepcopy(observed.get("attempts") or []),
-        "reason": (None if available else
+        "reason": ("lineage coverage is partial; totals include measured attempts only"
+                   if coverage["status"] == "partial" else None) if available else (
                    "effective token telemetry is unavailable in this receipt"),
     }
 
@@ -963,11 +927,11 @@ def seal_terminal_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
             "total_tokens", "uncached_input_tokens", "effective_tokens",
             "sessions", "elapsed_seconds"):
         _number(observed.get(field), f"terminal observed {field}")
-    if sum(row["total_tokens"] for row in attempts) != \
+    if sum(row["total_tokens"] for row in attempts if row["usage_status"] == "measured") != \
             observed["total_tokens"] or sum(
-                row["uncached_input_tokens"] for row in attempts) != \
+                row["uncached_input_tokens"] for row in attempts if row["usage_status"] == "measured") != \
             observed["uncached_input_tokens"] or sum(
-                row["effective_tokens"] for row in attempts) != \
+                row["effective_tokens"] for row in attempts if row["usage_status"] == "measured") != \
             observed["effective_tokens"]:
         raise WaveMetricsError("terminal attempts contradict observed usage")
 
@@ -1048,6 +1012,7 @@ def seal_terminal_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "breached": value >= source["ceilings"][name],
     } for name, value in ceiling_values.items()]
     unexplained = [row["name"] for row in ceilings if row["breached"]]
+    coverage = _attempt_coverage(attempts)
     material = {
         "schema": TERMINAL_RECEIPT_SCHEMA,
         "evidence_fingerprint": checked["fingerprint"],
@@ -1060,6 +1025,7 @@ def seal_terminal_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
                 "uncached_input_tokens": observed["uncached_input_tokens"],
                 "effective_tokens": observed["effective_tokens"],
                 "attempts": attempts, "source_digest": token_digest,
+                "coverage": coverage,
             },
             "archive_upper_bound": {
                 "status": archive_status, "total_tokens": archive_total,
@@ -1070,9 +1036,10 @@ def seal_terminal_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "evaluator_summary": copy.deepcopy(checked["evaluator_summary"]),
         "ceilings": ceilings,
         "signoff": {
-            "ready": not unexplained,
+            "ready": not unexplained and coverage["status"] == "complete",
             "blocking_reasons": (
-                ["unclassified-ceiling-breach"] if unexplained else []),
+                (["unclassified-ceiling-breach"] if unexplained else [])
+                + (["token-usage-partial"] if coverage["status"] != "complete" else [])),
             "unexplained_ceilings": unexplained,
         },
         "redaction": {"paths": "omitted", "host_identity": "omitted",
@@ -1122,14 +1089,19 @@ def _validate_terminal_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
         _mapping(value["usage_truth"], "terminal usage truth").get(
             "observed"), "terminal observed truth")
     attempts = _terminal_attempts(observed.get("attempts"))
+    coverage = _attempt_coverage(attempts)
+    if "coverage" in observed and observed["coverage"] != coverage:
+        raise WaveMetricsError("terminal receipt coverage contradicts attempts")
+    if coverage["status"] != "complete" and value["signoff"].get("ready"):
+        raise WaveMetricsError("partial usage cannot claim complete signoff")
     for field in (
             "total_tokens", "uncached_input_tokens", "effective_tokens"):
         _number(observed.get(field), f"terminal receipt {field}")
-    if sum(row["total_tokens"] for row in attempts) != \
+    if sum(row["total_tokens"] for row in attempts if row["usage_status"] == "measured") != \
             observed["total_tokens"] or sum(
-                row["uncached_input_tokens"] for row in attempts) != \
+                row["uncached_input_tokens"] for row in attempts if row["usage_status"] == "measured") != \
             observed["uncached_input_tokens"] or sum(
-                row["effective_tokens"] for row in attempts) != \
+                row["effective_tokens"] for row in attempts if row["usage_status"] == "measured") != \
             observed["effective_tokens"]:
         raise WaveMetricsError("terminal receipt attempts contradict totals")
     checked = {**value, "fingerprint": fingerprint}

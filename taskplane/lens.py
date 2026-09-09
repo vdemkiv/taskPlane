@@ -399,10 +399,10 @@ def route(changed_files, task_type: str | None = None,
         _record_breadth(workspace, requested=breadth, effective="routed",
                         engine_ran=True, stage=stage, routing=routed)
         return routed
-    legacy = _route_legacy(files, task_type, artifact_type, cat,
+    fallback = route_fallback(files, task_type, artifact_type, cat,
                            only, skip, breadth, hub_dependents)
     try:
-        legacy = _attach_language_context(legacy, files, task_type)
+        fallback = _attach_language_context(fallback, files, task_type)
     except (OSError, ValueError) as exc:
         import sys
         print(f"taskplane: language reference unavailable ({exc}) — "
@@ -423,10 +423,10 @@ def route(changed_files, task_type: str | None = None,
                         reason="mapper-unavailable")
         return refused
     _record_breadth(workspace, requested=breadth, effective=breadth,
-                    engine_ran=False, stage=stage, routing=legacy,
+                    engine_ran=False, stage=stage, routing=fallback,
                     reason=_engine_off_reason(cat, breadth, stage,
                                               use_signals))
-    return legacy
+    return fallback
 
 
 # ------------------------------------------------- recorded routing breadth
@@ -511,10 +511,9 @@ def _record_breadth(workspace, *, requested, effective, engine_ran, stage,
         pass
 
 
-def _route_legacy(changed_files, task_type, artifact_type, cat,
+def route_fallback(changed_files, task_type, artifact_type, cat,
                   only, skip, breadth, hub_dependents) -> dict:
-    """Today's glob/task-type/baseline/hub routing — the byte-identical
-    legacy path (existing tests pin it)."""
+    """Catalog routing when no phase-specific signal route is selected."""
     code_ext = cat.get("code_extensions", [])
     deep_n = cat.get("deep_threshold_files", 8)
     files = list(changed_files or [])

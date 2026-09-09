@@ -232,6 +232,9 @@ def fingerprint(rec: dict) -> str:
         encoded = json.dumps(rec.get(k), sort_keys=True,
                              separators=(",", ":"))
         h.update(f"{k}={encoded}\n".encode("utf-8"))
+    if "diff_policy" in rec:
+        h.update(json.dumps(rec["diff_policy"], sort_keys=True,
+                            separators=(",", ":")).encode("utf-8"))
     return h.hexdigest()[:16]
 
 
@@ -249,6 +252,8 @@ def review_cache_identity(rec: dict, graph: dict) -> dict:
         "shallow": row.get("shallow"),
         "graph_revision": graph_revision,
     }
+    if "diff_policy" in row:
+        material["diff_policy"] = row["diff_policy"]
     material["fingerprint"] = hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")).encode(
             "utf-8")).hexdigest()

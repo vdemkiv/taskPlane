@@ -33,6 +33,7 @@ def test_contract_apis_strict_typing(tmp_path: Path) -> None:
     Source locations only bound this T01 check; mypy judges the types. Older
     lifecycle diagnostics remain visible outside the two new contract sections.
     """
+    pytest.importorskip("mypy", reason="strict typing requires the optional mypy dependency")
     config = tmp_path / "mypy.ini"
     config.write_text("[mypy]\n", encoding="utf-8")
     root = Path(__file__).resolve().parents[2]

@@ -99,6 +99,12 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
         root_id = str(payload.get("session_id") or session_id).strip()
         if not session_id or not root_id:
             raise NativeSessionMeterError("native session identity is missing")
+        history = payload.get("history_base")
+        if history is not None and (not isinstance(history, Mapping) or
+                history.get("thread_id") != session_id or any(
+                    type(history.get(field)) is not int or history[field] < 0
+                    for field in ("end_ordinal_exclusive", "end_byte_offset"))):
+            raise NativeSessionMeterError("native restart identity is invalid")
         parent = str(
             payload.get("forked_from_id")
             or payload.get("parent_thread_id")
@@ -241,6 +247,7 @@ def read_snapshot(path: str) -> dict[str, Any]:
         "path_fingerprint": source["path_fingerprint"],
         "device": source["device"],
         "inode": source["inode"],
+        "metadata_record_sha256": source["metadata_record_sha256"],
     })
     snapshot["fingerprint"] = _fingerprint(snapshot)
     return snapshot
@@ -334,6 +341,10 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     sessions: dict[str, list[dict[str, Any]]] = {}
     for row in ordered_segments:
         sessions.setdefault(str(row["session_id"]), []).append(row)
+    for rows in sessions.values():
+        rows.sort(key=lambda row: (str(row.get("observed_at") or ""), row["ordinal"]))
+        if any(not row.get("resumed") for row in rows[1:]):
+            raise NativeSessionMeterError("native source replacement has no restart evidence")
     usage_keys = (
         "input_tokens", "cached_input_tokens", "uncached_input_tokens",
         "output_tokens", "reasoning_tokens", "total_tokens",

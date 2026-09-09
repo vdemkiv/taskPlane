@@ -548,6 +548,10 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
         wave_signoff = wave.get("signoff") or {}
         token_usage = wave.get("token_usage") or {}
         token_status = str(token_usage.get("status") or "unavailable")
+        coverage = token_usage.get("coverage") or {}
+        if coverage.get("status") == "partial":
+            lines[0] += (f" — partial usage ({coverage.get('observed_attempts', 0)}/"
+                         f"{coverage.get('expected_attempts', 0)} attempts measured)")
         lines.extend([
             "", "## Sealed wave metrics", "",
             f"- receipt: {wave.get('receipt_fingerprint')}",
@@ -557,6 +561,12 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
             "- source digests: " + json.dumps(
                 wave.get("source_digests") or {}, sort_keys=True),
             f"- token usage status: {token_status}",
+            "- measured attempt coverage: " + (
+                f"{coverage['percent']}%" if coverage.get("percent") is not None
+                else "unavailable"),
+            "- root share of measured tokens: " + (
+                f"{coverage['root_share_percent']}%"
+                if coverage.get("root_share_percent") is not None else "unavailable"),
             "- observed total tokens: " + (
                 str(token_usage.get("total_tokens"))
                 if token_usage.get("total_tokens") is not None else
@@ -794,10 +804,10 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                 f"{severity_counts['high']} high finding(s) reached final "
                 "review — use their lens ownership to move detection earlier.")
         metrics_projection = sealed_wave_metrics_projection(state)
-        if metrics_projection.get("token_usage", {}).get("status") != \
-                "available":
+        usage_status = metrics_projection.get("token_usage", {}).get("status")
+        if usage_status != "available":
             lessons.append(
-                "terminal token usage is unavailable — the run cannot claim "
+                f"terminal token usage is {usage_status or 'unavailable'} — the run cannot claim "
                 "complete measurement or a clean telemetry outcome.")
         if not lessons:
             lessons.append("clean run — no scope friction, forecasts held.")

@@ -4641,14 +4641,6 @@ def _emit_stage(ws, payload, emit: str):
     return out
 
 
-def tp_target_diff(ws: str, base: str) -> tuple:
-    """The diff every lens agent would otherwise re-derive. Bounded: a diff
-    too large to be shared cheaply is not shared at all, and the briefs fall
-    back to embedding the blast radius as before."""
-    import review
-    return review.canonical_diff_patch(ws, base)
-
-
 def _lane_landed(ws: str, lid: str) -> bool:
     """Has this lens already written evidence? The SAME source the wave board
     reads (v2.2.1), so `--resume` and the board can never disagree about who
@@ -4941,7 +4933,14 @@ def cmd_lens(a) -> int:
                 import review as _rv
                 _diff = ""
                 if a.base:
-                    _rc, _diff = tp_target_diff(ws, a.base)
+                    _rc, _diff = _rv.canonical_diff_patch(ws, a.base)
+                    if _rc:
+                        refusal = (json.loads(_diff)
+                                   if _rc == _rv.CANONICAL_DIFF_TOO_LARGE else {
+                                       "reason_code": "canonical_diff_unavailable",
+                                       "reason": _diff or "canonical diff derivation failed"})
+                        print(json.dumps({"status": "start_failed", **refusal}))
+                        return 1
                 ctx_paths = _rv.write_context(
                     ws, diff=_diff, blast_radius=impact_ctx or "")
             except Exception:
@@ -5820,12 +5819,14 @@ def _invoke_run_command(a, workspace: str) -> int:
 def _run_hook_command(a) -> int:
     """Claim native/bridge hook events once, execute once, replay by class."""
     # Schema/help discovery is independent of workspace or run storage.
-    if a.cmd in {"help", "version"}:
+    if a.cmd in {"help", "version"} or (a.cmd == "target" and
+            getattr(a, "target_action", None) == "tools"):
         from taskplane.settings import load_settings
         _set_effective_settings_snapshot(load_settings(environment=os.environ))
         return a.fn(a)
     hook_path = (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower()
-    if a.cmd not in _HOOK_COMMANDS or hook_path not in {"native", "bridge"}:
+    if a.cmd not in _HOOK_COMMANDS or (a.cmd in {"context", "host-native-check"}
+            and hook_path not in {"native", "bridge"}):
         workspace = _workspace(getattr(a, "workspace", None))
         if a.cmd == "onboard" or (a.cmd == "repository" and
                 getattr(a, "repository_action", None) == "prepare"):
@@ -5855,6 +5856,16 @@ def _run_hook_command(a) -> int:
         event_cwd if isinstance(event_cwd, str) and event_cwd
         else getattr(a, "workspace", None))
     a.workspace = workspace
+    if hook_path not in {"native", "bridge"}:
+        # Direct hook invocations still belong to the event's checkout.
+        # They do not gain a native receipt merely by supplying an event.
+        runtime_storage.bind_workspace_taskplane_home(workspace, os.environ)
+        original_stdin = sys.stdin
+        try:
+            sys.stdin = io.StringIO(raw)
+            return _invoke_run_command(a, workspace)
+        finally:
+            sys.stdin = original_stdin
     receipt_home = runtime_storage.bind_hook_taskplane_home(
         workspace, os.environ, hook_path=hook_path)
     host_caps.record_runtime_hook_receipt(
@@ -6656,6 +6667,13 @@ def cmd_review(a) -> int:
         return 0
     repository_run = None
     repository_preflight = None
+    diff_byte_limit = getattr(a, "max_diff_bytes", None)
+    if diff_byte_limit is None:
+        diff_byte_limit = rv.DEFAULT_MAX_DIFF_BYTES
+    if type(diff_byte_limit) is not int or diff_byte_limit <= 0:
+        print(json.dumps({"status": "start_failed", "reason_code": "invalid_diff_limit",
+                          "reason": "--max-diff-bytes must be a positive integer"}))
+        return 1
     spec = getattr(a, "spec", None)
     parsed = tgt.parse(spec) if spec else None
     remote_repository = False
@@ -6815,6 +6833,21 @@ def cmd_review(a) -> int:
     # the PR diverged, inflating symbols and graph impact.
     base = rec.get("merge_base") or rec.get("base_ref") or \
         getattr(a, "base", None) or "HEAD"
+    try:
+        files = rv.select_diff_paths(rv.canonical_diff_files(ws, base), getattr(a, "paths", None))
+        active = tp.load_active(ws) or {}
+        coding = active.get("coding") or {}
+        if coding.get("scope_paths"):
+            outside = [path for path in files if not tp.match_any(path, coding["scope_paths"])]
+            if outside:
+                raise rv.ReviewKernelError("review paths exceed the active contract: " + ", ".join(outside))
+        rec["changed_files"] = files
+        rec["diff_policy"] = {"paths": files, "max_diff_bytes": diff_byte_limit}
+        rec["fingerprint"] = tgt.fingerprint(rec)
+        tgt.save(ws, rec)
+    except (ValueError, RuntimeError) as exc:
+        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_paths", "reason": str(exc)}))
+        return 1
     step("target", True, head=rec["head"][:12], base=(rec.get("base") or "")[:12],
          fingerprint=rec["fingerprint"], changed=len(rec.get("changed_files") or []))
 
@@ -6905,7 +6938,7 @@ def cmd_review(a) -> int:
     c["target"] = {k: rec.get(k) for k in
                    ("origin", "head", "base", "base_ref", "branch",
                     "merge_base", "shallow", "fingerprint", "target",
-                    "review_cache")}
+                    "review_cache", "diff_policy")}
     out["contract"] = {"task_id": c["task_id"], "read_only": True,
                        "status": "prepared", "write_allow": write_allow,
                        "budget": c.get("budget")}
@@ -6916,9 +6949,13 @@ def cmd_review(a) -> int:
     try:
         import runnability as runmod
         probe = runmod.probe_once(ws)
-        diff_rc, patch = tp_target_diff(ws, base)
+        diff_rc, patch = rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit)
         if diff_rc:
-            raise RuntimeError("canonical diff derivation failed")
+            if diff_rc == rv.CANONICAL_DIFF_TOO_LARGE:
+                print(json.dumps({"schema": "taskplane.review-start-manifest/v2",
+                                  "status": "start_failed", **json.loads(patch)}))
+                return 1
+            raise RuntimeError(patch or "canonical diff derivation failed")
         import review_evidence as _re
         store = _re.ArtifactStore(ws)
         diff_ref = store.put("diff", {"base": base, "patch": patch,
@@ -9342,6 +9379,8 @@ def main(argv=None) -> int:
                            "the read-only contract")
     rvs.add_argument("spec", nargs="?", help="PR url, OWNER/REPO#N, or a ref")
     rvs.add_argument("--base", default=None, help="diff base ref")
+    rvs.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
+    rvs.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
     rvs.add_argument("--fetch", action="store_true",
                      help="fetch pull/N/head into this checkout first")
     rvs.add_argument("--goal", nargs="*", default=None,
@@ -9377,6 +9416,8 @@ def main(argv=None) -> int:
                      help="the user's approving/cancelling chat identity")
     rvr.add_argument("--advisory", action="store_true",
                      help="continue with visibly advisory screen enforcement")
+    rvr.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
+    rvr.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
     rvr.add_argument("--goal", nargs="*", default=None,
                      help="contract goal text after preflight resumes")
     rvr.add_argument("--max-actions", type=int, default=None,

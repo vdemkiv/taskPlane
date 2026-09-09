@@ -3192,10 +3192,10 @@ def _generated_diff_path(path: str) -> bool:
 
 
 def changed_files(workspace: str, snapshot_ref: str) -> list:
-    diff = _run(["git", "diff", "--name-only", snapshot_ref], cwd=workspace)
-    untracked = _run(["git", "ls-files", "--others", "--exclude-standard"],
+    diff = _run(["git", "diff", "--name-only", "-z", snapshot_ref], cwd=workspace)
+    untracked = _run(["git", "ls-files", "-z", "--others", "--exclude-standard"],
                      cwd=workspace)
-    files = [f for f in (diff.stdout + untracked.stdout).splitlines()
+    files = [f for f in (diff.stdout + untracked.stdout).split("\0")
              if f and not f.startswith(RUNTIME_OWNED)
              and not _generated_diff_path(f)]
     return sorted(set(files))

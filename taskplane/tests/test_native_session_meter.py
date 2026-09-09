@@ -108,7 +108,7 @@ def test_resume_sums_reset_physical_segment_and_fork_counters_once(
     child = tmp_path / "child.jsonl"
     _write_segment(first, session_id="root", total=90, ordinal=7)
     _write_segment(
-        resumed, session_id="root", total=25, resumed=True, ordinal=11,
+        resumed, session_id="root", total=90, resumed=True, ordinal=11,
     )
     _write_segment(
         child, session_id="child", parent="root", total=40, ordinal=5,
@@ -118,15 +118,20 @@ def test_resume_sums_reset_physical_segment_and_fork_counters_once(
         native_session_meter.read_snapshot(str(first)),
         native_session_meter.read_snapshot(str(resumed)),
         native_session_meter.read_snapshot(str(child)),
+        native_session_meter.read_snapshot(str(resumed)),
     ])
 
     assert wave["physical_segments"] == 3
     assert wave["logical_sessions"] == 2
-    assert wave["usage"]["total_tokens"] == 155
+    assert wave["usage"]["total_tokens"] == 220
     assert {row["session_id"]: row["segments"] for row in wave["sessions"]} \
         == {"child": 1, "root": 2}
     assert {row["session_id"]: row["total_tokens"]
-            for row in wave["sessions"]} == {"child": 40, "root": 115}
+            for row in wave["sessions"]} == {"child": 40, "root": 180}
+    _write_segment(resumed, session_id="root", total=90, ordinal=11)
+    with pytest.raises(native_session_meter.NativeSessionMeterError, match="restart evidence"):
+        native_session_meter.aggregate([native_session_meter.read_snapshot(str(first)),
+                                        native_session_meter.read_snapshot(str(resumed))])
 
 
 def test_missing_counter_and_backwards_same_segment_refuse_instead_of_zero(

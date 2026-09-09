@@ -68,6 +68,7 @@ MAX_HOST_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 MAX_HOST_SESSION_INDEX_BYTES = 4 * 1024 * 1024
 MAX_HOST_SESSION_INDEX_RECORDS = 4096
 CANONICAL_DIFF_TOO_LARGE = 75
+DEFAULT_MAX_DIFF_BYTES = 2_000_000
 KERNEL_STATE = os.path.join(".em-review", "kernel-v2", "active.json")
 KERNEL_RUNS = os.path.join(".em-review", "kernel-v2", "runs")
 RESULT_SCHEMA = "taskplane.lens-slot-output/v2"
@@ -2398,9 +2399,24 @@ def bounded_caller_expander(graph: dict) -> Callable:
     return expand
 
 
+def canonical_diff_files(ws: str, base: str) -> list[str]:
+    """Read literal filenames, including Unicode and embedded newlines."""
+    import subprocess
+
+    files = set()
+    for args in (["diff", "--name-only", "-z", base],
+                 ["ls-files", "-z", "--others", "--exclude-standard"]):
+        result = subprocess.run(["git", *args], cwd=ws, capture_output=True,
+                                text=True, encoding="utf-8", errors="strict", timeout=120)
+        if result.returncode:
+            raise ReviewKernelError("canonical diff file inventory failed: " + result.stderr.strip())
+        files.update(path for path in result.stdout.split("\0") if path)
+    return sorted(files)
+
+
 def canonical_diff_patch(ws: str, base: str, *,
                          paths: Iterable[str] | None = None,
-                         max_bytes: int = 400_000) -> tuple[int, str]:
+                         max_bytes: int = DEFAULT_MAX_DIFF_BYTES) -> tuple[int, str]:
     """Return one bounded patch, including scoped untracked files.
 
     ``paths`` is an exact, already-governed file set.  Supplying it prevents
@@ -2411,13 +2427,20 @@ def canonical_diff_patch(ws: str, base: str, *,
     import subprocess
 
     try:
+        if type(max_bytes) is not int or max_bytes <= 0:
+            return 1, "max_diff_bytes must be a positive integer"
         selected = None if paths is None else sorted({
-            str(path).replace("\\", "/")
+            str(path)
             for path in paths if str(path)
         })
+        if selected is not None and any(
+                os.path.isabs(path) or ".." in path.split("/") or "\0" in path
+                for path in selected):
+            return 1, "diff paths must stay inside the repository"
         if selected == []:
             return 0, ""
-        tracked_args = ["git", "diff", base]
+        tracked_args = ["git", "--literal-pathspecs", "diff",
+                        "--no-ext-diff", "--no-textconv", base]
         if selected is not None:
             tracked_args.extend(["--", *selected])
         tracked = subprocess.run(
@@ -2426,7 +2449,7 @@ def canonical_diff_patch(ws: str, base: str, *,
         if tracked.returncode:
             return tracked.returncode, ""
         untracked = subprocess.run(
-            ["git", "ls-files", "--others", "--exclude-standard"], cwd=ws,
+            ["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=ws,
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=120)
         if untracked.returncode:
@@ -2434,10 +2457,9 @@ def canonical_diff_patch(ws: str, base: str, *,
         parts = [tracked.stdout or ""]
         size = len(parts[0].encode("utf-8"))
         if size > max_bytes:
-            return CANONICAL_DIFF_TOO_LARGE, ""
+            parts.clear()
         selected_set = None if selected is None else set(selected)
-        for rel in sorted(line for line in untracked.stdout.splitlines()
-                          if line.strip()):
+        for rel in sorted(path for path in untracked.stdout.split("\0") if path):
             if selected_set is not None and rel not in selected_set:
                 continue
             if rel == ".codex/hooks.json":
@@ -2456,19 +2478,50 @@ def canonical_diff_patch(ws: str, base: str, *,
                         json.JSONDecodeError):
                     pass
             addition = subprocess.run(
-                ["git", "diff", "--no-index", "--", "/dev/null", rel],
+                ["git", "diff", "--no-ext-diff", "--no-textconv",
+                 "--no-index", "--", "/dev/null", rel],
                 cwd=ws, capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=120)
             if addition.returncode not in {0, 1}:
                 return addition.returncode, ""
             text = addition.stdout or ""
             size += len(text.encode("utf-8"))
-            if size > max_bytes:
-                return CANONICAL_DIFF_TOO_LARGE, ""
-            parts.append(text)
+            if size <= max_bytes:
+                parts.append(text)
+        if size > max_bytes:
+            return CANONICAL_DIFF_TOO_LARGE, json.dumps({
+                "reason_code": "canonical_diff_too_large", "bytes": size,
+                "max_diff_bytes": max_bytes,
+                "recovery": shlex.join([
+                    "tp", "review", "start", "--workspace", ws, "--base", base,
+                    "--max-diff-bytes", str(size),
+                    *(["--paths", *selected] if selected else []),
+                ]),
+            }, sort_keys=True)
         return 0, "".join(parts)
     except (OSError, subprocess.TimeoutExpired):
         return 1, ""
+
+
+def select_diff_paths(files: Iterable[str], patterns: Iterable[str] | None) -> list[str]:
+    """Expand user scope only against the pinned changed-file inventory."""
+    from taskplane import glob_match
+
+    inventory = sorted(set(files))
+    if patterns is None:
+        return inventory
+    selected = set()
+    for pattern in patterns:
+        if not pattern or os.path.isabs(pattern) or ".." in pattern.split("/") or \
+                pattern.startswith(":") or "\0" in pattern:
+            raise ReviewKernelError("review paths must be relative files, directories or globs")
+        stem = pattern.rstrip("/")
+        matches = {path for path in inventory if path == stem or
+                   path.startswith(stem + "/") or glob_match.path_matches(path, pattern)}
+        if not matches:
+            raise ReviewKernelError(f"review path matches no changed files: {pattern}")
+        selected.update(matches)
+    return sorted(selected)
 
 
 def changed_symbols_from_patch(patch: str) -> list[str]:

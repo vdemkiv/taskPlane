@@ -1950,7 +1950,8 @@ def closed_wave_metrics_source(
         ledger: Mapping[str, Any], clock: Clock, *,
         candidate_fingerprint: str,
         billing_total_tokens: int | None = None,
-        archive_upper_bound_tokens: int | None = None) -> dict[str, Any]:
+        archive_upper_bound_tokens: int | None = None,
+        allow_partial: bool = False) -> dict[str, Any]:
     """Project one closed ledger for the wave-metrics sealing boundary.
 
     Dispatch, session, and usage identities remain inside their producer.  The
@@ -1980,7 +1981,7 @@ def closed_wave_metrics_source(
             "wave metrics require a closed dispatch ledger")
     usage = wave_usage(ledger, clock)
     capability = ledger_usage_capability(ledger)
-    if capability.get("status") != "available":
+    if capability.get("status") != "available" and not allow_partial:
         raise DispatchTelemetryError(
             "wave metrics require host-observed token usage")
 
@@ -2063,39 +2064,24 @@ def terminal_metrics_source(
     already included in provider output and are never counted twice.
     """
     attempts = terminal_attempt_attribution(ledger)
-    unavailable = [row for row in attempts
-                   if row["usage_status"] != "measured"]
-    if unavailable:
-        raise DispatchTelemetryError(
-            "terminal dispatch usage is attributable but unavailable for "
-            f"{len(unavailable)} attempt(s)")
     source = closed_wave_metrics_source(
         ledger, clock, candidate_fingerprint=candidate_fingerprint,
         billing_total_tokens=billing_total_tokens,
-        archive_upper_bound_tokens=archive_upper_bound_tokens)
+        archive_upper_bound_tokens=archive_upper_bound_tokens, allow_partial=True)
     sealed = validate_ledger(ledger)
-    rows = list(sealed.get("dispatches") or [])
-    if not rows:
+    measured = [row for row in attempts if row["usage_status"] == "measured"]
+    if not measured:
         raise DispatchTelemetryError(
             "terminal metrics require at least one host-observed dispatch")
-    effective = 0.0
-    for row in rows:
-        usage = _usage({field: row.get(field) for field in _USAGE_FIELDS})
-        cache_creation = usage["total_tokens"] - usage["input_tokens"] - \
-            usage["output_tokens"]
-        effective += (
-            usage["uncached_input_tokens"] * WEIGHTS["input"]
-            + usage["cached_input_tokens"] * WEIGHTS["cache_read"]
-            + cache_creation * WEIGHTS["cache_write"]
-            + usage["output_tokens"] * WEIGHTS["output"])
     material = {
         **{key: value for key, value in source.items()
            if key != "fingerprint"},
         "schema": TERMINAL_METRICS_SOURCE_SCHEMA,
         "ledger_fingerprint": content_fingerprint(sealed),
         "observed": {**source["observed"],
-                     "effective_tokens": int(effective),
-                     "dispatches": len(rows)},
+                     **{field: sum(row[field] for row in measured) for field in
+                        ("total_tokens", "uncached_input_tokens", "effective_tokens")},
+                     "dispatches": len(attempts)},
         "attempts": attempts,
     }
     material["fingerprint"] = content_fingerprint(material)

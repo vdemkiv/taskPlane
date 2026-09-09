@@ -468,10 +468,6 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
                     return_value=prepared), \
                     mock.patch("target.resolve_pr_head",
                                return_value={"ok": False}), \
-                    mock.patch.object(
-                        cli, "tp_target_diff",
-                        return_value=(0, "diff --git a/a.py b/a.py\n")) \
-                    as target_diff, \
                     mock.patch("review.start_review", return_value=ready) \
                     as start_review, \
                     mock.patch("review._load_state", return_value={}), \
@@ -485,8 +481,9 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
             self.assertEqual(rc, 0)
             payload = json.loads(output.getvalue())
             self.assertEqual(payload["contract"]["status"], "active")
-            target_diff.assert_called_once_with(checkout, base)
             self.assertEqual(start_review.call_args.kwargs["base"], base)
+            self.assertEqual(start_review.call_args.kwargs["diff"]["files"], ["a.py"])
+            self.assertGreater(start_review.call_args.kwargs["diff"]["artifact"]["bytes"], 0)
             manifest = run_store.RunStore(home=home).load("review-ready")
             self.assertEqual(manifest["status"], "governed")
             self.assertEqual(manifest["review"]["status"], "ready")

@@ -113,11 +113,15 @@ print(json.dumps(after, sort_keys=True))
     assert json.loads(result.stdout)["tempdir"] is None
 
 
-def test_m24_runner_scope_restores_every_mutated_process_binding():
+def test_m24_runner_scope_restores_every_mutated_process_binding(monkeypatch):
     import shutil
     import unittest
 
-    names = ("TMPDIR", "PYTHONIOENCODING", "TASKPLANE_HOME")
+    inherited = {"CLAUDE_SESSION_ID": "host-session", "CODEX_THREAD_ID": "host-thread",
+                 "TASKPLANE_TASK": "host-task"}
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    names = ("TMPDIR", "PYTHONIOENCODING", "TASKPLANE_HOME", *inherited)
     environment = {name: os.environ.get(name) for name in names}
     before = (tempfile.tempdir, shutil.rmtree, unittest.TestCase.run)
     with isolated_test_runtime() as runtime:
@@ -125,6 +129,11 @@ def test_m24_runner_scope_restores_every_mutated_process_binding():
         assert tempfile.tempdir == root
         assert tempfile.mkdtemp().startswith(root)
         assert os.environ["TMPDIR"] == root
+        assert not any(name in os.environ for name in inherited)
+        with isolated_test_runtime(host_environment={"CODEX_THREAD_ID": "explicit-test"}):
+            assert os.environ["CODEX_THREAD_ID"] == "explicit-test"
+            assert "CLAUDE_SESSION_ID" not in os.environ
+        assert "CODEX_THREAD_ID" not in os.environ
         os.environ["TASKPLANE_HOME"] = "mutated-by-test"
         assert shutil.rmtree is not before[1]
         assert unittest.TestCase.run is not before[2]
