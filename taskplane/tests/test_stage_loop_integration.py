@@ -687,6 +687,7 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     monkeypatch.setenv("CODEX_HOME", str(home))
     destination.write_text(json.dumps(plan, sort_keys=True, indent=4) + "\n")
     def no_host_effect(*args, **kwargs): pytest.fail("current validation must not dispatch or replay Stop")
+    observe_phase_hook = design_host_transport.observe_phase_hook
     monkeypatch.setattr(design_host_transport, "observe_phase_hook", no_host_effect)
     # Execute the real script entry, retaining its flat ``import loop``.
     # Aliasing that module to the package hides cross-module dataclass bugs.
@@ -735,6 +736,10 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
         if row["operation"] == "phase_collect" and row["operation_id"] == args.phase_operation + "-complete"]) == 1
     # Continue through the actual root hook and direct-script Build command.
     # Neither the final root telemetry owner nor Build preparation is mocked.
+    onboarding = Path(ws) / ".codex/hooks.json"
+    onboarding.parent.mkdir(exist_ok=True)
+    onboarding.write_text('{"hooks":{"SessionStart":[]}}\n')
+    original_onboarding = onboarding.read_bytes()
     from taskplane import tp as cli
     from taskplane.tests.test_native_root_session import _write_root
     root_transcript = tmp_path / "current-root-counter.jsonl"
@@ -797,6 +802,59 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     pending = loop.next_action(ws)
     assert pending["phase_runtime"]["reference"] == build["phase_runtime"]["reference"]
     assert "task_name" not in pending
+    monkeypatch.setattr(design_host_transport, "observe_phase_hook", observe_phase_hook)
+    assert _emit_host_hook(ws, build, "SubagentStart", monkeypatch, agent_id="simulated-build-worker") == 0
+    target = Path(ws) / "app.py"
+    target.write_text(target.read_text() + "\n# Scoped worker implementation.\n")
+    slot = build["contract_bootstrap"]["task_slot"]
+    with monkeypatch.context() as patch:
+        patch.setenv("TASKPLANE_TASK", slot)
+        submitted = loop.submit(ws, "pass", "Scoped simulated producer completed")
+    assert submitted.get("submitted") is True, submitted.get("error")
+    submission = copy.deepcopy(loop.load(ws)["_submission"])
+    # Actual-shaped native Stop has no internal effect-lease payload. The
+    # existing hook must durably preserve it even when collection is interrupted.
+    if preparation_failure:
+        with monkeypatch.context() as patch:
+            def interrupted_collection(*args, **kwargs):
+                raise ValueError("historical collection interruption")
+            patch.setattr(loop, "_collect_phase_attempt", interrupted_collection)
+            assert _emit_host_hook(ws, build, "SubagentStop", monkeypatch, agent_id="simulated-build-worker") == 2
+    else:
+        assert _emit_host_hook(ws, build, "SubagentStop", monkeypatch, agent_id="simulated-build-worker") == 0
+    source = design_host_transport.phase_nonce_source(loop.tp, ws, run_id, existing_only=True)
+    issued = source.recover(build_material["nonce_bindings"])
+    hooks = source.phase_hooks(issued, build_material["nonce_bindings"])
+    assert hooks[1]["lease_terminal"] is None
+    capsys.readouterr()
+    monkeypatch.setattr(sys, "argv", [script, "loop", "--workspace", ws, "resolve", "reconcile",
+        "--phase-operation", build["phase_runtime"]["operation_id"]])
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_path(script, run_name="__main__")
+    collected = json.loads(capsys.readouterr().out)
+    assert exited.value.code == 0, collected.get("error")
+    assert collected["status"] == "collected"
+    completion = collected["receipt"]["result"]
+    assert artifacts.read(completion["runtime_receipt"])["payload"]["status"] == "accepted"
+    assert source.phase_hooks(issued, build_material["nonce_bindings"]) == hooks
+    assert loop.load(ws)["_submission"] == submission
+    assert onboarding.read_bytes() == original_onboarding
+    assert loop.load(ws)["attempt_lease"]["released"] is True
+    assert not Path(loop.tp.active_contract_path(ws, slot)).exists()
+    with monkeypatch.context() as patch:
+        patch.setenv("TASKPLANE_TASK", slot)
+        with pytest.raises(loop.tp.StateError):
+            loop.tp.load_active(ws)  # Existing missing-slot refusal closes writes.
+    archived = loop.tp.released_worker_contract(ws, slot)
+    assert archived["worker_lifecycle"]["terminal"]["submission_status"] == "phase-terminal:" + hooks[1]["claim"]
+    assert archived["phase_runtime"] == build["phase_runtime"]
+    signed = artifacts.read(completion["runtime_receipt"])
+    current_material = artifacts.read(completion["validation"]["signing_material"])
+    assert current_material["original_preparation"] == build["phase_runtime"]["reference"]
+    assert signed["freshness"] == current_material["freshness"]
+    before_replay = store.load(run_id)
+    assert loop.resolve(ws, "reconcile", phase_operation=build["phase_runtime"]["operation_id"])["replay"] is True
+    assert store.load(run_id) == before_replay
 
 
 @pytest.mark.parametrize("case", ["uncanceled", "different-reason", "foreign-run", "foreign-candidate",

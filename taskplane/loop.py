@@ -11519,6 +11519,8 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
     if observed["kind"] == "start":
         phase_harness.record_dispatch(sys.modules[__name__], ws, contract, material, observed)
         return {"status": "pending", "operation_id": operation, "observed_start": observed["claim"]}
+    if definition["id"] == "build":
+        return phase_harness.reconcile(sys.modules[__name__], ws, load(ws), operation)
     return _collect_phase_attempt(ws, attempt)
 
 
@@ -11577,12 +11579,38 @@ def _collect_phase_attempt(ws, attempt, *, completed_worker=None):
     if stage["stage_kind"] == "build":
         from taskplane import build_c, delivery_ports
         owner, lease = _phase_bridge_build_owner(ws, context, runtime, material)
-        released = terminal.get("lease_terminal")
-        if not isinstance(released, Mapping) or any(released.get(key) != getattr(lease, key)
-                for key in ("lease_id", "attempt_id", "operation_id", "fencing_token")):
-            raise ValueError("Build requires authoritative released effect reconciliation")
+        slot = material["contract_slot"]
+        path = tp.active_contract_path(ws, slot)
+        with tp.file_lock(path):
+            contract = tp.load_json(path, default=None, what="Build terminal contract")
+            if contract is None:
+                contract = tp.released_worker_contract(ws, slot)
+            lifecycle = contract["worker_lifecycle"]
+            if lease.owner != slot or lifecycle["dispatch_intent_id"] != lease.attempt_id or \
+                    contract.get("phase_runtime") != requested or any(lifecycle["owner"] != {
+                        key: observed["owner"][key] for key in ("session_id", "agent_id", "task_name")}
+                        for observed in (start, terminal)) or set(lease.effect_scope) != {
+                        "workspace:" + item for item in contract["coding"]["scope_paths"]}:
+                raise ValueError("Build terminal differs from its bound effect owner")
+            with mutate(ws) as current:
+                owner._record(current, lease)
+            submission = tp.stop_submission_decision(ws, contract, loop_state=load(ws))
+            if submission.get("block"):
+                raise ValueError("Build terminal submission: " + submission["status"])
+            if any(other_slot != slot and _scopes_overlap(contract["coding"]["scope_paths"],
+                    (other.get("coding") or {}).get("scope_paths")) for other_slot, other in tp._active_worker_contracts(ws)):
+                raise ValueError("Build effect observation overlaps another worker")
+            if lifecycle["status"] != "released":
+                receipt = lifecycle.get("terminal") or tp.record_worker_terminal(ws, slot, event=None,
+                    outcome=terminal["outcome"], submission_status="phase-terminal:" + terminal["claim"],
+                    authority="phase-observation")
+                tp.release_worker_contract(ws, slot, action=lifecycle["release_action"], terminal_receipt=receipt)
+            tp.released_worker_contract(ws, slot)
+        # Only the existing signed release proves the writer is gone. Current
+        # scoped effects were observed above, not reported committed by a worker.
         lease_terminal = delivery_ports.observe_lease_terminal(lease,
-            lambda bound: {**released, "terminal_identity": terminal["claim"]})
+            lambda bound: {"released": True, "effects": {scope:"observed" for scope in bound.effect_scope},
+                "terminal_identity": terminal["claim"]})
         result = build_c.complete_build_phase(runtime, dispatch, observation,
             lease_owner=owner, lease=lease, terminal=lease_terminal)
     elif stage["stage_kind"] in {"evaluate", "engineering"}:
@@ -11603,7 +11631,7 @@ def _collect_phase_attempt(ws, attempt, *, completed_worker=None):
     # The original phase-result remains immutable evidence for compatibility.
     _phase_bridge_authorize(ws, context, store.load(run_id))
     signing_material = material
-    if completed_worker is not None:
+    if completed_worker is not None or (stage["stage_kind"] == "build" and runtime.resource_limits_advisory):
         freshness, impact = _phase_bridge_freshness(ws, material["signing_scope"])
         signing_material = {**material, "original_preparation":requested["reference"], "freshness":freshness,
             "impact_reference":artifacts.put("phase-impact", impact)}
@@ -11623,7 +11651,7 @@ def _collect_phase_attempt(ws, attempt, *, completed_worker=None):
         "preparation": requested["reference"], "terminal_observation": terminal["claim"]}
     complete["validation"] = {"mode":"current-semantic", "validated_at":time.time(),
         "completion_source":terminal.get("source", "subagent-stop"), "historical_stop_recovered":False}
-    if completed_worker is not None:
+    if signing_material is not material:
         complete["validation"]["signing_material"] = artifacts.put("phase-current-validation", signing_material)
     complete["resource_usage"] = {**phase_harness.usage_evidence(ws, material, terminal),
         "limits": dict(material["bindings"]["budget"]),

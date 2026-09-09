@@ -6025,7 +6025,8 @@ def record_worker_terminal(
         start, terminal = source.phase_hooks(issued, material["nonce_bindings"])
         if lifecycle.get("status") != "active" or any(owner != {key: observed["owner"][key]
                 for key in ("session_id", "agent_id", "task_name")} for observed in (start, terminal)) or \
-                outcome != terminal["outcome"] or submission_status != "phase-collected:" + terminal["claim"]:
+                outcome != terminal["outcome"] or submission_status not in {
+                    "phase-collected:" + terminal["claim"], "phase-terminal:" + terminal["claim"]}:
             raise _worker_lifecycle_error(workspace, "phase terminal owner or outcome changed")
         now = int(terminal["observed_at"])
     elif authority not in {"loop-gate", "session-start", "orphan-recovery"}:
@@ -6198,8 +6199,22 @@ def released_worker_contract(workspace: str, slot: str) -> dict:
     _verify_worker_release_action(workspace, slot, action, contract)
     _verify_worker_terminal_receipt(workspace, slot, receipt, contract, action)
     if (lifecycle.get("status") != "released" or lifecycle.get("terminal") != receipt
-            or receipt.get("authority") != "host-lifecycle" or receipt.get("owner") != lifecycle.get("owner")):
+            or receipt.get("authority") not in {"host-lifecycle", "phase-observation"}
+            or receipt.get("owner") != lifecycle.get("owner")):
         raise _worker_lifecycle_error(workspace, "quarantine lacks its exact native terminal")
+    if receipt["authority"] == "phase-observation":
+        from taskplane import design_host_transport, review_evidence
+        requested = contract.get("phase_runtime") or {}
+        material = review_evidence.ArtifactStore(workspace).read(requested["reference"])
+        source = design_host_transport.phase_nonce_source(sys.modules[__name__], workspace,
+            requested["run_id"], existing_only=True)
+        issued = source.recover(material["nonce_bindings"])
+        start, terminal = source.phase_hooks(issued, material["nonce_bindings"])
+        if material["contract_slot"] != slot or material["bindings"]["operation_id"] != requested["operation_id"] or any(
+                lifecycle["owner"] != {key: observed["owner"][key] for key in ("session_id", "agent_id", "task_name")}
+                for observed in (start, terminal)) or receipt["outcome"] != normalize_worker_terminal_outcome(terminal["outcome"]) or \
+                receipt["submission_status"] not in {"phase-terminal:" + terminal["claim"], "phase-collected:" + terminal["claim"]}:
+            raise _worker_lifecycle_error(workspace, "quarantine differs from its authenticated phase terminal")
     return contract
 
 

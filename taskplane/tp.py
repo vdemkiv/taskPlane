@@ -1944,6 +1944,16 @@ def cmd_subagent_stop(a) -> int:
             collected = _phase_loop.observe_phase_runtime_hook(ws, lifecycle_contract, event)
             if not isinstance(collected, dict) or collected.get("status") != "collected":
                 raise ValueError("phase output remains pending: " + str((collected or {}).get("reason_code")))
+            if collected.get("worker_released") is True:
+                # The phase owner already consumed this signed Stop, released
+                # the writer and collected telemetry. Do not retire it twice.
+                retained = tp.released_worker_contract(ws, lifecycle_contract["task_slot"])
+                submission = _submission_stop_check(event, workspace=ws, contract=retained)
+                if submission and submission.get("block"):
+                    _emit_submission_stop_block("SubagentStop", submission)
+                    return 2
+                print("{}")
+                return 0
         except Exception as exc:
             _emit_submission_stop_block("SubagentStop", {
                 "status": "phase_observation_refused", "contract_id": lifecycle_contract.get("task_id"),

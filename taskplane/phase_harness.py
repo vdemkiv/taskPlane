@@ -237,11 +237,7 @@ def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> d
     path = runtime.tp.active_contract_path(ws, slot)
     contract = runtime.tp.load_json(path, default=None, what="phase worker contract")
     if contract is None:
-        completed = stage_migration.phase_records(context["manifest"]).get(operation + "-complete")
-        if completed is None:
-            raise ValueError("phase contract is unavailable before collection")
-        runtime._phase_bridge_gate_check(ws, state)
-        return {"status": "collected", "receipt": completed, "replay": True, "dispatch_allowed": False}
+        contract = runtime.tp.released_worker_contract(ws, slot)
     attempt = runtime._phase_bridge_attempt(ws, contract)
     if attempt is None or attempt[0]["operation_id"] != operation:
         raise ValueError("phase contract is foreign")
