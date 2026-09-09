@@ -11509,9 +11509,7 @@ def observe_phase_runtime_hook(ws: str, contract: Mapping[str, object], event: M
     if observed["kind"] == "start":
         phase_harness.record_dispatch(sys.modules[__name__], ws, contract, material, observed)
         return {"status": "pending", "operation_id": operation, "observed_start": observed["claim"]}
-    if definition["id"] == "build":
-        return phase_harness.reconcile(sys.modules[__name__], ws, load(ws), operation)
-    return _collect_phase_attempt(ws, attempt)
+    return phase_harness.reconcile(sys.modules[__name__], ws, load(ws), operation)
 
 
 def _collect_phase_attempt(ws, attempt, *, completed_worker=None):

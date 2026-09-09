@@ -10,6 +10,7 @@ import copy
 import io
 import json
 import hashlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 from taskplane import loop, review_evidence, run_store, stage_entities, stage_handoff, stage_migration, storage
@@ -76,7 +77,7 @@ def test_normal_accepted_output_has_host_runtime_signature(tmp_path, monkeypatch
 
 def test_normal_runtime_telemetry_uses_native_ledger(tmp_path, monkeypatch, record_property):
     ws, _, stage, artifacts, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
-    monkeypatch.setenv("CODEX_HOME", str(Path(ws) / ".codex-native"))
+    monkeypatch.setenv("CODEX_HOME", str(Path(ws).parent / ".codex-native"))
     requested = loop.next_action(ws)
     expected = loop.tp.peek_expectation(ws, requested["task_name"], strict=False)
     loop.record_native_dispatch_observation(ws, expected=expected,
@@ -459,7 +460,7 @@ def _terminal_caller_workspace(tmp_path, monkeypatch):
 
 def test_normal_engineering_to_retro_public_caller(tmp_path, monkeypatch, record_property):
     ws, store, stage, artifacts = _terminal_caller_workspace(tmp_path, monkeypatch)
-    monkeypatch.setenv("CODEX_HOME", str(Path(ws) / ".codex-native"))
+    monkeypatch.setenv("CODEX_HOME", str(Path(ws).parent / ".codex-native"))
     requested = loop.next_action(ws)
     assert "error" not in requested, requested
     assert requested["phase_runtime"]["status"] == "pending"
@@ -484,6 +485,9 @@ def test_normal_engineering_to_retro_public_caller(tmp_path, monkeypatch, record
     assert _emit_host_hook(ws, requested, "SubagentStop", monkeypatch, agent_transcript_path=str(transcript)) == 0
     completion = loop.next_action(ws)["phase_runtime"]["completion"]
     assert artifacts.read(completion["runtime_receipt"])["payload"]["phase_id"] == "engineering"
+    assert loop.load(ws)["_submission"] == submitted["submission"]
+    assert not Path(taskplane_lite.active_contract_path(
+        ws, requested["contract_bootstrap"]["task_slot"])).exists()
     # Simulated authority chooses a failure retrospective. The incumbent
     # lifecycle creates the successor from the real collected handoff; no
     # Engineering PASS, review acceptance or publication grant is supplied.
@@ -546,6 +550,11 @@ def _host_event(ws, requested, kind):
     """Explicit simulated native boundary, never native proof."""
     name = requested["task_name"]
     event = _worker_event(ws, requested, label=name)
+    # Provider metadata is outside the target: recording host counters must
+    # not change the submitted source candidate.
+    event["agent_transcript_path"] = str(Path(ws).parent / ".codex-native" /
+        "sessions" / datetime.now(timezone.utc).strftime("%Y/%m/%d") /
+        Path(event["agent_transcript_path"]).name)
     event.update({"hook_event_name": kind, "session_id": "simulated-session",
         "turn_id": "simulated-turn", "outcome": "success", "usage": {"total_tokens": 100}})
     identity = taskplane_lite.hook_event_identity(ws,
