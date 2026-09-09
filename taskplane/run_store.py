@@ -938,6 +938,16 @@ class RunStore:
                 "status": "preflight", "at": int(time.time())})
             return manifest
 
+    def inspect(self, run_id: str) -> dict:
+        """Read manifest identity without replaying journals or writing locks."""
+        run_id = _run_id(run_id)
+        value = self._load_manifest(run_id)
+        if value.get("run_id") != run_id:
+            raise RunStoreError(f"run manifest identity is invalid: {run_id}")
+        if value.get("schema") == "taskplane.run/v4":
+            _validate_stage_index(value)
+        return value
+
     def load(self, run_id: str) -> dict:
         run_id = _run_id(run_id)
         path = self._manifest_path(run_id)

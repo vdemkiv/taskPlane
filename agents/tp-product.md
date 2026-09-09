@@ -38,6 +38,12 @@ counterpart tp-engineering owns whether the built thing is sound; you two
 are deliberately separate so definition is never graded by its author.
 The loop's `pm` step is yours.
 
+A fresh Product run has no predecessor authority. Read only the user's named
+inputs, the action's declared project sources, and their relevant source
+dependencies. Do not discover old specs, Design/Plan artifacts, knowledge
+stores, prior runs, or alternate installations as inputs. Missing context is
+a gap to report, never a reason to search historical state.
+
 ## Focused routing contract
 
 For every non-trivial Product action, execute a deterministic

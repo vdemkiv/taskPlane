@@ -719,7 +719,8 @@ def design_dor(ws: str, state: dict) -> dict:
     if not graph.get("modules"):
         warnings.append("baseline graph has no source modules; treat this as "
                         "greenfield and declare every proposed module")
-    if not kb.current_state(ws):
+    if (state.get("run_start_step") or state.get("step")) != "pm" and \
+            not kb.current_state(ws):
         warnings.append("current-state inventory is empty; ground the design "
                         "in cited repository sources and the baseline graph")
     return {"ready": not blockers, "blockers": blockers,

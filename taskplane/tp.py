@@ -941,7 +941,12 @@ def _onboard_report(ws: str) -> dict:
     # A committed checkout is a project even when its only tracked file is an
     # otherwise ignored marker such as .gitignore (or the commit is empty).
     looks_like_project = (has_files or (inside_git and has_commit)) and not bare_root
-    has_context = os.path.isdir(os.path.join(tp.kb_root(ws), "context"))
+    import preflight
+    run_readiness = preflight.workspace_readiness(ws)
+    try:
+        has_context = os.path.isdir(os.path.join(tp.kb_root(ws), "context"))
+    except runtime_storage.StorageIdentityError:
+        has_context = False
 
     is_codex = bool(os.environ.get("CODEX_HOME")
                     or os.environ.get("CODEX_THREAD_ID"))
@@ -973,6 +978,13 @@ def _onboard_report(ws: str) -> dict:
          "hint": "`tp init` scaffolds context docs, the KB, and the graph — "
                  "I run it for you once a folder + repo are in place."},
     ]
+    recovery_command = ["python3", ".taskplane/codex-hook.py", "repository",
+                        "prepare", os.path.realpath(ws)]
+    checks.append({
+        "id": "run_binding", "label": "Declared run manifest",
+        "ok": run_readiness["ready"], "detail": run_readiness["status"],
+        "hint": "Use repository prepare to recover the declared run binding; "
+                "preserve existing knowledge and artifacts."})
     codex_hooks = _codex_hooks_report(ws) if is_codex else None
     host_capabilities = None
     if codex_hooks is not None:
@@ -1034,33 +1046,30 @@ def _onboard_report(ws: str) -> dict:
                 "hint": host_capabilities["effective_path"]["reason"],
             },
         ))
-    base_ready = looks_like_project and inside_git and has_commit and has_context
+    base_ready = (looks_like_project and inside_git and has_commit and has_context
+                  and run_readiness["ready"])
     ready = base_ready and (host_capabilities is None
                             or bool(host_capabilities["ready"]))
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
         nxt = "init_git"
+    elif not run_readiness["ready"]:
+        nxt = "recover_run_binding"
     elif not has_context:
         nxt = "tp_init"
     elif host_capabilities is not None and not host_capabilities["ready"]:
         nxt = host_capabilities["next_action"]
     else:
         nxt = "ready"
+    # Readiness is not input selection. Historical snapshots enter a new
+    # Product run only through an explicit, authenticated selection.
     artifacts = None
-    try:
-        _art = os.path.join(tp.store_root(ws), "artifacts")
-        _tracks = sorted(os.listdir(_art)) if os.path.isdir(_art) else []
-        if _tracks:
-            artifacts = {"path": tp.to_posix(_art), "tracks": _tracks,
-                         "note": "prior gate snapshots - a context "
-                                 "cache; read before re-deriving"}
-    except Exception:
-        artifacts = None
     _ictx = _install_context()
     # Onboarding is one of the explicit discovery boundaries. Status below
     # reads this durable result and never scans the tree independently.
-    foreign_state = collision_kernel.discover_state_roots(ws)
+    foreign_state = (collision_kernel.discover_state_roots(ws)
+                     if run_readiness["ready"] else [])
     if foreign_state:
         collision_kernel.persist(ws, roots=foreign_state)
     return {"workspace": ws, "host": host, "artifacts": artifacts,
@@ -1086,6 +1095,10 @@ def _onboard_report(ws: str) -> dict:
             "is_git": inside_git, "has_commit": has_commit,
             "has_context": has_context, "ready": ready,
             "checks": checks, "next_action": nxt,
+            "run_readiness": run_readiness,
+            "recovery": ({"command_argv": recovery_command,
+                          "preserve_existing_state": True}
+                         if not run_readiness["ready"] else None),
             # Resolved model routing, visible at cold start: with defaults
             # Claude pins only `cheap`; Codex inherits all tiers so another
             # provider's model id is never dispatched. Overrides remain
@@ -5805,7 +5818,8 @@ def _run_hook_command(a) -> int:
     hook_path = (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower()
     if a.cmd not in _HOOK_COMMANDS or hook_path not in {"native", "bridge"}:
         workspace = _workspace(getattr(a, "workspace", None))
-        if a.cmd == "repository" and getattr(a, "repository_action", None) == "prepare":
+        if a.cmd == "onboard" or (a.cmd == "repository" and
+                getattr(a, "repository_action", None) == "prepare"):
             try:
                 runtime_storage.load_workspace_locator(workspace)
             except runtime_storage.StorageIdentityError:

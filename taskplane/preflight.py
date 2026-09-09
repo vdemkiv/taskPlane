@@ -28,6 +28,42 @@ _GOVERNANCE_BASELINE_SCHEMA = "taskplane.governance-baseline/v1"
 _ATOMIC_STARTUP_SCHEMA = "taskplane.atomic-governed-startup/v1"
 
 
+def workspace_readiness(workspace: str) -> dict:
+    """Authenticate only this checkout's declared run, without repairing it."""
+    locator = None
+    try:
+        locator = storage.load_workspace_locator(workspace)
+        if locator is None:
+            return {"ready": True, "status": "unbound", "run_id": None}
+        identity = storage.resolve_repository_identity(workspace)
+        manifest = run_store.RunStore(home=locator["home"]).inspect(
+            locator.get("run_id"))
+        layout = storage.resolve_layout(
+            identity, home=locator["home"], run_id=locator["run_id"])
+        paths = {"state": layout.state_root, "graph": layout.graph_root,
+                 "evidence": layout.evidence_root, "lenses": layout.lens_root,
+                 "artifacts": layout.artifact_root}
+        owner = manifest.get("repository") or {}
+        if locator.get("repo_id") != identity.repo_id or \
+                locator.get("repository_key") != identity.key or \
+                owner.get("repo_id") != identity.repo_id or \
+                owner.get("checkout") != locator["primary_checkout"] or \
+                manifest.get("paths") != paths or locator["paths"] != paths:
+            return {"ready": False, "status": "binding_mismatch",
+                    "run_id": locator.get("run_id"),
+                    "detail": "declared run belongs to another binding"}
+        return {"ready": True, "status": "bound",
+                "run_id": locator["run_id"], "schema": manifest["schema"]}
+    except (storage.StorageIdentityError, run_store.RunStoreError,
+            OSError, ValueError) as exc:
+        cause = exc.__cause__ or exc.__context__ or exc
+        status = ("missing_manifest" if isinstance(cause, FileNotFoundError)
+                  else "permission_denied" if isinstance(cause, PermissionError)
+                  else "invalid_manifest" if locator else "invalid_locator")
+        return {"ready": False, "status": status,
+                "run_id": (locator or {}).get("run_id"), "detail": str(exc)}
+
+
 def atomic_governed_startup(*, workspace: str, worker_workspace: str,
                             task_id: str) -> dict:
     """Prove every alternate-worktree startup input without side effects.

@@ -1405,13 +1405,39 @@ def _prepare_run_control_plane(
         f"{stage_id}-" + hashlib.sha256(
             f"{state.get('run_id')}:{candidate_fingerprint}:"
             f"{effective.digest}".encode("utf-8")).hexdigest()[:24])
-    root, binding, reference = _ensure_run_artifacts(
-        ws, state, settings_digest=effective.digest,
-        stage_instance_id=stage_instance_id,
-        candidate_fingerprint=candidate_fingerprint,
-        requirement_id=requirement_id,
-        requirement_fingerprint=requirement_fingerprint,
-        stage_id=stage_id)
+    if isinstance(existing_binding, Mapping):
+        # Product attaches a requirement after startup. That changes the
+        # Design input, not the immutable owner of the whole run's artifacts.
+        root = _ensure_run_artifact_parent(ws, state)
+        manifest = run_artifacts.load_manifest(root)
+        binding = manifest["binding"]
+        candidate = binding.get("candidate") or {}
+        expected = run_artifacts.create_binding(
+            repository_id=runtime_storage.resolve_repository_identity(ws).repo_id,
+            run_id=str(state.get("run_id") or ""), stage_id=stage_id,
+            stage_instance_id=stage_instance_id, candidate=candidate,
+            settings_digest=effective.digest,
+            source_fingerprint=hashlib.sha256(json.dumps({
+                "candidate": candidate,
+                "baseline": str(state.get("baseline") or ""),
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                allow_nan=False).encode("utf-8")).hexdigest())
+        if binding != existing_binding or binding != expected or \
+                candidate.get("fingerprint") != candidate_fingerprint or \
+                candidate.get("goal_fingerprint") != hashlib.sha256(
+                    str(state.get("goal") or "").encode("utf-8")).hexdigest():
+            raise run_artifacts.RunArtifactError(
+                "run control-plane binding changed at run_artifact_binding")
+        run_artifacts.verify_manifest(root, expected_binding=binding)
+        reference = run_artifacts.manifest_locator_reference()
+    else:
+        root, binding, reference = _ensure_run_artifacts(
+            ws, state, settings_digest=effective.digest,
+            stage_instance_id=stage_instance_id,
+            candidate_fingerprint=candidate_fingerprint,
+            requirement_id=requirement_id,
+            requirement_fingerprint=requirement_fingerprint,
+            stage_id=stage_id)
     cleanup_manifest = _ensure_owned_cleanup_manifest(ws, root, binding)
     fields = {
         "run_start_step": step,
@@ -8144,8 +8170,9 @@ def wave(ws: str, *, root_observation_authority: bytes | None = None) -> dict:
     for t in ready:
         dispatch = dispatches[str(t["id"])]
         prime, delivery_dispatch = prepared_routing[str(t["id"])]
-        recalled = kb.retrieve(ws, files=t.get("scope") or [],
-                               tags=[t["id"]], limit=3)
+        recalled = ([] if _product_started_run(state) else
+                    kb.retrieve(ws, files=t.get("scope") or [],
+                                tags=[t["id"]], limit=3))
         rid = t.get("req") or state.get("requirement_id")
         rec = reqs.get_requirement(ws, rid) if rid else None
         is_variant = bool(state.get("ab") and t.get("variant"))
@@ -8828,8 +8855,8 @@ def next_action(
                     "step": step, "status": status(ws),
                     "review_kernel": {"status": "impact_incomplete",
                                       "slots": []}}
-    # Inject the handful of prior decisions relevant to this step's work, so
-    # the role starts with context instead of re-deriving it (token savings).
+    # Legacy continuation can recall decisions; a Product-started run uses
+    # only its explicitly bound inputs throughout the delivery sequence.
     task = _current_task(state)
     # Evaluate uses only the canonical workspace returned by the resolver.
     # Re-reading task["workspace"] here would create a second path authority
@@ -8843,7 +8870,8 @@ def next_action(
     graph_ws = act_ws if is_parallel_evaluate else ws
     query_files = (task or {}).get("scope") or []
     query_tags = ([task["id"]] if task else []) + [state["goal"][:24]]
-    recalled = kb.retrieve(ws, files=query_files, tags=query_tags, limit=5)
+    recalled = ([] if _product_started_run(state) else
+                kb.retrieve(ws, files=query_files, tags=query_tags, limit=5))
     if recalled:
         tp.trace(ws, "kb_recall", step=step,
                  decisions=[d["id"] for d in recalled])
@@ -9293,15 +9321,12 @@ def next_action(
         "dor": {"ready": dor_ready, "blockers": blockers,
                 "warnings": warnings},
         "knowledge": {"decisions": recalled,
-                      # R-0002: accepted decisions whose modules overlap this
-                      # task's scope are ALWAYS in force — injected
-                      # unconditionally, not relevance-ranked.
-                      "governing_decisions": kb.governing(
-                          ws, contract["coding"]["scope_paths"]),
-                      # R-0004: the as-built inventory — ALWAYS in the brief
-                      # when filled, so design work is judged as a delta
-                      # against what exists, never in a vacuum.
-                      "current_state": kb.current_state(ws),
+                      # Preserve legacy continuation behavior without
+                      # importing historical authority into fresh Product.
+                      "governing_decisions": ([] if _product_started_run(state)
+                          else kb.governing(ws, contract["coding"]["scope_paths"])),
+                      "current_state": (None if _product_started_run(state)
+                                        else kb.current_state(ws)),
                       "context": kb.render_context(recalled)},
         **({
             "lenses": routing["lenses"],
@@ -9556,7 +9581,8 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
               "mechanically scores DoR and links context files to the "
               "planned graph. Return the R-id to the orchestrator.",
         "design": "Run tp-designer (read-only toward product code): inspect "
-                  "the requirement, current state, decisions, and baseline "
+                  "the requirement, its cited current sources, explicitly "
+                  "supplied context and decisions, and the baseline "
                   "graph; author design/design.md and design/contract.json "
                   "using schema taskplane.design/v1. Compare alternatives, "
                   "select the HOW, define modules/contracts plus graph DoR/DoD "
@@ -9564,7 +9590,8 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                   "apply solution-design, and create a visualization only "
                   "when it materially clarifies the choice. Never mutate the "
                   "as-built graph. Return to the orchestrator; it validates "
-                  "with `loop gate pass` and then pauses for human approval.",
+                  "with `loop gate pass`. In a delivery loop the consolidated "
+                  "human implementation approval follows the Plan gate.",
         "plan": "Run the tp-planner role: derive impact once with `tp graph "
                 "impact --files \"comma,separated,paths\" --json`; write "
                 "plan/tasks.json (machine) "
@@ -9703,20 +9730,23 @@ def _retained_production_authority_errors(ws: str) -> list[str]:
         return [f"retained R-0013 production authority: {exc}"]
 
 
+def _product_started_run(state: Mapping[str, object]) -> bool:
+    """Fresh Product runs carry only explicitly bound inputs to successors."""
+    return (state.get("run_start_step") or state.get("step")) == "pm"
+
+
 def _design_context(ws: str, state: dict) -> dict | None:
-    if not state.get("design_required"):
+    if not state.get("design_required") or not state.get("design_fingerprint"):
         return None
-    contract, errors = _design_contract(ws)
-    approved = bool(state.get("design_fingerprint"))
-    stale = _design_current_errors(ws, state) if approved else []
+    stale = _design_current_errors(ws, state)
     if stale:
-        # M8 (v2.2.1): an approved design whose artifacts changed after
-        # approval is NOT served as approved — the same staleness the
-        # gates enforce is reported in every brief that carries it.
-        approved = False
-        errors = list(errors or []) + stale
-    return {"approved": approved,
-            "stale": bool(stale) or None,
+        # Diagnose stale authority without handing its bytes to a worker.
+        return {"approved": False, "stale": True,
+                "fingerprint": state.get("design_fingerprint"),
+                "contract": None, "errors": stale}
+    contract, errors = _design_contract(ws)
+    return {"approved": not bool(errors),
+            "stale": None,
             "fingerprint": state.get("design_fingerprint"),
             "contract": contract, "errors": errors}
 

@@ -248,6 +248,73 @@ class DesignWorkflowTest(unittest.TestCase):
         loop.gate(self.ws, "pass")
         self.assertEqual(loop.load(self.ws)["step"], "design")
 
+    def test_fresh_product_does_not_read_ambient_design_or_knowledge(self):
+        from pathlib import Path
+        from unittest import mock
+
+        old_design = Path(self.ws) / "design" / "contract.json"
+        old_design.parent.mkdir()
+        old_design.write_text(json.dumps({
+            "schema": "taskplane.design/v1", "requirement": "R-9999",
+            "title": "UNRELATED_DESIGN_SENTINEL",
+        }))
+        old_context = Path(tp.kb_root(self.ws)) / "context" / "current-state.md"
+        old_context.parent.mkdir(parents=True, exist_ok=True)
+        old_context.write_text("# Old context\nSTALE_CONTEXT_SENTINEL\n")
+        before = (old_design.read_bytes(), old_context.read_bytes())
+        initialized = loop.init(self.ws, "fresh Product input", design=True)
+        self.assertNotIn("error", initialized)
+        with mock.patch.object(loop.kb, "retrieve", side_effect=AssertionError(
+                "fresh Product must not discover old decisions")):
+            action = loop.next_action(self.ws)
+        self.assertEqual(action.get("role"), "tp-product", action.get("error"))
+        self.assertIsNone(action["design"])
+        self.assertEqual(action["knowledge"], {
+            "decisions": [], "governing_decisions": [],
+            "current_state": None, "context": ""})
+        self.assertNotIn("UNRELATED_DESIGN_SENTINEL", json.dumps(action))
+        self.assertNotIn("STALE_CONTEXT_SENTINEL", json.dumps(action))
+        self.assertEqual(before, (old_design.read_bytes(), old_context.read_bytes()))
+        loop.gate(self.ws, "pass", rid=self.req["id"])
+        with mock.patch.object(loop.kb, "retrieve", side_effect=AssertionError(
+                "Design must not discover old decisions")), \
+                mock.patch.object(loop.kb, "governing", side_effect=AssertionError(
+                    "Design must not discover old governing decisions")), \
+                mock.patch.object(loop.kb, "current_state", side_effect=AssertionError(
+                    "Design must not read historical state")):
+            successor = loop.next_action(self.ws)
+        self.assertEqual(successor.get("role"), "tp-designer", successor.get("error"))
+        self.assertIsNone(successor["design"])
+        self.assertNotIn("UNRELATED_DESIGN_SENTINEL", json.dumps(successor))
+        self.assertNotIn("STALE_CONTEXT_SENTINEL", json.dumps(successor))
+
+    def test_product_requirement_attachment_preserves_artifact_owner(self):
+        from pathlib import Path
+
+        initialized = loop.init(self.ws, "Product creates the requirement", design=True)
+        self.assertNotIn("error", initialized)
+        original_binding = initialized["run_artifact_binding"]
+        root = loop._run_artifact_root(self.ws, initialized)
+        manifest = Path(root) / "run-artifacts.json"
+        original_manifest = manifest.read_bytes()
+        self.assertEqual(original_binding["candidate"]["requirement"], "")
+        gated = loop.gate(self.ws, "pass", rid=self.req["id"])
+        self.assertEqual(gated.get("step"), "design", gated.get("error"))
+        receipt, _policy = loop._prepare_design_control_plane(self.ws, loop.load(self.ws))
+        self.assertEqual(receipt["status"], "ready")
+        current = loop.load(self.ws)
+        self.assertEqual(current["run_artifact_binding"], original_binding)
+        self.assertEqual(current["design_control_plane_binding"]["requirement"],
+                         self.req["id"])
+        # Publication may append entries; ownership is immutable, and the
+        # pre-Design manifest remains an authentic prefix of its classes.
+        before = json.loads(original_manifest)
+        after = json.loads(manifest.read_bytes())
+        self.assertEqual(before["binding"], after["binding"])
+        for name, rows in before["classes"].items():
+            self.assertEqual(rows["entries"],
+                             after["classes"][name]["entries"][:len(rows["entries"])])
+
     def test_design_dor_blocks_unresolved_requirement(self):
         unresolved = reqs.record_requirement(
             self.ws, "ambiguous", functional=["do it"],
