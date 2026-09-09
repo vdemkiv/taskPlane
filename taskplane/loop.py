@@ -564,6 +564,7 @@ def project_next_action_for_host(
     if not isinstance(action, Mapping):
         raise brief_projection.BriefProjectionError(
             "loop next action must be a mapping")
+    limits_advisory = run_context.resource_limits_advisory(ws)
     if wave_usage is None:
         state = load(ws)
         ledger = (state or {}).get("dispatch_telemetry")
@@ -625,6 +626,7 @@ def project_next_action_for_host(
         projected = brief_projection.project(
             action, previous=previous, wave_usage=wave_usage,
             reference_artifact=relative_source,
+            resource_limits_advisory=limits_advisory,
         )
         tp.atomic_write_json(
             head_path, {"schema": "taskplane.loop-next-source-head/v1",
@@ -14319,6 +14321,17 @@ def _compute_signoff_dod(
     baseline = state.get("baseline")
     errors: list = []
     notices: list = []
+    try:
+        inventory = loop_recovery.approved_scope_inventory(sys.modules[__name__], ws, state)
+    except (ValueError, KeyError, OSError) as exc:
+        return {"passed": False, "errors": ["scope inventory: " + str(exc)],
+                "notices": [], "scope": scopes, "baseline": baseline}
+    if inventory is not None:
+        baseline = inventory["baseline"]
+        scopes.extend(inventory["paths"])
+        notices.append("Retained human-accepted Build; historical task tests and deferred reviews "
+                       "are not newly executed tests or independent passes. Current delta, test "
+                       "evidence, requirements and Design remain subject to canonical EM review.")
     errors.extend("requirement DoD: " + e for e in tp.requirement_coverage_errors(
         reqs.publication_coverage_tasks(state.get("tasks") or [], lambda rid: reqs.get_requirement(ws, rid), require_passed=True),
         lambda rid: reqs.get_requirement(ws, rid),
@@ -14354,12 +14367,12 @@ def _compute_signoff_dod(
                     "diff_scope recovery: revert the out-of-scope files or "
                     "widen the owning task's scope via the human gate "
                     "(attributable: trace + KB decision), then re-run")
-    if state.get("graph_governance"):
+    if inventory is None and state.get("graph_governance"):
         try:
             depgraph.scan(ws)
         except Exception as exc:
             errors.append(f"graph_dod: final merged-tree scan failed: {exc}")
-    for task in state.get("tasks") or []:
+    for task in ([] if inventory is not None else state.get("tasks") or []):
         test_command = task.get("tests")
         if not test_command:
             errors.append(f"task {task.get('id', '?')}: test command missing")
@@ -14486,8 +14499,13 @@ def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
             for row in ledger_for_root.get("bindings") or []
             if isinstance(row, Mapping) and row.get("thread_type") != "main"
             and isinstance(row.get("usage"), Mapping))
+        # Artifact ownership is stable across Design/Build baselines. Keep
+        # the seed identity intact and seal under the artifact's candidate.
+        root_binding = run_artifacts.validate_binding(
+            state.get("run_artifact_binding"))
         root_receipt = wave_metrics.finalize_root_hygiene_canary(
-            root_state, candidate_sha=str(state.get("baseline") or ""),
+            root_state, candidate_sha=str(
+                root_binding["candidate"].get("revision") or ""),
             worker_tokens=worker_tokens)
         existing_root = state.get("root_hygiene_receipt")
         if existing_root is not None and existing_root != root_receipt:
@@ -16558,7 +16576,7 @@ def continue_build(ws: str, *, source: str, by: str, request: str,
 def amend_delivery(ws: str, *, source: str, by: str, request: str,
                    expected_fingerprint: str, check: bool = False,
                    observation_authority: bytes | None = None) -> dict:
-    """Exact human publication sequencing; no Build acceptance or dispatch."""
+    """Exact human publication or scope amendment; no Build acceptance or dispatch."""
     import sys
     return loop_recovery.amend_delivery(sys.modules[__name__], ws, source=source,
         by=by, request=request, expected_fingerprint=expected_fingerprint,

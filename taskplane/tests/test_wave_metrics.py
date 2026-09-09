@@ -15,6 +15,7 @@ from taskplane import retro
 from taskplane import dashboard
 from taskplane import audit_projection
 from taskplane import release_evidence
+from taskplane import run_artifacts
 from taskplane import terminal_truth
 from taskplane.delivery_ports import FakeClock, content_fingerprint
 
@@ -40,6 +41,49 @@ def _root(*, worker_tokens: int = 0) -> tuple[dict, int]:
                       "cached_input_tokens": 50_000},
         },
     }, worker_tokens)
+
+
+@pytest.mark.parametrize("case", ["same-baseline", "changed-baseline", "foreign-binding"])
+def test_loop_root_seal_uses_artifact_candidate(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str) -> None:
+    binding = run_artifacts.create_binding(
+        repository_id="repo-root-seal", run_id="run-root-seal",
+        stage_id="design", stage_instance_id="design-root-seal",
+        candidate={"fingerprint": "b" * 64, "revision": "a" * 40},
+        settings_digest="c" * 64, source_fingerprint="d" * 64)
+    artifact_root = tmp_path / "artifacts"
+    run_artifacts.create_manifest(artifact_root, binding=binding)
+    root, _ = _root()
+    state = {
+        "run_id": "run-root-seal", "root_hygiene": root,
+        "baseline": ("a" if case == "same-baseline" else "e") * 40,
+        "run_artifact_binding": binding,
+    }
+    original_root = copy.deepcopy(root)
+    if case == "foreign-binding":
+        state["run_artifact_binding"] = run_artifacts.create_binding(
+            repository_id=binding["repository_id"], run_id=binding["run_id"],
+            stage_id=binding["stage_id"], stage_instance_id=binding["stage_instance_id"],
+            candidate={"fingerprint": "f" * 64, "revision": "f" * 40},
+            settings_digest=binding["settings_digest"],
+            source_fingerprint=binding["source_fingerprint"])
+    monkeypatch.setattr(loop, "_run_artifact_root", lambda *_: str(artifact_root))
+    if case == "foreign-binding":
+        with pytest.raises(run_artifacts.RunArtifactError, match="another candidate"):
+            loop._seal_terminal_metrics_before_retro(str(tmp_path), state)
+        assert not run_artifacts.load_manifest(artifact_root)["classes"]["telemetry"]["entries"]
+        return
+
+    assert loop._seal_terminal_metrics_before_retro(str(tmp_path), state)["status"] == "unavailable"
+    receipt = state["root_hygiene_receipt"]
+    assert receipt["candidate"]["source_sha"] == "a" * 40
+    assert state["root_hygiene"] == original_root
+    assert state["baseline"] == ("a" if case == "same-baseline" else "e") * 40
+    assert receipt["totals"]["root_tokens"] == 100_000
+    retained = state["run_artifact_refs"]["root_hygiene"]
+    loop._seal_terminal_metrics_before_retro(str(tmp_path), state)
+    assert state["run_artifact_refs"]["root_hygiene"] == retained
+    assert run_artifacts.load_manifest(artifact_root)["classes"]["telemetry"]["entries"] == [retained]
 
 
 def test_root_hygiene_required_fields_reject_null_and_preserve_zero_and_applicability_null():
