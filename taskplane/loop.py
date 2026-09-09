@@ -14499,8 +14499,13 @@ def _seal_terminal_metrics_before_retro(ws: str, state: dict) -> dict:
             for row in ledger_for_root.get("bindings") or []
             if isinstance(row, Mapping) and row.get("thread_type") != "main"
             and isinstance(row.get("usage"), Mapping))
+        # Artifact ownership is stable across Design/Build baselines. Keep
+        # the seed identity intact and seal under the artifact's candidate.
+        root_binding = run_artifacts.validate_binding(
+            state.get("run_artifact_binding"))
         root_receipt = wave_metrics.finalize_root_hygiene_canary(
-            root_state, candidate_sha=str(state.get("baseline") or ""),
+            root_state, candidate_sha=str(
+                root_binding["candidate"].get("revision") or ""),
             worker_tokens=worker_tokens)
         existing_root = state.get("root_hygiene_receipt")
         if existing_root is not None and existing_root != root_receipt:
