@@ -428,6 +428,7 @@ def project(
     previous: Mapping[str, Any] | None = None,
     wave_usage: Mapping[str, Any] | None = None,
     reference_artifact: str | None = None,
+    resource_limits_advisory: bool = False,
 ) -> dict[str, Any]:
     """Project one real loop action into a bounded host-consumable delta.
 
@@ -445,6 +446,8 @@ def project(
         raise BriefProjectionError("previous loop next action must be a mapping")
 
     budget = _usage_projection(wave_usage)
+    if resource_limits_advisory:
+        budget.update(status="advisory", dispatch_allowed=True)
     current_action, new_evidence, unchanged_refs = _split_delta(
         action, previous, reference_artifact=reference_artifact
     )

@@ -564,6 +564,7 @@ def project_next_action_for_host(
     if not isinstance(action, Mapping):
         raise brief_projection.BriefProjectionError(
             "loop next action must be a mapping")
+    limits_advisory = run_context.resource_limits_advisory(ws)
     if wave_usage is None:
         state = load(ws)
         ledger = (state or {}).get("dispatch_telemetry")
@@ -625,6 +626,7 @@ def project_next_action_for_host(
         projected = brief_projection.project(
             action, previous=previous, wave_usage=wave_usage,
             reference_artifact=relative_source,
+            resource_limits_advisory=limits_advisory,
         )
         tp.atomic_write_json(
             head_path, {"schema": "taskplane.loop-next-source-head/v1",

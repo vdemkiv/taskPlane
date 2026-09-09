@@ -144,6 +144,29 @@ def test_delta_projection_preserves_existing_stage_task_path() -> None:
     ) is True
 
 
+@pytest.mark.parametrize("advisory", [False, True], ids=["binding", "authorized-advisory"])
+@pytest.mark.parametrize("field", ["elapsed_seconds", "sessions"])
+def test_loop_next_projection_honors_saved_resource_policy(
+        tmp_path, monkeypatch, advisory: bool, field: str) -> None:
+    monkeypatch.setattr(loop.run_context, "resource_limits_advisory",
+                        lambda ws: advisory)
+    usage = dict.fromkeys(dispatch_telemetry.WAVE_BUDGET_CEILINGS, 0)
+    usage[field] = dispatch_telemetry.WAVE_BUDGET_CEILINGS[field]
+
+    result = loop.project_next_action_for_host(
+        str(tmp_path), {"step": "em", "instruction": "review"},
+        wave_usage=usage)
+
+    assert result["status"] == ("ready" if advisory else "human_scope_review")
+    assert result["budget"]["dispatch_allowed"] is advisory
+    assert result["budget"]["status"] == ("advisory" if advisory else "human_scope_review")
+    assert result["budget"]["usage"] == usage
+    assert result["budget"]["triggered"] == [
+        {"field": field, "observed": usage[field], "ceiling": usage[field]}]
+    if advisory:
+        assert result["current_action"]["step"] == "em"
+
+
 @pytest.mark.parametrize(
     ("field", "ceiling"),
     [
