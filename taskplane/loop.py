@@ -76,7 +76,6 @@ if TYPE_CHECKING:
 
 if __package__:
     from . import brief_projection
-    from . import build_quality
     from . import delivery_policy
     from . import dispatch_telemetry
     from . import em_outage
@@ -98,7 +97,6 @@ if __package__:
     from .delivery_ports import SystemClock
 else:  # pragma: no cover - direct CLI module loading
     import brief_projection
-    import build_quality
     import delivery_policy
     import dispatch_telemetry
     import em_outage
@@ -9321,28 +9319,6 @@ def next_action(
             contract["phase_runtime"] = phase_request
             result["phase_runtime"] = phase_request
             phase_harness.compile_brief(phase_context, result, req_rec, act_ws)
-            if phase_context["definition"]["id"] == "build" and _build_quality_required(worker_task):
-                result["build_quality"] = {
-                    "task": worker_task["id"], "stage": step,
-                    "binding_at_dispatch": _build_quality_binding(act_ws, state, worker_task, step),
-                    "strategy_authority": _validated_task_test_strategy_authority(act_ws, state, worker_task),
-                    "authority_reference": (state.get("delivery_mode_receipt") or {}).get("plan_authority"),
-                    "actor": phase_context["stage"]["authority"]["actor"],
-                    "approved_tests": worker_task.get("tests"),
-                }
-                result["instruction"] += (
-                    " Before loop submit pass, produce and admit the Build-quality receipt: use "
-                    "build_quality.begin_receipt, seal_layer_evidence and advance_validation with "
-                    "actual static, exact-selector, changed-radius and proportional-suite evidence "
-                    "under the emitted build_quality strategy_authority. Refresh the candidate binding "
-                    "after edits through loop._build_quality_binding(workspace, loop.load(workspace), "
-                    "current_task, stage); binding_at_dispatch is not post-change evidence. Cite retained "
-                    "unchanged checks honestly; never label local checks CI. For explicitly approved "
-                    "local checks, pass local_approval with the saved actor, approval request, emitted "
-                    "authority_reference and current candidate_fingerprint. Default broad-local refusal "
-                    "and later authoritative CI remain. Admit via loop build-quality --task <task> "
-                    "--stage <stage> --strategy <approved strategy path> --receipt <completed receipt>. "
-                    "Missing evidence must be reported, not replaced with asserted passing payloads.")
         tp.activate(
             act_ws, contract, snapshot=snapshot,
             task_slot_override=contract["task_slot"])
@@ -10909,42 +10885,6 @@ def _detected_build_failure_routing(
     return decision
 
 
-def _build_quality_binding(
-        ws: str, state: Mapping[str, object], task: Mapping[str, object],
-        stage: str) -> dict:
-    """Derive the only Build-quality binding accepted by this loop head."""
-    candidate = _failure_candidate_identity(ws, task)
-    settings = operational_settings.load_settings(environment=os.environ)
-    strategy_authority = _validated_task_test_strategy_authority(
-        ws, state, task)
-    runtime_digest = str(tp.engine_fingerprint() or "")
-    environment_digest = hashlib.sha256(json.dumps({
-        "python": [sys.version_info.major, sys.version_info.minor],
-        "platform": sys.platform,
-        "test_backend": settings.tests.backend,
-    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        allow_nan=False).encode("utf-8")).hexdigest()
-    stage_instance = hashlib.sha256(json.dumps({
-        "run_id": str(state.get("run_id") or ""),
-        "stage": stage,
-        "task": str(task.get("id") or ""),
-        "candidate": candidate,
-        "settings_digest": settings.digest,
-        "test_strategy_authority": (
-            strategy_authority.get("fingerprint")
-            if strategy_authority is not None else None),
-    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        allow_nan=False).encode("utf-8")).hexdigest()
-    return {
-        "candidate": candidate,
-        "run_id": str(state.get("run_id") or ""),
-        "stage_instance": f"{stage}-{stage_instance[:24]}",
-        "settings_digest": settings.digest,
-        "runtime_digest": runtime_digest,
-        "environment_digest": environment_digest,
-    }
-
-
 _DESIGN_TEST_STRATEGY_REFERENCE_SCHEMA = \
     "taskplane.design-test-strategy-reference/v1"
 _PLAN_TEST_STRATEGY_REFERENCE_SCHEMA = \
@@ -12372,129 +12312,8 @@ def _validated_task_test_strategy_authority(
     return expected
 
 
-def record_build_quality(
-        ws: str, task_id: str, *, strategy: Mapping[str, object],
-        receipt: Mapping[str, object], stage: str | None = None) -> dict:
-    """Admit and persist current Build/Fix quality from its typed producer."""
-    state = load(ws)
-    if state is None:
-        return {"error": "no active loop"}
-    current_stage = str(stage or state.get("step") or "")
-    if current_stage not in {"execute", "fix"}:
-        return {"error": "Build quality may be recorded only during Build or Fix"}
-    if current_stage != state.get("step"):
-        return {"error": "Build-quality stage assertion does not match the "
-                         "current governed stage"}
-    task = next((row for row in state.get("tasks") or []
-                 if str(row.get("id") or "") == str(task_id)), None)
-    if task is None:
-        return {"error": f"no task {task_id}"}
-    task_ws = str(task.get("workspace") or ws)
-    try:
-        strategy_authority = _validated_task_test_strategy_authority(
-            task_ws, state, task)
-        expected = _build_quality_binding(task_ws, state, task, current_stage)
-        validated_strategy = test_strategy.validate_strategy(strategy)
-        if strategy_authority is not None and (
-                validated_strategy.get("contract_fingerprint_sha256") !=
-                strategy_authority["artifact"]["strategy_fingerprint"] or
-                list(receipt.get("criterion_ids") or []) !=
-                strategy_authority["selection"]["criterion_ids"] or
-                list(receipt.get("changed_producer_ids") or []) !=
-                strategy_authority["selection"]["changed_producer_ids"]):
-            raise ValueError(
-                "submitted Build quality differs from the approved "
-                "Design/Plan test strategy")
-        admitted = build_quality.admit_build_quality(
-            validated_strategy, receipt, expected_binding=expected)
-        artifact_root = _run_artifact_root(ws, state)
-        metadata = {
-            "producer": "taskplane.build_quality",
-            "schema": build_quality.BUILD_QUALITY_RECEIPT_SCHEMA_ID,
-            "task": str(task_id), "stage": current_stage,
-            "candidate_fingerprint": expected["candidate"]["fingerprint"],
-            "receipt_fingerprint": admitted["fingerprint"],
-        }
-        manifest = run_artifacts.load_manifest(artifact_root)
-        existing = [entry for entry in manifest["classes"]["validation"][
-            "entries"] if entry.get("metadata") == metadata]
-        if len(existing) > 1:
-            raise run_artifacts.RunArtifactError(
-                "Build-quality receipt has duplicate durable publications")
-        reference = (dict(existing[0]) if existing else
-                     run_artifacts.publish_artifact(
-                         artifact_root, "validation", admitted,
-                         metadata=metadata))
-    except Exception as exc:
-        return {"error": "Build quality refused: "
-                         f"{exc.__class__.__name__}: {exc}"}
-    with mutate(ws) as locked:
-        if locked is None or locked.get("step") != current_stage:
-            return {"error": "loop advanced while Build quality was validated"}
-        target = next((row for row in locked.get("tasks") or []
-                       if str(row.get("id") or "") == str(task_id)), None)
-        if target is None:
-            return {"error": f"no task {task_id}"}
-        try:
-            locked_authority = _validated_task_test_strategy_authority(
-                str(target.get("workspace") or ws), locked, target)
-        except Exception as exc:
-            return {"error": "Build quality refused after state lock: "
-                    f"{exc.__class__.__name__}: {exc}"}
-        if locked_authority != strategy_authority:
-            return {"error": "Build quality refused: approved test-strategy "
-                    "authority changed during admission"}
-        # This is submitted validation evidence.  The separately named
-        # Plan-sealed authority receipt above is immutable and never replaced
-        # by Build input.
-        target["test_strategy"] = validated_strategy
-        target["build_quality_receipt"] = admitted
-        target["build_quality_artifact"] = reference
-    tp.trace(ws, "build_quality_admitted", task=task_id,
-             stage=current_stage, receipt=admitted["fingerprint"])
-    return {"admitted": True, "task": str(task_id), "stage": current_stage,
-            "receipt": admitted, "artifact": reference}
-
-
-def _build_quality_errors(
-        ws: str, state: Mapping[str, object], task: Mapping[str, object],
-        stage: str) -> list[str]:
-    strategy = task.get("test_strategy")
-    receipt = task.get("build_quality_receipt")
-    if not isinstance(strategy, Mapping) or not isinstance(receipt, Mapping):
-        return ["current Build-quality strategy and receipt are required"]
-    try:
-        strategy_authority = _validated_task_test_strategy_authority(
-            ws, state, task)
-        if strategy_authority is not None and (
-                strategy.get("contract_fingerprint_sha256") !=
-                strategy_authority["artifact"]["strategy_fingerprint"] or
-                list(receipt.get("criterion_ids") or []) !=
-                strategy_authority["selection"]["criterion_ids"] or
-                list(receipt.get("changed_producer_ids") or []) !=
-                strategy_authority["selection"]["changed_producer_ids"]):
-            raise ValueError(
-                "Build evidence differs from approved Design/Plan test strategy")
-        build_quality.admit_build_quality(
-            strategy, receipt,
-            expected_binding=_build_quality_binding(ws, state, task, stage))
-    except Exception as exc:
-        return ["current Build-quality receipt is invalid: "
-                f"{exc.__class__.__name__}: {exc}"]
-    reference = task.get("build_quality_artifact")
-    if not isinstance(reference, Mapping) or \
-            reference.get("fingerprint") != receipt.get("fingerprint"):
-        # Run-artifact entries and receipts use independent fingerprints.
-        # The exact receipt identity must instead be carried in metadata.
-        if not isinstance(reference, Mapping) or \
-                (reference.get("metadata") or {}).get(
-                    "receipt_fingerprint") != receipt.get("fingerprint"):
-            return ["Build-quality durable artifact reference is missing"]
-    return []
-
-
-def _build_quality_required(task: Mapping[str, object] | None) -> bool:
-    """New Design-authored test contracts opt into the contract-changing gate."""
+def _task_submission_authority_required(task: Mapping[str, object] | None) -> bool:
+    """Design-authored test contracts retain exact worker submission authority."""
     return isinstance((task or {}).get("test_contract"), Mapping)
 
 
@@ -13176,7 +12995,7 @@ def submit(ws: str, outcome: str, note: str = "",
     evidence_engine_ws = _submission_evidence_engine_workspace(
         ws, state, task, act_ws)
     task_authority = None
-    if step in {"execute", "fix"} and _build_quality_required(task):
+    if step in {"execute", "fix"} and _task_submission_authority_required(task):
         try:
             task_authority = _task_submission_authority(
                 act_ws, step, task)
@@ -13523,7 +13342,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": "gate request does not match the worker submission",
                     "step": step, "submission": submission}
         if step in {"execute", "fix"} and \
-                _build_quality_required(task_for_submission):
+                _task_submission_authority_required(task_for_submission):
             authority_error = _task_submission_authority_error(
                 str(submission.get("workspace") or ws), submission, step,
                 task_for_submission)
@@ -13550,14 +13369,6 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         # destroy the work. Commit first, then gate.
         wt = wt_precheck.get("workspace")
         if outcome == "pass":
-            quality_errors = (_build_quality_errors(
-                wt or ws, state, wt_precheck, "execute")
-                if _build_quality_required(wt_precheck) else [])
-            if quality_errors:
-                tp.trace(ws, "loop_gate_blocked", step=step, task=task_id,
-                         reason="build_quality", errors=quality_errors)
-                return {"error": "Build quality failed — task remains running",
-                        "dod": {"passed": False, "errors": quality_errors}}
             with _claimed_execute_suite_binding():
                 dod_errors = _task_dod_errors(
                     wt or ws, state, wt_precheck,
@@ -13588,7 +13399,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                     return {"error": stale + " during gate validation — "
                                      "submit the final state again",
                             "step": step}
-                if _build_quality_required(t):
+                if _task_submission_authority_required(t):
                     authority_error = _task_submission_authority_error(
                         str(submission.get("workspace") or ws), submission,
                         step, t)
@@ -13777,15 +13588,6 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
     # A reported PASS is a request to evaluate the gate. Evidence, not the
     # agent's assertion, determines whether the state machine advances.
     if outcome == "pass" and step in ("execute", "fix"):
-        quality_errors = (_build_quality_errors(
-            act_ws, state, task, step)
-            if _build_quality_required(task) else [])
-        if quality_errors:
-            tp.trace(ws, "loop_gate_blocked", step=step,
-                     reason="build_quality", errors=quality_errors)
-            return {"error": "Build quality failed — step did not advance",
-                    "step": step,
-                    "dod": {"passed": False, "errors": quality_errors}}
         with _claimed_execute_suite_binding():
             dod_errors = _task_dod_errors(
                 act_ws, state, task,
@@ -13933,7 +13735,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                                  "the final state again", "step": step}
             if step in {"execute", "fix"}:
                 locked_task = _current_task(state)
-                if _build_quality_required(locked_task):
+                if _task_submission_authority_required(locked_task):
                     authority_error = _task_submission_authority_error(
                         str(submission.get("workspace") or ws), submission,
                         step, locked_task)

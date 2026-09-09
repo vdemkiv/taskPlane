@@ -3853,19 +3853,6 @@ def cmd_loop(a) -> int:
     elif action == "submit":
         out = loopmod.submit(
             ws, a.outcome, note=a.note or "", task_id=a.task)
-    elif action == "build-quality":
-        try:
-            with open(a.strategy, encoding="utf-8") as stream:
-                strategy = json.load(stream)
-            with open(a.receipt, encoding="utf-8") as stream:
-                receipt = json.load(stream)
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            out = {"error": "Build-quality input is unreadable: "
-                            f"{type(exc).__name__}: {exc}"}
-        else:
-            out = loopmod.record_build_quality(
-                ws, a.task, strategy=strategy, receipt=receipt,
-                stage=getattr(a, "stage", None))
     elif action == "gate":
         import depgraph
         try:
@@ -8766,16 +8753,6 @@ def main(argv=None) -> int:
                      help="one-line evidence note recorded with the "
                           "submission")
     lsu.add_argument("--task", help="task id (parallel execute waves)")
-    lbq = lsub.add_parser(
-        "build-quality", help="admit one typed candidate-bound Build/Fix "
-        "quality receipt before worker submission or gate evaluation")
-    lbq.add_argument("--task", required=True, help="exact approved task id")
-    lbq.add_argument("--strategy", required=True,
-                     help="typed test-strategy JSON file")
-    lbq.add_argument("--receipt", required=True,
-                     help="completed Build-quality receipt JSON file")
-    lbq.add_argument("--stage", choices=("execute", "fix"), default=None,
-                     help="optional exact current stage assertion")
     ls_ = lsub.add_parser("select", help="A/B selection gate: pick the "
                           "variant that ships (or 'hybrid')")
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import agent_runtime, build_quality, delivery_ports, loop, producer_observation
+from taskplane import agent_runtime, delivery_ports, loop, producer_observation
 from taskplane import review_evidence, settings, stage_entities, stage_handoff, test_strategy
 
 
@@ -164,13 +164,7 @@ def test_definition_drives_stateless_product_design_plan(tmp_path, record_proper
     assert authority["selection"]["selectors"] == [SELECTOR]
     assert authority["package_binding"]["candidate_fingerprint"] == "a" * 64
     assert authority["package_binding"]["definition_set_fingerprint"] == registry.definition_set_fingerprint
-    quality = build_quality.begin_receipt(package.read("test-strategy"),
-        binding={"candidate": {"id": "T11", "fingerprint": package.candidate_fingerprint},
-            "run_id": package.run_id, "stage_instance": "build-t11", "settings_digest": "b" * 64,
-            "runtime_digest": "c" * 64, "environment_digest": "d" * 64},
-        criterion_ids=authority["selection"]["criterion_ids"],
-        changed_producer_ids=authority["selection"]["changed_producer_ids"], changed_paths=["taskplane/loop.py"])
-    assert quality["selectors"] == [SELECTOR]
+    assert authority["selection"]["selectors"] == [SELECTOR]
     assert {artifact.artifact_class for artifact in package.artifacts} == {"requirement", "design", "test-strategy", "plan-task",
         "source-coverage", "decomposition", "seam-manifest"}
     assert stage_handoff.read_v2_manifest(store, design_ref, expected_authority_revision=1,

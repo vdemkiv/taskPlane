@@ -820,14 +820,8 @@ def test_public_plan_reconcile_validates_current_json_and_gates_without_old_stop
     assert build["phase_runtime"]["status"] == "pending"
     assert build["contract_bootstrap"]["task_slot"]
     assert build["phase_runtime"]["outputs"] == {}
-    quality = build["build_quality"]
-    assert quality["binding_at_dispatch"] == loop._build_quality_binding(
-        ws, loop.load(ws), loop.load(ws)["tasks"][0], "execute")
-    assert quality["strategy_authority"] == loop.load(ws)["tasks"][0]["test_strategy_authority_receipt"]
-    assert quality["task"] == loop.load(ws)["tasks"][0]["id"]
-    assert "build_quality.begin_receipt" in build["instruction"]
-    assert "loop build-quality" in build["instruction"]
-    assert "Before loop submit pass" in build["instruction"]
+    assert "build_quality" not in build
+    assert "loop build-quality" not in build["instruction"]
     assert {row["artifact_class"]:row["owner"] for row in build["phase_outputs"]} == {
         "stage":"runtime", "realized-conformance":"runtime"}
     build_material = artifacts.read(build["phase_runtime"]["reference"])

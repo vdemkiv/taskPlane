@@ -65,7 +65,6 @@ not repeated in the tables.
 | `tp.py loop` | drive the Evaluate-Loop engine |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
-| `tp.py loop build-quality` | admit one typed candidate-bound Build/Fix quality receipt before worker submission or gate evaluation |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
@@ -639,17 +638,6 @@ derive routine authority for a real host/facade flow from the bound consolidated
 Positional arguments:
 
 - `flow` (required) — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
-
-## `tp.py loop build-quality`
-
-admit one typed candidate-bound Build/Fix quality receipt before worker submission or gate evaluation
-
-| Flag | Value | What it does |
-| --- | --- | --- |
-| `--receipt` | RECEIPT (required) | completed Build-quality receipt JSON file |
-| `--stage` | one of: execute, fix | optional exact current stage assertion |
-| `--strategy` | STRATEGY (required) | typed test-strategy JSON file |
-| `--task` | TASK (required) | exact approved task id |
 
 ## `tp.py loop claim`
 

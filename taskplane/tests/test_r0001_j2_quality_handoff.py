@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import build_quality, loop, review_evidence, stage_entities, stage_handoff
+from taskplane import loop, review_evidence, stage_entities, stage_handoff
 from taskplane.tests.test_r0001_phase_agents_spec import _journey, _run, _consume
 
 
@@ -43,27 +43,21 @@ def _connection(tmp_path):
 
 def _fresh_build_inputs(store, registry, state, plan_ref, source):
     package, authority = _consume(store, registry, state, plan_ref)
-    quality = build_quality.begin_receipt(package.read("test-strategy"),
-        binding={"candidate": {"id": "T11", "fingerprint": package.candidate_fingerprint},
-            "run_id": package.run_id, "stage_instance": "build-j2", "settings_digest": "b" * 64,
-            "runtime_digest": "c" * 64, "environment_digest": "d" * 64},
-        criterion_ids=authority["selection"]["criterion_ids"],
-        changed_producer_ids=authority["selection"]["changed_producer_ids"], changed_paths=["taskplane/loop.py"])
     candidates = loop.produce_spec_phase_candidates(store, registry.admit("build", ()).to_dict(),
         {"stage": _build_stage(package)}, package=package, state=state, workspace=str(source))
-    return package, quality, candidates
+    return package, authority, candidates
 
 
 def test_fresh_design_package_reaches_plan_and_build_through_public_boundary(tmp_path, record_property):
     store, registry, state, design_ref, plan_ref, build_ref, design_result, build_result, authority = _connection(tmp_path)
-    package, quality, candidates = _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
+    package, current_authority, candidates = _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
     design = stage_handoff.read_v2_manifest(store, design_ref,
         expected_authority_revision=1, expected_authority_fingerprint="f" * 64)
     built = stage_handoff.read_v2_manifest(store, build_ref,
         expected_authority_revision=1, expected_authority_fingerprint="f" * 64)
     strategy_ref = next(row["reference"] for row in design["produced_artifacts"] if row["artifact_class"] == "test-strategy")
     assert package.read("test-strategy") == store.read(strategy_ref)
-    assert quality["selectors"] == authority["selection"]["selectors"]
+    assert current_authority["selection"]["selectors"] == authority["selection"]["selectors"]
     assert candidates["realized-conformance"]["status"] == "conformant"
     assert design["phase_result"] == design_result
     assert built["phase_result"] == build_result
@@ -78,7 +72,7 @@ def test_fresh_design_package_reaches_plan_and_build_through_public_boundary(tmp
 @pytest.mark.parametrize("case", ["removed_strategy", "altered_output", "missing_quality_authority", "simulated_substitution"])
 def test_severed_design_artifact_fails_the_same_plan_build_connection(tmp_path, record_property, case):
     store, registry, state, _, plan_ref, _, _, _, _ = _connection(tmp_path)
-    package, quality, positive = _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
+    package, authority, positive = _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
     baseline = package.manifest()
     artifact_class = {"removed_strategy": "test-strategy", "altered_output": "design",
         "missing_quality_authority": "plan-task", "simulated_substitution": "stage-handoff"}[case]
@@ -99,9 +93,9 @@ def test_severed_design_artifact_fails_the_same_plan_build_connection(tmp_path, 
             _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
     finally:
         path.write_bytes(original)
-    restored, restored_quality, restored_candidates = _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
+    restored, restored_authority, restored_candidates = _fresh_build_inputs(store, registry, state, plan_ref, tmp_path / "source")
     assert restored.manifest() == baseline
-    assert restored_quality == quality
+    assert restored_authority == authority
     assert restored_candidates["stage"] == positive["stage"]
     for field in ("status", "binding", "manifest_fingerprint", "missing", "unexpected"):
         assert restored_candidates["realized-conformance"][field] == positive["realized-conformance"][field]
