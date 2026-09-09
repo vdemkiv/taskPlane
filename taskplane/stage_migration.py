@@ -835,9 +835,6 @@ def migration_projection(
     heads = manifest.get("stage_heads")
     if not isinstance(projection, dict) or not isinstance(heads, dict):
         raise MigrationIntegrityError("migration stage index is invalid")
-    if result.get("active_stage_projection") != projection:
-        raise MigrationIntegrityError(
-            "migration receipt projection does not match the run manifest")
     try:
         expected_projection = stage_entities.active_stage_projection(
             heads, foreground_stage_id=projection.get("foreground_stage_id"))
@@ -850,7 +847,8 @@ def migration_projection(
     stage_ids = receipt.get("stage_ids")
     if result["classification"] == "legacy-unknown":
         unknown_ref = result.get("unknown_ref")
-        if stage_ids != [] or heads or not isinstance(unknown_ref, dict):
+        if stage_ids != [] or heads or not isinstance(unknown_ref, dict) or \
+                result.get("active_stage_projection") != projection:
             raise MigrationIntegrityError(
                 "unknown migration created lifecycle authority")
         review_evidence.verify_portable_artifact_reference(
@@ -867,10 +865,23 @@ def migration_projection(
             raise MigrationIntegrityError(
                 "migration receipt stage binding is invalid")
         stage_id = str(stage_ids[0])
-        head = heads[stage_id]
-        if not isinstance(head, dict) or result.get("head") != head:
-            raise MigrationIntegrityError("migration head does not verify")
-        resolved_store.read_stage_object(resolved_run, head["object"])
+        # Migration is immutable history, not a second lifecycle owner. The
+        # original head/projection must still verify, but legitimate later
+        # lifecycle commits may terminalize it or select a fresh successor.
+        retained_head = result.get("head")
+        try:
+            original = stage_entities._read_indexed_stage(
+                resolved_store, resolved_run, stage_id, retained_head)
+            original_projection = stage_entities.active_stage_projection(
+                {stage_id: retained_head},
+                foreground_stage_id=(stage_id if original["state"] == "active" else None))
+            if result.get("active_stage_projection") != original_projection:
+                raise MigrationIntegrityError("migration retained projection does not verify")
+            for current_id, current_head in heads.items():
+                stage_entities._read_indexed_stage(
+                    resolved_store, resolved_run, current_id, current_head)
+        except stage_entities.StageValidationError as exc:
+            raise MigrationIntegrityError("migration head does not verify") from exc
     foreground_id = projection.get("foreground_stage_id")
     foreground = (copy.deepcopy(heads[foreground_id]["summary"])
                   if foreground_id is not None else None)
