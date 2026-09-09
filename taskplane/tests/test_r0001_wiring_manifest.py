@@ -30,7 +30,8 @@ from taskplane import authority, review
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN = json.loads((ROOT / "plan/tasks.json").read_text())
+PLAN = json.loads((Path(__file__).resolve().parent /
+                   "fixtures/r0001/approved-plan.json").read_text())
 ROWS = {row["id"]: row for row in PLAN["wiring_manifest"]}
 
 # These are unresolved production obligations, never skips or policy passes.

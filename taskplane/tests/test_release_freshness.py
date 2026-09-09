@@ -124,3 +124,41 @@ def test_version_cli_reports_the_current_candidate() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == release_evidence.CURRENT_VERSION
+
+
+def test_source_checkout_does_not_track_ignored_run_data() -> None:
+    tracked_ignored = subprocess.run(
+        ["git", "ls-files", "-ci", "--exclude-standard"], cwd=ROOT,
+        text=True, encoding="utf-8", capture_output=True, check=True,
+    )
+    assert not tracked_ignored.stdout.strip(), tracked_ignored.stdout
+    samples = [
+        "backlog/requirement.md", "design/backlog/debt.md",
+        "analysis/usage.json", "reports/retro.md", "artifacts/result.json",
+        "exports/report.json", "build/package.zip", "dist/package.zip",
+        "waves/run/result.json", "plan/tasks.json",
+        "design/lens-evidence/result.json", "design/lenses/result.json",
+        "design/contract.json", "design/design.md", "design/test-strategy.json",
+        "design/visual.html", ".em-review/findings.json", ".taskplane/state.json",
+        "Claude outputs/report.md", "test-results/junit.xml", "coverage.xml",
+    ]
+    ignored = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--stdin"], cwd=ROOT,
+        input="\n".join(samples) + "\n", text=True, encoding="utf-8",
+        capture_output=True, check=True,
+    )
+    assert set(ignored.stdout.splitlines()) == set(samples)
+    # Root-local exclusions must not hide reusable regression inputs or policy.
+    source = [
+        "taskplane/tests/fixtures/r0001/approved-plan.json",
+        "taskplane/tests/fixtures/terminal-export/successor-template.json",
+        "design/compatibility.json", "design/schemas/r0001-evidence-schemas.json",
+        "taskplane/tests/fixtures/detectors/project-management/positive/plan/plan.md",
+    ]
+    retained = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--stdin"], cwd=ROOT,
+        input="\n".join(source) + "\n", text=True, encoding="utf-8",
+        capture_output=True,
+    )
+    assert retained.returncode == 1, retained.stderr
+    assert not retained.stdout
