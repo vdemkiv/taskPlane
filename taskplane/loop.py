@@ -8681,8 +8681,33 @@ def next_action(
 
     worker_task = _current_task(state)
     worker_ref = str((worker_task or {}).get("id") or step)
-    dispatch_ref, _ = _reserve_worker_dispatch_ref(
-        ws, state, stage=step, task=worker_ref, worker_workspace=act_ws)
+    pending_contract = None
+    pending_expectation = None
+    if step == "plan" and phase_context is None:
+        try:
+            current = tp.worker_contract_for_stage(act_ws, stage=step, task=worker_ref)
+            if current is not None:
+                pending_contract = current["contract"]
+                lifecycle = pending_contract["worker_lifecycle"]
+                tp._verify_worker_release_action(act_ws, current["slot"],
+                    lifecycle.get("release_action"), pending_contract)
+                pending_expectation = tp.peek_expectation(ws,
+                    lifecycle.get("expected_task_name"), strict=True)
+                if (lifecycle.get("status") != "pending" or lifecycle.get("owner") is not None
+                        or lifecycle.get("terminal") is not None or not pending_expectation
+                        or pending_expectation.get("cancelled")
+                        or not lifecycle.get("dispatch_intent_id")
+                        or pending_expectation.get("intent_id") != lifecycle["dispatch_intent_id"]
+                        or pending_expectation.get("intent_run_id") != lifecycle.get("dispatch_intent_run_id")
+                        or pending_contract.get("run_artifact_binding") != state.get("run_artifact_binding")):
+                    raise ValueError("current Plan worker is not an undispatched bound pending attempt")
+        except (ValueError, tp.StateError) as exc:
+            return {"error": "Plan pickup refused: " + str(exc), "step": step}
+    if pending_contract is None:
+        dispatch_ref, _ = _reserve_worker_dispatch_ref(
+            ws, state, stage=step, task=worker_ref, worker_workspace=act_ws)
+    else:
+        dispatch_ref = worker_ref  # The authenticated emitted identity below remains authoritative.
     dispatch = tp.dispatch_fields(
         "step", STEP_ROLE[step], dispatch_ref,
         tp.step_tier(step, worker_task),
@@ -8698,6 +8723,14 @@ def next_action(
                 "step": step, **dispatch}
 
     contract = _step_contract(step, state, act_ws)
+    if pending_contract is not None:
+        if any(contract.get(key) != pending_contract.get(key)
+                for key in ("coding", "read_only", "write_allow", "allowed_tools")):
+            return {"error": "Plan pickup refused: current contract scope changed", "step": step}
+        dispatch["task_name"] = pending_expectation["task_name"]
+        if any(dispatch.get(key) != pending_expectation.get(key)
+                for key in ("role_marker", "model_tier", "model", "reasoning_effort")):
+            return {"error": "Plan pickup refused: current dispatch policy changed", "step": step}
     try:
         if phase_context is not None:
             definition = phase_context["definition"]
@@ -8731,7 +8764,7 @@ def next_action(
     enforcement = ((state.get("enforcement") or {}).get("current"))
     if enforcement:
         contract["enforcement"] = enforcement
-    contract = tp.prepare_worker_contract(
+    contract = pending_contract or tp.prepare_worker_contract(
         act_ws, contract, stage=step, task=worker_ref,
         task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
     evaluator_contract = None
@@ -9387,13 +9420,23 @@ def next_action(
             contract["phase_runtime"] = phase_request
             result["phase_runtime"] = phase_request
             phase_harness.compile_brief(phase_context, result, req_rec, act_ws)
-        tp.activate(
-            act_ws, contract, snapshot=snapshot,
-            task_slot_override=contract["task_slot"])
-        tp.release_superseded_pending_worker_contracts(
-            act_ws, stage=step, task=worker_ref,
-            keep_slot=contract["task_slot"])
+        if pending_contract is None:
+            tp.activate(
+                act_ws, contract, snapshot=snapshot,
+                task_slot_override=contract["task_slot"])
+            tp.release_superseded_pending_worker_contracts(
+                act_ws, stage=step, task=worker_ref,
+                keep_slot=contract["task_slot"])
+        else:
+            with mutate(ws) as fresh:
+                current = tp.worker_contract_for_stage(act_ws, stage=step, task=worker_ref)
+                if (fresh is None or fresh.get("step") != step
+                        or fresh.get("run_artifact_binding") != pending_contract.get("run_artifact_binding")
+                        or not current or current["contract"] != pending_contract):
+                    raise ValueError("Plan pending attempt changed during pickup")
     except Exception as exc:
+        if pending_contract is not None:
+            return {"error": "Plan pickup refused: " + str(exc), "step": step}
         recovery_errors = []
         try:
             tp.cancel_expected_dispatch(
@@ -9596,7 +9639,31 @@ _design_current_errors = _dc.design_current_errors
 _design_dor = _dc.design_dor
 _base_design_dod_errors = _dc.design_dod_errors
 _design_plan_errors = _dc.design_plan_errors
-_design_review_errors = _dc.design_review_errors
+def _pending_publication_design_edge(ws: str, state: dict) -> bool:
+    if state.get("legacy_publication_amendment") is None:
+        return False
+    # The incumbent owner checks the signed applied journal, original Design,
+    # exact current Plan/requirement and continuation predecessor together.
+    if loop_recovery.legacy_continuation(state, ws) is None:
+        raise ValueError("publication deferral lacks its original continuation")
+    return True
+
+
+def _design_review_errors(ws: str, state: dict, meta: dict) -> list:
+    try:
+        pending = _pending_publication_design_edge(ws, state)
+    except (ValueError, OSError) as exc:
+        return ["publication conformance binding refused: " + str(exc)]
+    return _dc.design_review_errors(ws, state, meta, publication_pending=pending)
+
+
+def _design_review_notices(ws: str, state: dict, meta: dict) -> list:
+    notices = _dc.design_review_notices(meta)
+    if _pending_publication_design_edge(ws, state):
+        notices.append("Publication workflow edge remains pending post-merge under the authenticated "
+            "publication-sequencing amendment; no realization or publication pass is claimed: "
+            ".github/workflows->contract:taskplane.stage-handoff/v2:consumes")
+    return notices
 
 
 def _design_dod_errors(ws: str, state: dict) -> list:
@@ -14373,7 +14440,7 @@ def _signoff_evidence_binding(
             if meta.get(key) is not None
         },
         "dod": dod,
-        "notices": _dc.design_review_notices(meta),
+        "notices": _design_review_notices(ws, state, meta),
     }
     if output_snapshot is not None:
         evidence["em_output_snapshot"] = \

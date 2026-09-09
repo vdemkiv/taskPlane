@@ -1063,6 +1063,52 @@ class TestLoop(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
 
+    def test_pending_plan_pickup_reuses_same_attempt_within_one_second(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "same pending Plan", spec_path="specs/spec.md")
+        prepare = tp.prepare_worker_contract
+        with unittest.mock.patch.object(tp, "prepare_worker_contract",
+                side_effect=lambda *a, **kw: prepare(*a, **kw, now=1000)):
+            first = loop.next_action(ws)
+            self.assertNotIn("error", first)
+            slots = tp.list_task_slots(ws)
+            sequences = loop.load(ws)["worker_dispatch_sequences"].copy()
+            second = loop.next_action(ws)
+        self.assertNotIn("error", second)
+        self.assertEqual(second["contract_bootstrap"], first["contract_bootstrap"])
+        self.assertEqual(second["task_name"], first["task_name"])
+        self.assertEqual(second["dispatch_intent"]["intent_id"], first["dispatch_intent"]["intent_id"])
+        self.assertEqual(tp.list_task_slots(ws), slots)
+        self.assertEqual(loop.load(ws)["worker_dispatch_sequences"], sequences)
+
+    def test_pending_plan_pickup_refuses_owned_cancelled_or_changed_authority(self):
+        for damage in ("owned", "cancelled", "signature", "foreign-run"):
+            with self.subTest(damage=damage):
+                ws = git_ws(tempfile.mkdtemp(), [TASK])
+                loop.init(ws, "pending Plan refusal", spec_path="specs/spec.md")
+                action = loop.next_action(ws)
+                self.assertNotIn("error", action)
+                slot = action["contract_bootstrap"]["task_slot"]
+                if damage == "owned":
+                    tp.bind_worker_contract_event(ws, {"session_id":"simulated-root",
+                        "agent_id":"simulated-child", "task_name":action["task_name"]})
+                elif damage == "cancelled":
+                    tp.cancel_expected_dispatch(ws, action["dispatch_intent"]["intent_id"], reason="test cancellation")
+                else:
+                    path = tp.active_contract_path(ws, slot)
+                    contract = tp.load_json(path)
+                    if damage == "signature":
+                        contract["worker_lifecycle"]["release_action"]["signature"] = "bad"
+                    else:
+                        contract["run_artifact_binding"]["run_id"] = "foreign"
+                    tp.atomic_write_json(path, contract)
+                before = {name:tp.load_json(tp.active_contract_path(ws, name)) for name in tp.list_task_slots(ws)}
+                sequences = loop.load(ws)["worker_dispatch_sequences"].copy()
+                refused = loop.next_action(ws)
+                self.assertIn("Plan pickup refused", refused.get("error", ""))
+                self.assertEqual({name:tp.load_json(tp.active_contract_path(ws, name)) for name in tp.list_task_slots(ws)}, before)
+                self.assertEqual(loop.load(ws)["worker_dispatch_sequences"], sequences)
+
     def test_free_text_goal_starts_at_pm(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "add complete()")

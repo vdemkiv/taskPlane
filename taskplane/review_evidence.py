@@ -726,6 +726,52 @@ def _target_fingerprint(target: dict) -> str:
     return value
 
 
+def source_derived_review_seams(*, target: dict, diff: dict, graph: dict,
+                              impact: dict, graph_quality: dict) -> dict:
+    """Project only observed edges in the existing bounded Review impact.
+
+    This is review evidence, not a Plan cut set or an interface declaration.
+    Missing/partial scanner coverage remains missing/partial in the envelope.
+    """
+    meta = graph.get("meta") or {}
+    coverage = meta.get("source_coverage") or {}
+    touched = set(_strings(impact.get("touched")))
+    impacted = {str(row.get("module"))
+        for rows in (impact.get("impacted") or {}).values() for row in rows
+        if isinstance(row, dict) and row.get("module")}
+    scope = touched | impacted
+    source_current = bool(target.get("head")) and meta.get("scanned_head") == target["head"]
+    edges = []
+    if source_current:
+        for row in graph.get("edges") or []:
+            if (not isinstance(row, dict) or row.get("from") not in scope
+                    or row.get("to") not in scope):
+                continue
+            edges.append({"from": row["from"], "to": row["to"], "kind": row.get("kind"),
+                "origin": {"scanner":"derived", "recorded":"declared"}.get(row.get("source"), "unknown"),
+                "source": row.get("source", "unknown")})
+    return {
+        "authority": "observed-source-and-diff; no Plan authority",
+        "target_fingerprint": _target_fingerprint(target), "source_revision": target.get("head"),
+        "graph_fingerprint": meta.get("content_fingerprint"),
+        "changed_files": _strings(diff.get("files")),
+        "edges": sorted(edges, key=lambda row: (row["from"], row["to"], str(row["kind"]))),
+        "coverage": {
+            "source_current": source_current,
+            "status": "complete" if (source_current and coverage.get("complete") is True
+                and coverage.get("status") == "complete" and not coverage.get("stopping_conditions")
+                and graph_quality.get("status") == "complete" and not impact.get("unknown")
+                and not impact.get("truncated")) else "partial",
+            "source_status": coverage.get("status", "unavailable"),
+            "stopping_conditions": copy.deepcopy(coverage.get("stopping_conditions") or []),
+            "graph_quality": graph_quality.get("status"),
+            "quality_reasons": copy.deepcopy(graph_quality.get("reasons") or []),
+            "unknown": copy.deepcopy(impact.get("unknown") or []),
+            "truncated": bool(impact.get("truncated")), "depth_limit": impact.get("depth_limit"),
+        },
+    }
+
+
 def create_envelope(store: ArtifactStore, *, target: dict, diff: dict,
                     impact: dict, graph_quality: dict, runnability: dict,
                     requirement: dict, acceptance, contracts,

@@ -18,7 +18,7 @@ REAL_GET_REQUIREMENT = loop.reqs.get_requirement
 
 
 @pytest.fixture
-def publication_amendment(legacy, monkeypatch):
+def publication_amendment(legacy, monkeypatch, request):
     ws, root, _, packet = legacy
     monkeypatch.setattr(loop.reqs, "get_requirement", REAL_GET_REQUIREMENT)
     criterion = ("FP-AC17 J6: real finalization: On a supported real host, production Build output "
@@ -38,7 +38,12 @@ def publication_amendment(legacy, monkeypatch):
         for target in (state["tasks"][i], original_plan["tasks"][i], amended_plan["tasks"][i]):
             target.update(criteria=[criterion], acceptance_refs=[criterion])
     (root / "design").mkdir()
-    (root / "design/contract.json").write_text(json.dumps({"requirement":"R-0001"}))
+    design = {"requirement":"R-0001"}
+    if getattr(request, "param", None) == "conformance":
+        design["graph"] = {"proposed_modules": [], "proposed_edges": [
+            {"from":".github/workflows", "to":"contract:taskplane.stage-handoff/v2", "kind":"consumes"},
+            {"from":"taskplane", "to":"contract:ordinary", "kind":"provides"}]}
+    (root / "design/contract.json").write_text(json.dumps(design))
     (root / "design/design.md").write_text("Original generated Design; publication authorization remains separate.")
     state["design_required"] = True
     state["design_fingerprint"] = loop._design_evidence_fingerprint(ws)
@@ -100,6 +105,33 @@ def apply_publication(fixture, **kwargs):
     ws, _, packet, source = fixture
     return loop.amend_delivery(ws, source=str(source), by=kwargs.pop("by", "human:test"),
         request=packet["request"], expected_fingerprint=loop_recovery._fingerprint(packet), **kwargs)
+
+
+@pytest.mark.parametrize("publication_amendment", ["conformance"], indirect=True)
+def test_publication_conformance_defers_only_authenticated_pending_edge(publication_amendment, monkeypatch):
+    ws, root, _, _ = publication_amendment
+    assert apply_publication(publication_amendment).get("amended")
+    state = loop._load_raw(ws)
+    contract = json.loads((root / "design/contract.json").read_text())
+    edges = contract["graph"]["proposed_edges"]
+    keys = [loop._dc.edge_key(row) for row in edges]
+    meta = {"design": {"fingerprint":state["design_fingerprint"], "verdict":"conformant",
+        "modules_checked":[], "edges_checked":keys, "contracts_checked":[], "drift":[],
+        "edge_evidence":[{"edge":keys[1], "evidence":"existing implementation", "declared_by":"test"}]}}
+    monkeypatch.setattr(loop._dc.depgraph, "load", lambda ws:{"modules":{}, "edges":[edges[1]]})
+    before = (root / "design/contract.json").read_bytes()
+    assert not loop._design_review_errors(ws, state, meta)
+    assert any("pending post-merge" in notice for notice in loop._design_review_notices(ws, state, meta))
+    assert (root / "design/contract.json").read_bytes() == before
+    unamended = copy.deepcopy(state)
+    unamended.pop("legacy_publication_amendment")
+    assert any(keys[0] in error for error in loop._design_review_errors(ws, unamended, meta))
+    monkeypatch.setattr(loop._dc.depgraph, "load", lambda ws:{"modules":{}, "edges":[]})
+    assert any(keys[1] in error for error in loop._design_review_errors(ws, state, meta))
+    for field, value in (("phase", "prepared"), ("actor", "human:foreign"), ("revoked", True)):
+        damaged = copy.deepcopy(state)
+        damaged["legacy_publication_amendment"][field] = value
+        assert loop._design_review_errors(ws, damaged, meta)
 
 
 def test_publication_amendment_preserves_failed_build_and_all_retained_work(publication_amendment):

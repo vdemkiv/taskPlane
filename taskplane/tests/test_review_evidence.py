@@ -100,6 +100,29 @@ class TestCanonicalViolationNormalization(unittest.TestCase):
 
 
 class TestImmutableEnvelope(unittest.TestCase):
+    def test_derived_seams_keep_source_and_coverage_limits(self):
+        graph = {"meta":{"scanned_head":"abc1234", "content_fingerprint":"g",
+            "source_coverage":{"status":"partial", "complete":False,
+                "stopping_conditions":["timed-out", "unsupported", "truncated"]}},
+            "edges":[{"from":"src/a", "to":"api", "kind":"imports", "source":"scanner"},
+                {"from":"src/a", "to":"outside", "kind":"imports", "source":"scanner"}]}
+        impact = {"touched":["src/a"], "impacted":{"1":[{"module":"api"}]},
+            "truncated":True, "unknown":["unparsed.py"], "depth_limit":3}
+        kwargs = {"target":self.kw["target"], "diff":self.kw["diff"], "graph":graph,
+            "impact":impact, "graph_quality":self.kw["graph_quality"]}
+        value = evidence.source_derived_review_seams(**kwargs)
+        self.assertEqual(value["coverage"]["status"], "partial")
+        self.assertEqual(value["coverage"]["stopping_conditions"], ["timed-out", "unsupported", "truncated"])
+        self.assertTrue(value["coverage"]["truncated"])
+        self.assertEqual(value["coverage"]["unknown"], ["unparsed.py"])
+        self.assertEqual([row["to"] for row in value["edges"]], ["api"])
+        graph["meta"]["scanned_head"] = "foreign"
+        stale = evidence.source_derived_review_seams(**kwargs)
+        self.assertFalse(stale["coverage"]["source_current"])
+        self.assertEqual(stale["edges"], [])
+        graph["meta"].pop("scanned_head")
+        self.assertEqual(evidence.source_derived_review_seams(**kwargs)["edges"], [])
+
     def setUp(self):
         self.ws = tempfile.mkdtemp(prefix="tp-evidence-")
         self.store = evidence.ArtifactStore(self.ws)
