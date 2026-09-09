@@ -1418,48 +1418,8 @@ def test_public_plan_action_emits_exact_native_lens_team_and_replays_once(native
 
 
 def _finish_plan_lenses(ws, workspace, action, *, usage="unavailable"):
-    """Simulate only native dispatch/start/Stop; use real lifecycle owners."""
-    from taskplane.tests.test_r0002_cross_host_journey import _digest
-    plan = action["plan_team_plan"]
-    events = []
-    for index, worker in enumerate(plan["workers"]):
-        expected = loop.tp.peek_expectation(ws, worker["task_name"], strict=True)
-        loop.tp.record_design_dispatch_assignment_activity(ws, expected)
-        loop.record_native_dispatch_observation(ws, expected=expected,
-            native_task_name=worker["task_name"], observed_at=100 + index)
-        assert loop.tp.commit_dispatch_verification(ws, worker["task_name"], worker["model"],
-            expected, True, worker["reasoning_effort"], strict=True)
-        event = {"cwd":ws, "session_id":"pristine-session", "agent_id":f"plan-child-{index}",
-            "agent_type":worker["task_name"], "task_name":worker["task_name"], "turn_id":f"turn-{index}"}
-        bound = loop.tp.bind_worker_contract_event(ws, event)
-        loop.tp.record_design_worker_start_activity(ws, bound, event)
-        material = {"schema":"taskplane.plan-lens-result/v1", "lens":worker["lens"],
-            "worker_identity":worker["task_name"], "team_plan_fingerprint":plan["fingerprint"],
-            "candidate_fingerprint":plan["candidate_fingerprint"], "outcome":"pass", "findings":[]}
-        path = workspace / worker["output"]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({**material, "fingerprint":_digest(material)}))
-        if usage == "measured":
-            loop.record_observed_dispatch_usage(ws, task_id=worker["lens"],
-                native_task_name=worker["task_name"], source_fingerprint="a" * 64,
-                normalized_usage={"schema":loop.spend.USAGE_SCHEMA, "available":True,
-                    "cached_input_tokens":60, "uncached_input_tokens":40, "output_tokens":10,
-                    "raw_total_tokens":110, "reasoning_tokens":5})
-            sealed = loop.finalize_observed_dispatch_usage(ws, task_id=worker["lens"],
-                native_task_name=worker["task_name"], ended_at=110 + index, outcome="success")
-            event["usage_reference"] = {"schema":"taskplane.native-dispatch-usage-reference/v1",
-                "dispatch_receipt":sealed["receipt"]}
-        elif usage != "missing":
-            sealed = loop.finalize_observed_dispatch_usage(ws, task_id=worker["lens"],
-                native_task_name=worker["task_name"], ended_at=110 + index, outcome="success",
-                usage_unavailable=True, unavailable_reason="simulated host has no counter provider")
-            assert sealed["status"] == "unavailable"
-            assert sealed["binding"]["usage"] is None
-        terminal = loop.tp.terminalize_worker_contract(ws, {**event, "outcome":"success"},
-            outcome="success", submission_status="not_required")
-        assert terminal
-        events.append(event)
-    return events
+    from tests.fixtures.briefs.stage_fixture import finish_plan_lenses
+    return finish_plan_lenses(ws, workspace, action, usage=usage, runtime=loop)
 
 
 @pytest.mark.parametrize("started", [False, True])

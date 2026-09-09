@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import requirements  # noqa: E402
 from tests.root_session_fixture import open_delivery_root  # noqa: E402
+from tests.fixtures.briefs.stage_fixture import prepare_plan  # noqa: E402
 
 
 def _git(ws, *args):
@@ -58,6 +59,7 @@ def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
             "delivery_mode": "build", "automatic_lenses": [],
             "plan_authority": "human:test-fixture", **plan}
     json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+    prepare_plan(ws, runtime=loop)
     loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
     loop.approve(ws)                 # → execute
     return loop.load(ws)

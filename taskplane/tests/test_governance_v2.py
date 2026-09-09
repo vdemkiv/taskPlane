@@ -53,12 +53,13 @@ class TestGovernanceV2(unittest.TestCase):
                         "tests": "true", "criteria": ["works"]}
         loop.init(self.ws, "governed change", spec_path="specs/spec.md",
                   checkpoints=["em"])
-        loop.next_action(self.ws)
         with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"requirement": "governance-v2-fixture",
                        "delivery_mode": "build", "automatic_lenses": [],
                        "plan_authority": "human:test-fixture",
                        "tasks": [task]}, f)
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop)
         result = loop.gate(self.ws, "pass")
         self.assertNotIn("error", result)
         self.assertEqual(loop.load(self.ws)["step"], "execute")
@@ -68,6 +69,8 @@ class TestGovernanceV2(unittest.TestCase):
         loop.next_action(self.ws)
         self.assertIsNotNone(tp.worker_contract_for_stage(
             self.ws, stage="plan", task="plan"))
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop)
         rejected = loop.gate(self.ws, "fail")
         self.assertIn("rejected", rejected["error"])
         self.assertEqual(loop.load(self.ws)["step"], "plan")
@@ -102,6 +105,8 @@ class TestGovernanceV2(unittest.TestCase):
         loop.next_action(self.ws)
         with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [task]}, f)
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop)
         blocked = loop.gate(self.ws, "pass")
         self.assertIn("requirement dependency R-9999", " ".join(
             blocked["dor"]["blockers"]))
