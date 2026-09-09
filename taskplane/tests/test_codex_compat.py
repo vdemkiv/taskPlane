@@ -30,6 +30,200 @@ TPPY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 
 
 class TestCodexWorkspaceHookInstall(unittest.TestCase):
+    def setUp(self):
+        # Installer fixtures must not inherit a user's organization policy.
+        self.enterContext(mock.patch.object(
+            cli.host_caps, "observations_from_environment", return_value={}))
+        self.enterContext(mock.patch.object(
+            cli, "_install_context", return_value="user-local"))
+
+    def _workspace_config(self, config):
+        ws = self.enterContext(tempfile.TemporaryDirectory(
+            prefix="tp-hook-preservation-"))
+        os.makedirs(os.path.join(ws, ".codex"))
+        path = os.path.join(ws, ".codex", "hooks.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(config, handle)
+        return ws, path
+
+    def _mixed_hook_row(self):
+        foreign = [
+            {"type": "command", "command": "foreign-before", "timeout": 3},
+            {"type": "command", "command": "foreign-between",
+             "extension": {"nested": [1, {"enabled": False}]}},
+            {"type": "prompt", "prompt": "foreign-after", "future": None},
+        ]
+        row = {
+            "matcher": "custom-matcher",
+            "description": "preserve matcher association",
+            "extension": {"labels": ["one", "two"], "enabled": True},
+            "hooks": [foreign[0],
+                      {"type": "command", "command":
+                       "python3 .taskplane/codex-hook.py obsolete-one"},
+                      foreign[1],
+                      {"type": "command", "command":
+                       "python3 /old/host_native_runtime.py obsolete-two"},
+                      foreign[2]],
+        }
+        return row, foreign
+
+    def test_install_preserves_mixed_row_hooks_and_metadata(self):
+        mixed, foreign = self._mixed_hook_row()
+        before = {"matcher": "before", "hooks": [
+            {"type": "command", "command": "separate-before"}]}
+        after = {"matcher": "after", "hooks": [
+            {"type": "command", "command": "separate-after"}]}
+        ws, path = self._workspace_config({
+            "hooks": {"SessionStart": [before, mixed, after]}})
+
+        self.assertTrue(cli._install_codex_hooks(ws)["ok"])
+        installed = tp.load_json(path)["hooks"]["SessionStart"]
+
+        self.assertEqual(installed[1].get("hooks"), foreign,
+                         "mixed row must retain every foreign hook in order")
+        self.assertEqual({k: v for k, v in installed[1].items() if k != "hooks"},
+                         {k: v for k, v in mixed.items() if k != "hooks"})
+        self.assertEqual(installed[0], before)
+        self.assertEqual(installed[2], after)
+        self.assertEqual(installed[3:], cli._codex_hook_rows()["SessionStart"])
+
+    def test_install_preserves_foreign_content_and_replaces_platform_commands(self):
+        generated = cli._codex_hook_rows()
+        variants = [
+            {"command": "python3 .taskplane/codex-hook.py obsolete"},
+            {"command": r'python "C:\repo\.taskplane\codex-hook.py" obsolete'},
+            {"commandWindows": r'python "C:\repo\.taskplane\codex-hook.py" obsolete'},
+            {"commandWindows": "python .taskplane/codex-hook.py obsolete"},
+            {"command": "python3 /old/host_native_runtime.py obsolete"},
+            {"commandWindows": r"python C:\old\host_native_runtime.py obsolete"},
+            {"command": "foreign-unix", "commandWindows":
+             r"python C:\repo\.taskplane\codex-hook.py obsolete"},
+            {"command": "python3 .taskplane/codex-hook.py obsolete",
+             "commandWindows": "foreign-windows"},
+            generated["SessionStart"][0]["hooks"][0],
+        ]
+        for variant in variants:
+            with self.subTest(command_fields=variant):
+                foreign_hooks = [
+                    {"type": "command", "command": "foreign-command",
+                     "description": ".taskplane/codex-hook.py",
+                     "unknown": {"command": "host_native_runtime.py"}},
+                    {"type": "prompt", "prompt": "host_native_runtime.py"},
+                    {"command": [".taskplane/codex-hook.py"],
+                     "commandWindows": {"path": "host_native_runtime.py"}},
+                    {"command": None, "commandWindows": 42},
+                ]
+                foreign_row = {"matcher": ".taskplane/codex-hook.py",
+                               "hooks": foreign_hooks}
+                metadata_row = {"description": "host_native_runtime.py",
+                                "unknown": {"path": ".taskplane/codex-hook.py"}}
+                owned_row = {"matcher": "owned-custom", "extension": {"keep": 1},
+                             "hooks": [{"type": "command", **variant}]}
+                custom_generated = json.loads(json.dumps(generated["SessionStart"][0]))
+                custom_generated["extension"] = {"preserve": True}
+                foreign_event = [{"hooks": [{"command":
+                    "python3 .taskplane/codex-hook.py foreign-event"}]}]
+                initial = {
+                    "description": ".taskplane/codex-hook.py",
+                    "extension": {"name": "host_native_runtime.py"},
+                    "hooks": {
+                        "SessionStart": [foreign_row, metadata_row, owned_row,
+                                         {"hooks": [{"type": "command", **variant}]},
+                                         custom_generated],
+                        "ForeignEvent": foreign_event,
+                    },
+                }
+                ws, path = self._workspace_config(initial)
+                self.assertTrue(cli._install_codex_hooks(ws)["ok"])
+                installed = tp.load_json(path)
+                expected_rows = [foreign_row, metadata_row,
+                                 {**owned_row, "hooks": []},
+                                 {**custom_generated, "hooks": []}]
+                self.assertEqual(installed, {
+                    **initial,
+                    "hooks": {**generated, "SessionStart": expected_rows +
+                              generated["SessionStart"], "ForeignEvent": foreign_event},
+                })
+
+    def test_install_full_configuration_is_idempotent(self):
+        generated = cli._codex_hook_rows()
+        mixed, foreign = self._mixed_hook_row()
+        owned_only = {"matcher": "custom-owned", "extra": {"keep": True},
+                      "hooks": [{"commandWindows":
+                                 r"python C:\repo\.taskplane\codex-hook.py old"}]}
+        configurations = {
+            "clean": {"hooks": {}},
+            "current": {"hooks": generated},
+            "mixed-and-platform": {"extension": [1, 2], "hooks": {
+                "SessionStart": [mixed, owned_only] + generated["SessionStart"]}},
+        }
+        for name, config in configurations.items():
+            with self.subTest(configuration=name):
+                ws, path = self._workspace_config(config)
+                snapshots = []
+                for _ in range(3):
+                    self.assertTrue(cli._install_codex_hooks(ws)["ok"])
+                    snapshots.append(tp.load_json(path))
+                self.assertEqual(snapshots[0], snapshots[1])
+                self.assertEqual(snapshots[0], snapshots[2])
+                for event, rows in generated.items():
+                    installed = snapshots[0]["hooks"][event]
+                    self.assertEqual(installed[-len(rows):], rows)
+                    for row in rows:
+                        self.assertEqual(installed.count(row), rows.count(row))
+                if name == "mixed-and-platform":
+                    rows = snapshots[0]["hooks"]["SessionStart"]
+                    self.assertEqual(rows[:-len(generated["SessionStart"])],
+                                     [{**mixed, "hooks": foreign},
+                                      {**owned_only, "hooks": []}])
+                    hooks = [hook for row in rows for hook in row["hooks"]]
+                    for hook in foreign:
+                        self.assertEqual(hooks.count(hook), 1)
+
+    def test_install_managed_policy_blocks_before_any_mutation(self):
+        for status, context in (("unsupported", "user-local"),
+                                ("contradictory", "user-local"),
+                                (None, "org-managed")):
+            for present in (False, True):
+                with self.subTest(policy=status, context=context, present=present):
+                    ws = self.enterContext(tempfile.TemporaryDirectory(
+                        prefix="tp-blocked-hooks-"))
+                    config_path = os.path.join(ws, ".codex", "hooks.json")
+                    runner_path = os.path.join(ws, ".taskplane", "codex-hook.py")
+                    sentinels = {config_path: "config sentinel", runner_path: "bridge sentinel"}
+                    if present:
+                        for path, content in sentinels.items():
+                            os.makedirs(os.path.dirname(path))
+                            with open(path, "w", encoding="utf-8") as handle:
+                                handle.write(content)
+                    observations = ({} if status is None else {
+                        "managed_policy_permission": mock.Mock(status=status)})
+                    with contextlib.ExitStack() as stack:
+                        stack.enter_context(mock.patch.object(
+                            cli.host_caps, "observations_from_environment",
+                            return_value=observations))
+                        stack.enter_context(mock.patch.object(
+                            cli, "_install_context", return_value=context))
+                        probes = [stack.enter_context(mock.patch.object(obj, name))
+                                  for obj, name in (
+                                      (tp, "load_json"), (cli, "_codex_hook_rows"),
+                                      (os, "makedirs"), (os, "replace"),
+                                      (tp, "atomic_write_json"),
+                                      (cli, "_codex_runner_body"),
+                                      (cli, "_exclude_generated_codex_config"))]
+                        opened = stack.enter_context(mock.patch("builtins.open"))
+                        result = cli._install_codex_hooks(ws)
+                        self.assertFalse(result["ok"])
+                        self.assertEqual(result["status"], "blocked")
+                        for probe in [*probes, opened]:
+                            probe.assert_not_called()
+                    for path, content in sentinels.items():
+                        if present:
+                            with open(path, encoding="utf-8") as handle:
+                                self.assertEqual(handle.read(), content)
+                        else:
+                            self.assertFalse(os.path.exists(os.path.dirname(path)))
+
     def test_onboarding_preserves_other_hooks_and_installs_local_bridge(self):
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, ".codex"))

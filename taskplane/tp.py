@@ -850,10 +850,35 @@ def _install_codex_hooks(ws: str) -> dict:
         raise RuntimeError("existing .codex/hooks.json is not a hook object")
     original = json.loads(json.dumps(prior))
     hooks = prior["hooks"]
+
+    def owned_hook(hook):
+        if not isinstance(hook, dict):
+            return False
+        for field in ("command", "commandWindows"):
+            command = hook.get(field)
+            if isinstance(command, str) and (
+                    _CODEX_HOOK_MARKER in command.replace("\\", "/")
+                    or "host_native_runtime.py" in command):
+                return True
+        return False
+
     for event, rows in _codex_hook_rows().items():
-        existing = [row for row in hooks.get(event, [])
-                    if _CODEX_HOOK_MARKER not in json.dumps(row)
-                    and "host_native_runtime.py" not in json.dumps(row)]
+        existing = []
+        for row in hooks.get(event, []):
+            row_hooks = row.get("hooks") if isinstance(row, dict) else None
+            if not isinstance(row_hooks, list):
+                existing.append(row)
+                continue
+            foreign = [hook for hook in row_hooks if not owned_hook(hook)]
+            if len(foreign) == len(row_hooks):
+                existing.append(row)
+                continue
+            # Regenerate exact current rows without accumulating empty shells.
+            # Equality is considered only after every hook is known to be ours.
+            if not foreign and row in rows:
+                continue
+            if foreign or any(key != "hooks" for key in row):
+                existing.append({**row, "hooks": foreign})
         hooks[event] = existing + rows
     # Install the ignored launcher first. A tracked or host-protected hook
     # configuration may already be correct while this checkout-local bridge
