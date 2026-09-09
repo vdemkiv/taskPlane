@@ -63,7 +63,7 @@ not repeated in the tables.
 | `tp.py lens route` | decide which lenses a change needs |
 | `tp.py lens show` | the full brief for one lens |
 | `tp.py loop` | drive the Evaluate-Loop engine |
-| `tp.py loop amend-delivery` | human: exact legacy publication-only post-merge sequencing |
+| `tp.py loop amend-delivery` | human: exact legacy publication or scope-inventory amendment |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
 | `tp.py loop cancel-worker` | human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion |
@@ -624,15 +624,15 @@ drive the Evaluate-Loop engine
 
 ## `tp.py loop amend-delivery`
 
-human: exact legacy publication-only post-merge sequencing
+human: exact legacy publication or scope-inventory amendment
 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--by` | BY (required) | original human policy owner |
 | `--check` | flag | read-only validation; no journal, projection or outbox write |
 | `--fingerprint` | FINGERPRINT (required) | canonical approved packet SHA-256 |
-| `--from` | AMENDMENT_FROM (required) | exact approved publication amendment packet |
-| `--request` | REQUEST (required) | publication-only human decision |
+| `--from` | AMENDMENT_FROM (required) | exact approved publication packet or Plan scope inventory |
+| `--request` | REQUEST (required) | exact publication or scope-inventory human decision |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py loop approve`
