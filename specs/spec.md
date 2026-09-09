@@ -1,390 +1,148 @@
-# Canonical operational settings, CI-first testing, and all-outcome cleanup
+# Reliable reusable phases with source-derived decomposition and complete delivery
 
-## Product authority
-
-This specification is the Product authority for the delivery phase that starts
-from Taskplane 2.18.2 on `codex/modular-settings-test-redesign`. It replaces the
-previous contents of `specs/spec.md` for this new phase; prior requirements,
-designs, evidence, and released behavior remain historical records rather than
-being rewritten.
-
-The P0 findings in `REL-2181-full-retro.md` are binding input. Wall-clock time
-and recurring workflow, CI, and lifecycle glitches are the primary product
-problem. Token reduction remains a guardrail, not a reason to restore broad
-lens execution. Product and Design use only minimum-sufficient quick focused
-lenses, Plan uses exactly three or four quick lenses, and Build, Fix, Evaluate,
-and Engineering use zero lens workers.
+Status: fresh Product specification for governed registration. Design is required next; this document is not Design, implementation, review, approval, release, or evidence that any journey has run.
 
 ## Problem
 
-Taskplane operational behavior is controlled by duplicated constants,
-environment reads, workflow literals, and stage-local defaults. This makes
-delivery behavior hard to change coherently and helped turn the prior wave into
-a 40-hour sequence of late CI, repeated validation, lifecycle leaks, and
-replanning. The test portfolio and cleanup lifecycle also encode accumulated
-history rather than one explicit current-product contract.
-
-Taskplane needs one validated operational-settings authority, one CI-first test
-strategy, an evidence-based current-contract test portfolio, and exact-owned
-cleanup that runs on every terminal path. The resulting delivery must be faster
-in elapsed time without weakening security, human authority, portability,
-release truth, or audit evidence.
+Taskplane must turn a requirement into dependency-grounded tasks and carry complete, admissible, authorized results through the declared final outcome using phases that a fresh execution can continue without predecessor conversation or private runtime. Preserved R-0005 evidence identifies incomplete producer outputs, unreliable review decisions, misleading recovery, divergent setup behavior, and invalid task/proof restrictions in a later failed effort; those reports are lineage and risk evidence, not proof that the same defects remain unchanged in the current 2.19.0 source.
 
 ## Users and context
 
-- Taskplane users need predictable governed delivery across Codex, Claude,
-  local shells, linked worktrees, and GitHub-hosted CI.
-- Product, Design, and Plan workers need one settings and test-strategy contract
-  whose downstream consumers cannot silently diverge.
-- Build workers need pairwise-disjoint tasks and validation jobs dispatched
-  concurrently without editing-time lens fan-out.
-- Maintainers need quick local feedback, one authoritative CI workflow with no
-  synthetic join check,
-  and failure batches classified once rather than green layers repeatedly run.
-- Operators need truthful settings, validation, cleanup, usage, and duration
-  receipts that survive failure and handoff without exposing secrets.
-- Existing users need current CLI behavior and legacy environment deployments
-  to migrate predictably rather than silently changing authority.
+The primary user is the project owner directing delivery. Other users and consumers are fresh phase workers, independent reviewers, supported native hosts, and maintainers assessing PR, compatibility, rollback, and release evidence.
 
-## Measured baseline and targets
+This fresh requirement is derived only from:
 
-The baseline is evidence, not a deletion quota. Candidate families are removed
-only after the current contract they protect is adjudicated.
+- `specs/r0005-restart/spec.md`
+- `specs/r0005-restart/intake.json`
+- `specs/r0005-restart/inputs/R-0005.md`
+- `specs/r0005-restart/inputs/consolidated-improvement-report.md`
 
-| Measure | Measured baseline | Delivery target |
-| --- | ---: | ---: |
-| Operational-settings spread | 258 code/docs/workflow files contain candidate timeout, budget, model, routing, transport, sharding, or cleanup literals | 100% of governed settings have one canonical key and owner; zero independently authoritative duplicate defaults |
-| Test portfolio | 266 tracked test files, 4,909 collected cases, 95,601 test LOC | no more than 230 files and 4,200 cases; at least 6 demonstrably redundant families removed; zero protected-contract loss |
-| Candidate historical families | 112 version/requirement-named files; 174 files mention history, replay, legacy, fixture, golden, snapshot, or ceremonial concepts | 100% of candidates adjudicated by current-product value; removal only with retained-selector or obsolete-contract evidence |
-| Local feedback | one prior selector took 1,158 seconds; broad local suite was approximately 70 minutes; two commands hit 600-second defaults | exact-selector p95 at most 60 seconds; changed-file/proportional p95 at most 5 minutes; broad suite CI-only by default |
-| Hosted CI | first matrix after 31h37m; 12 matrices, 9 red; approximately 15-minute matrix wall and 38 runner-minutes | first matrix within 2 hours of integration readiness; at most 3 authoritative matrices; p50 at most 10 minutes, p95 at most 15 minutes, at most 30 runner-minutes |
-| Effective CI parallelism | approximately 2.59x from prior summed job time divided by matrix wall time | at least 4.0x when four or more pairwise-disjoint shards exist |
-| Plan/validation churn | 21 returns to Plan; 12 matrices | at most 2 Plan returns before one consolidated stabilization successor; at most 3 matrices unless a named new failure class requires another |
-| Cleanup leaks | 132 worktrees at Retro; 264 temporary artifacts plus about 17.3 GB of stale state later cleaned | exactly 0 owned leaks after success, failure, cancellation, interruption, and handoff; active worktrees no more than active shards plus 1 |
-| Token telemetry | 540.3M root-session logged tokens; 1.292B archive upper bound; actual billing materially lower | target at most 100M total and 15M uncached observed tokens; hard ceiling 150M total and 25M uncached; billing and non-cumulative root/session truth reported separately |
-| End-to-end duration | 39h28m first commit to merge; 40h35m session envelope | active post-authorization delivery at most 8 hours; phase start through Retro at most 12 hours; Design decision within 60 minutes |
-| Worker/control-plane churn | 190 spawns, 1,270 waits, 132 worktrees | no inherited worker turns; planned sessions at most 24 and fail-closed ceiling 60; every serialization names its dependency or authority reason |
+The copied R-0005 and report are immutable history inputs. Their former Design, Plan, runtime, conversations, approvals, reviews, paths, and completion claims carry no authority into this effort. Baseline lineage is Taskplane 2.19.0 at `8d02d856a77134026f05e83ef4ddcdd714354814`, restored by rollback PR #18 / merge `1cf41e9673bce86ccb8e77517c20e9a6b1332e74` to the identical baseline tree `284b5c1cb777a3c1b95f2b59849a3e2a803d3af5`.
 
 ## In scope
 
-1. A complete inventory of operational settings and consumers across production
-   code, flow graphs, skills, agents, hooks, commands, workflows, CI, release
-   tooling, tests, generators, fixtures, and packaging.
-2. One repository-shipped, versioned canonical settings file as the sole
-   persisted operational-settings authority, plus one typed, validated loader.
-3. Settings for stage model and reasoning effort; focused-lens dispatch counts
-   and routes; Build shard count and concurrency; local-versus-CI test backend;
-   test selection and sharding; timeouts and budgets; workflow transport;
-   cleanup policy; and explicitly safe overrides.
-4. Deterministic precedence, defaults, schema migration, one-release legacy
-   adapter behavior, cross-host resolution, fail-closed validation, and
-   redacted/tamper-evident effective-settings receipts.
-5. Initialization of every Taskplane flow, CLI entry point, skill flow, hook,
-   workflow, stage startup/handoff, CI/release command, and compatibility
-   adapter through the loader, with no second settings source of truth.
-6. Evidence-based removal or consolidation of obsolete, duplicate,
-   implementation-detail, history-replay, stale-fixture, and ceremonial tests,
-   while retaining current contracts and explicit protected floors.
-7. A Design and coding-phase test-strategy contract with exact acceptance
-   selectors, producer/consumer freshness and severed-edge checks, same-slice
-   fixture updates, product-versus-test failure classification, and progressive
-   validation culminating in one exact-candidate authoritative CI workflow.
-8. Outcome-independent cleanup for exactly owned temporary worktrees,
-   contracts, processes/process groups, caches, generated state, and test
-   artifacts, including evidence retention, unsafe-target refusal, idempotency,
-   replay/recovery, and post-cleanup zero-leak proof.
-9. CI concurrency, shard, timeout, candidate-freeze, failure-batching,
-   cancellation, release-order, first-parent compatibility, and cleanup wiring.
-10. Closed metrics and receipts for the baseline and every target in the table.
+- Explicit phase input/result and continuation behavior for Product, Design, Plan, Build, Evaluate/Engineering Review, Retro, and Release or another declared final state.
+- Verified bounded source touchpoint coverage, source-derived dependency decomposition, graph-grounded task ownership/order, complete cut-edge and worker/task/phase/runtime seam closure, and integrated realized conformance.
+- Canonical substantive finding admissibility, complete producer packages, recoverable attempts, truthful refusal/recovery/non-progress behavior, many-to-many contributions, multiple exact proofs, and separate joint acceptance proof.
+- Native capability, identity, observation, duplicate-event reconciliation, real-host evidence where required, honest real-versus-simulated labels, telemetry, historical compatibility, bounded migration/rollback, independent review, Retro, and PR-based delivery.
+- Small reusable phase-specific units over shared input/result, validation, persistence, host, evidence, and continuation mechanics, with one active owner for each migrated responsibility.
 
 ## Out of scope
 
-- A second project, user, host, or environment settings file that can become an
-  independent authority.
-- Changing the 26-lens catalog or restoring lens workers in Build, Fix,
-  Evaluate, or Engineering.
-- Weakening consolidated human authorization, stage authority, task-slot
-  isolation, protected-main truth, supply-chain controls, or fail-closed gates.
-- Deleting tests merely to reach a count, or deleting security, authority,
-  current-behavior, cross-host/encoding/path portability, release version/tag/
-  provenance, cleanup safety, or high-signal regression coverage.
-- Cleaning unrelated worktrees, processes, caches, stores, private knowledge,
-  evidence, dirty user changes, or any target whose ownership is ambiguous.
-- Redesigning unrelated user-facing features or replacing GitHub Actions as the
-  broad authoritative validation backend.
-- An actual push, merge, release tag, marketplace publication, or installation
-  under this Product requirement without the later exact human/release gate.
+- Product-stage implementation, code review, Design decisions, Plan, self-approval, runtime repair, release, or publication.
+- Treating any prior Design, Plan, private runtime, conversation, approval, review, completion claim, stale fingerprint, copied receipt, or hash as current authority.
+- Prescribing absent historical `phase_*` or `worker_hook_identity.py` layouts, arbitrary module or line-count targets, a new general workflow language/framework, a duplicate coordinator/store/graph/seam ledger, parallel progression authority, or ceremonial agent fan-out.
+- Unrelated features, external-service internals, unnecessary whole-repository scans, direct pushes to main, or publication without separate applicable authority.
+- Fabricated host observations or usage, simulation/skip as evidence for a real-host criterion, guessed command equivalence, fixture-inserted producer outputs as end-to-end proof, or synthetic terminal events as completion.
+- Exporting secrets, full prompts/transcripts, predecessor private runtime, or portable copies of authentication authority.
+- Implicitly closing P14 native canary, P23 whole-suite adjudication, R-0001, or R-0003 obligations. R-0004 is not a separate active obligation; its incorporated scope remains governed by R-0001.
 
-## Functional requirements
+## Required behavior and priority
 
-1. Publish one complete, machine-checkable operational-settings inventory. Each
-   operational literal or environment read has one canonical key and one
-   disposition: canonicalized, runtime observation, derived value, immutable
-   protocol constant, or justified non-setting.
-2. Store every configurable default exactly once in the canonical settings
-   file. The typed loader validates schema version, types, enums, ranges,
-   cross-field constraints, stage availability, and unknown keys before any
-   Taskplane state write or dispatch.
-3. Use deterministic precedence: explicitly allowlisted safe CLI override,
-   explicitly allowlisted safe environment override, then canonical value.
-   Overlays are ephemeral inputs, never second config stores. Authority-bearing
-   or governance-weakening changes require exact approved authority; conflicts,
-   unsupported values, and unsafe overrides fail closed.
-4. Emit an immutable normalized effective-settings receipt with schema/version,
-   canonical source digest, precedence sources, engine/package identity, host
-   capability facts, override authority, and redaction evidence. Bind its digest
-   into stage handoffs, worker contracts, test/CI requests, suite-cache keys,
-   cleanup manifests, dashboards, and final evidence.
-5. Resolve equivalent settings byte-identically across supported hosts. A host
-   that cannot honor the effective contract stops with a named incompatibility;
-   it does not silently inherit, downgrade, or select another backend.
-6. Provide a one-release compatibility adapter for documented legacy variables
-   and artifacts. It emits a deprecation/source receipt, never owns defaults,
-   and refuses legacy/canonical conflicts. Cache-busted and numeric package
-   version forms must resolve through the same typed version contract.
-7. Preserve the approved delivery routing: minimum-sufficient quick Product and
-   Design; exactly three or four quick Plan lenses; zero Build, Fix, Evaluate,
-   and Engineering lens workers. Settings may select permitted values but may
-   not create new authority or escape these policy bounds.
-8. Require every acceptance criterion and Build slice to name its exact test
-   files/selectors. Changed producers enumerate consumers and prove fresh-edge
-   and deliberately severed-edge behavior; interface changes update fixtures in
-   the same slice; every failure is classified product, test, infrastructure, or
-   environment before a correction is authorized.
-9. Execute validation once per unchanged evidence layer in this order: static,
-   exact selector, changed-file/radius, proportional suite, then one terminal
-   exact-candidate authoritative CI workflow. Broad validation defaults to GitHub
-   Actions; local broad execution occurs only when approved settings explicitly
-   select it.
-10. Dispatch all pairwise-disjoint Build tasks and CI validation jobs in
-    parallel. Serialize only for an explicit dependency, shared owner/state, or
-    authority transition, and record the reason. Freeze the candidate for the
-    authoritative workflow; a source/test change invalidates its receipts, while unchanged green
-    layer fingerprints are cited rather than rerun.
-11. On every red workflow, collect and classify all direct failures once, assign
-    one owner per failure cluster, and issue one correction wave. After two Plan
-    returns, consolidate remaining coupled generators, goldens, checksums,
-    fixtures, manifests, and history ledgers into one bounded stabilization
-    successor.
-12. Register every owned cleanup target before use with exact run/task identity,
-    stable path/ref/process identity, containment, creation receipt, and cleanup
-    policy. Cleanup runs on success, failure, cancellation, interruption,
-    timeout, handoff, and fail-safe recovery; it retains evidence, refuses dirty,
-    foreign, symlinked, PID-reused, or ambiguous targets, and proves zero leaks.
-13. Make alternate-worktree preflight atomic across repository/workspace
-    identity, hook receipt, stable launcher, session identity, settings digest,
-    and contract store. Dispatch workers with no inherited conversation turns,
-    only the bounded engine stage envelope and selected artifacts.
-14. Preserve CI least privilege, immutable action pins, hash-locked dependencies,
-    credential-empty untrusted PR jobs, exact-head proof, pre-merge first-parent
-    compatibility, and release refusal until the exact protected-main SHA is
-    green. Superseded PR heads may cancel; protected-main/release runs may not.
-15. Emit one closed wave-metrics receipt covering suite inventory, redundant
-    families removed, local feedback, CI wall/runner time and parallelism,
-    cleanup leaks, tokens, stage/phase duration, Plan returns, matrices, workers,
-    worktrees, and every target/ceiling decision.
+1. Verify current source touchpoints and bounded dependency coverage before decomposition; keep observed source, verified proposed extension, and realized candidate truth distinct.
+2. Derive task scope, ownership, dependencies, and actual order from connected impacted subgraphs; close every real cut edge and declared worker/task/phase/runtime seam.
+3. Compare the integrated candidate with proposed seams, consume exact boundary proofs, and support bounded standalone Review without inventing Plan authority.
+4. **C — admissibility:** after identity/byte validation, apply the canonical finding classification and blocking policy; retain non-blocking findings and append revalidation when historical passes are relied upon.
+5. **E — recovery:** preserve the actual refusal, effects, attempt, prerequisites, authorized continuation, and same-versus-replacement semantics; distinguish waiting, artifact correction, setup repair, and new authority; stop unchanged failing retries.
+6. **A — complete results:** every producer publishes all required produced and inherited artifacts, actual quality strategy bytes, accessible evidence, and applicable authority for a fresh successor.
+7. **B — execution:** owner and reviewer setup/pickup reconcile every required durable record and uncertain external effect before readiness; exact replay preserves operation identity and completed work, while changed input is rejected.
+8. **D — acceptance:** support many-to-many task/criterion contributions, several exact proofs per task or criterion, accountable acceptance ownership, and separately required joint integration evidence.
+9. Connect Product through the declared final outcome using explicit durable results and continuations; no phase requires predecessor conversation or private runtime.
+10. Use one explicit applicable policy to distinguish produced work, mechanical validation, authorized progression, and human sign-off; reuse recorded authority only within its scope.
+11. Reuse incumbent lifecycle, graph, storage, host, seam/evidence, and policy capabilities in small responsibility-specific units; each migrated responsibility has one active owner, explicit historical compatibility, retired/inactive superseded paths, and rollback.
+12. Report provenance-bound progress, effects, waits, corrections, replay, timing, evidence gaps, and provider/cache usage without fabricating unavailable data or double-counting.
+13. Deliver through a fresh current-source Design, dependency-ordered bounded PRs, exact acceptance/proof mapping, all six labeled journeys, independent final review, scoped sign-off, Retro, and separately authorized release/publication.
+
+Risk priority is **C → E → A → B → D**. It governs risk treatment, not permission to violate actual dependencies. Design may order prerequisites differently only by recording the dependency and acceptance rationale.
+
+## Reusable phase outcome
+
+A phase receives an explicit versioned input package, performs its phase-specific expert work, applies integrity/domain validation and the applicable authorization policy, and persists a complete result usable by a fresh successor. The result identifies produced and inherited artifacts, full accessible evidence, unresolved issues, attempt/candidate provenance, completion status, and the precise continuation. Durable shared state is allowed; predecessor conversation/private runtime is not an input contract. Partial publication or an interrupted draft is neither phase completion nor approval.
+
+Adding a phase that uses existing capabilities must require only its definition, phase-specific processing, and domain validation; it must not require changes to shared dispatch, pickup, storage, hooks, or lifecycle behavior. This is an outcome constraint, not a prescribed implementation structure or module count.
 
 ## Acceptance criteria
 
-1. **AC-SET1 — Complete settings inventory.** The inventory covers code, flow
-   graph, skills, agents, hooks, commands, workflows, CI, release tooling,
-   tests, fixtures, generators, and packaging; every discovered setting-like
-   value has exactly one canonical key or justified non-setting disposition,
-   and duplicate authoritative defaults fail. Verify with
-   `taskplane/tests/test_settings_inventory.py::test_every_operational_setting_has_one_canonical_owner`.
-2. **AC-SET2 — Typed canonical authority.** Valid canonical settings load into
-   the complete typed contract, while an unknown key, malformed type, invalid
-   enum/range, unsupported stage model/effort/backend/transport, or cross-field
-   conflict blocks before any state write or dispatch. Verify with
-   `taskplane/tests/test_settings.py::test_valid_canonical_settings_load_typed`
-   and `taskplane/tests/test_settings.py::test_invalid_or_unknown_settings_fail_closed`.
-3. **AC-SET3 — Precedence and safe overrides.** Allowlisted CLI and environment
-   overlays resolve in the declared order, never own defaults, and are
-   receipted; a setting that weakens governance, changes authoritative backend/
-   transport/store, expands scope, disables proof/cleanup, or raises a budget
-   blocks without exact authority. Verify with
-   `taskplane/tests/test_settings.py::test_precedence_migration_and_safe_override_contract`.
-4. **AC-SET4 — Universal flow initialization.** Every Taskplane flow and named
-   operational consumer initializes through the loader, binds one effective
-   settings digest, and contains no prohibited direct governed-variable/default
-   read. Verify with
-   `taskplane/tests/test_settings_flow_wiring.py::test_every_flow_initializes_from_canonical_settings`.
-5. **AC-SET5 — Cross-host, migration, and receipts.** Equal canonical input and
-   safe overlays produce byte-identical effective settings across supported
-   hosts; incompatible hosts stop; legacy adapters warn and receipt for exactly
-   one release without owning defaults; numeric and cache-busted package versions
-   resolve consistently; receipts are tamper-evident and secret-free. Verify with
-   `taskplane/tests/test_settings_cross_host.py::test_effective_settings_are_portable_and_safely_observable`
-   and `taskplane/tests/test_settings.py::test_precedence_migration_and_safe_override_contract`.
-6. **AC-TST1 — Test-strategy contract.** Every acceptance criterion maps to
-   exact selectors; every changed producer lists consumers plus freshness and
-   severed-edge checks; interface/fixture changes share one slice; and failures
-   cannot enter correction without product-versus-test/infrastructure/environment
-   classification. Verify with
-   `taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete`.
-7. **AC-TST2 — Evidence-based portfolio cleanup.** The delivered portfolio
-   records the cleanup decision and measured result; it is not a release gate
-   and does not recursively recollect/rerun the suite or freeze historical
-   files, digests, cases, or line counts. Current security, dashboard, cleanup,
-   portability, and release behavior remains protected by the direct selectors
-   in the test-strategy contract.
-8. **AC-TST3 — Progressive CI-first validation.** Validation advances static,
-   exact selector, changed-file/radius, proportional suite, and one frozen-SHA
-   GitHub Actions workflow; unchanged green fingerprints are cited without
-   execution, broad local runs are refused by default, and any candidate source/
-   test change invalidates direct check authority. Verify with
-   `taskplane/tests/test_ci_execution_policy.py::test_validation_progression_requires_one_authoritative_ci_run`.
-9. **AC-CI1 — Parallel bounded CI.** One pytest suite runs alongside
-   pairwise-disjoint quality/package and browser jobs with settings-derived
-   budgets and timeouts; every
-   serialization has a recorded dependency/shared-owner/authority reason; PR
-   supersession cancellation cannot cancel protected-main/release runs; and CI
-   meets the p50/p95, runner-minute, first-matrix, matrix-count, and at-least-4x
-   parallelism targets. Verify with
-   `taskplane/tests/test_ci_execution_policy.py::test_ci_shards_cleanup_and_candidate_freeze_are_authoritative`
-   and `taskplane/tests/test_ci_execution_policy.py::test_ci_metrics_meet_declared_targets`.
-10. **AC-CI2 — One classified correction wave.** One red workflow produces a
-    complete direct-failure inventory with product/test/infrastructure/environment
-    classification and one owner per cluster; unchanged green layers do not
-    rerun, and a third Plan return is mechanically converted to one bounded
-    stabilization successor. Verify with
-    `taskplane/tests/test_ci_failure_batching.py::test_red_matrix_is_classified_once_and_corrected_as_one_wave`
-    and `taskplane/tests/test_ci_failure_batching.py::test_third_plan_return_consolidates_coupled_surfaces`.
-11. **AC-CLN1 — All-outcome owned cleanup.** Success, failure, cancellation,
-    interruption, timeout, and handoff each execute cleanup for every registered
-    owned worktree, contract, process/process group, cache, generated state, and
-    test artifact; evidence survives and the post-check proves exactly zero
-    owned leaks. Verify with
-    `taskplane/tests/test_owned_cleanup.py::test_cleanup_runs_on_every_terminal_outcome`
-    and `taskplane/tests/test_owned_cleanup.py::test_cleanup_preserves_evidence_and_proves_zero_leaks`.
-12. **AC-CLN2 — Unsafe cleanup refusal and recovery.** Cleanup is idempotent and
-    replayable, refuses any foreign, dirty, symlinked, relocated, PID-reused,
-    containment-invalid, or ambiguous target, reports cleanup failure without
-    masking the original outcome, and never infers ownership from a prefix,
-    branch, age, or process name alone. Verify with
-    `taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets`
-    and `taskplane/tests/test_owned_cleanup.py::test_cleanup_replay_is_exact_and_idempotent`.
-13. **AC-P0 — Atomic startup and bounded workers.** Alternate-worktree startup
-    either atomically proves workspace, hook, stable launcher, session, settings,
-    and store identity before dispatch or creates no live contract/worktree; each
-    worker has zero inherited turns and only its bounded stage envelope. Verify
-    with `taskplane/tests/test_atomic_governed_preflight.py::test_preflight_is_atomic_before_any_worker_or_worktree`
-    and `taskplane/tests/test_stage_bounded_handoff.py::test_worker_receives_no_inherited_conversation_turns`.
-14. **AC-REL — Protected-main release truth.** PR validation retains least
-    privilege, immutable action/dependency pins, credential-empty untrusted jobs,
-    exact-head proof, and pre-merge first-parent simulation; release tooling
-    refuses a tag until the exact protected-main SHA has terminal green CI.
-    Verify with `taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green`
-    and `taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate`.
-15. **AC-MET — Measurable outcome receipt.** One closed, redacted wave receipt
-    records every baseline and target in this specification from non-cumulative
-    sources, distinguishes billing truth from log upper bounds, blocks sign-off
-    on a nonzero owned leak or unclassified ceiling breach, and names every
-    serialization. Verify with
-    `taskplane/tests/test_wave_metrics.py::test_wave_receipt_covers_baselines_targets_and_guardrails`.
-16. **AC-REG — Protected current-contract floor.** Test pruning and settings/
-    cleanup rewiring retain exact selectors for security and human authority,
-    host/session/store identity, malformed/stale receipt refusal, cross-host/
-    encoding/path portability, cache freshness, cleanup containment and races,
-    CI pins/locks/permissions, and release tag/version/provenance. Verify with
-    `taskplane/tests/test_governance_invariants.py`,
-    `taskplane/tests/test_consolidated_authority.py`,
-    `taskplane/tests/test_windows_portability.py`,
-    `taskplane/tests/test_stage_cross_host.py`,
-    `taskplane/tests/test_worker_contract_lifecycle.py`,
-    `taskplane/tests/test_worktree_cleanup.py`,
-    `taskplane/tests/test_release_tags.py`, and
-    `taskplane/tests/test_release_provenance.py`.
+1. **FP-AC01 — Verified bounded source coverage.** Verify files, modules, symbols, configuration, contracts, and runtime touchpoints once per bound input before decomposition. Default local depth is 3; report exact depth, fan-out, time, parser/language, ambiguity, policy, missing, unsupported, truncated, and rejected stopping conditions. Identical inputs produce deterministic semantic results and partial coverage never reads as complete. **Verification:** bounded source/graph cases cover changed, missing, ambiguous, unsupported, and truncated inputs and reject unverified proposals.
+2. **FP-AC02 — Dependency-derived tasks and complete seams.** Connected impacted subgraphs determine ownership and order; proposed extensions are verified before expansion. Every actual cut edge and declared runtime seam carries exact producer/consumer nodes and symbols, schema/version, cardinality, both owners, direction/order, distinct positive/severed selectors, and source/graph/requirement/Design/Plan/candidate provenance. **Verification:** public readiness rejects omitted nodes/edges, orphan or duplicate producers/consumers, wrong direction/order, unowned rows, and stale/incomplete bindings.
+3. **FP-AC03 — Integrated realized conformance.** Proposed overlays remain distinct from integrated as-built truth, and conformance detects added, removed/missing, changed, reversed, stale, and unexpected seams, including individually passing tasks whose shared contract disagrees. **Verification:** Engineering cannot approve before consuming current conformance and every seam proof; swapping overlay identity or removing a binding blocks the public outcome.
+4. **FP-AC04 — Faithful production-boundary proof.** Each required worker/task/phase/runtime seam passes with actual upstream production output and fails observably under one distinct targeted edge severance. **Verification:** reject missing, stale, foreign, multi-edge, ceremonial, non-failing, or consumer-fabricated boundary proof; an unavailable required runtime probe remains a blocking evidence gap.
+5. **FP-AC05 — Standalone Review and compatibility.** Review without Plan derives current source/diff seams without invented Plan authority, labels declared/derived and partial/timed-out/unsupported/truncated coverage, and reads eligible historical graph/evaluation-evidence/wiring records through deterministic migration or revalidation. **Verification:** standalone and historical-generation cases preserve originals and reject a second graph, seam, or evidence authority.
+6. **FP-AC06 — Entry, native capability, and identity.** Supported CLI/native launchers preserve the selected valid engine, arguments, contract, and enforcement; absent, invalid, or ambiguous candidates fail before effects. Capability precedes readiness. Runs/replacement attempts have unique native identities, review children bind their owner attempt, exact replay retains identity, and duplicate events converge through one observation owner. **Verification:** entry/capability cases plus a fresh real native spawn reject broken/foreign binding without widened authority.
+7. **FP-AC07 — C: substantive review admissibility.** Observed valid bytes and a reported pass cannot override a canonical policy-blocking unresolved finding or missing required evidence. Equal classifications yield equal applicable decisions; non-blocking debt/observations stay visible, and resolution requires current linked evidence. **Verification:** contradictory public collection cases plus append-only revalidation of relied-on historical passes; unavailable retained evidence is unverified and originals remain unchanged.
+8. **FP-AC08 — E: truthful authorized recovery.** Refusals name safe reason, phase/attempt, committed/observed/pending/uncertain effects, exact permitted continuation, prerequisites, and whether replacement is permitted. Missing terminal evidence names observation/wait/reconciliation rather than generic repair. **Verification:** public failures distinguish waiting, correction, setup, and authority; execution rechecks authority; unchanged retry preserves identity/completed work; repeated identical failure without progress stops; legitimate waits use the named event mechanism.
+9. **FP-AC09 — A: complete producer result.** Normal quality-enabled Design seals actual strategy bytes and every selected produced/inherited artifact, accessible evidence, and applicable quality authority; fresh Plan and Build consume only that package through public interfaces. **Verification:** removing, altering, or staling each required artifact yields its specific producer-completion or successor-admission refusal; no test inserts missing artifacts, receipts, or permission between phases.
+10. **FP-AC10 — B: recoverable attempts.** Owner/reviewer setup and pickup never advertise readiness with absent or inconsistent required records. Same-operation replay reconciles setup or returns its valid prior result; changed input under the identity is refused. **Verification:** phase/role fault injection at each persistence/external-effect boundary and host reconciliation before uncertain relaunch; unavailable reconciliation is a named blocker, never an exactly-once remote claim.
+11. **FP-AC11 — D: contributions and acceptance.** One task may contribute to multiple criteria, multiple tasks may contribute to one criterion, and each task/criterion may require several exact proofs plus separate joint integration evidence. Accountable ownership cannot exclude contributors, and task completion is not acceptance. **Verification:** public Plan/Build/acceptance cases block missing contribution/proof, stale candidate, or absent joint proof and never guess distinct shell commands equivalent.
+12. **FP-AC12 — J1: real native start through collection.** On an authorized supported real host, production interfaces provide genuine start/identity, terminal evidence, and actual collected output. **Verification:** retain exact real-host/evidence provenance; missing identity/terminal refuses without fabricated completion or duplicate launch, and unsupported capability refuses before readiness and stays unverified. Simulation or skip cannot satisfy J1.
+13. **FP-AC13 — J2: quality Design → Plan → Build.** A fresh trace carries the actual Design-selected strategy, complete outputs, and quality authority into fresh Plan and Build. **Verification:** remove or alter a required artifact through the same production connection and observe failure; label host mode and evidence origin, with simulated evidence unable to substitute for J1/J6.
+14. **FP-AC14 — J3: interruption and pickup.** Production-entry traces parameterize owner/reviewer roles and applicable phases across fresh pickup, interruption, cancellation, and duplicate events while preserving logical operation identity. **Verification:** persistence/effect fault injection asserts readiness records, launch counts, uncertain effects, and explicit real/simulated evidence labels.
+15. **FP-AC15 — J4: rejected review and bounded correction.** Production collection rejects a pass carrying a genuine blocker and progresses only through a bounded authorized correction to a corrected candidate with sufficient current evidence. **Verification:** unchanged failure preserves identity/completed work and stops blind retries; host mode, correction authority, unresolved evidence, and real/simulated labels remain explicit.
+16. **FP-AC16 — J5: multiple tasks and proofs.** An actual Plan-produced many-to-many contribution and multiple-proof package reaches Build and aggregate acceptance with joint behavior evidence. **Verification:** removing any required contribution/proof or changing candidate identity blocks the same journey; fixtures do not rewrite the producer package, and host mode is labeled.
+17. **FP-AC17 — J6: real finalization.** On a supported real host, production Build output supplies full accessible evidence to fresh Evaluate, independent Engineering review, applicable scoped human sign-off, Retro, and the declared Release/Publish/final outcome. **Verification:** missing downstream evidence or authority blocks at its boundary; PR-based delivery and separately authorized publication are evidenced. Build-only completion, documents, synthetic terminals, historical approval, or skips cannot satisfy J6.
+18. **FP-AC18 — Authority and retained obligations.** Each supported path distinguishes draft/interrupted output, mechanical validity, attributed progression authority, and human sign-off under the explicit applicable policy; recovery rechecks scope-valid recorded authorization. **Verification:** reject predecessor conversations/runtime, old Design/Plan/approval/review/completion claims, copied authentication, and stale fingerprints as authority; retain R-0001/R-0003 dependencies and leave P14/P23 separately open. R-0004 remains historical only because its applicable obligations are incorporated into R-0001.
+19. **FP-AC19 — Modest reuse and bounded migration.** Design maps each proposed unit to one responsibility, explicit inputs/outputs, incumbent capabilities, and current acceptance checks. Each bounded migration PR names removed or inactive superseded paths, additive/breaking compatibility, and feasible rollback. **Verification:** add a phase via definition/processing/domain validation using existing capabilities without shared dispatch/pickup/storage/hook/lifecycle changes; reject competing progression owners, unexplained infrastructure, or silently reinterpreted historical authority.
+20. **FP-AC20 — Honest telemetry and privacy.** Preserve run/phase/attempt/operation/candidate identity, continuation, timing, actual terminal outcome, last progress/wait, correction/replay counts, uncertain effects, missing evidence, and next permitted action. **Verification:** replay/duplicate events count attempt and provider usage once; usage includes source/cache semantics, absent values remain unavailable rather than zero, and exported diagnostics contain no secrets, full prompts/transcripts, copied authentication, or predecessor private runtime.
+21. **FP-AC21 — Fresh Product and Design handoff.** This specification and its one fresh requirement record are the only current Product deliverables; they do not authorize implementation or reuse former Design/Plan authority. **Verification:** Product artifact review maps all 21 R-0005 criteria and all six journeys without claiming code/runtime/Git/approval mutation; fresh Design binds current source, assigns owned exact positive/negative selectors, and settles policy, compatibility, rollout, rollback, and dependency-ordered slices before implementation authorization.
+
+## Six required journeys
+
+| Journey | Criteria | Required evidence and failure behavior |
+|---|---|---|
+| J1 — Real native start/terminal | FP-AC06, FP-AC12 | Actual supported host required. Missing identity/terminal refuses without fabrication or duplicate launch; unsupported stays unverified. |
+| J2 — Quality Design/Plan/Build | FP-AC09, FP-AC13 | Label real/simulated host and origin. Actual producer package crosses the production boundary; removed/altered artifact fails. Simulation cannot replace J1/J6. |
+| J3 — Interrupted setup/replay | FP-AC08, FP-AC10, FP-AC14 | Label real/simulated. Fault each persistence/effect boundary; preserve operation identity, reconcile uncertainty, and assert readiness/launch counts. |
+| J4 — Review/correction | FP-AC07, FP-AC08, FP-AC15 | Label real/simulated. A genuine blocker refuses; only authorized bounded correction progresses; unchanged failure stops. |
+| J5 — Tasks/proofs | FP-AC11, FP-AC16 | Label real/simulated. Production Plan package carries contributions, multiple proofs, and joint evidence; missing/stale elements block. |
+| J6 — Real finalization | FP-AC17, FP-AC18, FP-AC20 | Actual supported host required. Full evidence and authority cross every downstream boundary through Retro and PR-based final outcome. |
 
 ## Non-functional requirements
 
-- **security:** Settings and overrides never mint authority; malformed,
-  unsupported, tampered, stale, conflicting, or governance-weakening values fail
-  before state/dispatch. Selectors are structured and repo-contained rather than
-  shell-evaluated. CI retains least privilege and immutable supply-chain inputs.
-- **architecture:** One canonical settings document owns every configurable
-  default and one typed loader is the only operational-consumer boundary. Flow,
-  test, cleanup, cache, dashboard, and release consumers bind the same effective
-  digest; no compatibility adapter becomes a second source of truth.
-- **data-safety:** Cleanup and migration are atomic, idempotent, exact-owned,
-  evidence-preserving, anti-symlink/PID-reuse, and fail closed on uncertainty.
-- **sre:** Timeouts, budgets, concurrency, cancellation, retries, cleanup,
-  terminal states, and recovery are bounded and observable for all outcomes;
-  original failures are never hidden by cleanup failures.
-- **integrability:** Supported hosts, CLI/environment overlays, hooks, workflows,
-  CI, package-version forms, and one-release legacy artifacts share a versioned
-  schema and deterministic incompatibility behavior.
-- **privacy-compliance:** Receipts store bounded identifiers, digests, metrics,
-  and redacted source classes, never secrets, raw environment values, full
-  prompts/diffs, workstation identity, or unrelated private paths.
-- **cost-finops:** Broad validation is CI-first; duplicate green execution is
-  prevented; shards and worker sessions are bounded; the declared elapsed,
-  runner-minute, token, worktree, and matrix targets/ceilings are enforced and
-  reported.
+- **security:** Treat paths, symlinks, selectors, manifests, host events, and portable evidence as untrusted; enforce containment, exact identity/provenance, and current authority before effects or recovery. A hash or copied local receipt is not transferable authentication.
+- **architecture:** One active owner per migrated lifecycle/graph/seam/finding/acceptance responsibility; reuse incumbent small units and keep proposed/as-built truth distinct. Do not add a general framework, coordinator, store, parallel authority, arbitrary module target, or ceremonial fan-out.
+- **integrability:** Use exact versioned producer/consumer contracts, complete portable artifacts/evidence, typed refusals, multiple contributions/proofs, explicit additive/breaking classification, and deterministic eligible historical migration/revalidation; reject silent drift.
+- **data-safety:** Keep historical requirements, approvals, passes, and artifacts immutable; append revalidation, reconcile interrupted operations, reject changed-input replay, preserve completed work, and provide bounded rollback without dual owners.
+- **sre:** Bound traversal and correction, expose degraded capability/evidence and precise continuation, reconcile persistence/effect failures and duplicate events, preserve legitimate waits, and stop identical failing retries.
+- **privacy-compliance:** Export only necessary diagnostics/telemetry and safe reason codes with provenance; exclude secrets, full prompts/transcripts, private predecessor runtime, and copied authentication authority.
+- **cost-finops:** Default graph depth to 3 with explicit traversal/fan-out/time limits; avoid unnecessary whole-repository scans and worker fan-out; deduplicate replay and report provider/cache counters only with their actual availability and semantics.
+- **qa:** Require six production-boundary journeys, exact positive and targeted-severed evidence, current candidate binding, and real/simulated labels. Consumer fixtures, suite counts, skips, or synthetic observations cannot establish real-host completion.
+
+## Dependencies and contract handoff
+
+Requirement dependencies are unresolved inputs and must be recorded once each: **R-0001** and **R-0003**. R-0004 is historical rather than a separate active dependency because its applicable obligations are incorporated into R-0001. No completion is imported. R-0005 is the lineage source, not a dependency that authorizes current work.
+
+Canonical boundary IDs are separate from their relation:
+
+| Boundary ID | Relation |
+|---|---|
+| `contract:graph-decomposition` | changes |
+| `contract:slice-validation` | changes |
+| `contract:taskplane-source-touchpoint-coverage-v1` | changes |
+| `contract:taskplane-cross-task-seam-manifest-v1` | changes |
+| `contract:taskplane-realized-seam-conformance-v1` | changes |
+| `contract:taskplane-standalone-review-seams-v1` | changes |
+| `contract:taskplane.stage-handoff/v2` | changes |
+| `contract:taskplane.phase-progress-receipt/v1` | changes |
+| `contract:taskplane.phase-pickup-result/v1` | changes |
+| `contract:taskplane.phase-review-collection/v1` | changes |
+| `contract:taskplane.phase-host-dispatch/v1` | changes |
+| `contract:taskplane.stage-authority-binding/v1` | consumes |
+
+These names preserve R-0005 boundary identity; they do not assert that every version exists in 2.19.0. Design must verify availability and ownership, classify each change as additive or breaking, define deterministic historical reads/revalidation, identify retired/inactive paths, and specify rollback before implementation.
 
 ## Contract handoff
 
-```yaml
-scope_paths:
-  - taskplane/**
-  - hooks/**
-  - agents/**
-  - skills/**
-  - workflows/**
-  - scripts/**
-  - .github/workflows/**
-  - .codex-plugin/**
-  - .claude-plugin/**
-  - docs/**
-  - README.md
-  - pyproject.toml
-  - requirements-dev.lock
-  - components.yaml
-  - lenses/**
-  - specs/spec.md
-  - design/**
-  - plan/**
-out_of_scope:
-  - unrelated user-facing feature redesign
-  - private knowledge deletion
-  - unowned or ambiguous cleanup targets
-  - a second authoritative settings store
-  - actual push, merge, tag, publish, or installation without its later gate
-contracts:
-  - contract:configuration.effective-settings
-  - contract:delivery.flow-initialization
-  - contract:validation.test-strategy
-  - contract:ci.authoritative-validation
-  - contract:lifecycle.owned-cleanup
-  - contract:release.protected-main-green
-  - resource:configuration.effective-settings-receipt
-  - resource:lifecycle.cleanup-receipt
-  - resource:delivery.wave-metrics
-dod:
-  local_test_command: >-
-    python3 -m pytest <exact selector(s) from the approved task> -q
-  authoritative_test_command: >-
-    GitHub Actions exact-candidate matrix selected by the approved settings
-```
+- `scope_paths`: current-source Design must resolve the exact implementation paths within the incumbent graph/decomposition, wiring/evidence, lifecycle/persistence, host/delivery, review/acceptance, launcher, documentation, and directly affected test surfaces. Historical removed paths are not mandatory scope.
+- `context_files`: `specs/spec.md`, `specs/r0005-restart/spec.md`, `specs/r0005-restart/intake.json`, `specs/r0005-restart/inputs/R-0005.md`, `specs/r0005-restart/inputs/consolidated-improvement-report.md`.
+- `out_of_scope`: every exclusion above, especially implementation during Product, inherited authority, external-service internals, duplicate coordination/storage/authority, arbitrary module targets, and fabricated evidence.
+- `dod.test_command`: `python3 -m unittest discover -s taskplane/tests -p 'test_*.py'`. This is an aggregate execution entrypoint, not proof of any criterion by itself and not closure of P23; Design/Plan must map every criterion and journey to owned exact positive and negative selectors and required real-host evidence.
+- `next_phase`: fresh governed Design is mandatory before Plan or implementation because this is cross-module, contract-changing, recovery-sensitive, native-host-dependent, and materially ambiguous work.
 
-## Dependencies and open questions
+## Design decisions to settle; not Product blockers
 
-- Requirement dependencies: none.
-- Material serialization reasons: Product must precede Design; Design must
-  precede Plan; consolidated human authorization must precede Build; producing
-  slices must precede their consumer freshness checks; implementation must
-  precede direct zero-lens Evaluate; Evaluate must precede Engineering; exact
-  protected-main green must precede any release tag. All other pairwise-disjoint
-  work and CI shards execute concurrently.
-- Open questions: none. Design owns the canonical file path, schema shape,
-  compatibility adapter placement, test-family adjudication ledger, and cleanup
-  component boundaries without changing this Product contract.
+1. Which explicit approval policy applies consistently to every supported path, recorded scope-valid reuse, interrupted drafts, independent review, human sign-off, and separate publishing authority?
+2. Which supported native host/version and production observation contract provide real start/identity/terminal evidence, and what smallest scoped transport change is required if current capability is insufficient?
+3. Which input/boundary versions exist in 2.19.0, which historical generations remain readable, and which bounded migrations are additive or breaking with one active owner, retired paths, and rollback?
+4. Which exact owned public positive/negative selectors and dependency-ordered PR slices prove all 21 criteria and six journeys against the selected candidate while preserving C → E → A → B → D risk priority?
 
-## Product focused-lens route
-
-Taskplane selected a deterministic quick route of `product`, `security`, and
-`cost-finops`. Those three quick lenses executed in parallel. The remaining 23
-catalog lenses were not separately executed at Product because their Product
-risks are either absent or expressed as binding acceptance/NFR constraints for
-Design and Plan; the complete machine disposition ledger remains in the
-Taskplane route receipt.
+These questions require Design judgment against current source. They do not authorize reuse of former Design/Plan, weaken acceptance, or block this complete Product requirement.

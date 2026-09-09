@@ -1,1 +1,18 @@
-{"schema":"taskplane.design-lens-result/v1","lens":"privacy-compliance","worker_identity":"tp_lens_design_privacy_compliance_ac593493","team_plan_fingerprint":"91e8ebcc3f448b43bf6958067290d26a27590585f90f301beb7493a0a0cbc337","candidate_fingerprint":"b14fa9c51ad1561e12f013c85e5e7923d89c6c268b1ca0f878758cce74421287","outcome":"changes-required","findings":["Evaluator activity is incomplete, diagnostics can contain private text, dashboard generations are unbounded, and Retro exports retain excessive local detail."],"decisions":["Keep detailed logs private, publish pseudonymous attempt references, use allowlisted exports and TTLs, and preserve minimized evidence through cleanup."],"fingerprint":"f9ffa1dbd21aabae4d918a3f1c734fa96432b12168aca776b408bff1ecf3f6e6"}
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "privacy-compliance",
+  "worker_identity": "tp_lens_design_privacy_compliance_ac593493",
+  "team_plan_fingerprint": "4325e85b896cd576e5d62e18547e28a7bb4d124a8cd8ff5cde76519d58f01ad8",
+  "candidate_fingerprint": "80024e6bbe65df8b868bd0c68fbcd8a6d62fcd6bc5c8cee9cf290ed5ec191e60",
+  "outcome": "changes-required",
+  "findings": [
+    "design/design.md:1 and design/contract.json:3 identify the checked-in Design as R-0002, while design/contract.json:203-207 retains the prior team and candidate fingerprints. The active requirement is R-0001 and expressly rejects former Design authority at specs/spec.md:33,83,86, so the existing privacy assertions cannot establish current collection, flow, retention, deletion, default, or ownership decisions.",
+    "design/design.md:23-27 and design/contract.json:145-157 make telemetry, agent-activity, and Retro evidence durable across cleanup, but the only privacy treatment is the prose risk mitigation at design/contract.json:186. It does not define a field-level private-versus-portable allowlist, forbidden-field rejection, pseudonym linkability boundary, retention duration and trigger, deletion propagation to downstream copies, cleanup receipt, or accountable privacy decision owner. That leaves no failing-capable proof that exports exclude secrets, full prompts/transcripts, predecessor private runtime, and copied authentication authority as required by specs/spec.md:37,85,106."
+  ],
+  "decisions": [
+    "Regenerate the privacy design under the active R-0001 candidate. Inventory each collected field and data flow across private run state, dashboards, telemetry, agent activity, diagnostics, Retro, and release artifacts; record purpose, necessity, access boundary, privacy-protective default, applicable opt-out or non-applicability rationale, retention owner, and downstream deletion behavior.",
+    "Define exact portable schemas as positive allowlists: emit provenance references and safe reason codes instead of copied prompts, transcripts, private runtime, credentials, authentication receipts, or free-form diagnostic payloads; reject forbidden fields before persistence/export and make pseudonymous identifiers unlinkable outside the bounded run purpose.",
+    "Bind FP-AC20 and J6 to current positive and severed selectors that inject representative secrets, prompts, private paths, identities, copied authority, and duplicate/replay events; prove minimized exports, single-counted usage, explicit unavailable values, idempotent retention/deletion through every downstream copy, preserved evidence on cleanup failure, and an attributable deletion/minimization receipt."
+  ],
+  "fingerprint": "c1b61c1fd1fe5cbd8740294b11823f13cf890902d1dc490f05467029c5983c2c"
+}

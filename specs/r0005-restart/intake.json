@@ -391,7 +391,7 @@
       "id": "FP-AC18",
       "title": "Authority and retained obligations",
       "requirement": "All supported paths distinguish draft/interrupted output, mechanical validity, and attributed progression authority under the explicit applicable policy; recovery rechecks recorded scope-valid authorization.",
-      "verification": "Reject predecessor conversations/runtime, old Design/Plan/approvals/reviews/completion claims, and stale fingerprints as current authority. Retain R-0004 and R-0001/R-0003 dependencies; keep P14 native canary and P23 whole-suite adjudication separately open.",
+      "verification": "Reject predecessor conversations/runtime, old Design/Plan/approvals/reviews/completion claims, and stale fingerprints as current authority. Retain R-0001/R-0003 dependencies; keep P14 native canary and P23 whole-suite adjudication separately open. R-0004 remains historical only because its applicable obligations are incorporated into R-0001.",
       "source_criteria": [
         "R-0005:AC18"
       ],
@@ -643,10 +643,6 @@
   "dependency_obligations": {
     "requirement_dependencies": [
       {
-        "id": "R-0004",
-        "status": "unresolved_input_preserved"
-      },
-      {
         "id": "R-0001",
         "status": "unresolved_input_preserved"
       },
@@ -655,7 +651,7 @@
         "status": "unresolved_input_preserved"
       }
     ],
-    "deduplication": "R-0004 is repeated in the source; retain one dependency without dropping its substantive obligations.",
+    "deduplication": "R-0004 remains historical rather than a separate active dependency; its applicable substantive obligations are incorporated into R-0001.",
     "obligations": [
       {
         "id": "DEP-01",
