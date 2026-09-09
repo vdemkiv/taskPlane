@@ -1389,9 +1389,19 @@ def publish_design_decomposition(ws: str, artifact_root, receipt: object) -> dic
 
 
 def _scan_volatile_stripped(g: dict) -> str:
-    """Canonical JSON of a graph minus the volatile meta timestamps — the
-    only fields that move on a content-identical rescan."""
+    """Compare content, not timestamps or validated scan elapsed observations."""
     meta = {k: v for k, v in (g.get("meta") or {}).items() if k not in ("updated_at", "scanned_at")}
+    if "source_coverage" in meta:
+        try:
+            coverage = require_complete_source_coverage(
+                meta["source_coverage"], source_tree=meta.get("source_tree"))
+        except ValueError:
+            pass  # Corrupt/partial proof is not a reusable complete scan.
+        else:
+            coverage.pop("fingerprint")
+            for row in coverage["touchpoints"].values():
+                row.pop("elapsed_ms", None)
+            meta["source_coverage"] = coverage
     stable = {k: v for k, v in g.items() if k != "meta"}
     stable["meta"] = meta
     return json.dumps(stable, sort_keys=True, default=str)

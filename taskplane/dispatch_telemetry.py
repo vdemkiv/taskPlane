@@ -27,16 +27,16 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING or __package__:
     from .delivery_policy import DeliveryPolicyError
     from .delivery_ports import Clock, canonical_json, content_fingerprint
-    from . import native_session_meter, producer_observation, stage_handoff, stage_entities
+    from . import native_session_meter
     from .spend import WEIGHTS, normalize_usage
 else:  # pragma: no cover - direct module loading
     from delivery_policy import DeliveryPolicyError
     from delivery_ports import Clock, canonical_json, content_fingerprint
     import native_session_meter
-    import producer_observation
-    import stage_handoff
-    import stage_entities
     from spend import WEIGHTS, normalize_usage
+
+if TYPE_CHECKING:
+    from . import producer_observation, stage_handoff
 
 
 LEDGER_SCHEMA = "taskplane.dispatch-telemetry-ledger/v1"
@@ -207,6 +207,11 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
     proposal inventory. Rejected/conflicting updates remain visible. This
     prerequisite does not grant a gate, native evidence, or lifecycle authority.
     """
+    if TYPE_CHECKING or __package__:
+        from . import stage_handoff, stage_entities
+    else:
+        import stage_handoff
+        import stage_entities
     if inputs.resource_limits_advisory:
         key_id = inputs.runtime_receipt.get("key_id")
         issued_at = inputs.runtime_receipt.get("issued_at")

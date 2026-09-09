@@ -69,12 +69,12 @@ import storage as runtime_storage
 import spend
 import taskplane_lite as tp
 import yield_meter
-from taskplane import run_context, phase_harness
 
 if TYPE_CHECKING:
     from taskplane.review_evidence import ArtifactStore
 
 if __package__:
+    from . import run_context, phase_harness
     from . import brief_projection
     from . import delivery_policy
     from . import dispatch_telemetry
@@ -96,6 +96,8 @@ if __package__:
     from . import wave_metrics
     from .delivery_ports import SystemClock
 else:  # pragma: no cover - direct CLI module loading
+    import run_context
+    import phase_harness
     import brief_projection
     import delivery_policy
     import dispatch_telemetry
@@ -104,7 +106,7 @@ else:  # pragma: no cover - direct CLI module loading
     import lens_route_policy
     import native_session_meter
     import owned_cleanup
-    from taskplane import settings as operational_settings
+    import settings as operational_settings
     import plan_topology
     import release_evidence
     import run_artifacts

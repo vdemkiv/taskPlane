@@ -14,18 +14,18 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
 
-from taskplane.delivery_ports import (
-    Clock,
-    DeliveryPortError,
-    EvidenceStore,
-    HostActionCapabilitySource,
-    ProducerEventSource,
-    content_fingerprint,
-    LocatorEvidenceStore,
-    SystemClock,
-)
+if TYPE_CHECKING or __package__:
+    from .delivery_ports import (
+        Clock, DeliveryPortError, EvidenceStore, HostActionCapabilitySource,
+        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock,
+    )
+else:
+    from delivery_ports import (
+        Clock, DeliveryPortError, EvidenceStore, HostActionCapabilitySource,
+        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock,
+    )
 
 
 PRODUCER_OBSERVATION_SCHEMA = "taskplane.producer-observation/v1"
