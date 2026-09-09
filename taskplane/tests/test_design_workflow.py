@@ -325,6 +325,32 @@ class DesignWorkflowTest(unittest.TestCase):
         self.assertEqual(action["step"], "design")
         self.assertIn("unresolved", " ".join(action["dor"]["blockers"]))
 
+    def test_changed_design_input_gets_fresh_native_workers_and_output_paths(self):
+        from pathlib import Path
+
+        loop.init(self.ws, "design isolated attempts", spec_path="specs/x.md",
+                  requirement_id=self.req["id"], design=True)
+        first = loop.next_action(self.ws)
+        self.assertIsNone(first.get("error"))
+        workers = first["design_lens_dispatches"]
+        expected = tp.peek_expectation(self.ws, workers[0]["task_name"], strict=True)
+        self.assertTrue(tp.native_worker_role_matches(
+            self.ws, expected, workers[0]["task_name"]))
+        self.assertFalse(tp.native_worker_role_matches(
+            self.ws, {**expected, "intent_id": "0" * 64}, workers[0]["task_name"]))
+        old_result = Path(self.ws) / workers[0]["output"]
+        old_result.parent.mkdir(parents=True, exist_ok=True)
+        old_result.write_text("retained first attempt")
+        Path(self.ws, "src/core/a.py").write_text("VALUE = 2\n")
+        second = loop.next_action(self.ws)
+        later = second["design_lens_dispatches"]
+        self.assertNotEqual(first["design_team_plan"]["fingerprint"],
+                            second["design_team_plan"]["fingerprint"])
+        for field in ("task_name", "task_slot", "output"):
+            self.assertFalse({row[field] for row in workers} &
+                             {row[field] for row in later}, field)
+        self.assertEqual(old_result.read_text(), "retained first attempt")
+
     def test_design_gate_approves_and_fingerprints_evidence(self):
         loop.init(self.ws, "design this", spec_path="specs/x.md",
                   requirement_id=self.req["id"], design=True)

@@ -1705,6 +1705,13 @@ def _design_team_plan(
     workers = []
     generation = len(state.get("replan_history") or []) if stage == "plan" else 0
     generation_suffix = f"-replan-{generation}" if generation else ""
+    if stage == "design":
+        # A changed input is a fresh native worker and result slot. Reusing a
+        # role-only name can bind a retry to a stopped child or overwrite its
+        # evidence, even when the new team fingerprint is different.
+        generation_suffix = "-input-" + hashlib.sha256(json.dumps(
+            dict(binding), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()[:12]
     for lens_id in selected:
         # ``tp-lens`` is intentionally host-neutral and therefore has no
         # agent-to-stage mapping of its own.  The historical ``quick`` value

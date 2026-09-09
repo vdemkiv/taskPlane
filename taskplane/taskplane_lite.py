@@ -5774,6 +5774,46 @@ def bind_worker_contract_event(workspace: str, event: dict, *,
         return _bind_worker_contract_slot(workspace, slot, owner, now=now)
 
 
+def native_worker_role_matches(workspace: str, expected: dict,
+                               task_name: str) -> bool:
+    """Authenticate a native role when the host does not expose prompt text.
+
+    The declared name alone is insufficient: require the single pending
+    engine-owned contract, its signed authority, and matching role identity.
+    This does not activate a child or manufacture a dispatch observation.
+    """
+    if expected.get("task_name") != task_name:
+        return False
+    marker = role_marker(str(expected.get("agent") or ""))
+    if expected.get("role_marker") != marker:
+        return False
+    matches = [(slot, contract) for slot, contract in
+               _active_worker_contracts(workspace)
+               if (contract.get("worker_lifecycle") or {}).get(
+                   "expected_task_name") == task_name]
+    if len(matches) != 1:
+        return False
+    slot, contract = matches[0]
+    lifecycle = contract["worker_lifecycle"]
+    if lifecycle.get("status") != "pending" or \
+            lifecycle.get("owner") is not None or \
+            lifecycle.get("expected_role_marker") != marker:
+        return False
+    _verify_worker_release_action(
+        workspace, slot, lifecycle.get("release_action"), contract)
+    if any(lifecycle.get(key) is not None for key in (
+            "design_host_authority", "plan_host_authority")):
+        authority = _design_host_transport()._contract_authority(
+            sys.modules[__name__], workspace, contract)
+        if authority is None or authority["assignment"].get(
+                "task_name") != task_name or lifecycle.get(
+                "dispatch_intent_id") != expected.get("intent_id") or \
+                lifecycle.get("dispatch_intent_run_id") != expected.get(
+                    "intent_run_id"):
+            return False
+    return True
+
+
 def _bind_worker_contract_slot(workspace: str, slot: str, owner: dict, *, now=None) -> dict:
     # Serialize activation with exact-slot recovery; a delayed Start cannot
     # resurrect an administratively retired pending contract.

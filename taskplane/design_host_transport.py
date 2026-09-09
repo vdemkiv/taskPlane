@@ -612,6 +612,12 @@ def _validate_plan(kernel: Any, plan: object) -> list[JsonDict]:
         slot = str(worker.get("task_slot") or "")
         output = str(worker.get("output") or "")
         generation_suffix = ""
+        if stage == "design" and slot != f"design-lens-{lens}":
+            prefix = f"design-lens-{lens}"
+            generation_suffix = slot.removeprefix(prefix)
+            if not slot.startswith(prefix) or re.fullmatch(
+                    r"-input-[0-9a-f]{12}", generation_suffix) is None:
+                raise ValueError("Design lens input generation is invalid")
         if stage == "plan" and slot != f"plan-lens-{lens}":
             prefix = f"plan-lens-{lens}-replan-"
             generation = slot.removeprefix(prefix)

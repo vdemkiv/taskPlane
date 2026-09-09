@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -63,6 +64,66 @@ def test_pending_worker_slot_never_governs_orchestrator(tmp_path):
     assert worker["task_id"] == contract["task_id"]
     assert worker["worker_lifecycle"]["status"] == "active"
     assert tp.load_active(str(tmp_path)) is None
+
+
+def test_native_dispatch_authenticates_role_without_readable_prompt(
+        tmp_path, monkeypatch, capsys):
+    name = "tp_step_product_pm_deadbeef"
+    contract = _active_worker(tmp_path, name=name)
+    tp.record_expected_dispatch(str(tmp_path), "step", "tp-product", "deep",
+                                None, task_name=name, reasoning_effort="high")
+    event = {"cwd": str(tmp_path), "tool_name": "spawn_agent", "tool_input": {
+        "task_name": name, "model": None, "reasoning_effort": "high",
+        "fork_turns": "none", "message": "host-protected-prompt"}}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    monkeypatch.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
+    assert cli.cmd_screen_dispatch(types.SimpleNamespace()) == 0
+    assert "deny" not in capsys.readouterr().out
+    assert tp.peek_expectation(str(tmp_path), name) is None
+    current = tp.load_json(tp.active_contract_path(str(tmp_path), contract["task_slot"]))
+    assert current["worker_lifecycle"]["status"] == "pending"
+    assert current["worker_lifecycle"]["owner"] is None
+
+
+@pytest.mark.parametrize("damage", ["missing", "foreign-name", "foreign-role",
+                                   "wrong-signature", "already-started"])
+def test_native_role_requires_exact_pending_signed_worker(tmp_path, damage):
+    name = "tp_step_product_pm_deadbeef"
+    expected = {"task_name": name, "agent": "tp-product",
+                "role_marker": "taskplane-role:tp-product"}
+    if damage != "missing":
+        contract = _active_worker(tmp_path, name=name)
+        if damage == "foreign-name":
+            expected["task_name"] = "tp_step_product_pm_foreign"
+        elif damage == "foreign-role":
+            expected["role_marker"] = "taskplane-role:tp-executor"
+        elif damage == "already-started":
+            tp.bind_worker_contract_event(str(tmp_path), _event(tmp_path), now=11)
+        elif damage == "wrong-signature":
+            contract["worker_lifecycle"]["release_action"]["signature"] = "0" * 64
+            tp.atomic_write_json(tp.active_contract_path(str(tmp_path),
+                                                         contract["task_slot"]), contract)
+    if damage == "wrong-signature":
+        with pytest.raises(tp.StateError, match="signature is invalid"):
+            tp.native_worker_role_matches(str(tmp_path), expected, name)
+    else:
+        assert tp.native_worker_role_matches(str(tmp_path), expected, name) is False
+
+
+def test_plaintext_contradictory_role_is_not_replaced_by_contract(
+        tmp_path, monkeypatch, capsys):
+    name = "tp_step_product_pm_deadbeef"
+    _active_worker(tmp_path, name=name)
+    tp.record_expected_dispatch(str(tmp_path), "step", "tp-product", "deep",
+                                None, task_name=name, reasoning_effort="high")
+    event = {"cwd": str(tmp_path), "tool_name": "spawn_agent", "tool_input": {
+        "task_name": name, "model": None, "reasoning_effort": "high",
+        "fork_turns": "none", "message": "taskplane-role:tp-executor"}}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    monkeypatch.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
+    cli.cmd_screen_dispatch(types.SimpleNamespace())
+    assert "deny" in capsys.readouterr().out
+    assert tp.peek_expectation(str(tmp_path), name) is not None
 
 
 def test_control_plane_reads_exact_worker_snapshot_without_root_binding(

@@ -1656,15 +1656,24 @@ def cmd_screen_dispatch(a) -> int:
             exp.get("agent", "")))
         marker_present = bool(marker) and any(
             line.strip() == marker for line in message.splitlines())
+        bound_role = False
+        if native_codex and exp is not None and not marker_present and \
+                "taskplane-role:" not in message:
+            # Codex may protect prompt contents in tool events. Authenticate
+            # the role against the exact signed pending worker, never an
+            # opaque prompt prefix or an assumed role from a task name.
+            bound_role = tp.native_worker_role_matches(ws, exp, str(agent))
         role_ok = exp is None or (
-            marker_present if native_codex else
+            (marker_present or bound_role) if native_codex else
             not ti.get("role") or ti.get("role") == exp.get("agent"))
         ok = name_ok and not unknown_governed and model_ok and effort_ok \
             and context_ok and role_ok
         tp.trace(ws, "native_dispatch_checks", name_ok=name_ok,
                  known_brief=not unknown_governed, model_ok=model_ok,
                  effort_ok=effort_ok, context_ok=context_ok, role_ok=role_ok,
-                 message_present=bool(message))
+                 message_present=bool(message),
+                 role_basis=("prepared-worker-contract" if bound_role else
+                             "prompt-marker" if marker_present else "unavailable"))
         if ok and exp is not None and exp.get("intent_id"):
             try:
                 import spend as _spend
