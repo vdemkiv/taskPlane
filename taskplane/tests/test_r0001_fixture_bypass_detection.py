@@ -4,12 +4,19 @@ Passing these tests does not provide W01-W34 or native journey evidence.
 """
 from __future__ import annotations
 
+import json
 import pytest
 
 from taskplane import test_strategy
 
 
 CASES = {
+    "constructed_strategy": "strategy = {'schema': 'test-strategy/v1'}\nconsume(strategy)",
+    "inserted_receipt": "result = produce()\nresult['receipt'] = {}\nconsume(result)",
+    "synthetic_terminal": "terminal = {'status': 'complete'}\nconsume(terminal)",
+    "copied_dispatch_permission": "permission = copy.deepcopy(produce())\nconsume(permission)",
+    "fixture_rewritten_package": "package = produce()\npackage['artifacts'] = stored_fixture\nconsume(package)",
+    "monkeypatched_producer": "monkeypatch.setattr(owner, 'produce', replacement)\nconsume(produce())",
     "constructed": "result = {'accepted': True}\nconsume(result)",
     "synthesized-envelope": "result = encode({'accepted': True})\nconsume(result)",
     "inserted": "result = produce()\nresult['missing'] = {}\nconsume(result)",
@@ -30,13 +37,20 @@ CASES = {
 
 
 @pytest.mark.parametrize("case", CASES, ids=CASES)
-def test_review_detects_arbitrary_test_code_that_fabricates_missing_producer_outputs(case):
+def test_review_detects_arbitrary_test_code_that_fabricates_missing_producer_outputs(case, request, record_property):
     report = test_strategy.inspect_boundary_test(
         CASES[case], filename="changed_test.py", producer_api="produce", consumer_api="consume")
     assert report["boundary_eligible"] is False
     assert report["findings"], case
     assert report["scanned_files"] == ["changed_test.py"]
     assert report["source_fingerprint"]
+    record_property("fixture_bypass_case", json.dumps({
+        "selector": request.node.nodeid, "case_id": case,
+        "source_fingerprint": report["source_fingerprint"],
+        "scanned_files": report["scanned_files"], "findings": report["findings"],
+        "collected": True, "executed": True, "outcome": "refused",
+        "evidence_class": "consumer-unit", "boundary_eligible": False,
+    }, sort_keys=True))
 
 
 def test_labeled_consumer_unit_fixture_is_allowed_but_never_counts_as_boundary_evidence():
