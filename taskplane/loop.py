@@ -5473,8 +5473,8 @@ def _next_deferred_build_index(state: Mapping, completing: str | None = None) ->
     raise ValueError("deferred Build has no dependency-ready task; Engineering remains owed")
 
 
-def _advance_build_with_review_deferred(ws: str, state: dict) -> bool:
-    """Only a verified Build gate may append another non-judged completion."""
+def _advance_build_with_review_deferred(ws: str, state: dict, *, human_resolution: dict | None = None) -> bool:
+    """Advance verified Build or explicitly human-accepted legacy completion."""
     policy = _build_review_deferred(state)
     if policy is None:
         return False
@@ -5484,7 +5484,7 @@ def _advance_build_with_review_deferred(ws: str, state: dict) -> bool:
             or state.get("_build_failed") or task.get("_build_failed")):
         raise ValueError("only an undispatched successful Build may defer review")
     suite = (state.get("_suite_evidence") or {}).get(task["id"])
-    if (not isinstance(suite, dict) or suite.get("returncode") != 0
+    if human_resolution is None and (not isinstance(suite, dict) or suite.get("returncode") != 0
             or suite.get("command") != task.get("tests") or not suite.get("key")):
         raise ValueError("deferred review still requires the exact passing Build tests")
     candidate = tp.git_head(ws)
@@ -5493,8 +5493,14 @@ def _advance_build_with_review_deferred(ws: str, state: dict) -> bool:
     next_index = _next_deferred_build_index(state, task["id"])
     task["status"] = "passed"
     task["evaluation"] = {"task": task["id"], "status": "deferred", "verdict": "non-judged",
-        "reason_code": "human-deferred-to-em", "detail": "Build tests passed; independent Engineering review remains owed.",
-        "policy_fingerprint": policy["fingerprint"], "build_candidate": candidate, "suite_key": suite["key"]}
+        "policy_fingerprint": policy["fingerprint"], "build_candidate": candidate}
+    if human_resolution is None:
+        task["evaluation"].update(reason_code="human-deferred-to-em",
+            detail="Build tests passed; independent Engineering review remains owed.", suite_key=suite["key"])
+    else:
+        task["human_resolution"] = dict(human_resolution, build_candidate=candidate)
+        task["evaluation"].update(reason_code="human-accepted-build-review-deferred",
+            detail="Human accepted Build completion; no current test run or independent review is claimed. EM review remains owed.")
     pending = state.setdefault("deferred_review_tasks", [])
     if task["id"] not in pending:
         pending.append(task["id"])
@@ -16102,6 +16108,7 @@ def _cascade_skip(state: dict, root_id: str) -> list:
 @run_context.operation
 def resolve(
         ws: str, decision: str, *, by: str | None = None,
+        run_id: str | None = None, task_id: str | None = None, reason: str | None = None,
         accept_producer_receipt_outage: bool = False,
         outage_fingerprint: str | None = None, phase_operation: str | None = None,
         candidate_fingerprint: str | None = None, worker_stopped: bool = False) -> dict:
@@ -16109,6 +16116,13 @@ def resolve(
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     state = load(ws)
+    if decision == "defer-review":
+        if phase_operation or candidate_fingerprint or worker_stopped or accept_producer_receipt_outage or outage_fingerprint:
+            return {"error": "defer-review accepts only --by, --run-id, --task and --reason"}
+        return loop_recovery.resolve_deferred_review(sys.modules[__name__], ws,
+            by=by or "", run_id=run_id or "", task_id=task_id or "", reason=reason or "")
+    if run_id is not None or task_id is not None or reason is not None:
+        return {"error": "--run-id, --task and --reason require defer-review"}
     if decision == "limits-advisory":
         if state is None or phase_operation or candidate_fingerprint or worker_stopped:
             return {"error": "limits-advisory requires only the existing run and human --by"}

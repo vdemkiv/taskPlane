@@ -395,10 +395,13 @@ def _legacy_results(state: Mapping, plan: Mapping, requirement: Mapping) -> None
                 or not set(task.get("deps") or []) <= passed):
             raise ValueError("legacy completion is not unchanged, dependency-closed non-judged Build")
         if evaluation.get("status") == "deferred":
-            if (evaluation.get("reason_code") != "human-deferred-to-em"
+            human_accepted = evaluation.get("reason_code") == "human-accepted-build-review-deferred"
+            if human_accepted:
+                _human_deferred_review(state, task, policy)
+            if (evaluation.get("reason_code") not in {"human-deferred-to-em", "human-accepted-build-review-deferred"}
                     or evaluation.get("policy_fingerprint") not in policies
                     or not re.fullmatch(r"[a-f0-9]{40}", str(evaluation.get("build_candidate", "")))
-                    or not re.fullmatch(r"[a-f0-9]{64}", str(evaluation.get("suite_key", "")))
+                    or (not human_accepted and not re.fullmatch(r"[a-f0-9]{64}", str(evaluation.get("suite_key", ""))))
                     or task.get("target_commit") or task.get("reanchor_authority")):
                 raise ValueError("deferred Build evidence is missing, stale or promoted to a pass")
             deferred.append(task["id"])
@@ -414,6 +417,62 @@ def _legacy_results(state: Mapping, plan: Mapping, requirement: Mapping) -> None
     if len(set(state.get("deferred_review_tasks", []))) != len(deferred) or \
             set(state.get("deferred_review_tasks", [])) != set(deferred):
         raise ValueError("deferred review obligations changed")
+
+
+def _human_deferred_review(state: Mapping, task: Mapping, policy: Mapping) -> dict:
+    resolution = task.get("human_resolution") or {}
+    evaluation = task.get("evaluation") or {}
+    if (resolution.get("decision") != "defer-review" or resolution.get("run_id") != state.get("run_id")
+            or resolution.get("task") != task.get("id") or resolution.get("actor") != policy.get("by")
+            or not isinstance(resolution.get("reason"), str) or not resolution["reason"].strip()
+            or resolution.get("policy_fingerprint") != policy.get("fingerprint")
+            or evaluation.get("policy_fingerprint") != policy.get("fingerprint")
+            or resolution.get("build_candidate") != evaluation.get("build_candidate")
+            or evaluation.get("reason_code") != "human-accepted-build-review-deferred"
+            or evaluation.get("status") != "deferred" or evaluation.get("verdict") != "non-judged"
+            or task.get("status") != "passed" or "suite_key" in evaluation
+            or task.get("target_commit") or task.get("reanchor_authority")):
+        raise ValueError("human-accepted Build deferral is missing, foreign or promoted to evidence")
+    return resolution
+
+
+def resolve_deferred_review(runtime, workspace: str, *, by: str, run_id: str, task_id: str, reason: str) -> dict:
+    """One attributed legacy completion; never a test or independent-review pass."""
+    if not by.startswith("human:") or not all(value.strip() for value in (by, run_id, task_id, reason)):
+        return {"error": "defer-review requires explicit human --by, --run-id, --task and --reason"}
+    try:
+        with runtime.mutate(workspace) as state:
+            if state is None or state.get("run_id") != run_id or legacy_continuation(state, workspace) is None:
+                raise ValueError("defer-review requires the exact admitted legacy run")
+            policy = legacy_review_policy(state)
+            if policy is None or by != policy["by"]:
+                raise ValueError("defer-review actor differs from the saved human review policy")
+            task = next((row for row in state.get("tasks", []) if row.get("id") == task_id), None)
+            if task is None:
+                raise ValueError("defer-review task is foreign")
+            if (task.get("human_resolution") or {}).get("decision") == "defer-review":
+                saved = _human_deferred_review(state, task, policy)
+                if saved["actor"] != by or saved["reason"] != reason or state.get("deferred_review_tasks", []).count(task_id) != 1:
+                    raise ValueError("defer-review replay changed the exact human decision")
+                return {"resolved": True, "replay": True, "task": task_id, "step": state["step"]}
+            if (state.get("step") != "evaluate" or runtime._current_task(state) is not task
+                    or task.get("status") != "running" or state.get("_build_failed") or task.get("_build_failed")
+                    or state.get("_submission") is not None or state.get("evaluate_child_evidence") is not None
+                    or task.get("target_commit") or task.get("reanchor_authority")
+                    or list(runtime.tp._active_worker_contracts(workspace))):
+                raise ValueError("defer-review requires the exact unsettled task with no active work or failed Build")
+            resolution = {"decision": "defer-review", "actor": by, "reason": reason,
+                "run_id": run_id, "task": task_id, "policy_fingerprint": policy["fingerprint"],
+                "previous_evaluation": copy.deepcopy(task.get("evaluation")),
+                "previous_human_resolution": copy.deepcopy(task.get("human_resolution"))}
+            runtime._advance_build_with_review_deferred(workspace, state, human_resolution=resolution)
+            _human_deferred_review(state, task, policy)
+            result = {"resolved": True, "replay": False, "task": task_id, "step": state["step"],
+                      "review": "deferred", "verdict": "non-judged"}
+    except (ValueError, OSError) as exc:
+        return {"error": "defer-review refused: " + str(exc)}
+    runtime.tp.trace(workspace, "loop_resolve", decision="defer-review", task=task_id, by=by)
+    return result
 
 
 def legacy_continuation(state: Mapping, workspace: str) -> dict | None:

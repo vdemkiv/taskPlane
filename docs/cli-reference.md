@@ -828,7 +828,7 @@ resolve a blocked loop: retry, pass, skip, defer or abort
 
 Positional arguments:
 
-- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`, `limits-advisory`, `reconcile`)
+- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`, `limits-advisory`, `reconcile`, `defer-review`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -837,7 +837,19 @@ Positional arguments:
 | `--candidate-fingerprint` | CANDIDATE_FINGERPRINT | exact candidate SHA-256 for the new phase attempt |
 | `--outage-fingerprint` | OUTAGE_FINGERPRINT | exact current evaluator outage fingerprint; replay-safe |
 | `--phase-operation` | PHASE_OPERATION | exact existing phase operation to reconcile or retry once |
+| `--run-id` | RUN_ID | exact admitted legacy run for defer-review |
+| `--task` | TASK | exact human-accepted legacy Build task for defer-review |
+| `--reason` | REASON | explicit Build acceptance and EM-review deferral decision |
 | `--worker-stopped` | flag | attest the expired unbound worker is stopped; not a completion or pass |
+
+`defer-review` requires all four of `--by`, `--run-id`, `--task`, and
+`--reason`, an admitted legacy continuation and its existing human review
+policy. It accepts only the current running Evaluate task with no active
+worker, submission, evaluator evidence or failed-Build flag. It records
+human-accepted Build completion and non-judged review deferred to EM; it does
+not claim a current test run or an independent review pass. Historical
+evaluation and failure records remain retained. Repeating the exact decision
+does not advance another task. Ordinary test-verified deferral is unchanged.
 
 ## `tp.py loop restore-settings`
 

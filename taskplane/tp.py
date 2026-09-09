@@ -3902,6 +3902,8 @@ def cmd_loop(a) -> int:
     elif action == "resolve":
         out = loopmod.resolve(
             ws, a.decision, by=getattr(a, "by", None),
+            run_id=getattr(a, "run_id", None), task_id=getattr(a, "task", None),
+            reason=getattr(a, "reason", None),
             accept_producer_receipt_outage=getattr(
                 a, "accept_producer_receipt_outage", False),
             outage_fingerprint=getattr(a, "outage_fingerprint", None),
@@ -8769,9 +8771,12 @@ def main(argv=None) -> int:
     lr = lsub.add_parser(
         "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort")
     lr.add_argument(
-        "decision", choices=["retry", "pass", "skip", "defer", "abort", "limits-advisory", "reconcile"])
+        "decision", choices=["retry", "pass", "skip", "defer", "abort", "limits-advisory", "reconcile", "defer-review"])
     lr.add_argument("--by",
                     help="human approving the exact recovery decision")
+    lr.add_argument("--run-id", help="exact admitted legacy run for defer-review")
+    lr.add_argument("--task", help="exact human-accepted legacy Build task for defer-review")
+    lr.add_argument("--reason", help="explicit Build acceptance and EM-review deferral decision")
     lr.add_argument("--phase-operation", help="exact existing phase operation to reconcile or retry once")
     lr.add_argument("--candidate-fingerprint", help="exact candidate SHA-256 for the new phase attempt")
     lrestore = lsub.add_parser("restore-settings",

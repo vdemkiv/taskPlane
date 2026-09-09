@@ -1154,6 +1154,70 @@ def test_failed_or_dispatched_build_cannot_be_deferred(legacy):
     assert state == before
 
 
+def _ready_human_defer_review(legacy):
+    ws, _, _, _ = legacy
+    assert invoke(legacy)["continued"] is True
+    state = loop._load_raw(ws)
+    state["step"] = "evaluate"
+    state["tasks"][19].update(status="running", evaluation={"status": "failed", "verdict": "unknown"},
+                              failure_routing={"next": "hold", "historical": True})
+    loop.save(ws, state)
+    return state
+
+
+# This saved-shape fixture has no renderable dashboard artifact store. Exercise
+# the public resolver/run_context and mutation owners without that UI decorator.
+resolve_defer_review = loop.resolve.__wrapped__
+
+
+def test_human_defer_review_preserves_history_without_current_test_or_review_pass(legacy):
+    ws, root, _, _ = legacy
+    before = _ready_human_defer_review(legacy)
+    args = dict(by="human:test", run_id="legacy-run", task_id="T19", reason="Accept completed Build; review at EM")
+    result = resolve_defer_review(ws, "defer-review", **args)
+    assert not result.get("error"), result
+    after = loop._load_raw(ws)
+    task = after["tasks"][19]
+    assert after["step"] == "execute" and after["current_task"] == 20
+    assert task["status"] == "passed"
+    assert task["evaluation"]["status"] == "deferred"
+    assert task["evaluation"]["verdict"] == "non-judged"
+    assert task["evaluation"]["reason_code"] == "human-accepted-build-review-deferred"
+    assert task["human_resolution"]["previous_evaluation"] == before["tasks"][19]["evaluation"]
+    assert task["failure_routing"] == before["tasks"][19]["failure_routing"]
+    assert not task.get("target_commit") and not task.get("reanchor_authority")
+    assert "suite_key" not in task["evaluation"] and "_suite_evidence" not in after
+    assert after["deferred_review_tasks"].count("T19") == 1
+    assert after["tasks"][:19] == before["tasks"][:19]
+    assert after["baseline"] == before["baseline"]
+    loop_recovery._legacy_results(after, json.loads((root / "plan/tasks.json").read_text()),
+                                  loop.reqs.get_requirement(ws, "R-0001"))
+    assert resolve_defer_review(ws, "defer-review", **args)["replay"] is True
+    assert loop._load_raw(ws) == after
+    assert resolve_defer_review(ws, "defer-review", **{**args, "reason": "changed"}).get("error")
+    assert loop._load_raw(ws) == after
+
+
+@pytest.mark.parametrize("damage", ["actor", "reason", "run", "task", "policy", "not-legacy", "failed", "submission", "evaluator", "worker"])
+def test_human_defer_review_refuses_unapproved_or_active_state(legacy, monkeypatch, damage):
+    ws, _, _, _ = legacy
+    state = _ready_human_defer_review(legacy)
+    args = dict(by="human:test", run_id="legacy-run", task_id="T19", reason="Accept Build; EM review remains")
+    if damage == "actor": args["by"] = ""
+    elif damage == "reason": args["reason"] = ""
+    elif damage == "run": args["run_id"] = "foreign-run"
+    elif damage == "task": args["task_id"] = "T20"
+    elif damage == "policy": state["review_timing_override"]["instruction"] = "forged"
+    elif damage == "not-legacy": state.pop("legacy_build_continuation")
+    elif damage == "failed": state["_build_failed"] = True
+    elif damage == "submission": state["_submission"] = {"outcome": "pass"}
+    elif damage == "evaluator": state["evaluate_child_evidence"] = {"pending": True}
+    else: monkeypatch.setattr(loop.tp, "_active_worker_contracts", lambda _: [("active", {})])
+    loop.save(ws, state)
+    assert resolve_defer_review(ws, "defer-review", **args).get("error")
+    assert loop._load_raw(ws) == state
+
+
 def test_public_cli_check_and_apply_use_same_explicit_command_without_outbox_flush(legacy, monkeypatch, capsys):
     from taskplane import tp as cli
     ws, root, before, packet = legacy
