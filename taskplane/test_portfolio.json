@@ -151,7 +151,7 @@
     {"path": "taskplane/tests/fixtures/dashboard-phase/module-impact.json", "consumer_selectors": ["taskplane/tests/test_dashboard_phase_graphs.py::test_design_graph_plan_dag_waves_and_module_impact_are_distinct"]},
     {"path": "taskplane/tests/fixtures/dashboard-browser/environment.json", "consumer_selectors": ["taskplane/tests/test_dashboard_browser.py::test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale"]},
     {"path": "taskplane/tests/fixtures/dashboard-browser/topology.json", "consumer_selectors": ["taskplane/tests/test_dashboard_browser.py::test_real_browser_svg_graphs_and_single_document_are_truthful"]},
-    {"path": "design/test-strategy.json", "consumer_selectors": ["taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"]},
+    {"path": "taskplane/tests/fixtures/test-strategy/settings-contract.json", "consumer_selectors": ["taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"]},
     {"path": "taskplane/tests/fixtures/test-strategy/failure-classes.json", "consumer_selectors": ["taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete"]},
     {"path": "taskplane/tests/fixtures/test-strategy/severed-edges.json", "consumer_selectors": ["taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"]}
   ],

@@ -267,7 +267,7 @@
         ],
         "interface_fixtures": [
           {
-            "path": "design/test-strategy.json",
+            "path": "taskplane/tests/fixtures/test-strategy/settings-contract.json",
             "slice": "TEST-STRATEGY"
           }
         ]

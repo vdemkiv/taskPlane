@@ -60,7 +60,11 @@ def test_ledger_is_explicitly_targeted_and_paths_match_the_current_tree() -> Non
     for pattern in ledger["removed_fixture_families"]:
         assert not [path for path in ROOT.glob(pattern) if path.is_file()], \
             pattern
+    tracked = set(subprocess.check_output(
+        ["git", "ls-files", "-z"], cwd=ROOT, text=True, encoding="utf-8",
+    ).split("\0"))
     for fixture in ledger["retained_fixtures"]:
+        assert fixture["path"] in tracked, fixture["path"]
         assert (ROOT / fixture["path"]).is_file()
         assert fixture["consumer_selectors"]
 
