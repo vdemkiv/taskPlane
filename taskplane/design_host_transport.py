@@ -18,12 +18,13 @@ import stat
 import secrets
 import time
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING, TypeAlias
+from typing import Any, TYPE_CHECKING, TypeAlias, cast
 
 if TYPE_CHECKING:
     from . import host_capabilities, run_artifacts, stage_entities, stage_migration, storage
+    from . import producer_observation, review_evidence, stage_handoff
 else:
     try:
         from . import host_capabilities, run_artifacts, stage_entities, storage
@@ -75,20 +76,21 @@ class RuntimeReceiptAuthority:
 
     bindings: Mapping[str, object]
     freshness: Mapping[str, object]
-    keys: Mapping[str, object] = field(repr=False)
+    keys: Mapping[str, stage_handoff.SigningKey] = field(repr=False)
     key_id: str
     now: int
     expires_at: int
     durable_evidence: bool = False
 
-    def require_current(self):
+    def require_current(self) -> None:
         key = self.keys[self.key_id]
         if key.status != "active" or not key.not_before <= self.now < min(key.not_after, self.expires_at):
             raise NativeEntryError("runtime signing key is disabled, not yet valid or stale")
 
-    def verify(self, receipt, *, store=None, historical=False):
+    def verify(self, receipt: JsonDict, *, store: review_evidence.ArtifactStore | None = None,
+               historical: bool = False) -> JsonDict:
         from taskplane import stage_handoff
-        key = self.keys.get(receipt.get("key_id"))
+        key = self.keys.get(cast(str, receipt.get("key_id")))
         if key is None or receipt.get("key_id") != self.key_id:
             raise NativeEntryError("runtime signing key is not admitted for this attempt")
         if (not historical or self.durable_evidence) and key.status != "active":
@@ -99,14 +101,15 @@ class RuntimeReceiptAuthority:
             expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
             expected_freshness=self.freshness, now=self.now,
             store=store, historical=historical or self.durable_evidence)
-        result = checked["payload"]
+        result = cast(JsonDict, checked["payload"])
         if result["status"] != "accepted" or any(result.get(k) != v for k, v in self.bindings.items()):
             raise NativeEntryError("runtime receipt differs from admitted attempt bindings")
         if receipt["expires_at"] > self.expires_at:
             raise NativeEntryError("runtime receipt exceeds admitted freshness interval")
         return checked
 
-    def sign(self, result, *, store=None):
+    def sign(self, result: Mapping[str, object], *,
+             store: review_evidence.ArtifactStore | None = None) -> JsonDict:
         from taskplane import stage_handoff
         self.require_current()
         if result.get("status") != "accepted" or any(result.get(k) != v for k, v in self.bindings.items()):
@@ -117,9 +120,11 @@ class RuntimeReceiptAuthority:
         return receipt
 
 
-def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
-                              now: int, admit=False, authorize=None, collection_policy: str | None = None,
-                              original_freshness=None):
+def runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[str, object],
+                              freshness: Mapping[str, object], now: int, admit: bool = False,
+                              authorize: Callable[[], object] | None = None,
+                              collection_policy: str | None = None,
+                              original_freshness: Mapping[str, object] | None = None) -> RuntimeReceiptAuthority:
     """Admit a purpose-limited key only through the incumbent host owner.
 
     The private policy is separate from worker lifecycle and nonce secrets.
@@ -216,8 +221,9 @@ def runtime_receipt_authority(kernel, workspace: str, *, bindings, freshness,
             admission["key_id"], now, admission["expires_at"], collection_policy is not None)
 
 
-def disable_runtime_receipt_authority(kernel, workspace: str, *, bindings,
-        freshness, now: int, authorize, status: str, changed_at: int):
+def disable_runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[str, object],
+        freshness: Mapping[str, object], now: int, authorize: Callable[[], object] | None,
+        status: str, changed_at: int) -> None:
     """Host-only monotone retirement/revocation; retain historical key bytes.
 
     New operations receive separate keys through normal admission. Neither
@@ -246,7 +252,8 @@ def disable_runtime_receipt_authority(kernel, workspace: str, *, bindings,
         kernel.atomic_write_json(str(path), policy, sort_keys=True, private=True)
 
 
-def phase_nonce_source(kernel, workspace: str, run_id: str, *, existing_only: bool = False):
+def phase_nonce_source(kernel: Any, workspace: str, run_id: str, *,
+                       existing_only: bool = False) -> producer_observation.AttemptNonceSource:
     """Compose existing private worker-key custody with the nonce owner.
 
     This opens no new authority or observation source and makes no native
@@ -266,9 +273,10 @@ def phase_nonce_source(kernel, workspace: str, run_id: str, *, existing_only: bo
     return producer_observation.AttemptNonceSource(evidence, key=authority["secret"])
 
 
-def observe_phase_hook(kernel, workspace: str, contract: Mapping[str, object],
-                       event: Mapping[str, object], *, nonce, bindings,
-                       outputs=None):
+def observe_phase_hook(kernel: Any, workspace: str, contract: Mapping[str, object],
+                       event: Mapping[str, object], *, nonce: producer_observation.AttemptNonceSource,
+                       bindings: Mapping[str, object],
+                       outputs: list[dict[str, object]] | None = None) -> dict[str, object]:
     """Bind a claimed child hook to the existing enforced worker slot."""
     lifecycle = contract.get("worker_lifecycle")
     if not isinstance(lifecycle, Mapping) or contract.get("worker_scoped") is not True:

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import os
 import re
 import time
-from typing import Any
+from typing import Any, cast
 
 
 def compile_brief(context: dict[str, Any], action: dict[str, Any], requirement: object,
@@ -122,7 +122,7 @@ def _initial_operation(context: dict[str, Any]) -> str:
         if row["operation"] == "phase_prepare" and
         row["result"].get("stage_fingerprint") == context["stage"]["fingerprint"]),
         key=lambda row: row["committed_revision"])
-    return prepared[0]["operation_id"] if prepared else "phase-attempt-" + context["stage"]["fingerprint"][:32]
+    return cast(str, prepared[0]["operation_id"] if prepared else "phase-attempt-" + context["stage"]["fingerprint"][:32])
 
 
 def retry_chain(context: dict[str, Any]) -> list[dict[str, Any]]:

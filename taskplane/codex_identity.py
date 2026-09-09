@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 
@@ -190,7 +190,7 @@ def completed_child(workspace: str, start: dict[str, Any]) -> dict[str, Any]:
     ended = latest["completed_at"]
     began = latest["started_at"]
     if type(ended) not in (int, float) or type(began) not in (int, float) or not (
-            0 <= began <= start["observed_at"] <= ended <= datetime.now(timezone.utc).timestamp()):
+            0 <= cast(int | float, began) <= start["observed_at"] <= cast(int | float, ended) <= datetime.now(timezone.utc).timestamp()):
         raise ValueError("provider completion time is invalid")
     result = {"source":"codex-task-complete", "owner":dict(owner), "turn_id":latest["turn_id"],
         "observed_at":ended, "outcome":"complete", "tokens":None, "provider_lifecycle":latest}

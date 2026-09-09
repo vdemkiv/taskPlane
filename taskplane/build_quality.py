@@ -94,7 +94,7 @@ def _validate_progression(value: Mapping[str, Any]) -> dict[str, Any]:
     return previous
 
 
-def _local_approval(value: object, candidate: str) -> dict[str, Any]:
+def _local_approval(value: object, candidate: object) -> dict[str, Any]:
     approval = _mapping(value, "local approval")
     if set(approval) != {"actor", "request", "authority_reference", "candidate_fingerprint"}:
         raise BuildQualityError("local_approval", "local approval requires attributable saved authority")

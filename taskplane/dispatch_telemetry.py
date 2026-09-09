@@ -84,7 +84,7 @@ TERMINAL_EVENT_KINDS = frozenset({
 })
 MAX_EVENT_BYTES = 64 * 1024
 MAX_EVENTS = 256
-WAVE_BUDGET_CEILINGS = {
+WAVE_BUDGET_CEILINGS: dict[str, int] = {
     "elapsed_seconds": 28_800,
     "sessions": 60,
     "total_tokens": 150_000_000,
