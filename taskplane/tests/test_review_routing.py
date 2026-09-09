@@ -37,7 +37,8 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         (root / "api/client.py").write_text("VALUE = 1\n")
         (root / "src/service.py").write_text("from api.client import VALUE\ndef changed():\n    return VALUE\n")
         def git(*args):
-            return subprocess.check_output(["git", *args], cwd=self.ws, text=True).strip()
+            return subprocess.check_output(["git", *args], cwd=self.ws, text=True,
+                encoding="utf-8", errors="replace").strip()
         git("init", "-q")
         git("add", ".")
         git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
