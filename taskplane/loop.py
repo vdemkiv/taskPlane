@@ -4738,6 +4738,7 @@ STEP_ROLE = {
     "retro": "tp-retro",
 }
 HUMAN_STEPS = progress_engine.HUMAN_STEPS
+WORKER_SUBMISSION_STEPS = frozenset({"design", "execute", "fix", "evaluate", "em"})
 
 COMMAND_WAVE_SCHEMA = command_wave.COMMAND_WAVE_SCHEMA
 command_wave_create = command_wave.create
@@ -5457,8 +5458,7 @@ def _step_contract(step: str, state: dict, ws: str | None = None) -> dict:
 def _bind_worker_submission(ws: str, state: dict, step: str,
                             contract: dict, task: dict | None) -> dict:
     """Bind worker lifecycle to its exact loop submission, without gating."""
-    if not state.get("submission_required") or step not in {
-            "execute", "fix", "evaluate", "em"}:
+    if not state.get("submission_required") or step not in WORKER_SUBMISSION_STEPS:
         return contract
     task_name = ((task or {}).get("id") or "engineering-signoff"
                  if step == "em" else (task or {}).get("id"))
@@ -9596,7 +9596,8 @@ def _instruction(step: str, state: dict, ws: str | None = None) -> str:
                   "and depth policy, map acceptance, handle risks/rollout, "
                   "apply solution-design, and create a visualization only "
                   "when it materially clarifies the choice. Never mutate the "
-                  "as-built graph. Return to the orchestrator; it validates "
+                  "as-built graph. Run `loop submit pass|fail`, stop, and "
+                  "return to the orchestrator; it validates "
                   "with `loop gate pass`. In a delivery loop the consolidated "
                   "human implementation approval follows the Plan gate.",
         "plan": "Run the tp-planner role: derive impact once with `tp graph "
@@ -13060,10 +13061,10 @@ def submit(ws: str, outcome: str, note: str = "",
     if state is None:
         return {"error": "no active loop"}
     step = state.get("step")
-    if step not in ("execute", "fix", "evaluate", "em"):
+    if step not in WORKER_SUBMISSION_STEPS:
         return {"error": f"step '{step}' is not a worker submission step — "
                          "run `loop next` to see the current role and "
-                         "instruction; submissions happen at execute/fix/"
+                         "instruction; submissions happen at design/execute/fix/"
                          "evaluate/em"}
     if outcome not in ("pass", "fail", "unavailable"):
         return {"error": "submission outcome must be pass, fail, or unavailable"}
@@ -13175,9 +13176,18 @@ def submit(ws: str, outcome: str, note: str = "",
 
     snapshot = _worker_stage_snapshot(act_ws, step, task)
     evidence_paths = runtime_storage.submission_evidence_paths(act_ws, step)
+    if step == "design":
+        # Design outputs can be ignored by Git. Bind only this stage's named
+        # evidence, including a required visual, without reading old lens files.
+        design, _ = _dc.design_contract(act_ws)
+        design = dict(design) if isinstance(design, dict) else {}
+        if not isinstance(design.get("visualization"), dict):
+            design["visualization"] = {}
+        evidence_paths = _dc.design_evidence_paths(act_ws, design)
+        evidence_paths.append("design/test-strategy.json")
     graph_fingerprint = None
     if state.get("graph_governance") and \
-            (step == "em" or step == "evaluate" and not state.get("parallel")):
+            (step in {"design", "em"} or step == "evaluate" and not state.get("parallel")):
         graph_fingerprint = (depgraph.load(ws).get("meta") or {}).get(
             "content_fingerprint")
     evidence_engine_ws = _submission_evidence_engine_workspace(
@@ -13512,8 +13522,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
             return {"error": f"unknown task id '{task_id}' — wave members: "
                              + ", ".join(members), "step": step}
 
-    if state.get("submission_required") and step in \
-            ("execute", "fix", "evaluate", "em"):
+    if state.get("submission_required") and step in WORKER_SUBMISSION_STEPS:
         task_for_submission = (_current_task(state) if step != "execute"
                                or not state.get("parallel") else
                                next((x for x in state.get("tasks") or []
@@ -13917,8 +13926,7 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
         # gate whose evidence was attested against different bytes. (The
         # contract is cleared AFTER the locked transition, below, so a
         # refused gate also leaves the workspace governed.)
-        if _validated.get("submission_required") and step in \
-                ("execute", "fix", "evaluate", "em"):
+        if _validated.get("submission_required") and step in WORKER_SUBMISSION_STEPS:
             stale = _submission_staleness(ws, submission)
             if stale:
                 return {"error": stale + " during gate validation — submit "

@@ -130,7 +130,7 @@ Have `tp-designer` inspect the cited code and write:
 
 Read [references/design-contract.md](references/design-contract.md) for the exact contract and graph rules.
 
-Then call `loop gate pass`. The orchestrator, not the designer, validates Design DoD. Missing alternatives, acceptance mappings, named contracts, graph policy, graph DoR/DoD, risk/rollout evidence, lens evidence, safe visualization, or graph isolation keeps the loop at Design.
+The designer runs `loop submit pass|fail` and stops. Then the orchestrator calls the matching `loop gate`; it validates the unchanged submission and Design DoD. Missing alternatives, acceptance mappings, named contracts, graph policy, graph DoR/DoD, risk/rollout evidence, lens evidence, safe visualization, or graph isolation keeps the loop at Design.
 
 ## Human approval
 

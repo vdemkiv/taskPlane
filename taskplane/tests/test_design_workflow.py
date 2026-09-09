@@ -228,12 +228,74 @@ class DesignWorkflowTest(unittest.TestCase):
             json.dump(contract, f, indent=2)
         return contract
 
+    def _gate(self, outcome, **kwargs):
+        if loop.load(self.ws)["step"] == "design":
+            submitted = loop.submit(self.ws, outcome)
+            self.assertTrue(submitted.get("submitted"), submitted)
+        return loop.gate(self.ws, outcome, **kwargs)
+
+    def test_design_submission_binds_ignored_outputs_before_gate(self):
+        loop.init(self.ws, "design this", spec_path="specs/x.md",
+                  requirement_id=self.req["id"], design=True)
+        action = loop.next_action(self.ws)
+        slot = action["contract_bootstrap"]["task_slot"]
+        bound = tp.load_json(tp.active_contract_path(self.ws, slot))
+        self.assertEqual(bound["submission_contract"]["stage"], "design")
+        with open(os.path.join(self.ws, ".git", "info", "exclude"), "a") as handle:
+            handle.write("\ndesign/\n")
+        self._write_design(visualization_required=True)
+        self.assertIn("not submitted", loop.gate(self.ws, "pass")["error"])
+        submitted = loop.submit(self.ws, "pass")
+        self.assertTrue(submitted.get("submitted"), submitted)
+        self.assertFalse(submitted["transitioned"])
+        self.assertEqual(loop.load(self.ws)["step"], "design")
+        self.assertIn("design/visual.html", submitted["submission"]["evidence_paths"])
+        self.assertIn("does not match", loop.gate(self.ws, "fail")["error"])
+        for relative in ("design/contract.json", "design/design.md", "design/visual.html",
+                         "design/test-strategy.json"):
+            with self.subTest(relative=relative):
+                submitted = loop.submit(self.ws, "pass")
+                self.assertTrue(submitted.get("submitted"), submitted)
+                path = os.path.join(self.ws, relative)
+                if os.path.exists(path):
+                    with open(path, "rb") as handle:
+                        before = handle.read()
+                else:
+                    before = None
+                with open(path, "ab") as handle:
+                    handle.write(b"\nchanged after submission\n")
+                self.assertIn("changed after worker submission",
+                              loop.gate(self.ws, "pass")["error"])
+                if before is None:
+                    os.unlink(path)
+                else:
+                    with open(path, "wb") as handle:
+                        handle.write(before)
+        self.assertTrue(loop.submit(self.ws, "pass")["submitted"])
+        self.assertEqual(loop.gate(self.ws, "pass")["step"], "design_approval")
+
+    def test_design_can_submit_failure_with_incomplete_artifacts(self):
+        loop.init(self.ws, "design this", spec_path="specs/x.md",
+                  requirement_id=self.req["id"], design=True)
+        loop.next_action(self.ws)
+        os.makedirs(os.path.join(self.ws, "design"), exist_ok=True)
+        with open(os.path.join(self.ws, "design", "contract.json"), "w") as handle:
+            json.dump({"visualization": "invalid incomplete field"}, handle)
+        self.assertIn("only valid for model evaluation",
+                      loop.submit(self.ws, "unavailable")["error"])
+        self.assertIn("does not match the current", loop.submit(
+            self.ws, "fail", task_id="foreign-task")["error"])
+        submitted = loop.submit(self.ws, "fail", "scope correction required")
+        self.assertTrue(submitted.get("submitted"), submitted)
+        self.assertEqual(loop.load(self.ws)["step"], "design")
+        self.assertEqual(loop.gate(self.ws, "fail")["step"], "design")
+
     def test_default_loop_remains_product_to_plan(self):
         loop.init(self.ws, "ordinary build", requirement_id=self.req["id"])
         self.assertEqual(loop.load(self.ws)["step"], "pm")
         self.assertNotIn("design", [x[0] for x in loop.display_pipeline(
             loop.load(self.ws))])
-        loop.gate(self.ws, "pass")
+        self._gate("pass")
         self.assertEqual(loop.load(self.ws)["step"], "plan")
 
     def test_design_loop_routes_product_to_design(self):
@@ -245,7 +307,7 @@ class DesignWorkflowTest(unittest.TestCase):
         self.assertEqual([x[0] for x in loop.display_pipeline(state)][:5],
                          ["pm", "design", "design_approval", "plan",
                           "plan_approval"])
-        loop.gate(self.ws, "pass")
+        self._gate("pass")
         self.assertEqual(loop.load(self.ws)["step"], "design")
 
     def test_fresh_product_does_not_read_ambient_design_or_knowledge(self):
@@ -275,7 +337,7 @@ class DesignWorkflowTest(unittest.TestCase):
         self.assertNotIn("UNRELATED_DESIGN_SENTINEL", json.dumps(action))
         self.assertNotIn("STALE_CONTEXT_SENTINEL", json.dumps(action))
         self.assertEqual(before, (old_design.read_bytes(), old_context.read_bytes()))
-        loop.gate(self.ws, "pass", rid=self.req["id"])
+        self._gate("pass", rid=self.req["id"])
         with mock.patch.object(loop.kb, "retrieve", side_effect=AssertionError(
                 "Design must not discover old decisions")), \
                 mock.patch.object(loop.kb, "governing", side_effect=AssertionError(
@@ -298,7 +360,7 @@ class DesignWorkflowTest(unittest.TestCase):
         manifest = Path(root) / "run-artifacts.json"
         original_manifest = manifest.read_bytes()
         self.assertEqual(original_binding["candidate"]["requirement"], "")
-        gated = loop.gate(self.ws, "pass", rid=self.req["id"])
+        gated = self._gate("pass", rid=self.req["id"])
         self.assertEqual(gated.get("step"), "design", gated.get("error"))
         receipt, _policy = loop._prepare_design_control_plane(self.ws, loop.load(self.ws))
         self.assertEqual(receipt["status"], "ready")
@@ -366,7 +428,7 @@ class DesignWorkflowTest(unittest.TestCase):
                         if x["id"] == "solution-design")
         self.assertNotEqual(solution["mode"], "none")
         self._write_design()
-        gated = loop.gate(self.ws, "pass")
+        gated = self._gate("pass")
         self.assertEqual(gated["step"], "design_approval")
         approved = loop.approve(self.ws, by="human — approved")
         self.assertEqual(approved["step"], "plan")
@@ -387,7 +449,7 @@ class DesignWorkflowTest(unittest.TestCase):
                   encoding="utf-8") as f:
             json.dump(contract, f, indent=2)
 
-        gated = loop.gate(self.ws, "pass")
+        gated = self._gate("pass")
 
         self.assertEqual(gated["step"], "design")
         self.assertIn("acceptance criterion has no exact tests", " ".join(
@@ -402,7 +464,7 @@ class DesignWorkflowTest(unittest.TestCase):
                   design_only=True)
         loop.next_action(self.ws)
         self._write_design(visualization_required=True)
-        self.assertEqual(loop.gate(self.ws, "pass")["step"],
+        self.assertEqual(self._gate("pass")["step"],
                          "design_approval")
         self.assertEqual(loop.approve(self.ws, by="human")["step"], "done")
 
@@ -414,7 +476,7 @@ class DesignWorkflowTest(unittest.TestCase):
         self._write_design(graph_fingerprint=baseline)
         depgraph.record_edge(self.ws, "core", "contract:surprise",
                              kind="runtime")
-        rejected = loop.gate(self.ws, "pass")
+        rejected = self._gate("pass")
         self.assertEqual(rejected["step"], "design")
         self.assertIn("as-built graph changed", " ".join(
             rejected["dod"]["errors"]))
@@ -424,7 +486,7 @@ class DesignWorkflowTest(unittest.TestCase):
                   requirement_id=self.req["id"], design=True)
         loop.next_action(self.ws)
         self._write_design()
-        loop.gate(self.ws, "pass")
+        self._gate("pass")
         loop.approve(self.ws, by="human")
         state = loop.load(self.ws)
         state["tasks"] = [{"id": "t1", "scope": ["taskplane/**"],
@@ -451,7 +513,7 @@ class DesignWorkflowTest(unittest.TestCase):
         contract["lens_evidence"][0]["blockers"] = "not-a-number"
         with open(os.path.join(self.ws, "design", "contract.json"), "w", encoding="utf-8") as f:
             json.dump(contract, f)
-        gated = loop.gate(self.ws, "pass")
+        gated = self._gate("pass")
         self.assertEqual(gated["step"], "design")
         joined = " ".join(gated["dod"]["errors"])
         self.assertIn("graph must be an object", joined)
@@ -463,7 +525,7 @@ class DesignWorkflowTest(unittest.TestCase):
                   requirement_id=self.req["id"], design=True)
         loop.next_action(self.ws)
         self._write_design()
-        loop.gate(self.ws, "pass")
+        self._gate("pass")
         loop.approve(self.ws, by="human")
         state = loop.load(self.ws)
         incomplete = loop._design_review_errors(

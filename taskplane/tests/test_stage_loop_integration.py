@@ -516,6 +516,7 @@ def collected_zero_lens_design(collected_product_handoff, monkeypatch):
     (folder / "test-strategy.json").write_text(json.dumps(_strategy()))
     assert loop._base_design_dod_errors(ws, state) == []
     assert loop._design_control_plane_errors(ws, state) == []
+    assert loop.submit(ws, "pass").get("submitted") is True
     slot = action["contract_bootstrap"]["task_slot"]
     worker = loop.tp.load_json(loop.tp.active_contract_path(ws, slot))
     stop = _host_event(ws, action, "SubagentStop")
