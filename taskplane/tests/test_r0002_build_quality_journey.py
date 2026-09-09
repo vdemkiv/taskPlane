@@ -14,11 +14,11 @@ from taskplane import loop
 def test_build_quality_command_is_removed():
     script = Path(__file__).resolve().parents[1] / "tp.py"
     result = subprocess.run([sys.executable, str(script), "loop", "--help"],
-                            capture_output=True, text=True, timeout=15)
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     assert result.returncode == 0, result.stderr
     assert "build-quality" not in result.stdout
     refused = subprocess.run([sys.executable, str(script), "loop", "build-quality"],
-                             capture_output=True, text=True, timeout=15)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     assert refused.returncode != 0
     assert "invalid choice" in refused.stderr
 
@@ -34,7 +34,7 @@ def test_build_fix_gate_uses_real_test_result_without_quality_receipt(tmp_path, 
     subprocess.run(["git", "add", "owned.py", "check.py"], cwd=workspace, check=True)
     subprocess.run(["git", "-c", "user.name=Taskplane", "-c", "user.email=taskplane@example.invalid",
                     "commit", "-qm", "base"], cwd=workspace, check=True)
-    snapshot = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+    snapshot = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True, encoding="utf-8", errors="replace").strip()
     monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "disabled")
     monkeypatch.setattr(loop.tp, "external_store_root", lambda _ws: str(tmp_path / "store"))
     state = {"run_id": "run-r0002", "goal": "scoped test", "step": stage, "current_task": 0,

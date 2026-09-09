@@ -439,9 +439,9 @@ def design_traceability_inventory(contract: dict) -> dict:
 
     contract_rows = unique_rows(contracts, "id", "contract")
     journey_rows = unique_rows(journeys, "id", "journey")
-    expected_journeys = [f"J{number}" for number in range(int(counts.get("journeys") or 0))]
-    if sorted(journey_rows) != expected_journeys:
-        raise ValueError("Design journeys are not the canonical J0-J7 inventory")
+    if any(re.fullmatch(r"J(?:0|[1-9][0-9]*)", identity) is None
+           for identity in journey_rows):
+        raise ValueError("Design journeys must use canonical journey IDs")
     for journey_id, row in journey_rows.items():
         if not str(row.get("owner") or "").strip():
             raise ValueError(f"Design journey owner is required: {journey_id}")

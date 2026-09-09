@@ -15,8 +15,8 @@ from taskplane.test_strategy import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN_CONTRACT = ROOT / "design" / "contract.json"
-STRATEGY = ROOT / "design" / "test-strategy.json"
+SETTINGS_CONTRACT = (Path(__file__).parent / "fixtures" / "test-strategy" /
+                     "settings-contract.json")
 FAILURES = (Path(__file__).parent / "fixtures" / "test-strategy" /
             "failure-classes.json")
 SEVERED_EDGES = (Path(__file__).parent / "fixtures" / "test-strategy" /
@@ -25,12 +25,13 @@ PORTFOLIO = ROOT / "taskplane" / "test_portfolio.json"
 
 
 def _strategy():
-    return seal_strategy(json.loads(STRATEGY.read_text(encoding="utf-8")))
+    fixture = json.loads(SETTINGS_CONTRACT.read_text(encoding="utf-8"))
+    return seal_strategy(fixture["strategy"])
 
 
 def _declared_selectors():
-    strategy = json.loads(STRATEGY.read_text(encoding="utf-8"))
-    design = json.loads(DESIGN_CONTRACT.read_text(encoding="utf-8"))
+    fixture = json.loads(SETTINGS_CONTRACT.read_text(encoding="utf-8"))
+    strategy = fixture["strategy"]
     portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
     selectors = [
         selector
@@ -44,9 +45,20 @@ def _declared_selectors():
     )
     selectors.extend(
         selector
-        for criterion in design["acceptance_map"]
+        for criterion in fixture["acceptance_map"]
         for selector in criterion["tests"]
     )
+    retirement = fixture["retired_selectors"]
+    assert retirement["source_revision"] == "5a1d2562186c37264fbf8d46c98fcea41b423169"
+    retired = set(retirement["selectors"])
+    assert retired == {
+        "taskplane/tests/test_build_quality.py::"
+        "test_receipt_proves_the_complete_build_progression_and_exact_binding",
+        "taskplane/tests/test_r0002_build_quality_journey.py::"
+        "test_recorded_build_quality_is_current_then_severs_when_candidate_moves",
+    }
+    assert retired.issubset(selectors)
+    selectors = [selector for selector in selectors if selector not in retired]
     selectors.extend(
         selector
         for fixture in portfolio["retained_fixtures"]
@@ -56,6 +68,11 @@ def _declared_selectors():
 
 
 def test_design_and_build_contract_is_complete():
+    fixture = json.loads(SETTINGS_CONTRACT.read_text(encoding="utf-8"))
+    assert fixture["provenance"]["source_revision"] == (
+        "a45aae112bd5b6113292771204ca9ff867bf7ff8"
+    )
+    assert "not current R-0001 approval" in fixture["provenance"]["status"]
     strategy = _strategy()
 
     validated = validate_strategy(strategy)

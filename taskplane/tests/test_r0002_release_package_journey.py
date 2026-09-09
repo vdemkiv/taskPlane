@@ -1,4 +1,4 @@
-"""Installed-package journey for the 2.18.9 marketplace candidate.
+"""Installed-package journey for the canonical current marketplace candidate.
 
 The journey executes extracted archives from an isolated directory.  It
 checks public behavior and schemas, not byte identity; the sole digest
@@ -17,9 +17,11 @@ import zipfile
 
 import pytest
 
+from taskplane.release_evidence import CURRENT_VERSION
+
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = "2.19.0"
+VERSION = CURRENT_VERSION
 
 
 def _script_module(name: str):

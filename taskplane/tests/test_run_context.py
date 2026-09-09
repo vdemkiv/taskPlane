@@ -109,7 +109,7 @@ print(json.dumps(action))
     environment["TASKPLANE_SESSION_ID"] = "replacement-controller"
     environment["TASKPLANE_MODEL_DEEP"] = "must-not-replace-saved-model"
     first = subprocess.run([sys.executable, "-c", code, ws], env=environment,
-        cwd=ws, text=True, capture_output=True, timeout=60)
+        cwd=ws, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
     assert first.returncode == 0, first.stderr
     prepared = json.loads(first.stdout)
     assert not prepared.get("error"), prepared
@@ -118,7 +118,7 @@ print(json.dumps(action))
     after = store.load(run_id)
     environment["TASKPLANE_SESSION_ID"] = "third-controller"
     second = subprocess.run([sys.executable, "-c", code, ws], env=environment,
-        cwd=ws, text=True, capture_output=True, timeout=60)
+        cwd=ws, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
     assert second.returncode == 0, second.stderr
     pending = json.loads(second.stdout)
     assert pending["phase_runtime"]["operation_id"] == prepared["phase_runtime"]["operation_id"]
@@ -193,7 +193,7 @@ def test_public_pending_pickup_needs_neither_settings_nor_host_admission(tmp_pat
     environment["TASKPLANE_INLINE_MAX"] = "invalid-today"
     completed = subprocess.run([sys.executable, str(ROOT / "taskplane" / "tp.py"),
         "loop", "--workspace", ws, "next"], env=environment,
-        cwd=ws, text=True, capture_output=True, timeout=60)
+        cwd=ws, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout)["phase_runtime"] == picked["phase_runtime"]
     assert Path(loop._loop_path(ws)).read_bytes() == before
@@ -208,7 +208,7 @@ def test_public_unprepared_run_reports_missing_snapshot_without_traceback(tmp_pa
     manifest = store.load(run_id)
     completed = subprocess.run([sys.executable, str(ROOT / "taskplane" / "tp.py"),
         "loop", "--workspace", ws, "next"], cwd=ws,
-        text=True, capture_output=True, timeout=60)
+        text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
     assert completed.returncode == 1, completed.stderr
     assert "snapshot is missing" in json.loads(completed.stdout)["error"]
     assert "Traceback" not in completed.stderr

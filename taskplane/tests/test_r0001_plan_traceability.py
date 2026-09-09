@@ -90,6 +90,18 @@ def _approved_artifacts() -> tuple[dict, dict]:
     plan = json.loads(
         (ROOT / "plan" / "tasks.json").read_text(encoding="utf-8")
     )
+    # Apply only the saved withdrawal to this unit input, never the Design file.
+    withdrawal = plan["withdrawal_amendment"]
+    assert withdrawal["status"] == "explicit_user_withdrawal"
+    assert withdrawal["removed_task"] == "T17"
+    assert withdrawal["withdrawn_history"]["journey_declaration"]["id"] == "J0"
+    assert withdrawal["design_supersession"]["artifact_unchanged"] is True
+    assert withdrawal["active_journeys"] == [f"J{i}" for i in range(1, 8)]
+    assert len(plan["tasks"]) == withdrawal["active_task_count"] == 23
+    assert "T17" not in {task["id"] for task in plan["tasks"]}
+    design["journeys"] = [row for row in design["journeys"] if row["id"] != "J0"]
+    assert [row["id"] for row in design["journeys"]] == withdrawal["active_journeys"]
+    design["design_counts"]["journeys"] = len(design["journeys"])
     return design, plan
 
 
@@ -245,7 +257,7 @@ def test_traceability_foreign_keys_and_bidirectional_coverage(
         "criteria": 21,
         "contracts": 18,
         "tasks": 23,
-        "journeys": 8,
+        "journeys": 7,
         "wiring_rows": 34,
         "design_edges": 25,
     }
@@ -428,14 +440,27 @@ def test_plan_owner_inventory_complete(monkeypatch):
     }
     assert len(inventory["task_owners"]) == 23
     assert len(inventory["criterion_owners"]) == 21
-    assert len(inventory["journey_owners"]) == 8
+    assert len(inventory["journey_owners"]) == 7
     assert len(inventory["responsibility_owners"]) == 11
     assert len(set(inventory["task_owners"].values())) == 23
     assert len(set(inventory["criterion_owners"].values())) == 21
-    assert len(set(inventory["journey_owners"].values())) == 8
+    assert len(set(inventory["journey_owners"].values())) == 7
     assert inventory["task_owners"]["T00"] == "traceability-owner"
     assert inventory["criterion_owners"]["FP-AC01"] == "source-coverage owner"
     assert inventory["journey_owners"]["J7"] == "decomposition pipeline owner"
+
+    for mutation, message in (("duplicate", "duplicate Design journey"),
+                              ("invalid-id", "canonical journey"),
+                              ("stale-count", "journeys count is stale")):
+        changed = copy.deepcopy(design)
+        if mutation == "duplicate":
+            changed["journeys"].append(copy.deepcopy(changed["journeys"][0]))
+        elif mutation == "invalid-id":
+            changed["journeys"][0]["id"] = "J01"
+        else:
+            changed["design_counts"]["journeys"] += 1
+        with pytest.raises(plan_topology.PlanTopologyError, match=message):
+            plan_topology.build_plan_owner_inventory(changed, plan)
 
     missing_owner = copy.deepcopy(plan)
     missing_owner["tasks"][0]["owner"] = ""

@@ -116,7 +116,7 @@ def _observed_evidence(store, package, source):
         command = obligation["command"]
         if command not in executions:
             executions[command] = subprocess.run(command.split(), cwd=Path(__file__).resolve().parents[2],
-                env={**os.environ, "TASKPLANE_J5_PROOF_SOURCE": str(source)}, capture_output=True, text=True, timeout=60)
+                env={**os.environ, "TASKPLANE_J5_PROOF_SOURCE": str(source)}, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         observed = executions[command]
         assert observed.returncode == 0, observed.stdout + observed.stderr
         reference = store.put("acceptance-proof", {"schema": "taskplane.acceptance-proof/v1",

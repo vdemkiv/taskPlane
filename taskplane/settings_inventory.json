@@ -9,6 +9,7 @@
     "rule": "A configurable operational default exists only in canonical_source. Consumers load the typed value or verify a digest-bound projection; observations, derived values, protocol constants, and non-settings never own defaults."
   },
   "canonical_keys": [
+    "phase_definitions",
     "stages.*.model",
     "stages.*.reasoning",
     "lenses.routing.*",

@@ -96,25 +96,8 @@ def _produce(schema: str, store: review_evidence.ArtifactStore) -> dict[str, obj
     if schema == entities.AGENT_RUNTIME_SCHEMA:
         return _runtime()
     if schema == entities.HANDOFF_V2_SCHEMA:
-        original = entities.validate_contract(_manifest(store), store=store)
-        selected = original["selected_artifacts"]
-        assert isinstance(selected, list)
-        fields = {key: value for key, value in original.items() if key != "fingerprint"}
-        fields.update(
-            schema=schema,
-            phase_result=_runtime(),
-            produced_artifacts=[
-                {
-                    "artifact_class": "delivery",
-                    "artifact_schema_version": "v1",
-                    "reference": selected[0],
-                }
-            ],
-            inherited_artifacts=[],
-            knowledge_apply_receipts=[],
-            unresolved_issues=[],
-        )
-        return entities.create_contract(fields, store=store)
+        from taskplane.tests.test_r0001_contract_compatibility import _produce as produce
+        return produce("handoff-v2", store)
     if schema == entities.PHASE_DEFINITION_SCHEMA:
         return entities.create_contract(
             {
@@ -334,5 +317,7 @@ def test_new_producer_inactive_before_cutover(tmp_path: Path, schema: str) -> No
         )
         == incumbent
     )
-    with pytest.raises(handoff.HandoffValidationError, match="unsupported"):
-        handoff.store_manifest(store, _produce(entities.HANDOFF_V2_SCHEMA, store))
+    current = _produce(entities.HANDOFF_V2_SCHEMA, store)
+    reference = handoff.store_manifest(store, current)
+    assert handoff.read_manifest(store, reference, expected_authority_revision=7,
+        expected_authority_fingerprint="a" * 64) == current

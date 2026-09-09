@@ -66,6 +66,7 @@ def test_contract_apis_strict_typing(tmp_path: Path) -> None:
         cwd=root,
         capture_output=True,
         text=True,
+        encoding="utf-8", errors="replace",
         timeout=120,
     )
     assert result.returncode in (0, 1), result.stdout + result.stderr
@@ -200,15 +201,23 @@ def _produce(kind, store):
         return _manifest(store)
     if kind == "handoff-v2":
         original = _manifest(store)
+        reference = review_evidence.portable_artifact_reference(
+            store, store.put("delivery", {"schema": "v1", "commit": "1" * 40}))
+        runtime = _runtime()
+        runtime.update(candidate_fingerprint=original["target"]["fingerprint"],
+            collected_output_references=[reference],
+            produced_artifact_schema_versions=[{
+                "artifact_class": "delivery", "artifact_schema_version": "v1"}])
         result = {key: value for key, value in original.items() if key != "fingerprint"}
         result.update(
             schema="taskplane.stage-handoff/v2",
-            phase_result=entities.create_contract(_runtime()),
+            selected_artifacts=[reference],
+            phase_result=entities.create_contract(runtime),
             produced_artifacts=[
                 {
                     "artifact_class": "delivery",
                     "artifact_schema_version": "v1",
-                    "reference": original["selected_artifacts"][0],
+                    "reference": reference,
                 }
             ],
             inherited_artifacts=[],
@@ -276,9 +285,9 @@ def test_contract_matrix_mixed_versions(tmp_path, kind):
             == value
         )
     if kind == "handoff-v2":
-        # Reader/writer cutover belongs to T01R; the incumbent cannot reinterpret v2.
-        with pytest.raises(handoff.HandoffValidationError, match="unsupported"):
-            handoff.store_manifest(store, value)
+        ref = handoff.store_manifest(store, value)
+        assert handoff.read_manifest(store, ref, expected_authority_revision=7,
+            expected_authority_fingerprint="a" * 64) == value
 
 
 @pytest.mark.parametrize(

@@ -118,7 +118,7 @@ def test_cli_and_native_entry_preserve_engine_contract_and_unique_identity(
         result = subprocess.run(
             [sys.executable, str(Path(ci_local.__file__)), "--native-entry-probe", str(source)],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=30,
         )
         assert result.returncode == 2, result.stdout + result.stderr

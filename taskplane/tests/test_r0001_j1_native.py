@@ -143,7 +143,7 @@ def test_supporting_j1_onboarding_produces_ignored_candidate_launcher(
     assert report["codex_hooks"]["status"] == "ready"
     assert Path(report["codex_hooks"]["resolved_engine"]).resolve() == intended_engine.resolve()
     ignored = subprocess.run(["git", "check-ignore", "--", ".taskplane/codex-hook.py"],
-                             cwd=workspace, text=True, capture_output=True, check=True)
+                             cwd=workspace, text=True, encoding="utf-8", errors="replace", capture_output=True, check=True)
     assert ignored.stdout.strip() == ".taskplane/codex-hook.py"
     # Execute the real generated launcher through a non-hook command; its
     # selected engine reports its own resolver result without a fake event.

@@ -214,7 +214,7 @@ def _fresh_process(workspace, *arguments, event=None, hook_path=None, home=None,
         sys.executable, str(workspace / ".taskplane/codex-hook.py"),
         *arguments,
     ], cwd=workspace, env=environment, input=json.dumps(event or {}),
-        capture_output=True, text=True, timeout=60)
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout
 
@@ -254,7 +254,7 @@ def test_fresh_process_retains_strict_policy_without_environment(onboarded):
     environment["CODEX_THREAD_ID"] = "replacement-with-no-policy-env"
     result = subprocess.run([
         sys.executable, str(workspace / ".taskplane/codex-hook.py"), "loop", "next",
-    ], cwd=workspace, env=environment, capture_output=True, text=True, timeout=60)
+    ], cwd=workspace, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert result.returncode == 1, result.stdout + result.stderr
     refusal = json.loads(result.stdout)
     assert refusal["schema"] == "taskplane.enforcement-refusal/v1"
