@@ -1336,17 +1336,21 @@ class TestLoop(unittest.TestCase):
     def _gate_evaluator_unavailable(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
-        prepare_plan(ws, runtime=loop)
+        prepare_plan(ws, runtime=loop, usage="measured")
         loop.gate(ws, "pass")
         loop.approve(ws, "plan")
-        loop.next_action(ws)
+        action = loop.next_action(ws)
+        assert not action.get("error"), {key: action[key] for key in ("error", "dor") if key in action}
+        from taskplane.tests.test_worker_contract_lifecycle import _event
+        assert tp.bind_worker_contract_event(ws, _event(ws, name=action["task_name"]))
         with open(os.path.join(ws, "src", "todo", "a.py"), "a",
                   encoding="utf-8") as stream:
             stream.write("\ndef complete():\n    return True\n")
         with unittest.mock.patch(
                 "runtime_eval.guide_loop",
                 return_value={"status": "on_path", "recovered": False}):
-            submit_gate(ws, "pass")
+            built = submit_gate(ws, "pass")
+            assert not built.get("error"), {key: built[key] for key in ("error", "dod", "enforcement") if key in built}
         write_verdict(ws)
         path = os.path.join(ws, ".eval", "verdict.json")
         with open(path, encoding="utf-8") as stream:
@@ -1624,7 +1628,7 @@ class TestLoop(unittest.TestCase):
     def test_replan_preserves_history_and_requires_fresh_approval(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md", checkpoints=[])
-        prepare_plan(ws, runtime=loop)
+        prepare_plan(ws, runtime=loop, usage="measured")
         self.assertEqual(loop.gate(ws, "pass")["step"], "execute")
 
         refused = loop.replan(ws, by="", reason="invalid test command")
@@ -1643,7 +1647,7 @@ class TestLoop(unittest.TestCase):
 
         # The corrected plan is reloaded and cannot bypass fresh human
         # approval even though the original loop had no plan checkpoint.
-        prepare_plan(ws, runtime=loop)
+        prepare_plan(ws, runtime=loop, usage="measured")
         self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
         self.assertEqual(loop.approve(ws, by="user")["step"], "execute")
 
@@ -1669,7 +1673,7 @@ class TestLoop(unittest.TestCase):
     def test_define_projection_replan_reanchors_unchanged_passed_contract(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
-        prepare_plan(ws, runtime=loop)
+        prepare_plan(ws, runtime=loop, usage="measured")
         self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
         state = loop.load(ws)
         state["tasks"][0].update({
@@ -1678,7 +1682,7 @@ class TestLoop(unittest.TestCase):
         })
         loop.save(ws, state)
         loop.replan(ws, by="user", reason="metadata-only correction")
-        prepare_plan(ws, runtime=loop)
+        prepare_plan(ws, runtime=loop, usage="measured")
         verified = {
             "target_commit": tp.git_head(ws),
             "evaluation_path": os.path.join(ws, ".eval", "verdict.json"),
@@ -1952,7 +1956,7 @@ class TestLoop(unittest.TestCase):
     def test_plan_checkpoint_then_execute(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")   # → plan
-        prepare_plan(ws, runtime=loop); loop.gate(ws, "pass")     # plan → plan_approval
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")     # plan → plan_approval
         self.assertEqual(loop.load(ws)["step"], "plan_approval")
         act = loop.next_action(ws)
         self.assertTrue(act["paused"])                   # human gate
@@ -1963,7 +1967,7 @@ class TestLoop(unittest.TestCase):
     def test_happy_path_to_signoff(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])  # no plan gate
-        prepare_plan(ws, runtime=loop); loop.gate(ws, "pass")            # plan → execute
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")            # plan → execute
         self.assertEqual(loop.load(ws)["step"], "execute")
         loop.next_action(ws); submit_gate(ws, "pass")          # execute → evaluate
         loop.next_action(ws); evaluated = pass_eval(ws)        # evaluate → em
@@ -2046,7 +2050,7 @@ class TestLoop(unittest.TestCase):
         """
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])
-        prepare_plan(ws, runtime=loop); loop.gate(ws, "pass")
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")
         loop.next_action(ws); submit_gate(ws, "pass")
         loop.next_action(ws); pass_eval(ws)
         commit_integration(ws)
@@ -2096,7 +2100,7 @@ class TestLoop(unittest.TestCase):
         t2 = dict(TASK, id="t2")
         ws = git_ws(self.tmp, [TASK, t2])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])
-        prepare_plan(ws, runtime=loop); loop.gate(ws, "pass")   # plan → execute t1
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")   # plan → execute t1
         loop.next_action(ws); submit_gate(ws, "pass") # execute → evaluate
         loop.next_action(ws); pass_eval(ws)            # evaluate t1 pass → execute t2
         self.assertEqual(loop.load(ws)["step"], "execute")
@@ -2324,7 +2328,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [task]}, f)
         loop.init(ws, "auth work", spec_path="s", checkpoints=["plan"])
-        prepare_plan(ws, runtime=loop)
+        prepare_plan(ws, runtime=loop, usage="measured")
         loop.gate(ws, "pass")          # plan -> plan_approval
         return ws
 
@@ -2539,7 +2543,7 @@ class TestParallelExecution(unittest.TestCase):
             json.dump({"tasks": tasks}, f)
         loop.init(ws, "parallel goal", spec_path="s", checkpoints=["plan"],
                   parallel=True)
-        prepare_plan(ws, runtime=loop); loop.gate(ws, "pass")   # plan → approval
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")   # plan → approval
         loop.approve(ws)                               # → execute
         open_delivery_root(ws)
         return ws
@@ -3047,7 +3051,7 @@ class TestSerialClaimRefusal(unittest.TestCase):
         task2 = dict(TASK, id="t2")
         ws = git_ws(self.tmp, [TASK, task2])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])  # serial
-        prepare_plan(ws, runtime=loop); loop.gate(ws, "pass")            # plan → execute
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")            # plan → execute
         for tid in ("t1", "t2"):
             out = loop.claim(ws, tid, os.path.join(ws, ".tp-work", tid))
             self.assertIn("error", out)
@@ -3120,7 +3124,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         engine (which the stamp stands in for)."""
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["plan"], parallel=True)
-        prepare_plan(ws, runtime=loop)
+        prepare_plan(ws, runtime=loop, usage="measured")
         loop.gate(ws, "pass")                       # plan → plan_approval
         loop.approve(ws)                            # → execute (wave)
         agent_ws = os.path.join(ws, ".tp-work", "t1")

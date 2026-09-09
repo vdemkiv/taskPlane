@@ -376,6 +376,13 @@
     "capability_requirements": [],
     "consumes": [
       {
+        "artifact_class": "judgment",
+        "artifact_schema_version": "taskplane.evaluator-output/v2",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
         "artifact_class": "stage",
         "artifact_schema_version": "taskplane.stage/v1",
         "knowledge_fingerprint_required": true,
@@ -394,7 +401,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "fe47a6b3d1bf011fbece883c2cc270944e24181d0dfc44fa3813c87761137e4d",
+    "fingerprint": "a6b680d87f1a1990874cfb4513f751656c1957ce2193934eb1e969b56a785ba9",
     "gate": "human",
     "id": "engineering",
     "model_tier": "inherit",

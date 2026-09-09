@@ -17,6 +17,7 @@ from taskplane.tests.test_r0001_phase_agents_spec import _journey
 from taskplane.tests.test_r0001_native_entry import _request, _snapshot
 from taskplane import design_host_transport
 from taskplane import taskplane_lite
+from taskplane.tests.test_native_terminal_telemetry import _worker_event, _write_codex_transcript
 
 
 def _normal_phase_workspace(tmp_path, monkeypatch, *, stage_kind="product"):
@@ -74,17 +75,18 @@ def test_normal_accepted_output_has_host_runtime_signature(tmp_path, monkeypatch
 
 
 def test_normal_runtime_telemetry_uses_native_ledger(tmp_path, monkeypatch, record_property):
-    from taskplane.tests.test_native_session_meter import _write_segment
     ws, _, stage, artifacts, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_HOME", str(Path(ws) / ".codex-native"))
     requested = loop.next_action(ws)
     expected = loop.tp.peek_expectation(ws, requested["task_name"], strict=False)
     loop.record_native_dispatch_observation(ws, expected=expected,
         native_task_name=requested["task_name"])
     assert _emit_host_hook(ws, requested, "SubagentStart", monkeypatch) == 0
     _authored_requirement(ws, stage)
-    transcript = tmp_path / "simulated-host.jsonl"
-    _write_segment(transcript, session_id="simulated-worker", parent="simulated-root",
-        total=100, cached=20, output=10)
+    event = _host_event(ws, requested, "SubagentStop")
+    transcript = Path(event["agent_transcript_path"])
+    _write_codex_transcript(transcript, label=requested["task_name"],
+        input_tokens=90, cached_tokens=20, output_tokens=10, event=event)
     assert _emit_host_hook(ws, requested, "SubagentStop", monkeypatch,
         agent_transcript_path=str(transcript)) == 0
     completion = loop.next_action(ws)["phase_runtime"]["completion"]
@@ -447,7 +449,7 @@ def _terminal_caller_workspace(tmp_path, monkeypatch):
         "definition_set_fingerprint": registry.definition_set_fingerprint, "knowledge_reference": knowledge_ref,
         "candidate_fingerprint": candidate_fingerprint, "target_revision": stage["authority"]["target_revision"],
         "host_kind": "simulated", "host_version": "local-test", "output_paths": {
-            "engineering": {"stage": loop.runtime_storage.review_public_path(ws, "phase-stage.json")},
+            "engineering": {},  # The existing runtime owns stage metadata.
             "retro": {"stage": "retro/phase-stage.json"}}}
     stage_migration.change_phase_routing(store, stage["run_id"], owner="agent-runtime", configuration=configuration,
         expected_previous=None, expected_revision=store.load(stage["run_id"])["revision"],
@@ -456,8 +458,8 @@ def _terminal_caller_workspace(tmp_path, monkeypatch):
 
 
 def test_normal_engineering_to_retro_public_caller(tmp_path, monkeypatch, record_property):
-    from taskplane.tests.test_native_session_meter import _write_segment
     ws, store, stage, artifacts = _terminal_caller_workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_HOME", str(Path(ws) / ".codex-native"))
     requested = loop.next_action(ws)
     assert "error" not in requested, requested
     assert requested["phase_runtime"]["status"] == "pending"
@@ -468,9 +470,6 @@ def test_normal_engineering_to_retro_public_caller(tmp_path, monkeypatch, record
     assert loop.tp.commit_dispatch_verification(ws, requested["task_name"],
         expected["model"], expected, True, expected["reasoning_effort"], strict=True)
     assert _emit_host_hook(ws, requested, "SubagentStart", monkeypatch) == 0
-    path = Path(loop.runtime_storage.review_public_path(ws, "phase-stage.json"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(stage))
     # Honest non-judgment, submitted by the genuine incumbent owner; no PASS
     # verdict or review evidence is forged to bootstrap this consumer test.
     submitted = loop.submit(ws, "fail", note="Local caller fixture does not perform substantive Engineering review.")
@@ -478,8 +477,10 @@ def test_normal_engineering_to_retro_public_caller(tmp_path, monkeypatch, record
     from taskplane import tp as cli
     stop_status = cli._submission_stop_check(_host_event(ws, requested, "SubagentStop"))
     assert not stop_status or not stop_status.get("block"), stop_status
-    transcript = tmp_path / "simulated-engineering.jsonl"
-    _write_segment(transcript, session_id="simulated-engineering", parent="simulated-root", total=100, cached=20, output=10)
+    event = _host_event(ws, requested, "SubagentStop")
+    transcript = Path(event["agent_transcript_path"])
+    _write_codex_transcript(transcript, label=requested["task_name"],
+        input_tokens=90, cached_tokens=20, output_tokens=10, event=event)
     assert _emit_host_hook(ws, requested, "SubagentStop", monkeypatch, agent_transcript_path=str(transcript)) == 0
     completion = loop.next_action(ws)["phase_runtime"]["completion"]
     assert artifacts.read(completion["runtime_receipt"])["payload"]["phase_id"] == "engineering"
@@ -517,8 +518,10 @@ def test_normal_engineering_to_retro_public_caller(tmp_path, monkeypatch, record
     retro_output = Path(ws) / "retro/phase-stage.json"
     retro_output.parent.mkdir()
     retro_output.write_text(json.dumps(successor))
-    transcript = tmp_path / "simulated-retro.jsonl"
-    _write_segment(transcript, session_id="simulated-retro", parent="simulated-root", total=120, cached=10, output=15)
+    event = _host_event(ws, requested, "SubagentStop")
+    transcript = Path(event["agent_transcript_path"])
+    _write_codex_transcript(transcript, label=requested["task_name"],
+        input_tokens=105, cached_tokens=10, output_tokens=15, event=event)
     assert _emit_host_hook(ws, requested, "SubagentStop", monkeypatch, agent_transcript_path=str(transcript)) == 0
     terminal = loop.next_action(ws)["phase_runtime"]["completion"]
     assert artifacts.read(terminal["runtime_receipt"])["payload"]["phase_id"] == "retro"
@@ -542,9 +545,9 @@ def test_normal_engineering_to_retro_public_caller(tmp_path, monkeypatch, record
 def _host_event(ws, requested, kind):
     """Explicit simulated native boundary, never native proof."""
     name = requested["task_name"]
-    event = {"hook_event_name": kind, "cwd": ws, "session_id": "simulated-session",
-        "turn_id": "simulated-turn", "agent_id": "simulated-worker", "agent_type": name,
-        "task_name": name, "outcome": "success", "usage": {"total_tokens": 100}}
+    event = _worker_event(ws, requested, label=name)
+    event.update({"hook_event_name": kind, "session_id": "simulated-session",
+        "turn_id": "simulated-turn", "outcome": "success", "usage": {"total_tokens": 100}})
     identity = taskplane_lite.hook_event_identity(ws,
         "subagent-start" if kind == "SubagentStart" else "subagent-stop", event)
     event["_taskplane_hook_claim_id"] = hashlib.sha256(identity.encode()).hexdigest()
@@ -775,7 +778,7 @@ def test_async_domain_adapters_preserve_prerequisites(tmp_path, monkeypatch, dom
 @pytest.mark.parametrize("sever", ["connected", "missing-predecessor"])
 def test_successive_declared_stage_selection_retains_lineage(tmp_path, sever):
     """Actual package producers; synchronous simulated host, not native proof."""
-    from taskplane.tests.test_r0001_phase_agents_spec import _run
+    from taskplane.tests.test_r0001_phase_agents_spec import _review_candidates, _run
     artifacts, registry, state, _, predecessor, _ = _journey(tmp_path)
     authority = {"schema": "taskplane.stage-authority-binding/v1", "run_id": "run-t11",
         "repository_id": "github.com/vdemkiv/taskplane", "repository_key": "github.com-vdemkiv-taskplane-43a0a10bba",
@@ -799,7 +802,8 @@ def test_successive_declared_stage_selection_retains_lineage(tmp_path, sever):
             with pytest.raises((ValueError, OSError)):
                 _run(tmp_path, artifacts, registry, phase, {"stage": value}, predecessor, state=state)
             return
-        reference, result = _run(tmp_path, artifacts, registry, phase, {"stage": value}, predecessor, state=state)
+        authored = _review_candidates(value) if phase in {"evaluate", "engineering"} else {"stage": value}
+        reference, result = _run(tmp_path, artifacts, registry, phase, authored, predecessor, state=state)
         output = artifacts.read(reference)
         assert len([row for row in output["produced_artifacts"] + output["inherited_artifacts"]
             if row["artifact_class"] == "stage"]) == 1

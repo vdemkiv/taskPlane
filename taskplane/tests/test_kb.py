@@ -86,7 +86,9 @@ class TestKBLoopIntegration(unittest.TestCase):
                   open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
 
         loop.init(ws, "add complete()", spec_path="s", checkpoints=["plan", "em"])
-        loop.next_action(ws); loop.gate(ws, "pass")     # plan → plan_approval
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(ws, runtime=loop, usage="measured")
+        loop.gate(ws, "pass")     # plan → plan_approval
         loop.approve(ws)                                 # records a decision
         self.assertTrue(kb.list_decisions(ws))           # KB has an entry
 

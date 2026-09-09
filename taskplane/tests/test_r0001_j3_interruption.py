@@ -8,7 +8,7 @@ from dataclasses import replace
 import pytest
 
 from taskplane import agent_runtime, delivery_ports, loop_recovery, producer_observation, review_evidence
-from taskplane.tests.test_r0001_phase_agents_spec import _journey, _run
+from taskplane.tests.test_r0001_phase_agents_spec import _journey, _review_candidates, _run
 from taskplane.tests.test_r0001_j2_quality_handoff import _build_stage
 from taskplane import loop as phase_loop
 from taskplane.tests.test_r0001_lease_retry import _owner
@@ -29,6 +29,8 @@ def _phase_journey(tmp_path, driver):
             expected_authority_revision=1, expected_authority_fingerprint="f" * 64,
             expected_run_id="run-t11", expected_candidate_fingerprint="a" * 64)
         authored = {"stage": _build_stage(package) if phase == "build" else package.read("stage")}
+        if phase in {"evaluate", "engineering"}:
+            authored = _review_candidates(authored["stage"])
         predecessor, _ = _run(tmp_path, store, registry, phase, authored, predecessor, state=state, driver=driver)
     return predecessor
 

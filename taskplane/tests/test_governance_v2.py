@@ -59,7 +59,7 @@ class TestGovernanceV2(unittest.TestCase):
                        "plan_authority": "human:test-fixture",
                        "tasks": [task]}, f)
         from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop)
+        prepare_plan(self.ws, runtime=loop, usage="measured")
         result = loop.gate(self.ws, "pass")
         self.assertNotIn("error", result)
         self.assertEqual(loop.load(self.ws)["step"], "execute")

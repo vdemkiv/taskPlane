@@ -7116,6 +7116,17 @@ def _dispatch_public_evaluate_evidence_children(
             dispatch=_native_delivery_dispatch_binding(
                 state, stage="evaluate", task=task, intent_id=intent_id,
                 native_task_name=str(dispatch["task_name"])))
+        contract = tp.prepare_worker_contract(
+            ws, tp.build_contract(
+                f"EVALUATE EVIDENCE: {kind}", read_only=True,
+                tools=["Read", "Grep", "Glob", "Bash"]),
+            stage="evaluate-evidence", task=str(task["id"]),
+            task_name=dispatch["task_name"], role_marker=dispatch["role_marker"])
+        contract["worker_lifecycle"]["dispatch_intent_id"] = intent_id
+        contract["worker_lifecycle"]["dispatch_intent_run_id"] = (
+            intent["identity"]["run_id"])
+        tp.activate(ws, contract, snapshot=tp.git_head(ws),
+                    task_slot_override=contract["task_slot"])
         tp.record_expected_dispatch(
             ws, "step", STEP_ROLE["evaluate"], dispatch["model_tier"],
             dispatch["model"], ref=str(task.get("id") or "evaluate"),
@@ -7126,6 +7137,20 @@ def _dispatch_public_evaluate_evidence_children(
             intent_run_id=(intent.get("identity") or {}).get("run_id"))
         rows.append({
             **dispatch, "assignment": copy.deepcopy(assignment),
+            "contract": contract,
+            "contract_bootstrap": {
+                "schema": "taskplane.worker-contract-bootstrap/v1",
+                "task_slot": contract["task_slot"],
+                "worker_identity": dispatch["task_name"],
+                "environment": {"TASKPLANE_TASK": contract["task_slot"]},
+                "activation": "pending_subagent_start_binding",
+                "control_plane_release": {
+                    "command": "worker-release",
+                    "signed_action": tp.encode_worker_release_action(
+                        contract["worker_lifecycle"]["release_action"]),
+                    "terminal_receipt_required": True,
+                },
+            },
             "dispatch_intent": intent, "root_admission": admission,
             "prompt": "Read-only evidence producer. Execute the exact "
                       "assignment obligations and return only the required "

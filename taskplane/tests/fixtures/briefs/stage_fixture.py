@@ -147,14 +147,14 @@ def finish_plan_lenses(ws, workspace, action, *, usage="unavailable", runtime=No
     return events
 
 
-def prepare_plan(ws, *, runtime=None):
+def prepare_plan(ws, *, runtime=None, usage="unavailable"):
     """Complete the simulated Plan lens prerequisite, not the Plan gate."""
     if runtime is None:
         import loop as runtime
     assert runtime.load(ws)["step"] == "plan"
     action = runtime.next_action(ws)
     assert not action.get("error"), action
-    finish_plan_lenses(ws, Path(ws), action, runtime=runtime)
+    finish_plan_lenses(ws, Path(ws), action, runtime=runtime, usage=usage)
     return action
 
 
@@ -163,7 +163,7 @@ def start_loop(ws: str) -> None:
     import loop
     from tests.root_session_fixture import open_delivery_root
     loop.init(ws, GOAL, spec_path="s", checkpoints=["plan"], parallel=True)
-    prepare_plan(ws, runtime=loop)
+    prepare_plan(ws, runtime=loop, usage="measured")
     loop.gate(ws, "pass")
     loop.approve(ws)
     open_delivery_root(ws)

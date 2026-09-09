@@ -22,7 +22,7 @@ from taskplane.tests.test_native_root_session import (
     AUTHORITY, _capability, _write_root,
 )
 from taskplane.tests.test_native_terminal_telemetry import (
-    _write_codex_transcript,
+    _worker_event, _write_codex_transcript,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -692,6 +692,7 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
         set(evidence.PRODUCER_KINDS)
 
     for child in children:
+        assert child["contract_bootstrap"]["task_slot"] == child["contract"]["task_slot"]
         expected = tp_cli.tp.peek_expectation(
             str(workspace), child["task_name"], strict=True)
         assert expected is not None
@@ -702,16 +703,18 @@ def test_public_next_action_observes_two_children_and_gate_consumes_them(
     results = _results(assignments)
 
     def stop(child: dict) -> None:
-        transcript = workspace / (child["task_name"] + ".jsonl")
+        event = _worker_event(str(workspace), child, label=child["task_name"])
+        transcript = Path(event["agent_transcript_path"])
+        monkeypatch.setenv("CODEX_HOME", str(workspace / ".codex-native"))
         _write_codex_transcript(
             transcript, label=child["task_name"], input_tokens=10,
-            cached_tokens=0, output_tokens=2)
-        event = {"cwd": str(workspace), "agent_id": child["task_name"],
-                 "agent_type": child["task_name"], "turn_id": "turn-1",
-                 "task_name": child["task_name"], "provider": "codex",
-                 "agent_transcript_path": str(transcript),
-                 "last_assistant_message": json.dumps(
-                     results[child["assignment"]["producer_kind"]])}
+            cached_tokens=0, output_tokens=2, event=event)
+        monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
+        assert tp_cli.cmd_subagent_start(None) == 0
+        capsys.readouterr()
+        event.update({"hook_event_name": "SubagentStop", "provider": "codex",
+                      "last_assistant_message": json.dumps(
+                          results[child["assignment"]["producer_kind"]])})
         monkeypatch.setattr(tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))
         assert tp_cli.cmd_subagent_stop(None) == 0
         assert capsys.readouterr().out.strip() == "{}"
@@ -846,10 +849,22 @@ def test_evidence_child_stop_requires_successful_current_terminal_authority(
                 "resume": "forbidden", "seed": "digest-only",
                 "seed_budget_tokens": 100, "root_budget_tokens": 1000,
             }, settings_digest=_binding()["settings_digest"])
-    transcript = tmp_path / (task_name + ".jsonl")
+    # Simulated owner setup uses the same preparation/activation boundary as
+    # the public producer; each corruption below remains independently local.
+    contract = loop.tp.prepare_worker_contract(
+        str(tmp_path), loop.tp.build_contract("simulated evidence child", read_only=True),
+        stage="evaluate-evidence", task=_binding()["task_id"],
+        task_name=task_name, role_marker="taskplane-role:tp-evaluator")
+    contract["worker_lifecycle"]["dispatch_intent_id"] = dispatch_id
+    contract["worker_lifecycle"]["dispatch_intent_run_id"] = run_id
+    loop.tp.activate(str(tmp_path), contract, task_slot_override=contract["task_slot"])
+    event = _worker_event(str(tmp_path), {"task_name": task_name}, label=task_name)
+    transcript = Path(event["agent_transcript_path"])
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex-native"))
     _write_codex_transcript(
         transcript, label=task_name, input_tokens=10,
-        cached_tokens=0, output_tokens=2)
+        cached_tokens=0, output_tokens=2, event=event)
+    assert loop.tp.bind_worker_contract_event(str(tmp_path), event)
     if scenario == "missing-binding":
         with loop.mutate(str(tmp_path)) as locked:
             locked["dispatch_telemetry"]["bindings"] = []
@@ -901,13 +916,11 @@ def test_evidence_child_stop_requires_successful_current_terminal_authority(
             route["assignments"][0] = copy.deepcopy(assignment)
             route["child_dispatches"][0]["assignment"] = copy.deepcopy(
                 assignment)
-    event = {
-        "cwd": str(tmp_path), "agent_id": task_name,
-        "agent_type": task_name, "task_name": task_name,
-        "turn_id": "turn-success", "provider": "codex",
+    event.update({
+        "hook_event_name": "SubagentStop", "provider": "codex",
         "status": "success", "agent_transcript_path": str(transcript),
         "last_assistant_message": json.dumps(result),
-    }
+    })
     if scenario == "conflicting-replay":
         monkeypatch.setattr(
             tp_cli.sys, "stdin", io.StringIO(json.dumps(event)))

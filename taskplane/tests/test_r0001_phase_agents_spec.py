@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from taskplane import agent_runtime, delivery_ports, loop, producer_observation
+from taskplane import agent_runtime, delivery_ports, evaluation_output, failure_routing, loop, producer_observation
 from taskplane import review_evidence, settings, stage_entities, stage_handoff, test_strategy
 
 
@@ -49,6 +49,24 @@ def _authority():
     return {"actor": "human:simulated", "session_id": "simulated-session", "authorized_at": "2026-09-06T00:00:00Z",
         "operation_id": "package-op", "authority_record": {"schema": "taskplane.authority-record-reference/v1",
             "authority_schema": "taskplane.consolidated-authorization/v1", "revision": 1, "fingerprint": "f" * 64}}
+
+
+def _review_candidates(stage):
+    """Simulated author input: valid typed FAIL, never native acceptance."""
+    evidence = {"mode": "simulated-host", "detail": "Native acceptance is not established by this fixture."}
+    failure = {"schema": failure_routing.FAILURE_RECORD_SCHEMA_ID,
+        "id": "simulated-native-proof-unavailable", "source": "simulated-worker", "stage": "evaluate",
+        "repro": "Inspect the fixture's explicitly simulated host boundary.",
+        "evidence": evidence, "evidence_digest": failure_routing.evidence_digest(evidence),
+        "class": "unknown", "reason": evidence["detail"], "owner": "orchestrator",
+        "cluster": "native-proof", "route": "hold",
+        "candidate": {"id": "local-candidate", "fingerprint": "a" * 64}}
+    judgment = {"schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+        "task": "T11", "requirement": stage["requirement"]["id"], "verdict": "fail",
+        "criteria": [{"criterion": "Native acceptance", "status": "cannot-verify", "evidence": evidence["detail"]}],
+        "evaluation": {"status": "complete", "reason_code": "none", "detail": evidence["detail"]},
+        "graph": {"dispositions": [], "requirements_checked": [], "contracts_checked": []}, "failures": [failure]}
+    return {"stage": stage, "judgment": judgment}
 
 
 def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=None, driver=None):

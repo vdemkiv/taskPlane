@@ -195,6 +195,8 @@ def _plan_workspace(root: Path) -> Path:
 
 
 def _gate_plan_to_execute(workspace: Path) -> dict:
+    from tests.fixtures.briefs.stage_fixture import prepare_plan
+    prepare_plan(str(workspace), runtime=loop, usage="measured")
     gated = loop.gate(str(workspace), "pass")
     assert "error" not in gated
     assert gated["step"] == "execute"

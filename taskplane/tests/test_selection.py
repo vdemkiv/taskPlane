@@ -59,7 +59,7 @@ def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
             "delivery_mode": "build", "automatic_lenses": [],
             "plan_authority": "human:test-fixture", **plan}
     json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-    prepare_plan(ws, runtime=loop)
+    prepare_plan(ws, runtime=loop, usage="measured")
     loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
     loop.approve(ws)                 # → execute
     return loop.load(ws)
