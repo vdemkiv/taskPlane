@@ -2,8 +2,20 @@
   "package": "taskplane",
   "sccs": [
     {
-      "edge_count": 49,
+      "edge_count": 343,
       "internal_edges": [
+        [
+          "taskplane.agent_runtime",
+          "taskplane.producer_observation"
+        ],
+        [
+          "taskplane.agent_runtime",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.agent_runtime",
+          "taskplane.stage_entities"
+        ],
         [
           "taskplane.audit",
           "taskplane.defect_claim"
@@ -17,12 +29,120 @@
           "taskplane.loop"
         ],
         [
+          "taskplane.audit",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.audit",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.audit_projection",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.brief_projection",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.agent_runtime"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.checkpoint"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.loop_recovery"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.plan_topology"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.repository"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.build_c",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.checkpoint",
+          "taskplane.owned_cleanup"
+        ],
+        [
+          "taskplane.checkpoint",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.checkpoint",
+          "taskplane.terminal_truth"
+        ],
+        [
+          "taskplane.codex_identity",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.collision",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.command_adapters",
+          "taskplane.command_runtime"
+        ],
+        [
+          "taskplane.command_adapters",
+          "taskplane.host_native"
+        ],
+        [
+          "taskplane.command_runtime",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.command_runtime",
+          "taskplane.owned_cleanup"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.collision"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.host_native"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.kb"
+        ],
+        [
           "taskplane.dashboard",
           "taskplane.loop"
         ],
         [
           "taskplane.dashboard",
           "taskplane.loop_status"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.plan_topology"
         ],
         [
           "taskplane.dashboard",
@@ -33,12 +153,156 @@
           "taskplane.runtime_eval"
         ],
         [
+          "taskplane.dashboard",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.dashboard",
+          "taskplane.yield_meter"
+        ],
+        [
+          "taskplane.defect_claim",
+          "taskplane.kb"
+        ],
+        [
           "taskplane.defect_claim",
           "taskplane.requirements"
         ],
         [
+          "taskplane.depgraph",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.depgraph",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.depgraph",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.derivation",
+          "taskplane.target"
+        ],
+        [
+          "taskplane.derivation",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.design_contract",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.design_contract",
+          "taskplane.kb"
+        ],
+        [
           "taskplane.design_contract",
           "taskplane.requirements"
+        ],
+        [
+          "taskplane.design_contract",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.design_contract",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.producer_observation"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.stage_migration"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.design_host_transport",
+          "taskplane.tp"
+        ],
+        [
+          "taskplane.dispatch_telemetry",
+          "taskplane.producer_observation"
+        ],
+        [
+          "taskplane.dispatch_telemetry",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.dispatch_telemetry",
+          "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.enforcement",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.evaluate_child_evidence",
+          "taskplane.governed_commands"
+        ],
+        [
+          "taskplane.evaluate_child_evidence",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.evaluate_child_evidence",
+          "taskplane.run_store"
+        ],
+        [
+          "taskplane.evaluate_child_evidence",
+          "taskplane.runnability"
+        ],
+        [
+          "taskplane.evaluation_output",
+          "taskplane.evaluate_child_evidence"
+        ],
+        [
+          "taskplane.evaluation_output",
+          "taskplane.producer_observation"
+        ],
+        [
+          "taskplane.evaluation_output",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.evaluator_health",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.evidence",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.evidence",
+          "taskplane.evaluation_output"
         ],
         [
           "taskplane.evidence",
@@ -50,7 +314,63 @@
         ],
         [
           "taskplane.evidence",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.evidence",
           "taskplane.runtime_eval"
+        ],
+        [
+          "taskplane.evidence",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.evidence",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.governed_commands",
+          "taskplane.checkpoint"
+        ],
+        [
+          "taskplane.governed_commands",
+          "taskplane.command_adapters"
+        ],
+        [
+          "taskplane.governed_commands",
+          "taskplane.command_runtime"
+        ],
+        [
+          "taskplane.governed_commands",
+          "taskplane.owned_cleanup"
+        ],
+        [
+          "taskplane.governed_commands",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.governed_commands",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.host_native",
+          "taskplane.root_seed"
+        ],
+        [
+          "taskplane.host_native",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.host_native",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.kb",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.lens",
+          "taskplane.depgraph"
         ],
         [
           "taskplane.lens",
@@ -65,6 +385,14 @@
           "taskplane.review_progression"
         ],
         [
+          "taskplane.lens",
+          "taskplane.runnability"
+        ],
+        [
+          "taskplane.lens",
+          "taskplane.taskplane_lite"
+        ],
+        [
           "taskplane.lens_signals",
           "taskplane.lens"
         ],
@@ -74,7 +402,31 @@
         ],
         [
           "taskplane.loop",
+          "taskplane.agent_runtime"
+        ],
+        [
+          "taskplane.loop",
           "taskplane.audit"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.brief_projection"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.build_c"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.checkpoint"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.codex_identity"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.depgraph"
         ],
         [
           "taskplane.loop",
@@ -82,7 +434,39 @@
         ],
         [
           "taskplane.loop",
+          "taskplane.design_host_transport"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.enforcement"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.evaluation_output"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.evaluator_health"
+        ],
+        [
+          "taskplane.loop",
           "taskplane.evidence"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.governed_commands"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.host_native"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.kb"
         ],
         [
           "taskplane.loop",
@@ -90,7 +474,39 @@
         ],
         [
           "taskplane.loop",
+          "taskplane.loop_recovery"
+        ],
+        [
+          "taskplane.loop",
           "taskplane.loop_status"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.owned_cleanup"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.phase_harness"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.plan_topology"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.preflight"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.producer_observation"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.release_evidence"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.repository"
         ],
         [
           "taskplane.loop",
@@ -106,11 +522,87 @@
         ],
         [
           "taskplane.loop",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.loop",
           "taskplane.review_retry"
         ],
         [
           "taskplane.loop",
+          "taskplane.root_seed"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.run_context"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.run_store"
+        ],
+        [
+          "taskplane.loop",
           "taskplane.runtime_eval"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.stage_migration"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.terminal_truth"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.worktree_cleanup"
+        ],
+        [
+          "taskplane.loop",
+          "taskplane.yield_meter"
+        ],
+        [
+          "taskplane.loop_recovery",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.loop_recovery",
+          "taskplane.loop"
+        ],
+        [
+          "taskplane.loop_recovery",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.loop_status",
+          "taskplane.host_native"
         ],
         [
           "taskplane.loop_status",
@@ -118,11 +610,187 @@
         ],
         [
           "taskplane.loop_status",
+          "taskplane.plan_topology"
+        ],
+        [
+          "taskplane.loop_status",
+          "taskplane.run_store"
+        ],
+        [
+          "taskplane.loop_status",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.loop_status",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.loop_status",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.loop_status",
           "taskplane.views"
+        ],
+        [
+          "taskplane.loop_status",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.obligations",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.obligations",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.owned_cleanup",
+          "taskplane.worktree_cleanup"
+        ],
+        [
+          "taskplane.phase_harness",
+          "taskplane.codex_identity"
+        ],
+        [
+          "taskplane.phase_harness",
+          "taskplane.design_host_transport"
+        ],
+        [
+          "taskplane.phase_harness",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.phase_harness",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.phase_harness",
+          "taskplane.stage_migration"
+        ],
+        [
+          "taskplane.phase_harness",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.pickup",
+          "taskplane.build_c"
+        ],
+        [
+          "taskplane.pickup",
+          "taskplane.design_contract"
+        ],
+        [
+          "taskplane.plan_topology",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.preflight",
+          "taskplane.repository"
+        ],
+        [
+          "taskplane.preflight",
+          "taskplane.run_store"
+        ],
+        [
+          "taskplane.preflight",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.preflight",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.preflight",
+          "taskplane.target"
+        ],
+        [
+          "taskplane.preflight",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.preview_runtime",
+          "taskplane.command_adapters"
+        ],
+        [
+          "taskplane.preview_runtime",
+          "taskplane.command_runtime"
+        ],
+        [
+          "taskplane.producer_observation",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.regression",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.release_evidence",
+          "taskplane.retro"
+        ],
+        [
+          "taskplane.release_evidence",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.release_evidence",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.release_evidence",
+          "taskplane.terminal_truth"
+        ],
+        [
+          "taskplane.release_evidence",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.repository",
+          "taskplane.owned_cleanup"
+        ],
+        [
+          "taskplane.repository",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.repository",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.repository",
+          "taskplane.terminal_truth"
+        ],
+        [
+          "taskplane.repository",
+          "taskplane.worktree_cleanup"
+        ],
+        [
+          "taskplane.requirements",
+          "taskplane.depgraph"
         ],
         [
           "taskplane.requirements",
           "taskplane.lens"
+        ],
+        [
+          "taskplane.requirements",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.agent_runtime"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.collision"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.kb"
         ],
         [
           "taskplane.retro",
@@ -130,7 +798,43 @@
         ],
         [
           "taskplane.retro",
+          "taskplane.plan_topology"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.retro",
           "taskplane.runtime_eval"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.terminal_truth"
+        ],
+        [
+          "taskplane.retro",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.agent_runtime"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.command_adapters"
         ],
         [
           "taskplane.review",
@@ -139,6 +843,14 @@
         [
           "taskplane.review",
           "taskplane.defect_claim"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.evaluation_output"
         ],
         [
           "taskplane.review",
@@ -154,6 +866,10 @@
         ],
         [
           "taskplane.review",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.review",
           "taskplane.review_progression"
         ],
         [
@@ -166,25 +882,157 @@
         ],
         [
           "taskplane.review",
+          "taskplane.runnability"
+        ],
+        [
+          "taskplane.review",
           "taskplane.runtime_eval"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.review",
+          "taskplane.terminal_truth"
         ],
         [
           "taskplane.review",
           "taskplane.views"
         ],
         [
+          "taskplane.review",
+          "taskplane.yield_meter"
+        ],
+        [
+          "taskplane.review_evidence",
+          "taskplane.evaluation_output"
+        ],
+        [
+          "taskplane.review_evidence",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.review_evidence",
+          "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.review_evidence",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.review_evidence",
+          "taskplane.taskplane_lite"
+        ],
+        [
           "taskplane.review_progression",
           "taskplane.lens"
+        ],
+        [
+          "taskplane.review_recovery",
+          "taskplane.review_evidence"
         ],
         [
           "taskplane.review_repair",
           "taskplane.review"
         ],
         [
+          "taskplane.review_repair",
+          "taskplane.review_recovery"
+        ],
+        [
           "taskplane.review_retry",
           "taskplane.review"
         ],
         [
+          "taskplane.review_retry",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.review_retry",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.root_seed",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.run_artifacts",
+          "taskplane.wave_metrics"
+        ],
+        [
+          "taskplane.run_context",
+          "taskplane.loop"
+        ],
+        [
+          "taskplane.run_context",
+          "taskplane.loop_recovery"
+        ],
+        [
+          "taskplane.run_context",
+          "taskplane.phase_harness"
+        ],
+        [
+          "taskplane.run_context",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.run_store",
+          "taskplane.collision"
+        ],
+        [
+          "taskplane.run_store",
+          "taskplane.enforcement"
+        ],
+        [
+          "taskplane.run_store",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.run_store",
+          "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.run_store",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.run_store",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.run_store",
+          "taskplane.worktree_cleanup"
+        ],
+        [
+          "taskplane.runnability",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.runnability",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.runtime_eval",
+          "taskplane.evaluate_child_evidence"
+        ],
+        [
+          "taskplane.runtime_eval",
+          "taskplane.evaluation_output"
+        ],
+        [
           "taskplane.runtime_eval",
           "taskplane.loop"
         ],
@@ -193,57 +1041,28 @@
           "taskplane.review"
         ],
         [
-          "taskplane.views",
-          "taskplane.dashboard"
+          "taskplane.runtime_eval",
+          "taskplane.review_evidence"
         ],
         [
-          "taskplane.views",
-          "taskplane.loop"
-        ]
-      ],
-      "member_count": 17,
-      "members": [
-        "taskplane.audit",
-        "taskplane.dashboard",
-        "taskplane.defect_claim",
-        "taskplane.design_contract",
-        "taskplane.evidence",
-        "taskplane.lens",
-        "taskplane.lens_signals",
-        "taskplane.loop",
-        "taskplane.loop_status",
-        "taskplane.requirements",
-        "taskplane.retro",
-        "taskplane.review",
-        "taskplane.review_progression",
-        "taskplane.review_repair",
-        "taskplane.review_retry",
-        "taskplane.runtime_eval",
-        "taskplane.views"
-      ]
-    },
-    {
-      "edge_count": 13,
-      "internal_edges": [
+          "taskplane.runtime_eval",
+          "taskplane.run_artifacts"
+        ],
         [
-          "taskplane.collision",
+          "taskplane.runtime_eval",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.runtime_eval",
           "taskplane.taskplane_lite"
         ],
         [
-          "taskplane.depgraph",
-          "taskplane.taskplane_lite"
+          "taskplane.settings",
+          "taskplane.run_context"
         ],
         [
-          "taskplane.regression",
-          "taskplane.taskplane_lite"
-        ],
-        [
-          "taskplane.review_evidence",
-          "taskplane.stage_handoff"
-        ],
-        [
-          "taskplane.review_evidence",
-          "taskplane.taskplane_lite"
+          "taskplane.settings",
+          "taskplane.stage_entities"
         ],
         [
           "taskplane.stage_entities",
@@ -252,10 +1071,66 @@
         [
           "taskplane.stage_entities",
           "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.stage_entities",
+          "taskplane.storage"
         ],
         [
           "taskplane.stage_handoff",
           "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.stage_handoff",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.stage_handoff",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.stage_migration",
+          "taskplane.loop"
+        ],
+        [
+          "taskplane.stage_migration",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.stage_migration",
+          "taskplane.run_store"
+        ],
+        [
+          "taskplane.stage_migration",
+          "taskplane.stage_entities"
+        ],
+        [
+          "taskplane.stage_migration",
+          "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.stage_migration",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.storage",
+          "taskplane.host_native"
+        ],
+        [
+          "taskplane.storage_migration",
+          "taskplane.run_store"
+        ],
+        [
+          "taskplane.storage_migration",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.target",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.taskplane_lite",
+          "taskplane.audit_projection"
         ],
         [
           "taskplane.taskplane_lite",
@@ -267,7 +1142,23 @@
         ],
         [
           "taskplane.taskplane_lite",
+          "taskplane.design_host_transport"
+        ],
+        [
+          "taskplane.taskplane_lite",
           "taskplane.regression"
+        ],
+        [
+          "taskplane.taskplane_lite",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.taskplane_lite",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.taskplane_lite",
+          "taskplane.settings"
         ],
         [
           "taskplane.taskplane_lite",
@@ -276,20 +1167,291 @@
         [
           "taskplane.taskplane_lite",
           "taskplane.stage_handoff"
+        ],
+        [
+          "taskplane.taskplane_lite",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.terminal_truth",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.codex_identity"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.collision"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.dashboard"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.derivation"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.enforcement"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.governed_commands"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.host_native"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.kb"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.lens"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.loop"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.loop_status"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.obligations"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.pickup"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.preflight"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.preview_runtime"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.producer_observation"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.requirements"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.review"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.review_evidence"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.root_seed"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.run_context"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.run_store"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.runnability"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.settings"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.storage_migration"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.target"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.track"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.views"
+        ],
+        [
+          "taskplane.tp",
+          "taskplane.yield_meter"
+        ],
+        [
+          "taskplane.track",
+          "taskplane.loop"
+        ],
+        [
+          "taskplane.track",
+          "taskplane.stage_migration"
+        ],
+        [
+          "taskplane.track",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.dashboard"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.depgraph"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.host_native"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.loop"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.obligations"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.run_artifacts"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.views",
+          "taskplane.terminal_truth"
+        ],
+        [
+          "taskplane.wave_metrics",
+          "taskplane.dispatch_telemetry"
+        ],
+        [
+          "taskplane.worktree_cleanup",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.worktree_cleanup",
+          "taskplane.taskplane_lite"
+        ],
+        [
+          "taskplane.yield_meter",
+          "taskplane.storage"
+        ],
+        [
+          "taskplane.yield_meter",
+          "taskplane.taskplane_lite"
         ]
       ],
-      "member_count": 7,
+      "member_count": 70,
       "members": [
+        "taskplane.agent_runtime",
+        "taskplane.audit",
+        "taskplane.audit_projection",
+        "taskplane.brief_projection",
+        "taskplane.build_c",
+        "taskplane.checkpoint",
+        "taskplane.codex_identity",
         "taskplane.collision",
+        "taskplane.command_adapters",
+        "taskplane.command_runtime",
+        "taskplane.dashboard",
+        "taskplane.defect_claim",
         "taskplane.depgraph",
+        "taskplane.derivation",
+        "taskplane.design_contract",
+        "taskplane.design_host_transport",
+        "taskplane.dispatch_telemetry",
+        "taskplane.enforcement",
+        "taskplane.evaluate_child_evidence",
+        "taskplane.evaluation_output",
+        "taskplane.evaluator_health",
+        "taskplane.evidence",
+        "taskplane.governed_commands",
+        "taskplane.host_native",
+        "taskplane.kb",
+        "taskplane.lens",
+        "taskplane.lens_signals",
+        "taskplane.loop",
+        "taskplane.loop_recovery",
+        "taskplane.loop_status",
+        "taskplane.obligations",
+        "taskplane.owned_cleanup",
+        "taskplane.phase_harness",
+        "taskplane.pickup",
+        "taskplane.plan_topology",
+        "taskplane.preflight",
+        "taskplane.preview_runtime",
+        "taskplane.producer_observation",
         "taskplane.regression",
+        "taskplane.release_evidence",
+        "taskplane.repository",
+        "taskplane.requirements",
+        "taskplane.retro",
+        "taskplane.review",
         "taskplane.review_evidence",
+        "taskplane.review_progression",
+        "taskplane.review_recovery",
+        "taskplane.review_repair",
+        "taskplane.review_retry",
+        "taskplane.root_seed",
+        "taskplane.run_artifacts",
+        "taskplane.run_context",
+        "taskplane.run_store",
+        "taskplane.runnability",
+        "taskplane.runtime_eval",
+        "taskplane.settings",
         "taskplane.stage_entities",
         "taskplane.stage_handoff",
-        "taskplane.taskplane_lite"
+        "taskplane.stage_migration",
+        "taskplane.storage",
+        "taskplane.storage_migration",
+        "taskplane.target",
+        "taskplane.taskplane_lite",
+        "taskplane.terminal_truth",
+        "taskplane.tp",
+        "taskplane.track",
+        "taskplane.views",
+        "taskplane.wave_metrics",
+        "taskplane.worktree_cleanup",
+        "taskplane.yield_meter"
       ]
     }
   ],
   "schema": "taskplane.import-cycle-topology/v2",
-  "source_revision": "110e765ef58fcb7b16916063790b772bf773e175"
+  "source_revision": "fd5ff0cec8ca5267d0576f5c53289cc4ecb194c9"
 }
