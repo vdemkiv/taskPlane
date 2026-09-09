@@ -753,11 +753,99 @@ def prepare_publication_amendment(runtime, workspace: str, *, by: str, request: 
     return packet
 
 
+def _scope_inventory(runtime, workspace: str, state: dict, source: str,
+                     expected_fingerprint: str) -> dict:
+    """Validate an exact-file appendix without rewriting accepted Plan history."""
+    path = Path(workspace) / "plan/scope-inventory.json"
+    if (os.path.abspath(source) != str(path) or path.is_symlink()
+            or path.stat().st_size > 64_000):
+        raise ValueError("scope inventory must be the bounded regular Plan appendix")
+    packet = json.loads(path.read_bytes())
+    fields = {"schema", "run_id", "requirement_id", "plan_fingerprint", "baseline",
+              "candidate", "by", "request", "paths"}
+    selected = review_baseline(workspace, state)
+    if (not isinstance(packet, dict) or set(packet) != fields
+            or packet.get("schema") != "taskplane.scope-inventory/v1"
+            or _fingerprint(packet) != expected_fingerprint or not selected
+            or packet["baseline"] != selected["baseline"] or packet["by"] != selected["actor"]
+            or not isinstance(packet["request"], str) or not packet["request"].strip()
+            or any(packet[key] != state.get(key) for key in
+                   ("run_id", "requirement_id", "plan_fingerprint"))):
+        raise ValueError("scope inventory approval, Plan or accepted Build changed")
+    candidate = packet["candidate"]
+    if not isinstance(candidate, str) or not re.fullmatch(r"[a-f0-9]{40}", candidate) or subprocess.run(
+            ["git", "merge-base", "--is-ancestor", candidate, "HEAD"], cwd=workspace,
+            capture_output=True, check=False, timeout=15).returncode:
+        raise ValueError("scope inventory candidate is not a current ancestor")
+    paths = packet["paths"]
+    if not isinstance(paths, dict) or not 1 <= len(paths) <= 256:
+        raise ValueError("scope inventory requires bounded exact files")
+    for name, digest in paths.items():
+        relative = PurePosixPath(name)
+        if (not name or relative.is_absolute() or any(char in name for char in "\\*?[]")
+                or any(part in {"..", ".git", ".env", "secrets"} for part in relative.parts)
+                or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)):
+            raise ValueError("scope inventory contains an unsafe path or digest")
+        target = Path(workspace) / name
+        if (str(target) != os.path.realpath(target) or not target.is_file()
+                or hashlib.sha256(target.read_bytes()).hexdigest() != digest):
+            raise ValueError("approved scope file changed: " + name)
+        blob = subprocess.run(["git", "show", f"{candidate}:{name}"], cwd=workspace,
+                              capture_output=True, check=False, timeout=15)
+        if blob.returncode or hashlib.sha256(blob.stdout).hexdigest() != digest:
+            raise ValueError("scope file does not match the approved candidate: " + name)
+    return packet
+
+
+def approved_scope_inventory(runtime, workspace: str, state: dict) -> dict | None:
+    approval = state.get("scope_inventory_amendment")
+    if approval is None:
+        return None
+    approval = _verified(approval, "scope inventory amendment")
+    packet = _scope_inventory(runtime, workspace, state, approval["source"], approval["packet_fingerprint"])
+    if (approval.get("revoked") is not False or approval.get("actor") != packet["by"]
+            or approval.get("request") != packet["request"]):
+        raise ValueError("scope inventory authority changed")
+    return packet
+
+
+def _amend_scope_inventory(runtime, workspace: str, *, source: str, by: str,
+                           request: str, expected_fingerprint: str, check: bool) -> dict:
+    if runtime.tp.task_slot() is not None or not by.startswith("human:"):
+        raise ValueError("scope inventory amendment requires the human-owned controller")
+    source = os.path.abspath(source)
+    with runtime.tp.file_lock(os.path.join(runtime.tp.tp_dir(workspace), "controller-operation")):
+        state = runtime._load_raw(workspace) or {}
+        packet = _scope_inventory(runtime, workspace, state, source, expected_fingerprint)
+        if (state.get("step") != "em" or state.get("_submission")
+                or by != packet["by"] or request != packet["request"]
+                or any((contract.get("worker_lifecycle") or {}).get("status") != "pending"
+                       for _, contract in runtime.tp._active_worker_contracts(workspace))):
+            raise ValueError("scope inventory requires the exact idle EM and human approval")
+        record = _sealed({"source": source, "packet_fingerprint": expected_fingerprint,
+                          "actor": by, "request": request, "revoked": False})
+        prior = state.get("scope_inventory_amendment")
+        if prior is not None and prior != record:
+            raise ValueError("scope inventory amendment cannot replace an earlier approval")
+        if not check and prior is None:
+            with runtime.mutate(workspace) as locked:
+                if locked != state or _scope_inventory(runtime, workspace, locked, source, expected_fingerprint) != packet:
+                    raise ValueError("scope inventory or run changed before application")
+                locked["scope_inventory_amendment"] = record
+            runtime.tp.trace(workspace, "loop_scope_inventory_amended", by=by,
+                             fingerprint=expected_fingerprint, files=len(packet["paths"]))
+        return {"amended": not check, "checked": check, "replay": prior is not None,
+                "step": "em", "dispatch_allowed": False, "scope_files": len(packet["paths"])}
+
+
 def amend_delivery(runtime, workspace: str, *, source: str, by: str, request: str,
         expected_fingerprint: str, check: bool = False, observation_authority: bytes | None = None) -> dict:
-    """Journal one publication-only amendment through existing requirement/Plan/state owners."""
+    """Apply a human-approved publication or exact scope-inventory amendment."""
     from taskplane import delivery_policy
     try:
+        if os.path.abspath(source) == os.path.join(workspace, "plan/scope-inventory.json"):
+            return _amend_scope_inventory(runtime, workspace, source=source, by=by, request=request,
+                expected_fingerprint=expected_fingerprint, check=check)
         packet = _publication_packet_file(source, expected_fingerprint)
         _publication_plan_and_requirement(runtime, packet)
         if runtime.tp.task_slot() is not None or by != packet["by"] or request != packet["request"]:

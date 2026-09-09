@@ -14321,6 +14321,17 @@ def _compute_signoff_dod(
     baseline = state.get("baseline")
     errors: list = []
     notices: list = []
+    try:
+        inventory = loop_recovery.approved_scope_inventory(sys.modules[__name__], ws, state)
+    except (ValueError, KeyError, OSError) as exc:
+        return {"passed": False, "errors": ["scope inventory: " + str(exc)],
+                "notices": [], "scope": scopes, "baseline": baseline}
+    if inventory is not None:
+        baseline = inventory["baseline"]
+        scopes.extend(inventory["paths"])
+        notices.append("Retained human-accepted Build; historical task tests and deferred reviews "
+                       "are not newly executed tests or independent passes. Current delta, test "
+                       "evidence, requirements and Design remain subject to canonical EM review.")
     errors.extend("requirement DoD: " + e for e in tp.requirement_coverage_errors(
         reqs.publication_coverage_tasks(state.get("tasks") or [], lambda rid: reqs.get_requirement(ws, rid), require_passed=True),
         lambda rid: reqs.get_requirement(ws, rid),
@@ -14356,12 +14367,12 @@ def _compute_signoff_dod(
                     "diff_scope recovery: revert the out-of-scope files or "
                     "widen the owning task's scope via the human gate "
                     "(attributable: trace + KB decision), then re-run")
-    if state.get("graph_governance"):
+    if inventory is None and state.get("graph_governance"):
         try:
             depgraph.scan(ws)
         except Exception as exc:
             errors.append(f"graph_dod: final merged-tree scan failed: {exc}")
-    for task in state.get("tasks") or []:
+    for task in ([] if inventory is not None else state.get("tasks") or []):
         test_command = task.get("tests")
         if not test_command:
             errors.append(f"task {task.get('id', '?')}: test command missing")
@@ -16560,7 +16571,7 @@ def continue_build(ws: str, *, source: str, by: str, request: str,
 def amend_delivery(ws: str, *, source: str, by: str, request: str,
                    expected_fingerprint: str, check: bool = False,
                    observation_authority: bytes | None = None) -> dict:
-    """Exact human publication sequencing; no Build acceptance or dispatch."""
+    """Exact human publication or scope amendment; no Build acceptance or dispatch."""
     import sys
     return loop_recovery.amend_delivery(sys.modules[__name__], ws, source=source,
         by=by, request=request, expected_fingerprint=expected_fingerprint,

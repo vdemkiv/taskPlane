@@ -1266,6 +1266,52 @@ def test_review_baseline_selects_only_accepted_instance_and_preserves_history(re
         loop._review_baseline(ws, after, "em")
 
 
+@pytest.mark.parametrize("damage", ["none", "actor", "file", "packet", "extra-scope", "review"])
+def test_scope_inventory_preserves_build_and_never_replays_tests(review_baseline_ready, monkeypatch, damage):
+    ws, root, accepted = review_baseline_ready
+    assert resolve_defer_review(ws, "review-baseline", by="human:test", run_id="legacy-run",
+        task_id="T19", reason="Use accepted Build for EM").get("resolved")
+    before = loop._load_raw(ws)
+    plan_bytes = (root / "plan/tasks.json").read_bytes()
+    packet = {"schema":"taskplane.scope-inventory/v1", "run_id":"legacy-run", "requirement_id":"R-0001",
+        "plan_fingerprint":before["plan_fingerprint"], "baseline":accepted, "candidate":REAL_GIT_HEAD(ws),
+        "by":"human:test", "request":"Record the exact approved repair scope",
+        "paths":{"candidate.txt":hashlib.sha256((root / "candidate.txt").read_bytes()).hexdigest()}}
+    source = root / "plan/scope-inventory.json"
+    source.write_text(json.dumps(packet))
+    args = dict(source=str(source), by="human:test", request=packet["request"],
+                expected_fingerprint=fingerprint(packet))
+    if damage == "actor":
+        assert loop.amend_delivery(ws, **{**args, "by":"human:foreign"}).get("error")
+        assert loop._load_raw(ws) == before
+        return
+    assert loop.amend_delivery(ws, **args, check=True)["checked"]
+    assert loop._load_raw(ws) == before
+    assert loop.amend_delivery(ws, **args)["amended"]
+    after = loop._load_raw(ws)
+    assert {key:value for key,value in after.items() if key != "scope_inventory_amendment"} == before
+    assert (root / "plan/tasks.json").read_bytes() == plan_bytes
+    assert loop.amend_delivery(ws, **args)["replay"]
+    if damage == "file": (root / "candidate.txt").write_text("unapproved edit")
+    if damage == "packet": source.write_text(json.dumps({**packet, "paths":{"foreign.py":"a" * 64}}))
+    monkeypatch.setattr(loop.tp, "changed_files", lambda *_: ["candidate.txt"] +
+                        (["foreign.py"] if damage == "extra-scope" else []))
+    monkeypatch.setattr(loop.tp, "requirement_coverage_errors", lambda *_a, **_k: [])
+    monkeypatch.setattr(loop.kb, "lint", lambda *_: [])
+    monkeypatch.setattr(loop, "_engineering_review_errors", lambda *_a, **_k:
+                        ["canonical EM is missing"] if damage == "review" else [])
+    def no_replay(*_a, **_k):
+        pytest.fail("terminal admission replayed completed Build or graph work")
+    monkeypatch.setattr(loop.tp, "dod_check", no_replay)
+    monkeypatch.setattr(loop.depgraph, "scan", no_replay)
+    result = loop._compute_signoff_dod(ws, {**after, "graph_governance":True})
+    assert result["passed"] is (damage == "none"), result
+    if damage == "none":
+        assert result["baseline"] == accepted
+        assert "not newly executed tests" in result["notices"][0]
+    assert loop._load_raw(ws) == after
+
+
 def test_human_defer_review_preserves_history_without_current_test_or_review_pass(legacy):
     ws, root, _, _ = legacy
     before = _ready_human_defer_review(legacy)
