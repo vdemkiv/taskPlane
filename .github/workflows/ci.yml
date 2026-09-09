@@ -37,6 +37,7 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
           python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
+          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r requirements-dev.lock
       - name: Initialize canonical settings and execute one unsharded suite
         id: execute
         shell: bash

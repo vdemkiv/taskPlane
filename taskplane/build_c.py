@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -179,6 +179,180 @@ def authorize_delivery_dispatch(
         "automatic_lens_workers": workers,
         "automatic_lens_worker_count": len(workers),
     }
+
+
+def _external_build_binding(dispatch, lease):
+    from taskplane import delivery_ports
+    if not isinstance(lease, delivery_ports.AttemptLease) or dispatch.bindings["phase_id"] != "build" or any(
+            getattr(lease, key) != dispatch.bindings[key] for key in
+            ("lease_id", "run_id", "phase_id", "attempt_id", "operation_id", "fencing_token")):
+        raise ValueError("Build phase lease binding mismatch")
+
+
+def prepare_build_phase(runtime, dispatch, *, lease_owner, lease, paths=()):
+    """Reserve incumbent lease effects before emitting an external dispatch.
+
+    This is not a launch callback and returns no invented worker identity.
+    Any crash leaves the lease uncertain until a matching released observation.
+    """
+    _external_build_binding(dispatch, lease)
+    prepared = runtime.prepare(dispatch)
+    if lease_owner.pickup(lease)["continuation"] != "retry_same_attempt":
+        raise ValueError("Build effects require reconciliation")
+    def reserve(bound):
+        runtime.prepare(dispatch)
+        for path in paths:
+            path.revalidate()
+        lease_owner.revalidate(bound)
+        return prepared
+    return lease_owner.execute(lease, nonce_action=lambda action: action(), action=reserve, paths=paths)
+
+
+def complete_build_phase(runtime, dispatch, observation, *, lease_owner, lease, terminal):
+    from taskplane import agent_runtime, delivery_ports
+    _external_build_binding(dispatch, lease)
+    if not isinstance(terminal, delivery_ports.LeaseTerminalObservation) or \
+            not observation.start_identity or not observation.terminal_identity or \
+            terminal.terminal_identity != observation.terminal_identity:
+        raise ValueError("Build requires matching released terminal evidence")
+    lease_owner.reconcile(lease, terminal)
+    if lease_owner.authorize(lease) is not True:
+        raise ValueError("Build completion authority revoked")
+    return runtime.complete(agent_runtime.PreparedDispatch(dispatch), replace(observation, effect_state="reconciled"))
+
+
+def run_build_phase(runtime, dispatch, *, lease_owner, lease, launch,
+                    observe_terminal, paths=()) -> dict[str, object]:
+    """Inactive Build adapter over the runtime and incumbent lease/nonce owners.
+
+    Only the composition root supplies these trusted ports. ``launch`` receives
+    the admitted lease (including attempt/operation/fence), envelope, artifacts,
+    and runtime tool boundary. It must propagate the fence on supported writes;
+    unfenceable work stays reserved until a terminal, released, non-overlapping
+    operation is observed. This adapter grants no retry, gate or activation.
+
+    The runtime reserves its nonce before calling the launch adapter; the lease
+    owner then durably reserves effects and performs the final checks. Neither
+    a callback return nor process loss clears either reservation.
+    """
+    if __package__:
+        from . import agent_runtime, delivery_ports, loop_recovery, stage_entities
+    else:  # direct CLI loading keeps the inactive facade out of startup
+        from taskplane import agent_runtime, delivery_ports, loop_recovery, stage_entities
+
+    bindings = dict(dispatch.bindings)
+    result = stage_entities.create_contract({
+        "schema": stage_entities.AGENT_RUNTIME_SCHEMA, **bindings,
+        "start_identity": None, "progress_identity": [], "terminal_identity": None,
+        "effect_state": "none", "collected_output_references": [],
+        "produces_conformance": False, "knowledge_proposals": [],
+        "evaluator_dispatch_eligibility": False, "retry_class": "none",
+        "status": "refused", "reason_code": "package_mismatch",
+        "continuation": dict(runtime.continuation("package_mismatch")),
+    })
+    entered = reconciled = False
+    reason = None
+
+    def revalidate_inputs():
+        # Reuse runtime validation against the current producers, inside the
+        # fenced boundary, after optimistic package admission has completed.
+        registry = runtime.registry
+        if registry is None:
+            raise agent_runtime.RuntimeRefusal("package_mismatch")
+        definition = registry.admit("build", ()).to_dict()
+        if (registry.definition_set_fingerprint != bindings["definition_set_fingerprint"]
+                or registry.capability_set_fingerprint != bindings["capability_set_fingerprint"]
+                or definition["fingerprint"] != bindings["phase_definition_fingerprint"]
+                or dict(dispatch.bindings) != bindings
+                or agent_runtime.package_fingerprint(dispatch.package, dispatch.knowledge,
+                    dispatch.envelope) != bindings["sealed_package_fingerprint"]):
+            raise agent_runtime.RuntimeRefusal("package_mismatch")
+        runtime._artifacts(dispatch.package, definition["consumes"],
+            definition["domain_validator_refs"], bindings)
+        runtime._budget(bindings)
+
+    def fenced_launch(envelope, package, boundary):
+        nonlocal entered, reason
+        entered = True
+        def effect(bound):
+            try:
+                revalidate_inputs()
+            except agent_runtime.RuntimeRefusal:
+                raise
+            except (ValueError, OSError) as exc:
+                raise agent_runtime.RuntimeRefusal("package_mismatch") from exc
+            # Input validators can take time; authority and containment must
+            # still be current after those reads, immediately before the effect.
+            for path in paths:
+                path.revalidate()
+            lease_owner.revalidate(bound)
+            return launch(bound, envelope, package, boundary)
+        try:
+            # Already inside AgentRuntime's durable nonce dispatch boundary.
+            return lease_owner.execute(lease, nonce_action=lambda action: action(),
+                action=effect, paths=paths)
+        except loop_recovery.LeaseRefusal as exc:
+            reason = exc.result["reason"]
+            raise agent_runtime.RuntimeRefusal(reason) from exc
+        except delivery_ports.DeliveryPortError as exc:
+            reason = "package_mismatch"
+            raise agent_runtime.RuntimeRefusal(reason) from exc
+
+    def observed(identity):
+        nonlocal reconciled, reason
+        observation = runtime.observe(identity)
+        terminal = observe_terminal(lease)
+        if (not observation.start_identity or not observation.terminal_identity
+                or observation.effect_state in {"none", "uncertain"}
+                or not isinstance(terminal, delivery_ports.LeaseTerminalObservation)
+                or terminal.terminal_identity != observation.terminal_identity):
+            raise agent_runtime.RuntimeRefusal("terminal_evidence_missing")
+        try:
+            lease_owner.reconcile(lease, terminal)
+            reconciled = True
+            # Observing effect truth is allowed after revocation, but accepting
+            # a candidate still needs current scoped completion authority.
+            if lease_owner.authorize(lease) is not True:
+                raise agent_runtime.RuntimeRefusal("authority_revoked")
+        except loop_recovery.LeaseRefusal as exc:
+            reason = exc.result["reason"]
+            raise agent_runtime.RuntimeRefusal(reason) from exc
+        except delivery_ports.DeliveryPortError as exc:
+            raise agent_runtime.RuntimeRefusal("terminal_evidence_missing") from exc
+        return replace(observation, effect_state="reconciled")
+
+    try:
+        if not isinstance(lease, delivery_ports.AttemptLease) or bindings["phase_id"] != "build" or any(
+                getattr(lease, key) != bindings[key] for key in
+                ("lease_id", "run_id", "phase_id", "attempt_id", "operation_id", "fencing_token")):
+            raise agent_runtime.RuntimeRefusal("package_mismatch")
+        pickup = lease_owner.pickup(lease)
+        if pickup["continuation"] != "retry_same_attempt":
+            result["effect_state"] = "uncertain" if any(value in {"pending", "uncertain"}
+                for value in pickup["effects"].values()) else (
+                    "effect_free" if all(value == "effect_free" for value in pickup["effects"].values())
+                    else "reconciled")
+            result["retry_class"] = "none" if result["effect_state"] == "effect_free" else "reconcile"
+            raise agent_runtime.RuntimeRefusal(pickup["reason"])
+        if runtime.nonce.effect_state(dispatch.nonce_bindings) != "issued":
+            result.update(effect_state="uncertain", retry_class="reconcile")
+            raise agent_runtime.RuntimeRefusal("effects_require_reconciliation")
+        result = replace(runtime, launch=fenced_launch, observe=observed).run(dispatch)
+        reason = result["reason_code"]
+    except loop_recovery.LeaseRefusal as exc:
+        reason = exc.result["reason"]
+        result.update(effect_state="uncertain", retry_class="reconcile")
+    except (ValueError, OSError, delivery_ports.DeliveryPortError) as exc:
+        reason = str(exc) if isinstance(exc, agent_runtime.RuntimeRefusal) else "package_mismatch"
+    if entered:
+        result["effect_state"] = "reconciled" if reconciled else "uncertain"
+        if not reconciled:
+            result["retry_class"] = "reconcile"
+            reason = reason or "effects_require_reconciliation"
+    if reason is not None:
+        result.update(status="refused", reason_code=reason, evaluator_dispatch_eligibility=False,
+            continuation=dict(runtime.continuation(reason)))
+    return stage_entities.create_contract({key: value for key, value in result.items() if key != "fingerprint"})
 
 
 def bind_loop_runtime(

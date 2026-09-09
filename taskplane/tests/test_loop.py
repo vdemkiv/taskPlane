@@ -2,6 +2,7 @@ import json
 import hashlib
 import contextlib
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import checkpoint  # noqa: E402
 import build_c  # noqa: E402
 from tests import run_lr10_parallel as lr10_runner  # noqa: E402
 from tests.root_session_fixture import open_delivery_root  # noqa: E402
+from tests.fixtures.briefs.stage_fixture import finish_plan_lenses, prepare_plan  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -831,14 +833,22 @@ def write_verdict(ws):
         results = _evaluate_evidence_results(assignments, route["run_id"])
         for assignment in assignments:
             kind = assignment["producer_kind"]
+            child = next(row for row in route["child_dispatches"]
+                         if row["assignment"]["producer_kind"] == kind)
+            from taskplane.tests.test_worker_contract_lifecycle import _event
+            event = _event(ws, name=child["task_name"], agent="child-" + kind)
+            assert tp.bind_worker_contract_event(ws, event)
             loop.observe_evaluate_evidence_child_start(
                 artifact_root=route["artifact_root"], assignment=assignment,
-                dispatch_id="intent-" + kind,
-                native_task_name="test-" + kind)
+                dispatch_id=child["dispatch_intent"]["intent_id"],
+                native_task_name=child["task_name"])
             loop.complete_evaluate_evidence_child(
                 workspace=route["workspace"],
                 artifact_root=route["artifact_root"], run_id=route["run_id"],
                 assignment=assignment, result=results[kind], work_units=2)
+            assert tp.terminalize_worker_contract(
+                ws, {**event, "hook_event_name": "SubagentStop", "outcome": "success"},
+                outcome="success", submission_status="not_required")
         verdict = evaluation_output.attach_child_evidence(
             verdict, run_id=route["run_id"],
             evaluator_attempt_id=route["evaluator_attempt_id"],
@@ -1021,7 +1031,8 @@ def write_kernel_results(ws):
             stream.write(content)
     return loop.collect_review_bridge(
         review_ws, publish=False,
-        run_id=manifest["collection"]["run_id"])
+        run_id=manifest["collection"]["run_id"],
+        collection_stage="EM" if loop_state["step"] == "em" else "Evaluate")
 
 
 def pass_em(ws):
@@ -1051,6 +1062,52 @@ class TestLoop(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+
+    def test_pending_plan_pickup_reuses_same_attempt_within_one_second(self):
+        ws = git_ws(self.tmp, [TASK])
+        loop.init(ws, "same pending Plan", spec_path="specs/spec.md")
+        prepare = tp.prepare_worker_contract
+        with unittest.mock.patch.object(tp, "prepare_worker_contract",
+                side_effect=lambda *a, **kw: prepare(*a, **kw, now=1000)):
+            first = loop.next_action(ws)
+            self.assertNotIn("error", first)
+            slots = tp.list_task_slots(ws)
+            sequences = loop.load(ws)["worker_dispatch_sequences"].copy()
+            second = loop.next_action(ws)
+        self.assertNotIn("error", second)
+        self.assertEqual(second["contract_bootstrap"], first["contract_bootstrap"])
+        self.assertEqual(second["task_name"], first["task_name"])
+        self.assertEqual(second["dispatch_intent"]["intent_id"], first["dispatch_intent"]["intent_id"])
+        self.assertEqual(tp.list_task_slots(ws), slots)
+        self.assertEqual(loop.load(ws)["worker_dispatch_sequences"], sequences)
+
+    def test_pending_plan_pickup_refuses_owned_cancelled_or_changed_authority(self):
+        for damage in ("owned", "cancelled", "signature", "foreign-run"):
+            with self.subTest(damage=damage):
+                ws = git_ws(tempfile.mkdtemp(), [TASK])
+                loop.init(ws, "pending Plan refusal", spec_path="specs/spec.md")
+                action = loop.next_action(ws)
+                self.assertNotIn("error", action)
+                slot = action["contract_bootstrap"]["task_slot"]
+                if damage == "owned":
+                    tp.bind_worker_contract_event(ws, {"session_id":"simulated-root",
+                        "agent_id":"simulated-child", "task_name":action["task_name"]})
+                elif damage == "cancelled":
+                    tp.cancel_expected_dispatch(ws, action["dispatch_intent"]["intent_id"], reason="test cancellation")
+                else:
+                    path = tp.active_contract_path(ws, slot)
+                    contract = tp.load_json(path)
+                    if damage == "signature":
+                        contract["worker_lifecycle"]["release_action"]["signature"] = "bad"
+                    else:
+                        contract["run_artifact_binding"]["run_id"] = "foreign"
+                    tp.atomic_write_json(path, contract)
+                before = {name:tp.load_json(tp.active_contract_path(ws, name)) for name in tp.list_task_slots(ws)}
+                sequences = loop.load(ws)["worker_dispatch_sequences"].copy()
+                refused = loop.next_action(ws)
+                self.assertIn("Plan pickup refused", refused.get("error", ""))
+                self.assertEqual({name:tp.load_json(tp.active_contract_path(ws, name)) for name in tp.list_task_slots(ws)}, before)
+                self.assertEqual(loop.load(ws)["worker_dispatch_sequences"], sequences)
 
     def test_free_text_goal_starts_at_pm(self):
         ws = git_ws(self.tmp, [TASK])
@@ -1334,17 +1391,21 @@ class TestLoop(unittest.TestCase):
     def _gate_evaluator_unavailable(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop, usage="measured")
         loop.gate(ws, "pass")
         loop.approve(ws, "plan")
-        loop.next_action(ws)
+        action = loop.next_action(ws)
+        assert not action.get("error"), {key: action[key] for key in ("error", "dor") if key in action}
+        from taskplane.tests.test_worker_contract_lifecycle import _event
+        assert tp.bind_worker_contract_event(ws, _event(ws, name=action["task_name"]))
         with open(os.path.join(ws, "src", "todo", "a.py"), "a",
                   encoding="utf-8") as stream:
             stream.write("\ndef complete():\n    return True\n")
         with unittest.mock.patch(
                 "runtime_eval.guide_loop",
                 return_value={"status": "on_path", "recovered": False}):
-            submit_gate(ws, "pass")
+            built = submit_gate(ws, "pass")
+            assert not built.get("error"), {key: built[key] for key in ("error", "dod", "enforcement") if key in built}
         write_verdict(ws)
         path = os.path.join(ws, ".eval", "verdict.json")
         with open(path, encoding="utf-8") as stream:
@@ -1572,11 +1633,13 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(act["role"], "tp-planner")
         self.assertTrue(act["contract"]["read_only"])
         slot = act["contract_bootstrap"]["task_slot"]
-        self.assertEqual(tp.list_task_slots(ws), [slot])
+        self.assertEqual(set(tp.list_task_slots(ws)), {slot, *(
+            worker["task_slot"] for worker in act["plan_lens_dispatches"])})
         self.assertIsNone(tp.load_active(ws))  # root/orchestrator is unbound
         child = tp.load_json(tp.active_contract_path(ws, slot))
         self.assertTrue(child["worker_scoped"])
         self.assertEqual(child["worker_lifecycle"]["status"], "pending")
+        finish_plan_lenses(ws, Path(ws), act, runtime=loop)
         loop.gate(ws, "pass")
         self.assertEqual(tp.list_task_slots(ws), [])      # released by gate
 
@@ -1590,7 +1653,7 @@ class TestLoop(unittest.TestCase):
             real_plan = json.load(stream)
         os.remove(os.path.join(ws, "plan", "tasks.json"))   # phantom plan
         loop.init(ws, "g", spec_path="specs/spec.md")       # → plan
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop)
         r = loop.gate(ws, "pass")
         self.assertIn("error", r)
         self.assertIn("plan/tasks.json", r["error"])
@@ -1610,7 +1673,7 @@ class TestLoop(unittest.TestCase):
             with self.subTest(tests=tests):
                 ws = git_ws(tempfile.mkdtemp(), [dict(TASK, tests=tests)])
                 loop.init(ws, "g", spec_path="specs/spec.md")
-                loop.next_action(ws)
+                prepare_plan(ws, runtime=loop)
                 out = loop.gate(ws, "pass")
                 self.assertIn("error", out)
                 self.assertIn("one command string", str(out))
@@ -1620,7 +1683,7 @@ class TestLoop(unittest.TestCase):
     def test_replan_preserves_history_and_requires_fresh_approval(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md", checkpoints=[])
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop, usage="measured")
         self.assertEqual(loop.gate(ws, "pass")["step"], "execute")
 
         refused = loop.replan(ws, by="", reason="invalid test command")
@@ -1636,11 +1699,26 @@ class TestLoop(unittest.TestCase):
                          "execute")
         self.assertEqual(state["replan_history"][-1]["tasks"][0]["id"],
                          "t1")
+        prior_team = state["replan_history"][-1]["plan_team_plan"]
+        self.assertNotIn("plan_team_plan", state)
 
         # The corrected plan is reloaded and cannot bypass fresh human
         # approval even though the original loop had no plan checkpoint.
-        loop.next_action(ws)
-        self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
+        with unittest.mock.patch.object(loop, "_screen_public_native_route", return_value={
+                "dispatch_allowed": False, "error": "root admission denied"}):
+            refused = loop.next_action(ws)
+        self.assertIn("root admission denied", refused.get("error", ""))
+        replacement = prepare_plan(ws, runtime=loop, usage="measured")
+        new_team = replacement["plan_team_plan"]
+        for field in ("task_slot", "task_name", "output"):
+            self.assertTrue({row[field] for row in prior_team["workers"]}.isdisjoint(
+                {row[field] for row in new_team["workers"]}))
+        replay = loop.next_action(ws)
+        self.assertNotIn("error", replay, replay.get("error"))
+        self.assertEqual(replay["plan_team_plan"], new_team)
+        gated = loop.gate(ws, "pass")
+        assert not gated.get("error"), {key: gated[key] for key in ("error", "dor", "dod") if key in gated}
+        self.assertEqual(gated["step"], "plan_approval")
         self.assertEqual(loop.approve(ws, by="user")["step"], "execute")
 
     def test_define_projection_plan_gate_names_every_task_without_explicit_criteria(self):
@@ -1650,7 +1728,7 @@ class TestLoop(unittest.TestCase):
         empty = dict(TASK, id="empty-criteria", criteria=["", "  "])
         ws = git_ws(self.tmp, [missing, empty])
         loop.init(ws, "g", spec_path="specs/spec.md")
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop)
 
         out = loop.gate(ws, "pass")
 
@@ -1665,7 +1743,7 @@ class TestLoop(unittest.TestCase):
     def test_define_projection_replan_reanchors_unchanged_passed_contract(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop, usage="measured")
         self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
         state = loop.load(ws)
         state["tasks"][0].update({
@@ -1674,7 +1752,7 @@ class TestLoop(unittest.TestCase):
         })
         loop.save(ws, state)
         loop.replan(ws, by="user", reason="metadata-only correction")
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop, usage="measured")
         verified = {
             "target_commit": tp.git_head(ws),
             "evaluation_path": os.path.join(ws, ".eval", "verdict.json"),
@@ -1948,7 +2026,7 @@ class TestLoop(unittest.TestCase):
     def test_plan_checkpoint_then_execute(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="specs/spec.md")   # → plan
-        loop.next_action(ws); loop.gate(ws, "pass")     # plan → plan_approval
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")     # plan → plan_approval
         self.assertEqual(loop.load(ws)["step"], "plan_approval")
         act = loop.next_action(ws)
         self.assertTrue(act["paused"])                   # human gate
@@ -1959,7 +2037,7 @@ class TestLoop(unittest.TestCase):
     def test_happy_path_to_signoff(self):
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])  # no plan gate
-        loop.next_action(ws); loop.gate(ws, "pass")            # plan → execute
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")            # plan → execute
         self.assertEqual(loop.load(ws)["step"], "execute")
         loop.next_action(ws); submit_gate(ws, "pass")          # execute → evaluate
         loop.next_action(ws); evaluated = pass_eval(ws)        # evaluate → em
@@ -1990,6 +2068,17 @@ class TestLoop(unittest.TestCase):
             "submission_required": True,
         })
         loop.save(ws, state)
+        em_action = loop.next_action(ws)
+        self.assertNotIn("error", em_action, em_action.get("error"))
+        _, evidence, kernel = loop._review_runtime_modules()
+        store = evidence.ArtifactStore(ws)
+        review_state = kernel._load_state(ws, em_action["review_kernel"]["run_id"])
+        retained_diff = store.read(review_state["envelope"])["diff"]["artifact"]
+        self.assertIn("patch", loop.read_retained_review_diff(
+            ws, store=store, reference=retained_diff))
+        unrelated = loop.store_retained_review_diff(ws, store=store,
+            payload=loop._retained_review_diff_payload(base="unrelated-review",
+                files=["other.py"], patch="+ unrelated private diff"))
         review_root = os.path.join(ws, ".em-review")
         os.makedirs(review_root, exist_ok=True)
         findings_path = os.path.join(review_root, "findings.json")
@@ -2015,6 +2104,9 @@ class TestLoop(unittest.TestCase):
 
         self.assertNotIn("error", out)
         self.assertEqual(out["step"], "escalated")
+        self.assertNotIn(retained_diff["fingerprint"],
+            [row["fingerprint"] for row in store.references("diff")])
+        self.assertEqual(store.read(unrelated)["patch"], "+ unrelated private diff")
         state = loop.load(ws)
         self.assertEqual(state["step"], "escalated")
         self.assertNotIn("signoff_evidence", state)
@@ -2032,6 +2124,40 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(open(findings_path, "rb").read(), findings_before)
         self.assertEqual(open(report_path, "rb").read(), report_before)
         self.assertTrue(loop.next_action(ws)["paused"])
+        tasks_before = json.loads(json.dumps(state["tasks"]))
+        for field, value in (("task", "foreign-task"), ("step", "evaluate"),
+                             ("workspace", self.tmp), ("workspace", ""),
+                             ("fingerprint", "invalid")):
+            changed = json.loads(json.dumps(state))
+            changed["engineering_review_request_changes"]["submission"][field] = value
+            loop.save(ws, changed)
+            refused = loop.resolve(ws, "retry", by="human:review-owner")
+            self.assertIn("error", refused, field)
+            self.assertEqual(loop.load(ws), changed)
+        loop.save(ws, state)
+        self.assertIn("error", loop.resolve(ws, "retry"))
+        self.assertEqual(loop.load(ws), state)
+        retried = loop.resolve(ws, "retry", by="human:review-owner")
+        self.assertNotIn("error", retried, retried)
+        self.assertEqual(retried["step"], "em")
+        retried_state = loop.load(ws)
+        self.assertEqual(retried_state["tasks"], tasks_before)
+        self.assertEqual(retried_state["baseline"], state["baseline"])
+        self.assertEqual(retried_state["engineering_review_request_changes"]["submission"],
+                         submission_audit)
+        resolution = retried_state["engineering_review_request_changes"]["resolution"]
+        self.assertEqual(resolution["actor"], "human:review-owner")
+        self.assertEqual(resolution["submission_fingerprint"], evidence_fingerprint)
+        self.assertIn("error", loop.resolve(ws, "retry", by="human:review-owner"))
+        self.assertEqual(loop.load(ws), retried_state)
+        later = json.loads(json.dumps(retried_state))
+        later["step"] = "escalated"
+        later["tasks"][0]["status"] = "failed"
+        loop.save(ws, later)
+        ordinary = loop.resolve(ws, "retry")
+        self.assertEqual(ordinary["step"], "evaluate")
+        self.assertEqual(loop.load(ws)["engineering_review_request_changes"],
+                         retried_state["engineering_review_request_changes"])
 
     def test_signoff_is_bound_to_em_integration_not_later_shared_bytes(self):
         """A later commit/loop cannot make an approved EM revision fail DoD.
@@ -2042,7 +2168,7 @@ class TestLoop(unittest.TestCase):
         """
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])
-        loop.next_action(ws); loop.gate(ws, "pass")
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")
         loop.next_action(ws); submit_gate(ws, "pass")
         loop.next_action(ws); pass_eval(ws)
         commit_integration(ws)
@@ -2092,7 +2218,7 @@ class TestLoop(unittest.TestCase):
         t2 = dict(TASK, id="t2")
         ws = git_ws(self.tmp, [TASK, t2])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])
-        loop.next_action(ws); loop.gate(ws, "pass")   # plan → execute t1
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")   # plan → execute t1
         loop.next_action(ws); submit_gate(ws, "pass") # execute → evaluate
         loop.next_action(ws); pass_eval(ws)            # evaluate t1 pass → execute t2
         self.assertEqual(loop.load(ws)["step"], "execute")
@@ -2219,10 +2345,13 @@ class TestLoop(unittest.TestCase):
 
         with unittest.mock.patch.object(loop.tp, "activate", activate), \
                 unittest.mock.patch.object(loop.tp, "dor_check", dor):
-            loop.next_action(ws)
+            action = loop.next_action(ws)
         self.assertEqual(order[:2], ["dor", "contract"])
         self.assertIsNone(tp.load_active(ws))
-        self.assertEqual(len(tp.list_task_slots(ws)), 1)
+        self.assertEqual(set(tp.list_task_slots(ws)), {
+            action["contract_bootstrap"]["task_slot"],
+            *(row["task_slot"] for row in action["plan_team_plan"]["workers"]),
+        })
 
     def test_task_dod_enables_regression_gate(self):
         """The submit/gate reconstruction keeps the same governed DoD."""
@@ -2320,7 +2449,7 @@ class TestLoopLensAndRequirementWiring(unittest.TestCase):
         with open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"tasks": [task]}, f)
         loop.init(ws, "auth work", spec_path="s", checkpoints=["plan"])
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop, usage="measured")
         loop.gate(ws, "pass")          # plan -> plan_approval
         return ws
 
@@ -2535,7 +2664,7 @@ class TestParallelExecution(unittest.TestCase):
             json.dump({"tasks": tasks}, f)
         loop.init(ws, "parallel goal", spec_path="s", checkpoints=["plan"],
                   parallel=True)
-        loop.next_action(ws); loop.gate(ws, "pass")   # plan → approval
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")   # plan → approval
         loop.approve(ws)                               # → execute
         open_delivery_root(ws)
         return ws
@@ -3043,7 +3172,7 @@ class TestSerialClaimRefusal(unittest.TestCase):
         task2 = dict(TASK, id="t2")
         ws = git_ws(self.tmp, [TASK, task2])
         loop.init(ws, "g", spec_path="s", checkpoints=["em"])  # serial
-        loop.next_action(ws); loop.gate(ws, "pass")            # plan → execute
+        prepare_plan(ws, runtime=loop, usage="measured"); loop.gate(ws, "pass")            # plan → execute
         for tid in ("t1", "t2"):
             out = loop.claim(ws, tid, os.path.join(ws, ".tp-work", tid))
             self.assertIn("error", out)
@@ -3116,7 +3245,7 @@ class TestEngineSkewRefusal(unittest.TestCase):
         engine (which the stamp stands in for)."""
         ws = git_ws(self.tmp, [TASK])
         loop.init(ws, "g", spec_path="s", checkpoints=["plan"], parallel=True)
-        loop.next_action(ws)
+        prepare_plan(ws, runtime=loop, usage="measured")
         loop.gate(ws, "pass")                       # plan → plan_approval
         loop.approve(ws)                            # → execute (wave)
         agent_ws = os.path.join(ws, ".tp-work", "t1")
@@ -3707,7 +3836,7 @@ class TestReviewBridge(unittest.TestCase):
                     ".", "python3 -m pytest -q")
         self.assertEqual(result.returncode, 0)
         argv = invoked.call_args.args[0]
-        self.assertEqual(argv, ["python3", "-m", "pytest", "-q"])
+        self.assertEqual(argv, tp._checkout_bound_python_args(".", ["-m", "pytest", "-q"]))
         self.assertFalse(invoked.call_args.kwargs["shell"])
 
     def test_review_bridge_execute_gate_accepts_safe_hosted_checks_argv(self):

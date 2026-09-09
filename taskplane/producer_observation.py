@@ -3,25 +3,29 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import base64
 import json
 import math
 import os
+import secrets
+import stat
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
 
-from taskplane.delivery_ports import (
-    Clock,
-    DeliveryPortError,
-    EvidenceStore,
-    HostActionCapabilitySource,
-    ProducerEventSource,
-    content_fingerprint,
-    LocatorEvidenceStore,
-    SystemClock,
-)
+if TYPE_CHECKING or __package__:
+    from .delivery_ports import (
+        Clock, DeliveryPortError, EvidenceStore, HostActionCapabilitySource,
+        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock,
+    )
+else:
+    from delivery_ports import (
+        Clock, DeliveryPortError, EvidenceStore, HostActionCapabilitySource,
+        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock,
+    )
 
 
 PRODUCER_OBSERVATION_SCHEMA = "taskplane.producer-observation/v1"
@@ -103,6 +107,418 @@ class ProducerObservationError(ValueError):
     """A submission lacks one exact, fresh host observation."""
 
 
+_NONCE_BINDINGS = frozenset({
+    "run_id", "phase_id", "attempt_id", "operation_id", "candidate_fingerprint",
+    "definition_set_fingerprint", "phase_definition_fingerprint",
+    "sealed_package_fingerprint", "knowledge_fingerprint", "authority_fingerprint",
+    "host_kind", "host_version", "deadline",
+})
+_NONCE_STATES = frozenset({
+    "issued", "dispatch_uncertain", "dispatched", "effect_uncertain", "effect_observed",
+})
+_NONCE_RECEIPT_SCHEMA = "taskplane.attempt-nonce/v1"
+_NONCE_STATE_SCHEMA = "taskplane.attempt-nonce-state/v1"
+_EffectResult = TypeVar("_EffectResult")
+ReconciledEffect = Literal["observed", "effect_free", "uncertain"]
+
+
+@dataclass(frozen=True)
+class IssuedAttemptNonce:
+    """Private attempt material; only receipt is portable, never authority."""
+
+    secret: bytes = field(repr=False)
+    receipt: dict[str, object]
+
+
+class _NonceRecord(TypedDict):
+    secret: str
+    receipt: dict[str, object]
+    effect_state: str
+
+
+class _NonceState(TypedDict):
+    schema: str
+    keys: dict[str, str]
+    attempts: dict[str, _NonceRecord]
+
+
+def _nonce_bindings(value: Mapping[str, object]) -> dict[str, object]:
+    if set(value) != _NONCE_BINDINGS:
+        raise ProducerObservationError("nonce bindings must be closed")
+    for name in _NONCE_BINDINGS - {"deadline"}:
+        _text(value[name], name)
+        if name.endswith("_fingerprint"):
+            _fingerprint(value[name], name)
+    _number(value["deadline"], "deadline")
+    return dict(value)
+
+
+class AttemptNonceSource:
+    """Attempt-scoped nonce controls within the incumbent evidence store.
+
+    The composition root supplies a private signing key and explicitly activates
+    it. Neither the key nor nonce secret belongs in portable evidence. This
+    primitive does not activate hooks, grant lifecycle authority, or establish
+    native success. Callers must retain their existing authority checks.
+    """
+
+    def __init__(self, store: LocatorEvidenceStore, *, key: bytes,
+                 clock: Clock | None = None) -> None:
+        if not isinstance(key, bytes) or len(key) < 32:
+            raise ProducerObservationError("nonce key requires at least 256 bits")
+        self.store = store
+        self._key = key
+        self.key_id = hashlib.sha256(key).hexdigest()
+        self.clock = clock or SystemClock()
+        self._directory = store._domain_dir("producer_observation")
+        for path in (store.path, self._directory):
+            if path.is_symlink() or not path.resolve().is_relative_to(store.path.resolve()):
+                raise ProducerObservationError("nonce state directory is not confined")
+        self._path = self._directory / "nonce-state.json"
+
+    def _read(self) -> _NonceState:
+        if self._path.is_symlink():
+            raise ProducerObservationError("nonce state cannot be a symlink")
+        try:
+            with self._path.open("rb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+                    raise ProducerObservationError("nonce state must be private")
+                value = json.load(stream)
+        except FileNotFoundError:
+            return {"schema": _NONCE_STATE_SCHEMA, "keys": {}, "attempts": {}}
+        except (OSError, ValueError) as exc:
+            raise ProducerObservationError("nonce state is unavailable or corrupt") from exc
+        if not isinstance(value, dict) or set(value) != {"schema", "keys", "attempts"} or \
+                value["schema"] != _NONCE_STATE_SCHEMA or \
+                not isinstance(value["keys"], dict) or not isinstance(value["attempts"], dict):
+            raise ProducerObservationError("nonce state is not closed")
+        keys: dict[str, str] = {}
+        attempts: dict[str, _NonceRecord] = {}
+        for key_id, status in value["keys"].items():
+            _fingerprint(key_id, "key_id")
+            if status not in {"active", "disabled"}:
+                raise ProducerObservationError("nonce key state is invalid")
+            keys[key_id] = status
+        for operation, record in value["attempts"].items():
+            if not isinstance(operation, str) or not isinstance(record, dict) or \
+                    set(record) != {"secret", "receipt", "effect_state"} or \
+                    not isinstance(record["secret"], str) or \
+                    not isinstance(record["receipt"], dict) or \
+                    record["effect_state"] not in _NONCE_STATES:
+                raise ProducerObservationError("nonce attempt state is corrupt")
+            attempts[operation] = {
+                "secret": record["secret"], "receipt": record["receipt"],
+                "effect_state": record["effect_state"],
+            }
+        return {"schema": _NONCE_STATE_SCHEMA, "keys": keys, "attempts": attempts}
+
+    def _write(self, state: _NonceState) -> None:
+        self.store._write_atomic(self._path, _canonical_bytes(state))
+
+    def activate_key(self) -> None:
+        """Explicit local provisioning; a disabled key can never be reactivated."""
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            if state["keys"].get(self.key_id) == "disabled":
+                raise ProducerObservationError("nonce key is disabled")
+            state["keys"][self.key_id] = "active"
+            self._write(state)
+
+    def disable_key(self) -> None:
+        """Durably stop issuance, dispatch, and effects, including on restart."""
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            state["keys"][self.key_id] = "disabled"
+            self._write(state)
+
+    def _active(self, state: _NonceState) -> None:
+        status = state["keys"].get(self.key_id, "inactive")
+        if status != "active":
+            raise ProducerObservationError(f"nonce key is {status}")
+
+    def _sign(self, value: Mapping[str, object]) -> str:
+        return hmac.new(self._key, _canonical_bytes(value), hashlib.sha256).hexdigest()
+
+    def _checked(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
+                 state: _NonceState, *, active: bool = True, enforce_deadline: bool = True) -> _NonceRecord:
+        checked = _nonce_bindings(bindings)
+        if active:
+            self._active(state)
+        record = state["attempts"].get(str(checked["operation_id"]))
+        if record is None:
+            raise ProducerObservationError("nonce issuance is missing")
+        receipt = issued.receipt
+        if set(receipt) != _NONCE_BINDINGS | {"schema", "key_id", "nonce_digest", "signature"}:
+            raise ProducerObservationError("nonce receipt is not closed")
+        if receipt["schema"] != _NONCE_RECEIPT_SCHEMA or receipt["key_id"] != self.key_id:
+            raise ProducerObservationError("nonce key or schema mismatch")
+        projection = {name: item for name, item in receipt.items() if name != "signature"}
+        signature = _fingerprint(receipt["signature"], "nonce signature")
+        if not hmac.compare_digest(signature, self._sign(projection)):
+            raise ProducerObservationError("nonce signature mismatch")
+        if any(receipt[name] != checked[name] for name in _NONCE_BINDINGS):
+            raise ProducerObservationError("nonce operation bindings changed")
+        if not isinstance(issued.secret, bytes) or len(issued.secret) < 32 or \
+                not hmac.compare_digest(hashlib.sha256(issued.secret).hexdigest(),
+                                        _fingerprint(receipt["nonce_digest"], "nonce digest")):
+            raise ProducerObservationError("nonce secret mismatch")
+        if not hmac.compare_digest(issued.secret.hex(), record["secret"]) or \
+                not hmac.compare_digest(_canonical_bytes(receipt), _canonical_bytes(record["receipt"])):
+            raise ProducerObservationError("nonce durable issuance mismatch")
+        if active and enforce_deadline and _number(self.clock.wall_time(), "clock.wall_time") >= \
+                _number(checked["deadline"], "deadline"):
+            raise ProducerObservationError("nonce attempt deadline expired")
+        return record
+
+    def issue(self, bindings: Mapping[str, object]) -> IssuedAttemptNonce:
+        checked = _nonce_bindings(bindings)
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            self._active(state)
+            operation = str(checked["operation_id"])
+            record = state["attempts"].get(operation)
+            if record is not None:
+                try:
+                    issued = IssuedAttemptNonce(bytes.fromhex(record["secret"]), dict(record["receipt"]))
+                except ValueError as exc:
+                    raise ProducerObservationError("nonce secret is corrupt") from exc
+                self._checked(issued, checked, state)
+                if record["effect_state"] != "issued":
+                    raise ProducerObservationError(
+                        f"nonce cannot be reissued: {record['effect_state']}; reconcile original operation")
+                return issued
+            if _number(self.clock.wall_time(), "clock.wall_time") >= _number(checked["deadline"], "deadline"):
+                raise ProducerObservationError("nonce attempt deadline expired")
+            secret = secrets.token_bytes(32)
+            projection = {**checked, "schema": _NONCE_RECEIPT_SCHEMA,
+                          "key_id": self.key_id, "nonce_digest": hashlib.sha256(secret).hexdigest()}
+            receipt = {**projection, "signature": self._sign(projection)}
+            state["attempts"][operation] = {
+                "secret": secret.hex(), "receipt": receipt, "effect_state": "issued",
+            }
+            self._write(state)
+            return IssuedAttemptNonce(secret, receipt)
+
+    def validate(self, issued: IssuedAttemptNonce,
+                 bindings: Mapping[str, object], *, enforce_deadline: bool = True) -> dict[str, object]:
+        with self.store._domain_lock(self._directory):
+            self._checked(issued, bindings, self._read(), enforce_deadline=enforce_deadline)
+            return dict(issued.receipt)
+
+    def effect_state(self, bindings: Mapping[str, object]) -> str:
+        checked = _nonce_bindings(bindings)
+        with self.store._domain_lock(self._directory):
+            record = self._read()["attempts"].get(str(checked["operation_id"]))
+            if record is None or any(record["receipt"].get(name) != checked[name] for name in _NONCE_BINDINGS):
+                raise ProducerObservationError("nonce issuance missing or bindings changed")
+            return record["effect_state"]
+
+    def unreserved_issuances(self, operation: str) -> list[dict[str, object]]:
+        """Inspect unused operation-family receipts without renewing authority.
+
+        A receipt alone is not permission to replace an attempt: the caller
+        must also prove cancellation and absence of preparation/effect owners.
+        """
+        _text(operation, "operation_id")
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            result = []
+            for name, record in state["attempts"].items():
+                if name != operation and not name.startswith(operation + "-"):
+                    continue
+                receipt = record["receipt"]
+                bindings = {key: receipt.get(key) for key in _NONCE_BINDINGS}
+                issued = IssuedAttemptNonce(bytes.fromhex(record["secret"]), dict(receipt))
+                self._checked(issued, bindings, state, enforce_deadline=False)
+                if bindings["operation_id"] != name or record["effect_state"] != "issued" or any(
+                        path.exists() or path.is_symlink() for path in
+                        (self._hook_path(issued, "start"), self._hook_path(issued, "terminal"))):
+                    raise ProducerObservationError("prior preparation has nonce activity; reconcile original operation")
+                result.append(dict(receipt))
+            return result
+
+    def _perform(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
+                 action: Callable[[], _EffectResult], *, expected: str,
+                 uncertain: str) -> _EffectResult:
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            record = self._checked(issued, bindings, state)
+            if record["effect_state"] != expected:
+                raise ProducerObservationError(f"nonce effect state is {record['effect_state']}")
+            record["effect_state"] = uncertain
+            self._write(state)
+            # A callback response is not authoritative remote reconciliation.
+            # Persist uncertainty before crossing the boundary, even on success.
+            return action()
+
+    def dispatch(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
+                 launch: Callable[[], _EffectResult]) -> _EffectResult:
+        return self._perform(issued, bindings, launch, expected="issued", uncertain="dispatch_uncertain")
+
+    def reserve_dispatch(self, issued: IssuedAttemptNonce,
+                         bindings: Mapping[str, object]) -> None:
+        """Fence external dispatch before returning a host launch request.
+
+        The reservation is uncertainty, never an observed launch identity.
+        Loss of the response requires reconciliation of this same operation.
+        """
+        self._perform(issued, bindings, lambda: None,
+                      expected="issued", uncertain="dispatch_uncertain")
+
+    def recover(self, bindings: Mapping[str, object]) -> IssuedAttemptNonce:
+        """Recover the original private nonce for observation, never reissue."""
+        checked = _nonce_bindings(bindings)
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            record = state["attempts"].get(str(checked["operation_id"]))
+            if record is None:
+                raise ProducerObservationError("nonce issuance missing")
+            issued = IssuedAttemptNonce(bytes.fromhex(record["secret"]), dict(record["receipt"]))
+            self._checked(issued, checked, state, active=False)
+            return issued
+
+    def _hook_path(self, issued: IssuedAttemptNonce, kind: str) -> Path:
+        if kind not in {"start", "terminal"}:
+            raise ProducerObservationError("invalid phase hook kind")
+        return self._directory / (str(issued.receipt["nonce_digest"]) + "-" + kind + ".json")
+
+    def record_phase_hook(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object], *,
+                          workspace: str, task_name: str, event: Mapping[str, object],
+                          outputs: list[dict[str, object]] | None = None) -> dict[str, object]:
+        """Seal facts from an exact claimed native hook in existing nonce custody.
+
+        Only the composition root reads engine-selected output bytes. Portable
+        receipts contain references and the nonce digest, never the secret.
+        """
+        from taskplane import taskplane_lite as host_policy
+        kind = {"SubagentStart": "start", "SubagentStop": "terminal"}.get(event.get("hook_event_name"))
+        if kind is None:
+            raise ProducerObservationError("phase lifecycle hook required")
+        identity = host_policy.hook_event_identity(workspace, "subagent-" + ("stop" if kind == "terminal" else "start"), dict(event))
+        claim = hashlib.sha256(identity.encode()).hexdigest() if identity else None
+        if not claim or event.get("_taskplane_hook_claim_id") != claim:
+            raise ProducerObservationError("phase hook claim mismatch")
+        owner = {key: _text(event.get(key), key) for key in ("agent_id", "agent_type", "task_name")}
+        owner["session_id"] = _text(event.get("session_id") or event.get("thread_id"), "session_id")
+        turn = _text(event.get("turn_id"), "turn_id")
+        if owner["task_name"] != task_name:
+            raise ProducerObservationError("stale_or_foreign_event")
+        usage = event.get("usage")
+        tokens = usage.get("total_tokens") if isinstance(usage, Mapping) else None
+        if tokens is not None and (type(tokens) is not int or tokens < 0):
+            raise ProducerObservationError("invalid phase usage")
+        released = event.get("lease_terminal")
+        if released is not None:
+            if kind != "terminal" or not isinstance(released, Mapping) or set(released) != {
+                    "lease_id", "attempt_id", "operation_id", "fencing_token", "released", "effects"} or \
+                    released["attempt_id"] != bindings["attempt_id"] or released["operation_id"] != bindings["operation_id"] or \
+                    type(released["released"]) is not bool or type(released["fencing_token"]) is not int or \
+                    not isinstance(released["effects"], Mapping) or len(_canonical_bytes(released)) > 16384:
+                raise ProducerObservationError("invalid released phase effect observation")
+            released = dict(released)
+        now = float(self.clock.wall_time())
+        if "observed_at" in event:
+            _freshness(event["observed_at"], now)
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            record = self._checked(issued, bindings, state, active=False)
+            if record["effect_state"] not in {"dispatch_uncertain", "dispatched"}:
+                raise ProducerObservationError("phase dispatch is not reserved")
+            path = self._hook_path(issued, kind)
+            if path.exists():
+                prior = self._read_phase_hook(issued, bindings, kind)
+                if prior["claim"] != claim or prior["owner"] != owner or prior["outputs"] != (outputs or []) or prior["tokens"] != tokens or prior.get("lease_terminal") != released:
+                    raise ProducerObservationError("conflicting phase hook replay")
+                return prior
+            if kind == "terminal":
+                start = self._read_phase_hook(issued, bindings, "start")
+                if start["owner"] != owner:
+                    raise ProducerObservationError("stale_or_foreign_event")
+            value = {"schema": "taskplane.attempt-hook-receipt/v1", "bindings": dict(bindings),
+                "nonce_digest": issued.receipt["nonce_digest"], "kind": kind,
+                "sequence": 1 if kind == "start" else 2, "claim": claim, "owner": owner,
+                "turn_id": turn, "observed_at": now, "outputs": outputs or [], "tokens": tokens,
+                "lease_terminal": released,
+                "outcome": None if kind == "start" else host_policy.normalize_worker_terminal_outcome(
+                    event.get("outcome") or event.get("status") or event.get("stop_reason") or "unknown")}
+            value["signature"] = self._sign(value)
+            self.store._write_atomic(path, _canonical_bytes(value))
+            return value
+
+    def _read_phase_hook(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
+                         kind: str) -> dict[str, object]:
+        path = self._hook_path(issued, kind)
+        if path.is_symlink():
+            raise ProducerObservationError("unsafe phase hook receipt")
+        try:
+            raw = path.read_bytes()
+            if len(raw) > 1024 * 1024:
+                raise ProducerObservationError("oversized phase hook receipt")
+            value = json.loads(raw)
+        except (OSError, ValueError) as exc:
+            raise ProducerObservationError("missing_" + kind) from exc
+        if not isinstance(value, dict) or value.get("bindings") != dict(bindings) or \
+                value.get("nonce_digest") != issued.receipt["nonce_digest"] or value.get("kind") != kind or \
+                not hmac.compare_digest(str(value.get("signature") or ""),
+                    self._sign({key: item for key, item in value.items() if key != "signature"})):
+            raise ProducerObservationError("phase hook binding or signature mismatch")
+        return value
+
+    def phase_hooks(self, issued: IssuedAttemptNonce,
+                    bindings: Mapping[str, object]) -> tuple[dict[str, object], dict[str, object]]:
+        """Read both authenticated receipts; absence remains an observation gap."""
+        with self.store._domain_lock(self._directory):
+            self._checked(issued, bindings, self._read(), active=False)
+            start = self._read_phase_hook(issued, bindings, "start")
+            terminal = self._read_phase_hook(issued, bindings, "terminal")
+            if start["owner"] != terminal["owner"] or terminal["observed_at"] < start["observed_at"]:
+                raise ProducerObservationError("stale_or_foreign_event")
+            return start, terminal
+
+    def terminal_hooks(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object]
+                       ) -> tuple[dict[str, object], dict[str, object]] | None:
+        """Read a completed host observation, distinguishing absence from corruption."""
+        path = self._hook_path(issued, "terminal")
+        if not path.exists() and not path.is_symlink():
+            return None
+        return self.phase_hooks(issued, bindings)
+
+    def effect(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
+               action: Callable[[], _EffectResult]) -> _EffectResult:
+        return self._perform(issued, bindings, action, expected="dispatched", uncertain="effect_uncertain")
+
+    def reconcile(self, issued: IssuedAttemptNonce, bindings: Mapping[str, object],
+                  observe: Callable[[str], ReconciledEffect] | None) -> str:
+        """Use the caller's authoritative host observation port, never a timeout.
+
+        This port must reconcile the original operation, including any still
+        running request, before reporting effect_free. Disabled/expired attempts
+        may still gather truth, but may not initiate new effects.
+        """
+        with self.store._domain_lock(self._directory):
+            state = self._read()
+            record = self._checked(issued, bindings, state, active=False)
+            current = record["effect_state"]
+            if current not in {"dispatch_uncertain", "effect_uncertain"}:
+                return current
+            if observe is None:
+                raise ProducerObservationError("nonce reconciliation unavailable: original operation observation required")
+            try:
+                result = observe(str(bindings["operation_id"]))
+            except Exception as exc:
+                raise ProducerObservationError("nonce reconciliation unavailable") from exc
+            if result not in {"observed", "effect_free", "uncertain"}:
+                raise ProducerObservationError("nonce reconciliation result is invalid")
+            if result != "uncertain":
+                record["effect_state"] = (
+                    ("dispatched" if result == "observed" else "issued")
+                    if current == "dispatch_uncertain" else
+                    ("effect_observed" if result == "observed" else "dispatched"))
+                self._write(state)
+            return record["effect_state"]
+
+
 class _NativeEventSource:
     """One host-owned event, constructed inside the lifecycle adapter."""
 
@@ -132,7 +548,7 @@ class _OneUseNativeCapability:
                 now: float) -> dict[str, Any]:
         if self._consumed:
             raise DeliveryPortError("host capability replay")
-        if handle != self._handle:
+        if not hmac.compare_digest(handle.encode("utf-8"), self._handle.encode("utf-8")):
             raise DeliveryPortError("missing host-private capability handle")
         if not self._issued_at <= float(now) < self._expires_at:
             raise DeliveryPortError("host capability expired or not yet valid")
@@ -398,8 +814,7 @@ def _stopping_identity(
         raise ProducerObservationError(
             "Codex SubagentStop stopping-agent identity is required")
     expected_name = str(dispatch["task_name"])
-    if identity["agent_type"] != expected_name or \
-            identity["task_name"] != expected_name:
+    if identity["task_name"] != expected_name:
         raise ProducerObservationError(
             "Codex SubagentStop stopping agent does not match emitted "
             "producer dispatch")
@@ -419,8 +834,7 @@ def _decode_stopping_identity(
     for field in _STOP_IDENTITY_FIELDS:
         _text(identity.get(field), field)
     expected_name = str(dispatch["task_name"])
-    if identity["agent_type"] != expected_name or \
-            identity["task_name"] != expected_name:
+    if identity["task_name"] != expected_name:
         raise ProducerObservationError(
             "producer observation stopping agent mismatched")
     return identity

@@ -12,7 +12,8 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import math
 from pathlib import Path
 import re
 import shutil
@@ -20,7 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, TypeVar, runtime_checkable
 
 try:  # pragma: no cover - platform branch
     import fcntl
@@ -54,6 +55,116 @@ class DeliveryPortError(RuntimeError):
 
 class InjectedFault(DeliveryPortError):
     """A deterministic test fault at a named public seam."""
+
+
+@dataclass(frozen=True)
+class AttemptLease:
+    """An orchestrator-issued value, never authority inferred from host state."""
+
+    lease_id: str
+    run_id: str
+    phase_id: str
+    attempt_id: str
+    operation_id: str
+    owner: str
+    issued_at: float
+    expires_at: float
+    heartbeat_deadline: float
+    effect_scope: tuple[str, ...]
+    fencing_token: int
+
+    def __post_init__(self) -> None:
+        if any(not isinstance(value, str) or not value.strip() for value in (
+                self.lease_id, self.run_id, self.phase_id, self.attempt_id,
+                self.operation_id, self.owner)):
+            raise DeliveryPortError("invalid lease identity")
+        times = (self.issued_at, self.expires_at, self.heartbeat_deadline)
+        if any(type(value) not in {int, float} or not math.isfinite(value) for value in times) or \
+                not self.issued_at < self.heartbeat_deadline <= self.expires_at:
+            raise DeliveryPortError("invalid lease deadlines")
+        if type(self.fencing_token) is not int or self.fencing_token < 1 or \
+                not isinstance(self.effect_scope, tuple) or not self.effect_scope or \
+                any(not isinstance(value, str) or not value for value in self.effect_scope) or \
+                len(set(self.effect_scope)) != len(self.effect_scope):
+            raise DeliveryPortError("invalid lease fence or effect scope")
+
+    def projection(self) -> dict[str, object]:
+        return {**asdict(self), "effect_scope": list(self.effect_scope)}
+
+
+@dataclass(frozen=True)
+class LeaseTerminalObservation:
+    lease: AttemptLease
+    terminal_identity: str | None
+    released: bool
+    effects: Mapping[str, str]
+
+
+def observe_lease_terminal(
+    lease: AttemptLease, observe: Callable[[AttemptLease], Mapping[str, object]],
+) -> LeaseTerminalObservation:
+    """Consume the trusted host adapter's original-operation observation.
+
+    The adapter must prove terminal, released and non-overlapping work; a
+    cancel request or elapsed deadline is not such an observation. This port
+    confers no native identity or authentication claim of its own.
+    """
+    value = observe(lease)
+    effects = value.get("effects")
+    terminal = value.get("terminal_identity")
+    released = value.get("released")
+    if set(value) != {"effects", "terminal_identity", "released"} or \
+            not isinstance(effects, dict) or set(effects) != set(lease.effect_scope) or \
+            any(effect not in {"effect_free", "committed", "observed", "pending", "uncertain"}
+                for effect in effects.values()) or type(released) is not bool or \
+            (terminal is not None and (not isinstance(terminal, str) or not terminal.strip())):
+        raise DeliveryPortError("invalid lease terminal observation")
+    return LeaseTerminalObservation(lease, terminal, released, dict(effects))
+
+
+@dataclass(frozen=True)
+class EffectPath:
+    path: Path
+    identity: tuple[tuple[int, int, int], ...]
+
+    @classmethod
+    def capture(cls, path: Path) -> "EffectPath":
+        path = Path(os.path.abspath(path))
+        identities = []
+        for part in (*reversed(path.parents), path):
+            if part.is_symlink():
+                raise DeliveryPortError("effect path cannot traverse a symlink")
+            metadata = part.stat(follow_symlinks=False)
+            identities.append((metadata.st_dev, metadata.st_ino, metadata.st_mode))
+        return cls(path, tuple(identities))
+
+    def revalidate(self) -> None:
+        if self.capture(self.path) != self:
+            raise DeliveryPortError("effect path changed after admission")
+
+
+_LeaseEffectResult = TypeVar("_LeaseEffectResult")
+
+
+def perform_lease_effect(
+    lease: AttemptLease, *, revalidate: Callable[[AttemptLease], None],
+    nonce_action: Callable[[Callable[[], _LeaseEffectResult]], _LeaseEffectResult],
+    action: Callable[[AttemptLease], _LeaseEffectResult], paths: Sequence[EffectPath] = (),
+) -> _LeaseEffectResult:
+    """Recheck immediately inside the incumbent nonce-protected boundary.
+
+    The trusted adapter receives the attempt/fence for supporting remote writes.
+    Local adapters must use descriptor-relative operations when path mutation
+    can race the action; this preflight does not make arbitrary callbacks atomic.
+    """
+    def perform() -> _LeaseEffectResult:
+        for path in paths:
+            path.revalidate()
+        revalidate(lease)
+        return action(lease)
+
+    revalidate(lease)
+    return nonce_action(perform)
 
 
 def configure_dashboard_refresh_publisher(publisher) -> None:

@@ -1,6 +1,19 @@
 
 # Engineering Manager Review
 
+The inactive phase-runtime adapter in `review.py` requires an orchestrator
+selection committed before evaluator dispatch. Its assignments bind the exact
+candidate, source tree, impact manifest, phase definition, package, knowledge,
+attempt, and operation. The evaluator receives the committed empty evaluation
+lens-set fingerprint, with no working lenses or lifecycle capabilities.
+`review_evidence.collect_evaluator_attempts` consumes every selected attempt;
+pending, refused, and unfavorable attempts remain visible, and a later pass
+cannot replace them. Canonical evaluator validation still requires current
+durable evidence for a pass. Collection owns no gate, commit, dispatch, or
+progression. These adapters remain inactive until the separate HG-E/T15C
+activation boundary; local simulated checks do not satisfy native journeys or
+final Engineering sign-off.
+
 A validation role, not a remediation role. The Engineering Manager inspects completed work, reports what they find, and hands the final judgment to the human EM. It runs differently from every other role in this system.
 
 ## Cardinal Rule — validation only, never change

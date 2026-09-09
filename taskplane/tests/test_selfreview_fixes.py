@@ -167,6 +167,8 @@ class TestEngine(unittest.TestCase):
              "new_modules": ["src"], "tests": "t",
              "criteria": ["variant B is ready for human selection"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop, usage="measured")
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
         for t in s["tasks"]:
@@ -187,6 +189,8 @@ class TestEngine(unittest.TestCase):
              "deps": ["t2"], "tests": "t",
              "criteria": ["task three passes review"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop, usage="measured")
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws); s["step"] = "escalated"; s["current_task"] = 0
         loop.save(self.ws, s)
@@ -206,6 +210,8 @@ class TestEngine(unittest.TestCase):
              "deps": ["t1"], "tests": "t",
              "criteria": ["task two passes review"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop, usage="measured")
         loop.gate(self.ws, "pass"); loop.approve(self.ws)
         s = loop.load(self.ws)
         # t1 skipped directly (not via cascade), t2 left pending → deadlock
@@ -233,6 +239,8 @@ class TestEngine(unittest.TestCase):
              "new_modules": ["src"], "tests": "t",
              "criteria": ["variant B is ready for human selection"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop, usage="measured")
         loop.gate(self.ws, "pass")
         self.assertTrue(loop.load(self.ws)["parallel"])
 
@@ -253,6 +261,8 @@ class TestEngine(unittest.TestCase):
             {"id": "t2", "req": "R-0001", "scope": ["src/pay/**"],
              "tests": "t", "criteria": ["shared edges stay"]}]},
             open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop, usage="measured")
         loop.gate(self.ws, "pass")
         g = depgraph.load(self.ws)
         planned = {e["to"] for e in g["edges"]

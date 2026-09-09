@@ -82,34 +82,439 @@ import re
 
 import graph_primitives
 
-CANDIDATE_MIN_FILES = 8    # module decomposes with >= this many code files…
-BIG_FILE_LINES = 600       # …or any single code file >= this many lines
-CLUSTER_MIN_FILES = 2      # file cluster floor
-CLUSTER_MIN_SYMBOLS = 4    # intra-file symbol cluster floor (symbols)
-CLUSTER_MIN_LINES = 120    # intra-file symbol cluster floor (line span)
+CANDIDATE_MIN_FILES = 8  # module decomposes with >= this many code files…
+BIG_FILE_LINES = 600  # …or any single code file >= this many lines
+CLUSTER_MIN_FILES = 2  # file cluster floor
+CLUSTER_MIN_SYMBOLS = 4  # intra-file symbol cluster floor (symbols)
+CLUSTER_MIN_LINES = 120  # intra-file symbol cluster floor (line span)
 
 # Bounded reads, Ctx-style (lens_signals bounds content scans the same way).
 # The per-file cap is larger than lens_signals.MAX_FILE_BYTES because the
 # AST pass needs the WHOLE file to be parseable; a file beyond the cap is
 # never parsed (it folds to ::core) instead of being truncated into a
 # spurious SyntaxError degrade.
-MAX_FILE_BYTES = 1024 * 1024   # per-file read bound
-MAX_MODULE_FILES = 400         # max code files considered per module
+MAX_FILE_BYTES = 1024 * 1024  # per-file read bound
+MAX_MODULE_FILES = 400  # max code files considered per module
 
-_FLOOR_KEYS = ("candidate_min_files", "big_file_lines", "cluster_min_files",
-               "cluster_min_symbols", "cluster_min_lines")
+_FLOOR_KEYS = (
+    "candidate_min_files",
+    "big_file_lines",
+    "cluster_min_files",
+    "cluster_min_symbols",
+    "cluster_min_lines",
+)
 _COMPONENTS_YAML = "components.yaml"
 
 _STDLIB = getattr(__import__("sys"), "stdlib_module_names", frozenset())
+
+DESIGN_TRACEABILITY_INVENTORY_SCHEMA = "taskplane.design-traceability-inventory/v1"
+DESIGN_TRACEABILITY_PRODUCER = "taskplane/graph_decomposition.py"
+SOURCE_TOUCHPOINT_COVERAGE_SCHEMA = "taskplane.source-touchpoint-coverage/v1"
+SOURCE_TOUCHPOINT_KINDS = frozenset(
+    {
+        "file",
+        "module",
+        "symbol",
+        "configuration",
+        "contract",
+        "runtime",
+    }
+)
+SOURCE_TOUCHPOINT_STATES = frozenset(
+    {
+        "present",
+        "missing",
+        "ambiguous",
+        "unsupported",
+        "rejected",
+        "truncated",
+    }
+)
+SOURCE_COVERAGE_STOP_ORDER = (
+    "unverified",
+    "missing",
+    "ambiguous",
+    "unsupported",
+    "rejected",
+    "truncated",
+    "parser",
+    "language",
+    "policy",
+    "depth",
+    "fan-out",
+    "time",
+)
+
+
+def _coverage_fingerprint(value: dict) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _coverage_limit(value, label: str, *, default=None) -> int:
+    if value is None:
+        value = default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"source coverage {label} must be a non-negative integer")
+    return value
+
+
+def build_source_touchpoint_coverage(
+    source_tree: str, bound_inputs, *, limits: dict, verifier
+) -> dict:
+    """Verify each bound source touchpoint once and seal bounded coverage.
+
+    The verifier is the owned source boundary: it is invoked exactly once for
+    each unique input after the complete binding has been structurally
+    validated.  Any verification or bound stop condition produces explicit
+    partial evidence that cannot authorize decomposition.
+    """
+    source_tree = str(source_tree or "").strip()
+    if not source_tree:
+        raise ValueError("source coverage source tree is required")
+    if not isinstance(bound_inputs, list) or not bound_inputs:
+        raise ValueError("source coverage bound inputs must be a non-empty list")
+    if not isinstance(limits, dict):
+        raise ValueError("source coverage limits must be an object")
+    if not callable(verifier):
+        raise ValueError("source coverage verifier must be callable")
+
+    normalized_inputs = []
+    seen = set()
+    for index, raw in enumerate(bound_inputs, 1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"source coverage input {index} must be an object")
+        identity = str(raw.get("id") or "").strip()
+        kind = str(raw.get("kind") or "").strip()
+        if not identity or not kind:
+            raise ValueError(f"source coverage input {index} id and kind are required")
+        if identity in seen:
+            raise ValueError(f"ambiguous source coverage input: {identity}")
+        seen.add(identity)
+        normalized_inputs.append({"id": identity, "kind": kind})
+
+    parser_limits = limits.get("parsers")
+    language_limits = limits.get("languages")
+    if (
+        not isinstance(parser_limits, list)
+        or not parser_limits
+        or any(not str(value).strip() for value in parser_limits)
+    ):
+        raise ValueError("source coverage parser limits must be a non-empty list")
+    if (
+        not isinstance(language_limits, list)
+        or not language_limits
+        or any(not str(value).strip() for value in language_limits)
+    ):
+        raise ValueError("source coverage language limits must be a non-empty list")
+    policy = str(limits.get("policy") or "").strip()
+    if not policy:
+        raise ValueError("source coverage policy limit is required")
+    normalized_limits = {
+        "local_depth": _coverage_limit(limits.get("local_depth"), "local_depth", default=3),
+        "max_fanout": _coverage_limit(limits.get("max_fanout"), "max_fanout"),
+        "max_elapsed_ms": _coverage_limit(limits.get("max_elapsed_ms"), "max_elapsed_ms"),
+        "parsers": sorted(set(map(str, parser_limits))),
+        "languages": sorted(set(map(str, language_limits))),
+        "policy": policy,
+    }
+
+    touchpoints = {}
+    stopping_conditions = []
+    for bound_input in sorted(normalized_inputs, key=lambda row: row["id"]):
+        observed = verifier(dict(bound_input))
+        if not isinstance(observed, dict):
+            raise ValueError(f"source verifier output must be an object: {bound_input['id']}")
+        state = str(observed.get("state") or "").strip()
+        parser = str(observed.get("parser") or "").strip()
+        language = str(observed.get("language") or "").strip()
+        observed_policy = str(observed.get("policy") or "").strip()
+        reasons = set()
+        if (
+            observed.get("verified") is not True
+            or not str(observed.get("source_fingerprint") or "").strip()
+        ):
+            reasons.add("unverified")
+        if state in SOURCE_TOUCHPOINT_STATES - {"present"}:
+            reasons.add(state)
+        elif state != "present":
+            reasons.add("rejected")
+        if bound_input["kind"] not in SOURCE_TOUCHPOINT_KINDS:
+            reasons.add("unsupported")
+        if parser not in normalized_limits["parsers"]:
+            reasons.add("parser")
+        if language not in normalized_limits["languages"]:
+            reasons.add("language")
+        if observed_policy != normalized_limits["policy"]:
+            reasons.add("policy")
+
+        numeric = {}
+        for field, reason, ceiling in (
+            ("depth", "depth", normalized_limits["local_depth"]),
+            ("fanout", "fan-out", normalized_limits["max_fanout"]),
+            ("elapsed_ms", "time", normalized_limits["max_elapsed_ms"]),
+        ):
+            value = observed.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                reasons.add(reason)
+                numeric[field] = None
+            else:
+                numeric[field] = value
+                if value > ceiling:
+                    reasons.add(reason)
+
+        ordered_reasons = [reason for reason in SOURCE_COVERAGE_STOP_ORDER if reason in reasons]
+        touchpoints[bound_input["id"]] = {
+            "kind": bound_input["kind"],
+            "verified": observed.get("verified") is True,
+            "state": state,
+            "source_fingerprint": str(observed.get("source_fingerprint") or "").strip(),
+            "parser": parser,
+            "language": language,
+            "policy": observed_policy,
+            **numeric,
+            "stop_reasons": ordered_reasons,
+        }
+        stopping_conditions.extend(
+            {"input": bound_input["id"], "reason": reason} for reason in ordered_reasons
+        )
+
+    complete = not stopping_conditions
+    material = {
+        "schema": SOURCE_TOUCHPOINT_COVERAGE_SCHEMA,
+        "producer": DESIGN_TRACEABILITY_PRODUCER,
+        "source_tree": source_tree,
+        "status": "complete" if complete else "partial",
+        "complete": complete,
+        "limits": normalized_limits,
+        "kinds": sorted({row["kind"] for row in normalized_inputs}),
+        "touchpoints": dict(sorted(touchpoints.items())),
+        "stopping_conditions": stopping_conditions,
+    }
+    material["fingerprint"] = _coverage_fingerprint(material)
+    return material
+
+
+def require_complete_source_coverage(coverage: dict, *, source_tree: str | None = None) -> dict:
+    """Validate a sealed receipt and refuse partial or foreign coverage."""
+    if not isinstance(coverage, dict):
+        raise ValueError("source coverage receipt must be an object")
+    material = {key: value for key, value in coverage.items() if key != "fingerprint"}
+    if (
+        coverage.get("schema") != SOURCE_TOUCHPOINT_COVERAGE_SCHEMA
+        or coverage.get("producer") != DESIGN_TRACEABILITY_PRODUCER
+        or coverage.get("fingerprint") != _coverage_fingerprint(material)
+    ):
+        raise ValueError("source coverage receipt is malformed or stale")
+    if source_tree is not None and coverage.get("source_tree") != source_tree:
+        raise ValueError("source coverage is foreign to the graph source tree")
+    if (
+        coverage.get("status") != "complete"
+        or coverage.get("complete") is not True
+        or coverage.get("stopping_conditions") != []
+    ):
+        raise ValueError("source coverage is partial and blocks decomposition")
+    return json.loads(json.dumps(coverage))
+
+
+def derive_verified_source(workspace: str, graph: dict, coverage: dict, prev: dict | None = None):
+    """Run decomposition only for complete coverage of this graph source."""
+    meta = (graph or {}).get("meta") or {}
+    source_tree = str(meta.get("source_tree") or meta.get("scanned_head") or "").strip()
+    if not source_tree:
+        raise ValueError("graph source tree is unavailable for decomposition")
+    require_complete_source_coverage(coverage, source_tree=source_tree)
+    return derive(workspace, graph, prev)
+
+
+DEPENDENCY_DECOMPOSITION_SCHEMA = "taskplane.dependency-decomposition/v1"
+
+
+def dependency_decomposition(graph: dict, *, task_owners: dict[str, str] | None = None) -> dict:
+    """Partition the verified scanner graph into dependency-ordered SCC tasks.
+
+    Components retain their exact source spans. Cyclic modules share a task;
+    every acyclic dependency cut becomes a Plan seam. Declared overlays cannot
+    substitute for scanner observations in this production projection. An
+    approved Plan may supply ownership of its scoped modules instead of asking
+    the scanner to invent tasks for the entire repository.
+    """
+    coverage = require_complete_source_coverage(graph["meta"]["source_coverage"],
+        source_tree=graph["meta"]["source_tree"])
+    if graph["meta"]["graph_scan_quality"]["degraded"]:
+        raise ValueError("degraded source graph blocks dependency decomposition")
+    components = graph.get("components") or []
+    if not components or any(row.get("degraded") for row in components):
+        raise ValueError("verified source components are required")
+    if task_owners is not None:
+        if set(task_owners) - {row["module"] for row in components} or any(
+                not isinstance(owner, str) or not owner for owner in task_owners.values()):
+            raise ValueError("Plan dependency ownership is foreign or incomplete")
+        components = [row for row in components if row["module"] in task_owners]
+    modules = sorted({row["module"] for row in components})
+    edges = sorted({(row["to"], row["from"], row["kind"])
+        for row in graph["edges"] if row.get("source") == "scanner"
+        and row["from"] in modules and row["to"] in modules and row["from"] != row["to"]})
+    groups = (graph_primitives.strongly_connected_components(modules,
+        [(a, b) for a, b, _ in edges]) if task_owners is None else
+        [sorted(node for node in modules if task_owners[node] == owner)
+            for owner in sorted(set(task_owners.values()))])
+    owners = (task_owners if task_owners is not None else
+        {node: "dependency-" + _coverage_fingerprint({"nodes": group})[:16]
+            for group in groups for node in group})
+    tasks = [{"id": owners[group[0]], "nodes": group,
+        "deps": sorted({owners[a] for a, b, _ in edges if b in group and a not in group})}
+        for group in groups]
+    pending = {row["id"]: row for row in tasks}
+    ordered = []
+    while pending:
+        ready = sorted(key for key, row in pending.items() if not set(row["deps"]) & pending.keys())
+        if not ready:
+            raise ValueError("dependency task cycle after SCC decomposition")
+        ordered.extend(pending.pop(key) for key in ready)
+    value = {"schema": DEPENDENCY_DECOMPOSITION_SCHEMA,
+        "source_tree": coverage["source_tree"], "coverage_fingerprint": coverage["fingerprint"],
+        "components": [{key: row[key] for key in ("id", "module", "files", "symbols", "fingerprint")}
+            for row in sorted(components, key=lambda row: row["id"])],
+        "edges": [{"producer": a, "consumer": b, "kind": kind} for a, b, kind in edges],
+        "tasks": ordered}
+    value["fingerprint"] = _coverage_fingerprint(value)
+    return value
+
+
+def design_traceability_inventory(contract: dict) -> dict:
+    """Close the canonical Design entities consumed by Plan traceability."""
+    if not isinstance(contract, dict):
+        raise ValueError("Design Contract must be an object")
+    counts = contract.get("design_counts")
+    if not isinstance(counts, dict):
+        raise ValueError("Design Contract counts are required")
+    acceptance = contract.get("acceptance_map")
+    contracts = contract.get("contracts")
+    journeys = contract.get("journeys")
+    ownership = contract.get("module_ownership")
+    graph = contract.get("graph")
+    if not isinstance(acceptance, list):
+        raise ValueError("Design acceptance_map must be a list")
+    if not isinstance(contracts, list):
+        raise ValueError("Design contracts must be a list")
+    if not isinstance(journeys, list):
+        raise ValueError("Design journeys must be a list")
+    if not isinstance(ownership, list):
+        raise ValueError("Design module_ownership must be a list")
+    if not isinstance(graph, dict) or not isinstance(graph.get("proposed_edges"), list):
+        raise ValueError("Design proposed graph edges are required")
+
+    def unique_rows(rows, field: str, label: str) -> dict[str, dict]:
+        result = {}
+        for index, raw in enumerate(rows, 1):
+            if not isinstance(raw, dict):
+                raise ValueError(f"Design {label} row {index} must be an object")
+            identity = str(raw.get(field) or "").strip()
+            if not identity:
+                raise ValueError(f"Design {label} row {index} {field} is required")
+            if identity in result:
+                raise ValueError(f"duplicate Design {label}: {identity}")
+            result[identity] = json.loads(json.dumps(raw))
+        return result
+
+    criteria = unique_rows(acceptance, "criterion_id", "criterion")
+    expected_criteria = [
+        f"FP-AC{number:02d}" for number in range(1, int(counts.get("criteria") or 0) + 1)
+    ]
+    if sorted(criteria) != expected_criteria:
+        raise ValueError("Design criteria are not the canonical FP-AC inventory")
+    for criterion_id, row in criteria.items():
+        criterion = str(row.get("criterion") or "")
+        if not criterion.startswith(criterion_id + " "):
+            raise ValueError(f"Design criterion text is not bound to {criterion_id}")
+        if not str(row.get("owner") or "").strip():
+            raise ValueError(f"Design criterion owner is required: {criterion_id}")
+
+    contract_rows = unique_rows(contracts, "id", "contract")
+    journey_rows = unique_rows(journeys, "id", "journey")
+    if any(re.fullmatch(r"J(?:0|[1-9][0-9]*)", identity) is None
+           for identity in journey_rows):
+        raise ValueError("Design journeys must use canonical journey IDs")
+    for journey_id, row in journey_rows.items():
+        if not str(row.get("owner") or "").strip():
+            raise ValueError(f"Design journey owner is required: {journey_id}")
+        refs = row.get("criteria")
+        if not isinstance(refs, list) or not refs:
+            raise ValueError(f"Design journey criteria are required: {journey_id}")
+        foreign = sorted(set(map(str, refs)) - set(criteria))
+        if foreign:
+            raise ValueError(f"Design journey {journey_id} has foreign criteria: {foreign}")
+
+    edge_rows = {}
+    for index, raw in enumerate(graph["proposed_edges"], 1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Design edge row {index} must be an object")
+        source = str(raw.get("from") or "").strip()
+        target = str(raw.get("to") or "").strip()
+        kind = str(raw.get("kind") or "").strip()
+        if not source or not target or not kind:
+            raise ValueError(f"Design edge row {index} is incomplete")
+        if target.startswith("contract:") and target not in contract_rows:
+            raise ValueError(f"Design edge has foreign contract: {target}")
+        edge_id = f"{source}->{target}:{kind}"
+        if edge_id in edge_rows:
+            raise ValueError(f"duplicate Design edge: {edge_id}")
+        edge_rows[edge_id] = json.loads(json.dumps(raw))
+
+    responsibility_rows = unique_rows(ownership, "responsibility", "responsibility")
+    actual_counts = {
+        "criteria": len(criteria),
+        "contracts": len(contract_rows),
+        "journeys": len(journey_rows),
+        "proposed_edges": len(edge_rows),
+    }
+    for name, actual in actual_counts.items():
+        if int(counts.get(name) or -1) != actual:
+            raise ValueError(
+                f"Design {name} count is stale: expected {counts.get(name)}, found {actual}"
+            )
+
+    material = {
+        "schema": DESIGN_TRACEABILITY_INVENTORY_SCHEMA,
+        "producer_chain": [DESIGN_TRACEABILITY_PRODUCER],
+        "requirement": str(contract.get("requirement") or "").strip(),
+        "criteria": criteria,
+        "contracts": contract_rows,
+        "journeys": journey_rows,
+        "design_edges": edge_rows,
+        "responsibilities": responsibility_rows,
+        "depth_policy": json.loads(json.dumps(graph.get("depth_policy") or {})),
+    }
+    encoded = json.dumps(
+        material,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    material["fingerprint"] = hashlib.sha256(encoded).hexdigest()
+    return material
 
 
 class _DerivationError(Exception):
     """Internal: a per-module derivation failure (caught by derive())."""
 
-    def __init__(self, message: str, *, file: str = "",
-                 parser: str = "decomposition",
-                 error_class: str = "DerivationError",
-                 reason: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        file: str = "",
+        parser: str = "decomposition",
+        error_class: str = "DerivationError",
+        reason: str | None = None,
+    ):
         super().__init__(message)
         self.file = file
         self.parser = parser
@@ -124,17 +529,26 @@ def _syntax_error(rel: str, exc: SyntaxError) -> _DerivationError:
         if exc.offset is not None:
             reason += f", column {exc.offset}"
     return _DerivationError(
-        f"bad AST in {rel}: {reason}", file=rel, parser="python-ast",
-        error_class=exc.__class__.__name__, reason=reason)
+        f"bad AST in {rel}: {reason}",
+        file=rel,
+        parser="python-ast",
+        error_class=exc.__class__.__name__,
+        reason=reason,
+    )
 
 
 def _unreadable_error(rel: str) -> _DerivationError:
     return _DerivationError(
-        f"unreadable file: {rel}", file=rel, parser="file-read",
-        error_class="OSError", reason="file could not be read")
+        f"unreadable file: {rel}",
+        file=rel,
+        parser="file-read",
+        error_class="OSError",
+        reason="file could not be read",
+    )
 
 
 # ---------------------------------------------------------------- bounded IO
+
 
 def _read_text(workspace: str, rel: str) -> str | None:
     """Bounded, contained read (Ctx.read pattern): at most MAX_FILE_BYTES,
@@ -153,6 +567,7 @@ def _read_text(workspace: str, rel: str) -> str | None:
 
 # ------------------------------------------------------------ components.yaml
 
+
 def _parse_components_yaml(text: str) -> dict:
     """Floors from components.yaml, via the ONE shared parser.
 
@@ -164,6 +579,7 @@ def _parse_components_yaml(text: str) -> dict:
     unsupported line SHAPE still raises so the caller fails open.
     """
     import path_roles
+
     cfg = path_roles.parse_components_yaml(text)
     return {k: v for k, v in cfg["floors"].items() if k in _FLOOR_KEYS}
 
@@ -181,11 +597,13 @@ def load_floors(workspace: str) -> tuple[dict, str | None]:
     defaults with the existing `ignored` marker. floors_hash hashes the
     values load_floors RETURNS — i.e. the clamped ones — so the cache key
     always reflects the EFFECTIVE floors."""
-    floors = {"candidate_min_files": CANDIDATE_MIN_FILES,
-              "big_file_lines": BIG_FILE_LINES,
-              "cluster_min_files": CLUSTER_MIN_FILES,
-              "cluster_min_symbols": CLUSTER_MIN_SYMBOLS,
-              "cluster_min_lines": CLUSTER_MIN_LINES}
+    floors = {
+        "candidate_min_files": CANDIDATE_MIN_FILES,
+        "big_file_lines": BIG_FILE_LINES,
+        "cluster_min_files": CLUSTER_MIN_FILES,
+        "cluster_min_symbols": CLUSTER_MIN_SYMBOLS,
+        "cluster_min_lines": CLUSTER_MIN_LINES,
+    }
     p = os.path.join(workspace, _COMPONENTS_YAML)
     if not os.path.exists(p):
         return floors, None
@@ -193,15 +611,16 @@ def load_floors(workspace: str) -> tuple[dict, str | None]:
         text = _read_text(workspace, _COMPONENTS_YAML)
         if text is None:
             raise ValueError("components.yaml unreadable")
-        overrides = {k: int(v)
-                     for k, v in _parse_components_yaml(text).items()}
+        overrides = {k: int(v) for k, v in _parse_components_yaml(text).items()}
         clamped = {k: v for k, v in overrides.items() if v < 1}
         floors.update({k: max(1, v) for k, v in overrides.items()})
         if clamped:
             detail = ", ".join(f"{k}={v}" for k, v in sorted(clamped.items()))
-            return floors, ("degraded: components.yaml floors below 1 "
-                            f"clamped to 1 ({detail}) — a floor can never "
-                            "be less than 1")
+            return floors, (
+                "degraded: components.yaml floors below 1 "
+                f"clamped to 1 ({detail}) — a floor can never "
+                "be less than 1"
+            )
         return floors, None
     except Exception as e:
         return floors, f"components.yaml ignored (defaults used): {e}"
@@ -211,16 +630,17 @@ def floors_hash(workspace: str) -> str:
     """Cache key for the active floor configuration — a components.yaml
     change invalidates every module-level derivation skip."""
     floors, _err = load_floors(workspace)
-    return hashlib.sha256(json.dumps(floors, sort_keys=True,
-                                     separators=(",", ":")).encode()
-                          ).hexdigest()
+    return hashlib.sha256(
+        json.dumps(floors, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 # ----------------------------------------------------------------- utilities
 
+
 def _sanitize(name: str) -> str:
     s = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-") or "part"
-    if s == "core":              # `core` is reserved for the residual
+    if s == "core":  # `core` is reserved for the residual
         s = "core-x"
     return s
 
@@ -272,8 +692,8 @@ def _module_stems(files: list) -> dict:
 
 # -------------------------------------------------- python import resolution
 
-def _py_import_map(tree: ast.AST, rel: str, mod_stems: dict,
-                   repo_stems: dict, module: str):
+
+def _py_import_map(tree: ast.AST, rel: str, mod_stems: dict, repo_stems: dict, module: str):
     """(intra, alias): intra = {local name -> intra-module file}, alias =
     {local name -> module-level target (module id or ext:pkg)}. Stdlib and
     own-module targets are dropped from alias (they are not deps)."""
@@ -285,8 +705,7 @@ def _py_import_map(tree: ast.AST, rel: str, mod_stems: dict,
         n = (dotted or "").replace(".", "/")
         if not n:
             return
-        hit_file = mod_stems.get(n) or mod_stems.get(n.split("/")[-1]
-                                                     if "/" in n else n)
+        hit_file = mod_stems.get(n) or mod_stems.get(n.split("/")[-1] if "/" in n else n)
         if hit_file and (n in mod_stems or "/" not in n):
             intra[local] = hit_file
             return
@@ -308,24 +727,22 @@ def _py_import_map(tree: ast.AST, rel: str, mod_stems: dict,
             if node.level:
                 base = pkg_dir.split("/") if pkg_dir else []
                 base = base[: len(base) - (node.level - 1)]
-                stem = "/".join(base + [s for s in
-                                        (node.module or "").split(".") if s])
+                stem = "/".join(base + [s for s in (node.module or "").split(".") if s])
             else:
                 stem = (node.module or "").replace(".", "/")
             for a in node.names:
                 local = a.asname or a.name
                 child = f"{stem}/{a.name}" if stem else a.name
-                if child in mod_stems:      # from pkg import file
+                if child in mod_stems:  # from pkg import file
                     intra[local] = mod_stems[child]
-                elif stem in mod_stems:     # from <module file> import sym
+                elif stem in mod_stems:  # from <module file> import sym
                     intra[local] = mod_stems[stem]
                 else:
                     resolve(stem or a.name, local)
     return intra, alias
 
 
-def _file_refs(text: str | None, rel: str, mod_stems: dict,
-               repo_stems: dict, module: str):
+def _file_refs(text: str | None, rel: str, mod_stems: dict, repo_stems: dict, module: str):
     """Per-file (intra-module file targets, module-level alias targets).
     Python via AST; JS-family via relative-import regex; other -> empty."""
     if text is None:
@@ -335,18 +752,17 @@ def _file_refs(text: str | None, rel: str, mod_stems: dict,
             tree = ast.parse(text)
         except SyntaxError as e:
             raise _syntax_error(rel, e) from None
-        intra, alias = _py_import_map(tree, rel, mod_stems, repo_stems,
-                                      module)
+        intra, alias = _py_import_map(tree, rel, mod_stems, repo_stems, module)
         return set(intra.values()), set(alias.values())
     intra: set = set()
     if rel.endswith((".js", ".ts", ".tsx", ".jsx", ".mjs")):
         for target in re.findall(
-                r"""(?:import\s+(?:[^'"]*\s+from\s+)?|require\s*\(\s*)"""
-                r"""['"](\.[^'"]+)['"]""", text):
-            resolved = posixpath.normpath(
-                posixpath.join(posixpath.dirname(rel), target))
-            stem = resolved.rsplit(".", 1)[0] if "." in posixpath.basename(
-                resolved) else resolved
+            r"""(?:import\s+(?:[^'"]*\s+from\s+)?|require\s*\(\s*)"""
+            r"""['"](\.[^'"]+)['"]""",
+            text,
+        ):
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), target))
+            stem = resolved.rsplit(".", 1)[0] if "." in posixpath.basename(resolved) else resolved
             if stem in mod_stems:
                 intra.add(mod_stems[stem])
     return intra, set()
@@ -354,16 +770,18 @@ def _file_refs(text: str | None, rel: str, mod_stems: dict,
 
 # -------------------------------------------------------------- fingerprints
 
+
 def _fingerprint(members: list) -> str:
     """sha256 over the sorted (file, hash, symbol-span) material — the
     contract:component-map cache key."""
     material = sorted([f, h, span] for f, h, span in members)
-    return hashlib.sha256(json.dumps(material, sort_keys=True,
-                                     separators=(",", ":")).encode()
-                          ).hexdigest()
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 # ------------------------------------------------------------- module deriva
+
 
 def _symbol_clusters(text: str, rel: str, floors: dict):
     """Cluster a big Python file's top-level symbols by name prefix, then
@@ -382,9 +800,11 @@ def _symbol_clusters(text: str, rel: str, floors: dict):
         tree = ast.parse(text)
     except SyntaxError as e:
         raise _syntax_error(rel, e) from None
-    tops = {n.name: n for n in tree.body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
-                              ast.ClassDef))}
+    tops = {
+        n.name: n
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
     groups: dict = {}
     for name in sorted(tops):
         groups.setdefault(_sym_prefix(name), []).append(name)
@@ -392,32 +812,36 @@ def _symbol_clusters(text: str, rel: str, floors: dict):
     def span(names):
         return sum(tops[n].end_lineno - tops[n].lineno + 1 for n in names)
 
-    passing = {p for p, names in groups.items()
-               if len(names) >= floors["cluster_min_symbols"]
-               and span(names) >= floors["cluster_min_lines"]}
+    passing = {
+        p
+        for p, names in groups.items()
+        if len(names) >= floors["cluster_min_symbols"]
+        and span(names) >= floors["cluster_min_lines"]
+    }
     owner = {name: p for p, names in groups.items() for name in names}
-    residual = [n for p, names in sorted(groups.items())
-                if p not in passing for n in names]
+    residual = [n for p, names in sorted(groups.items()) if p not in passing for n in names]
     # reference cohesion: a residual symbol calling into exactly one passing
     # cluster joins it
     clusters = {p: list(groups[p]) for p in sorted(passing)}
     still = []
     for name in residual:
-        refs = {owner[x.id] for x in ast.walk(tops[name])
-                if isinstance(x, ast.Name) and x.id in tops
-                and x.id != name}
+        refs = {
+            owner[x.id]
+            for x in ast.walk(tops[name])
+            if isinstance(x, ast.Name) and x.id in tops and x.id != name
+        }
         targets = sorted((refs & passing) - {owner[name]})
         if len(targets) == 1 and owner[name] not in passing:
             clusters[targets[0]].append(name)
         else:
             still.append(name)
     folded = sum(1 for p in groups if p not in passing)
-    return ({p: sorted(clusters[p]) for p in clusters},
-            sorted(still), tops, tree, folded)
+    return ({p: sorted(clusters[p]) for p in clusters}, sorted(still), tops, tree, folded)
 
 
-def _derive_module(workspace: str, module: str, files: list, hashes: dict,
-                   floors: dict, repo_stems: dict):
+def _derive_module(
+    workspace: str, module: str, files: list, hashes: dict, floors: dict, repo_stems: dict
+):
     """Derive the module's raw components (no lens maps yet). Returns
     (components, floor_folded). Raises _DerivationError on any failure."""
     files = sorted(files)[:MAX_MODULE_FILES]
@@ -430,47 +854,57 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
 
     def core_only():
         members = [(f, hashes.get(f, ""), "") for f in files]
-        return [{"id": f"{module}::core", "module": module,
-                 "files": list(files), "symbols": [],
-                 "_members": members, "deps": [], "derived_by": "core"}], 0
+        return [
+            {
+                "id": f"{module}::core",
+                "module": module,
+                "files": list(files),
+                "symbols": [],
+                "_members": members,
+                "deps": [],
+                "derived_by": "core",
+            }
+        ], 0
 
-    candidate = (len(files) >= floors["candidate_min_files"]
-                 or any(n >= floors["big_file_lines"]
-                        for n in lines.values()))
+    candidate = len(files) >= floors["candidate_min_files"] or any(
+        n >= floors["big_file_lines"] for n in lines.values()
+    )
     if not candidate:
         return core_only()
 
     mod_stems = _module_stems(files)
     # a Python file at/over the big-file floor gets SYMBOL clustering (a file
     # truncated by the read bound is never parsed — it stays a plain member)
-    big = [f for f in files
-           if f.endswith(".py") and lines[f] >= floors["big_file_lines"]
-           and sizes[f] < MAX_FILE_BYTES]
+    big = [
+        f
+        for f in files
+        if f.endswith(".py") and lines[f] >= floors["big_file_lines"] and sizes[f] < MAX_FILE_BYTES
+    ]
     pool = [f for f in files if f not in big]
 
     # ---- file clusters: sub-directory convention + import cohesion
     # Repo paths are '/'-shaped; posixpath keeps component ids identical
     # on every host (os.path.commonpath/relpath would emit backslashes on
     # Windows and mint ids like `engine\\mod::core`).
-    common = posixpath.commonpath(
-        [posixpath.dirname(f) or "." for f in files]) if files else "."
-    clusters: dict = {}          # key -> {"files": set, "name": str}
-    singleton: dict = {}         # file -> key (root-level loners)
+    common = posixpath.commonpath([posixpath.dirname(f) or "." for f in files]) if files else "."
+    clusters: dict = {}  # key -> {"files": set, "name": str}
+    singleton: dict = {}  # file -> key (root-level loners)
     for f in pool:
         d = posixpath.dirname(f) or "."
         sub = posixpath.relpath(d, common) if d != common else "."
         if sub != "." and not sub.startswith(".."):
             key = "dir:" + sub.split("/")[0]
-            clusters.setdefault(key, {"files": set(),
-                                      "name": _sanitize(sub.split("/")[0]),
-                                      "how": "directory"})
+            clusters.setdefault(
+                key, {"files": set(), "name": _sanitize(sub.split("/")[0]), "how": "directory"}
+            )
             clusters[key]["files"].add(f)
         else:
             key = "one:" + f
-            clusters[key] = {"files": {f},
-                             "name": _sanitize(
-                                 posixpath.basename(f).rsplit(".", 1)[0]),
-                             "how": "cohesion"}
+            clusters[key] = {
+                "files": {f},
+                "name": _sanitize(posixpath.basename(f).rsplit(".", 1)[0]),
+                "how": "cohesion",
+            }
             singleton[f] = key
 
     intra_imports: dict = {}
@@ -483,8 +917,7 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
     # cohesion pass 1: mutually-importing loners cluster together
     for f in sorted(singleton):
         for g_ in sorted(intra_imports[f]):
-            if (g_ in singleton and f in intra_imports.get(g_, ())
-                    and singleton[f] != singleton[g_]):
+            if g_ in singleton and f in intra_imports.get(g_, ()) and singleton[f] != singleton[g_]:
                 keep, drop = sorted((singleton[f], singleton[g_]))
                 clusters[keep]["files"] |= clusters[drop]["files"]
                 for x in clusters[drop]["files"]:
@@ -498,8 +931,11 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
         k = singleton.get(f)
         if k not in clusters or len(clusters[k]["files"]) != 1:
             continue
-        targets = {file_cluster[g_] for g_ in intra_imports[f]
-                   if g_ in file_cluster and file_cluster[g_] != k}
+        targets = {
+            file_cluster[g_]
+            for g_ in intra_imports[f]
+            if g_ in file_cluster and file_cluster[g_] != k
+        }
         if len(targets) == 1:
             tgt = targets.pop()
             clusters[tgt]["files"].add(f)
@@ -507,32 +943,31 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
             file_cluster[f] = tgt
 
     floor_folded = 0
-    comp: dict = {}              # name -> component draft
+    comp: dict = {}  # name -> component draft
     residual_files: set = set()
 
     def draft(name, how):
-        return comp.setdefault(name, {"files": set(), "symbols": set(),
-                                      "members": [], "how": {how}})
+        return comp.setdefault(
+            name, {"files": set(), "symbols": set(), "members": [], "how": {how}}
+        )
 
     for k in sorted(clusters):
         c = clusters[k]
         if len(c["files"]) >= floors["cluster_min_files"]:
             d = draft(c["name"], c["how"])
             d["files"] |= c["files"]
-            d["members"] += [(f, hashes.get(f, ""), "")
-                             for f in sorted(c["files"])]
+            d["members"] += [(f, hashes.get(f, ""), "") for f in sorted(c["files"])]
         else:
             floor_folded += 1
             residual_files |= c["files"]
 
     # ---- intra-file symbol clusters for the big files
-    sym_comp: dict = {}          # (file, symbol) -> component name
-    residual_syms: dict = {}     # file -> [symbol names]
+    sym_comp: dict = {}  # (file, symbol) -> component name
+    residual_syms: dict = {}  # file -> [symbol names]
     file_tops: dict = {}
-    big_clustered: set = set()   # big files that earned >= 1 symbol cluster
+    big_clustered: set = set()  # big files that earned >= 1 symbol cluster
     for f in big:
-        sclusters, still, tops, _tree, folded = _symbol_clusters(
-            texts[f], f, floors)
+        sclusters, still, tops, _tree, folded = _symbol_clusters(texts[f], f, floors)
         floor_folded += folded
         file_tops[f] = tops
         residual_syms[f] = still
@@ -543,9 +978,8 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
             d["files"].add(f)
             d["symbols"] |= set(names)
             d["members"] += [
-                (f, hashes.get(f, ""),
-                 f"{n}:{tops[n].lineno}-{tops[n].end_lineno}")
-                for n in names]
+                (f, hashes.get(f, ""), f"{n}:{tops[n].lineno}-{tops[n].end_lineno}") for n in names
+            ]
             for n in names:
                 sym_comp[(f, n)] = pname
 
@@ -560,25 +994,22 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
     # file now folds into ::core as a WHOLE-FILE member (file, hash, ''),
     # exactly like a below-floor file cluster: its span, its signals and its
     # imports all stay in the layer.
-    big_whole = {f for f in big
-                 if f not in big_clustered and not residual_syms.get(f)}
-    core_files = (residual_files | big_whole
-                  | {f for f in big if residual_syms.get(f)})
+    big_whole = {f for f in big if f not in big_clustered and not residual_syms.get(f)}
+    core_files = residual_files | big_whole | {f for f in big if residual_syms.get(f)}
     if core_files or residual_syms:
         d = draft("core", "core")
         d["files"] |= core_files
-        d["members"] += [(f, hashes.get(f, ""), "")
-                         for f in sorted(residual_files | big_whole)]
+        d["members"] += [(f, hashes.get(f, ""), "") for f in sorted(residual_files | big_whole)]
         for f in big:
             tops = file_tops[f]
             d["symbols"] |= set(residual_syms[f])
             d["members"] += [
-                (f, hashes.get(f, ""),
-                 f"{n}:{tops[n].lineno}-{tops[n].end_lineno}")
-                for n in residual_syms[f]]
+                (f, hashes.get(f, ""), f"{n}:{tops[n].lineno}-{tops[n].end_lineno}")
+                for n in residual_syms[f]
+            ]
             for n in residual_syms[f]:
                 sym_comp[(f, n)] = "core"
-    if not comp:                 # nothing earned a node -> single core
+    if not comp:  # nothing earned a node -> single core
         return core_only()
 
     # ---- component-level deps
@@ -612,16 +1043,14 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
         tops = file_tops[f]
         try:
             tree = ast.parse(texts[f])
-        except SyntaxError as e:     # pragma: no cover — parsed above
+        except SyntaxError as e:  # pragma: no cover — parsed above
             raise _syntax_error(f, e) from None
-        intra_map, alias_map = _py_import_map(tree, f, mod_stems,
-                                              repo_stems, module)
+        intra_map, alias_map = _py_import_map(tree, f, mod_stems, repo_stems, module)
         for n, node in sorted(tops.items()):
             own = sym_comp.get((f, n))
             if own is None:
                 continue
-            names = {x.id for x in ast.walk(node)
-                     if isinstance(x, ast.Name)}
+            names = {x.id for x in ast.walk(node) if isinstance(x, ast.Name)}
             for ref in sorted(names & set(tops)):
                 other = sym_comp.get((f, ref))
                 if other and other != own:
@@ -633,44 +1062,53 @@ def _derive_module(workspace: str, module: str, files: list, hashes: dict,
                 if other and other != own:
                     deps[own].add((comp_id(other), "references"))
 
-    how_label = {("core",): "core", ("directory",): "directory",
-                 ("cohesion",): "cohesion", ("symbols",): "symbols"}
+    how_label = {
+        ("core",): "core",
+        ("directory",): "directory",
+        ("cohesion",): "cohesion",
+        ("symbols",): "symbols",
+    }
     out = []
     for name in sorted(comp):
         d = comp[name]
         cid = comp_id(name)
-        label = ("core" if name == "core" else
-                 how_label.get(tuple(sorted(d["how"])), "mixed"))
-        out.append({
-            "id": cid, "module": module,
-            "files": sorted(d["files"]),
-            "symbols": sorted(d["symbols"]),
-            "_members": sorted(d["members"]),
-            "deps": [{"to": t, "kind": k}
-                     for t, k in sorted(deps[name]) if t != cid],
-            "derived_by": label,
-        })
+        label = "core" if name == "core" else how_label.get(tuple(sorted(d["how"])), "mixed")
+        out.append(
+            {
+                "id": cid,
+                "module": module,
+                "files": sorted(d["files"]),
+                "symbols": sorted(d["symbols"]),
+                "_members": sorted(d["members"]),
+                "deps": [{"to": t, "kind": k} for t, k in sorted(deps[name]) if t != cid],
+                "derived_by": label,
+            }
+        )
     return out, floor_folded
 
 
 # ------------------------------------------------------------------ lens map
 
+
 def _graph_payload(graph: dict, module: str) -> dict:
     return graph_primitives.graph_payload(
-        graph, [module],
-        fixture_module_predicate=graph_primitives.is_fixture_module)
+        graph, [module], fixture_module_predicate=graph_primitives.is_fixture_module
+    )
 
 
 def _lens_map(workspace: str, graph: dict, c: dict) -> dict:
     vmap = graph_primitives.route_verdicts(
-        workspace, c["files"], graph=_graph_payload(graph, c["module"]))
+        workspace, c["files"], graph=_graph_payload(graph, c["module"])
+    )
     # contract:component-map pins {lens_id: {verdict, score, evidence}}
-    return {lid: {"verdict": v["verdict"], "score": v["score"],
-                  "evidence": v["evidence"]}
-            for lid, v in sorted(vmap.items())}
+    return {
+        lid: {"verdict": v["verdict"], "score": v["score"], "evidence": v["evidence"]}
+        for lid, v in sorted(vmap.items())
+    }
 
 
 # -------------------------------------------------------------------- derive
+
 
 def derive(workspace: str, graph: dict, prev: dict | None = None):
     """Derive the component layer for `graph`. NEVER raises.
@@ -685,9 +1123,17 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
       {components, recomputed, cache_hits, floor_folded, modules_skipped,
        degraded: [module...], floors_hash, error: str|None}.
     """
-    stats = {"components": 0, "recomputed": 0, "cache_hits": 0,
-             "floor_folded": 0, "modules_skipped": 0, "degraded": [],
-             "failures": [], "floors_hash": "", "error": None}
+    stats = {
+        "components": 0,
+        "recomputed": 0,
+        "cache_hits": 0,
+        "floor_folded": 0,
+        "modules_skipped": 0,
+        "degraded": [],
+        "failures": [],
+        "floors_hash": "",
+        "error": None,
+    }
     errors: list = []
     try:
         floors, ferr = load_floors(workspace)
@@ -699,48 +1145,50 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
                     cfg_fingerprint = hashlib.sha256(stream.read()).hexdigest()
             except OSError:
                 cfg_fingerprint = ""
-            stats["failures"].append({
-                "file": _COMPONENTS_YAML,
-                "module": "(configuration)",
-                "parser": "components-yaml",
-                "error_class": "ValueError",
-                "reason": " ".join(str(ferr).split())[:240],
-                "file_fingerprint": cfg_fingerprint,
-            })
-        fhash = hashlib.sha256(json.dumps(floors, sort_keys=True,
-                                          separators=(",", ":")).encode()
-                               ).hexdigest()
+            stats["failures"].append(
+                {
+                    "file": _COMPONENTS_YAML,
+                    "module": "(configuration)",
+                    "parser": "components-yaml",
+                    "error_class": "ValueError",
+                    "reason": " ".join(str(ferr).split())[:240],
+                    "file_fingerprint": cfg_fingerprint,
+                }
+            )
+        fhash = hashlib.sha256(
+            json.dumps(floors, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         stats["floors_hash"] = fhash
 
         ids = graph_primitives.declared_module_ids(graph)
         by_module: dict = {}
         for rel in sorted(graph.get("files") or {}):
             by_module.setdefault(_module_of(rel, ids), []).append(rel)
-        hashes = {rel: (row or {}).get("hash", "")
-                  for rel, row in (graph.get("files") or {}).items()}
+        hashes = {
+            rel: (row or {}).get("hash", "") for rel, row in (graph.get("files") or {}).items()
+        }
 
         prev = prev or {}
         prev_files = prev.get("files") or {}
         prev_comps: dict = {}
         for c in prev.get("components") or []:
             prev_comps.setdefault(c.get("module"), []).append(c)
-        prev_fhash = ((prev.get("meta") or {}).get("decompose") or {}) \
-            .get("floors")
+        prev_fhash = ((prev.get("meta") or {}).get("decompose") or {}).get("floors")
         prev_by_module: dict = {}
         for rel in prev_files:
             prev_by_module.setdefault(
-                _module_of(
-                    rel, graph_primitives.declared_module_ids(prev)),
-                []).append(rel)
+                _module_of(rel, graph_primitives.declared_module_ids(prev)), []
+            ).append(rel)
         previous_failures: dict[str, list] = {}
-        previous_quality = ((prev.get("meta") or {}).get(
-            "graph_scan_quality") or {})
-        previous_decomposition = ((previous_quality.get("producers") or {})
-                                  .get("decomposition") or {})
+        previous_quality = (prev.get("meta") or {}).get("graph_scan_quality") or {}
+        previous_decomposition = (previous_quality.get("producers") or {}).get(
+            "decomposition"
+        ) or {}
         for row in previous_decomposition.get("failures") or []:
             if isinstance(row, dict) and row.get("module"):
                 previous_failures.setdefault(str(row["module"]), []).append(
-                    json.loads(json.dumps(row)))
+                    json.loads(json.dumps(row))
+                )
 
         repo_stems = _repo_stems(graph)
         out: list = []
@@ -749,7 +1197,8 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
             material = sorted([f, hashes.get(f, "")] for f in files)
             prev_material = sorted(
                 [f, (prev_files.get(f) or {}).get("hash", "")]
-                for f in sorted(prev_by_module.get(module) or []))
+                for f in sorted(prev_by_module.get(module) or [])
+            )
             # Phase 2 EM fix (MED): the cached lens_map bakes in the graph
             # flags (_graph_payload: hub_dependents, boundary_contracts)
             # that score graph-signal lenses. Keying the cache ONLY on file
@@ -757,18 +1206,21 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
             # hub -> cached map still narrows) — a NARROWING failure against
             # the ladder's every-rung-only-widens guarantee. Both cache
             # levels now also require the module's graph signature.
-            gsig = hashlib.sha256(json.dumps(
-                _graph_payload(graph, module), sort_keys=True,
-                separators=(",", ":")).encode()).hexdigest()[:16]
-            prev_gsig_ok = all(c.get("graph_sig") == gsig
-                               for c in prev_comps.get(module) or [])
-            cached_degraded = any(bool(c.get("degraded"))
-                                  for c in prev_comps.get(module) or [])
+            gsig = hashlib.sha256(
+                json.dumps(
+                    _graph_payload(graph, module), sort_keys=True, separators=(",", ":")
+                ).encode()
+            ).hexdigest()[:16]
+            prev_gsig_ok = all(c.get("graph_sig") == gsig for c in prev_comps.get(module) or [])
+            cached_degraded = any(bool(c.get("degraded")) for c in prev_comps.get(module) or [])
             cached_failure_rows = previous_failures.get(module) or []
-            if (module in prev_comps and prev_fhash == fhash
-                    and prev_gsig_ok
-                    and material == prev_material
-                    and (not cached_degraded or cached_failure_rows)):
+            if (
+                module in prev_comps
+                and prev_fhash == fhash
+                and prev_gsig_ok
+                and material == prev_material
+                and (not cached_degraded or cached_failure_rows)
+            ):
                 reused = json.loads(json.dumps(prev_comps[module]))
                 out.extend(reused)
                 stats["modules_skipped"] += 1
@@ -776,46 +1228,50 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
                 if cached_degraded:
                     stats["degraded"].append(module)
                     stats["failures"].extend(cached_failure_rows)
-                    errors.extend(str(row.get("reason") or "")
-                                  for row in cached_failure_rows)
+                    errors.extend(str(row.get("reason") or "") for row in cached_failure_rows)
                 continue
             try:
-                comps, folded = _derive_module(workspace, module, files,
-                                               hashes, floors, repo_stems)
+                comps, folded = _derive_module(workspace, module, files, hashes, floors, repo_stems)
                 stats["floor_folded"] += folded
             except Exception as e:
                 # fail-open: the module degrades to a single ::core with a
                 # degraded marker — a broken file never breaks the scan
                 errors.append(f"{module}: {e}")
                 stats["degraded"].append(module)
-                stats["failures"].append({
-                    "file": str(getattr(e, "file", "") or ""),
-                    "module": module,
-                    "parser": str(getattr(e, "parser", "decomposition")),
-                    "error_class": str(getattr(
-                        e, "error_class", e.__class__.__name__)),
-                    "reason": " ".join(str(getattr(
-                        e, "reason", e)).split())[:240],
-                    "file_fingerprint": str(hashes.get(
-                        getattr(e, "file", ""), "")),
-                })
-                comps = [{"id": f"{module}::core", "module": module,
-                          "files": files, "symbols": [],
-                          "_members": [(f, hashes.get(f, ""), "")
-                                       for f in files],
-                          "deps": [], "derived_by": "core",
-                          "degraded": True}]
-            prev_by_id = {c.get("id"): c
-                          for c in prev_comps.get(module) or []}
+                stats["failures"].append(
+                    {
+                        "file": str(getattr(e, "file", "") or ""),
+                        "module": module,
+                        "parser": str(getattr(e, "parser", "decomposition")),
+                        "error_class": str(getattr(e, "error_class", e.__class__.__name__)),
+                        "reason": " ".join(str(getattr(e, "reason", e)).split())[:240],
+                        "file_fingerprint": str(hashes.get(getattr(e, "file", ""), "")),
+                    }
+                )
+                comps = [
+                    {
+                        "id": f"{module}::core",
+                        "module": module,
+                        "files": files,
+                        "symbols": [],
+                        "_members": [(f, hashes.get(f, ""), "") for f in files],
+                        "deps": [],
+                        "derived_by": "core",
+                        "degraded": True,
+                    }
+                ]
+            prev_by_id = {c.get("id"): c for c in prev_comps.get(module) or []}
             for c in comps:
                 c["fingerprint"] = _fingerprint(c.pop("_members"))
                 c["graph_sig"] = gsig
                 old = prev_by_id.get(c["id"])
-                if old is not None and \
-                        old.get("fingerprint") == c["fingerprint"] and \
-                        old.get("graph_sig") == gsig and \
-                        isinstance(old.get("lens_map"), dict) and \
-                        old.get("lens_map"):
+                if (
+                    old is not None
+                    and old.get("fingerprint") == c["fingerprint"]
+                    and old.get("graph_sig") == gsig
+                    and isinstance(old.get("lens_map"), dict)
+                    and old.get("lens_map")
+                ):
                     c["lens_map"] = json.loads(json.dumps(old["lens_map"]))
                     stats["cache_hits"] += 1
                     continue
@@ -825,17 +1281,18 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
                 except Exception as e:
                     errors.append(f"{module}: lens map failed: {e}")
                     files_in_component = list(c.get("files") or [])
-                    stats["failures"].append({
-                        "file": files_in_component[0]
-                        if len(files_in_component) == 1 else "",
-                        "module": module,
-                        "parser": "lens-map",
-                        "error_class": e.__class__.__name__,
-                        "reason": " ".join(str(e).split())[:240],
-                        "file_fingerprint": str(hashes.get(
-                            files_in_component[0], ""))
-                        if len(files_in_component) == 1 else "",
-                    })
+                    stats["failures"].append(
+                        {
+                            "file": files_in_component[0] if len(files_in_component) == 1 else "",
+                            "module": module,
+                            "parser": "lens-map",
+                            "error_class": e.__class__.__name__,
+                            "reason": " ".join(str(e).split())[:240],
+                            "file_fingerprint": str(hashes.get(files_in_component[0], ""))
+                            if len(files_in_component) == 1
+                            else "",
+                        }
+                    )
                     c["lens_map"] = {}
                     c["degraded"] = True
                     if module not in stats["degraded"]:
@@ -846,12 +1303,16 @@ def derive(workspace: str, graph: dict, prev: dict | None = None):
         stats["components"] = len(out)
         stats["error"] = "; ".join(errors) if errors else None
         return out, stats
-    except Exception as e:       # absolute fail-open: never crash a scan
+    except Exception as e:  # absolute fail-open: never crash a scan
         stats["error"] = "; ".join(errors + [f"decompose failed: {e}"])
-        stats["failures"].append({
-            "file": "", "module": "(graph)", "parser": "decomposition",
-            "error_class": e.__class__.__name__,
-            "reason": " ".join(str(e).split())[:240],
-            "file_fingerprint": "",
-        })
+        stats["failures"].append(
+            {
+                "file": "",
+                "module": "(graph)",
+                "parser": "decomposition",
+                "error_class": e.__class__.__name__,
+                "reason": " ".join(str(e).split())[:240],
+                "file_fingerprint": "",
+            }
+        )
         return [], stats

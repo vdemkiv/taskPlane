@@ -14,6 +14,7 @@ import json
 import os
 import time
 import uuid
+from dataclasses import replace
 
 import depgraph
 import kb
@@ -111,6 +112,116 @@ def sealed_root_hygiene_projection(state: dict) -> dict:
         raise wave_metrics.WaveMetricsError(
             "canonical root hygiene receipt is unavailable")
     return wave_metrics.root_hygiene_projection(receipt, consumer="retro")
+
+
+def _phase_telemetry(store, *, telemetry_inputs, telemetry_ref,
+                     terminal_evidence_ref, terminal_metrics_ref) -> tuple[dict, dict]:
+    """Read the incumbent seals; never derive terminal metrics from a report."""
+    from taskplane import delivery_ports, terminal_truth
+    if any(ref is None for ref in (
+            telemetry_ref, terminal_evidence_ref, terminal_metrics_ref)):
+        raise ValueError("Retro requires sealed terminal telemetry")
+    telemetry = store.read(telemetry_ref)
+    readiness = terminal_truth.attempt_telemetry_readiness(telemetry, telemetry_inputs)
+    try:
+        terminal_truth.require_attempt_telemetry(
+            readiness, telemetry, telemetry_inputs, consumer="retro")
+    except terminal_truth.TerminalTruthError as exc:
+        raise ValueError("Retro telemetry prerequisite refused") from exc
+    evidence = wave_metrics.validate_terminal_evidence(store.read(terminal_evidence_ref))
+    sealed = wave_metrics.validate_wave_receipt(store.read(terminal_metrics_ref))
+    if sealed["schema"] != wave_metrics.TERMINAL_RECEIPT_SCHEMA or \
+            sealed["evidence_fingerprint"] != evidence["fingerprint"] or \
+            sealed["run"] != evidence["run"] or \
+            sealed["evaluator_summary"] != evidence["evaluator_summary"] or \
+            evidence["source"]["ledger_fingerprint"] != delivery_ports.content_fingerprint(telemetry_inputs.ledger) or \
+            sealed["run"]["candidate_fingerprint"] != telemetry["candidate_fingerprint"]:
+        raise ValueError("Retro terminal telemetry binding mismatch")
+    projection = wave_metrics.consumer_projection(sealed, consumer="retro")
+    if projection["signoff"]["ready"] is not True:
+        raise ValueError("Retro terminal telemetry is not sealable")
+    return telemetry, sealed
+
+
+def run_retro_phase(runtime, dispatch, *, telemetry_inputs, telemetry_ref,
+                    terminal_evidence_ref, terminal_metrics_ref) -> dict:
+    return _retro_phase(runtime, dispatch, telemetry_inputs=telemetry_inputs, telemetry_ref=telemetry_ref,
+        terminal_evidence_ref=terminal_evidence_ref, terminal_metrics_ref=terminal_metrics_ref)
+
+
+def prepare_retro_phase(runtime, dispatch, **telemetry):
+    return _retro_phase(runtime, dispatch, prepare=True, **telemetry)
+
+
+def complete_retro_phase(runtime, dispatch, observation, **telemetry):
+    return _retro_phase(runtime, dispatch, observation=observation, **telemetry)
+
+
+def _retro_phase(runtime, dispatch, *, telemetry_inputs, telemetry_ref,
+                    terminal_evidence_ref, terminal_metrics_ref, prepare=False, observation=None) -> dict:
+    """Inactive adapter: telemetry-gated runtime output, without loop effects.
+
+    The composition root supplies trusted runtime/telemetry ports. This does
+    not run the incumbent retrospective, admit knowledge, or advance a gate.
+    Activation belongs to the separately authorized shared-routing cutover.
+    """
+    inputs = dict(telemetry_inputs=telemetry_inputs, telemetry_ref=telemetry_ref,
+        terminal_evidence_ref=terminal_evidence_ref, terminal_metrics_ref=terminal_metrics_ref)
+    def check():
+        telemetry, sealed = _phase_telemetry(runtime.store, **inputs)
+        source = telemetry_inputs.runtime_receipt["payload"]
+        if dispatch.bindings["phase_id"] != "retro" or any(
+                dispatch.bindings[field] != source[field]
+                for field in ("run_id", "candidate_fingerprint", "definition_set_fingerprint")):
+            raise ValueError("Retro predecessor binding mismatch")
+        expected = [ref["fingerprint"] for ref in (
+            telemetry_ref, terminal_evidence_ref, terminal_metrics_ref)]
+        if dispatch.envelope.get("terminal_evidence_fingerprints") != expected:
+            raise ValueError("Retro sealed package lacks terminal telemetry bindings")
+        return telemetry, sealed
+    check()
+    if prepare:
+        return runtime.prepare(dispatch)
+    def launch(*args):
+        check()  # immediately inside the incumbent nonce fence
+        return runtime.launch(*args)
+    from taskplane import agent_runtime
+    result = (runtime.complete(agent_runtime.PreparedDispatch(dispatch), observation)
+        if observation is not None else replace(runtime, launch=launch).run(dispatch))
+    if result["status"] != "accepted":
+        raise ValueError("Retro runtime refused: " + str(result["reason_code"]))
+    telemetry, sealed = check()
+    material = {"schema": "taskplane.retro-phase-receipt/v1", "runtime_result": result,
+        "telemetry_fingerprint": telemetry["fingerprint"],
+        "terminal_metrics_fingerprint": sealed["fingerprint"],
+        "terminal_evidence_fingerprint": sealed["evidence_fingerprint"],
+        "freshness": dict(telemetry_inputs.freshness)}
+    return runtime.store.put("retro-phase", {**material, "fingerprint": _content_fingerprint(material)})
+
+
+def read_retro_phase(store, reference, **telemetry_inputs) -> dict:
+    """Recheck retained Retro output and its current upstream seals."""
+    from taskplane import stage_entities
+    if reference is None:
+        raise ValueError("Retro output is required")
+    value = store.read(reference)
+    fields = {"schema", "runtime_result", "telemetry_fingerprint", "terminal_metrics_fingerprint",
+        "terminal_evidence_fingerprint", "freshness", "fingerprint"}
+    if not isinstance(value, dict) or set(value) != fields or \
+            value["schema"] != "taskplane.retro-phase-receipt/v1" or \
+            value["fingerprint"] != _content_fingerprint({k: v for k, v in value.items() if k != "fingerprint"}):
+        raise ValueError("Retro output is malformed")
+    result = stage_entities.validate_contract(value["runtime_result"], store=store)
+    telemetry, sealed = _phase_telemetry(store, **telemetry_inputs)
+    source = telemetry_inputs["telemetry_inputs"].runtime_receipt["payload"]
+    if result["phase_id"] != "retro" or result["status"] != "accepted" or any(
+            result[field] != source[field] for field in ("run_id", "candidate_fingerprint", "definition_set_fingerprint")) or \
+            value["telemetry_fingerprint"] != telemetry["fingerprint"] or \
+            value["terminal_metrics_fingerprint"] != sealed["fingerprint"] or \
+            value["terminal_evidence_fingerprint"] != sealed["evidence_fingerprint"] or \
+            value["freshness"] != dict(telemetry_inputs["telemetry_inputs"].freshness):
+        raise ValueError("Retro output is stale or foreign")
+    return value
 
 
 def publish_terminal_artifacts(

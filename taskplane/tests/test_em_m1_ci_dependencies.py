@@ -115,7 +115,13 @@ def _violations(ci: str, lock: str, contributing: str) -> list[str]:
         for fragment in install_fragments:
             if fragment not in commands:
                 problems.append(f"{name} misses sealed install fragment {fragment}")
+        for command in commands.splitlines():
+            if "pip install" in command and "--require-hashes --no-deps" not in command:
+                problems.append(f"{name} misses sealed install fragment --require-hashes --no-deps")
     quality_commands = _step_runs(jobs.get("quality-package", {}))
+    for command in quality_commands.splitlines():
+        if "pip install" in command and "--require-hashes --no-deps" not in command:
+            problems.append("quality-package misses sealed install fragment --require-hashes --no-deps")
     for fragment in (
         "requirements-dev.lock", "--require-hashes --no-deps",
     ):

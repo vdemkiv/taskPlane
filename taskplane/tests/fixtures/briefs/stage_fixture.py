@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -98,12 +99,71 @@ def cli(*argv) -> "tuple[int, str]":
     return rc, out.getvalue()
 
 
+def finish_plan_lenses(ws, workspace, action, *, usage="unavailable", runtime=None):
+    """Simulate only native dispatch/start/Stop; use real lifecycle owners."""
+    if runtime is None:
+        import loop as runtime
+    loop = runtime
+    from taskplane.tests.test_r0002_cross_host_journey import _digest
+    plan = action["plan_team_plan"]
+    events = []
+    for index, worker in enumerate(plan["workers"]):
+        expected = loop.tp.peek_expectation(ws, worker["task_name"], strict=True)
+        loop.tp.record_design_dispatch_assignment_activity(ws, expected)
+        loop.record_native_dispatch_observation(ws, expected=expected,
+            native_task_name=worker["task_name"], observed_at=100 + index)
+        assert loop.tp.commit_dispatch_verification(ws, worker["task_name"], worker["model"],
+            expected, True, worker["reasoning_effort"], strict=True)
+        event = {"cwd":ws, "session_id":os.environ.get("TASKPLANE_SESSION_ID", "plan-fixture-session"), "agent_id":f"plan-child-{index}",
+            "agent_type":worker["task_name"], "task_name":worker["task_name"], "turn_id":f"turn-{index}"}
+        bound = loop.tp.bind_worker_contract_event(ws, event)
+        loop.tp.record_design_worker_start_activity(ws, bound, event)
+        material = {"schema":"taskplane.plan-lens-result/v1", "lens":worker["lens"],
+            "worker_identity":worker["task_name"], "team_plan_fingerprint":plan["fingerprint"],
+            "candidate_fingerprint":plan["candidate_fingerprint"], "outcome":"pass", "findings":[]}
+        path = workspace / worker["output"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({**material, "fingerprint":_digest(material)}))
+        if usage == "measured":
+            loop.record_observed_dispatch_usage(ws, task_id=worker["lens"],
+                native_task_name=worker["task_name"], source_fingerprint="a" * 64,
+                normalized_usage={"schema":loop.spend.USAGE_SCHEMA, "available":True,
+                    "cached_input_tokens":60, "uncached_input_tokens":40, "output_tokens":10,
+                    "raw_total_tokens":110, "reasoning_tokens":5})
+            sealed = loop.finalize_observed_dispatch_usage(ws, task_id=worker["lens"],
+                native_task_name=worker["task_name"], ended_at=110 + index, outcome="success")
+            event["usage_reference"] = {"schema":"taskplane.native-dispatch-usage-reference/v1",
+                "dispatch_receipt":sealed["receipt"]}
+        elif usage != "missing":
+            sealed = loop.finalize_observed_dispatch_usage(ws, task_id=worker["lens"],
+                native_task_name=worker["task_name"], ended_at=110 + index, outcome="success",
+                usage_unavailable=True, unavailable_reason="simulated host has no counter provider")
+            assert sealed["status"] == "unavailable"
+            assert sealed["binding"]["usage"] is None
+        terminal = loop.tp.terminalize_worker_contract(ws, {**event, "outcome":"success"},
+            outcome="success", submission_status="not_required")
+        assert terminal
+        events.append(event)
+    return events
+
+
+def prepare_plan(ws, *, runtime=None, usage="unavailable"):
+    """Complete the simulated Plan lens prerequisite, not the Plan gate."""
+    if runtime is None:
+        import loop as runtime
+    assert runtime.load(ws)["step"] == "plan"
+    action = runtime.next_action(ws)
+    assert not action.get("error"), {key: action[key] for key in ("error", "dor") if key in action}
+    finish_plan_lenses(ws, Path(ws), action, runtime=runtime, usage=usage)
+    return action
+
+
 def start_loop(ws: str) -> None:
     """init → plan gate → human plan approval → EXECUTE (parallel)."""
     import loop
     from tests.root_session_fixture import open_delivery_root
     loop.init(ws, GOAL, spec_path="s", checkpoints=["plan"], parallel=True)
-    loop.next_action(ws)
+    prepare_plan(ws, runtime=loop, usage="measured")
     loop.gate(ws, "pass")
     loop.approve(ws)
     open_delivery_root(ws)

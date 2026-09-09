@@ -235,7 +235,11 @@ def test_design_decomposition_reports_degradation_and_refuses_unsafe_scope(
     assert degraded["status"] == "degraded"
     assert degraded["degraded"] is True
     assert "graph-scan-quality" in degraded["degraded_reasons"]
-    assert degraded["component_count"] >= 4
+    assert degraded["component_count"] == 0  # Diagnostics, not ready decomposition.
+    graph = depgraph.load(str(workspace))
+    assert graph["meta"]["source_coverage"]["status"] == "partial"
+    with pytest.raises(ValueError, match="partial"):
+        depgraph.require_complete_source_coverage(graph["meta"]["source_coverage"])
     assert degraded["quality_fingerprint"]
 
     binding = _design_binding(degraded, settings.digest)
@@ -248,22 +252,25 @@ def test_design_decomposition_reports_degradation_and_refuses_unsafe_scope(
             "design_decomposition_receipt": degraded,
             "design_control_plane_binding": binding,
         }, require_bound=True)
-    assert projection["design_graph"]["graph_state"] == "degraded"
-    assert "graph-scan-quality" in projection[
-        "design_graph"]["degraded_reasons"]
-    assert "state degraded" in \
-        plan_topology.render_phase_dependency_graphs(projection)
+    assert "design_graph" not in projection  # Partial source has no derived graph.
 
     stale = dict(degraded)
     stale["settings_digest"] = "f" * 64
     with pytest.raises(ValueError, match="fingerprint is stale"):
         depgraph.validate_design_decomposition_receipt(stale)
 
-    foreign_root = _artifact_root(
-        tmp_path / "foreign", degraded, "e" * 64)
+    with pytest.raises(ValueError, match="floors_fingerprint"):
+        depgraph.validate_design_decomposition_receipt(degraded)
+    # Correct only the fixture input so the independent foreign-settings
+    # refusal reaches its intended boundary with complete source coverage.
+    (workspace / "components.yaml").unlink()
+    ready = depgraph.prepare_design_decomposition(
+        str(workspace), ["src/app/**"], settings_digest=settings.digest)
+    assert ready["component_count"] >= 4
+    foreign_root = _artifact_root(tmp_path / "foreign", ready, "e" * 64)
     with pytest.raises(ValueError, match="settings do not match"):
         depgraph.publish_design_decomposition(
-            str(workspace), foreign_root, degraded)
+            str(workspace), foreign_root, ready)
 
     with pytest.raises(ValueError, match="safe relative paths"):
         depgraph.prepare_design_decomposition(

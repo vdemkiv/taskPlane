@@ -29,6 +29,54 @@ from taskplane.tests.native_meter_support import attach_native_counter  # noqa: 
 
 
 class TestSelectiveReviewKernel(unittest.TestCase):
+    def test_standalone_review_exposes_current_derived_seams_without_plan(self):
+        import subprocess
+        from pathlib import Path
+        root = Path(self.ws)
+        (root / "api").mkdir()
+        (root / "api/client.py").write_text("VALUE = 1\n")
+        (root / "src/service.py").write_text("from api.client import VALUE\ndef changed():\n    return VALUE\n")
+        def git(*args):
+            return subprocess.check_output(["git", *args], cwd=self.ws, text=True,
+                encoding="utf-8", errors="replace").strip()
+        git("init", "-q")
+        git("add", ".")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
+        base = git("rev-parse", "HEAD")
+        (root / "api/client.py").write_text("VALUE = 2\n")
+        git("add", "api/client.py")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "change provider")
+        head = git("rev-parse", "HEAD")
+        self.graph = depgraph.scan(self.ws)
+        self.diff["files"] = ["api/client.py"]
+        self.diff["changed_symbols"] = ["VALUE"]
+        self.impact = depgraph.impact(self.ws, self.diff["files"])
+        self.target = {"head":head, "fingerprint":review_evidence.content_fingerprint({"head":head, "base":base})}
+        code, patch = review.canonical_diff_patch(self.ws, base)
+        self.assertEqual(code, 0)
+        store = review_evidence.ArtifactStore(self.ws)
+        self.diff["patch_artifact"] = store.put("diff", {"patch":patch})
+        opened = self._start()
+        self.assertEqual(opened["status"], "ready")
+        store = review_evidence.ArtifactStore(self.ws)
+        envelope = store.read(review._load_state(self.ws, opened["run_id"])["envelope"])
+        seams = envelope["change"]["source_derived_seams"]
+        self.assertEqual(seams["target_fingerprint"], self.target["fingerprint"])
+        self.assertEqual(seams["graph_fingerprint"], self.graph["meta"]["content_fingerprint"])
+        self.assertEqual(seams["authority"], "observed-source-and-diff; no Plan authority")
+        self.assertTrue(any(row["origin"] == "derived" for row in seams["edges"]), seams)
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "plan")))
+        with_design = self._start(design_contract={"graph":{"proposed_modules":["src", "api"]}})
+        designed = store.read(review._load_state(self.ws, with_design["run_id"])["envelope"])
+        self.assertEqual(designed["change"]["source_derived_seams"], seams)
+        # Sever only the already-produced scanner edge in this negative fixture;
+        # do not rerun or fabricate a reviewer or a Plan producer.
+        self.graph["edges"] = []
+        changed = self._start()
+        other = store.read(review._load_state(self.ws, changed["run_id"])["envelope"])
+        self.assertNotEqual(envelope["context_fingerprint"], other["context_fingerprint"])
+        self.assertEqual(other["change"]["source_derived_seams"]["edges"], [])
+
     def setUp(self):
         self.ws = tempfile.mkdtemp(prefix="tp-review-kernel-")
         os.makedirs(os.path.join(self.ws, "src"))

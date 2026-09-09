@@ -29,7 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from taskplane import failure_routing, run_artifacts  # noqa: E402
+from taskplane import (  # noqa: E402
+    design_host_transport, failure_routing, host_capabilities, run_artifacts,
+)
 from taskplane.ci_policy import (  # noqa: E402
     BROWSER_INPUTS,
     CIPolicyError,
@@ -1042,7 +1044,8 @@ def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
             f"--deselect={selector}"
             for selector in cell.get("excluded_selectors") or []
         ]
-        return [[PYTHON, "-m", "pytest", "-q", *selectors, *deselected]]
+        return [[PYTHON, "-m", "pytest", "-v" if kind == "pytest" else "-q",
+                 *selectors, *deselected]]
     if kind == "quality-package":
         return [
             [PYTHON, "-m", "ruff", "check", "--output-format=github",
@@ -1819,11 +1822,89 @@ def _validate_direct_ci_cell_receipt(
     return receipt
 
 
+def native_entry_snapshot(
+    request: design_host_transport.NativeEntryRequest,
+) -> host_capabilities.HostCapabilitySnapshot | None:
+    """Read incumbent host receipts; a foreign/unknown host stays unproven."""
+    from taskplane import tp as cli
+    from taskplane import taskplane_lite as kernel
+
+    host = (
+        "codex" if os.environ.get("CODEX_HOME") or os.environ.get("CODEX_THREAD_ID") else "claude"
+    )
+    version = (
+        os.environ.get("CODEX_VERSION")
+        if host == "codex"
+        else os.environ.get("CLAUDE_CODE_VERSION")
+    )
+    session = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+    # No request field can manufacture a current host session or version.
+    if (
+        host != request.host_kind
+        or version != request.host_version
+        or session != request.session_id
+    ):
+        return None
+    observations = host_capabilities.runtime_hook_observations(
+        kernel.store_home(), session_id=session, workspace=request.workspace
+    )
+    return host_capabilities.probe_snapshot(
+        request.workspace,
+        host=host,
+        host_version=version,
+        session_id=session,
+        install_context=cli._install_context(),
+        native_installed=(Path(cli.__file__).resolve().parents[1] / "hooks/hooks.json").is_file(),
+        bridge_configured=None,
+        observations=observations,
+        now=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    )
+
+
+def native_entry_probe(
+    request: design_host_transport.NativeEntryRequest,
+    *,
+    snapshot: host_capabilities.HostCapabilitySnapshot | None = None,
+) -> dict[str, object]:
+    """Consume the S0 preflight without executing the selected engine.
+
+    This diagnostic path cannot make CI, native journeys, or publication green.
+    It does not replace the incumbent launcher or activate a phase writer.
+    """
+    observed = snapshot if snapshot is not None else native_entry_snapshot(request)
+    prepared = design_host_transport.prepare_native_entry(request, observed)
+    return design_host_transport.consume_native_entry(request, prepared, observed)
+
+
+def _native_entry_probe_file(path: Path) -> int:
+    try:
+        if path.stat().st_size > 1_048_576:
+            raise design_host_transport.NativeEntryError("invalid_binding: request too large")
+
+        def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise design_host_transport.NativeEntryError("invalid_binding: duplicate field")
+                result[key] = value
+            return result
+
+        value: object = json.loads(path.read_bytes(), object_pairs_hook=unique_fields)
+        request = design_host_transport.NativeEntryRequest.from_dict(value)
+        report = native_entry_probe(request)
+    except (OSError, ValueError) as exc:
+        print(canonical_json({"status": "refused", "error": str(exc)}))
+        return 2
+    print(canonical_json(report))
+    return 2
+
+
 def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = None) -> int:
     argsv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if environ is None else environ
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--native-entry-probe", type=Path)
     parser.add_argument("--worker", type=int)
     parser.add_argument("--shard-root", type=Path)
     parser.add_argument("--result", type=Path)
@@ -1839,6 +1920,10 @@ def main(argv: Sequence[str] | None = None, *, environ: dict[str, str] | None = 
     parser.add_argument("--observe-browser", action="store_true")
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args(argsv)
+    if args.native_entry_probe is not None:
+        if len(argsv) != 2:
+            raise RunnerError("native entry probe must be an isolated diagnostic invocation")
+        return _native_entry_probe_file(args.native_entry_probe)
     if args.internal:
         return _internal(args.internal)
     if args.worker is not None:

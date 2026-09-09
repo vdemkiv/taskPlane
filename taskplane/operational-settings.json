@@ -1,5 +1,389 @@
 {
   "schema": "taskplane.operational-settings/v2",
+  "phase_definitions": [
+    {
+      "budget": {
+        "attempts": 1,
+        "corrections": 0,
+        "tokens": 100000,
+        "wall_ms": 1200000
+      },
+      "capability_requirements": [],
+      "consumes": [],
+      "domain_validator_refs": [
+        "taskplane.stage_entities.validate_stage"
+      ],
+      "edge_conditions": [
+        {
+          "condition": "accepted",
+          "successor": "design"
+        }
+      ],
+      "entry": true,
+      "evaluation_lenses": [],
+      "fingerprint": "1ecc9c2a3686b1b95b3a4d8c7af46b5ee35974724044e2cd1b033287f477eb55",
+      "gate": "human",
+      "id": "product",
+      "model_tier": "inherit",
+      "predecessors": [],
+      "produces": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "role": "tp-product",
+      "schema": "taskplane.phase-definition/v1",
+      "skill_content_fingerprint": "de9bd4cfe670552ac365b6c22192fc5ed6f3933daa2ea2b4f285b38e4d561cc7",
+      "skill_ref": "skills/tp-product/SKILL.md",
+      "successors": [
+        "design"
+      ],
+      "telemetry_scope": [
+        "phase-progress"
+      ],
+      "terminal": false,
+      "validator_inventory_fingerprint": "6f9e17994ed9ea07a26849cff9896b903398adc4fc19e4ce5fa7545032c32248",
+      "working_lenses": []
+    },
+    {
+      "budget": {
+        "attempts": 1,
+        "corrections": 0,
+        "tokens": 100000,
+        "wall_ms": 1200000
+      },
+      "capability_requirements": [],
+      "consumes": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "knowledge_fingerprint_required": true,
+          "knowledge_scope": [],
+          "required": true
+        }
+      ],
+      "domain_validator_refs": [
+        "taskplane.stage_entities.validate_stage"
+      ],
+      "edge_conditions": [
+        {
+          "condition": "accepted",
+          "successor": "plan"
+        }
+      ],
+      "entry": false,
+      "evaluation_lenses": [],
+      "fingerprint": "0d16a388c0e13538fb584e5f38467f74356f1bb6bbdd87690532b57357cda66f",
+      "gate": "human",
+      "id": "design",
+      "model_tier": "inherit",
+      "predecessors": [
+        "product"
+      ],
+      "produces": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "role": "tp-design",
+      "schema": "taskplane.phase-definition/v1",
+      "skill_content_fingerprint": "ab98526dcc3d6d95eacb3da25d502e8e85331259b6c76532b10bd48994f17453",
+      "skill_ref": "skills/tp-design/SKILL.md",
+      "successors": [
+        "plan"
+      ],
+      "telemetry_scope": [
+        "phase-progress"
+      ],
+      "terminal": false,
+      "validator_inventory_fingerprint": "6f9e17994ed9ea07a26849cff9896b903398adc4fc19e4ce5fa7545032c32248",
+      "working_lenses": []
+    },
+    {
+      "budget": {
+        "attempts": 1,
+        "corrections": 0,
+        "tokens": 100000,
+        "wall_ms": 1200000
+      },
+      "capability_requirements": [],
+      "consumes": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "knowledge_fingerprint_required": true,
+          "knowledge_scope": [],
+          "required": true
+        }
+      ],
+      "domain_validator_refs": [
+        "taskplane.stage_entities.validate_stage"
+      ],
+      "edge_conditions": [
+        {
+          "condition": "accepted",
+          "successor": "build"
+        }
+      ],
+      "entry": false,
+      "evaluation_lenses": [],
+      "fingerprint": "f07ddb8176fdf0de2d957966bf7ad541c67d45ecb4b2fa4cdc81df4c156fe2e7",
+      "gate": "human",
+      "id": "plan",
+      "model_tier": "inherit",
+      "predecessors": [
+        "design"
+      ],
+      "produces": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "role": "tp-plan",
+      "schema": "taskplane.phase-definition/v1",
+      "skill_content_fingerprint": "e634bb60a7f05e683906c7d7b3a78e6577f3829f4d86abeaa9fc91f0ed0c5810",
+      "skill_ref": "skills/tp-go/SKILL.md",
+      "successors": [
+        "build"
+      ],
+      "telemetry_scope": [
+        "phase-progress"
+      ],
+      "terminal": false,
+      "validator_inventory_fingerprint": "6f9e17994ed9ea07a26849cff9896b903398adc4fc19e4ce5fa7545032c32248",
+      "working_lenses": []
+    },
+    {
+      "budget": {
+        "attempts": 1,
+        "corrections": 0,
+        "tokens": 100000,
+        "wall_ms": 1200000
+      },
+      "capability_requirements": [],
+      "consumes": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "knowledge_fingerprint_required": true,
+          "knowledge_scope": [],
+          "required": true
+        }
+      ],
+      "domain_validator_refs": [
+        "taskplane.stage_entities.validate_stage"
+      ],
+      "edge_conditions": [
+        {
+          "condition": "accepted",
+          "successor": "evaluate"
+        }
+      ],
+      "entry": false,
+      "evaluation_lenses": [],
+      "fingerprint": "5e791cdd399f1dd201cd1c8d64d9a2b28a46da3ab4074ac7f7061e97d514fdf1",
+      "gate": "human",
+      "id": "build",
+      "model_tier": "inherit",
+      "predecessors": [
+        "plan"
+      ],
+      "produces": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "role": "tp-build",
+      "schema": "taskplane.phase-definition/v1",
+      "skill_content_fingerprint": "910a307cd4a1f5411e799d740bcd6d4e29b30b0416a3df0396c1e241e5d1ccdf",
+      "skill_ref": "skills/tp-build/SKILL.md",
+      "successors": [
+        "evaluate"
+      ],
+      "telemetry_scope": [
+        "phase-progress"
+      ],
+      "terminal": false,
+      "validator_inventory_fingerprint": "6f9e17994ed9ea07a26849cff9896b903398adc4fc19e4ce5fa7545032c32248",
+      "working_lenses": []
+    },
+    {
+      "budget": {
+        "attempts": 1,
+        "corrections": 0,
+        "tokens": 100000,
+        "wall_ms": 1200000
+      },
+      "capability_requirements": [],
+      "consumes": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "knowledge_fingerprint_required": true,
+          "knowledge_scope": [],
+          "required": true
+        }
+      ],
+      "domain_validator_refs": [
+        "taskplane.stage_entities.validate_stage"
+      ],
+      "edge_conditions": [
+        {
+          "condition": "accepted",
+          "successor": "engineering"
+        }
+      ],
+      "entry": false,
+      "evaluation_lenses": [],
+      "fingerprint": "8ef3649d9e76e0d6ec278ad69e1544d5ef69adc96afbb3ffac34e3f86f1b057d",
+      "gate": "human",
+      "id": "evaluate",
+      "model_tier": "inherit",
+      "predecessors": [
+        "build"
+      ],
+      "produces": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "role": "tp-evaluate",
+      "schema": "taskplane.phase-definition/v1",
+      "skill_content_fingerprint": "63a6cd33f137bf9233607ca107e96c8da454216202c312e74f96826c85e5c573",
+      "skill_ref": "skills/tp-engineering/SKILL.md",
+      "successors": [
+        "engineering"
+      ],
+      "telemetry_scope": [
+        "phase-progress"
+      ],
+      "terminal": false,
+      "validator_inventory_fingerprint": "6f9e17994ed9ea07a26849cff9896b903398adc4fc19e4ce5fa7545032c32248",
+      "working_lenses": []
+    },
+    {
+      "budget": {
+        "attempts": 1,
+        "corrections": 0,
+        "tokens": 100000,
+        "wall_ms": 1200000
+      },
+      "capability_requirements": [],
+      "consumes": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "knowledge_fingerprint_required": true,
+          "knowledge_scope": [],
+          "required": true
+        }
+      ],
+      "domain_validator_refs": [
+        "taskplane.stage_entities.validate_stage"
+      ],
+      "edge_conditions": [
+        {
+          "condition": "accepted",
+          "successor": "retro"
+        }
+      ],
+      "entry": false,
+      "evaluation_lenses": [],
+      "fingerprint": "a948d1b3f81a60a0c463c5d98b864f559a55e71b8fc84c1010be5d1b3427babb",
+      "gate": "human",
+      "id": "engineering",
+      "model_tier": "inherit",
+      "predecessors": [
+        "evaluate"
+      ],
+      "produces": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "role": "tp-engineering",
+      "schema": "taskplane.phase-definition/v1",
+      "skill_content_fingerprint": "63a6cd33f137bf9233607ca107e96c8da454216202c312e74f96826c85e5c573",
+      "skill_ref": "skills/tp-engineering/SKILL.md",
+      "successors": [
+        "retro"
+      ],
+      "telemetry_scope": [
+        "phase-progress"
+      ],
+      "terminal": false,
+      "validator_inventory_fingerprint": "6f9e17994ed9ea07a26849cff9896b903398adc4fc19e4ce5fa7545032c32248",
+      "working_lenses": []
+    },
+    {
+      "budget": {
+        "attempts": 1,
+        "corrections": 0,
+        "tokens": 100000,
+        "wall_ms": 1200000
+      },
+      "capability_requirements": [],
+      "consumes": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "knowledge_fingerprint_required": true,
+          "knowledge_scope": [],
+          "required": true
+        }
+      ],
+      "domain_validator_refs": [
+        "taskplane.stage_entities.validate_stage"
+      ],
+      "edge_conditions": [],
+      "entry": false,
+      "evaluation_lenses": [],
+      "fingerprint": "1efce55ae94095b545b4d9080d65056a265ed7de6b83842812bd4d6cd1f87ff9",
+      "gate": "human",
+      "id": "retro",
+      "model_tier": "inherit",
+      "predecessors": [
+        "engineering"
+      ],
+      "produces": [
+        {
+          "artifact_class": "stage",
+          "artifact_schema_version": "taskplane.stage/v1",
+          "cardinality": "one",
+          "required": true
+        }
+      ],
+      "role": "tp-retro",
+      "schema": "taskplane.phase-definition/v1",
+      "skill_content_fingerprint": "e634bb60a7f05e683906c7d7b3a78e6577f3829f4d86abeaa9fc91f0ed0c5810",
+      "skill_ref": "skills/tp-go/SKILL.md",
+      "successors": [],
+      "telemetry_scope": [
+        "phase-progress"
+      ],
+      "terminal": true,
+      "validator_inventory_fingerprint": "6f9e17994ed9ea07a26849cff9896b903398adc4fc19e4ce5fa7545032c32248",
+      "working_lenses": []
+    }
+  ],
   "stages": {
     "product": {"model": "inherit", "reasoning": "high"},
     "design": {"model": "inherit", "reasoning": "high"},
@@ -39,7 +423,7 @@
   },
   "limits": {
     "timeouts": {
-      "task_seconds": 1200,
+      "task_seconds": 1800,
       "subprocess_seconds": 300,
       "wait_seconds": 60,
       "lens_wait_seconds": 1800,

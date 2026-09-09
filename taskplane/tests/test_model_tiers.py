@@ -65,10 +65,12 @@ class TestAgentFrontmatterPortability(unittest.TestCase):
             os.path.abspath(__file__))))
         agents = os.path.join(root, "agents")
         for name in os.listdir(agents):
-            if not name.endswith(".md"):
+            if not (name.startswith("tp-") and name.endswith(".md")):
                 continue
             with open(os.path.join(agents, name), encoding="utf-8") as f:
                 text = f.read()
+            self.assertTrue(text.startswith("---\n"), name)
+            self.assertEqual(len(text.split("---", 2)), 3, name)
             frontmatter = text.split("---", 2)[1]
             self.assertIn("model: inherit", frontmatter, name)
 
@@ -156,6 +158,8 @@ class TestLoopPayloadCarriesModel(unittest.TestCase):
         loop.init(ws, "simple mechanical change")
         os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
         loop.gate(ws, "pass")              # pm -> plan
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(ws, runtime=loop, usage="measured")
         loop.gate(ws, "pass")              # plan -> plan_approval
         loop.approve(ws)                   # -> execute
         authority = open_delivery_root(ws)

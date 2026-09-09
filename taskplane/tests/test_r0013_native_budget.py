@@ -78,6 +78,14 @@ def test_missing_or_malformed_host_usage_fails_closed_before_next_dispatch() -> 
     assert {row["id"] for row in stopped["checkpoint"]["actions"]} == {
         "reduce-scope", "end-wave", "architecture-review",
     }
+    advisory = dispatch_telemetry.screen_dispatch(ledger, FakeClock(wall_time=10),
+        current_stage="build", outstanding_set_fingerprint="b" * 64,
+        preserved_context_fingerprint="c" * 64, resource_limits_advisory=True)
+    assert advisory["dispatch_allowed"] is True
+    assert advisory["status"] == "advisory"
+    assert advisory["observed_usage"] == stopped["observed_usage"]
+    assert advisory["budget"]["budget_claim"] is False
+    assert advisory["budget"]["triggered"] == stopped["budget"]["triggered"]
 
     malformed = _usage()
     malformed["total_tokens"] = 1

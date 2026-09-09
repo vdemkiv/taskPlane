@@ -16,6 +16,7 @@ import re
 import secrets
 import stat as stat_runtime
 from collections.abc import Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 # Mypy checks the package imports as the authoritative typed boundary.  At
@@ -33,6 +34,9 @@ else:  # pragma: no cover - direct module loading
     from delivery_ports import Clock, canonical_json, content_fingerprint
     import native_session_meter
     from spend import WEIGHTS, normalize_usage
+
+if TYPE_CHECKING:
+    from . import producer_observation, stage_handoff
 
 
 LEDGER_SCHEMA = "taskplane.dispatch-telemetry-ledger/v1"
@@ -80,7 +84,7 @@ TERMINAL_EVENT_KINDS = frozenset({
 })
 MAX_EVENT_BYTES = 64 * 1024
 MAX_EVENTS = 256
-WAVE_BUDGET_CEILINGS = {
+WAVE_BUDGET_CEILINGS: dict[str, int] = {
     "elapsed_seconds": 28_800,
     "sessions": 60,
     "total_tokens": 150_000_000,
@@ -153,6 +157,192 @@ _PRIVATE_REASON = re.compile(
 
 class DispatchTelemetryError(DeliveryPolicyError):
     """Telemetry input is incomplete, contradictory, or over its bound."""
+
+
+class TelemetryIncompleteError(DispatchTelemetryError):
+    """The producer has not supplied required terminal evidence (W20)."""
+
+
+@dataclass(frozen=True)
+class AttemptTelemetryInputs:
+    """Control-plane inputs, never a portable artifact or progression authority.
+
+    Owners supply their existing ledger, signed runtime/knowledge results and
+    nonce custody. Consumers reconstruct the projection from these sources;
+    a caller's rehashed projection cannot become evidence. No new store or key
+    is created here. Host simulation remains simulation.
+    """
+
+    ledger: Mapping[str, object]
+    runtime_receipt: Mapping[str, object]
+    nonce_source: producer_observation.AttemptNonceSource
+    nonce: producer_observation.IssuedAttemptNonce
+    nonce_bindings: Mapping[str, object]
+    knowledge_proposals: Sequence[Mapping[str, object]]
+    knowledge_receipts: Sequence[Mapping[str, object]]
+    trusted_keys: Mapping[str, stage_handoff.SigningKey]
+    freshness: Mapping[str, object]
+    now: int
+    event_deliveries: Sequence[Mapping[str, object]]
+    resource_limits_advisory: bool = False
+
+
+def _telemetry_object(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+        raise DispatchTelemetryError("telemetry object required")
+    return dict(value)
+
+
+def _telemetry_code(value: object) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value) or \
+            _PRIVATE_REASON.search(value):
+        raise DispatchTelemetryError("telemetry reason code invalid")
+    return value
+
+
+def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, object]:
+    """Minimize one verified attempt, including attributable unavailable usage.
+
+    Required knowledge receipts are matched one-to-one to the orchestrator's
+    proposal inventory. Rejected/conflicting updates remain visible. This
+    prerequisite does not grant a gate, native evidence, or lifecycle authority.
+    """
+    if TYPE_CHECKING or __package__:
+        from . import stage_handoff, stage_entities
+    else:
+        import stage_handoff
+        import stage_entities
+    if inputs.resource_limits_advisory:
+        key_id = inputs.runtime_receipt.get("key_id")
+        issued_at = inputs.runtime_receipt.get("issued_at")
+        if not isinstance(key_id, str) or type(issued_at) is not int:
+            raise DispatchTelemetryError("telemetry runtime signing identity is malformed")
+        key = inputs.trusted_keys.get(key_id)
+        if key is None or key.status != "active" or issued_at > inputs.now:
+            raise DispatchTelemetryError("telemetry runtime signing authority is disabled or from the future")
+    verified = stage_handoff.verify_contract(inputs.runtime_receipt,
+        trusted_keys=inputs.trusted_keys, expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
+        expected_freshness=inputs.freshness, now=inputs.now,
+        historical=inputs.resource_limits_advisory)
+    result = _telemetry_object(verified["payload"])
+    nonce = inputs.nonce_source.validate(inputs.nonce, inputs.nonce_bindings,
+        enforce_deadline=not inputs.resource_limits_advisory)
+    for field in ("run_id", "phase_id", "attempt_id", "operation_id", "candidate_fingerprint",
+                  "definition_set_fingerprint", "phase_definition_fingerprint",
+                  "sealed_package_fingerprint", "knowledge_fingerprint", "authority_fingerprint",
+                  "nonce_digest"):
+        if result[field] != nonce[field]:
+            raise DispatchTelemetryError("telemetry attempt binding mismatch")
+    ledger = validate_ledger(inputs.ledger)
+    if ledger["run_id"] != result["run_id"] or ledger["source_sha"] != inputs.freshness["candidate_sha"]:
+        raise DispatchTelemetryError("telemetry ledger identity mismatch")
+    binding = next((row for row in ledger.get("bindings", [])
+                    if row["dispatch_id"] == result["attempt_id"]), None)
+    if binding is None:
+        raise DispatchTelemetryError("telemetry attempt binding missing")
+    events = binding["events"]
+    if not events or len(inputs.event_deliveries) > MAX_EVENTS:
+        raise DispatchTelemetryError("telemetry event inventory missing or over limit")
+    by_fingerprint: dict[str, dict[str, object]] = {}
+    previous_at = _nonnegative_number(binding["started_at"], "started_at")
+    for event in events:
+        row = _telemetry_object(event)
+        for field in ("dispatch_id", "thread_id", "thread_type", "task_id"):
+            if row.get(field) != binding[field]:
+                raise DispatchTelemetryError("telemetry event identity mismatch")
+        digest = row.pop("fingerprint", None)
+        if digest != content_fingerprint(canonical_json(row)) or not isinstance(digest, str):
+            raise DispatchTelemetryError("telemetry event integrity mismatch")
+        at = _nonnegative_number(row.get("at"), "event timestamp")
+        if at < previous_at or at > inputs.now:
+            raise DispatchTelemetryError("telemetry event timing mismatch")
+        previous_at = at
+        by_fingerprint[digest] = dict(event)
+    delivered: set[str] = set()
+    for event in inputs.event_deliveries:
+        digest = event.get("fingerprint")
+        if not isinstance(digest, str) or by_fingerprint.get(digest) != event:
+            raise DispatchTelemetryError("telemetry delivery is foreign or changed")
+        delivered.add(digest)
+    if delivered != set(by_fingerprint):
+        raise DispatchTelemetryError("telemetry observation delivery missing")
+    terminal = [event for event in events if event["kind"] in TERMINAL_EVENT_KINDS]
+    if len(terminal) != 1 or terminal[0] != events[-1] or not result["terminal_identity"]:
+        raise TelemetryIncompleteError("telemetry required terminal field missing")
+    timing = next((row for row in ledger["dispatches"]
+                   if row["dispatch_id"] == binding["dispatch_id"]), binding)
+    if previous_at != timing["ended_at"]:
+        raise DispatchTelemetryError("telemetry terminal timing mismatch")
+    outcome = terminal[0]["kind"]
+    if result["status"] == "accepted" and outcome != "complete":
+        raise DispatchTelemetryError("telemetry terminal outcome mismatch")
+    if len(inputs.knowledge_proposals) > MAX_EVENTS or \
+            len(inputs.knowledge_proposals) != len(inputs.knowledge_receipts):
+        raise DispatchTelemetryError("telemetry knowledge receipt inventory mismatch")
+    knowledge: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    for proposal, receipt in zip(inputs.knowledge_proposals, inputs.knowledge_receipts):
+        for field in ("run_id", "phase_id", "attempt_id", "candidate_fingerprint"):
+            if proposal.get(field) != result[field]:
+                raise DispatchTelemetryError("telemetry knowledge attempt mismatch")
+        applied = stage_handoff.consume_knowledge_receipt(receipt, proposal=proposal,
+            trusted_keys=inputs.trusted_keys, expected_freshness=inputs.freshness, now=inputs.now)
+        identity = str(applied["proposal_fingerprint"])
+        if identity in knowledge:
+            raise DispatchTelemetryError("telemetry knowledge proposal duplicated")
+        if applied["retention_class"] not in {"fingerprints-only", "scoped-facts"}:
+            raise DispatchTelemetryError("telemetry knowledge retention missing")
+        knowledge[identity] = content_fingerprint(receipt)
+        status = str(applied["outcome"])
+        counts[status] = counts.get(status, 0) + 1
+    runtime_proposals = result["knowledge_proposals"]
+    if not isinstance(runtime_proposals, list) or any(
+            _telemetry_object(row).get("proposal_fingerprint") not in knowledge for row in runtime_proposals):
+        raise DispatchTelemetryError("telemetry runtime knowledge receipt missing")
+    attempt = next(row for row in terminal_attempt_attribution(ledger)
+                   if row["attempt_fingerprint"] == content_fingerprint({
+                       "schema": "taskplane.dispatch-attempt-identity/v1", "run_id": ledger["run_id"],
+                       "dispatch_id": binding["dispatch_id"], "thread_id": binding["thread_id"],
+                       "task_id": binding["task_id"]}))
+    measured = attempt["usage_status"] == "measured"
+    continuation = _telemetry_object(result["continuation"])
+    kind = _telemetry_code(continuation["kind"])
+    progress = [event["at"] for event in events if event["kind"] == "progress"]
+    missing = [] if measured else ["provider_usage_unavailable"]
+    if result["reason_code"] is not None:
+        missing.append(_telemetry_code(result["reason_code"]))
+    def pseudonym(field: str) -> str:
+        return content_fingerprint({"run": result["run_id"], "field": field, "value": result[field]})
+    material: dict[str, object] = {
+        "schema": "taskplane.attempt-telemetry/v1",
+        "run_id": pseudonym("run_id"), "phase_id": _telemetry_code(result["phase_id"]),
+        "attempt_id": pseudonym("attempt_id"), "operation_id": pseudonym("operation_id"),
+        "candidate_fingerprint": result["candidate_fingerprint"],
+        "agent_definition_fingerprint": result["phase_definition_fingerprint"],
+        "artifact_reference_fingerprints": [content_fingerprint(inputs.runtime_receipt),
+            content_fingerprint(ledger), content_fingerprint(inputs.freshness)],
+        "knowledge_fingerprint_consumed": result["knowledge_fingerprint"],
+        "knowledge_update_reference_fingerprints": sorted(knowledge.values()),
+        "knowledge_update_admission_counts": counts,
+        "taskplane_nonce_receipt_digest": content_fingerprint(nonce),
+        "pseudonymous_host_event_id": content_fingerprint({"run": result["run_id"],
+                                                           "event": result["terminal_identity"]}),
+        "started_at": binding["started_at"], "ended_at": previous_at,
+        "elapsed_ms": int((previous_at - binding["started_at"]) * 1000),
+        "last_progress_at": progress[-1] if progress else None,
+        "wait_reason_code": "host_observation" if binding["wait_duration_seconds"] else None,
+        "terminal_outcome": outcome, "effect_state": result["effect_state"],
+        "continuation": {"kind": kind, "phase_id": _telemetry_code(continuation["phase_id"])},
+        "next_permitted_action": kind, "missing_evidence_codes": missing,
+        "correction_count": binding["correction_count"],
+        "replay_count": len(inputs.event_deliveries) - len(delivered),
+        "usage_status": attempt["usage_status"],
+        "usage_source": attempt["usage_source_fingerprint"] if measured else None,
+        "token_counts_when_available": dict(binding["usage"]) if measured else None,
+        "cache_semantics": ("input-includes-cache-read;total-includes-cache-write;reasoning-in-output"
+                            if measured else None),
+    }
+    return {**material, "fingerprint": content_fingerprint(material)}
 
 
 def _transcript_usage_row(row: Mapping[str, Any]) \
@@ -963,7 +1153,7 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         if set(binding) != _BINDING_FIELDS:
             raise DispatchTelemetryError(
                 "dispatch telemetry binding must use its closed schema")
-        _receipt(
+        canonical = _receipt(
             {field: binding.get(field) for field in _DISPATCH_FIELDS},
             {field: 0 for field in _USAGE_FIELDS},
         )
@@ -1000,7 +1190,8 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
             if receipt.get("dispatch_id") != dispatch_id:
                 raise DispatchTelemetryError(
                     "finalized dispatch telemetry identity mismatched")
-            if any(receipt.get(field) != binding.get(field)
+            if any(receipt.get(field) != (canonical["dependencies"]
+                   if field == "dependencies" else binding.get(field))
                    for field in _STABLE_DISPATCH_IDENTITY_FIELDS):
                 raise DispatchTelemetryError(
                     "finalized dispatch telemetry identity mismatched")
@@ -1080,10 +1271,11 @@ def _bind_dispatch(
         raise DispatchTelemetryError(
             "dispatch binding is closed: "
             f"missing={sorted(missing)} unknown={sorted(unknown)}")
-    _receipt(dispatch, {field: 0 for field in _USAGE_FIELDS})
+    canonical = _receipt(dispatch, {field: 0 for field in _USAGE_FIELDS})
     material = {
         "schema": DISPATCH_BINDING_SCHEMA,
         **dict(dispatch),
+        "dependencies": canonical["dependencies"],
         "usage": (_usage(usage) if usage is not None else None),
         "usage_source_fingerprint": (
             _sha256_fingerprint(
@@ -1109,7 +1301,10 @@ def _bind_dispatch(
             "dispatch_id", "thread_id", "thread_type", "task_id",
             "dependencies", "shared_owner",
         }
-        if any(existing.get(field) != material.get(field)
+        # Historical bindings retain their original order and integrity digest.
+        # Compare only dependency identity canonically; never rewrite the row.
+        existing_dependencies = sorted(set(str(value) for value in existing["dependencies"]))
+        if any((existing_dependencies if field == "dependencies" else existing.get(field)) != material.get(field)
                for field in identity_fields):
             raise DispatchTelemetryError("dispatch binding id collision")
         return dict(existing)
@@ -2080,7 +2275,8 @@ def _screen_dispatch_projection(
         outstanding_set_fingerprint: str,
         preserved_context_fingerprint: str,
         observation_authority: bytes | None = None,
-        overrides: Mapping[str, int | float] | None = None) -> dict[str, Any]:
+        overrides: Mapping[str, int | float] | None = None,
+        resource_limits_advisory: bool = False) -> dict[str, Any]:
     """Return the one fail-closed decision consumed before a native start."""
     identity = validate_ledger(ledger)
     required = {
@@ -2161,7 +2357,7 @@ def _screen_dispatch_projection(
             if reason_code == "root_usage_unavailable" else
             "The root-session admission boundary is closed; active workers "
             "may terminalize but no new task was started.")
-        if isinstance(ledger, MutableMapping):
+        if isinstance(ledger, MutableMapping) and not resource_limits_advisory:
             state = ledger.get("root_admission")
             if isinstance(state, MutableMapping) and not state.get("sticky"):
                 state["sticky"] = True
@@ -2201,6 +2397,12 @@ def _screen_dispatch_projection(
         "wave_usage": reconciled_wave_usage,
         "checkpoint": None,
     }
+    if resource_limits_advisory and (root_admission is None or root_admission["reason_code"] in {
+            None, "root_usage_unavailable", "root_budget_reached", "root_seed_budget_exceeded"}):
+        # Authenticated ledger/root admission was validated above. Keep every
+        # measurement, triggered ceiling and budget claim; only its enforcement
+        # is advisory. Session/identity/custody refusals are not resource limits.
+        result.update(status="advisory", dispatch_allowed=True)
     if not result["dispatch_allowed"]:
         result["checkpoint"] = _scope_review_checkpoint(
             reason=reason, source_sha=identity["source_sha"],
@@ -2223,7 +2425,8 @@ def screen_dispatch(
         admission_operation_id: str | None = None,
         dispatch: Mapping[str, Any] | None = None,
         usage: Mapping[str, Any] | None = None,
-        source_fingerprint: str | None = None) -> dict[str, Any]:
+        source_fingerprint: str | None = None,
+        resource_limits_advisory: bool = False) -> dict[str, Any]:
     """Screen and, when requested, bind one dispatch as one operation.
 
     A projection-only call remains useful for status.  Once root admission is
@@ -2242,7 +2445,7 @@ def screen_dispatch(
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
             observation_authority=observation_authority,
-            overrides=overrides)
+            overrides=overrides, resource_limits_advisory=resource_limits_advisory)
     if not isinstance(ledger, MutableMapping):
         raise DispatchTelemetryError(
             "atomic screen_dispatch admission requires a mutable ledger")
@@ -2271,7 +2474,7 @@ def screen_dispatch(
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
             observation_authority=observation_authority,
-            overrides=overrides)
+            overrides=overrides, resource_limits_advisory=resource_limits_advisory)
         projected.pop("fingerprint", None)
         projected.update({
             "admission_operation_id": operation_id,
@@ -2286,7 +2489,7 @@ def screen_dispatch(
         outstanding_set_fingerprint=outstanding_set_fingerprint,
         preserved_context_fingerprint=preserved_context_fingerprint,
         observation_authority=observation_authority,
-        overrides=overrides)
+        overrides=overrides, resource_limits_advisory=resource_limits_advisory)
     binding = None
     operation_status = "refused"
     if projected["dispatch_allowed"]:

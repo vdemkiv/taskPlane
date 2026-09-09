@@ -15,6 +15,7 @@ from types import MappingProxyType
 from typing import Any
 
 from taskplane.authority import DECISION_SCHEMA
+from taskplane import stage_entities
 DEFAULT_SETTINGS_PATH = Path(__file__).with_name("operational-settings.json")
 DEFAULT_LENS_CATALOG_PATH = \
     Path(__file__).resolve().parent.parent / "lenses" / "catalog.json"
@@ -46,7 +47,7 @@ REQUIRED_DASHBOARD_LIFECYCLE_EVENTS = (
 
 _TOP = frozenset({
     "schema", "stages", "lenses", "build", "tests", "limits", "workflow",
-    "cleanup", "runtime", "dashboard", "overrides", "observability",
+    "cleanup", "runtime", "dashboard", "overrides", "observability", "phase_definitions",
 })
 _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     (): _TOP,
@@ -86,6 +87,149 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
 
 class SettingsError(ValueError):
     """Settings are malformed, contradictory, or insufficiently authorized."""
+
+
+@dataclass(frozen=True)
+class PhaseDefinition:
+    """Detached definition bytes; callers cannot mutate admitted authority fields."""
+
+    id: str
+    predecessors: tuple[str, ...]
+    successors: tuple[str, ...]
+    capability_requirements: tuple[str, ...]
+    canonical_bytes: bytes
+
+    def to_dict(self) -> dict[str, object]:
+        return stage_entities.validate_contract(json.loads(self.canonical_bytes))
+
+
+@dataclass(frozen=True)
+class PhaseRegistry:
+    """Effect-free admission result, ordered exclusively by the declared DAG.
+
+    This additive reader does not activate the incumbent loop or confer host
+    authority. Runtime consumers must enforce the admitted capabilities at
+    their tool boundary; signed skill prose never supplies capability grants.
+    """
+
+    phases: tuple[PhaseDefinition, ...]
+    definition_set_fingerprint: str
+    capability_set_fingerprint: str
+
+    def admit(self, phase_id: str, requested_capabilities: Sequence[str]) -> PhaseDefinition:
+        for phase in self.phases:
+            if phase.id == phase_id:
+                requested = _phase_strings(list(requested_capabilities), "capability request")
+                if not set(requested) <= set(phase.capability_requirements):
+                    raise SettingsError("undeclared phase capability request")
+                return phase
+        raise SettingsError("unknown phase id")
+
+
+def _phase_strings(value: object, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise SettingsError(f"{label} must be a string list")
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def _phase_bytes(value: object) -> tuple[bytes, ...]:
+    if not isinstance(value, list):
+        raise SettingsError("phase_definitions must be a list")
+    try:
+        rows = [stage_entities.validate_contract(row) for row in value]
+        if any(row["schema"] != stage_entities.PHASE_DEFINITION_SCHEMA for row in rows):
+            raise SettingsError("phase registry requires phase definitions")
+        return tuple(stage_entities.canonical_contract_bytes(row) for row in rows)
+    except (stage_entities.StageValidationError, TypeError) as exc:
+        raise SettingsError(f"invalid phase definition: {exc}") from exc
+
+
+def _phase_capability(value: str) -> None:
+    if not isinstance(value, str):
+        raise SettingsError("phase capability must be a string")
+    kind, separator, target = value.partition(":")
+    if (not separator or not target or "*" in target or
+            any(char.isspace() for char in target) or
+            kind not in {"network", "environment", "dependency", "root"}):
+        raise SettingsError("unsupported phase capability")
+    if kind == "root" and (not target.startswith("/") or target == "/" or
+                           any(part in {"", ".", ".."} for part in target.split("/")[1:])):
+        raise SettingsError("invalid root capability")
+
+
+def load_phase_registry(
+    definitions: object, *, skills: Mapping[str, bytes],
+    validator_inventory: Mapping[str, str], artifact_schemas: Mapping[str, str],
+    available_capabilities: Sequence[str] = (),
+) -> PhaseRegistry:
+    """Admit orchestrator-loaded definitions against explicit trusted inventories.
+
+    Inputs are supplied by the orchestrator from its bound candidate, never
+    copied from agent output. No environment, network, filesystem or dependency
+    discovery occurs here. Historical readers remain intact; caller activation
+    and tool enforcement belong to later migration slices.
+    """
+    encoded = _phase_bytes(definitions)
+    if not encoded:
+        raise SettingsError("phase registry must not be empty")
+    granted = tuple(available_capabilities)
+    for capability in granted:
+        _phase_capability(capability)
+    phases: dict[str, PhaseDefinition] = {}
+    rows = [stage_entities.validate_contract(json.loads(value)) for value in encoded]
+    for row, value in zip(rows, encoded):
+        phase_id = str(row["id"])
+        if phase_id in phases:
+            raise SettingsError("duplicate phase id")
+        skill = skills.get(str(row["skill_ref"]))
+        if not isinstance(skill, bytes) or hashlib.sha256(skill).hexdigest() != row["skill_content_fingerprint"]:
+            raise SettingsError("missing or changed skill content")
+        validators = _phase_strings(row["domain_validator_refs"], "domain validators")
+        if not set(validators) <= set(validator_inventory):
+            raise SettingsError("unregistered domain validator")
+        if _digest(dict(validator_inventory)) != row["validator_inventory_fingerprint"]:
+            raise SettingsError("changed validator inventory")
+        for relation in ("consumes", "produces"):
+            artifacts = row[relation]
+            if not isinstance(artifacts, list):
+                raise SettingsError("invalid artifact declarations")
+            for artifact in artifacts:
+                if not isinstance(artifact, dict) or artifact_schemas.get(
+                        str(artifact["artifact_class"])) != artifact["artifact_schema_version"]:
+                    raise SettingsError("undeclared or changed artifact schema")
+        required = _phase_strings(row["capability_requirements"], "capability requirements")
+        for capability in required:
+            _phase_capability(capability)
+        if not set(required) <= set(granted):
+            raise SettingsError("unavailable phase capability")
+        phases[phase_id] = PhaseDefinition(
+            phase_id, _phase_strings(row["predecessors"], "predecessors"),
+            _phase_strings(row["successors"], "successors"), required, value)
+    entries = [str(row["id"]) for row in rows if row["entry"]]
+    terminals = [str(row["id"]) for row in rows if row["terminal"]]
+    if len(entries) != 1 or len(terminals) != 1:
+        raise SettingsError("phase DAG requires one entry and terminal")
+    for phase in phases.values():
+        if (not phase.predecessors) != (phase.id == entries[0]) or (
+                not phase.successors) != (phase.id == terminals[0]):
+            raise SettingsError("unreachable or conflicting entry/terminal phase")
+        for predecessor in phase.predecessors:
+            if predecessor not in phases or phase.id not in phases[predecessor].successors:
+                raise SettingsError("unknown or asymmetric predecessor endpoint")
+        for successor in phase.successors:
+            if successor not in phases or phase.id not in phases[successor].predecessors:
+                raise SettingsError("unknown or asymmetric successor endpoint")
+    ordered: list[PhaseDefinition] = []
+    remaining = dict(phases)
+    while remaining:
+        ready = [phase for phase in remaining.values()
+                 if not set(phase.predecessors).intersection(remaining)]
+        if not ready:
+            raise SettingsError("cyclic or unreachable phase DAG")
+        for phase in ready:
+            ordered.append(phase)
+            del remaining[phase.id]
+    return PhaseRegistry(tuple(ordered), _digest(rows), _digest(sorted(set(granted))))
 
 
 def _canonical(value: object) -> bytes:
@@ -324,6 +468,8 @@ class OperationalSettings:
     digest: str
     receipt: Mapping[str, Any]
     schema: str = CURRENT_SCHEMA
+    phase_definitions: tuple[bytes, ...] = ()
+    legacy_snapshot: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -336,6 +482,8 @@ class OperationalSettings:
             "dashboard": self.dashboard.to_dict(),
             "overrides": self.overrides.to_dict(),
             "observability": self.observability.to_dict(),
+            **({} if self.legacy_snapshot else {
+                "phase_definitions": [json.loads(value) for value in self.phase_definitions]}),
         }
 
 
@@ -448,9 +596,11 @@ def _nonnegative_number(value: object, label: str) -> int | float:
 def _validate_and_type(
     data: Mapping[str, Any], receipt: Mapping[str, Any], *,
     catalog_ids: frozenset[str],
+    legacy_snapshot: bool = False,
 ) -> OperationalSettings:
     if data.get("schema") != CURRENT_SCHEMA:
         raise SettingsError("unsupported operational settings schema")
+    phase_definitions = _phase_bytes(data.get("phase_definitions", []))
     stages_raw = _plain_mapping(data.get("stages"), "stages")
     stages: dict[str, StageSettings] = {}
     for name in STAGES:
@@ -661,6 +811,7 @@ def _validate_and_type(
     test_shards = _positive_int(tests_raw.get("shards"), "tests.shards")
     normalized = {
         "schema": CURRENT_SCHEMA,
+        "phase_definitions": [json.loads(value) for value in phase_definitions],
         "stages": {key: value.to_dict() for key, value in stages.items()},
         "lenses": {"routing": {key: list(value) for key, value in routing.items()}, "counts": counts},
         "build": {"shards": build_shards, "concurrency": concurrency},
@@ -692,6 +843,8 @@ def _validate_and_type(
                       "governance_paths": typed_governance_paths},
         "observability": dict(observable_raw),
     }
+    if legacy_snapshot:
+        normalized.pop("phase_definitions")
     digest = _digest(normalized)
     sealed_receipt = dict(receipt)
     sealed_receipt["settings_digest"] = digest
@@ -716,6 +869,8 @@ def _validate_and_type(
             tuple(typed_safe_paths), tuple(typed_governance_paths)),
         observability=ObservabilitySettings(observable_raw["receipt"], False),
         digest=digest, receipt=_freeze(sealed_receipt),
+        phase_definitions=phase_definitions,
+        legacy_snapshot=legacy_snapshot,
     )
 
 
@@ -815,6 +970,16 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     the closed one-release environment alias table is interpreted here.
     """
     del host_capabilities
+    # Every consumer in a governed invocation sees the same durable values,
+    # including flat CLI imports and package imports. Host negotiation is
+    # deliberately separate from configuration selection.
+    from taskplane import run_context
+    bound = run_context.current_settings()
+    if bound is not None and Path(path) == DEFAULT_SETTINGS_PATH:
+        if overlay is not None:
+            raise SettingsError("a bound run cannot replace settings through a transient overlay")
+        return from_snapshot(bound[0], expected_digest=bound[1],
+                             allow_legacy="phase_definitions" not in bound[0])
     defaults = _read_json(DEFAULT_SETTINGS_PATH)
     raw = _read_json(Path(path))
     _reject_secrets(raw)
@@ -1000,6 +1165,26 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         effective, receipt, catalog_ids=catalog_ids)
 
 
+def from_snapshot(value: Mapping[str, Any], *, expected_digest: str,
+                  allow_legacy: bool = False) -> OperationalSettings:
+    """Validate complete durable values without merging today's defaults/env."""
+    raw = json.loads(_canonical(dict(value)))
+    legacy = allow_legacy and set(raw) == _TOP - {"phase_definitions"}
+    if (set(raw) != _TOP and not legacy) or raw.get("schema") != CURRENT_SCHEMA or _digest(raw) != expected_digest:
+        raise SettingsError("run settings snapshot is incomplete or its digest changed")
+    _reject_secrets(raw)
+    _validate_keys(raw)
+    _require_v2_root_session(raw)
+    catalog_ids, catalog_digest = _read_lens_catalog()
+    checked = _validate_and_type(raw, {"schema": RECEIPT_SCHEMA,
+        "precedence": ["durable-run"], "migration": None, "environment": None,
+        "overlay": None, "lens_catalog_digest": catalog_digest}, catalog_ids=catalog_ids,
+        legacy_snapshot=legacy)
+    if checked.digest != expected_digest:
+        raise SettingsError("run settings snapshot is not canonical")
+    return checked
+
+
 def settings_digest(settings: OperationalSettings | Mapping[str, Any]) -> str:
     """Return the portable digest of an effective settings value."""
     value = settings.to_dict() if isinstance(settings, OperationalSettings) else dict(settings)
@@ -1022,6 +1207,7 @@ __all__ = [
     "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS", "SettingsError",
     "StageLensPolicy", "StageSettings", "TestSettings", "WorkflowSettings",
     "STAGES", "ROUTED_LENS_STAGES", "ZERO_LENS_STAGES",
-    "DESIGN_LENS_MAX", "PLAN_LENS_MAX", "load_settings",
+    "DESIGN_LENS_MAX", "PLAN_LENS_MAX", "load_settings", "from_snapshot",
+    "PhaseDefinition", "PhaseRegistry", "load_phase_registry",
     "settings_digest", "settings_receipt",
 ]

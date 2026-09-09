@@ -8,6 +8,7 @@ sentinel and never a guessed active or terminal stage.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 import base64
 import copy
 import hashlib
@@ -16,18 +17,22 @@ import os
 import posixpath
 import re
 import stat
-from typing import Final
+from typing import Any, Final
 
 if __package__:
     from . import review_evidence
     from . import run_store as run_store_module
     from . import stage_entities
+    from . import stage_handoff
     from . import storage
 else:  # pragma: no cover - direct script import mode
     import review_evidence
     import run_store as run_store_module
     import stage_entities
+    import stage_handoff as flat_stage_handoff
     import storage
+
+    stage_handoff = flat_stage_handoff
 
 
 SOURCE_SCHEMA: Final[str] = "taskplane.legacy-source-bundle/v1"
@@ -82,6 +87,176 @@ class MigrationError(RuntimeError):
 
 class MigrationIntegrityError(MigrationError):
     """Retained source, sentinel, receipt, or projection failed verification."""
+
+
+@dataclass(frozen=True)
+class CompatibleContract:
+    """An inspected value, never a gate, recovery grant, or writer selection.
+
+    Authentication describes only the out-of-band signing trust supplied by
+    the caller. Domain owners must still recheck their scope-valid authority.
+    Retained values preserve their original version and bytes, including old
+    requirement identities; compatibility never upgrades historical authority.
+    """
+
+    payload: dict[str, object]
+    source_bytes: bytes
+    signature_valid: bool = False
+    current_authentication: bool = False
+
+    @property
+    def progression_authority(self) -> bool:
+        return False
+
+
+def read_compatible_contract(
+    data: str | bytes, *, store: review_evidence.ArtifactStore | None = None
+) -> CompatibleContract:
+    """Read retained T01 versions without adaptation or current authority.
+
+    The incumbent closed reader rejects unknown schemas, duplicate fields,
+    stale fingerprints and incomplete values. Draft/interrupted values do not
+    gain completion or progression authority by being mechanically readable.
+    """
+    payload = stage_entities.read_contract_json(data, store=store)
+    source = data.encode("utf-8") if isinstance(data, str) else data
+    return CompatibleContract(payload=payload, source_bytes=source)
+
+
+def read_authenticated_contract(
+    value: Mapping[str, object],
+    *,
+    trusted_keys: Mapping[str, stage_handoff.SigningKey],
+    expected_schema: str,
+    expected_freshness: Mapping[str, object],
+    now: int,
+    historical: bool = False,
+    store: review_evidence.ArtifactStore | None = None,
+) -> CompatibleContract:
+    """Read signed old/new contracts with exact externally supplied bindings.
+
+    Historical authentication can verify retained signatures but cannot become
+    current authentication. A missing signature never falls back to a retained
+    read. Neither route changes producers or infers domain progression policy.
+    """
+    verified = stage_handoff.verify_contract(
+        value,
+        trusted_keys=trusted_keys,
+        expected_schema=expected_schema,
+        expected_freshness=expected_freshness,
+        now=now,
+        historical=historical,
+        store=store,
+    )
+    payload = verified["payload"]
+    if not isinstance(payload, dict):
+        raise MigrationIntegrityError("verified contract payload must be an object")
+    return CompatibleContract(
+        payload=dict(payload),
+        source_bytes=review_evidence.canonical_bytes(value),
+        signature_valid=verified["signature_valid"] is True,
+        current_authentication=verified["authority_valid"] is True,
+    )
+
+
+def active_producer_schema(family: str) -> str | None:
+    """Report the incumbent selection before the separately approved cutover.
+
+    Reader support does not activate phase/runtime/knowledge producers. No
+    setter is exposed here; later cutover work owns the sole writer switch.
+    """
+    return {
+        "taskplane.stage": stage_entities.SCHEMA,
+        "taskplane.stage-handoff": stage_handoff.SCHEMA,
+    }.get(family)
+
+
+def phase_records(manifest: Mapping[str, object]) -> dict[str, dict]:
+    """Validate phase receipts held by the existing run manifest owner."""
+    rows = manifest.get("phase_records", {})
+    if not isinstance(rows, dict) or len(rows) > 10000:
+        raise MigrationIntegrityError("invalid phase receipt index")
+    for key, row in rows.items():
+        if not isinstance(row, dict) or set(row) != {"schema", "operation_id", "operation",
+                "request_fingerprint", "result", "result_fingerprint", "committed_revision"} or \
+                row["schema"] != "taskplane.phase-operation-receipt/v1" or row["operation_id"] != key or \
+                row["operation"] not in {"phase_routing", "phase_prepare", "phase_collect", "phase_retry", "resource_policy"} or \
+                row["result_fingerprint"] != _fingerprint(row["result"]) or \
+                not isinstance(row["request_fingerprint"], str) or not _FINGERPRINT.fullmatch(row["request_fingerprint"]) or \
+                type(row["committed_revision"]) is not int or not 1 < row["committed_revision"] <= manifest["revision"]:
+            raise MigrationIntegrityError("phase receipt does not verify")
+    return copy.deepcopy(rows)
+
+
+def commit_phase_record(store: run_store_module.RunStore, run_id: str, *,
+        expected_revision: int, operation_id: str, operation: str,
+        request_fingerprint: str, result: dict[str, Any],
+        validate_authority: Callable[[dict[str, Any]], object]) -> dict[str, Any]:
+    """Revision-CAS non-lifecycle data through RunStore's general commit API.
+
+    No stage receipt is forged: lifecycle state and its journal stay owned by
+    commit_stage_operation. A losing CAS cannot publish a second owner.
+    """
+    current = store.load(run_id)
+    validate_authority(current)
+    rows = phase_records(current)
+    prior = rows.get(operation_id)
+    if prior is not None:
+        if prior["operation"] != operation or prior["request_fingerprint"] != request_fingerprint or prior["result"] != result:
+            raise MigrationIntegrityError("phase operation replay changed")
+        return prior
+    row = {"schema": "taskplane.phase-operation-receipt/v1", "operation_id": operation_id,
+        "operation": operation, "request_fingerprint": request_fingerprint,
+        "result": copy.deepcopy(result), "result_fingerprint": _fingerprint(result),
+        "committed_revision": expected_revision + 1}
+    rows[operation_id] = row
+    phase_records({"phase_records": rows, "revision": expected_revision + 1})
+    store.commit(run_id, expected_revision=expected_revision, changes={"phase_records": rows})
+    return copy.deepcopy(row)
+
+
+def phase_routing(manifest: Mapping[str, object]) -> dict[str, object] | None:
+    """Read the single latest atomic routing receipt from the incumbent journal.
+
+    Attempts retain their original preparation receipt. A rollback changes
+    admission for new attempts only and never rewrites evidence or identities.
+    """
+    rows = sorted((row for row in phase_records(manifest).values()
+        if row.get("operation") == "phase_routing"), key=lambda row: row["committed_revision"])
+    prior = None
+    for row in rows:
+        result = row.get("result")
+        if not isinstance(result, dict) or set(result) != {"schema", "owner", "configuration", "previous"} or \
+                result["schema"] != "taskplane.phase-routing/v1" or \
+                result["owner"] not in {"incumbent", "agent-runtime"} or \
+                row.get("result_fingerprint") != _fingerprint(result) or \
+                result["previous"] != (None if prior is None else prior["result_fingerprint"]):
+            raise MigrationIntegrityError("phase routing receipt is invalid")
+        prior = row
+    return copy.deepcopy(prior)
+
+
+def change_phase_routing(store: run_store_module.RunStore, run_id: str, *,
+        owner: str, configuration: Mapping[str, object] | None,
+        expected_previous: str | None, expected_revision: int, operation_id: str,
+        validate_authority: Callable[[Mapping[str, object]], None]) -> dict[str, object]:
+    """CAS the sole new-attempt owner, preserving the complete prior journal."""
+    if owner not in {"incumbent", "agent-runtime"} or \
+            (owner == "agent-runtime" and not isinstance(configuration, Mapping)):
+        raise MigrationIntegrityError("invalid phase routing selection")
+    request = {"schema": "taskplane.phase-routing/v1", "owner": owner,
+        "configuration": copy.deepcopy(configuration), "previous": expected_previous}
+    # Replays also require current authority; RunStore's idempotent fast path
+    # deliberately does not rerun its mutation callback.
+    def authorize(current):
+        validate_authority(current)
+        prior = phase_routing(current)
+        replay = phase_records(current).get(operation_id)
+        if replay is None and (None if prior is None else prior["result_fingerprint"]) != expected_previous:
+            raise MigrationIntegrityError("phase routing CAS conflict")
+    return commit_phase_record(store, run_id, expected_revision=expected_revision,
+        operation_id=operation_id, operation="phase_routing", request_fingerprint=_fingerprint(request),
+        result=request, validate_authority=authorize)
 
 
 def _fingerprint(value: object) -> str:
@@ -660,9 +835,6 @@ def migration_projection(
     heads = manifest.get("stage_heads")
     if not isinstance(projection, dict) or not isinstance(heads, dict):
         raise MigrationIntegrityError("migration stage index is invalid")
-    if result.get("active_stage_projection") != projection:
-        raise MigrationIntegrityError(
-            "migration receipt projection does not match the run manifest")
     try:
         expected_projection = stage_entities.active_stage_projection(
             heads, foreground_stage_id=projection.get("foreground_stage_id"))
@@ -675,7 +847,8 @@ def migration_projection(
     stage_ids = receipt.get("stage_ids")
     if result["classification"] == "legacy-unknown":
         unknown_ref = result.get("unknown_ref")
-        if stage_ids != [] or heads or not isinstance(unknown_ref, dict):
+        if stage_ids != [] or heads or not isinstance(unknown_ref, dict) or \
+                result.get("active_stage_projection") != projection:
             raise MigrationIntegrityError(
                 "unknown migration created lifecycle authority")
         review_evidence.verify_portable_artifact_reference(
@@ -692,10 +865,23 @@ def migration_projection(
             raise MigrationIntegrityError(
                 "migration receipt stage binding is invalid")
         stage_id = str(stage_ids[0])
-        head = heads[stage_id]
-        if not isinstance(head, dict) or result.get("head") != head:
-            raise MigrationIntegrityError("migration head does not verify")
-        resolved_store.read_stage_object(resolved_run, head["object"])
+        # Migration is immutable history, not a second lifecycle owner. The
+        # original head/projection must still verify, but legitimate later
+        # lifecycle commits may terminalize it or select a fresh successor.
+        retained_head = result.get("head")
+        try:
+            original = stage_entities._read_indexed_stage(
+                resolved_store, resolved_run, stage_id, retained_head)
+            original_projection = stage_entities.active_stage_projection(
+                {stage_id: retained_head},
+                foreground_stage_id=(stage_id if original["state"] == "active" else None))
+            if result.get("active_stage_projection") != original_projection:
+                raise MigrationIntegrityError("migration retained projection does not verify")
+            for current_id, current_head in heads.items():
+                stage_entities._read_indexed_stage(
+                    resolved_store, resolved_run, current_id, current_head)
+        except stage_entities.StageValidationError as exc:
+            raise MigrationIntegrityError("migration head does not verify") from exc
     foreground_id = projection.get("foreground_stage_id")
     foreground = (copy.deepcopy(heads[foreground_id]["summary"])
                   if foreground_id is not None else None)

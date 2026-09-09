@@ -84,6 +84,21 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.19.0": {
+        "reason": "superseded unreleased candidate. PR #18 restored its "
+                  "exact implementation baseline and explicitly identified "
+                  "2.19.0 as unreleased; no v2.19.0 tag exists. Local "
+                  "installation and baseline restoration were not public "
+                  "release evidence. The next prepared candidate is 2.20.0.",
+        "superseded_by": "2.20.0",
+    },
+    "2.19.1": {
+        "reason": "reverted unreleased candidate. PR #15 declared 2.19.1 "
+                  "on the mainline, then PR #18 restored the 2.19.0 tree "
+                  "without rewriting that history. No v2.19.1 tag exists; "
+                  "the reverted candidate is not reused for 2.20.0.",
+        "superseded_by": "2.20.0",
+    },
     "2.18.10": {
         "reason": "superseded Marketplace candidate. It completed the "
                   "fail-closed delivery authority and isolated global-hook "

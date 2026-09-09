@@ -88,6 +88,8 @@ class TestProductLayer(unittest.TestCase):
                               "scope": ["src/api/**"], "tests": "true",
                               "criteria": ["API remains correct"]}]},
                   open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
+        from tests.fixtures.briefs.stage_fixture import prepare_plan
+        prepare_plan(self.ws, runtime=loop, usage="measured")
         loop.gate(self.ws, "pass")
         state = loop.load(self.ws)
         blast = state["tasks"][0].get("blast")

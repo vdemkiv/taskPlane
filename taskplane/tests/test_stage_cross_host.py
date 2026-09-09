@@ -341,6 +341,9 @@ def _parallel_loop_wave(
     assert "error" not in state, state
     bootstrapped = loop.next_action.__wrapped__(str(workspace))
     assert "error" not in bootstrapped, bootstrapped
+    from taskplane.tests.fixtures.briefs.stage_fixture import finish_plan_lenses
+    finish_plan_lenses(str(workspace), workspace, bootstrapped,
+        runtime=loop, usage="measured")
     monkeypatch.setattr(
         loop, "_load_tasks",
         lambda _ws, current: current.update({"tasks": copy.deepcopy(tasks)}))

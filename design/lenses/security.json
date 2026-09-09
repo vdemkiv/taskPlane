@@ -1,1 +1,19 @@
-{"schema":"taskplane.design-lens-result/v1","lens":"security","worker_identity":"tp_lens_design_security_d472516f","team_plan_fingerprint":"91e8ebcc3f448b43bf6958067290d26a27590585f90f301beb7493a0a0cbc337","candidate_fingerprint":"b14fa9c51ad1561e12f013c85e5e7923d89c6c268b1ca0f878758cce74421287","outcome":"changes-required","findings":["Authority labels are forgeable, candidate identity must include dirty bytes, CI has duplicate classifiers, cleanup has a path race, and dashboard actions lack snapshot binding."],"decisions":["Use host-private capabilities, one classifier, candidate-bound action envelopes, and descriptor-safe cleanup revalidation."],"fingerprint":"6e8788581f2a4916c2179e01c8107c740dfbbebb60c5874aeaac3a4a76770aad"}
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "security",
+  "worker_identity": "tp_lens_design_security_d472516f",
+  "team_plan_fingerprint": "4325e85b896cd576e5d62e18547e28a7bb4d124a8cd8ff5cde76519d58f01ad8",
+  "candidate_fingerprint": "80024e6bbe65df8b868bd0c68fbcd8a6d62fcd6bc5c8cee9cf290ed5ec191e60",
+  "outcome": "changes-required",
+  "findings": [
+    "The Design artifact is stale and foreign to this run: design/contract.json:3 names R-0002 and lines 203-205 embed team/candidate fingerprints 91e8eb.../b14fa9..., while the active R-0001 worker is bound to 4325e8.../80024e.... Admitting this artifact would let prior-run scope, selectors, and authority influence a fresh Design, contrary to FP-AC18/FP-AC21 and the security requirement to reject stale or foreign inputs.",
+    "The Design does not specify the current security boundary for untrusted repository paths, symlinks, selectors, manifests, host events, and portable evidence required by specs/r0005-restart/spec.md:122. Snapshot hashes, CAS, and local receipts are integrity signals, not transferable authentication; without containment and an unforgeable current-authority check before effects and recovery, a self-consistent forged or copied input can cross a privileged boundary.",
+    "The test strategy contains no current R-0001-owned positive and negative selectors that prove path/symlink containment, foreign or copied receipt rejection, host-event identity binding, and recovery-time authority revalidation. The existing R-0002 selectors cannot satisfy the fresh Design obligation in specs/r0005-restart/spec.md:61 and :83."
+  ],
+  "decisions": [
+    "Regenerate the Design from the current R-0001 source snapshot; bind every authority-bearing artifact and selector package to the exact run, requirement, candidate, team, stage, and operation, and retain former R-0002 Design bytes as historical context only.",
+    "Define canonical path resolution and symlink-safe containment, schema and identity validation for manifests/selectors/events, and an unforgeable scoped capability that is revalidated immediately before each effect and recovery action; never treat a digest or copied local receipt as authentication.",
+    "Assign exact current positive and targeted negative selectors for containment escapes, symlink swaps, stale/foreign/replayed evidence, copied receipts, identity mismatch, and revoked or missing recovery authority before Plan admission."
+  ],
+  "fingerprint": "81cf90ad40069d394b3dcce21b73f40fd25343feed9153fbf32ce10c0eaa97df"
+}

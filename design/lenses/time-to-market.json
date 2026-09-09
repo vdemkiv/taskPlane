@@ -1,0 +1,20 @@
+{
+  "schema": "taskplane.design-lens-result/v1",
+  "lens": "time-to-market",
+  "worker_identity": "tp_lens_design_time_to_market_682acbf5",
+  "team_plan_fingerprint": "4325e85b896cd576e5d62e18547e28a7bb4d124a8cd8ff5cde76519d58f01ad8",
+  "candidate_fingerprint": "80024e6bbe65df8b868bd0c68fbcd8a6d62fcd6bc5c8cee9cf290ed5ec191e60",
+  "outcome": "changes-required",
+  "findings": [
+    "The Product handoff defines the C → E → A → B → D risk priority but deliberately leaves DQ-04's exact PR slices and selectors open. Current-run evidence therefore has no named vertical-slice seam separating the fastest credible C/E proof from the remaining 21-criterion, six-journey scope; carrying the whole scope as one delivery unit would put deferrable A/B/D expansion on the critical path (specs/r0005-restart/spec.md:39-40,195).",
+    "J1 and J6 require actual supported-host evidence and explicitly reject simulation as a substitute, while DQ-02 leaves the host/version and observation contract unresolved. Deferring this capability check until final integration risks invalidating substantial simulation-only work and extending delivery through avoidable rework (specs/r0005-restart/spec.md:74,79,193).",
+    "DQ-03 leaves current boundary versions and additive/breaking migrations unresolved, but the handoff does not yet price deferral. Without a recorded adapter/backfill, retirement, and revalidation cost, Design cannot distinguish a reversible ship-now compatibility seam from a one-way migration that becomes costlier after multiple producers and consumers adopt it (specs/r0005-restart/spec.md:81,185,194)."
+  ],
+  "decisions": [
+    "Name a thin first vertical slice around the highest-priority C/E behavior: current candidate binding, genuine pass-with-blocker rejection, one bounded authorized correction, and unchanged-failure stop through public production interfaces. Keep A/B/D expansion and the remaining journeys outside this first slice behind explicit entry conditions.",
+    "Treat real-host capability, identity, start/terminal observation, and collection as an early time-boxed evidence spike. If the supported host cannot supply them, stop with the named capability gap before accumulating further simulation-only implementation.",
+    "For each deferred boundary migration, record the trigger, compatibility adapter or backfill work, retirement and rollback condition, and revalidation cost. Prefer an additive dual-read or branch-by-abstraction seam when current-source verification shows it is available.",
+    "Plan may own final dependency order, but every bounded PR slice should deliver one independently useful production-boundary increment with its positive/severed proof and rollback, so later scope can be deferred without discarding earlier value."
+  ],
+  "fingerprint": "bebe98fabd29eae7fd26844573f68d324578a32dc876603d23004d201b64c8a1"
+}

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import subprocess
 import types
 
 import pytest
@@ -31,9 +33,9 @@ def _event(tmp_path, *, name="tp_step_product_pm_deadbeef",
 
 def _active_worker(tmp_path, *, stage="pm", task="pm",
                    name="tp_step_product_pm_deadbeef", snapshot="",
-                   artifact_root=None, artifact_binding=None):
+                   artifact_root=None, artifact_binding=None, scope=None):
     contract = tp.build_contract(
-        "PM: lifecycle", read_only=True, write_allow=["specs/**"])
+        "PM: lifecycle", read_only=True, write_allow=["specs/**"], scope=scope)
     if artifact_root is not None or artifact_binding is not None:
         contract["run_artifact_root"] = str(artifact_root)
         contract["run_artifact_binding"] = artifact_binding
@@ -79,6 +81,66 @@ def test_control_plane_reads_exact_worker_snapshot_without_root_binding(
     assert tp.snapshot_ref(
         str(tmp_path), task_slot_override=binding["slot"]) == "target-head"
     assert tp.load_active(str(tmp_path)) is None
+
+
+@pytest.mark.parametrize("stage", ["execute", "fix"])
+@pytest.mark.parametrize("damage", ["none", "stale", "foreign", "missing-snapshot"])
+def test_gate_uses_original_submission_snapshot_after_worker_stop(tmp_path, monkeypatch, stage, damage):
+    from taskplane import loop
+    tmp_path = tmp_path / "checkout"
+    tmp_path.mkdir()
+    workspace = str(tmp_path)
+    for args in (["init", "-q"], ["config", "user.email", "test@example.test"],
+                 ["config", "user.name", "Test"]):
+        subprocess.run(["git", *args], cwd=workspace, check=True)
+    source = tmp_path / "src" / "candidate.txt"
+    source.parent.mkdir()
+    source.write_text("original\n")
+    (tmp_path / ".gitignore").write_text(".taskplane/\n")
+    subprocess.run(["git", "add", "src/candidate.txt", ".gitignore"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "original baseline"], cwd=workspace, check=True)
+    baseline = tp.git_head(workspace)
+    loop.init(workspace, "snapshot continuity", spec_path="src/candidate.txt")
+    state = loop.load(workspace)
+    task = {"id": "t1", "status": "running", "scope": ["src/**"],
+        "tests": "python3 -c 'print(1)'", "test_contract": {}}
+    state.update(step=stage, tasks=[task], current_task=0, submission_required=True)
+    loop.save(workspace, state)
+    name = "tp_step_executor_t1_deadbeef"
+    contract = _active_worker(tmp_path, stage=stage, task="t1", name=name, snapshot=baseline, scope=task["scope"])
+    start = _event(tmp_path, name=name)
+    tp.bind_worker_contract_event(workspace, start, now=11)
+    source.write_text("completed work\n")
+    subprocess.run(["git", "add", "src/candidate.txt"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "worker implementation"], cwd=workspace, check=True)
+    assert tp.git_head(workspace) != baseline
+    monkeypatch.setattr(loop.runtime_eval, "guide_loop", lambda *a, **k: {"status": "on_path"})
+    submitted = loop.submit(workspace, "pass")
+    assert submitted.get("submitted"), submitted
+    assert submitted["submission"]["snapshot"] == baseline
+    assert loop._submission_staleness(workspace, submitted["submission"]) is None, (
+        submitted["submission"]["changed_files"], tp.changed_files(workspace, baseline))
+    stopped = tp.terminalize_worker_contract(workspace,
+        {**start, "hook_event_name": "SubagentStop", "outcome": "success"},
+        outcome="success", submission_status="valid", now=12)
+    assert stopped["released"]
+    assert not Path(tp.active_contract_path(workspace, contract["task_slot"])).exists()
+    assert loop._worker_stage_snapshot(workspace, stage, task) is None
+    state = loop.load(workspace)
+    if damage == "stale":
+        source.write_text("changed after submission\n")
+    elif damage == "foreign":
+        state["_submission"]["task_authority"]["task"] = "foreign"
+    elif damage == "missing-snapshot":
+        state["_submission"].pop("snapshot")
+    loop.save(workspace, state)
+    result = loop.gate(workspace, "pass")
+    if damage == "none":
+        assert "error" not in result, (result.get("error"), result.get("dod"))
+        assert result.get("step") == "evaluate", result
+    else:
+        assert "error" in result, result
+        assert loop.load(workspace)["step"] == stage
 
 
 @pytest.mark.parametrize(

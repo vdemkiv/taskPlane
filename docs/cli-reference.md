@@ -63,9 +63,10 @@ not repeated in the tables.
 | `tp.py lens route` | decide which lenses a change needs |
 | `tp.py lens show` | the full brief for one lens |
 | `tp.py loop` | drive the Evaluate-Loop engine |
+| `tp.py loop amend-delivery` | human: exact legacy publication-only post-merge sequencing |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
-| `tp.py loop build-quality` | admit one typed candidate-bound Build/Fix quality receipt before worker submission or gate evaluation |
+| `tp.py loop cancel-worker` | human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
@@ -73,6 +74,7 @@ not repeated in the tables.
 | `tp.py loop command reconnect` | reconnect a durable command |
 | `tp.py loop command show` | show a durable command |
 | `tp.py loop command wait` | wait a durable command |
+| `tp.py loop continue-build` | human: validate and consume an exact legacy Build scope append without resetting work |
 | `tp.py loop evidence` | assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill |
 | `tp.py loop gate` | orchestrator-only: judge the evidence and advance the loop |
 | `tp.py loop guide` | before pass submission, check deterministic workflow facts and return one bounded drift correction |
@@ -81,6 +83,8 @@ not repeated in the tables.
 | `tp.py loop next` | print the next stage brief for the active loop |
 | `tp.py loop replan` | human: archive frozen tasks and return to Plan for a corrected plan plus fresh approval |
 | `tp.py loop resolve` | resolve a blocked loop: retry, pass, skip, defer or abort |
+| `tp.py loop restore-settings` | restore a digest-only run's exact original settings without changing policy |
+| `tp.py loop resume` | read durable run scope and continuation without dispatch |
 | `tp.py loop retro` | print the loop retrospective |
 | `tp.py loop select` | A/B selection gate: pick the variant that ships (or 'hybrid') |
 | `tp.py loop status` | show the loop's stage, tasks and gates |
@@ -618,6 +622,19 @@ drive the Evaluate-Loop engine
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py loop amend-delivery`
+
+human: exact legacy publication-only post-merge sequencing
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | original human policy owner |
+| `--check` | flag | read-only validation; no journal, projection or outbox write |
+| `--fingerprint` | FINGERPRINT (required) | canonical approved packet SHA-256 |
+| `--from` | AMENDMENT_FROM (required) | exact approved publication amendment packet |
+| `--request` | REQUEST (required) | publication-only human decision |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py loop approve`
 
 record a human approval at a checkpoint gate
@@ -637,16 +654,18 @@ Positional arguments:
 
 - `flow` (required) — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
 
-## `tp.py loop build-quality`
+## `tp.py loop cancel-worker`
 
-admit one typed candidate-bound Build/Fix quality receipt before worker submission or gate evaluation
+human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--receipt` | RECEIPT (required) | completed Build-quality receipt JSON file |
-| `--stage` | one of: execute, fix | optional exact current stage assertion |
-| `--strategy` | STRATEGY (required) | typed test-strategy JSON file |
-| `--task` | TASK (required) | exact approved task id |
+| `--by` | BY (required) | original human policy owner |
+| `--check` | flag | read-only validation; no terminalization or outbox flush |
+| `--fingerprint` | FINGERPRINT (required) | canonical cancellation packet SHA-256 |
+| `--from` | AMENDMENT_FROM (required) | exact legacy worker cancellation packet |
+| `--request` | REQUEST (required) | explicit human cancellation permission |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py loop claim`
 
@@ -739,6 +758,19 @@ Positional arguments:
 | `--timeout` | TIMEOUT | single blocking wait timeout |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py loop continue-build`
+
+human: validate and consume an exact legacy Build scope append without resetting work
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | original human policy owner |
+| `--check` | flag | validate without committing loop state or dispatching |
+| `--fingerprint` | FINGERPRINT (required) | approved canonical amendment packet SHA-256 |
+| `--from` | AMENDMENT_FROM (required) | exact legacy amendment JSON packet with original Plan and settings |
+| `--request` | REQUEST (required) | explicit approved scope and advisory-resource instruction |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py loop evidence`
 
 assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill
@@ -824,13 +856,31 @@ resolve a blocked loop: retry, pass, skip, defer or abort
 
 Positional arguments:
 
-- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`)
+- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`, `limits-advisory`, `reconcile`, `defer-review`, `review-baseline`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--accept-producer-receipt-outage` | flag | accept only the exact fingerprint supplied alongside --by |
-| `--by` | BY | human approving an exact producer-receipt outage |
+| `--by` | BY | human approving the exact recovery decision |
+| `--candidate-fingerprint` | CANDIDATE_FINGERPRINT | exact candidate SHA-256 for the new phase attempt |
 | `--outage-fingerprint` | OUTAGE_FINGERPRINT | exact current evaluator outage fingerprint; replay-safe |
+| `--phase-operation` | PHASE_OPERATION | exact existing phase operation to reconcile or retry once |
+| `--reason` | REASON | explicit Build acceptance, review deferral or EM baseline selection |
+| `--run-id` | RUN_ID | exact admitted legacy run for defer-review or review-baseline |
+| `--task` | TASK | exact human-accepted legacy Build task for defer-review or review-baseline |
+| `--worker-stopped` | flag | attest the expired unbound worker is stopped; not a completion or pass |
+
+## `tp.py loop restore-settings`
+
+restore a digest-only run's exact original settings without changing policy
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--from` | SETTINGS_FROM (required) | original complete settings JSON matching the saved run digest |
+
+## `tp.py loop resume`
+
+read durable run scope and continuation without dispatch
 
 ## `tp.py loop retro`
 

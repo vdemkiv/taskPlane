@@ -240,7 +240,7 @@ class TestCapabilitySnapshot:
 
 
 class TestOnboardingProjection:
-    def test_existing_loop_offers_advisory_continuation_without_claiming_live(
+    def test_existing_loop_offers_read_only_resume_without_claiming_live(
             self):
         ws = _repo()
         _bridge(ws)
@@ -252,18 +252,19 @@ class TestOnboardingProjection:
 
         with mock.patch.object(cli, "_existing_loop_step",
                                return_value="design_approval"):
-            continued = cli._prefer_existing_loop_advisory(ws, view)
+            continued = cli._prefer_existing_loop_resume(ws, view)
 
         assert continued["ready"] is False
         assert continued["effective_path"]["value"] == "transitioning"
-        assert continued["next_action"] == "continue_advisory"
+        assert continued["next_action"] == "resume_run"
         assert continued["continuation"] == {
             "available": True,
             "loop_step": "design_approval",
-            "status": "advisory",
-            "requires": ["--advisory", "--by <human>"],
+            "status": "read_only",
+            "command": "loop resume",
+            "requires": [],
         }
-        assert "start a new task only when live hook enforcement is required" \
+        assert "revalidates authority and live enforcement before dispatch" \
             in continued["effective_path"]["reason"]
 
     def test_fresh_install_still_requires_new_session_for_live_enforcement(
@@ -277,7 +278,7 @@ class TestOnboardingProjection:
         view = hc.onboarding_projection(snapshot)
 
         with mock.patch.object(cli, "_existing_loop_step", return_value=None):
-            unchanged = cli._prefer_existing_loop_advisory(ws, view)
+            unchanged = cli._prefer_existing_loop_resume(ws, view)
 
         assert unchanged["ready"] is False
         assert unchanged["next_action"] == "start_new_session"

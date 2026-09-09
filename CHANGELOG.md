@@ -27,12 +27,12 @@ lens rewrite and never bumped to.
 > remains the historical source-integration boundary on `main`. The unreleased
 > v2.17.22, v2.17.23, v2.17.24, v2.17.25, v2.17.26, and v2.18.0 candidates are superseded;
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
-> superseded unreleased candidates. The forward release candidate moves as v2.19.0,
-> which is not
-> released. Historical
+> superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
+> and v2.19.1 is a reverted unreleased candidate. The forward candidate is
+> v2.20.0, not released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.19.0 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.20.0 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -49,7 +49,9 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.19.0** | **Fresh-task native hook bootstrap and installable package repair — release candidate, not released.** The installed OpenAI package now preserves native SessionStart authority, accepts its launcher-only hook commands during onboarding, and can record the first session-bound receipt in the canonical default store before a fresh linked task has a governed locator. Repository bridges, custom homes, ambiguity, and unrelated chats remain fail closed. An extracted-package regression executes the real onboarding and linked-worktree path end to end. |
+| **v2.20.0** | **Stateless delivery and legacy continuity — release candidate, not released.** Candidate-bound stage handoffs, exact run/settings recovery, native-session attribution, replay-safe retries and administrative cancellation preserve prior work and uncertainty. Delivery review retains the full bounded artifact and reports its original failure; failed gates propagate failure to cleanup. Native J1/J6 validation, final review, required CI, and publication remain separate gates. |
+| **v2.19.1** | **Reverted unreleased candidate.** PR #15 declared this version; [PR #18](https://github.com/vdemkiv/taskPlane/pull/18) restored the exact 2.19.0 baseline without rewriting history. No v2.19.1 tag exists; this candidate is not reused for 2.20.0. |
+| **v2.19.0** | **Fresh-task native hook bootstrap and installable package repair — superseded unreleased baseline.** The installed OpenAI package now preserves native SessionStart authority, accepts its launcher-only hook commands during onboarding, and can record the first session-bound receipt in the canonical default store before a fresh linked task has a governed locator. Repository bridges, custom homes, ambiguity, and unrelated chats remain fail closed. An extracted-package regression executes the real onboarding and linked-worktree path end to end. [PR #18](https://github.com/vdemkiv/taskPlane/pull/18) explicitly restored this unreleased baseline; no v2.19.0 tag exists. |
 | **v2.18.10** | **Fail-closed delivery authority and isolated global hooks — superseded unreleased candidate.** It completed canonical settings, authenticated native metering, evaluator quality evidence, dashboard-source validation, global-hook isolation, and package provenance, but the installed OpenAI archive still rejected its sanitized launcher-only commands during onboarding and fresh native SessionStart could not record a receipt before locator creation. v2.19.0 closes both bootstrap edges. |
 | **v2.18.9** | **Native telemetry, isolated pickups, and one current dashboard — release candidate, not released.** Provider-owned Codex counters are captured at spawn and terminal boundaries, resumed sessions are delta-attributed without double counting, null or zero metering fails closed, and non-zero per-pickup targets and ceilings from canonical settings reach actual hook enforcement. Workers inherit zero conversation turns. Retro and dashboard consumers receive measured totals, while the surfaced dashboard is the full styled current document with a browser-verified visible dependency graph rather than a stale fragment. |
 | **v2.18.8** | **Canonical terminal Plan graph fallback — superseded unreleased candidate.** It restored the authoritative terminal task DAG and truthful unverified waves, but native counter enforcement, zero-context spawn binding, and the exact surfaced dashboard document were not wired end to end. v2.18.9 closes those runtime edges. |

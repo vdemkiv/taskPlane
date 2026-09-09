@@ -218,6 +218,32 @@ def test_current_candidate_has_an_explicit_nonrelease_predecessor():
     assert "never promoted" in disposition["reason"]
 
 
+@pytest.mark.parametrize("damage", [None, "tagged", "missing-changelog"])
+def test_219_rollback_candidates_are_not_fictional_releases(tmp_path, damage):
+    repo = _ReleaseRepository(tmp_path)
+    first = repo.release("1.0.0")
+    _git(tmp_path, "tag", "v1.0.0", first)
+    original = repo.release("2.19.0")
+    repo.release("2.19.1")
+    repo.release("2.19.0")  # Explicit mainline rollback, not a release.
+    repo.release("2.20.0")
+    versions = ["1.0.0", "2.19.0", "2.19.1", "2.20.0"]
+    if damage == "tagged": _git(tmp_path, "tag", "v2.19.0", original)
+    if damage == "missing-changelog": versions.remove("2.19.1")
+    (tmp_path / "CHANGELOG.md").write_text("\n".join(
+        f"| **v{version}** | candidate history |" for version in versions))
+    result = gate.audit(str(tmp_path))
+    if damage is None:
+        assert result["ok"], result
+        for version in ("2.19.0", "2.19.1"):
+            assert gate.NOT_RELEASED[version]["superseded_by"] == "2.20.0"
+            assert "PR #18" in gate.NOT_RELEASED[version]["reason"]
+    else:
+        assert not result["ok"]
+        assert any(row["check"] == "C7" for row in result["problems"])
+    assert "2.19.2" not in gate.NOT_RELEASED
+
+
 def _runtime_with_fingerprint(
     runtime: dict, digest: str, *, name: str = "runner",
     browser: dict | None = None,

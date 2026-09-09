@@ -188,6 +188,21 @@ def evidence(ws: str, task_id: "str | None" = None,
     # into its checkout. Derive the byte-identical output contract in that
     # one missing-file case; a present but corrupt contract still raises.
     active = (tp.load_active(ws) or {}) if os.path.exists(active_path) else {}
+    classification = None
+    if state.get("_build_failed") or task.get("_build_failed") or "failure_classification" in active:
+        # The dispatch owner defines this mode. A caller flag or historical
+        # object must not suppress acceptance effects for an ordinary attempt.
+        try:
+            binding = loop.review_kernel_binding(state, "evaluate", task)
+            if not binding or os.path.realpath(str(binding.get("workspace") or "")) != os.path.realpath(ws):
+                raise ValueError("current Evaluate attempt binding is missing or foreign")
+            classification = loop._failed_build_classification(
+                ws, state, task, evaluator_attempt_id=binding["run_id"])
+            if classification is None or active.get("failure_classification") != classification:
+                raise ValueError("current failure classification contract is missing, stale or incomplete")
+        except (ValueError, TypeError, KeyError) as exc:
+            return {"error":"failure classification evidence refused: " + str(exc),
+                    "acceptance_allowed":False}
     output_contract = active.get("output_contract")
     if not isinstance(output_contract, dict) or \
             output_contract.get("task") != str(task.get("id")):
@@ -217,7 +232,12 @@ def evidence(ws: str, task_id: "str | None" = None,
     # kernel-authored runtime file could even turn it into a hidden rerun.
     # An absent/stale record retains the old fail-safe cache/run path.
     tests = str(task.get("tests") or "").strip()
-    if tests:
+    if classification is not None:
+        out["failure_classification"] = classification
+        out["acceptance_allowed"] = False
+        out["suite"] = {"command":tests, "status":"not-run-classification-only",
+                        "returncode":None, "cited":False, "acceptance_evidence":False}
+    elif tests:
         env = {k: v for k, v in os.environ.items() if k != "TASKPLANE_TASK"}
         force_run = not tp.suite_cache_enabled()
         direct = ((state.get("_suite_evidence") or {}).get(
@@ -328,6 +348,8 @@ def evidence(ws: str, task_id: "str | None" = None,
                    "evidence per criterion, record findings, and set verdict "
                    "to 'pass' only if every obligation holds. An unfilled "
                    "slot is refused at the gate.")
+    if classification is not None:
+        out["note"] = classification["instruction"]
 
     out["verdict_template"] = _verdict_template(out)
     if write:

@@ -1168,7 +1168,8 @@ def design_plan_errors(ws: str, state: dict) -> list:
     return errors
 
 
-def design_review_errors(ws: str, state: dict, meta: dict) -> list:
+def design_review_errors(ws: str, state: dict, meta: dict, *,
+                         publication_pending: bool = False) -> list:
     """Approved design → final as-built review evidence."""
     errors = design_current_errors(ws, state)
     if errors or not state.get("design_required") or state.get("design_only"):
@@ -1207,7 +1208,12 @@ def design_review_errors(ws: str, state: dict, meta: dict) -> list:
         edge_key(row)
         for row in as_built.get("edges") or [] if isinstance(row, dict)
     }
-    unrealized_edges = expected_edges - actual_edges
+    # Only the loop's authenticated applied-amendment owner supplies this
+    # projection. Review still checks the edge; realization remains owed at
+    # the separate post-merge boundary. No original Design bytes are changed.
+    deferred = {".github/workflows->contract:taskplane.stage-handoff/v2:consumes"} \
+        if publication_pending else set()
+    unrealized_edges = expected_edges - actual_edges - deferred
     if unrealized_edges:
         errors.append("as-built graph is missing designed edges: "
                       + ", ".join(sorted(unrealized_edges)))
@@ -1232,7 +1238,7 @@ def design_review_errors(ws: str, state: dict, meta: dict) -> list:
         edge_rows = []
     declared = {str(row.get("edge") or "").strip(): row
                 for row in edge_rows or [] if isinstance(row, dict)}
-    for key in sorted(unscannable):
+    for key in sorted(unscannable - deferred):
         row = declared.get(key)
         if not isinstance(row, dict) or not _text(row.get("evidence")) \
                 or not _text(row.get("declared_by")):

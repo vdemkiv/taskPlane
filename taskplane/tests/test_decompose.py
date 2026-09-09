@@ -394,6 +394,18 @@ class TestCacheAndNoop(unittest.TestCase):
         self.assertEqual(values["cache_hits"], values["components"])
         self.assertGreater(values["components"], 0)
 
+        corrupt = json.loads(after)
+        corrupt["meta"]["source_coverage"]["fingerprint"] = "0" * 64
+        with open(p, "w", encoding="utf-8") as stream:
+            json.dump(corrupt, stream)
+        repaired = dg.scan(ws, decompose=True)
+        dg.require_complete_source_coverage(repaired["meta"]["source_coverage"])
+        with unittest.mock.patch.dict(dg._SCAN_COVERAGE_LIMITS, max_elapsed_ms=0):
+            limited = dg.scan(ws, decompose=True)
+        self.assertEqual(limited["meta"]["source_coverage"]["status"], "partial")
+        self.assertIn("time", {row["reason"] for row in
+            limited["meta"]["source_coverage"]["stopping_conditions"]})
+
     def test_single_component_recompute(self):
         ws = _miniapp(self.tmp)
         g1 = dg.scan(ws, decompose=True)
@@ -438,10 +450,11 @@ class TestFailOpen(unittest.TestCase):
     def test_bad_ast_degrades_module_never_raises(self):
         ws = _bigfile_ws(self.tmp, broken=True)
         g = dg.scan(ws, decompose=True)   # must not raise
-        mod = [c for c in g["components"] if c["module"] == "bigapp/gen"]
-        self.assertEqual([c["id"] for c in mod], ["bigapp/gen::core"])
-        self.assertTrue(mod[0].get("degraded"))
-        self.assertEqual(mod[0]["derived_by"], "core")
+        self.assertIn("bigapp/gen", g["modules"])
+        self.assertNotIn("components", g)
+        self.assertEqual(g["meta"]["source_coverage"]["status"], "partial")
+        with self.assertRaisesRegex(ValueError, "partial"):
+            dg.require_complete_source_coverage(g["meta"]["source_coverage"])
         traces = _decompose_traces(ws)
         self.assertIn("error", traces[-1])
 

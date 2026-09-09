@@ -117,6 +117,118 @@ def _native_approval_fingerprint(decision: dict) -> str:
         canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def precommit_evaluator_selection(runtime, dispatches, *, binding: dict) -> dict:
+    """Inactive composition-root entry; seal exact assignments before dispatch.
+
+    The caller is the incumbent orchestrator, not the evaluated agent. This
+    adapter neither grants authority nor selects additional workers/lenses.
+    """
+    from taskplane import agent_runtime
+
+    assignments = []
+    for dispatch in dispatches:
+        definition = runtime.registry.admit(dispatch.bindings["phase_id"], ()).to_dict()
+        if definition["working_lenses"] or definition["evaluation_lenses"]:
+            raise review_evidence_runtime.ProvenanceError("evaluator selection must exclude working lenses")
+        if dispatch.envelope.get("evaluation_lens_set_fingerprint") != \
+                review_evidence_runtime.content_fingerprint([]) or any(
+                    key in dispatch.envelope for key in
+                    ("working_lenses", "nonce_secret", "lifecycle_capability", "mutable_knowledge")):
+            raise review_evidence_runtime.ProvenanceError("evaluator selection lens authority is invalid")
+        if agent_runtime.package_fingerprint(dispatch.package, dispatch.knowledge,
+                dispatch.envelope) != dispatch.bindings["sealed_package_fingerprint"]:
+            raise review_evidence_runtime.ProvenanceError("evaluator selection package mismatch")
+        assignments.append(dict(dispatch.bindings))
+    return review_evidence_runtime.commit_evaluator_selection(runtime.store,
+        binding=binding, assignments=assignments, evaluation_lenses=[])
+
+
+def engineering_phase_source(ws: str, *, kernel_run_id: str, candidate_sha: str) -> dict:
+    """Read this Engineering kernel's full immutable selection and input.
+
+    This is a direct adapter, not a selector, dispatch or verdict producer.
+    Evaluate's child route cannot stand in for Engineering's own authority.
+    """
+    state = _load_state(ws, kernel_run_id)
+    manifest = copy.deepcopy(state["manifest"])
+    if manifest.get("manifest_bytes") != len(review_evidence_runtime.canonical_bytes(manifest)):
+        raise review_evidence_runtime.ProvenanceError("Engineering selection manifest changed")
+    store = review_evidence_runtime.ArtifactStore(ws)
+    envelope = review_evidence_runtime._load_complete_envelope(store, state["envelope"])
+    target = envelope["target"]
+    if state.get("stage") != "review" or manifest.get("stage") != "review" or \
+            state.get("run_id") != kernel_run_id or manifest.get("run_id") != kernel_run_id or \
+            target.get("step") != "em" or target.get("head") != candidate_sha or \
+            os.path.realpath(str(target.get("workspace") or "")) != os.path.realpath(ws) or \
+            manifest.get("context_fingerprint") != state["envelope"]["fingerprint"]:
+        raise review_evidence_runtime.ProvenanceError("Engineering kernel source is stale or foreign")
+    return {"manifest": manifest, "envelope": state["envelope"],
+        "selection": copy.deepcopy(state.get("slots") or []),
+        "target": copy.deepcopy(target), "impact": copy.deepcopy(envelope["impact"])}
+
+
+def prepare_evaluator_phase(runtime, dispatch, *, selection_ref: dict):
+    return _evaluator_phase(runtime, dispatch, selection_ref=selection_ref, prepare=True)
+
+
+def complete_evaluator_phase(runtime, dispatch, observation, *, selection_ref: dict):
+    return _evaluator_phase(runtime, dispatch, selection_ref=selection_ref, observation=observation)
+
+
+def run_evaluator_phase(runtime, dispatch, *, selection_ref: dict) -> dict:
+    return _evaluator_phase(runtime, dispatch, selection_ref=selection_ref)
+
+
+def _evaluator_phase(runtime, dispatch, *, selection_ref: dict, prepare=False, observation=None):
+    """Inactive evaluator adapter using incumbent runtime and immutable store.
+
+    Selection and pending attempt bytes are durable before runtime dispatch.
+    Replay returns the prior terminal bytes. Missing terminal evidence retains
+    the pending attempt; nonce reconciliation remains the runtime's owner.
+    Evaluators receive only the runtime tool boundary, with no lifecycle or
+    commit capability. The returned result is evidence, never a gate decision.
+    """
+    from dataclasses import replace
+    from taskplane import agent_runtime, stage_entities
+
+    evidence = review_evidence_runtime
+    selected = evidence.read_evaluator_selection(runtime.store, selection_ref)
+    assignment = dict(dispatch.bindings)
+    if assignment not in selected["assignments"] or \
+            agent_runtime.package_fingerprint(dispatch.package, dispatch.knowledge,
+                dispatch.envelope) != assignment["sealed_package_fingerprint"]:
+        raise evidence.ProvenanceError("evaluator selection does not match dispatch")
+    key = evidence.evaluator_attempt_key(selection_ref, assignment)
+    runtime.store.put("evaluator-attempt", {"selection_digest": selection_ref["digest"],
+        "assignment": assignment}, fingerprint=key)
+    prior = next((ref for ref in runtime.store.references("evaluator-attempt-result")
+                  if ref["fingerprint"] == key), None)
+    if prior is not None:
+        result = stage_entities.validate_contract(runtime.store.read(prior))
+        if any(result.get(field) != value for field, value in assignment.items()):
+            raise evidence.ProvenanceError("evaluator attempt result binding mismatch")
+        return result
+    def launch(envelope, package, boundary):
+        # Recheck the immutable selection at the actual external-effect edge.
+        # The nonce owner has already reserved uncertainty before entering here.
+        current = evidence.read_evaluator_selection(runtime.store, selection_ref)
+        if current != selected or dict(dispatch.bindings) != assignment or \
+                agent_runtime.package_fingerprint(package, dispatch.knowledge, envelope) != \
+                assignment["sealed_package_fingerprint"]:
+            raise evidence.ProvenanceError("evaluator selection changed before effect")
+        return runtime.launch(envelope, package, boundary)
+    if prepare:
+        return runtime.prepare(dispatch)
+    result = (runtime.complete(agent_runtime.PreparedDispatch(dispatch), observation)
+        if observation is not None else replace(runtime, launch=launch).run(dispatch))
+    # External completion retains a pending assignment on missing/uncertain
+    # observations. The synchronous API retains its established refusal record
+    # so unfavorable launch-loss evidence cannot disappear from collection.
+    if observation is None or (result.get("terminal_identity") and result.get("effect_state") not in {"none", "uncertain"}):
+        runtime.store.put("evaluator-attempt-result", result, fingerprint=key)
+    return result
+
+
 class ReviewKernelError(RuntimeError):
     """A normal review cannot preserve the selective-kernel contract."""
 
@@ -4444,6 +4556,9 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
         runnability=runnability, requirement=requirement or {},
         acceptance=acceptance or [], contracts=contracts or [],
         change={"type": task_type, "stage": stage, "dor": dor,
+                **({"source_derived_seams": evidence.source_derived_review_seams(
+                    target=target, diff=diff, graph=graph, impact=quality.get("impact") or impact,
+                    graph_quality=quality)} if stage == "review" else {}),
                 "review_depth_policy": copy.deepcopy(depth_policy),
                 "routing_input": _portable_ref(routing_input_ref),
                 "routing_decision": _portable_ref(decision_ref),

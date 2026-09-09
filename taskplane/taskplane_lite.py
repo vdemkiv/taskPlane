@@ -99,7 +99,7 @@ class StateError(RuntimeError):
 
 
 def atomic_write_json(path: str, data, *, indent: int = 1,
-                      sort_keys: bool = False) -> None:
+                      sort_keys: bool = False, private: bool = False) -> None:
     """Write JSON durably: fsynced temp + replace + parent-directory fsync.
 
     A crash mid-write leaves the previous version intact instead of a torn
@@ -116,6 +116,10 @@ def atomic_write_json(path: str, data, *, indent: int = 1,
         # these artifacts are fingerprinted and byte-compared (the audit
         # differential caught it: b'{\r\n  "reviews": 6\r\n}').
         with open(tmp, "x", encoding="utf-8", newline="") as f:
+            if private:
+                # Set custody before writing any secret, including to the
+                # temporary inode used by the incumbent atomic replacement.
+                os.fchmod(f.fileno(), 0o600)
             json.dump(data, f, indent=indent, sort_keys=sort_keys)
             f.flush()
             os.fsync(f.fileno())
@@ -3227,6 +3231,13 @@ def workspace_fingerprint(workspace: str, snapshot_ref: str | None = None,
     for raw in extra_paths or []:
         raw = str(raw or "").strip()
         if os.path.isabs(raw):
+            # Normalize an exact contained producer path to the same identity
+            # as its relative spelling; legacy .eval outputs are not managed
+            # external paths and must not silently disappear from the hash.
+            relative = os.path.relpath(raw, workspace)
+            if os.path.normpath(raw) == raw and _submission_relative_path(workspace, relative) is not None:
+                entries.append((relative.replace(os.sep, "/"), raw))
+                continue
             import storage as runtime_storage
             locator = runtime_storage.load_workspace_locator(workspace)
             resolved = os.path.realpath(raw)
@@ -3701,6 +3712,7 @@ STAGE_RECEIPT_SCHEMA = "taskplane.stage-operation-receipt/v1"
 STAGE_AUTHORITY_REFERENCE_SCHEMA = \
     "taskplane.stage-authority-reference/v1"
 STAGE_HANDOFF_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v1"
+STAGE_HANDOFF_V2_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v2"
 MAX_STAGE_STARTUP_BYTES = 128 * 1024
 MAX_STAGE_RECEIPT_BYTES = 2 * 1024 * 1024
 _STAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -3923,11 +3935,43 @@ def _verify_dispatch_result(stage: dict, receipt: dict,
 
 def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
                                    selected_artifacts: list) -> dict:
-    if not isinstance(handoff, dict) or set(handoff) != _STAGE_HANDOFF_FIELDS:
+    entities, stage_handoff = _stage_modules()
+    is_v2 = isinstance(handoff, dict) and handoff.get("schema") == entities.HANDOFF_V2_SCHEMA
+    fields = _STAGE_HANDOFF_FIELDS | (entities._HANDOFF_V2_ADDITIONS if is_v2 else frozenset())
+    if not isinstance(handoff, dict) or set(handoff) != fields:
         raise StageDispatchError("verified handoff fields are invalid")
-    if handoff.get("schema") != "taskplane.stage-handoff/v1":
+    if handoff.get("schema") != "taskplane.stage-handoff/v1" and not is_v2:
         raise StageDispatchError("verified handoff schema is invalid")
-    _, stage_handoff = _stage_modules()
+    if is_v2:
+        try:
+            entities.validate_contract(handoff["phase_result"])
+            selected = set()
+            produced = []
+            for group in ("produced_artifacts", "inherited_artifacts"):
+                entities._schema_artifacts(handoff[group], group, references=True)
+                for row in handoff[group]:
+                    reference = row["reference"]
+                    identity = (reference["kind"], reference["fingerprint"])
+                    if identity in selected:
+                        raise ValueError("v2 artifact has duplicate ownership")
+                    selected.add(identity)
+                    if group == "produced_artifacts":
+                        produced.append(reference)
+            if selected != {(ref["kind"], ref["fingerprint"]) for ref in selected_artifacts} or \
+                    sorted(produced, key=lambda ref: (ref["kind"], ref["fingerprint"])) != sorted(
+                        handoff["phase_result"]["collected_output_references"],
+                        key=lambda ref: (ref["kind"], ref["fingerprint"])):
+                raise ValueError("v2 package differs from its collected outputs")
+            for receipt in handoff["knowledge_apply_receipts"]:
+                entities.validate_contract(receipt)
+            entities._contract_strings(handoff["unresolved_issues"], "unresolved issues")
+        except ValueError as exc:
+            raise StageDispatchError("verified v2 handoff is invalid") from exc
+        result = handoff["phase_result"]
+        if result["status"] != "accepted" or handoff["producer"]["outcome"] != "done" or \
+                result["run_id"] != stage["run_id"] or \
+                result["authority_fingerprint"] != stage["authority"]["authority_fingerprint"]:
+            raise StageDispatchError("verified v2 result binding is invalid")
     try:
         expected = stage_handoff.manifest_fingerprint(handoff)
     except (TypeError, ValueError) as exc:
@@ -4102,7 +4146,9 @@ def _dispatch_handoff_projection(handoff: dict,
     """Make a content-addressed handoff projection safe for a stage worker."""
     projected = _json_detach(handoff, "verified handoff")
     source_fingerprint = projected.pop("fingerprint")
-    projected["schema"] = STAGE_HANDOFF_DISPATCH_SCHEMA
+    projected["schema"] = (STAGE_HANDOFF_V2_DISPATCH_SCHEMA
+        if handoff["schema"] == "taskplane.stage-handoff/v2"
+        else STAGE_HANDOFF_DISPATCH_SCHEMA)
     projected["source_fingerprint"] = source_fingerprint
     projected["authorization"] = _json_detach(
         authority_reference, "stage authority reference")
@@ -4114,8 +4160,12 @@ def _dispatch_handoff_projection(handoff: dict,
 def _verify_dispatch_handoff_projection(value, authority_reference: dict) \
         -> dict:
     fields = _STAGE_HANDOFF_FIELDS | {"source_fingerprint"}
+    is_v2 = isinstance(value, dict) and value.get("schema") == STAGE_HANDOFF_V2_DISPATCH_SCHEMA
+    if is_v2:
+        entities, _ = _stage_modules()
+        fields |= entities._HANDOFF_V2_ADDITIONS
     if not isinstance(value, dict) or set(value) != fields or \
-            value.get("schema") != STAGE_HANDOFF_DISPATCH_SCHEMA:
+            value.get("schema") not in {STAGE_HANDOFF_DISPATCH_SCHEMA, STAGE_HANDOFF_V2_DISPATCH_SCHEMA}:
         raise StageDispatchError("stage dispatch handoff projection is invalid")
     _stage_fingerprint(
         value.get("source_fingerprint"), "source handoff fingerprint")
@@ -5080,13 +5130,34 @@ def _loop_submission_status(workspace: str, contract: dict, binding: dict,
     snapshot = submission.get("snapshot")
     fingerprint = submission.get("fingerprint")
     evidence_paths = submission.get("evidence_paths")
+    def valid_evidence_path(item):
+        if _submission_relative_path(submission_workspace, item) is not None:
+            return True
+        # The incumbent producer names repository outputs with absolute paths.
+        # Admit only that exact stage-owned path, never arbitrary absolute input.
+        if isinstance(item, str) and os.path.isabs(item) and os.path.normpath(item) == item:
+            import storage as runtime_storage
+            if item in runtime_storage.submission_evidence_paths(submission_workspace, stage):
+                relative = os.path.relpath(item, submission_workspace)
+                if _submission_relative_path(submission_workspace, relative) is not None:
+                    return True
+        if not contract.get("phase_runtime") or stage not in {"evaluate", "em"}:
+            return False
+        # Stage-native review submissions name the incumbent's exact managed
+        # output paths. This does not admit arbitrary external evidence or
+        # change the repository-only artifact-submission locator contract.
+        try:
+            import storage as runtime_storage
+            return (item in runtime_storage.submission_evidence_paths(submission_workspace, stage)
+                and runtime_storage.managed_path_allowed(submission_workspace, item))
+        except (ValueError, OSError):
+            return False
     if (not isinstance(snapshot, str) or not snapshot
             or not isinstance(fingerprint, str)
             or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
             or not isinstance(evidence_paths, list)
             or len(evidence_paths) > 128
-            or any(_submission_relative_path(submission_workspace, item) is None
-                   for item in evidence_paths)):
+            or any(not valid_evidence_path(item) for item in evidence_paths)):
         return _submission_result(contract, binding, "corrupt",
                                   artifact=artifact, recovery=recovery)
     try:
@@ -5699,6 +5770,17 @@ def bind_worker_contract_event(workspace: str, event: dict, *,
         raise _worker_lifecycle_error(
             workspace, "worker start does not identify exactly one pending slot")
     slot, contract = candidates[0]
+    with file_lock(active_contract_path(workspace, slot)):
+        return _bind_worker_contract_slot(workspace, slot, owner, now=now)
+
+
+def _bind_worker_contract_slot(workspace: str, slot: str, owner: dict, *, now=None) -> dict:
+    # Serialize activation with exact-slot recovery; a delayed Start cannot
+    # resurrect an administratively retired pending contract.
+    contract = load_json(active_contract_path(workspace, slot), default=None,
+                         what="pending worker contract")
+    if not isinstance(contract, dict):
+        raise _worker_lifecycle_error(workspace, "worker slot is no longer pending")
     lifecycle = contract["worker_lifecycle"]
     if lifecycle.get("status") == "active":
         if lifecycle.get("owner") != owner:
@@ -5749,7 +5831,8 @@ def _generic_activity_authority(workspace: str, contract: dict) \
     evidence; it cannot activate, release, gate, or route a worker.
     """
     lifecycle = contract.get("worker_lifecycle") or {}
-    if lifecycle.get("design_host_authority") is not None:
+    if any(lifecycle.get(key) is not None for key in (
+            "design_host_authority", "plan_host_authority")):
         return None
     root = contract.get("run_artifact_root")
     binding = contract.get("run_artifact_binding")
@@ -5927,6 +6010,25 @@ def record_worker_terminal(
                 or observed != owner:
             raise _worker_lifecycle_error(
                 workspace, "terminal event does not match worker owner")
+    elif authority == "phase-observation":
+        # Recovery consumes the nonce owner's signed facts. It never invents
+        # a callback or treats a controller's assertion as a native Stop.
+        from taskplane import design_host_transport, review_evidence
+        requested = contract.get("phase_runtime") or {}
+        material = review_evidence.ArtifactStore(workspace).read(requested["reference"])
+        if material["contract_slot"] != slot or material["bindings"]["operation_id"] != requested["operation_id"]:
+            raise _worker_lifecycle_error(workspace, "phase terminal binding changed")
+        source = design_host_transport.phase_nonce_source(sys.modules[__name__], workspace,
+            requested["run_id"], existing_only=True)
+        issued = source.recover(material["nonce_bindings"])
+        source.validate(issued, material["nonce_bindings"], enforce_deadline=False)
+        start, terminal = source.phase_hooks(issued, material["nonce_bindings"])
+        if lifecycle.get("status") != "active" or any(owner != {key: observed["owner"][key]
+                for key in ("session_id", "agent_id", "task_name")} for observed in (start, terminal)) or \
+                outcome != terminal["outcome"] or submission_status not in {
+                    "phase-collected:" + terminal["claim"], "phase-terminal:" + terminal["claim"]}:
+            raise _worker_lifecycle_error(workspace, "phase terminal owner or outcome changed")
+        now = int(terminal["observed_at"])
     elif authority not in {"loop-gate", "session-start", "orphan-recovery"}:
         raise _worker_lifecycle_error(
             workspace, "worker terminal authority is unsupported")
@@ -6076,6 +6178,46 @@ def _verify_worker_terminal_receipt(workspace: str, slot: str,
                 workspace, f"worker terminal receipt {field} mismatches slot")
 
 
+def released_worker_contract(workspace: str, slot: str) -> dict:
+    """Read one exact signed quarantine for a submission-bound terminal slot."""
+    if not _TASK_SLOT_RE.fullmatch(str(slot or "")):
+        raise _worker_lifecycle_error(workspace, "terminal worker slot is invalid")
+    terminal_path = _worker_terminal_path(workspace, slot)
+    if os.path.islink(terminal_path):
+        raise _worker_lifecycle_error(workspace, "terminal receipt is symlinked")
+    receipt = load_json(terminal_path, what="exact worker terminal receipt")
+    identifier = str((receipt or {}).get("receipt_id") or "")
+    if not re.fullmatch(r"worker-terminal-[0-9a-f]{24}", identifier):
+        raise _worker_lifecycle_error(workspace, "terminal receipt identity is invalid")
+    archive = os.path.join(tp_dir(workspace), "quarantine", "contracts",
+        f"{slot}-{identifier.split('-')[-1]}.json")
+    if os.path.islink(archive):
+        raise _worker_lifecycle_error(workspace, "terminal quarantine is symlinked")
+    contract = load_json(archive, what="exact worker quarantine")
+    lifecycle = (contract or {}).get("worker_lifecycle") or {}
+    action = lifecycle.get("release_action")
+    _verify_worker_release_action(workspace, slot, action, contract)
+    _verify_worker_terminal_receipt(workspace, slot, receipt, contract, action)
+    if (lifecycle.get("status") != "released" or lifecycle.get("terminal") != receipt
+            or receipt.get("authority") not in {"host-lifecycle", "phase-observation"}
+            or receipt.get("owner") != lifecycle.get("owner")):
+        raise _worker_lifecycle_error(workspace, "quarantine lacks its exact native terminal")
+    if receipt["authority"] == "phase-observation":
+        from taskplane import design_host_transport, review_evidence
+        requested = contract.get("phase_runtime") or {}
+        material = review_evidence.ArtifactStore(workspace).read(requested["reference"])
+        source = design_host_transport.phase_nonce_source(sys.modules[__name__], workspace,
+            requested["run_id"], existing_only=True)
+        issued = source.recover(material["nonce_bindings"])
+        start, terminal = source.phase_hooks(issued, material["nonce_bindings"])
+        if material["contract_slot"] != slot or material["bindings"]["operation_id"] != requested["operation_id"] or any(
+                lifecycle["owner"] != {key: observed["owner"][key] for key in ("session_id", "agent_id", "task_name")}
+                for observed in (start, terminal)) or receipt["outcome"] != normalize_worker_terminal_outcome(terminal["outcome"]) or \
+                receipt["submission_status"] not in {"phase-terminal:" + terminal["claim"], "phase-collected:" + terminal["claim"]}:
+            raise _worker_lifecycle_error(workspace, "quarantine differs from its authenticated phase terminal")
+    return contract
+
+
 def release_worker_contract(
         workspace: str, slot: str, *, action: dict,
         terminal_receipt: dict | None = None) -> dict:
@@ -6155,11 +6297,15 @@ def validate_design_lens_dispatch_completion(
 
 def _worker_loop_completed(contract: dict, state: dict | None) -> bool:
     lifecycle = contract.get("worker_lifecycle") or {}
+    stage = lifecycle.get("stage")
+    if stage not in {"pm", "design", "plan", "em", "execute", "fix", "evaluate", "design-lens", "plan-lens"}:
+        return False  # Unknown workers never inherit an ordinary task's completion.
     if lifecycle.get("status") == "terminal":
         return True
+    if stage in {"design-lens", "plan-lens"}:
+        return False  # Only their authenticated terminal owner can complete lenses.
     if not isinstance(state, dict):
         return False
-    stage = lifecycle.get("stage")
     task = str(lifecycle.get("task") or "")
     step = state.get("step")
     if stage in {"pm", "design", "plan", "em"}:
@@ -6265,6 +6411,13 @@ def sweep_completed_worker_contracts(
         if not stage or not task:
             raise _worker_lifecycle_error(
                 workspace, f"worker slot {slot} lifecycle is malformed")
+        if lifecycle.get("status") == "terminal":
+            receipt = lifecycle.get("terminal")
+            if not isinstance(receipt, dict):
+                raise _worker_lifecycle_error(workspace, "terminal worker lacks its receipt")
+            action = lifecycle.get("release_action")
+            _verify_worker_release_action(workspace, slot, action, contract)
+            _verify_worker_terminal_receipt(workspace, slot, receipt, contract, action)
         identities.setdefault((stage, task), []).append(slot)
     for (stage, task), slots in sorted(identities.items()):
         if len(slots) > 1:
@@ -6866,7 +7019,7 @@ def dispatch_fields(kind: str, agent: str, ref: str,
                     model_tier: str, *, capability_snapshot=None,
                     enforcement_mode: str | None = None,
                     observed_route: dict | None = None,
-                    settings_context=None) -> dict:
+                    settings_context=None, lens_stage: str | None = None) -> dict:
     """Resolve one settings snapshot, then delegate pure brief assembly."""
     settings = settings_context or _canonical_operational_settings(
         legacy_environment=True)
@@ -6879,6 +7032,10 @@ def dispatch_fields(kind: str, agent: str, ref: str,
     selected = stage or {
         "cheap": "evaluate", "standard": "build", "deep": "design",
     }.get((model_tier or "standard").strip().lower(), "build")
+    if lens_stage is not None:
+        if agent != "tp-lens" or lens_stage not in {"design", "plan"}:
+            raise ValueError("explicit lens stage must be Design or Plan")
+        selected = lens_stage
     route = None
     if capability_snapshot is not None:
         import host_capabilities
