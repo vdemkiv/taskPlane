@@ -331,7 +331,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "237f943b57374d0e7aa2fd4314bb75b6733d52507e28d7e4777dcb7917d634ff",
+    "fingerprint": "0ff52038fcf185c6655c58a164f1bb873c43eb3a5a3549ae409ae0f0c59ca8a5",
     "gate": "human",
     "id": "evaluate",
     "model_tier": "inherit",
@@ -339,6 +339,12 @@
       "build"
     ],
     "produces": [
+      {
+        "artifact_class": "judgment",
+        "artifact_schema_version": "taskplane.evaluator-output/v2",
+        "cardinality": "one",
+        "required": true
+      },
       {
         "artifact_class": "stage",
         "artifact_schema_version": "taskplane.stage/v1",
@@ -388,7 +394,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "24e5cc106ab38bf7a9be219b5d83464aff0f0b3dd1c9f931f19a1a0859147bce",
+    "fingerprint": "fe47a6b3d1bf011fbece883c2cc270944e24181d0dfc44fa3813c87761137e4d",
     "gate": "human",
     "id": "engineering",
     "model_tier": "inherit",
@@ -396,6 +402,12 @@
       "evaluate"
     ],
     "produces": [
+      {
+        "artifact_class": "judgment",
+        "artifact_schema_version": "taskplane.evaluator-output/v2",
+        "cardinality": "one",
+        "required": true
+      },
       {
         "artifact_class": "stage",
         "artifact_schema_version": "taskplane.stage/v1",

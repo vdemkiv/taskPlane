@@ -14,6 +14,62 @@ from taskplane import evaluation_output, failure_routing
 from taskplane.tests.test_r0001_agent_runtime import _setup
 
 
+def _spec_evaluator(tmp_path, phase="evaluate"):
+    """Actual declared producer/collector; only worker authorship/host are simulated."""
+    from taskplane import loop
+    from taskplane.tests.test_r0001_phase_agents_spec import _registry
+    from taskplane.tests.test_stage_entities import _stage, _authority
+
+    runtime, original, calls = _setup(tmp_path)
+    runtime.registry = _registry()
+    definition = runtime.registry.admit(phase, ()).to_dict()
+    envelope = delivery_ports.dispatch_envelope(phase, definition["role"], "T13",
+        definition["model_tier"], role_instructions="Read the sealed evidence.",
+        requested_model=None, requested_effort="high", settings_digest="b" * 64)
+    envelope["evaluation_lens_set_fingerprint"] = review_evidence.content_fingerprint([])
+    nonce_binding = {**original.nonce_bindings, "phase_id": phase,
+        "operation_id": phase + "-operation", "attempt_id": phase + "-attempt",
+        "phase_definition_fingerprint": definition["fingerprint"],
+        "definition_set_fingerprint": runtime.registry.definition_set_fingerprint,
+        "sealed_package_fingerprint": agent_runtime.package_fingerprint(original.package, original.knowledge, envelope)}
+    issued = runtime.nonce.issue(nonce_binding)
+    bindings = {**original.bindings, **{key: value for key, value in nonce_binding.items()
+        if key in original.bindings and key != "deadline"}, "nonce_digest": issued.receipt["nonce_digest"],
+        "skill_content_fingerprint": definition["skill_content_fingerprint"],
+        "validator_identities": definition["domain_validator_refs"],
+        "validator_inventory_fingerprint": definition["validator_inventory_fingerprint"],
+        "capability_set_fingerprint": runtime.registry.capability_set_fingerprint,
+        "produced_artifact_schema_versions": [{key: row[key] for key in
+            ("artifact_class", "artifact_schema_version")} for row in definition["produces"]]}
+    dispatch = replace(original, bindings=bindings, nonce_bindings=nonce_binding, issued=issued, envelope=envelope)
+    runtime.validators = {"taskplane.loop.validate_spec_phase_artifact": loop.validate_spec_phase_artifact}
+    runtime.launch = lambda *args: calls.append("launch") or "simulated-worker-1"
+    runtime.continuation = lambda reason: {"kind": "hold" if reason else "evaluate", "phase_id": phase}
+    evidence = {"schema": "taskplane.failure-evidence/v1", "mode": "simulated-worker-authorship",
+        "detail": "This local connection probe does not establish native acceptance."}
+    failure = failure_routing.validate_failure_record({
+        "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID, "id": "native-proof-unavailable", "stage": "evaluate",
+        "source": "simulated-worker", "repro": "Inspect the local probe's absent native proof.",
+        "evidence": evidence, "evidence_digest": failure_routing.evidence_digest(evidence),
+        "class": "unknown", "reason": "Native acceptance is not established by this local probe.",
+        "owner": "orchestrator", "cluster": "native-proof", "route": "hold",
+        "candidate": {"id": "local-candidate", "fingerprint": bindings["candidate_fingerprint"]}})
+    runtime.fixture_judgment = {"schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID, "task": "T13",
+        "requirement": "R-0001", "verdict": "fail", "criteria": [{"criterion": "FP-AC03",
+            "status": "cannot-verify", "evidence": "No native acceptance in this simulated-host probe."}],
+        "evaluation": {"status": "complete", "reason_code": "none", "detail": "Independent failure remains owed."},
+        "graph": {"dispositions": [], "requirements_checked": [], "contracts_checked": []}, "failures": [failure]}
+    def observe(identity):
+        calls.append("observe")
+        stage = _stage(run_id=bindings["run_id"], stage_kind=phase,
+            authority=_authority(run_id=bindings["run_id"]))
+        outputs = loop.store_spec_phase_outputs(runtime.store, definition,
+            {"stage": stage, "judgment": runtime.fixture_judgment})
+        return agent_runtime.Observation(identity, (), "simulated-stop", "effect_free", outputs)
+    runtime.observe = observe
+    return runtime, dispatch, calls
+
+
 def _evaluator(tmp_path):
     runtime, dispatch, calls = _setup(tmp_path)
     # Consumer-only definition fixture: exercise the real registry and runtime
@@ -98,6 +154,49 @@ def _binding(dispatch):
 
 def _select(runtime, dispatches):
     return review.precommit_evaluator_selection(runtime, dispatches, binding=_binding(dispatches[0]))
+
+
+@pytest.mark.parametrize("phase", ["evaluate", "engineering"])
+@pytest.mark.parametrize("damage", ["none", "missing-judgment", "foreign-task", "foreign-requirement",
+    "invalid-failure", "pass-without-child-evidence", "foreign-stage"])
+def test_declared_evaluator_output_reaches_collector_without_promoting_failure(tmp_path, phase, damage):
+    runtime, dispatch, calls = _spec_evaluator(tmp_path, phase)
+    selected = _select(runtime, [dispatch])
+    if damage == "foreign-task":
+        runtime.fixture_judgment["task"] = "foreign"
+    elif damage == "foreign-requirement":
+        runtime.fixture_judgment["requirement"] = "foreign"
+    elif damage == "invalid-failure":
+        runtime.fixture_judgment["failures"][0].pop("evidence_digest")
+    elif damage == "pass-without-child-evidence":
+        runtime.fixture_judgment.update(verdict="pass", failures=[])
+    elif damage in {"missing-judgment", "foreign-stage"}:
+        original = runtime.observe
+        def observe(identity):
+            observed = original(identity)
+            if damage == "missing-judgment":
+                return replace(observed, outputs=tuple(row for row in observed.outputs if row.artifact_class == "stage"))
+            from taskplane.tests.test_stage_entities import _stage, _authority
+            foreign = _stage(run_id="foreign", stage_kind=phase, authority=_authority(run_id="foreign"))
+            return replace(observed, outputs=tuple(
+                agent_runtime.Artifact("stage", "taskplane.stage/v1", runtime.store.put("stage", foreign))
+                if row.artifact_class == "stage" else row for row in observed.outputs))
+        runtime.observe = observe
+    result = review.run_evaluator_phase(runtime, dispatch, selection_ref=selected)
+    if damage == "foreign-stage" and result["status"] == "accepted":
+        with pytest.raises(ValueError, match="stage metadata is foreign"):
+            review_evidence.collect_evaluator_attempts(runtime.store, selected)
+        return
+    collected = review_evidence.collect_evaluator_attempts(runtime.store, selected)
+    assert collected["admissible"] is collected["progression_authority"] is False
+    if damage == "none":
+        assert result["status"] == "accepted"
+        assert collected["gaps"] == []
+        assert len(collected["attempts"][0]["judgments"]) == 1
+        assert len(result["collected_output_references"]) == 2
+        assert collected["unfavorable_attempts"] == [dispatch.bindings["attempt_id"]]
+    else:
+        assert collected["gaps"] or result["status"] == "refused"
 
 
 def _second(runtime, dispatch):

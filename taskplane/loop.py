@@ -11278,7 +11278,8 @@ def _phase_bridge_prepare(ws: str, state: Mapping[str, object], contract: dict,
     authority = stage["authority"]
     _phase_bridge_authorize(ws, context, context["store"].load(context["run_id"]))
     producer_owned = {"plan": {"source-coverage", "decomposition", "seam-manifest"},
-        "build": {"stage", "realized-conformance"}}.get(stage["stage_kind"], set())
+        "build": {"stage", "realized-conformance"}, "evaluate": {"stage"},
+        "engineering": {"stage"}}.get(stage["stage_kind"], set())
     worker_outputs = {row["artifact_class"] for row in definition["produces"]} - producer_owned
     paths = config["output_paths"].get(stage["stage_kind"], {} if not worker_outputs else None)
     if not isinstance(paths, dict) or set(paths) != worker_outputs:
@@ -11517,7 +11518,7 @@ def _collect_phase_attempt(ws, attempt, *, completed_worker=None):
             phase_id=stage["stage_kind"], expected_authority_revision=stage["authority"]["authority_revision"],
             expected_authority_fingerprint=stage["authority"]["authority_fingerprint"], expected_run_id=run_id,
             expected_candidate_fingerprint=dispatch.bindings["candidate_fingerprint"])
-    if stage["stage_kind"] == "build":
+    if stage["stage_kind"] in {"build", "evaluate", "engineering"}:
         # The authenticated terminal precedes this read. Preserve the current
         # control-plane stage exactly; it is not a worker-authored success or
         # a fabricated stage terminal. Lease reconciliation still gates collection.
@@ -11865,6 +11866,8 @@ def validate_spec_phase_artifact(value: Mapping[str, object]) -> dict:
         return test_strategy.validate_strategy(value)
     if schema == "taskplane.stage/v1":
         return stage_entities.validate_stage(value)
+    if schema == evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID:
+        return evaluation_output.validate_evaluator_value(dict(value), expected_lenses=[])
     if schema in {"taskplane.source-touchpoint-coverage/v1", "taskplane.dependency-decomposition/v1",
             "taskplane.cross-task-seam-manifest/v1", "taskplane.realized-seam-conformance/v1"}:
         from taskplane import graph_decomposition, review_evidence

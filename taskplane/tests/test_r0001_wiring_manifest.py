@@ -34,9 +34,7 @@ PLAN = json.loads((ROOT / "plan/tasks.json").read_text())
 ROWS = {row["id"]: row for row in PLAN["wiring_manifest"]}
 
 # These are unresolved production obligations, never skips or policy passes.
-UNRESOLVED = {
-    "W19": "spec-phase-definitions evaluate produces stage/v1, but collect_evaluator_attempts requires an evaluator judgment",
-}
+UNRESOLVED = {}
 
 
 def policy_pair():
@@ -191,6 +189,24 @@ def _authorization_pair(*, severed):
 
 
 def _evaluator_pair(edge_id, tmp_path, *, severed):
+    if edge_id == "W19":
+        from taskplane.tests.test_r0001_evaluator_integrity import _spec_evaluator, _select
+        runtime, dispatch, calls = _spec_evaluator(tmp_path)
+        selected = _select(runtime, [dispatch])
+        result = review.run_evaluator_phase(runtime, dispatch, selection_ref=selected)
+        assert result["status"] == "accepted", result
+        collected = review_evidence.collect_evaluator_attempts(runtime.store, selected)
+        # A typed FAIL proves the connection, never a passing review or native acceptance.
+        assert collected["gaps"] == [], collected
+        assert collected["unfavorable_attempts"] == [dispatch.bindings["attempt_id"]]
+        assert collected["admissible"] is collected["progression_authority"] is False
+        if severed:
+            reference = collected["attempts"][0]["judgments"][0]
+            path = Path(runtime.store.root) / reference["kind"] / (reference["fingerprint"] + ".json")
+            path.unlink()
+            with pytest.raises(ValueError):
+                review_evidence.collect_evaluator_attempts(runtime.store, selected)
+        return selected["fingerprint"]
     runtime, original, calls = _setup(tmp_path)
     definition = runtime.registry.admit("evaluate", ()).to_dict()
     envelope = delivery_ports.dispatch_envelope("evaluate", definition["role"], "T16B",
@@ -216,20 +232,7 @@ def _evaluator_pair(edge_id, tmp_path, *, severed):
         "impact_manifest_fingerprint": "3" * 64, "task_id": "T16B", "requirement_id": "R-0001",
         "design_fingerprint": "4" * 64, "plan_fingerprint": "5" * 64, "settings_digest": "b" * 64})
     assert review.prepare_evaluator_phase(runtime, dispatch, selection_ref=selected)
-    if edge_id == "W19":
-        result = review.run_evaluator_phase(runtime, dispatch, selection_ref=selected)
-        assert result["status"] == "accepted"
-        collected = review_evidence.collect_evaluator_attempts(runtime.store, selected)
-        assert collected["admissible"], f"W19 product contract mismatch: {collected['gaps']}"
-        if severed:
-            # Only reachable once the normal evaluator produces an admissible
-            # judgment. Never use a hand-written judgment to reach this edge.
-            reference = result["collected_output_references"][0]
-            path = Path(runtime.store.root) / reference["kind"] / (reference["fingerprint"] + ".json")
-            path.unlink()
-            refused = review_evidence.collect_evaluator_attempts(runtime.store, selected)
-            assert not refused["admissible"] and refused["gaps"]
-    elif severed:
+    if severed:
         if edge_id == "W17":
             selected_input = None
         else:

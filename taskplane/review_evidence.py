@@ -288,6 +288,12 @@ def collect_evaluator_attempts(store, selection_ref: dict) -> dict:
             unfavorable.append(row["attempt_id"])
         for reference in result["collected_output_references"]:
             value = store.read(reference)
+            if value.get("schema") == "taskplane.stage/v1":
+                metadata = stage_entities.validate_stage(value)
+                if metadata["run_id"] != selected["binding"]["run_id"] or \
+                        metadata["stage_kind"] != selected["binding"]["phase_id"]:
+                    raise ProvenanceError("evaluator stage metadata is foreign")
+                continue
             row["judgments"].append(reference)
             try:
                 # Pass evidence is validated by the incumbent durable child
