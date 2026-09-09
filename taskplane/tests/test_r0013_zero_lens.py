@@ -117,7 +117,7 @@ def _native_evidence():
     return trace, ledger
 
 
-def _start(ws, head, *, receipt=review._DELIVERY_MODE_AUTHORITY_UNSET):
+def _start(ws, head, *, receipt=review._DELIVERY_MODE_AUTHORITY_UNSET, artifact=None):
     return review.start_review(
         str(ws), target={"fingerprint": "e" * 64, "head": head,
                          "task": "task-a"},
@@ -127,7 +127,8 @@ def _start(ws, head, *, receipt=review._DELIVERY_MODE_AUTHORITY_UNSET):
                "edges": []},
         impact={"touched": ["src"], "impacted": {}, "total_impacted": 1,
                 "unknown": []},
-        diff={"files": ["src/feature.py"], "changed_symbols": ["VALUE"]},
+        diff={"files": ["src/feature.py"], "changed_symbols": ["VALUE"],
+              **({"artifact": artifact} if artifact else {})},
         runnability={"summary": "available", "checks": []},
         requirement={"id": "R-0013", "text": "final EM"},
         acceptance=["delivery is complete"], contracts=[], stage="review",
@@ -401,8 +402,13 @@ def test_nonempty_malformed_or_outage_fallback_refuses_before_dispatch_or_gate()
 def test_execution_time_em_uses_sealed_authority_and_zero_slots(tmp_path):
     ws, head = _workspace(tmp_path)
     receipt = _receipt()
+    _, evidence, _ = loop._review_runtime_modules()
+    store = evidence.ArtifactStore(str(ws))
+    artifact = loop.store_retained_review_diff(str(ws), store=store,
+        payload=loop._retained_review_diff_payload(base=head,
+            files=["src/feature.py"], patch="-VALUE = 1\n+VALUE = 2\n"))
 
-    opened = _start(ws, head, receipt=receipt)
+    opened = _start(ws, head, receipt=receipt, artifact=artifact)
     state = review._load_state(str(ws), opened["run_id"])
 
     assert opened["slots"] == []
@@ -418,6 +424,8 @@ def test_execution_time_em_uses_sealed_authority_and_zero_slots(tmp_path):
         collection_stage="EM", result_validator=lambda value: value)
     assert collected["status"] == "complete"
     assert collected["empty_lens_collection"]["stage"] == "EM"
+    assert loop.read_retained_review_diff(str(ws), store=store,
+        reference=artifact)["patch"] == "-VALUE = 1\n+VALUE = 2\n"
 
 
 def test_legacy_em_keeps_normal_lens_slots(tmp_path):

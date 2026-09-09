@@ -1023,7 +1023,8 @@ def write_kernel_results(ws):
             stream.write(content)
     return loop.collect_review_bridge(
         review_ws, publish=False,
-        run_id=manifest["collection"]["run_id"])
+        run_id=manifest["collection"]["run_id"],
+        collection_stage="EM" if loop_state["step"] == "em" else "Evaluate")
 
 
 def pass_em(ws):
@@ -1998,6 +1999,17 @@ class TestLoop(unittest.TestCase):
             "submission_required": True,
         })
         loop.save(ws, state)
+        em_action = loop.next_action(ws)
+        self.assertNotIn("error", em_action, em_action.get("error"))
+        _, evidence, kernel = loop._review_runtime_modules()
+        store = evidence.ArtifactStore(ws)
+        review_state = kernel._load_state(ws, em_action["review_kernel"]["run_id"])
+        retained_diff = store.read(review_state["envelope"])["diff"]["artifact"]
+        self.assertIn("patch", loop.read_retained_review_diff(
+            ws, store=store, reference=retained_diff))
+        unrelated = loop.store_retained_review_diff(ws, store=store,
+            payload=loop._retained_review_diff_payload(base="unrelated-review",
+                files=["other.py"], patch="+ unrelated private diff"))
         review_root = os.path.join(ws, ".em-review")
         os.makedirs(review_root, exist_ok=True)
         findings_path = os.path.join(review_root, "findings.json")
@@ -2023,6 +2035,9 @@ class TestLoop(unittest.TestCase):
 
         self.assertNotIn("error", out)
         self.assertEqual(out["step"], "escalated")
+        self.assertNotIn(retained_diff["fingerprint"],
+            [row["fingerprint"] for row in store.references("diff")])
+        self.assertEqual(store.read(unrelated)["patch"], "+ unrelated private diff")
         state = loop.load(ws)
         self.assertEqual(state["step"], "escalated")
         self.assertNotIn("signoff_evidence", state)
@@ -2040,6 +2055,40 @@ class TestLoop(unittest.TestCase):
         self.assertEqual(open(findings_path, "rb").read(), findings_before)
         self.assertEqual(open(report_path, "rb").read(), report_before)
         self.assertTrue(loop.next_action(ws)["paused"])
+        tasks_before = json.loads(json.dumps(state["tasks"]))
+        for field, value in (("task", "foreign-task"), ("step", "evaluate"),
+                             ("workspace", self.tmp), ("workspace", ""),
+                             ("fingerprint", "invalid")):
+            changed = json.loads(json.dumps(state))
+            changed["engineering_review_request_changes"]["submission"][field] = value
+            loop.save(ws, changed)
+            refused = loop.resolve(ws, "retry", by="human:review-owner")
+            self.assertIn("error", refused, field)
+            self.assertEqual(loop.load(ws), changed)
+        loop.save(ws, state)
+        self.assertIn("error", loop.resolve(ws, "retry"))
+        self.assertEqual(loop.load(ws), state)
+        retried = loop.resolve(ws, "retry", by="human:review-owner")
+        self.assertNotIn("error", retried, retried)
+        self.assertEqual(retried["step"], "em")
+        retried_state = loop.load(ws)
+        self.assertEqual(retried_state["tasks"], tasks_before)
+        self.assertEqual(retried_state["baseline"], state["baseline"])
+        self.assertEqual(retried_state["engineering_review_request_changes"]["submission"],
+                         submission_audit)
+        resolution = retried_state["engineering_review_request_changes"]["resolution"]
+        self.assertEqual(resolution["actor"], "human:review-owner")
+        self.assertEqual(resolution["submission_fingerprint"], evidence_fingerprint)
+        self.assertIn("error", loop.resolve(ws, "retry", by="human:review-owner"))
+        self.assertEqual(loop.load(ws), retried_state)
+        later = json.loads(json.dumps(retried_state))
+        later["step"] = "escalated"
+        later["tasks"][0]["status"] = "failed"
+        loop.save(ws, later)
+        ordinary = loop.resolve(ws, "retry")
+        self.assertEqual(ordinary["step"], "evaluate")
+        self.assertEqual(loop.load(ws)["engineering_review_request_changes"],
+                         retried_state["engineering_review_request_changes"])
 
     def test_signoff_is_bound_to_em_integration_not_later_shared_bytes(self):
         """A later commit/loop cannot make an approved EM revision fail DoD.

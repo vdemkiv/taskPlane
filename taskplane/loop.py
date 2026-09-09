@@ -10432,6 +10432,21 @@ def _claimed_execute_suite_binding():
         tp.run_suite_command = original_runner
 
 
+def _purge_review_generation_diff(review_ws: str, run_id: str) -> None:
+    """End the raw diff's lifetime only after its actual consumer commits."""
+    _, review_evidence, review_kernel = _review_runtime_modules()
+    state = review_kernel._load_state(review_ws, run_id)
+    store = review_evidence.ArtifactStore(review_ws)
+    envelope = store.read(state["envelope"])
+    retained_diff = (envelope.get("diff") or {}).get("artifact")
+    if isinstance(retained_diff, dict):
+        purge = enforce_review_diff_retention(review_ws, store=store,
+            purge_fingerprint=str(retained_diff.get("fingerprint") or ""))
+        tp.trace(review_ws, "review_diff_retention_purge", run_id=run_id,
+            review_id=str((state.get("target") or {}).get("fingerprint") or "unknown"),
+            count=purge.get("removed", 0))
+
+
 def collect_review_bridge(review_ws: str, *, publish: bool,
                           run_id: str,
                           evaluator_result: dict | None = None,
@@ -10444,6 +10459,7 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
     A provisional collection still ends the producer wave: missing or
     invalid outputs become named repair evidence, while stale producer
     contracts must not remain in the parent contract union.
+    EM collection prepares the reviewer input; its committed gate owns purge.
     """
     _, review_evidence, review_kernel = _review_runtime_modules()
 
@@ -10487,16 +10503,8 @@ def collect_review_bridge(review_ws: str, *, publish: bool,
         result = review_kernel.collect_review(
             review_ws, publish=publish, run_id=run_id,
             empty_lens_collection=empty_collection)
-        if result.get("status") == "complete" and \
-                isinstance(retained_diff, dict):
-            purge = enforce_review_diff_retention(
-                review_ws, store=store,
-                purge_fingerprint=str(retained_diff.get("fingerprint") or ""))
-            tp.trace(review_ws, "review_diff_retention_purge",
-                     run_id=run_id,
-                     review_id=str((state.get("target") or {}).get(
-                         "fingerprint") or "unknown"),
-                     count=purge.get("removed", 0))
+        if result.get("status") == "complete" and collection_stage != "EM":
+            _purge_review_generation_diff(review_ws, run_id)
         return result
     finally:
         review_kernel._release_slot_contracts(review_ws, state)
@@ -14139,6 +14147,15 @@ def gate(ws: str, outcome: str, note: str = "", task_id: str | None = None,
                 state.update(stage_state_before)
                 return {"error": "stage-native loop transition failed closed: "
                         f"{exc.__class__.__name__}: {exc}", "step": step}
+    if step == "em" and outcome in {"pass", "fail"}:
+        binding = review_kernel_binding(_validated, step, task)
+        if binding:
+            try:
+                _purge_review_generation_diff(
+                    str(binding.get("workspace") or ws), binding["run_id"])
+            except Exception as exc:
+                tp.trace(ws, "review_diff_retention_failed", run_id=binding["run_id"],
+                    failure_code=exc.__class__.__name__)
     if step == "em" and outcome == "pass":
         # One more COMPLETED engineering review: advance the audit cadence
         # (every Nth em review runs as a full audit sweep). A cadence-store
@@ -16151,7 +16168,7 @@ def resolve(
         accept_producer_receipt_outage: bool = False,
         outage_fingerprint: str | None = None, phase_operation: str | None = None,
         candidate_fingerprint: str | None = None, worker_stopped: bool = False) -> dict:
-    """Human decision when a task escalated (fix cycles exhausted)."""
+    """Resolve a task escalation or retry the current failed EM review."""
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     state = load(ws)
@@ -16189,7 +16206,44 @@ def resolve(
         return {"error": "nothing escalated to resolve"}
     t = _current_task(state)
     cascaded = []
-    if decision == "retry":
+    em_retry = None
+    if decision == "retry" and "engineering_review_request_changes" in state:
+        changes = state["engineering_review_request_changes"]
+        if not isinstance(changes, dict) or changes.get("schema") != \
+                "taskplane.engineering-review-request-changes/v1":
+            return {"error": "EM request-changes record is malformed"}
+        failed = changes.get("submission")
+        if not isinstance(failed, dict) or failed.get("step") != "em" or \
+                failed.get("outcome") != "fail" or \
+                not re.fullmatch(r"[0-9a-f]{64}", str(failed.get("fingerprint") or "")):
+            return {"error": "EM request-changes submission is invalid"}
+        resolved = changes.get("resolution")
+        if resolved is not None:
+            if not isinstance(resolved, dict) or resolved.get("decision") != "retry" or \
+                    resolved.get("submission_fingerprint") != failed["fingerprint"] or \
+                    resolved.get("run_id") != state.get("run_id") or \
+                    resolved.get("task") != failed.get("task") or \
+                    not str(resolved.get("actor") or "").strip():
+                return {"error": "EM retry resolution is invalid"}
+            if t.get("status") in SETTLED:
+                return {"error": "EM request changes were already resolved"}
+        else:
+            if failed.get("task") != t.get("id") or \
+                    not str(failed.get("workspace") or "").strip() or \
+                    os.path.realpath(str(failed.get("workspace") or "")) != os.path.realpath(ws) or \
+                    not state.get("run_id") or any(
+                        row.get("status") not in SETTLED for row in state.get("tasks") or []):
+                return {"error": "EM request changes do not match the completed current Build"}
+            if not str(by or "").strip():
+                return {"error": "EM retry requires attributable --by"}
+            em_retry = json.loads(json.dumps(changes))
+            changes["resolution"] = {"decision": "retry", "actor": str(by).strip(),
+                "run_id": state["run_id"], "task": t["id"],
+                "submission_fingerprint": failed["fingerprint"], "resolved_at": int(time.time())}
+            state["step"] = "em"
+    if decision == "retry" and em_retry is not None:
+        pass  # The completed Build records stay untouched; only EM retries.
+    elif decision == "retry":
         classified = t.get("failure_routing") or {}
         retry_product_fix = (
             isinstance(classified, Mapping)
@@ -16363,6 +16417,12 @@ def resolve(
             return {"error": "the loop advanced concurrently during resolve "
                              f"(now '{locked.get('step')}') — re-run",
                     "step": locked.get("step")}
+        if em_retry is not None and (
+                locked.get("engineering_review_request_changes") != em_retry or
+                locked.get("run_id") != state.get("run_id") or
+                locked.get("tasks") != state.get("tasks") or
+                locked.get("current_task") != state.get("current_task")):
+            return {"error": "EM request changes changed during retry"}
         try:
             stage_transition = _stage_loop_transition(
                 ws, state, from_step="escalated", to_step=state["step"])
