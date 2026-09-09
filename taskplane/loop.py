@@ -9321,6 +9321,28 @@ def next_action(
             contract["phase_runtime"] = phase_request
             result["phase_runtime"] = phase_request
             phase_harness.compile_brief(phase_context, result, req_rec, act_ws)
+            if phase_context["definition"]["id"] == "build" and _build_quality_required(worker_task):
+                result["build_quality"] = {
+                    "task": worker_task["id"], "stage": step,
+                    "binding_at_dispatch": _build_quality_binding(act_ws, state, worker_task, step),
+                    "strategy_authority": _validated_task_test_strategy_authority(act_ws, state, worker_task),
+                    "authority_reference": (state.get("delivery_mode_receipt") or {}).get("plan_authority"),
+                    "actor": phase_context["stage"]["authority"]["actor"],
+                    "approved_tests": worker_task.get("tests"),
+                }
+                result["instruction"] += (
+                    " Before loop submit pass, produce and admit the Build-quality receipt: use "
+                    "build_quality.begin_receipt, seal_layer_evidence and advance_validation with "
+                    "actual static, exact-selector, changed-radius and proportional-suite evidence "
+                    "under the emitted build_quality strategy_authority. Refresh the candidate binding "
+                    "after edits through loop._build_quality_binding(workspace, loop.load(workspace), "
+                    "current_task, stage); binding_at_dispatch is not post-change evidence. Cite retained "
+                    "unchanged checks honestly; never label local checks CI. For explicitly approved "
+                    "local checks, pass local_approval with the saved actor, approval request, emitted "
+                    "authority_reference and current candidate_fingerprint. Default broad-local refusal "
+                    "and later authoritative CI remain. Admit via loop build-quality --task <task> "
+                    "--stage <stage> --strategy <approved strategy path> --receipt <completed receipt>. "
+                    "Missing evidence must be reported, not replaced with asserted passing payloads.")
         tp.activate(
             act_ws, contract, snapshot=snapshot,
             task_slot_override=contract["task_slot"])

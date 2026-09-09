@@ -128,7 +128,20 @@ def _validate_progression(value: Mapping[str, Any]) -> dict[str, Any]:
         raise BuildQualityError(
             "matrix_runs", "only one authoritative matrix may run for a candidate"
         )
+    if previous.get("local_approval") is not None:
+        _local_approval(previous["local_approval"], previous.get("candidate_fingerprint"))
     return previous
+
+
+def _local_approval(value: object, candidate: str) -> dict[str, Any]:
+    approval = _mapping(value, "local approval")
+    if set(approval) != {"actor", "request", "authority_reference", "candidate_fingerprint"}:
+        raise BuildQualityError("local_approval", "local approval requires attributable saved authority")
+    for field in ("actor", "request", "authority_reference"):
+        _text(approval[field], "local approval " + field)
+    if approval["candidate_fingerprint"] != candidate:
+        raise BuildQualityError("local_approval", "local approval belongs to another candidate")
+    return copy.deepcopy(approval)
 
 
 def advance_progression(
@@ -138,6 +151,7 @@ def advance_progression(
     execution: str,
     prior: Mapping[str, Any] | None = None,
     unchanged_green: Mapping[str, Any] | None = None,
+    local_approval: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Advance the one validation progression used by Build and CI."""
     candidate = _digest(candidate_fingerprint, "candidate fingerprint")
@@ -147,13 +161,15 @@ def advance_progression(
         raise BuildQualityError(
             "execution", "validation execution must be local or ci"
         )
-    if execution == "local" and layer not in {"static", "exact-selector"}:
-        raise BuildQualityError(
-            "broad_local", "broad local validation is refused by default"
-        )
+    approval = (_local_approval(local_approval, candidate)
+                if local_approval is not None else None)
     if layer == "authoritative-ci" and execution != "ci":
         raise BuildQualityError(
             "authoritative_execution", "the authoritative matrix must run in CI"
+        )
+    if execution == "local" and layer not in {"static", "exact-selector"} and approval is None:
+        raise BuildQualityError(
+            "broad_local", "broad local validation is refused by default"
         )
 
     completed: list[str] = []
@@ -168,6 +184,12 @@ def advance_progression(
         completed = list(previous["completed"])
         cited = copy.deepcopy(list(previous.get("cited_unchanged_green") or []))
         matrix_runs = int(previous.get("matrix_runs") or 0)
+        retained_approval = previous.get("local_approval")
+        if retained_approval is not None:
+            retained_approval = _local_approval(retained_approval, candidate)
+            if approval is not None and approval != retained_approval:
+                raise BuildQualityError("local_approval", "local approval changed during progression")
+            approval = retained_approval
     expected = (
         VALIDATION_LAYERS[len(completed)]
         if len(completed) < len(VALIDATION_LAYERS)
@@ -208,6 +230,8 @@ def advance_progression(
         "authoritative": completed == list(VALIDATION_LAYERS),
         "matrix_runs": matrix_runs,
     }
+    if approval is not None:
+        payload["local_approval"] = approval
     return {**payload, "fingerprint": _fingerprint(payload)}
 
 
@@ -571,6 +595,7 @@ def advance_validation(
     evidence: Mapping[str, Any],
     *,
     execution: str,
+    local_approval: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Verify one layer and advance the canonical receipt progression."""
     current = validate_receipt(strategy, receipt)
@@ -588,6 +613,7 @@ def advance_validation(
         execution=execution,
         prior=current.get("progression"),
         unchanged_green=unchanged_green,
+        local_approval=local_approval,
     )
     current["progression"] = progression
     current["layers"].append(checked)

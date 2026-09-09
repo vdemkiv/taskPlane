@@ -135,6 +135,63 @@ def _complete_build(strategy: dict, receipt: dict) -> dict:
     )
 
 
+def _local_quality_case():
+    # Select from the checked strategy without relying on older user-owned
+    # Design criterion names. This is synthetic runner evidence, not native CI.
+    strategy = _strategy()
+    producer = strategy["producers"][0]
+    paths = [producer["path"], *[row["path"] for row in producer.get("interface_fixtures", [])]]
+    receipt = build_quality.begin_receipt(
+        strategy, binding=_binding(),
+        criterion_ids=[strategy["acceptance_criteria"][0]["id"]],
+        changed_producer_ids=[producer["id"]], changed_paths=list(dict.fromkeys(paths)))
+    return strategy, receipt
+
+
+def test_explicit_local_approval_retains_local_build_without_claiming_ci():
+    strategy, receipt = _local_quality_case()
+    approval = {"actor": "human:fixture-owner", "request": "Approved focused Plan suite",
+                "authority_reference": "saved-plan-approval",
+                "candidate_fingerprint": receipt["binding"]["candidate"]["fingerprint"]}
+    for layer, payload in [
+        ("static", _static(receipt)), ("exact-selector", _exact(receipt)),
+        ("changed-radius", _radius(receipt)),
+        ("proportional-suite", {"scope": ["approved focused suite"], "passed": True}),
+    ]:
+        evidence = build_quality.seal_layer_evidence(receipt, layer, payload)
+        if layer in {"changed-radius", "proportional-suite"}:
+            with pytest.raises(build_quality.BuildQualityError, match="broad local"):
+                build_quality.advance_validation(strategy, receipt, layer, evidence, execution="local")
+        receipt = build_quality.advance_validation(
+            strategy, receipt, layer, evidence, execution="local", local_approval=approval)
+    admitted = build_quality.admit_build_quality(strategy, receipt, expected_binding=_binding())
+    assert admitted["build_complete"] and not admitted["authoritative"]
+    assert admitted["progression"]["local_approval"] == approval
+    assert admitted["progression"]["last_layer"]["execution"] == "local"
+    evidence = build_quality.seal_layer_evidence(
+        receipt, "authoritative-ci", {"matrix_runs": 1, "passed": True})
+    with pytest.raises(build_quality.BuildQualityError, match="must run in CI"):
+        build_quality.advance_validation(
+            strategy, receipt, "authoritative-ci", evidence,
+            execution="local", local_approval=approval)
+
+
+@pytest.mark.parametrize("change", ["missing-actor", "missing-request", "foreign-candidate", "stale-evidence"])
+def test_local_approval_does_not_bypass_attribution_or_evidence(change):
+    strategy, receipt = _local_quality_case()
+    approval = {"actor": "human:fixture-owner", "request": "Approved focused Plan suite",
+                "authority_reference": "saved-plan-approval",
+                "candidate_fingerprint": receipt["binding"]["candidate"]["fingerprint"]}
+    evidence = build_quality.seal_layer_evidence(receipt, "static", _static(receipt))
+    if change == "missing-actor": approval.pop("actor")
+    elif change == "missing-request": approval.pop("request")
+    elif change == "foreign-candidate": approval["candidate_fingerprint"] = "f" * 64
+    else: evidence["payload"]["compile_import"]["passed"] = False
+    with pytest.raises(build_quality.BuildQualityError):
+        build_quality.advance_validation(
+            strategy, receipt, "static", evidence, execution="local", local_approval=approval)
+
+
 def test_receipt_proves_the_complete_build_progression_and_exact_binding():
     strategy = _strategy()
     receipt = _complete_build(strategy, _receipt(strategy))
