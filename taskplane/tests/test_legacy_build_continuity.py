@@ -1170,6 +1170,70 @@ def _ready_human_defer_review(legacy):
 resolve_defer_review = loop.resolve.__wrapped__
 
 
+@pytest.fixture
+def review_baseline_ready(legacy, monkeypatch):
+    ws, root, _, _ = legacy
+    _ready_human_defer_review(legacy)
+    for args in (["init", "-q"], ["config", "user.email", "test@example.test"],
+                 ["config", "user.name", "Test"]):
+        subprocess.run(["git", *args], cwd=ws, check=True)
+    (root / "candidate.txt").write_text("accepted\n")
+    subprocess.run(["git", "add", "candidate.txt"], cwd=ws, check=True)
+    subprocess.run(["git", "commit", "-qm", "accepted Build"], cwd=ws, check=True)
+    monkeypatch.setattr(loop.tp, "git_head", REAL_GIT_HEAD)
+    accepted = REAL_GIT_HEAD(ws)
+    for index in range(19, 23):
+        state = loop._load_raw(ws)
+        state["step"] = "evaluate"
+        state["tasks"][index]["status"] = "running"
+        loop.save(ws, state)
+        result = resolve_defer_review(ws, "defer-review", by="human:test", run_id="legacy-run",
+            task_id=state["tasks"][index]["id"], reason="Accept Build; review remains non-judged")
+        assert result.get("resolved"), result
+    (root / "candidate.txt").write_text("current delta\n")
+    subprocess.run(["git", "add", "candidate.txt"], cwd=ws, check=True)
+    subprocess.run(["git", "commit", "-qm", "remaining implementation"], cwd=ws, check=True)
+    return ws, root, accepted
+
+
+@pytest.mark.parametrize("damage", ["none", "run", "actor", "task", "reason", "incomplete", "scope",
+    "nonancestor", "submission", "worker"])
+def test_review_baseline_selects_only_accepted_instance_and_preserves_history(review_baseline_ready, monkeypatch, damage):
+    ws, root, accepted = review_baseline_ready
+    args = dict(by="human:test", run_id="legacy-run", task_id="T19", reason="Use latest accepted T19 for EM delta")
+    state = loop._load_raw(ws)
+    if damage == "run": args["run_id"] = "foreign"
+    elif damage == "actor": args["by"] = "human:foreign"
+    elif damage == "task": args["task_id"] = "T00"
+    elif damage == "reason": args["reason"] = ""
+    elif damage == "incomplete": state["tasks"][-1]["status"] = "pending"
+    elif damage == "scope": state["tasks"][-1]["scope"].append("foreign.py")
+    elif damage == "nonancestor":
+        state["tasks"][19]["human_resolution"]["build_candidate"] = "f" * 40
+        state["tasks"][19]["evaluation"]["build_candidate"] = "f" * 40
+    elif damage == "submission": state["_submission"] = {"outcome": "pass"}
+    elif damage == "worker": monkeypatch.setattr(loop.tp, "_active_worker_contracts", lambda _: [("worker", {})])
+    loop.save(ws, state)
+    result = resolve_defer_review(ws, "review-baseline", **args)
+    if damage != "none":
+        assert result.get("error"), result
+        assert loop._load_raw(ws) == state
+        return
+    assert result.get("resolved"), result
+    after = loop._load_raw(ws)
+    assert after["tasks"] == state["tasks"] and after["baseline"] == state["baseline"]
+    assert after["deferred_review_tasks"] == state["deferred_review_tasks"]
+    assert loop._review_baseline(ws, after, "em") == accepted
+    assert loop._review_baseline(ws, after, "evaluate") == state["baseline"]
+    assert "candidate.txt" in loop._diff_files(ws, loop._review_baseline(ws, after, "em"))
+    assert resolve_defer_review(ws, "review-baseline", **args)["replay"] is True
+    assert loop._load_raw(ws) == after
+    assert resolve_defer_review(ws, "review-baseline", **{**args, "reason": "changed"}).get("error")
+    after["tasks"][-1]["scope"].append("foreign.py")
+    with pytest.raises(ValueError):
+        loop._review_baseline(ws, after, "em")
+
+
 def test_human_defer_review_preserves_history_without_current_test_or_review_pass(legacy):
     ws, root, _, _ = legacy
     before = _ready_human_defer_review(legacy)

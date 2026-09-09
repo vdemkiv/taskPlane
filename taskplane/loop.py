@@ -8903,10 +8903,14 @@ def next_action(
     # Blast radius from the persistent dependency graph — the reviewer sees
     # what the change can break WITHOUT re-deriving dependencies (no tokens).
     imp = None
+    try:
+        review_base = _review_baseline(ws, state, step)
+    except (ValueError, OSError) as exc:
+        return {"error": "review baseline refused: " + str(exc), "step": step}
     if step in ("evaluate", "em"):
         diff_ws = act_ws if step == "evaluate" else ws
         changed = [f for f in _diff_files(
-            diff_ws, state.get("baseline") or "HEAD")
+            diff_ws, review_base or "HEAD")
             if not f.startswith(lens_router.LOOP_OWNED)]
         if changed or step == "em":
             review_policy = (_aggregate_impact_policy(state.get("tasks") or [])
@@ -8923,7 +8927,7 @@ def next_action(
                 r for r in prod["affected_requirements"] if r != own]
             imp["dependent_requirements"] = prod["dependent_requirements"]
             nudges = _edge_nudges(diff_ws, changed,
-                                  state.get("baseline") or "HEAD")
+                                  review_base or "HEAD")
             if nudges:
                 imp["edge_suggestions"] = nudges
             tp.trace(ws, "graph_impact", step=step,
@@ -8982,7 +8986,7 @@ def next_action(
     if step in ("evaluate", "em"):
         diff_ws = act_ws if is_parallel_evaluate else ws
         review_workspace = diff_ws
-        base_ref = state.get("baseline") or "HEAD"
+        base_ref = review_base or "HEAD"
         try:
             review_delivery_authority = _DELIVERY_MODE_AUTHORITY_UNSET
             if step == "em":
@@ -9214,6 +9218,8 @@ def next_action(
                 "language_references"),
         } if routing and step != "evaluate" and not zero_lens_delivery else {}),
         "review_kernel": review_kernel,
+        **({"review_baseline": loop_recovery.review_baseline(ws, state)}
+           if step == "em" and state.get("em_review_baseline") else {}),
         **({"failure_classification": failure_classification}
            if failure_classification is not None else {}),
         **({"evaluate_child_evidence": evaluate_children}
@@ -10268,6 +10274,11 @@ def _staged_dispatch_refusal(task: Mapping | None) -> dict | None:
         "task": str(task.get("id") or ""),
         "step": "execute",
     }
+
+
+def _review_baseline(ws: str, state: Mapping, step: str) -> str | None:
+    selected = loop_recovery.review_baseline(ws, state) if step == "em" else None
+    return selected["baseline"] if selected is not None else state.get("baseline")
 
 
 def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
@@ -12631,7 +12642,7 @@ def _engineering_review_errors(
             errors.append("engineering dependency impact evidence is incomplete: "
                           + ", ".join(missing_impact))
         changed = [f for f in _diff_files(
-            ws, (state or {}).get("baseline") or "HEAD")
+            ws, _review_baseline(ws, state or {}, "em") or "HEAD")
             if not f.startswith(lens_router.LOOP_OWNED)]
         if changed:
             review_policy = _aggregate_impact_policy(
@@ -16121,13 +16132,14 @@ def resolve(
     if refusal := _stage_loop_mutation_refusal(ws):
         return refusal
     state = load(ws)
-    if decision == "defer-review":
+    if decision in {"defer-review", "review-baseline"}:
         if phase_operation or candidate_fingerprint or worker_stopped or accept_producer_receipt_outage or outage_fingerprint:
-            return {"error": "defer-review accepts only --by, --run-id, --task and --reason"}
-        return loop_recovery.resolve_deferred_review(sys.modules[__name__], ws,
+            return {"error": decision + " accepts only --by, --run-id, --task and --reason"}
+        resolver = loop_recovery.resolve_review_baseline if decision == "review-baseline" else loop_recovery.resolve_deferred_review
+        return resolver(sys.modules[__name__], ws,
             by=by or "", run_id=run_id or "", task_id=task_id or "", reason=reason or "")
     if run_id is not None or task_id is not None or reason is not None:
-        return {"error": "--run-id, --task and --reason require defer-review"}
+        return {"error": "--run-id, --task and --reason require defer-review or review-baseline"}
     if decision == "limits-advisory":
         if state is None or phase_operation or candidate_fingerprint or worker_stopped:
             return {"error": "limits-advisory requires only the existing run and human --by"}

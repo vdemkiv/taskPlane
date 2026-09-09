@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import subprocess
 import time
 from contextlib import AbstractContextManager
 from typing import Callable, Mapping, Sequence, TypeVar
@@ -473,6 +474,62 @@ def resolve_deferred_review(runtime, workspace: str, *, by: str, run_id: str, ta
         return {"error": "defer-review refused: " + str(exc)}
     runtime.tp.trace(workspace, "loop_resolve", decision="defer-review", task=task_id, by=by)
     return result
+
+
+def _review_baseline_material(workspace: str, state: Mapping, task_id: str) -> dict:
+    continuation = legacy_continuation(state, workspace)
+    policy = legacy_review_policy(state)
+    tasks = state.get("tasks") or []
+    if not continuation or not policy or not tasks or any(task.get("status") != "passed" for task in tasks):
+        raise ValueError("review baseline requires an admitted completed legacy Build")
+    task = next((task for task in tasks if task.get("id") == task_id), None)
+    if task is None:
+        raise ValueError("review baseline task is foreign")
+    accepted = _human_deferred_review(state, task, policy)["build_candidate"]
+    if not re.fullmatch(r"[a-f0-9]{40}", str(accepted)) or subprocess.run(
+            ["git", "merge-base", "--is-ancestor", accepted, "HEAD"], cwd=workspace,
+            capture_output=True, check=False, timeout=15).returncode != 0:
+        raise ValueError("accepted Build baseline is not a current ancestor")
+    return {"decision": "review-baseline", "run_id": state["run_id"], "task": task_id,
+        "actor": policy["by"], "baseline": accepted, "original_baseline": state["baseline"],
+        "continuation_fingerprint": continuation["fingerprint"], "policy_fingerprint": policy["fingerprint"],
+        "deferred_review_tasks": list(state.get("deferred_review_tasks") or []),
+        "review_scope": "Accepted Build baseline plus current delta; full requirements remain in scope. "
+                        "Retained deferred reviews are non-judged, not independent passes."}
+
+
+def review_baseline(workspace: str, state: Mapping) -> dict | None:
+    """Validate the EM-only choice without changing original wave evidence."""
+    selected = state.get("em_review_baseline")
+    if selected is None:
+        return None
+    if not isinstance(selected, Mapping) or not isinstance(selected.get("reason"), str) or not selected["reason"].strip():
+        raise ValueError("review baseline lacks attributed selection")
+    expected = _review_baseline_material(workspace, state, str(selected.get("task") or ""))
+    if dict(selected) != {**expected, "reason": selected["reason"]}:
+        raise ValueError("review baseline selection is stale or foreign")
+    return dict(selected)
+
+
+def resolve_review_baseline(runtime, workspace: str, *, by: str, run_id: str, task_id: str, reason: str) -> dict:
+    if not by.startswith("human:") or not all(value.strip() for value in (by, run_id, task_id, reason)):
+        return {"error": "review-baseline requires explicit human --by, --run-id, --task and --reason"}
+    try:
+        with runtime.mutate(workspace) as state:
+            if not state or state.get("run_id") != run_id or state.get("step") != "em" \
+                    or state.get("_submission") is not None or list(runtime.tp._active_worker_contracts(workspace)):
+                raise ValueError("review baseline requires the exact idle EM run")
+            selected = {**_review_baseline_material(workspace, state, task_id), "reason": reason}
+            if selected["actor"] != by:
+                raise ValueError("review baseline actor differs from the saved human authority")
+            prior = review_baseline(workspace, state)
+            if prior is not None and prior != selected:
+                raise ValueError("review baseline replay changed the exact selection")
+            state["em_review_baseline"] = selected
+        runtime.tp.trace(workspace, "loop_resolve", decision="review-baseline", task=task_id, by=by)
+        return {"resolved": True, "replay": prior is not None, "step": "em", "review_baseline": selected}
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        return {"error": "review-baseline refused: " + str(exc)}
 
 
 def legacy_continuation(state: Mapping, workspace: str) -> dict | None:

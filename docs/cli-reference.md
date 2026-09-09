@@ -63,8 +63,10 @@ not repeated in the tables.
 | `tp.py lens route` | decide which lenses a change needs |
 | `tp.py lens show` | the full brief for one lens |
 | `tp.py loop` | drive the Evaluate-Loop engine |
+| `tp.py loop amend-delivery` | human: exact legacy publication-only post-merge sequencing |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
+| `tp.py loop cancel-worker` | human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
@@ -620,6 +622,19 @@ drive the Evaluate-Loop engine
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py loop amend-delivery`
+
+human: exact legacy publication-only post-merge sequencing
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | original human policy owner |
+| `--check` | flag | read-only validation; no journal, projection or outbox write |
+| `--fingerprint` | FINGERPRINT (required) | canonical approved packet SHA-256 |
+| `--from` | AMENDMENT_FROM (required) | exact approved publication amendment packet |
+| `--request` | REQUEST (required) | publication-only human decision |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py loop approve`
 
 record a human approval at a checkpoint gate
@@ -638,6 +653,19 @@ derive routine authority for a real host/facade flow from the bound consolidated
 Positional arguments:
 
 - `flow` (required) — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
+
+## `tp.py loop cancel-worker`
+
+human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | original human policy owner |
+| `--check` | flag | read-only validation; no terminalization or outbox flush |
+| `--fingerprint` | FINGERPRINT (required) | canonical cancellation packet SHA-256 |
+| `--from` | AMENDMENT_FROM (required) | exact legacy worker cancellation packet |
+| `--request` | REQUEST (required) | explicit human cancellation permission |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py loop claim`
 
@@ -828,7 +856,7 @@ resolve a blocked loop: retry, pass, skip, defer or abort
 
 Positional arguments:
 
-- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`, `limits-advisory`, `reconcile`, `defer-review`)
+- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`, `limits-advisory`, `reconcile`, `defer-review`, `review-baseline`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -837,19 +865,10 @@ Positional arguments:
 | `--candidate-fingerprint` | CANDIDATE_FINGERPRINT | exact candidate SHA-256 for the new phase attempt |
 | `--outage-fingerprint` | OUTAGE_FINGERPRINT | exact current evaluator outage fingerprint; replay-safe |
 | `--phase-operation` | PHASE_OPERATION | exact existing phase operation to reconcile or retry once |
-| `--run-id` | RUN_ID | exact admitted legacy run for defer-review |
-| `--task` | TASK | exact human-accepted legacy Build task for defer-review |
-| `--reason` | REASON | explicit Build acceptance and EM-review deferral decision |
+| `--reason` | REASON | explicit Build acceptance, review deferral or EM baseline selection |
+| `--run-id` | RUN_ID | exact admitted legacy run for defer-review or review-baseline |
+| `--task` | TASK | exact human-accepted legacy Build task for defer-review or review-baseline |
 | `--worker-stopped` | flag | attest the expired unbound worker is stopped; not a completion or pass |
-
-`defer-review` requires all four of `--by`, `--run-id`, `--task`, and
-`--reason`, an admitted legacy continuation and its existing human review
-policy. It accepts only the current running Evaluate task with no active
-worker, submission, evaluator evidence or failed-Build flag. It records
-human-accepted Build completion and non-judged review deferred to EM; it does
-not claim a current test run or an independent review pass. Historical
-evaluation and failure records remain retained. Repeating the exact decision
-does not advance another task. Ordinary test-verified deferral is unchanged.
 
 ## `tp.py loop restore-settings`
 
