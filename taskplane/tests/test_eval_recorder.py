@@ -520,7 +520,11 @@ class TestTheFixtureIsInvisibleToTheRepositorysOwnTooling(unittest.TestCase):
                 "-I",
                 "-c",
                 "import sys; sys.path.insert(0, sys.argv[1]); import loop; "
-                "assert loop.STEP_ROLE",
+                "from taskplane import settings, run_context, phase_harness; "
+                "assert loop.STEP_ROLE; "
+                "assert loop.operational_settings is settings; "
+                "assert loop.run_context is run_context; "
+                "assert loop.phase_harness is phase_harness",
                 os.path.join(REPO, "taskplane"),
             ],
             capture_output=True,
