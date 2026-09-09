@@ -1148,7 +1148,7 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         if set(binding) != _BINDING_FIELDS:
             raise DispatchTelemetryError(
                 "dispatch telemetry binding must use its closed schema")
-        _receipt(
+        canonical = _receipt(
             {field: binding.get(field) for field in _DISPATCH_FIELDS},
             {field: 0 for field in _USAGE_FIELDS},
         )
@@ -1185,7 +1185,8 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
             if receipt.get("dispatch_id") != dispatch_id:
                 raise DispatchTelemetryError(
                     "finalized dispatch telemetry identity mismatched")
-            if any(receipt.get(field) != binding.get(field)
+            if any(receipt.get(field) != (canonical["dependencies"]
+                   if field == "dependencies" else binding.get(field))
                    for field in _STABLE_DISPATCH_IDENTITY_FIELDS):
                 raise DispatchTelemetryError(
                     "finalized dispatch telemetry identity mismatched")
@@ -1265,10 +1266,11 @@ def _bind_dispatch(
         raise DispatchTelemetryError(
             "dispatch binding is closed: "
             f"missing={sorted(missing)} unknown={sorted(unknown)}")
-    _receipt(dispatch, {field: 0 for field in _USAGE_FIELDS})
+    canonical = _receipt(dispatch, {field: 0 for field in _USAGE_FIELDS})
     material = {
         "schema": DISPATCH_BINDING_SCHEMA,
         **dict(dispatch),
+        "dependencies": canonical["dependencies"],
         "usage": (_usage(usage) if usage is not None else None),
         "usage_source_fingerprint": (
             _sha256_fingerprint(
@@ -1294,7 +1296,10 @@ def _bind_dispatch(
             "dispatch_id", "thread_id", "thread_type", "task_id",
             "dependencies", "shared_owner",
         }
-        if any(existing.get(field) != material.get(field)
+        # Historical bindings retain their original order and integrity digest.
+        # Compare only dependency identity canonically; never rewrite the row.
+        existing_dependencies = sorted(set(str(value) for value in existing["dependencies"]))
+        if any((existing_dependencies if field == "dependencies" else existing.get(field)) != material.get(field)
                for field in identity_fields):
             raise DispatchTelemetryError("dispatch binding id collision")
         return dict(existing)

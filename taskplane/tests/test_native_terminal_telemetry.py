@@ -6,6 +6,8 @@ import hashlib
 import io
 import json
 import os
+from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
@@ -126,21 +128,25 @@ def _activate_worker(
     return contract
 
 
-def _worker_event(workspace: str, expected: dict, *, label: str) -> dict:
+def _worker_event(workspace: str, expected: dict, *, label: str, child: str | None = None) -> dict:
+    child = child or str(uuid5(NAMESPACE_URL, label))
     return {
         "hook_event_name": "SubagentStart",
         "cwd": workspace,
         "session_id": f"session-{label}",
-        "agent_id": f"agent-{label}",
+        "agent_id": child,
         "agent_type": expected["task_name"],
         "task_name": expected["task_name"],
         "turn_id": f"turn-{label}",
+        "agent_transcript_path": os.path.join(workspace, ".codex-native", "sessions",
+            f"rollout-{label}-{child}.jsonl"),
     }
 
 
 def _start_worker(
         event: dict, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("CODEX_HOME", os.path.join(event["cwd"], ".codex-native"))
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
     assert cli.cmd_subagent_start(None) == 0
     assert "permissionDecision\": \"deny" not in capsys.readouterr().out
@@ -150,9 +156,11 @@ def _write_codex_transcript(path: os.PathLike[str], *, label: str,
                             input_tokens: int, cached_tokens: int,
                             output_tokens: int,
                             session_id: str | None = None,
-                            resumed: bool = False) -> None:
+                            resumed: bool = False, event: dict | None = None,
+                            include_counter: bool = True) -> None:
     total = input_tokens + output_tokens
     native_session_id = session_id or f"session-{label}"
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as stream:
         stream.write(json.dumps({
             "timestamp": "2026-09-01T00:00:00Z",
@@ -162,10 +170,19 @@ def _write_codex_transcript(path: os.PathLike[str], *, label: str,
                 "id": native_session_id,
                 "timestamp": "2026-09-01T00:00:00Z",
                 "thread_source": "subagent",
+                **({"id": event["agent_id"], "session_id": event["session_id"],
+                    "parent_thread_id": event["session_id"], "cwd": event["cwd"],
+                    "agent_path": "/root/" + event["task_name"],
+                    "source": {"subagent": {"thread_spawn": {
+                        "parent_thread_id": event["session_id"],
+                        "agent_path": "/root/" + event["task_name"]}}}}
+                   if event else {}),
                 **({"history_base": {"kind": "resume"}}
                    if resumed else {}),
             },
         }) + "\n")
+        if not include_counter:
+            return
         stream.write(json.dumps({
             "timestamp": "2026-09-01T00:00:01Z",
             "ordinal": 1,
@@ -190,6 +207,12 @@ def _stop_worker(
         transcript: os.PathLike[str] | None = None,
         expected_rc: int = 0) -> list[dict]:
     stop = {**event, "hook_event_name": "SubagentStop", "outcome": outcome}
+    if transcript is None:
+        # Missing-counter cases still need a genuine-shaped simulated child
+        # identity so the production reader reaches the intended missing usage.
+        transcript = event["agent_transcript_path"]
+        _write_codex_transcript(transcript, label="missing", input_tokens=0,
+            cached_tokens=0, output_tokens=0, event=event, include_counter=False)
     if transcript is not None:
         stop["agent_transcript_path"] = os.fspath(transcript)
     monkeypatch.setattr(cli, "_submission_stop_check", lambda _event: None)
@@ -248,6 +271,45 @@ def _ledger() -> dict:
         run_id=RUN_ID, source_sha=SOURCE_SHA,
         design_fingerprint=DESIGN_FINGERPRINT,
         plan_fingerprint=PLAN_FINGERPRINT, started_at=10)
+
+
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("damage", ["none", "dependencies", "thread", "usage", "blank-dependency"])
+def test_finalized_dependency_identity_ignores_order_without_rewriting_binding(historical, damage):
+    ledger = _ledger()
+    dispatch = {**_dispatch("ordered-worker"), "dependencies": ["T18", "T19", "T16B"]}
+    dispatch_telemetry.bind_dispatch(ledger, dispatch, usage=_usage(12), source_fingerprint="e" * 64)
+    binding = ledger["bindings"][0]
+    if historical:
+        # Reproduce the previous producer's raw-order persisted binding using
+        # its unchanged integrity owner; no native receipt is claimed here.
+        binding["dependencies"] = list(dispatch["dependencies"])
+        binding["usage_integrity_fingerprint"] = dispatch_telemetry._usage_integrity_fingerprint(
+            ledger, binding, binding["usage"], binding["usage_source_fingerprint"])
+    result = dispatch_telemetry.finalize_usage(
+        ledger, dispatch_id=dispatch["dispatch_id"], ended_at=20, clock=_Clock())
+    assert result["receipt"]["dependencies"] == ["T16B", "T18", "T19"]
+    before = json.dumps(ledger, sort_keys=True)
+    dispatch_telemetry.validate_ledger(ledger)
+    assert json.dumps(ledger, sort_keys=True) == before
+    replay = dispatch_telemetry.bind_dispatch(ledger, {**dispatch, "dependencies": ["T16B", "T18", "T19"]})
+    assert replay == binding
+    assert json.dumps(ledger, sort_keys=True) == before
+    if damage == "none":
+        assert dispatch_telemetry.finalize_usage(ledger, dispatch_id=dispatch["dispatch_id"],
+            ended_at=20, clock=_Clock())["status"] == "duplicate"
+        assert binding["dependencies"] == (dispatch["dependencies"] if historical else ["T16B", "T18", "T19"])
+        return
+    if damage == "dependencies":
+        binding["dependencies"] = ["T16B", "T18", "foreign"]
+    elif damage == "thread":
+        binding["thread_id"] = "foreign"
+    elif damage == "blank-dependency":
+        binding["dependencies"] = [""]
+    else:
+        binding["usage"]["total_tokens"] += 1
+    with pytest.raises(dispatch_telemetry.DispatchTelemetryError):
+        dispatch_telemetry.validate_ledger(ledger)
 
 
 def _root_meter(total: int, *, authority: bytes,
@@ -666,10 +728,10 @@ def test_subagent_stop_seals_content_bound_usage_and_actual_outcome(
         workspace, expected, slot=f"task_attempt_{terminal_kind}")
     event = _worker_event(workspace, expected, label=terminal_kind)
     _start_worker(event, monkeypatch, capsys)
-    transcript = tmp_path / f"{terminal_kind}.jsonl"
+    transcript = Path(event["agent_transcript_path"])
     _write_codex_transcript(
         transcript, label=terminal_kind, input_tokens=13,
-        cached_tokens=5, output_tokens=3)
+        cached_tokens=5, output_tokens=3, event=event)
     projection, _ = dispatch_telemetry.project_transcript_usage(
         str(transcript), provider="codex")
 
@@ -693,7 +755,7 @@ def test_subagent_stop_seals_content_bound_usage_and_actual_outcome(
                          if row["task_id"] == "task-a")
     assert worker_native["attributed_usage"]["total_tokens"] == 16
     assert worker_native["session_id"] == \
-        f"session-{terminal_kind}"
+        event["agent_id"]
     assert not os.path.exists(tp.active_contract_path(
         workspace, contract["task_slot"]))
 
@@ -702,15 +764,15 @@ def test_native_counter_reaches_nonzero_retro_and_dashboard_consumers(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
     loop.save(workspace, _state())
-    expected = _record_expectation(workspace, label="consumer-wire")
+    expected = _record_expectation(workspace, label="consumer_wire")
     _screen_dispatch(workspace, expected, monkeypatch, capsys)
     _activate_worker(workspace, expected, slot="task_consumer_wire")
     event = _worker_event(workspace, expected, label="consumer-wire")
     _start_worker(event, monkeypatch, capsys)
-    transcript = tmp_path / "consumer-wire.jsonl"
+    transcript = Path(event["agent_transcript_path"])
     _write_codex_transcript(
         transcript, label="consumer-wire", input_tokens=13,
-        cached_tokens=5, output_tokens=3)
+        cached_tokens=5, output_tokens=3, event=event)
     _stop_worker(
         event, monkeypatch, capsys, outcome="success",
         transcript=transcript)
@@ -761,23 +823,23 @@ def test_resumed_native_session_reset_is_attributed_as_a_new_segment(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
     loop.save(workspace, _state())
-    shared_session = "session-resumed-worker"
+    shared_session = str(uuid5(NAMESPACE_URL, "session-resumed-worker"))
     expected_totals = [12, 20]
     for index, total in enumerate(expected_totals, start=1):
         expected = _record_expectation(
-            workspace, label=f"resume-attempt-{index}")
+            workspace, label=f"resume_attempt_{index}")
         _screen_dispatch(workspace, expected, monkeypatch, capsys)
         _activate_worker(
             workspace, expected, slot=f"task_resume_attempt_{index}")
         event = _worker_event(
-            workspace, expected, label=f"resume-attempt-{index}")
+            workspace, expected, label=f"resume-attempt-{index}", child=shared_session)
         _start_worker(event, monkeypatch, capsys)
-        transcript = tmp_path / f"resume-attempt-{index}.jsonl"
+        transcript = Path(event["agent_transcript_path"])
         _write_codex_transcript(
             transcript, label=f"resume-attempt-{index}",
             input_tokens=total - 2, cached_tokens=4 + index - 1,
             output_tokens=2, session_id=shared_session,
-            resumed=index > 1)
+            resumed=index > 1, event=event)
         _stop_worker(
             event, monkeypatch, capsys, outcome="success",
             transcript=transcript)
@@ -830,16 +892,16 @@ def test_terminal_native_counter_at_pickup_ceiling_blocks_release(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
     loop.save(workspace, _state())
-    expected = _record_expectation(workspace, label="terminal-ceiling")
+    expected = _record_expectation(workspace, label="terminal_ceiling")
     _screen_dispatch(workspace, expected, monkeypatch, capsys)
     contract = _activate_worker(
         workspace, expected, slot="task_terminal_ceiling", max_tokens=10)
     event = _worker_event(workspace, expected, label="terminal-ceiling")
     _start_worker(event, monkeypatch, capsys)
-    transcript = tmp_path / "terminal-ceiling.jsonl"
+    transcript = Path(event["agent_transcript_path"])
     _write_codex_transcript(
         transcript, label="terminal-ceiling", input_tokens=8,
-        cached_tokens=2, output_tokens=2)
+        cached_tokens=2, output_tokens=2, event=event)
 
     output = _stop_worker(
         event, monkeypatch, capsys, outcome="success",
