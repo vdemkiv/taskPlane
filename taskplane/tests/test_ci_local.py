@@ -87,6 +87,11 @@ def test_runner_plan_has_one_unsharded_suite_and_no_pytest_replays():
         "pytest-1",
     ]
     assert core["runtime"] == "3.12"
+    assert core["timeout_seconds"] == 1800
+    assert runner._ci_cell_commands(core, Path("/owned")) == [[
+        runner.CI_LOGICAL_PYTHON, "-m", "pytest", "-v", *core["selectors"],
+        *(f"--deselect={selector}" for selector in core["excluded_selectors"]),
+    ]]
     assert core["selectors"] == list(runner._authoritative_pytest_files())
     assert core["excluded_selectors"] == list(runner.CI_WINDOWS_SELECTORS)
     assert len(pytest_commands) == 3  # core, real browser, native Windows only

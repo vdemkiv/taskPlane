@@ -1675,13 +1675,15 @@ def _design_team_plan(
         environment=os.environ)
     design_stage = effective.stages[stage]
     workers = []
+    generation = len(state.get("replan_history") or []) if stage == "plan" else 0
+    generation_suffix = f"-replan-{generation}" if generation else ""
     for lens_id in selected:
         # ``tp-lens`` is intentionally host-neutral and therefore has no
         # agent-to-stage mapping of its own.  The historical ``quick`` value
         # fell through to Build settings.  Resolve the explicit Design tier
         # against this same typed settings snapshot instead.
         worker_dispatch = tp.dispatch_fields(
-            "lens", "tp-lens", f"{stage}-{lens_id}", "deep",
+            "lens", "tp-lens", f"{stage}-{lens_id}{generation_suffix}", "deep",
             settings_context=effective, lens_stage=stage)
         if worker_dispatch.get("model") != design_stage.model or \
                 worker_dispatch.get("reasoning_effort") != \
@@ -1689,7 +1691,7 @@ def _design_team_plan(
                 worker_dispatch.get("settings_digest") != effective.digest:
             raise ValueError("Design lens dispatch severed canonical settings")
         worker_identity = worker_dispatch["task_name"]
-        result_path = f"{stage}/lenses/{lens_id}.json"
+        result_path = f"{stage}/lenses/{lens_id}{generation_suffix}.json"
         workers.append({
             "lens": lens_id,
             "task_name": worker_identity,
@@ -1698,7 +1700,7 @@ def _design_team_plan(
             "model_tier": worker_dispatch["model_tier"],
             "model": worker_dispatch.get("model"),
             "reasoning_effort": worker_dispatch["reasoning_effort"],
-            "task_slot": f"{stage}-lens-{lens_id}",
+            "task_slot": f"{stage}-lens-{lens_id}{generation_suffix}",
             "output": result_path,
             "contract": {
                 "read_only": True,
@@ -6845,7 +6847,9 @@ def _screen_public_native_route(
         observation_authority: bytes | None,
         dispatch: Mapping[str, object]) -> dict | None:
     """Enforce root preparation/open/meter admission before intent emission."""
-    if stage not in {"execute", "fix", "evaluate"}:
+    if stage not in {"execute", "fix", "evaluate", "plan"}:
+        return None
+    if stage == "plan" and (state.get("dispatch_telemetry") or {}).get("root_admission") is None:
         return None
     root = state.get("root_hygiene")
     if not isinstance(root, Mapping):
@@ -6881,12 +6885,25 @@ def _screen_public_native_route(
         dispatch_id = str(dispatch.get("dispatch_id") or "").strip()
         if not dispatch_id:
             raise ValueError("native dispatch admission requires an exact intent id")
+        usage = source_fingerprint = None
+        if stage == "plan":
+            prior = next((row for row in ledger.get("bindings", [])
+                          if row.get("dispatch_id") == dispatch_id), None)
+            if prior is not None:
+                if any(prior.get(key) != dispatch.get(key) for key in (
+                        "dispatch_id", "thread_id", "thread_type", "task_id",
+                        "dependencies", "shared_owner", "correction_count")):
+                    raise ValueError("Plan dispatch admission identity changed")
+                dispatch = prior
+                usage = prior.get("usage")
+                source_fingerprint = prior.get("usage_source_fingerprint")
         decision = dispatch_telemetry.screen_dispatch(
             ledger, SystemClock(), current_stage=stage,
             outstanding_set_fingerprint=outstanding,
             preserved_context_fingerprint=preserved,
             observation_authority=observation_authority,
             admission_operation_id=dispatch_id, dispatch=dispatch,
+            usage=usage, source_fingerprint=source_fingerprint,
             resource_limits_advisory=run_context.resource_limits_advisory(ws))
         if not decision.get("dispatch_allowed"):
             locked["root_hygiene"] = {
@@ -8912,6 +8929,20 @@ def next_action(
                     effective_settings=effective_settings, stage="plan")
                 fresh["plan_team_plan"] = _copy_json(plan_team_plan)
             state = load(ws) or state
+            if (state.get("dispatch_telemetry") or {}).get("root_admission") is not None:
+                for worker in plan_team_plan["workers"]:
+                    lens_task = {"id": worker["lens"]}
+                    lens_binding = _native_delivery_dispatch_binding(
+                        state, stage="plan", task=lens_task,
+                        intent_id=worker["dispatch_intent"]["fingerprint"],
+                        native_task_name=worker["task_name"])
+                    lens_binding["thread_type"] = "lens"
+                    admitted = _screen_public_native_route(
+                        ws, state, stage="plan", tasks=[lens_task],
+                        observation_authority=root_observation_authority,
+                        dispatch=lens_binding)
+                    if admitted is not None and admitted.get("dispatch_allowed") is not True:
+                        raise ValueError(str(admitted.get("error") or "Plan lens root admission refused"))
         except Exception as exc:
             return {"error": "Plan lens team planning failed closed: "
                     f"{type(exc).__name__}: {exc}", "step": step}
@@ -16480,6 +16511,9 @@ def replan(ws: str, by: str, reason: str) -> dict:
             yield locked
             if locked is None or locked.get("step") == from_step:
                 return
+            prior_team = locked.pop("plan_team_plan", None)
+            if prior_team is not None:
+                locked["replan_history"][-1]["plan_team_plan"] = prior_team
             locked["_stage_completion"] = _stage_loop_decision_completion(
                 workspace, schema="taskplane.loop-replan-result/v1",
                 step=from_step, outcome="replanned",

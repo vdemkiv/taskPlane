@@ -247,6 +247,7 @@ def test_plan_gate_requires_and_stamps_delivery_mode():
 def test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval_or_root_seed(
     tmp_path,
 ):
+    from tests.fixtures.briefs.stage_fixture import prepare_plan
     invalid_declarations = {
         "missing-delivery-mode": ("delivery_mode", None),
         "wrong-delivery-mode": ("delivery_mode", "review"),
@@ -264,8 +265,14 @@ def test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval
             plan[field] = replacement
         plan_path.write_text(json.dumps(plan))
         state = loop.load(str(workspace))
-        state["design_fingerprint"] = "d" * 64
+        # Bound Design input for this declaration-policy fixture; no Design
+        # completion or approval is inferred from a sentinel fingerprint.
+        design = {"requirement": state.get("requirement_id"), "summary": "delivery declaration fixture"}
+        (workspace / "design").mkdir()
+        (workspace / "design" / "contract.json").write_text(json.dumps(design))
+        state["design_fingerprint"] = loop._design_evidence_fingerprint(str(workspace), design)
         loop.save(str(workspace), state)
+        prepare_plan(str(workspace), runtime=loop, usage="measured")
 
         refused = loop.gate(str(workspace), "pass")
 
@@ -288,6 +295,7 @@ def test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval
     for field in ("delivery_mode", "automatic_lenses", "plan_authority"):
         legacy_plan.pop(field)
     legacy_plan_path.write_text(json.dumps(legacy_plan))
+    prepare_plan(str(legacy), runtime=loop, usage="measured")
 
     accepted = loop.gate(str(legacy), "pass")
 

@@ -833,14 +833,22 @@ def write_verdict(ws):
         results = _evaluate_evidence_results(assignments, route["run_id"])
         for assignment in assignments:
             kind = assignment["producer_kind"]
+            child = next(row for row in route["child_dispatches"]
+                         if row["assignment"]["producer_kind"] == kind)
+            from taskplane.tests.test_worker_contract_lifecycle import _event
+            event = _event(ws, name=child["task_name"], agent="child-" + kind)
+            assert tp.bind_worker_contract_event(ws, event)
             loop.observe_evaluate_evidence_child_start(
                 artifact_root=route["artifact_root"], assignment=assignment,
-                dispatch_id="intent-" + kind,
-                native_task_name="test-" + kind)
+                dispatch_id=child["dispatch_intent"]["intent_id"],
+                native_task_name=child["task_name"])
             loop.complete_evaluate_evidence_child(
                 workspace=route["workspace"],
                 artifact_root=route["artifact_root"], run_id=route["run_id"],
                 assignment=assignment, result=results[kind], work_units=2)
+            assert tp.terminalize_worker_contract(
+                ws, {**event, "hook_event_name": "SubagentStop", "outcome": "success"},
+                outcome="success", submission_status="not_required")
         verdict = evaluation_output.attach_child_evidence(
             verdict, run_id=route["run_id"],
             evaluator_attempt_id=route["evaluator_attempt_id"],
@@ -1645,11 +1653,26 @@ class TestLoop(unittest.TestCase):
                          "execute")
         self.assertEqual(state["replan_history"][-1]["tasks"][0]["id"],
                          "t1")
+        prior_team = state["replan_history"][-1]["plan_team_plan"]
+        self.assertNotIn("plan_team_plan", state)
 
         # The corrected plan is reloaded and cannot bypass fresh human
         # approval even though the original loop had no plan checkpoint.
-        prepare_plan(ws, runtime=loop, usage="measured")
-        self.assertEqual(loop.gate(ws, "pass")["step"], "plan_approval")
+        with unittest.mock.patch.object(loop, "_screen_public_native_route", return_value={
+                "dispatch_allowed": False, "error": "root admission denied"}):
+            refused = loop.next_action(ws)
+        self.assertIn("root admission denied", refused.get("error", ""))
+        replacement = prepare_plan(ws, runtime=loop, usage="measured")
+        new_team = replacement["plan_team_plan"]
+        for field in ("task_slot", "task_name", "output"):
+            self.assertTrue({row[field] for row in prior_team["workers"]}.isdisjoint(
+                {row[field] for row in new_team["workers"]}))
+        replay = loop.next_action(ws)
+        self.assertNotIn("error", replay, replay.get("error"))
+        self.assertEqual(replay["plan_team_plan"], new_team)
+        gated = loop.gate(ws, "pass")
+        assert not gated.get("error"), {key: gated[key] for key in ("error", "dor", "dod") if key in gated}
+        self.assertEqual(gated["step"], "plan_approval")
         self.assertEqual(loop.approve(ws, by="user")["step"], "execute")
 
     def test_define_projection_plan_gate_names_every_task_without_explicit_criteria(self):
@@ -2276,10 +2299,13 @@ class TestLoop(unittest.TestCase):
 
         with unittest.mock.patch.object(loop.tp, "activate", activate), \
                 unittest.mock.patch.object(loop.tp, "dor_check", dor):
-            loop.next_action(ws)
+            action = loop.next_action(ws)
         self.assertEqual(order[:2], ["dor", "contract"])
         self.assertIsNone(tp.load_active(ws))
-        self.assertEqual(len(tp.list_task_slots(ws)), 1)
+        self.assertEqual(set(tp.list_task_slots(ws)), {
+            action["contract_bootstrap"]["task_slot"],
+            *(row["task_slot"] for row in action["plan_team_plan"]["workers"]),
+        })
 
     def test_task_dod_enables_regression_gate(self):
         """The submit/gate reconstruction keeps the same governed DoD."""

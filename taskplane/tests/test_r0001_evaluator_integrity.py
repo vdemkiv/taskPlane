@@ -23,6 +23,25 @@ def _spec_evaluator(tmp_path, phase="evaluate"):
     runtime, original, calls = _setup(tmp_path)
     runtime.registry = _registry()
     definition = runtime.registry.admit(phase, ()).to_dict()
+    evidence = {"schema": "taskplane.failure-evidence/v1", "mode": "simulated-worker-authorship",
+        "detail": "This local connection probe does not establish native acceptance."}
+    failure = failure_routing.validate_failure_record({
+        "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID, "id": "native-proof-unavailable", "stage": "evaluate",
+        "source": "simulated-worker", "repro": "Inspect the local probe's absent native proof.",
+        "evidence": evidence, "evidence_digest": failure_routing.evidence_digest(evidence),
+        "class": "unknown", "reason": "Native acceptance is not established by this local probe.",
+        "owner": "orchestrator", "cluster": "native-proof", "route": "hold",
+        "candidate": {"id": "local-candidate", "fingerprint": original.bindings["candidate_fingerprint"]}})
+    runtime.fixture_judgment = {"schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID, "task": "T13",
+        "requirement": "R-0001", "verdict": "fail", "criteria": [{"criterion": "FP-AC03",
+            "status": "cannot-verify", "evidence": "No native acceptance in this simulated-host probe."}],
+        "evaluation": {"status": "complete", "reason_code": "none", "detail": "Independent failure remains owed."},
+        "graph": {"dispositions": [], "requirements_checked": [], "contracts_checked": []}, "failures": [failure]}
+    if phase == "engineering":
+        evaluation_output.validate_evaluator_value(runtime.fixture_judgment)
+        judgment = agent_runtime.Artifact("judgment", evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID,
+            runtime.store.put("judgment", runtime.fixture_judgment))
+        original = replace(original, package=(*original.package, judgment))
     envelope = delivery_ports.dispatch_envelope(phase, definition["role"], "T13",
         definition["model_tier"], role_instructions="Read the sealed evidence.",
         requested_model=None, requested_effort="high", settings_digest="b" * 64)
@@ -39,26 +58,14 @@ def _spec_evaluator(tmp_path, phase="evaluate"):
         "validator_identities": definition["domain_validator_refs"],
         "validator_inventory_fingerprint": definition["validator_inventory_fingerprint"],
         "capability_set_fingerprint": runtime.registry.capability_set_fingerprint,
+        "consumed_artifact_schema_versions": [{key: row[key] for key in
+            ("artifact_class", "artifact_schema_version")} for row in definition["consumes"]],
         "produced_artifact_schema_versions": [{key: row[key] for key in
             ("artifact_class", "artifact_schema_version")} for row in definition["produces"]]}
     dispatch = replace(original, bindings=bindings, nonce_bindings=nonce_binding, issued=issued, envelope=envelope)
     runtime.validators = {"taskplane.loop.validate_spec_phase_artifact": loop.validate_spec_phase_artifact}
     runtime.launch = lambda *args: calls.append("launch") or "simulated-worker-1"
     runtime.continuation = lambda reason: {"kind": "hold" if reason else "evaluate", "phase_id": phase}
-    evidence = {"schema": "taskplane.failure-evidence/v1", "mode": "simulated-worker-authorship",
-        "detail": "This local connection probe does not establish native acceptance."}
-    failure = failure_routing.validate_failure_record({
-        "schema": failure_routing.FAILURE_RECORD_SCHEMA_ID, "id": "native-proof-unavailable", "stage": "evaluate",
-        "source": "simulated-worker", "repro": "Inspect the local probe's absent native proof.",
-        "evidence": evidence, "evidence_digest": failure_routing.evidence_digest(evidence),
-        "class": "unknown", "reason": "Native acceptance is not established by this local probe.",
-        "owner": "orchestrator", "cluster": "native-proof", "route": "hold",
-        "candidate": {"id": "local-candidate", "fingerprint": bindings["candidate_fingerprint"]}})
-    runtime.fixture_judgment = {"schema": evaluation_output.EVALUATOR_OUTPUT_SCHEMA_ID, "task": "T13",
-        "requirement": "R-0001", "verdict": "fail", "criteria": [{"criterion": "FP-AC03",
-            "status": "cannot-verify", "evidence": "No native acceptance in this simulated-host probe."}],
-        "evaluation": {"status": "complete", "reason_code": "none", "detail": "Independent failure remains owed."},
-        "graph": {"dispositions": [], "requirements_checked": [], "contracts_checked": []}, "failures": [failure]}
     def observe(identity):
         calls.append("observe")
         stage = _stage(run_id=bindings["run_id"], stage_kind=phase,
@@ -190,7 +197,7 @@ def test_declared_evaluator_output_reaches_collector_without_promoting_failure(t
     collected = review_evidence.collect_evaluator_attempts(runtime.store, selected)
     assert collected["admissible"] is collected["progression_authority"] is False
     if damage == "none":
-        assert result["status"] == "accepted"
+        assert result["status"] == "accepted", result.get("reason_code")
         assert collected["gaps"] == []
         assert len(collected["attempts"][0]["judgments"]) == 1
         assert len(result["collected_output_references"]) == 2

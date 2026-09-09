@@ -3804,6 +3804,16 @@ def cmd_loop(a) -> int:
     if (action == "init" and loopmod.load(ws) is None
             and runtime_storage.load_workspace_locator(ws) is None):
         import preflight
+        # Preserve the existing private store's exact checkout ownership
+        # before preflight switches lookup to the repository-keyed locator.
+        # The incumbent adoption owner then moves it; no records are copied.
+        if (tp.get_mode(ws)["store"] == "external" and
+                os.path.isfile(os.path.join(tp.external_store_root(ws), "knowledge", "index.json")) and
+                not os.path.lexists(tp.store_meta_path(ws))):
+            index = tp.load_json(os.path.join(tp.external_store_root(ws), "knowledge", "index.json"))
+            if isinstance(index, dict) and any(index.get(key) for key in (
+                    "requirements", "decisions", "flows", "debt")):
+                tp.write_store_meta(ws)
         prepared = preflight.RepositoryPreflight().prepare(
             ws, workspace=ws, host={"kind": tp.host(),
                 "session_id": (os.environ.get("CODEX_THREAD_ID") or

@@ -399,7 +399,9 @@ def collected_product_handoff(tmp_path, monkeypatch):
     contract = loop.tp.load_json(loop.tp.active_contract_path(ws, slot))
     collected = loop.observe_phase_runtime_hook(ws, contract, stop)
     assert collected["status"] == "collected", collected
-    loop.tp.terminalize_worker_contract(ws, stop, outcome="success", submission_status="not_required")
+    assert collected["worker_released"] is True
+    assert loop.tp.load_json(loop.tp.active_contract_path(ws, slot), default=None) is None
+    assert loop.tp.released_worker_contract(ws, slot)["worker_lifecycle"]["owner"]
     completion = loop.next_action(ws)["phase_runtime"]["completion"]
     assert completion is not None
     artifacts = review_evidence.ArtifactStore(ws)
@@ -519,7 +521,9 @@ def collected_zero_lens_design(collected_product_handoff, monkeypatch):
     stop = _host_event(ws, action, "SubagentStop")
     collected = loop.observe_phase_runtime_hook(ws, worker, stop)
     assert collected["status"] == "collected", collected
-    loop.tp.terminalize_worker_contract(ws, stop, outcome="success", submission_status="not_required")
+    assert collected["worker_released"] is True
+    assert loop.tp.load_json(loop.tp.active_contract_path(ws, slot), default=None) is None
+    assert loop.tp.released_worker_contract(ws, slot)["worker_lifecycle"]["owner"]
     completion = loop.next_action(ws)["phase_runtime"]["completion"]
     assert artifacts.read(completion["runtime_result"])["status"] == "accepted"
     assert "design_team_plan" not in loop.load(ws)

@@ -1044,7 +1044,8 @@ def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
             f"--deselect={selector}"
             for selector in cell.get("excluded_selectors") or []
         ]
-        return [[PYTHON, "-m", "pytest", "-q", *selectors, *deselected]]
+        return [[PYTHON, "-m", "pytest", "-v" if kind == "pytest" else "-q",
+                 *selectors, *deselected]]
     if kind == "quality-package":
         return [
             [PYTHON, "-m", "ruff", "check", "--output-format=github",

@@ -423,7 +423,7 @@
   },
   "limits": {
     "timeouts": {
-      "task_seconds": 1200,
+      "task_seconds": 1800,
       "subprocess_seconds": 300,
       "wait_seconds": 60,
       "lens_wait_seconds": 1800,

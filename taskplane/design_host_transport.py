@@ -611,10 +611,18 @@ def _validate_plan(kernel: Any, plan: object) -> list[JsonDict]:
         task_name = str(worker.get("task_name") or "")
         slot = str(worker.get("task_slot") or "")
         output = str(worker.get("output") or "")
-        expected_output = f"{stage}/lenses/{lens}.json"
+        generation_suffix = ""
+        if stage == "plan" and slot != f"plan-lens-{lens}":
+            prefix = f"plan-lens-{lens}-replan-"
+            generation = slot.removeprefix(prefix)
+            if (not slot.startswith(prefix) or not generation.isascii() or
+                    not generation.isdecimal() or generation.startswith("0")):
+                raise ValueError("Plan lens replan generation is invalid")
+            generation_suffix = f"-replan-{generation}"
+        expected_output = f"{stage}/lenses/{lens}{generation_suffix}.json"
         if (not lens or not kernel._TASK_SLOT_RE.fullmatch(slot) or
                 task_name != kernel.dispatch_task_name(
-                    "lens", "tp-lens", f"{stage}-{lens}") or
+                    "lens", "tp-lens", f"{stage}-{lens}{generation_suffix}") or
                 task_name in names or slot in slots or
                 output != expected_output):
             raise ValueError("Design lens worker identity is invalid")
@@ -1077,8 +1085,8 @@ def design_terminal_activity(kernel: Any, workspace: str, contract: JsonDict,
     outcome = receipt.get("outcome")
     result_details = {}
     if contract["worker_lifecycle"].get("stage") == "plan-lens":
-        lens = authority["assignment"]["lens"]
-        result_details["result_sha256"] = _result_sha256(workspace, f"plan/lenses/{lens}.json")
+        output = contract["write_allow"][0]
+        result_details["result_sha256"] = _result_sha256(workspace, output)
     semantic = ({"cancellation": "cancel", "interruption": "interruption",
                  "handoff": "handoff"}.get(outcome)
                 if isinstance(outcome, str) else None)

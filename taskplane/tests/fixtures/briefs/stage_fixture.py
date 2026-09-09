@@ -153,7 +153,7 @@ def prepare_plan(ws, *, runtime=None, usage="unavailable"):
         import loop as runtime
     assert runtime.load(ws)["step"] == "plan"
     action = runtime.next_action(ws)
-    assert not action.get("error"), action
+    assert not action.get("error"), {key: action[key] for key in ("error", "dor") if key in action}
     finish_plan_lenses(ws, Path(ws), action, runtime=runtime, usage=usage)
     return action
 
