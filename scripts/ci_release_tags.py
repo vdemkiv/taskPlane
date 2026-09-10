@@ -84,6 +84,14 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.20.0": {
+        "reason": "superseded local development version. PR #22 integrated "
+                  "the harness refactor while the manifests still declared "
+                  "2.20.0. The distinct post-refactor Marketplace candidate "
+                  "is 2.23.0; local builds and installation did not publish "
+                  "2.20.0 as a public release.",
+        "superseded_by": "2.23.0",
+    },
     "2.19.0": {
         "reason": "superseded unreleased candidate. PR #18 restored its "
                   "exact implementation baseline and explicitly identified "
