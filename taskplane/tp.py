@@ -363,6 +363,19 @@ def _codex_hooks_report(ws: str) -> dict:
     """
     config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
+    if not os.path.isfile(runner_path):
+        # Match the hook commands' explicit Git-family fallback. Never search
+        # other checkouts or installed versions for workspace authority.
+        try:
+            common = tp._run([
+                "git", "rev-parse", "--path-format=absolute", "--git-common-dir",
+            ], cwd=ws)
+        except OSError:
+            common = None
+        if common is not None and common.returncode == 0:
+            primary = os.path.realpath(os.path.join(common.stdout.strip(), ".."))
+            runner_path = os.path.join(primary, _CODEX_HOOK_RUNNER)
+            config_path = os.path.join(primary, _CODEX_HOOK_CONFIG)
     try:
         config = tp.load_json(config_path, default=None,
                               what="Codex hook configuration")
@@ -719,8 +732,8 @@ def _exclude_generated_codex_config(ws: str, value: dict) -> None:
 def _install_codex_hooks(ws: str) -> dict:
     """Install the portable workspace config and ignored local engine bridge.
 
-    Marketplace plugins provide skills/apps, while Codex lifecycle hooks load
-    from workspace configuration. The committed config stays portable; the
+    Native plugin hooks and the workspace bridge share the same event guard.
+    The workspace configuration stays portable; the
     ignored runner holds a stable installation-family path and resolves the
     newest valid engine on every invocation.
     """
@@ -922,9 +935,12 @@ def _onboard_report(ws: str) -> dict:
         checks.extend((
             {
                 "id": "hook_install", "label": "Hook installation",
-                "ok": host_capabilities["install"]["status"] == "supported",
-                "detail": host_capabilities["install"]["status"],
-                "hint": "Install taskPlane hooks before starting governed work.",
+                "ok": (host_capabilities["install"]["status"] == "supported"
+                       and codex_hooks["ok"]),
+                "detail": (host_capabilities["install"]["status"] if
+                           codex_hooks["ok"] else codex_hooks["status"]),
+                "hint": codex_hooks.get("hint") or (
+                    "Run onboarding's hook setup before governed work."),
             },
             {
                 "id": "repository_trust", "label": "Repository trust",
@@ -969,7 +985,8 @@ def _onboard_report(ws: str) -> dict:
     base_ready = (looks_like_project and inside_git and has_commit and has_context
                   and run_readiness["ready"] and phase_ready)
     ready = base_ready and (host_capabilities is None
-                            or bool(host_capabilities["ready"]))
+                            or (bool(host_capabilities["ready"])
+                                and bool(codex_hooks["ok"])))
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
@@ -982,6 +999,10 @@ def _onboard_report(ws: str) -> dict:
         nxt = "repair_phase_configuration"
     elif not has_context:
         nxt = "tp_init"
+    elif (codex_hooks is not None and not codex_hooks["ok"]
+          and host_capabilities["next_action"] not in {
+              "contact_administrator", "review_repository_trust"}):
+        nxt = "install_codex_hooks"
     elif host_capabilities is not None and not host_capabilities["ready"]:
         nxt = host_capabilities["next_action"]
     else:
@@ -1275,12 +1296,9 @@ def _seed_owed(ws, run_type, task_id):
 def cmd_session_verify(a) -> int:
     """Stop / SessionEnd hook: report artifacts this run owes and never showed.
 
-    Exits 2 with the list on stderr when anything is open. The host's exact
-    blocking semantics for `Stop` are not documented precisely enough to
-    rely on, so this is written to be USEFUL either way: if Stop can block,
-    the turn does not end quietly; if it cannot, the list is still surfaced
-    where a human reads it. The PreToolUse conversion is the mechanism that
-    actually holds — this is the net under it.
+    Request artifact delivery once per unchanged obligation set. Re-entry
+    must not trap the conversation; submission and completion gates still
+    enforce their evidence independently.
     """
     try:
         event = json.load(sys.stdin)
@@ -1295,10 +1313,15 @@ def cmd_session_verify(a) -> int:
     try:
         import obligations
         ws = _workspace(getattr(a, "workspace", None))
-        owed = obligations.blocking(ws)
+        contract = tp.load_active_for_event(ws, event)
+        if not contract:
+            return 0
+        owed = [row for row in obligations.blocking(ws)
+                if not row.get("session")
+                or row["session"] == contract.get("task_id")]
     except Exception:
         return 0
-    if not owed:
+    if not owed or event.get("stop_hook_active") is True:
         return 0
     print("taskplane: this run owes artifacts that were never shown:",
           file=sys.stderr)
@@ -1307,23 +1330,19 @@ def cmd_session_verify(a) -> int:
               file=sys.stderr)
     print("Render each one, then `tp ack <id>` (ack is unmetered — it can "
           "always be run).", file=sys.stderr)
-    # STALL DETECTION (v2.11.0). This hook used to print one instruction
-    # forever. On karpenter#9464 it fired ~12 consecutive times with no
-    # state change, because `tp ack` was itself budget-blocked: the hook
-    # demanded an action the harness refused, and nothing the agent could
-    # do satisfied it. The refusal still stands — an obligation that can be
-    # waited out is not an obligation — but a hook that repeats an
-    # unsatisfiable instruction is a hang, not enforcement. So when nothing
-    # has changed since the last firing, say what is actually in the way and
-    # name the command that clears it.
+    # Stop is a reminder, not a retry engine. Keep the actual completion
+    # gate closed without generating an unbounded chain of agent turns.
     try:
         stalled, detail = _session_verify_stall(ws, owed)
     except Exception:
-        stalled, detail = False, ""
+        stalled, detail = True, ("could not save the reminder state; automatic "
+                                 "retries stopped. Check runtime-store access. "
+                                 "Completion remains blocked.")
     if stalled:
         print("", file=sys.stderr)
         print(f"taskplane: NO PROGRESS since the last check — {detail}",
               file=sys.stderr)
+        return 0
     return 2
 
 
@@ -1341,7 +1360,9 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
     except Exception:
         contract, used = contract, None
     key = hashlib.sha1(
-        ("|".join(sorted(o["id"] for o in owed)) + f"#{used}").encode()
+        (str((contract or {}).get("task_id", "")) + "|"
+         + "|".join(sorted(f"{o['id']}:{o.get('fingerprint', '')}"
+                           for o in owed))).encode()
     ).hexdigest()[:16]
     path = os.path.join(tp.tp_dir(ws), "session_verify_stall.json")
     prior = tp.load_json(path, default={}, what="stall marker") or {}
@@ -1350,8 +1371,9 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"key": key, "count": count}, f)
-    except OSError:
-        pass
+    except OSError as exc:
+        return True, (f"cannot save the reminder state: {exc}. Automatic retries "
+                      "stopped; completion remains blocked.")
     if count < 2:
         return False, ""
     max_a = ((contract or {}).get("budget") or {}).get("max_actions")
@@ -1366,9 +1388,11 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
             f"outside-workspace workaround is required.")
     return True, (
         f"the same {len(owed)} obligation(s) have been open across "
-        f"{count} checks. Render the artifact the engine produced — its own "
-        f"bytes, not a summary — then `tp ack <id>`. `tp ack --status` shows "
-        f"whether a render was observed, substituted, or only claimed")
+        f"{count} checks. Automatic retries stopped; completion remains "
+        "blocked. Check `tp ack --status` and any storage-permission error "
+        "from `tp ack <id>`. If the human ended this task, use "
+        "`tp clear --approved-by <human> --workspace <path>`; clearing "
+        "does not approve the review or mark its artifacts delivered.")
 
 
 def cmd_screen_render(a) -> int:
@@ -5253,6 +5277,13 @@ def cmd_context(a) -> int:
     import requirements as reqmod
     import track as tr
     ws = _workspace(a.workspace)
+    print('[taskplane] On the first TaskPlane request in this session, and '
+          'after installation or update, run onboard and present its setup '
+          'dashboard before routing any intent (including review, status, '
+          'and help). Existing repository context is not completed onboarding. '
+          'Keep the requested goal and continue it when setup is ready. '
+          'Internal stage workers consume their sealed startup without '
+          'repeating this user-entry setup.')
     lifecycle_released = []
     terminal_recovery = None
     if ((os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
@@ -5514,10 +5545,11 @@ def _run_hook_command(a) -> int:
             sys.stdin = original_stdin
     receipt_home = runtime_storage.bind_hook_taskplane_home(
         workspace, os.environ, hook_path=hook_path)
-    host_caps.record_runtime_hook_receipt(
-        receipt_home, hook_path=hook_path, event=event)
     claim = tp.claim_hook_event(
         workspace, a.cmd, event, hook_path=hook_path)
+    if claim.get("claim_id"):
+        host_caps.record_runtime_hook_receipt(
+            receipt_home, hook_path=hook_path, event=event, claim=claim)
     context_replay = (not claim.get("execute") and a.cmd == "context"
                       and claim.get("response_class") in {"context", "empty"})
     if not claim.get("execute") and not context_replay:
@@ -5694,7 +5726,6 @@ def cmd_ack(a) -> int:
     issued = {row.get("id"): row for row in obligations.read(ws)
               if row.get("event") == "issued"}
     if a.id not in issued:
-        elsewhere = _contracts_elsewhere(ws)
         msg = (f"taskplane: no obligation '{a.id}' was issued in this "
                f"workspace ({ws}) — refusing to acknowledge it.")
         if not issued:
@@ -5704,10 +5735,7 @@ def cmd_ack(a) -> int:
         else:
             msg += (" Obligations issued here: "
                     + ", ".join(sorted(issued)) + ".")
-        if elsewhere:
-            msg += (" Active taskplane contracts exist in: "
-                    + ", ".join(elsewhere)
-                    + " — re-run with `--workspace <that path>`.")
+        msg += " Re-run with `--workspace <the run's checkout>`."
         print(msg, file=sys.stderr)
         return 1
     fp = getattr(a, "fingerprint", None)
@@ -5717,21 +5745,24 @@ def cmd_ack(a) -> int:
             fp = obligations.artifact_fingerprint(
                 os.path.join(ws, art) if not os.path.isabs(art) else art)
     delivered = getattr(a, "delivered", None)
-    if delivered:
-        # Delivering the engine's file is not a weaker discharge than
-        # rendering it inline — it is the SAME bytes, and the fingerprint is
-        # what the ledger compares either way. It is simply the one that
-        # does not cost a full re-authoring of the document.
-        fp = obligations.artifact_fingerprint(
-            delivered if os.path.isabs(delivered)
-            else os.path.join(ws, delivered)) or fp
-        obligations.observe(ws, tool="delivered_file",
-                            fingerprint=fp, title=os.path.basename(delivered),
-                            bytes_len=(os.path.getsize(delivered)
-                                       if os.path.isfile(delivered) else 0),
-                            session=None)
-    obligations.acknowledge(ws, a.id, evidence=getattr(a, "evidence", "") or "",
-                            fingerprint=fp)
+    try:
+        if delivered:
+            import hashlib
+            path = delivered if os.path.isabs(delivered) else os.path.join(ws, delivered)
+            with open(path, "rb") as stream:
+                body = stream.read()
+            fp = hashlib.sha256(body).hexdigest()[:16]
+            obligations.observe(ws, tool="delivered_file", fingerprint=fp,
+                                title=os.path.basename(path), bytes_len=len(body),
+                                strict=True)
+        obligations.acknowledge(ws, a.id, evidence=getattr(a, "evidence", "") or "",
+                               fingerprint=fp)
+    except (OSError, tp.StateError) as exc:
+        print(f"taskplane: acknowledgment {a.id} was not saved: {exc}. "
+              f"Ledger: {obligations.ledger_path(ws)}. Check artifact access "
+              "and authorize writes to this exact store through the host, "
+              "then retry and verify with `tp ack --status`.", file=sys.stderr)
+        return 1
     print(f"acknowledged {a.id}" + (f" ({fp})" if fp else ""))
     return 0
 

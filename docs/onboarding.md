@@ -9,7 +9,11 @@ README's [Onboarding summary](../README.md) covers the short version.
 ## Readiness checks
 
 Say **taskplane help** for the tour, or just state a goal — `taskplane` routes
-it and runs onboarding for you on a fresh folder. `tp onboard` shows the
+it after onboarding on the first request in a host session and after each install,
+reinstall, or update. This includes Review, Status, and Help in an existing
+repository. Existing knowledge or run state never substitutes for setup.
+TaskPlane retains your original request and continues it when ready, without
+asking you to state the goal again. `tp onboard` shows the
 onboarding dashboard and won't hand you to a governed run until the prerequisite
 checks are green for a local target. A repository URL or pull request first
 runs the automatic repository precondition, which creates a verified managed
@@ -85,13 +89,16 @@ permissions and sandbox controls enabled.
    name a repository URL or pull request; taskplane acquires and verifies a
    managed checkout automatically inside the current environment.
 3. Prompt **"set up taskplane"** or **"use taskplane for …"**. The plugin runs
-   `tp onboard --json` before governed work. On first use it installs the
+   `tp onboard --json` and presents the onboarding dashboard before routing
+   the request. On first use it installs the
    portable `.codex/hooks.json` workspace configuration plus an ignored local
    `.taskplane/codex-hook.py` bridge. A new task is required only for this
    one-time initial host hook load, never for checkout/auth/storage recovery.
    A linked Codex worktree reuses the primary checkout's validated bridge via
    Git's common directory until onboarding creates its own ignored local copy;
    it does not depend on plugin-root environment variables being inherited.
+   Reinstallation restores a missing launcher before trusting an earlier session
+   receipt. Onboarding checks the same Git-family launcher path the hooks use.
 4. Answer any prerequisite prompt in chat. taskplane runs only its stored
    bounded action after approval and resumes the same run.
 5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
@@ -118,6 +125,30 @@ When inline HTML widgets are unavailable, Codex still relays the plain-text
 `HEADLINE:` and provides the managed run's dashboard by reference (legacy
 unmanaged workspaces use `.taskplane/dashboard.html`). The governance state
 and human gates do not depend on widget support.
+
+Both native and repository hooks pass through the same event-claim guard, which
+executes an event once and replays its result for duplicates. Onboarding consumes
+that guard's receipt; the two paths do not need to have identical latest events.
+Hook delivery order, a late repository hook, and concurrent checkouts must not
+make readiness oscillate. An event without a valid identity cannot establish
+this capability. Records remain isolated by host session and, for repository
+hooks, by checkout.
+
+The dashboard and plain-text headline use the same setup actions. A missing or
+unrecognized action stays incomplete. When execution is missing, review, trust,
+and enable TaskPlane hooks in Codex settings before retrying onboarding. Newly
+installed or changed hooks can require another trust review. A receipt records
+past execution, not the current position of Codex's hook toggles. Only if trusted,
+enabled hooks still need initial loading should a new task be suggested.
+Neither a missing load nor a missing event claim shows a Start action.
+
+If a human ends an obsolete review, `tp clear --approved-by <human> --workspace
+<checkout>` releases its contract without approving that review. This recovery
+command remains reachable through the hook. Artifact acknowledgments report
+storage failures with the exact ledger path; authorize that store through the
+host and retry, then check `tp ack --status`. Stop reminders do not retry an
+unchanged obligation indefinitely. Submission and completion evidence gates
+remain enforced, and clearing a contract preserves the review's history.
 
 ## Host setup at a glance
 

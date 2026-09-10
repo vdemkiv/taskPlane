@@ -181,7 +181,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "4ad724503c7eab7f792161094719f819efa4a682d85d14fb52068abac7df0067",
+    "fingerprint": "50b46c92edd91ec6790baa5cf35393029e81da52df7c8b07fa0020e0cc4bb8e0",
     "gate": "human",
     "id": "plan",
     "model_tier": "inherit",
@@ -222,7 +222,7 @@
     ],
     "role": "tp-plan",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "fb2afb2e8a06ac2be449ba4085aff1ff02b9518d0402660455a0ec7ae561c3c5",
+    "skill_content_fingerprint": "ade68c8b35442473b48aea19a0553ba16f53f19626a284abdc7d5cfdb44b5b3e",
     "skill_ref": "skills/tp-go/SKILL.md",
     "successors": [
       "build"
@@ -608,7 +608,7 @@
     "edge_conditions": [],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "ed1b3eca5a25f34633aa8b5b35a36f2e174c88ff8a0cc5de5a4cb60fc0e622bd",
+    "fingerprint": "0999d3a9a935f4a45465a28e819ae6bfe3f40ac21c17c52fa3e84b120fafb6e9",
     "gate": "human",
     "id": "retro",
     "model_tier": "inherit",
@@ -631,7 +631,7 @@
     ],
     "role": "tp-retro",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "fb2afb2e8a06ac2be449ba4085aff1ff02b9518d0402660455a0ec7ae561c3c5",
+    "skill_content_fingerprint": "ade68c8b35442473b48aea19a0553ba16f53f19626a284abdc7d5cfdb44b5b3e",
     "skill_ref": "skills/tp-go/SKILL.md",
     "successors": [],
     "telemetry_scope": [

@@ -65,11 +65,10 @@ literal complaint behind "this is not the graph we designed" — has nothing to
 cite, so the obligation stays open and the scorer counts it. This is the one
 place the design does better than a naive "did you render? yes" checkbox.
 
-WHAT THIS MODULE MAY NOT DO. It gates nothing. It cannot fail CI, block a
-loop, refuse a tool, or change a verdict. Every write is best-effort and
-swallowed. Delete this file and taskplane behaves exactly as before — the
-same contract yield_meter.py holds, and the property that makes an instrument
-safe to add and easy to remove if it does not earn its keep.
+Passive issuance and hook observations remain best-effort. Explicit
+acknowledgments must persist or report failure. Binding obligations, described
+below, additionally hold TaskPlane completion commands; Stop reminders are
+bounded and never stand in for those gates.
 """
 from __future__ import annotations
 if __package__:
@@ -196,12 +195,14 @@ def ledger_path(ws: str) -> str:
     return os.path.join(tp.store_root(ws), LEDGER)
 
 
-def _append(ws: str, record: dict) -> None:
+def _append(ws: str, record: dict, *, strict: bool = False) -> None:
     try:
         path = ledger_path(ws)
     except Exception:
+        if strict:
+            raise
         return
-    _shared_primitives.append_instrument(path, record)
+    _shared_primitives.append_instrument(path, record, strict=strict)
 
 
 def artifact_fingerprint(path: str) -> str | None:
@@ -296,7 +297,8 @@ def acknowledge(ws: str, oid: str, *, evidence: str = "",
            "evidence": str(evidence)[:400], "host": tp.host()}
     if fingerprint:
         row["fingerprint"] = str(fingerprint)[:64]
-    _append(ws, row)
+    # An explicit command must never claim success after losing its write.
+    _append(ws, row, strict=True)
     return row
 
 
@@ -313,7 +315,7 @@ def content_fingerprint(text: str) -> str:
 
 def observe(ws: str, *, tool: str, fingerprint: str | None,
             title: str = "", bytes_len: int = 0,
-            session: str | None = None) -> dict:
+            session: str | None = None, strict: bool = False) -> dict:
     """Record that a render TOOL RAN. A fact, not a claim.
 
     Written from the PreToolUse hook, so it is recorded whether or not the
@@ -329,7 +331,7 @@ def observe(ws: str, *, tool: str, fingerprint: str | None,
         row["fingerprint"] = str(fingerprint)[:64]
     if session:
         row["session"] = str(session)[:120]
-    _append(ws, row)
+    _append(ws, row, strict=strict)
     return row
 
 

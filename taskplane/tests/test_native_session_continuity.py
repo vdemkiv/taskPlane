@@ -255,6 +255,8 @@ def test_fresh_session_reads_original_run_and_emits_valid_context(onboarded):
     assert "Repair the native harness with durable scope" in context["additionalContext"]
     assert saved["run_id"] in context["additionalContext"]
     assert "loop next" in context["additionalContext"]
+    assert "first TaskPlane request" in context["additionalContext"]
+    assert "Existing repository context is not completed onboarding" in context["additionalContext"]
     assert caps.runtime_hook_observations(
         str(home), session_id="fresh-session", workspace=str(workspace))[
             "repository_bridge_loaded"].status == "supported"
@@ -305,22 +307,74 @@ def test_receipts_survive_another_live_session(tmp_path):
         observations = caps.runtime_hook_observations(
             home, session_id=session, workspace=workspace)
         assert observations["repository_bridge_loaded"].status == "supported"
-        assert observations["stable_event_identity"].status == "supported"
+        assert "stable_event_identity" not in observations
     assert caps.runtime_hook_observations(
         home, session_id="foreign", workspace=workspace) == {}
 
 
-def test_late_bridge_converges_on_a_later_real_event(tmp_path):
-    home = str(tmp_path / "receipts")
-    event = {"session_id": "session", "hook_event_name": "PreToolUse",
-             "tool_use_id": "before-bridge", "cwd": str(tmp_path)}
-    caps.record_runtime_hook_receipt(home, hook_path="native", event=event)
-    event = {**event, "tool_use_id": "after-bridge"}
+@pytest.mark.parametrize("leading", ["native", "bridge"])
+def test_readiness_uses_real_claims_during_sequential_hook_delivery(
+        onboarded, monkeypatch, capsys, leading):
+    import io
+    from argparse import Namespace
+    workspace, home = onboarded
+    _fresh_process(workspace, "loop", "init", "Hook ordering regression", home=home)
+    lagging = "bridge" if leading == "native" else "native"
+    event = {"session_id": "receipt-regression", "hook_event_name": "PreToolUse",
+             "tool_use_id": "current", "tool_name": "Read", "cwd": str(workspace)}
+    # Reinstall in an existing chat: retained records describe different
+    # events, and have no claim evidence from the corrected engine.
+    for path in (leading, lagging):
+        caps.record_runtime_hook_receipt(str(home), hook_path=path,
+            event={**event, "tool_use_id": "retained-" + path})
+    executions = []
+
+    def assert_ready():
+        observed = caps.runtime_hook_observations(str(home),
+            session_id=event["session_id"], workspace=str(workspace))
+        snapshot = caps.probe_snapshot(str(workspace), host="codex",
+            install_context="personal",
+            native_installed=True, bridge_configured=True,
+            observations=observed)
+        assert caps.onboarding_projection(snapshot)["ready"] is True
+
+    def handler(args):
+        # Check inside the first hook, before the other path catches up.
+        assert_ready()
+        executions.append(event["tool_use_id"])
+        print('{"continue": true}')
+        return 0
+
+    for path, call in [(leading, "current"), (lagging, "current"),
+                       (leading, "next")]:
+        event["tool_use_id"] = call
+        monkeypatch.setenv("TASKPLANE_HOOK_PATH", path)
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+        assert cli._run_hook_command(Namespace(
+            cmd="screen", workspace=str(workspace), fn=handler)) == 0
+        assert_ready()
+        capsys.readouterr()
+    assert executions == ["current", "next"]
+
+
+def test_missing_event_identity_never_creates_claim_evidence(
+        onboarded, monkeypatch, capsys):
+    import io
+    from argparse import Namespace
+    workspace, home = onboarded
+    _fresh_process(workspace, "loop", "init", "Missing hook identity", home=home)
+    event = {"session_id": "missing-event", "cwd": str(workspace)}
     for path in ("native", "bridge"):
-        caps.record_runtime_hook_receipt(home, hook_path=path, event=event)
-    observations = caps.runtime_hook_observations(
-        home, session_id="session", workspace=str(tmp_path))
-    assert observations["stable_event_identity"].status == "supported"
+        monkeypatch.setenv("TASKPLANE_HOOK_PATH", path)
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+        cli._run_hook_command(Namespace(
+            cmd="screen", workspace=str(workspace),
+            fn=lambda args: pytest.fail("unclaimed event executed")))
+        refusal = json.loads(capsys.readouterr().out)
+        assert refusal["hookSpecificOutput"]["permissionDecision"] == "deny"
+    observations = caps.runtime_hook_observations(str(home),
+        session_id=event["session_id"], workspace=str(workspace))
+    assert observations == {}
 
 
 def test_bridge_receipts_preserve_both_workspaces_in_one_session(tmp_path):

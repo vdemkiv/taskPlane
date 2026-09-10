@@ -344,6 +344,7 @@ def _fingerprint_text(value: object) -> str | None:
 
 def record_runtime_hook_receipt(
         home: str, *, hook_path: str, event: Mapping[str, Any],
+        claim: Mapping[str, Any] | None = None,
         observed_at: float | None = None) -> dict[str, Any]:
     """Persist proof that a configured hook actually executed.
 
@@ -362,10 +363,16 @@ def record_runtime_hook_receipt(
                or event.get("conversation_id") or
                os.environ.get("CODEX_THREAD_ID") or
                os.environ.get("CLAUDE_SESSION_ID"))
-    event_values = [str(event.get(key) or "") for key in (
-        "session_id", "thread_id", "turn_id", "tool_use_id",
-        "hook_event_name", "tool_name", "agent_id")]
-    event_identity = "\0".join(event_values)
+    # The shared claim kernel owns event identity and duplicate suppression.
+    # Two paths' latest events need not match: they can execute sequentially,
+    # observe different event types, or serve different checkouts.
+    claim_id = claim.get("claim_id") if isinstance(claim, Mapping) else None
+    claimed = (isinstance(claim, Mapping)
+               and claim.get("schema") == "taskplane.hook-claims/v1"
+               and claim.get("status") in {
+                   "claimed", "recovered", "replay", "duplicate_pending"}
+               and isinstance(claim_id, str)
+               and re.fullmatch(r"[0-9a-f]{64}", claim_id) is not None)
     cwd = event.get("cwd") if isinstance(event.get("cwd"), str) else ""
     receipt = {
         "schema": RUNTIME_RECEIPT_SCHEMA,
@@ -373,8 +380,7 @@ def record_runtime_hook_receipt(
         "observed_at": float(observed_at if observed_at is not None
                              else time.time()),
         "session_fingerprint": _fingerprint_text(session),
-        "event_fingerprint": (_fingerprint_text(event_identity)
-                              if any(event_values) else None),
+        "claim_id": claim_id if claimed else None,
         "workspace_fingerprint": _fingerprint_text(
             os.path.normcase(os.path.realpath(cwd))) if cwd else None,
         "event_name": _bounded(event.get("hook_event_name"), 64),
@@ -459,14 +465,13 @@ def runtime_hook_observations(
             status="supported", source="runtime-hook:bridge",
             confidence="high",
             reason="repository bridge executed for the active host task")
-    if len(receipts) == 2:
-        native_event = receipts["native"].get("event_fingerprint")
-        bridge_event = receipts["bridge"].get("event_fingerprint")
-        if native_event and native_event == bridge_event:
-            observations["stable_event_identity"] = Observation(
-                status="supported", source="runtime-hook:exactly-once-claim",
-                confidence="high",
-                reason="native and bridge observed the same hook event")
+    if any(isinstance(row.get("claim_id"), str) and
+           re.fullmatch(r"[0-9a-f]{64}", row["claim_id"])
+           for row in receipts.values()):
+        observations["stable_event_identity"] = Observation(
+            status="supported", source="runtime-hook:exactly-once-claim",
+            confidence="high",
+            reason="a host hook passed the shared event claim guard")
     return observations
 
 
@@ -603,8 +608,8 @@ def probe_snapshot(
               and rows["repository_trust"].status == "supported"
               and policy == "supported")
     if native and bridge:
-        # Exactly-once claiming lands in the next slice.  Until a stable event
-        # identity is proved, two loaded paths are a transition, not ready.
+        # A receipt from the shared claim guard proves duplicate suppression;
+        # comparing the paths' latest events would make readiness oscillate.
         effective_path = (
             "native_effective"
             if rows["stable_event_identity"].status == "supported"
@@ -757,9 +762,17 @@ def onboarding_projection(snapshot: HostCapabilitySnapshot) -> dict[str, Any]:
           and trust.status in ("unsupported", "contradictory")):
         action = "review_repository_trust"
         reason = "repository trust does not permit the configured bridge"
+    elif path == "transitioning" and any(
+            row.status == "supported" for row in loaded):
+        action = "check_hook_identity"
+        reason = ("hooks loaded, but no valid host event claim is recorded; "
+                  "review and enable hooks in host settings, then rerun "
+                  "onboarding in this task")
     elif path == "transitioning":
         action = "start_new_session"
-        reason = "configuration exists but this session has no effective-path receipt"
+        reason = ("hooks are configured but have not executed in this session; "
+                  "review and enable them in host settings before retrying "
+                  "or starting a new session for initial loading")
     elif path == "blocked":
         action = "install_or_enable_hooks"
         reason = "no policy-permitted loaded hook path is proved"

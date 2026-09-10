@@ -241,15 +241,16 @@ def fingerprint_text(value: object, field: str, *, optional: bool = False,
     return value
 
 
-def append_instrument(path: str, record: dict[str, Any]) -> None:
-    """Append optional telemetry; an instrument cannot hold a delivery gate."""
+def append_instrument(path: str, record: dict[str, Any], *, strict: bool = False) -> None:
+    """Append telemetry; explicit user actions can require a successful write."""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         record.setdefault("ts", _time.time())
         with file_lock(path), open(path, "a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, default=str, sort_keys=True) + "\n")
     except Exception:
-        pass
+        if strict:
+            raise
 
 
 def atomic_write_json(path: str, data: Any, *, indent: int=1, sort_keys: bool=False, private: bool=False) -> None:

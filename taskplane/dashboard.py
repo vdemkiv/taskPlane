@@ -2814,15 +2814,40 @@ def render_lens_wave(lenses, meta=None, out=None):
 
 # ------------------------------------------------------ onboarding dashboard
 
+# One action vocabulary for the text fallback and the interactive dashboard.
+_ONBOARDING_ACTIONS = {
+    "attach_folder": ("Let's give taskplane a place to work", "connect a project folder"),
+    "init_git": ("One step: put this folder under git", "create a git snapshot (git init + commit)"),
+    "tp_init": ("Almost there — initialize taskplane", "initialize taskplane (tp init)"),
+    "install_codex_hooks": ("Connect taskplane to this workspace", "install or restore the workspace hook launcher"),
+    "install_or_enable_hooks": ("Connect taskplane to this session", "install or enable taskplane hooks"),
+    "start_new_session": ("Review and enable taskplane hooks", "trust and enable taskplane hooks in host settings; start a new session only if initial loading still requires it"),
+    "check_hook_identity": ("Check the hook connection", "review and enable taskplane hooks in host settings, then retry onboarding in this task"),
+    "contact_administrator": ("Administrator action is needed", "ask your administrator to allow taskplane hooks"),
+    "review_repository_trust": ("Review repository trust", "review this repository's hook permission"),
+    "recover_run_binding": ("Recover the current run", "recover this checkout's declared run binding"),
+    "archive_run": ("Review the retained run", "approve archiving the unsupported run before new work"),
+    "repair_phase_configuration": ("Repair the installed phase configuration", "use one consistent plugin build"),
+    "resume_run": ("Resume the saved run", "read the saved run; dispatch will recheck readiness"),
+    "ready": ("Ready to go", "ready for governed work"),
+}
+
+
+def _onboarding_action(report):
+    action = report.get("next_action")
+    if action == "ready" and (report.get("ready") is not True or
+            any(not row.get("ok") for row in report.get("checks") or [])):
+        action = None
+    title, detail = _ONBOARDING_ACTIONS.get(
+        action, ("Setup needs attention", "check the incomplete setup prerequisite"))
+    return action, title, detail
+
+
 def headline_onboarding(report):
     """Never-skippable one-liner for the setup state (render contract)."""
     checks = report.get("checks") or []
     ok = sum(1 for c in checks if c.get("ok"))
-    nxt = {"attach_folder": "connect a project folder",
-           "init_git": "create a git snapshot (git init + commit)",
-           "tp_init": "initialize taskplane (tp init)",
-           "ready": "ready for governed work"}.get(
-        report.get("next_action"), "setup incomplete")
+    _, _, nxt = _onboarding_action(report)
     host = report.get("host")
     tail = f" · host: {host}" if host else ""
     foreign = report.get("foreign_state") or []
@@ -2840,7 +2865,7 @@ def render_onboarding(report, out=None):
     checklist and offers the single next action as a button (sendPrompt).
     report: the output of tp._onboard_report()."""
     checks = report.get("checks", [])
-    nxt = report.get("next_action", "ready")
+    nxt, headline, next_detail = _onboarding_action(report)
     done = sum(1 for c in checks if c.get("ok"))
     rows = []
     for c in checks:
@@ -2880,7 +2905,6 @@ def render_onboarding(report, out=None):
                 f'&#39;{_jsattr(prompt)}&#39;)">{_esc(label)}</button>')
 
     if nxt == "attach_folder":
-        headline = "Let's give taskplane a place to work"
         if report.get("host") == "codex":
             sub = ("Open the repository as this Codex task's working folder "
                    "— then start a new task and I'll set up the rest.")
@@ -2895,7 +2919,6 @@ def render_onboarding(report, out=None):
             + b(sec, "Use the current folder",
                 "Use the current folder as my taskplane workspace and set it up"))
     elif nxt == "init_git":
-        headline = "One step: put this folder under git"
         sub = ("taskplane's gates diff against a commit, so the folder needs "
                "a git snapshot. I can initialize it for you.")
         actions = (
@@ -2904,17 +2927,23 @@ def render_onboarding(report, out=None):
             + b(sec, "Clone a repo instead",
                 "I'd rather clone a git repo — here's the URL: "))
     elif nxt == "tp_init":
-        headline = "Almost there — initialize taskplane"
         sub = ("Folder and repo are ready. `tp init` scaffolds the context "
                "docs, knowledge base, and dependency graph.")
         actions = b(btn, "Initialize taskplane",
                     "Run tp init here and help me fill the context docs")
+    elif nxt == "ready":
+        sub = "Setup is complete. Continue with your TaskPlane request."
+        actions = b(btn, "Continue",
+                    "Continue my original TaskPlane request now that onboarding is complete")
     else:
-        headline = "Ready to go"
-        sub = ("Folder, repo, and taskplane are all set. State a goal and "
-               "I'll drive the governed loop.")
-        actions = b(btn, "Start — what should we build?",
-                    "taskplane is set up — help me state my first goal")
+        pending = [row for row in checks if not row.get("ok")]
+        sub = next_detail[0].upper() + next_detail[1:] + "."
+        if pending:
+            sub += " " + str(pending[0].get("hint") or "")
+        actions = b(btn, "Continue setup",
+                    "Continue TaskPlane onboarding: " + next_detail
+                    + ". Preserve my original request and the current run; "
+                    "do not proceed until setup is ready.")
 
     foreign = report.get("foreign_state") or []
     foreign_html = ""

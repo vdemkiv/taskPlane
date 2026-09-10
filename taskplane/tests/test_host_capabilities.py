@@ -107,7 +107,7 @@ class TestCapabilitySnapshot:
             home, session_id="session-1", now=10_000.0)[
                 "native_plugin_hooks_loaded"].status == "supported"
 
-    def test_native_and_bridge_same_event_prove_exactly_once_identity(self):
+    def test_matching_unclaimed_receipts_do_not_prove_duplicate_suppression(self):
         home = tempfile.mkdtemp(prefix="tp-host-receipt-")
         event = {"session_id": "session-1", "tool_use_id": "call-1",
                  "hook_event_name": "PreToolUse"}
@@ -119,8 +119,16 @@ class TestCapabilitySnapshot:
         observed = hc.runtime_hook_observations(
             home, session_id="session-1", now=101.0)
 
-        assert observed["stable_event_identity"].status == "supported"
+        assert "stable_event_identity" not in observed
         assert observed["repository_trust"].status == "supported"
+        snapshot = hc.probe_snapshot(
+            _repo(), host="codex", install_context="personal",
+            native_installed=True, bridge_configured=True,
+            observations=observed)
+        view = hc.onboarding_projection(snapshot)
+        assert view["ready"] is False
+        assert view["next_action"] == "check_hook_identity"
+        assert "claim" in view["effective_path"]["reason"]
 
     def test_bridge_receipt_is_scoped_to_its_repository(self):
         home = tempfile.mkdtemp(prefix="tp-host-receipt-")
@@ -267,7 +275,7 @@ class TestOnboardingProjection:
         assert "revalidates authority and live enforcement before dispatch" \
             in continued["effective_path"]["reason"]
 
-    def test_fresh_install_still_requires_new_session_for_live_enforcement(
+    def test_fresh_install_prompts_hook_trust_before_initial_session_reload(
             self):
         ws = _repo()
         _bridge(ws)
@@ -282,6 +290,7 @@ class TestOnboardingProjection:
 
         assert unchanged["ready"] is False
         assert unchanged["next_action"] == "start_new_session"
+        assert "review and enable" in unchanged["effective_path"]["reason"]
 
     def test_loaded_native_hook_governs_a_different_managed_checkout(self):
         checkout = _repo()
