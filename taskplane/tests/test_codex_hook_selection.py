@@ -269,6 +269,24 @@ class TestHookPathManifests(unittest.TestCase):
             self.assertTrue(Path(
                 ws, ".taskplane", "codex-hook.py").is_file())
 
+    def test_linked_checkout_onboarding_uses_the_hook_commands_git_family(self):
+        with tempfile.TemporaryDirectory(prefix="tp-onboard-family-") as root:
+            primary = Path(root, "primary")
+            linked = Path(root, "linked")
+            subprocess.run(["git", "init", "-q", str(primary)], check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c",
+                "user.email=test@example.invalid", "commit", "--allow-empty",
+                "-qm", "base"], cwd=primary, check=True)
+            subprocess.run(["git", "worktree", "add", "--detach", str(linked)],
+                cwd=primary, check=True, capture_output=True)
+            with mock.patch.object(cli, "_install_context", return_value="personal"):
+                cli._install_codex_hooks(str(primary))
+            report = cli._codex_hooks_report(str(linked))
+            self.assertTrue(report["ok"], report)
+            self.assertEqual(Path(report["runner"]),
+                             primary / ".taskplane" / "codex-hook.py")
+            self.assertFalse((linked / ".taskplane" / "codex-hook.py").exists())
+
     def test_onboarding_leaves_runner_when_required_config_write_is_denied(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-denied-") as ws:
             Path(ws, ".codex").mkdir()

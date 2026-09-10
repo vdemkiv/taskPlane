@@ -46,6 +46,11 @@
       "kind": "input"
     },
     {
+      "id": "onboarding",
+      "label": "check and present setup; preserve the request",
+      "kind": "control"
+    },
+    {
       "id": "route",
       "label": "intent + state route",
       "kind": "control"
@@ -94,6 +99,10 @@
   "edges": [
     [
       "goal",
+      "onboarding"
+    ],
+    [
+      "onboarding",
       "route"
     ],
     [

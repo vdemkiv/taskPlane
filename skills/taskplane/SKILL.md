@@ -44,7 +44,7 @@ variables are unset, stop with the bootstrap error; never collapse it to
 
 ## Approved flow contract
 
-`flow.json` is the canonical facade graph: **user goal → intent/state route →
+`flow.json` is the canonical facade graph: **user goal → onboarding → intent/state route →
 the smallest matching specialist flow**. The Review branch is never complete
 when the report is generated: engineering review must deliver its canonical
 workflow/graph/findings dashboard and stop at the explicit **human approve /
@@ -74,9 +74,16 @@ ends with its own attributed sign-off and persisted synthesis.
 - Status or “what needs me?”: follow `../tp-status/SKILL.md` and run
   `$TP summary` first.
 
-On a fresh repository, run `$TP onboard --json` before governed work. Resolve
-only the missing prerequisite it names. Do not dump setup mechanics unless the
-user asks; say what is missing and help complete it.
+Before routing the first TaskPlane request in every host session, and after
+installation, reinstallation, or update, run `$TP onboard --json` and present
+the canonical onboarding dashboard (`$TP onboard`). This applies to every
+intent, including Review, Status, and Help, even in an initialized repository.
+Existing context, knowledge, and run artifacts do not prove this installation
+is ready. Retain the user's original request; once setup is ready, continue it
+without asking them to repeat their goal. Resolve only the missing prerequisite
+the report names. Do not dump setup mechanics unless the user asks.
+This is the user-entry sequence. Internal stage and lens workers consume their
+sealed startup envelopes without repeating onboarding or inheriting its state.
 When the goal names a local path, repository URL, ref, or pull request, source
 acquisition is an engine-owned precondition, not a manual setup task. Run
 `$TP repository prepare <target>` before the specialist flow (standalone
@@ -103,8 +110,9 @@ session reuses the saved runtime choice and revalidates its original authority;
 an explicit rollback setting still blocks effects.
 Initialization persists a new run's scope before checking transport readiness;
 it launches no worker and does not prove that hooks are loaded.
-Do not dispatch governed workers until the
-`codex_hooks` check is ready: marketplace skills do not themselves establish
+Do not dispatch governed workers until onboarding's top-level `ready` is true:
+both launcher configuration and the observed host hook path must be ready.
+Marketplace skills do not themselves establish
 the repo-local lifecycle/write receipts required by taskplane provenance.
 
 ## Keep the harness internal

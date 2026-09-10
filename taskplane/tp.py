@@ -363,6 +363,19 @@ def _codex_hooks_report(ws: str) -> dict:
     """
     config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
+    if not os.path.isfile(runner_path):
+        # Match the hook commands' explicit Git-family fallback. Never search
+        # other checkouts or installed versions for workspace authority.
+        try:
+            common = tp._run([
+                "git", "rev-parse", "--path-format=absolute", "--git-common-dir",
+            ], cwd=ws)
+        except OSError:
+            common = None
+        if common is not None and common.returncode == 0:
+            primary = os.path.realpath(os.path.join(common.stdout.strip(), ".."))
+            runner_path = os.path.join(primary, _CODEX_HOOK_RUNNER)
+            config_path = os.path.join(primary, _CODEX_HOOK_CONFIG)
     try:
         config = tp.load_json(config_path, default=None,
                               what="Codex hook configuration")
@@ -719,8 +732,8 @@ def _exclude_generated_codex_config(ws: str, value: dict) -> None:
 def _install_codex_hooks(ws: str) -> dict:
     """Install the portable workspace config and ignored local engine bridge.
 
-    Marketplace plugins provide skills/apps, while Codex lifecycle hooks load
-    from workspace configuration. The committed config stays portable; the
+    Native plugin hooks and the workspace bridge share the same event guard.
+    The workspace configuration stays portable; the
     ignored runner holds a stable installation-family path and resolves the
     newest valid engine on every invocation.
     """
@@ -922,9 +935,12 @@ def _onboard_report(ws: str) -> dict:
         checks.extend((
             {
                 "id": "hook_install", "label": "Hook installation",
-                "ok": host_capabilities["install"]["status"] == "supported",
-                "detail": host_capabilities["install"]["status"],
-                "hint": "Install taskPlane hooks before starting governed work.",
+                "ok": (host_capabilities["install"]["status"] == "supported"
+                       and codex_hooks["ok"]),
+                "detail": (host_capabilities["install"]["status"] if
+                           codex_hooks["ok"] else codex_hooks["status"]),
+                "hint": codex_hooks.get("hint") or (
+                    "Run onboarding's hook setup before governed work."),
             },
             {
                 "id": "repository_trust", "label": "Repository trust",
@@ -969,7 +985,8 @@ def _onboard_report(ws: str) -> dict:
     base_ready = (looks_like_project and inside_git and has_commit and has_context
                   and run_readiness["ready"] and phase_ready)
     ready = base_ready and (host_capabilities is None
-                            or bool(host_capabilities["ready"]))
+                            or (bool(host_capabilities["ready"])
+                                and bool(codex_hooks["ok"])))
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
@@ -982,6 +999,10 @@ def _onboard_report(ws: str) -> dict:
         nxt = "repair_phase_configuration"
     elif not has_context:
         nxt = "tp_init"
+    elif (codex_hooks is not None and not codex_hooks["ok"]
+          and host_capabilities["next_action"] not in {
+              "contact_administrator", "review_repository_trust"}):
+        nxt = "install_codex_hooks"
     elif host_capabilities is not None and not host_capabilities["ready"]:
         nxt = host_capabilities["next_action"]
     else:
@@ -5253,6 +5274,13 @@ def cmd_context(a) -> int:
     import requirements as reqmod
     import track as tr
     ws = _workspace(a.workspace)
+    print('[taskplane] On the first TaskPlane request in this session, and '
+          'after installation or update, run onboard and present its setup '
+          'dashboard before routing any intent (including review, status, '
+          'and help). Existing repository context is not completed onboarding. '
+          'Keep the requested goal and continue it when setup is ready. '
+          'Internal stage workers consume their sealed startup without '
+          'repeating this user-entry setup.')
     lifecycle_released = []
     terminal_recovery = None
     if ((os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
@@ -5514,10 +5542,11 @@ def _run_hook_command(a) -> int:
             sys.stdin = original_stdin
     receipt_home = runtime_storage.bind_hook_taskplane_home(
         workspace, os.environ, hook_path=hook_path)
-    host_caps.record_runtime_hook_receipt(
-        receipt_home, hook_path=hook_path, event=event)
     claim = tp.claim_hook_event(
         workspace, a.cmd, event, hook_path=hook_path)
+    if claim.get("claim_id"):
+        host_caps.record_runtime_hook_receipt(
+            receipt_home, hook_path=hook_path, event=event, claim=claim)
     context_replay = (not claim.get("execute") and a.cmd == "context"
                       and claim.get("response_class") in {"context", "empty"})
     if not claim.get("execute") and not context_replay:

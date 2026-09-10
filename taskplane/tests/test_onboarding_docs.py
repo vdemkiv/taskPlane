@@ -9,12 +9,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from argparse import Namespace
 from contextlib import redirect_stdout
 
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import tp as cli  # noqa: E402
+import dashboard  # noqa: E402
+import host_capabilities  # noqa: E402
+import pytest  # noqa: E402
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -93,6 +97,36 @@ class _TmpRepo(unittest.TestCase):
         )
 
 class TestOnboardInstallTruth(_TmpRepo):
+    def test_reinstall_restores_launcher_before_reusing_current_session(self):
+        env = {"CODEX_HOME": os.path.join(self.ws, "codex-home"),
+               "CODEX_THREAD_ID": "reinstall-session",
+               "TASKPLANE_HOME": os.path.join(self.ws, "state-home"),
+               "TASKPLANE_MANAGED_HOOK_POLICY": "supported"}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+                cli, "_install_context", return_value="personal"):
+            self.assertTrue(cli._install_codex_hooks(self.ws)["ok"])
+            os.makedirs(os.path.join(cli.tp.kb_root(self.ws), "context"))
+            host_capabilities.record_runtime_hook_receipt(
+                env["TASKPLANE_HOME"], hook_path="native", event={
+                    "session_id": env["CODEX_THREAD_ID"],
+                    "hook_event_name": "PreToolUse", "tool_use_id": "before-removal",
+                    "cwd": self.ws})
+            os.unlink(os.path.join(self.ws, ".taskplane", "codex-hook.py"))
+            report = cli._onboard_report(self.ws)
+            self.assertFalse(report["ready"])
+            self.assertEqual(report["next_action"], "install_codex_hooks")
+            self.assertNotIn("Ready to go", dashboard.render_onboarding(report))
+
+            cli._install_codex_hooks(self.ws)
+            restored = cli._onboard_report(self.ws)
+            self.assertTrue(restored["ready"], restored)
+            self.assertEqual(restored["next_action"], "ready")
+            # Configuration alone must not bless a different host session.
+            os.environ["CODEX_THREAD_ID"] = "new-session-without-hook"
+            fresh = cli._onboard_report(self.ws)
+            self.assertFalse(fresh["ready"])
+            self.assertEqual(fresh["next_action"], "start_new_session")
+
     def test_install_context_org_managed_via_host_marker(self):
         with tempfile.NamedTemporaryFile(suffix=".json") as marker:
             old = cli._MANAGED_SETTINGS_PATHS
@@ -226,6 +260,34 @@ class TestReadmeLinkHygiene(unittest.TestCase):
                     self.assertTrue(os.path.isfile(os.path.join(ROOT, relative)), (source, target))
                     if fragment and relative.endswith(".md"):
                         self.assertIn(fragment, self._anchors(_read(relative)), (source, target))
+
+
+@pytest.mark.parametrize("action", [
+    "install_codex_hooks", "install_or_enable_hooks", "start_new_session",
+    "check_hook_identity", "contact_administrator", "review_repository_trust",
+    "recover_run_binding", "archive_run", "repair_phase_configuration",
+    "resume_run", "unknown-future-action", "ready", None,
+])
+def test_incomplete_onboarding_never_offers_start(action):
+    report = {"ready": False, "next_action": action, "checks": [{
+        "id": "blocked", "label": "Setup <check>", "ok": False,
+        "detail": "missing", "hint": "Needs <attention>",
+    }]}
+    rendered = dashboard.render_onboarding(report)
+    assert "Ready to go" not in rendered
+    assert "ready for governed work" not in dashboard.headline_onboarding(report)
+    assert "Continue setup" in rendered
+    assert "Needs &lt;attention&gt;" in rendered
+
+
+def test_ready_onboarding_preserves_original_request_and_checks():
+    report = {"ready": True, "next_action": "ready", "checks": [{
+        "id": "hook", "label": "Hook", "ok": True}]}
+    rendered = dashboard.render_onboarding(report)
+    assert "Ready to go" in rendered
+    assert "Continue my original TaskPlane request" in rendered
+    report["checks"][0]["ok"] = False
+    assert "Ready to go" not in dashboard.render_onboarding(report)
 
 
 if __name__ == "__main__":
