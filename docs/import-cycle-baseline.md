@@ -1,5 +1,7 @@
 # Import-cycle continuation baseline
 
+**Integration decision, 2026-09-10:** The user approved reporting cycle debt as non-blocking follow-up work for PR #22. CI invokes `--report-only`; the strict default/`--check` behavior and checked-in policy remain intact. Findings retain their failing status in the report, and malformed policy or scan errors still fail the command. See [refactor follow-ups](refactor-followups.md). The historical baseline discussion below does not override this decision.
+
 The import-cycle checker is unchanged. It still measures imports at every AST
 depth, including `TYPE_CHECKING`, and rejects new cyclic members or internal
 edges beyond the checked-in inventory. This is a fixed-revision debt baseline,

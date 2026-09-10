@@ -2,6 +2,8 @@
 
 Status: registered Product requirement R-0006 (draft); Design required. No Design, Plan, implementation, independent review, or human approval is claimed here. Date: 2026-09-09. Program label: R-HARNESS-01 (a source working label, not a registered R-id).
 
+**Integration decision, 2026-09-10:** The user approved deferring structural size and import-cycle targets while retaining functional CI as blocking for PR #22. This supersedes the no-relaxation requirement below only for those structural targets. Measurements and original targets remain visible; see [refactor follow-ups](../docs/refactor-followups.md). This is not approval of a completed EM review.
+
 ## Problem and users
 
 Maintainers cannot safely judge the phase-runtime refactor when review bounds disagree, usage omits attempts or restarts, tests inherit the active host, and onboarding declares readiness for an unavailable bound run. S0 makes those instruments and startup results trustworthy before activation or retirement, while preserving the graph and review backlog as separately bounded delivery work.

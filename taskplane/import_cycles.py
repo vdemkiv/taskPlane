@@ -445,8 +445,11 @@ def _parser() -> argparse.ArgumentParser:
         description="check the current taskplane import-cycle inventory")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--policy", type=Path, default=POLICY_RELATIVE)
-    parser.add_argument("--check", action="store_true",
-                        help="compare the checked-out tree with the policy")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="compare the checked-out tree with the policy")
+    mode.add_argument("--report-only", action="store_true",
+                      help="report policy violations without failing on deferred cycle debt")
     return parser
 
 
@@ -466,7 +469,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(canonical_json(result), end="")
     if result["status"] != "pass":
         print(format_failures(result), file=sys.stderr)
-        return 1
+        return 0 if args.report_only else 1
     return 0
 
 
