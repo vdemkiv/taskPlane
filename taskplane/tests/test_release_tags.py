@@ -227,7 +227,8 @@ def test_219_rollback_candidates_are_not_fictional_releases(tmp_path, damage):
     repo.release("2.19.1")
     repo.release("2.19.0")  # Explicit mainline rollback, not a release.
     repo.release("2.20.0")
-    versions = ["1.0.0", "2.19.0", "2.19.1", "2.20.0"]
+    repo.release("2.23.0")
+    versions = ["1.0.0", "2.19.0", "2.19.1", "2.20.0", "2.23.0"]
     if damage == "tagged": _git(tmp_path, "tag", "v2.19.0", original)
     if damage == "missing-changelog": versions.remove("2.19.1")
     (tmp_path / "CHANGELOG.md").write_text("\n".join(
@@ -238,6 +239,7 @@ def test_219_rollback_candidates_are_not_fictional_releases(tmp_path, damage):
         for version in ("2.19.0", "2.19.1"):
             assert gate.NOT_RELEASED[version]["superseded_by"] == "2.20.0"
             assert "PR #18" in gate.NOT_RELEASED[version]["reason"]
+        assert gate.NOT_RELEASED["2.20.0"]["superseded_by"] == "2.23.0"
     else:
         assert not result["ok"]
         assert any(row["check"] == "C7" for row in result["problems"])
