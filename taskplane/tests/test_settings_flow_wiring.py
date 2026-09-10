@@ -35,7 +35,13 @@ def test_public_cli_refuses_invalid_settings_before_flow_state_or_artifacts(
     ])
 
     assert result == 1
-    assert "operational settings are invalid" in capsys.readouterr().err
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {
+        "code": "invalid_run_settings",
+        "dispatch_allowed": False,
+        "error": "invalid canonical settings",
+    }
+    assert "invalid_run_settings" in output.err
     assert _workspace_entries(workspace) == []
     assert not taskplane_home.exists()
 
