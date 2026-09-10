@@ -1,6 +1,11 @@
 """Resumable repository preconditions that finish before governance starts."""
 from __future__ import annotations
 
+if __package__:
+    from .primitives import content_fingerprint
+else:
+    from primitives import content_fingerprint
+
 import hashlib
 import json
 import os
@@ -54,6 +59,9 @@ def workspace_readiness(workspace: str) -> dict:
                     "detail": "declared run belongs to another binding"}
         return {"ready": True, "status": "bound",
                 "run_id": locator["run_id"], "schema": manifest["schema"]}
+    except run_store.UnsupportedRunSchemaError as exc:
+        return {"ready": False, "status": "unsupported_run_schema",
+                "run_id": (locator or {}).get("run_id"), "detail": str(exc)}
     except (storage.StorageIdentityError, run_store.RunStoreError,
             OSError, ValueError) as exc:
         cause = exc.__cause__ or exc.__context__ or exc
@@ -86,17 +94,6 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str,
             f"workspace identity is unavailable: {exc}") from exc
     if primary_identity.repo_id != worker_identity.repo_id:
         raise PreflightError("worker workspace belongs to another repository")
-    primary_family = storage.resolve_repository_family(primary)
-    worker_family = storage.resolve_repository_family(worker)
-    launcher = str(primary_family.get("launcher") or "")
-    if not launcher or not os.path.isfile(launcher) or \
-            worker_family.get("launcher") != launcher:
-        raise PreflightError(
-            "stable repository-family launcher/hook receipt is unavailable")
-    try:
-        launcher_bytes, launcher_sha256 = _sha256_file(launcher)
-    except OSError as exc:
-        raise PreflightError(f"stable launcher is unreadable: {exc}") from exc
     session_id = str(
         os.environ.get("TASKPLANE_SESSION_ID") or
         os.environ.get("CODEX_THREAD_ID") or
@@ -116,27 +113,28 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str,
         locator = storage.load_workspace_locator(primary)
     except Exception as exc:
         raise PreflightError(f"store identity is invalid: {exc}") from exc
-    if locator is not None and locator.get("repo_id") != \
-            primary_identity.repo_id:
-        raise PreflightError("store identity belongs to another repository")
-    store_identity = ({
+    if locator is None or locator.get("repo_id") != primary_identity.repo_id:
+        raise PreflightError("startup requires the primary workspace's explicit run locator")
+    manifest = run_store.RunStore(home=locator["home"]).load(locator["run_id"])
+    if manifest.get("schema") != "taskplane.run/v4":
+        raise PreflightError("startup requires the current run schema")
+    state = manifest.get("workflow") or {}
+    if state.get("settings_digest") != effective.digest:
+        raise PreflightError("worker settings differ from the run's bound settings")
+    if not any(row.get("id") == task_id for row in state.get("tasks") or []):
+        raise PreflightError("worker task is absent from the approved run")
+    if error := storage.worker_locator_error(primary, worker, task_id):
+        raise PreflightError(error)
+    store_identity = {
         "mode": "v4", "run_id": locator["run_id"],
-        "repository_key": locator["repository_key"],
-        "repo_id": locator["repo_id"],
-    } if locator is not None else {
-        "mode": "legacy", "repository_key": primary_identity.key,
-        "repo_id": primary_identity.repo_id,
-    })
+        "repository_key": locator["repository_key"], "repo_id": locator["repo_id"],
+    }
     material = {
         "schema": _ATOMIC_STARTUP_SCHEMA,
         "task_id": str(task_id),
         "repository": primary_identity.repo_id,
         "workspace": hashlib.sha256(primary.encode("utf-8")).hexdigest(),
         "worker": hashlib.sha256(worker.encode("utf-8")).hexdigest(),
-        "hook": {"mode": str(os.environ.get("TASKPLANE_HOOK_PATH") or
-                              "configured"),
-                 "launcher_bytes": launcher_bytes,
-                 "launcher_sha256": launcher_sha256},
         "session": hashlib.sha256(session_id.encode("utf-8")).hexdigest(),
         "settings_digest": effective.digest,
         "store": store_identity,
@@ -145,10 +143,7 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str,
 
 
 def _canonical_digest(value: object) -> str:
-    payload = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return content_fingerprint(value)
 
 
 def _sha256_file(path: str) -> tuple[int, str]:
@@ -949,49 +944,10 @@ class RepositoryPreflight:
                     return acquired
                 return self.acquirer.acquire_repository(identity, parsed)
 
-            consolidated = os.environ.get("TASKPLANE_CONSOLIDATED_FLOW", "") \
-                .strip().lower() in {"1", "true", "yes", "on"}
             try:
-                if consolidated:
-                    preparation = repository.acquire_with_recovery(acquire)
-                    if preparation["status"] == "ready":
-                        acquired = preparation["value"]
-                    elif preparation["status"] == "needs_user":
-                        command = (["gh", "auth", "login", "--web"]
-                                   if gh.get("present") else [])
-                        return self._needs_user(run, manifest, self._action(
-                            run, kind="authenticate_repository",
-                            prompt=("Repository authentication is required. "
-                                    "Sign in or authorize access, then "
-                                    "taskPlane will resume this same run."),
-                            detail=str(preparation.get("detail") or
-                                       preparation.get("reason_code") or
-                                       "authority_required"),
-                            command_argv=command,
-                            choices=("approve", "retry", "cancel")),
-                            preparation_result=(preparation if
-                                "reason_code" in preparation else None))
-                    elif preparation["status"] == "refused":
-                        return self._needs_user(run, manifest, self._action(
-                            run, kind="correct_repository_default",
-                            prompt=("The hosted repository default branch could "
-                                    "not be verified. Correct the remote default "
-                                    "or target, then retry this same run."),
-                            detail=str(preparation["reason_code"]),
-                            choices=("retry", "cancel")),
-                            preparation_result=preparation)
-                    else:
-                        return self._waiting(
-                            run, manifest,
-                            reason=str(preparation.get("reason") or
-                                       preparation.get("reason_code")),
-                            detail=str(preparation.get("detail") or
-                                       preparation.get("reason_code")),
-                            recovery_record=(preparation if
-                                "reason_code" in preparation else
-                                preparation.get("recovery")))
-                else:
-                    acquired = acquire()
+                # RepositoryManager owns the bounded retry; preflight must
+                # not wrap it in a second recovery loop.
+                acquired = acquire()
             except repository.RepositoryAcquisitionError as exc:
                 preparation_result = exc.preparation_result
                 if preparation_result is not None and \

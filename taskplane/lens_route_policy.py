@@ -6,6 +6,11 @@ state access; stage adapters own context assembly and execution.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 import hashlib
 import json
 import math
@@ -56,8 +61,7 @@ def _json_value(value: Any, path: str = "$") -> Any:
 def canonical_bytes(value: Any) -> bytes:
     """Return deterministic UTF-8 JSON bytes after closed value validation."""
     normalized = _json_value(value)
-    return json.dumps(normalized, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return _json_primitives.canonical_bytes(normalized, ensure_ascii=False)
 
 
 def fingerprint(value: Any) -> str:

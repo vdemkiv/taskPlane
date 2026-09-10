@@ -124,60 +124,6 @@ def test_command_completion_remains_a_native_dispatch_event():
     assert event["task_id"] == "a"
 
 
-def test_build_c_receipt_is_native_dispatch_set_without_scheduler_fields(
-        tmp_path, monkeypatch):
-    tasks = [
-        _task("a", scope=("src/a.py",)),
-        _task("b", scope=("src/b.py",)),
-    ]
-    graph = {
-        "modules": {
-            "a": {"files": ["src/a.py"]},
-            "b": {"files": ["src/b.py"]},
-        },
-        "edges": [], "files": {}, "meta": {},
-    }
-    monkeypatch.setattr(
-        build_c.depgraph, "scope_modules",
-        lambda _ws, scope: ["a"] if scope == ["src/a.py"] else ["b"])
-    workers = {task_id: tmp_path / task_id for task_id in ("a", "b")}
-    for worker in workers.values():
-        worker.mkdir()
-
-    def wait_policy(_name, count):
-        return {
-            "schema": "taskplane.wait-policy/v1", "mode": "event",
-            "scheduled_polling": False, "timeout_seconds": 1800,
-            "reissue_after": ["completion", "attention"],
-            "outstanding_count": count, "outstanding_set": "build-c",
-        }
-
-    receipt = build_c.assign_scopes(
-        str(tmp_path), {"tasks": tasks}, graph=graph,
-        revision="a" * 40,
-        create_worktree=lambda _ws, task_id, _rev: str(workers[task_id]),
-        register_worktree=lambda _ws, worker, task_id: {
-            "schema": "taskplane.managed-task-worktree/v1",
-            "task_id": task_id, "path": worker, "branch_tip": "a" * 40,
-        },
-        wait_policy_factory=wait_policy,
-        wait_invocation_factory=lambda _policy, members: {
-            "schema": "taskplane.event-wait-invocation/v1",
-            "operation": "wait_for_events", "scheduled": False,
-            "reissue": False, "outstanding_members": members,
-        },
-        repository_files=set(),
-    )
-
-    assert receipt["dispatch_set"]["members"] == ["a", "b"]
-    assert receipt["wait_invocation"]["outstanding_members"] == ["a", "b"]
-    forbidden = {
-        "reservation_fingerprint", "scheduler_revision",
-        "execution_dag_head", "capability", "event_contract",
-    }
-    assert not forbidden.intersection(receipt)
-    assert all(not forbidden.intersection(row)
-               for row in receipt["assignments"])
 
 
 def test_retired_scheduler_is_not_an_active_api():

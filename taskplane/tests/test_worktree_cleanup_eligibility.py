@@ -111,6 +111,8 @@ def test_merge_receipt_refuses_unmerged_registered_tip(tmp_path):
     (primary / "base").write_text("x", encoding="utf-8")
     _git(primary, "add", ".")
     _git(primary, "commit", "-qm", "base")
+    from taskplane.tests.phase_fixture import save_component_workflow
+    save_component_workflow(str(primary), {"run_id": "run", "goal": "component", "step": "execute", "tasks": []})
     worker = storage.task_worktree_path(str(primary), "task")
     os.makedirs(os.path.dirname(worker), exist_ok=True)
     _git(primary, "worktree", "add", "-q", "-b", "tp/task", worker)

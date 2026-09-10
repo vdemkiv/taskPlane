@@ -69,6 +69,7 @@ class TestPublicInstallClaims(unittest.TestCase):
 class _TmpRepo(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
         self.ws = self._tmp.name
         subprocess.run(["git", "init", "-q"], cwd=self.ws, check=True)
         subprocess.run(
@@ -90,10 +91,6 @@ class _TmpRepo(unittest.TestCase):
             cwd=self.ws,
             check=True,
         )
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
 
 class TestOnboardInstallTruth(_TmpRepo):
     def test_install_context_org_managed_via_host_marker(self):
@@ -169,6 +166,19 @@ class TestOnboardInstallTruth(_TmpRepo):
         report = cli._onboard_report(self.ws)
         self.assertIn(report["install"]["context"], ("org-managed", "personal", "unknown"))
         self.assertTrue(report["install"]["paths"])
+        self.assertEqual(report["phase_configuration"]["status"], "ready")
+        self.assertEqual(report["phase_configuration"]["phases"],
+            ["product", "design", "plan", "build", "evaluate", "engineering", "retro"])
+        self.assertEqual(report["settings"]["digest"], report["phase_configuration"]["settings_digest"])
+
+    def test_onboarding_refuses_broken_phase_links_before_dispatch(self):
+        from unittest.mock import patch
+        from taskplane import loop
+        with patch.object(loop, "_phase_bridge_registry", side_effect=ValueError("changed skill content")):
+            report = cli._onboard_report(self.ws)
+        self.assertFalse(report["ready"])
+        self.assertEqual(report["next_action"], "repair_phase_configuration")
+        self.assertEqual(report["phase_configuration"]["error"], "changed skill content")
 
     def test_human_and_json_commands_expose_install_guidance(self):
         old = cli._MANAGED_SETTINGS_PATHS
@@ -202,25 +212,20 @@ class TestReadmeLinkHygiene(unittest.TestCase):
             anchors.add(re.sub(r"\s+", "-", slug.strip()))
         return anchors
 
-    def test_every_readme_link_is_statically_valid(self):
-        bad = []
-        for target in self.LINK.findall(README):
-            if target.startswith(("http://", "https://")):
-                if not re.match(r"https?://[\w.-]+(?::\d+)?(?:/\S*)?$", target):
-                    bad.append((target, "malformed URL"))
-                continue
-            if target.startswith("#"):
-                if target[1:] not in self._anchors(README):
-                    bad.append((target, "internal anchor not found"))
-                continue
-            path, _, fragment = target.partition("#")
-            full = os.path.join(ROOT, path)
-            if not os.path.exists(full):
-                bad.append((target, "relative target missing"))
-            elif fragment and path.endswith(".md"):
-                if fragment not in self._anchors(_read(path)):
-                    bad.append((target, "anchor missing in target"))
-        self.assertEqual(bad, [])
+    def test_setup_and_harness_links_resolve(self):
+        for source in ("README.md", "docs/onboarding.md", "docs/configuration.md",
+                       "skills/tp-go/references/setup.md"):
+            with self.subTest(source=source):
+                text = _read(source)
+                for target in self.LINK.findall(text):
+                    if target.startswith(("http://", "https://")):
+                        self.assertRegex(target, r"https?://[\w.-]+(?::\d+)?(?:/\S*)?$")
+                        continue
+                    path, _, fragment = target.partition("#")
+                    relative = os.path.normpath(os.path.join(os.path.dirname(source), path)) if path else source
+                    self.assertTrue(os.path.isfile(os.path.join(ROOT, relative)), (source, target))
+                    if fragment and relative.endswith(".md"):
+                        self.assertIn(fragment, self._anchors(_read(relative)), (source, target))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import copy
 import subprocess
 import sys
 
@@ -170,19 +169,14 @@ def test_incomplete_north_star_note_is_rejected_without_gating_delivery():
     assert "advice_incomplete" in result["reasons"]
 
 
-def test_loop_derives_consolidated_stage_authority_only_when_rollout_enabled(
-        monkeypatch):
+def test_loop_derives_stage_authority_from_receipt_without_rollout_flag(monkeypatch):
     packet, receipt = approved_packet()
     state = {"authority_packet": packet, "authority_receipt": receipt}
     monkeypatch.setattr(loop, "_authorization_fields", lambda ws, st: BASE)
-
-    monkeypatch.delenv("TASKPLANE_CONSOLIDATED_FLOW", raising=False)
-    assert loop._derive_consolidated_authority("/repo", state, "execute") is None
-
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
     result = loop._derive_consolidated_authority("/repo", state, "execute")
     assert result["authorized"] is True
     assert result["stage"] == "execute"
+    assert loop._derive_consolidated_authority("/repo", {}, "execute") is None
 
 
 def test_one_receipt_covers_all_ten_production_flow_entry_points(monkeypatch):
@@ -191,7 +185,6 @@ def test_one_receipt_covers_all_ten_production_flow_entry_points(monkeypatch):
     monkeypatch.setattr(loop, "load", lambda ws: state)
     monkeypatch.setattr(loop, "_authorization_fields", lambda ws, st: BASE)
     monkeypatch.setattr(loop.tp, "trace", lambda *args, **kwargs: None)
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
 
     results = {flow: loop.authorize_routine_flow("/repo", flow)
                for flow in authority.ROUTINE_FLOWS}
@@ -719,49 +712,38 @@ def test_preview_replay_reconciles_failed_durable_trace_effect(monkeypatch):
     assert effect["status"] == "delivered"
 
 
-def test_selection_replay_reconciles_failed_kb_effect_once(monkeypatch):
-    state = {"step": "selection", "goal": "choose", "baseline": "r1",
-             "authority_target_revision": "r1", "tasks": [
+def test_selection_replay_reconciles_failed_kb_effect_once(monkeypatch, tmp_path):
+    from taskplane.tests.phase_fixture import save_component_workflow
+    workspace = tmp_path / "selection"
+    workspace.mkdir()
+    ws = str(workspace)
+    subprocess.run(["git", "init", "-q", ws], check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "--allow-empty", "-qm", "base"], cwd=ws, check=True)
+    revision = loop.tp.git_head(ws)
+    state = {"step": "selection", "goal": "choose", "baseline": revision,
+             "authority_target_revision": revision, "tasks": [
                  {"id": "a", "variant": "A", "scope": ["a.py"]},
-                 {"id": "b", "variant": "B", "scope": ["b.py"]},
-             ]}
-    traced = set()
-    decisions = set()
-    kb_attempts = []
-
-    @loop.contextlib.contextmanager
-    def fake_mutate(ws):
-        yield state
-
-    monkeypatch.setattr(loop, "mutate", fake_mutate)
-    monkeypatch.setattr(loop.tp, "git_head", lambda ws: "r1")
-    monkeypatch.setattr(loop, "_trace_effect_seen",
-                        lambda ws, effect_id: effect_id in traced)
-    monkeypatch.setattr(loop, "_append_authority_trace",
-                        lambda ws, event, data:
-                        traced.add(data["authority_effect_id"]))
-    monkeypatch.setattr(loop, "_kb_effect_seen",
-                        lambda ws, effect_id: effect_id in decisions)
-
-    def flaky_kb(ws, *, links, **kwargs):
-        effect_id = links["authority_effect"]
-        kb_attempts.append(effect_id)
-        if len(kb_attempts) == 1:
+                 {"id": "b", "variant": "B", "scope": ["b.py"]}]}
+    save_component_workflow(ws, state)
+    # Exercise outbox delivery and replay here; phase completion is a separate
+    # validated transition boundary, covered by the current phase journey.
+    monkeypatch.setattr(loop, "_stage_loop_transition", lambda *_a, **_kw: None)
+    record = loop.kb.record_decision
+    attempts = []
+    def flaky_kb(*args, **kwargs):
+        attempts.append(kwargs["links"]["authority_effect"])
+        if len(attempts) == 1:
             raise OSError("KB temporarily unavailable")
-        decisions.add(effect_id)
-
+        return record(*args, **kwargs)
     monkeypatch.setattr(loop.kb, "record_decision", flaky_kb)
-    monkeypatch.setattr(loop, "status", lambda ws: {"step": state["step"]})
-
-    selected = loop.select("/repo", "a")
-    replay = loop.select("/repo", "a")
-
-    effect_id = "selection:r1:a"
+    selected = loop.gates.select(loop, ws, "a")
+    replay = loop.gates.select(loop, ws, "a")
+    effect_id = f"selection:{revision}:a"
     assert selected["selection"]["choice"] == "a"
     assert "selection only" in replay["error"]
-    assert kb_attempts == [effect_id, effect_id]
-    assert decisions == {effect_id}
-    assert state["authority_effect_outbox"][effect_id]["status"] == "delivered"
+    assert attempts == [effect_id, effect_id]
+    assert loop.load(ws)["authority_effect_outbox"][effect_id]["status"] == "delivered"
 
 
 def test_loop_load_generally_flushes_pending_authority_outbox(monkeypatch):
@@ -793,42 +775,9 @@ def test_loop_load_generally_flushes_pending_authority_outbox(monkeypatch):
     assert state["authority_effect_outbox"][effect_id]["status"] == "delivered"
 
 
-def test_selection_revision_fence_rolls_back_post_commit_git_change(
-        monkeypatch, tmp_path):
-    original = {"step": "selection", "goal": "choose", "baseline": "r1",
-                "authority_target_revision": "r1", "tasks": [
-                    {"id": "a", "variant": "A", "scope": []},
-                    {"id": "b", "variant": "B", "scope": []},
-                ]}
-    stored = copy.deepcopy(original)
-    heads = iter(["r1", "r1", "r2"])
-
-    @loop.contextlib.contextmanager
-    def fake_lock(path):
-        yield
-
-    def fake_save(ws, state):
-        stored.clear()
-        stored.update(copy.deepcopy(state))
-
-    monkeypatch.setattr(loop, "reconcile_authority_effects",
-                        lambda ws: {"delivered": 0, "pending": 0})
-    monkeypatch.setattr(loop, "_state_dir", lambda ws: str(tmp_path))
-    monkeypatch.setattr(loop, "_load_raw", lambda ws: copy.deepcopy(stored))
-    monkeypatch.setattr(loop, "save", fake_save)
-    monkeypatch.setattr(loop.tp, "file_lock", fake_lock)
-    monkeypatch.setattr(loop.tp, "git_head", lambda ws: next(heads))
-
-    result = loop.select("/repo", "a")
-
-    assert "during the locked selection commit" in result["error"]
-    assert result["expected_revision"] == "r1"
-    assert result["actual_revision"] == "r2"
-    assert stored == original
-
-
 def test_select_rejects_stale_checkout_and_resumed_current_selection(
         monkeypatch, tmp_path):
+    monkeypatch.setattr(loop, "_stage_loop_transition", lambda *_a, **_kw: None)
     workspace = tmp_path / "repo"
     workspace.mkdir()
     base = {"step": "selection", "goal": "choose", "baseline": "r1",

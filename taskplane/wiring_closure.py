@@ -8,6 +8,11 @@ caller's repository root.  It deliberately imports no loop or review runtime.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import ast
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -30,13 +35,16 @@ SEAM_MANIFEST_SCHEMA = "taskplane.cross-task-seam-manifest/v1"
 REALIZED_CONFORMANCE_SCHEMA = "taskplane.realized-seam-conformance/v1"
 
 
-def build_seam_manifest(decomposition, *, binding, contracts):
+def build_seam_manifest(decomposition, *, binding, contracts, expected=None):
     """Close every actual dependency cut against its authored interface contract."""
     owners = {node: task["id"] for task in decomposition["tasks"] for node in task["nodes"]}
     nodes = sorted({row["module"] for row in decomposition["components"]})
     if sorted(owners) != nodes or sum(len(task["nodes"]) for task in decomposition["tasks"]) != len(nodes):
         raise ValueError("dependency nodes have missing or duplicate ownership")
     order = {task["id"]: index for index, task in enumerate(decomposition["tasks"])}
+    edges = decomposition["edges"]
+    if expected is not None:
+        nodes, owners, order, edges = (expected[key] for key in ("nodes", "owners", "order", "edges"))
     bindings = ("run_id", "requirement_fingerprint", "design_fingerprint", "plan_fingerprint",
         "candidate_fingerprint", "source_tree", "graph_fingerprint")
     if any(not binding.get(key) for key in bindings):
@@ -48,7 +56,7 @@ def build_seam_manifest(decomposition, *, binding, contracts):
             raise ValueError("duplicate seam contract")
         contract_rows[key] = raw
     seams = []
-    for edge in decomposition["edges"]:
+    for edge in edges:
         a, b = edge["producer"], edge["consumer"]
         if owners[a] == owners[b]:
             continue
@@ -65,6 +73,8 @@ def build_seam_manifest(decomposition, *, binding, contracts):
         for side, node in (("producer", a), ("consumer", b)):
             files = sorted({path for component in decomposition["components"] if component["module"] == node
                 for path in component["files"]})
+            if expected is not None:
+                files = expected["files"][node]
             # The incumbent scanner proves module/file dependencies. Do not
             # advertise function-call precision that this scanner cannot prove.
             if raw[side + "_symbol"].replace(".", "/") + ".py" not in files:
@@ -79,17 +89,22 @@ def build_seam_manifest(decomposition, *, binding, contracts):
         "decomposition_fingerprint": decomposition["fingerprint"], "nodes": nodes, "seams": seams})
 
 
-def realized_seam_conformance(manifest, decomposition):
-    """Compare integrated scanner truth with the immutable Plan cut set."""
+def realized_seam_conformance(manifest, decomposition, *, task_scope=None):
+    """Check task obligations or the complete merged Plan with one comparator."""
     expected = {row["id"] for row in manifest["seams"]}
     owners = {node: task["id"] for task in decomposition["tasks"] for node in task["nodes"]}
     actual = {f"{row['producer']}->{row['consumer']}:{row['kind']}" for row in decomposition["edges"]
         if owners[row["producer"]] != owners[row["consumer"]]}
-    missing, unexpected = sorted(expected - actual), sorted(actual - expected)
-    actual_nodes = sorted(owners)
-    if actual_nodes != manifest["nodes"]:
+    required_seams = manifest["seams"] if task_scope is None else [
+        row for row in manifest["seams"] if row["consumer_owner"] in task_scope["required_tasks"]]
+    required_nodes = set(manifest["nodes"] if task_scope is None else task_scope["required_nodes"])
+    missing = sorted({row["id"] for row in required_seams} - actual)
+    unexpected = sorted(actual - expected)
+    if not required_nodes <= owners.keys() or owners.keys() - set(manifest["nodes"]):
         raise ValueError("realized seam conformance: missing or unexpected source nodes")
     for seam in manifest["seams"]:
+        if task_scope is not None and seam not in required_seams and seam["id"] not in actual:
+            continue
         for side in ("producer", "consumer"):
             files = sorted({path for component in decomposition["components"] if component["module"] == seam[side]
                 for path in component["files"]})
@@ -100,7 +115,8 @@ def realized_seam_conformance(manifest, decomposition):
     return _seal({"schema": REALIZED_CONFORMANCE_SCHEMA, "status": "conformant",
         "binding": manifest["binding"], "manifest_fingerprint": manifest["fingerprint"],
         "realized_decomposition_fingerprint": decomposition["fingerprint"],
-        "realized_source_tree": decomposition["source_tree"], "missing": missing, "unexpected": unexpected})
+        "realized_source_tree": decomposition["source_tree"], "missing": missing, "unexpected": unexpected,
+        **({"task_scope": task_scope} if task_scope is not None else {})})
 EXPECTED_CRITERION_COUNT = 12
 EXPECTED_EDGE_IDS = tuple(f"W{number:02d}" for number in range(1, 33))
 EXPECTED_PRODUCER_COUNT = 18
@@ -412,25 +428,25 @@ R0013_PRODUCTION_EDGE_BINDINGS = (
         "E01",
         "Design native capability inventory",
         "design_contract.design_dod_errors",
-        "taskplane/tests/test_r0013_native_authority.py::test_complete_native_capability_map_is_required_by_design_and_plan",
+        "taskplane/tests/test_r0001_phase_agents_spec.py::test_severed_product_design_plan_binding_fails_independently",
     ),
     (
         "E02",
         "Design native capability inventory",
         "design_contract.design_plan_errors",
-        "taskplane/tests/test_r0013_native_authority.py::test_complete_native_capability_map_is_required_by_design_and_plan",
+        "taskplane/tests/test_r0001_phase_agents_spec.py::test_severed_product_design_plan_binding_fails_independently",
     ),
     (
         "E03",
         "loop.select_ready_tasks",
         "sealed native dispatch intent",
-        "taskplane/tests/test_r0013_native_dispatch.py::test_severed_readiness_dispatch_completion_and_wait_fail_without_fallback",
+        "taskplane/tests/test_r0013_native_dispatch.py::test_sealed_ready_set_refuses_rehashed_invented_hold",
     ),
     (
         "E04",
         "sealed ready set",
-        "build_c.assign_scopes",
-        "taskplane/tests/test_r0013_native_dispatch.py::test_build_c_consumes_one_sealed_ready_set_without_reclassification",
+        "dispatch.claim",
+        "taskplane/tests/test_stage_loop_integration.py::test_parallel_phases_join_em_and_retro",
     ),
     (
         "E05",
@@ -614,13 +630,7 @@ def _strings(value: Any, field: str, *, allow_empty: bool = False) -> list[str]:
 
 
 def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=False)
 
 
 def _seal(projection: Mapping[str, Any]) -> dict[str, Any]:

@@ -1,3 +1,0 @@
-import os
-
-MODEL = os.environ.get("TASKPLANE_MODEL_DEEP", "inherit")

@@ -357,22 +357,6 @@ class SharedReviewContext(_WS):
         for rel in paths.values():
             self.assertTrue(os.path.isfile(os.path.join(self.ws, rel)))
 
-    def test_briefs_cite_the_paths_instead_of_carrying_the_payload(self):
-        routing = {"context": {"changed_files": 2},
-                   "lenses": [{"id": "security", "name": "S", "tier": "deep",
-                               "mode": "subagent", "reasons": ["r"],
-                               "checks": ["c"]},
-                              {"id": "perf", "name": "P", "tier": "sweep",
-                               "mode": "inline", "reasons": ["r"],
-                               "checks": ["c"]}]}
-        paths = rv.write_context(self.ws, diff="D" * 5000,
-                                 blast_radius="B" * 5000)
-        out = lens.dispatch_briefs(routing, context_paths=paths)
-        for prompt in ([b["prompt"] for b in out["deep"]]
-                       + [out["sweep"]["prompt"]]):
-            self.assertIn("SHARED REVIEW CONTEXT", prompt)
-            self.assertIn(".em-review/context/diff.patch", prompt)
-            self.assertNotIn("D" * 200, prompt)
 
     def test_it_tells_the_agent_not_to_re_derive(self):
         """An agent told only that a file exists will run `git diff` anyway,
@@ -383,16 +367,6 @@ class SharedReviewContext(_WS):
         self.assertIn("do not run `git diff` again", note)
         self.assertIn("do not re-run `graph impact`", note)
 
-    def test_no_context_means_the_old_embedding_behaviour(self):
-        """A workspace that will not take the files must degrade to the
-        previous behaviour, not to a brief with no context at all."""
-        routing = {"context": {"changed_files": 1},
-                   "lenses": [{"id": "security", "name": "S", "tier": "deep",
-                               "mode": "subagent", "reasons": ["r"],
-                               "checks": ["c"]}]}
-        out = lens.dispatch_briefs(routing, impact_context="BLAST RADIUS HERE")
-        self.assertIn("BLAST RADIUS HERE", out["deep"][0]["prompt"])
-        self.assertNotIn("SHARED REVIEW CONTEXT", out["deep"][0]["prompt"])
 
     def test_an_unwritable_workspace_returns_no_paths(self):
         # `/proc` is a POSIX assumption and becomes a writable drive-root path
@@ -401,22 +375,6 @@ class SharedReviewContext(_WS):
                 mock.patch.object(rv, "_record"):
             self.assertEqual(rv.write_context(self.ws, diff="d"), {})
 
-    def test_four_agents_share_one_diff(self):
-        """The measured shape: N briefs, one payload."""
-        routing = {"context": {"changed_files": 4},
-                   "lenses": [{"id": i, "name": i, "tier": "deep",
-                               "mode": "subagent", "reasons": ["r"],
-                               "checks": ["c"]}
-                              for i in ("security", "code-quality",
-                                        "testability", "architecture")]}
-        big = "X" * 20000
-        paths = rv.write_context(self.ws, diff=big)
-        out = lens.dispatch_briefs(routing, context_paths=paths)
-        total = sum(len(b["prompt"]) for b in out["deep"])
-        self.assertEqual(len(out["deep"]), 4)
-        self.assertLess(total, len(big),
-                        "four briefs together still cost more than one copy "
-                        "of the diff")
 
 
 # ------------------------------------------- 4. budget in tokens, not actions

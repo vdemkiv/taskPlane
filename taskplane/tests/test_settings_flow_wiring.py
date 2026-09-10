@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from taskplane import loop_status, root_seed, settings as operational_settings, tp
+from taskplane import host_capabilities, loop_status, root_seed, settings as operational_settings, tp
 from taskplane.settings import DEFAULT_SETTINGS_PATH, SettingsError, load_settings
 
 
@@ -170,3 +170,38 @@ def _assert_root_session_wiring(tmp_path, monkeypatch):
 def test_root_session_settings_severed_edge_refuses_missing_extra_invalid_or_unconsumed_fields(
         tmp_path, monkeypatch):
     _assert_root_session_wiring(tmp_path, monkeypatch)
+
+
+def test_phase_roles_consume_their_settings_and_historical_snapshots_stay_sealed(tmp_path):
+    value = json.loads(DEFAULT_SETTINGS_PATH.read_text())
+    for name, stage in value["stages"].items():
+        stage["model"] = name + "-model"
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(json.dumps(value))
+    effective = load_settings(settings_file)
+    definitions = json.loads((DEFAULT_SETTINGS_PATH.parents[1] / "agents/spec-phase-definitions.json").read_text())
+    for definition in definitions:
+        dispatched = host_capabilities.dispatch_fields("step", definition["role"], "phase-settings",
+            definition["model_tier"], settings_context=effective)
+        assert dispatched["model"] == definition["id"] + "-model"
+        assert dispatched["settings_digest"] == effective.digest
+    for phase in operational_settings.ROUTED_LENS_STAGES:
+        dispatched = host_capabilities.dispatch_fields("lens", "tp-lens", "lens-settings", "cheap",
+            settings_context=effective, lens_stage=phase)
+        assert dispatched["model"] == phase + "-model"
+
+    historical = effective.to_dict()
+    historical["stages"].pop("retro")
+    historical["lenses"]["routing"].pop("retro")
+    historical["lenses"]["counts"].pop("retro")
+    digest = operational_settings.settings_digest(historical)
+    restored = operational_settings.from_snapshot(historical, expected_digest=digest)
+    assert restored.to_dict() == historical
+    assert restored.digest == digest
+    assert host_capabilities.dispatch_fields("step", "tp-retro", "old-retro", "inherit",
+        settings_context=restored)["model"] == "build-model"
+
+    value["phase_definitions"] = definitions
+    settings_file.write_text(json.dumps(value))
+    with pytest.raises(SettingsError, match="owned by agents/spec-phase-definitions.json"):
+        load_settings(settings_file)

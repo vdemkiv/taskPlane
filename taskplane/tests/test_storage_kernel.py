@@ -16,7 +16,6 @@ import design_contract  # noqa: E402
 import evaluation_output  # noqa: E402
 import storage  # noqa: E402
 import taskplane_lite  # noqa: E402
-import storage_migration  # noqa: E402
 
 
 def _git(ws, *args):
@@ -116,6 +115,9 @@ class TestStorageLayout(unittest.TestCase):
             checkout, identity=identity, layout=first_layout,
             run_id="run-one")
         first = depgraph.scan(checkout)
+        depgraph.record_edge(checkout, "(root)", "contract:RUN_ONE_ONLY",
+                             kind="provides", confidence="high")
+        assert depgraph.scan(checkout)["recorded"]
         second_layout = storage.resolve_layout(
             identity, home=home, run_id="run-two")
         storage.write_workspace_locator(
@@ -129,6 +131,10 @@ class TestStorageLayout(unittest.TestCase):
         finally:
             depgraph._scan_locked = original
         self.assertEqual(second, first)
+        self.assertEqual(second["recorded"], [])
+        with open(os.path.join(checkout, "dirty.py"), "w", encoding="utf-8") as handle:
+            handle.write("VALUE = 'uncommitted'\n")
+        self.assertIsNone(depgraph._managed_cache_path(checkout, decompose=False))
         self.assertTrue(os.path.isfile(os.path.join(
             second_layout.graph_root, "graph.json")))
 
@@ -279,152 +285,6 @@ class TestStorageLayout(unittest.TestCase):
         self.assertFalse(worker.startswith(os.path.realpath(checkout) + os.sep))
 
 
-class TestRunLocalWorkspaceLocatorReconstruction(unittest.TestCase):
-    """A durable registration can restore only its exact run-local worker."""
-
-    def setUp(self):
-        self.home = tempfile.mkdtemp(prefix="tp-reconstruct-home-")
-        self.primary = tempfile.mkdtemp(prefix="tp-reconstruct-primary-")
-        _git(self.primary, "init", "-q")
-        _git(self.primary, "config", "user.email", "t@example.com")
-        _git(self.primary, "config", "user.name", "T")
-        _git(self.primary, "remote", "add", "origin",
-             "https://github.com/Example/Project.git")
-        with open(os.path.join(self.primary, "a.py"), "w",
-                  encoding="utf-8") as handle:
-            handle.write("value = 1\n")
-        _git(self.primary, "add", "a.py")
-        self.assertEqual(_git(self.primary, "commit", "-qm", "base").returncode,
-                         0)
-        self.identity = storage.resolve_repository_identity(self.primary)
-        self.run_id = "run-123"
-        self.task_id = "t1"
-        self.layout = storage.resolve_layout(
-            self.identity, home=self.home, run_id=self.run_id)
-        storage.write_workspace_locator(
-            self.primary, identity=self.identity, layout=self.layout,
-            run_id=self.run_id)
-        self.worker = storage.task_worktree_path(self.primary, self.task_id)
-        os.makedirs(os.path.dirname(self.worker), exist_ok=True)
-        result = _git(self.primary, "worktree", "add", "-b", "tp/t1",
-                      self.worker, "HEAD")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        storage.bind_worker_locator(self.primary, self.worker, self.task_id)
-        with open(os.path.join(self.worker, "a.py"), "w",
-                  encoding="utf-8") as handle:
-            handle.write("value = 2\n")
-        _git(self.worker, "add", "a.py")
-        self.assertEqual(_git(self.worker, "commit", "-qm", "target").returncode,
-                         0)
-        self.target = _git(self.worker, "rev-parse", "HEAD").stdout.strip()
-        storage.refresh_task_worktree_tip(self.primary, self.task_id)
-        self.registration_path = storage.task_worktree_registration_path(
-            self.primary, self.task_id)
-        self.worker_locator_path = storage._locator_path(self.worker)
-        self.primary_locator_path = storage._locator_path(self.primary)
-
-    def _remove_locators(self):
-        os.unlink(self.worker_locator_path)
-        os.unlink(self.primary_locator_path)
-
-    def _recover(self, **overrides):
-        values = {
-            "primary_checkout": self.primary,
-            "worker_checkout": self.worker,
-            "task_id": self.task_id,
-            "target_commit": self.target,
-            "home": self.home,
-        }
-        values.update(overrides)
-        return storage.reconstruct_worker_locator(**values)
-
-    def test_registration_reconstructs_locator_and_scan_is_run_local(self):
-        primary_graph = os.path.join(self.layout.graph_root, "graph.json")
-        shared_graph = os.path.join(
-            self.home, "projects", self.identity.key, "knowledge",
-            "graph.json")
-        for path, marker in ((primary_graph, "primary"),
-                             (shared_graph, "shared")):
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump({"meta": {"marker": marker}}, handle,
-                          sort_keys=True)
-        with open(primary_graph, "rb") as handle:
-            primary_before = handle.read()
-        with open(shared_graph, "rb") as handle:
-            shared_before = handle.read()
-        self._remove_locators()
-
-        locator_path = self._recover()
-        graph = depgraph.scan(self.worker)
-
-        locator = storage.load_workspace_locator(self.worker)
-        token = storage._worktree_token(self.task_id)
-        self.assertEqual(locator_path, self.worker_locator_path)
-        self.assertEqual(locator["run_id"], self.run_id)
-        self.assertEqual(locator["paths"]["graph"], os.path.join(
-            self.layout.graph_root, "worktrees", token))
-        self.assertEqual(graph["meta"]["scanned_head"], self.target)
-        self.assertTrue(os.path.isfile(os.path.join(
-            locator["paths"]["graph"], "graph.json")))
-        with open(primary_graph, "rb") as handle:
-            self.assertEqual(handle.read(), primary_before)
-        with open(shared_graph, "rb") as handle:
-            self.assertEqual(handle.read(), shared_before)
-        self.assertIsNone(storage.load_workspace_locator(self.primary))
-
-    def test_missing_ambiguous_or_mismatched_registration_fails_closed(self):
-        self._remove_locators()
-        with open(self.registration_path, encoding="utf-8") as handle:
-            original = json.load(handle)
-
-        cases = {
-            "run": {"run_id": "sibling-run"},
-            "repository": {"repository_key": "foreign-repository"},
-            "path": {"path": self.primary},
-            "branch": {"branch_ref": "refs/heads/tp/other"},
-            "task": {"task_id": "t2"},
-            "target": {"branch_tip": "f" * 40},
-            "linked": {"linked": False},
-        }
-        for label, change in cases.items():
-            with self.subTest(label=label):
-                value = dict(original)
-                value.update(change)
-                with open(self.registration_path, "w", encoding="utf-8") as h:
-                    json.dump(value, h)
-                with self.assertRaises(storage.StorageIdentityError):
-                    self._recover()
-                self.assertFalse(os.path.exists(self.worker_locator_path))
-
-        with open(self.registration_path, "w", encoding="utf-8") as handle:
-            json.dump(original, handle)
-        sibling = os.path.join(
-            self.home, "runs", "sibling-run", "state",
-            "worktree-registrations", os.path.basename(self.registration_path))
-        os.makedirs(os.path.dirname(sibling), exist_ok=True)
-        with open(sibling, "w", encoding="utf-8") as handle:
-            json.dump(original, handle)
-        with self.assertRaises(storage.StorageIdentityError):
-            self._recover()
-
-    def test_head_and_unsafe_symlink_inputs_fail_closed(self):
-        self._remove_locators()
-        with open(os.path.join(self.worker, "a.py"), "a",
-                  encoding="utf-8") as handle:
-            handle.write("value = 3\n")
-        _git(self.worker, "add", "a.py")
-        self.assertEqual(_git(self.worker, "commit", "-qm", "moved").returncode,
-                         0)
-        with self.assertRaises(storage.StorageIdentityError):
-            self._recover()
-        alias_root = tempfile.mkdtemp(prefix="tp-worker-alias-")
-        alias = os.path.join(alias_root, "worker")
-        os.symlink(self.worker, alias)
-        with self.assertRaises(storage.StorageIdentityError):
-            self._recover(worker_checkout=alias)
-
-
 class TestRunStore(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp(prefix="tp-run-store-")
@@ -437,7 +297,7 @@ class TestRunStore(unittest.TestCase):
             self.identity, run_id="run-123", checkout="/tmp/project",
             host={"kind": "codex", "session_id": "thread-1"},
             target={"kind": "pr", "number": 7, "head": "a" * 40})
-        self.assertEqual(manifest["schema"], "taskplane.run/v3")
+        self.assertEqual(manifest["schema"], "taskplane.run/v4")
         self.assertEqual(manifest["repository"]["repo_id"],
                          self.identity.repo_id)
         self.assertEqual(manifest["preflight"]["status"], "pending")
@@ -470,50 +330,6 @@ class TestRunStore(unittest.TestCase):
         self.assertTrue(os.path.isdir(lock + ".lockdir"))
 
 
-class TestLegacyStorageMigration(unittest.TestCase):
-    def test_clean_scratch_clone_is_registered_without_being_moved(self):
-        home = tempfile.mkdtemp(prefix="tp-migration-home-")
-        ws = tempfile.mkdtemp(prefix="tp-migration-ws-")
-        clone = os.path.join(ws, ".em-review", "scratch", "project")
-        os.makedirs(clone)
-        _git(clone, "init", "-q")
-        _git(clone, "config", "user.email", "t@example.com")
-        _git(clone, "config", "user.name", "T")
-        with open(os.path.join(clone, "a.py"), "w", encoding="utf-8") as f:
-            f.write("x = 1\n")
-        _git(clone, "add", "a.py")
-        _git(clone, "commit", "-qm", "base")
-        _git(clone, "remote", "add", "origin",
-             "https://github.com/Example/Project.git")
-        report = storage_migration.migrate_legacy_checkouts(ws, home=home)
-        self.assertEqual(report["adopted"], 1)
-        self.assertEqual(report["review_required"], 0)
-        self.assertTrue(os.path.isdir(clone), "migration must not move source")
-        row = report["checkouts"][0]
-        self.assertEqual(row["status"], "registered_legacy_alias")
-        identity = storage.resolve_repository_identity(clone)
-        record = os.path.join(home, "repositories", f"{identity.key}.json")
-        with open(record, encoding="utf-8") as handle:
-            persisted = json.load(handle)
-        self.assertEqual(persisted["checkouts"][0]["path"],
-                         os.path.realpath(clone))
-
-    def test_dirty_scratch_clone_is_reported_and_not_registered(self):
-        home = tempfile.mkdtemp(prefix="tp-migration-home-")
-        ws = tempfile.mkdtemp(prefix="tp-migration-ws-")
-        clone = os.path.join(ws, ".em-review", "scratch", "dirty")
-        os.makedirs(clone)
-        _git(clone, "init", "-q")
-        _git(clone, "remote", "add", "origin",
-             "https://github.com/Example/Dirty.git")
-        with open(os.path.join(clone, "untracked.txt"), "w",
-                  encoding="utf-8") as handle:
-            handle.write("user data\n")
-        report = storage_migration.migrate_legacy_checkouts(ws, home=home)
-        self.assertEqual(report["adopted"], 0)
-        self.assertEqual(report["review_required"], 1)
-        self.assertEqual(report["checkouts"][0]["status"],
-                         "dirty_user_checkout")
 
 
 if __name__ == "__main__":

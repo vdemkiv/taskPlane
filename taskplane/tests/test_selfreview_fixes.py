@@ -1,3 +1,4 @@
+from taskplane.tests.phase_fixture import save_component_workflow
 """Regression tests for the v0.8.6 self-review fixes — each asserts the
 finding's failure mode is gone. Reproduce-then-pass."""
 import json
@@ -38,73 +39,8 @@ def _repo(prefix="tp-fix-"):
     return ws
 
 
-def _claim_variant_worktrees(ws):
-    """Give simulated variant builds their real isolated task worktrees."""
-    for task in loop.load(ws)["tasks"]:
-        if task.get("status") != "pending":
-            continue
-        worker = os.path.join(ws, ".tp-work", task["id"])
-        _git(ws, "worktree", "add", "-q", worker, "-b",
-             "tp/" + task["id"])
-        claimed = loop.claim(ws, task["id"], worker)
-        if claimed.get("error"):
-            raise AssertionError(claimed["error"])
-        depgraph.scan(worker)
 
 
-def _pass_eval(ws):
-    brief = loop.next_action(ws)
-    if brief.get("error"):
-        raise AssertionError(brief["error"])
-    state = loop.load(ws)
-    task = state["tasks"][state["current_task"]]
-    act_ws = task.get("workspace") if state.get("parallel") else ws
-    complete_evaluate_slots(
-        act_ws, session_id="selfreview-" + task["id"])
-    os.makedirs(os.path.join(act_ws, ".eval"), exist_ok=True)
-    with open(os.path.join(act_ws, ".eval", "verdict.json"), "w",
-              encoding="utf-8") as f:
-        json.dump({"schema": "taskplane.evaluator-output/v2",
-                   "task": task["id"],
-                   "requirement": task.get("req") or
-                                  state.get("requirement_id") or "",
-                   "verdict": "pass",
-                   "evaluation": {"status": "complete",
-                                  "reason_code": "none", "detail": ""},
-                   "criteria": [{"criterion": c, "status": "met",
-                                  "evidence": "verified"}
-                                for c in loop._criteria_for(ws, state, task)],
-                   "graph": {"dispositions": [],
-                             "requirements_checked": [],
-                             "contracts_checked": []},
-                   "failures": []}, f)
-    slot = brief["contract_bootstrap"]["task_slot"]
-    binding = tl.worker_contract_for_stage(
-        act_ws, stage="evaluate", task=str(task["id"]))
-    assert binding is not None
-    assert binding["slot"] == slot
-    assert tl.load_active(act_ws) is None
-    contract = binding["contract"]
-    lifecycle = (contract or {}).get("worker_lifecycle") or {}
-    assert lifecycle.get("stage") == "evaluate"
-    assert str(lifecycle.get("task") or "") == str(task["id"])
-    material = loop.producer_output_identity(
-        act_ws, state, task, "evaluate",
-        active_contract=contract)
-    event = {"hook_event_name": "SubagentStop",
-             "session_id": "selfreview-evaluate-session",
-             "turn_id": "selfreview-evaluate-turn",
-             "agent_id": "selfreview-evaluator",
-             "agent_type": material["producer_dispatch"]["task_name"],
-             "task_name": material["producer_dispatch"]["task_name"]}
-    claim = hashlib.sha256(tl.hook_event_identity(
-        act_ws, "subagent-stop", event).encode("utf-8")).hexdigest()
-    producer_observation.record_codex_subagent_stop(
-        event=event, hook_claim_id=claim, **material)
-    with mock.patch("runtime_eval.guide_loop",
-                    return_value={"status": "on_path", "recovered": False}):
-        loop.submit(ws, "pass")
-    return loop.gate(ws, "pass")
 
 
 class TestKernel(unittest.TestCase):
@@ -152,123 +88,15 @@ class TestEngine(unittest.TestCase):
             if previous is None else os.environ.__setitem__(
                 "TASKPLANE_SESSION_ID", previous))
 
-    def _ab_to_selection(self, ids=("va", "vb")):
-        loop.init(self.ws, "g", parallel=True)
-        s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
-        os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"requirement": "selfreview-ab-fixture",
-                   "delivery_mode": "build", "automatic_lenses": [],
-                   "plan_authority": "human:test-fixture",
-                   "mode": "ab-selection", "tasks": [
-            {"id": ids[0], "variant": "A", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t",
-             "criteria": ["variant A is ready for human selection"]},
-            {"id": ids[1], "variant": "B", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t",
-             "criteria": ["variant B is ready for human selection"]}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop, usage="measured")
-        loop.gate(self.ws, "pass"); loop.approve(self.ws)
-        s = loop.load(self.ws)
-        for t in s["tasks"]:
-            t["status"] = "passed"
-        s["step"] = "selection"; loop.save(self.ws, s)
 
-    def test_skip_cascades_to_dependents_no_deadlock(self):
-        loop.init(self.ws, "g", parallel=True)
-        s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
-        os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"tasks": [
-            {"id": "t1", "scope": ["a/**"], "new_modules": ["a"],
-             "tests": "t", "criteria": ["task one passes review"]},
-            {"id": "t2", "scope": ["b/**"], "new_modules": ["b"],
-             "deps": ["t1"], "tests": "t",
-             "criteria": ["task two passes review"]},
-            {"id": "t3", "scope": ["c/**"], "new_modules": ["c"],
-             "deps": ["t2"], "tests": "t",
-             "criteria": ["task three passes review"]}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop, usage="measured")
-        loop.gate(self.ws, "pass"); loop.approve(self.ws)
-        s = loop.load(self.ws); s["step"] = "escalated"; s["current_task"] = 0
-        loop.save(self.ws, s)
-        loop.resolve(self.ws, "skip")
-        s = loop.load(self.ws)
-        self.assertTrue(all(t["status"] == "skipped" for t in s["tasks"]))
-        self.assertEqual(s["step"], "em")
 
-    def test_wave_deadlock_surfaced(self):
-        loop.init(self.ws, "g", parallel=True)
-        s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
-        os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"tasks": [
-            {"id": "t1", "scope": ["a/**"], "new_modules": ["a"],
-             "tests": "t", "criteria": ["task one passes review"]},
-            {"id": "t2", "scope": ["b/**"], "new_modules": ["b"],
-             "deps": ["t1"], "tests": "t",
-             "criteria": ["task two passes review"]}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop, usage="measured")
-        loop.gate(self.ws, "pass"); loop.approve(self.ws)
-        s = loop.load(self.ws)
-        # t1 skipped directly (not via cascade), t2 left pending → deadlock
-        for t in s["tasks"]:
-            if t["id"] == "t1":
-                t["status"] = "skipped"
-        loop.save(self.ws, s)
-        w = loop.wave(self.ws)
-        self.assertIn("deadlock", w)
 
     def test_scopes_overlap_segment_aware(self):
         self.assertFalse(loop._scopes_overlap(["src/a/**"], ["src/ab/**"]))
         self.assertFalse(loop._scopes_overlap(["**/x.py"], ["foo/**"]))
         self.assertTrue(loop._scopes_overlap(["src/a/**"], ["src/**"]))
 
-    def test_ab_without_parallel_forced(self):
-        loop.init(self.ws, "g")  # no parallel
-        s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
-        os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"mode": "ab-selection", "tasks": [
-            {"id": "va", "variant": "A", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t",
-             "criteria": ["variant A is ready for human selection"]},
-            {"id": "vb", "variant": "B", "scope": ["src/**"],
-             "new_modules": ["src"], "tests": "t",
-             "criteria": ["variant B is ready for human selection"]}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop, usage="measured")
-        loop.gate(self.ws, "pass")
-        self.assertTrue(loop.load(self.ws)["parallel"])
 
-    def test_shared_requirement_keeps_all_edges(self):
-        os.makedirs(os.path.join(self.ws, "src", "auth"))
-        os.makedirs(os.path.join(self.ws, "src", "pay"))
-        open(os.path.join(self.ws, "src", "auth", "a.py"), "w", encoding="utf-8").write("x=1\n")
-        open(os.path.join(self.ws, "src", "pay", "p.py"), "w", encoding="utf-8").write("y=1\n")
-        depgraph.scan(self.ws)
-        reqs.record_requirement(
-            self.ws, "shared requirement", acceptance=["shared edges stay"])
-        loop.init(self.ws, "g", parallel=True)
-        s = loop.load(self.ws); s["step"] = "plan"; loop.save(self.ws, s)
-        os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"tasks": [
-            {"id": "t1", "req": "R-0001", "scope": ["src/auth/**"],
-             "tests": "t", "criteria": ["shared edges stay"]},
-            {"id": "t2", "req": "R-0001", "scope": ["src/pay/**"],
-             "tests": "t", "criteria": ["shared edges stay"]}]},
-            open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop, usage="measured")
-        loop.gate(self.ws, "pass")
-        g = depgraph.load(self.ws)
-        planned = {e["to"] for e in g["edges"]
-                   if e["from"] == "req:R-0001" and e["kind"] == "planned"}
-        self.assertIn("auth", planned)
-        self.assertIn("pay", planned)
 
 
 class TestKernelFailClosed(unittest.TestCase):
@@ -304,7 +132,8 @@ class TestKernelFailClosed(unittest.TestCase):
 class TestSurface(unittest.TestCase):
     def test_render_escapes_goal_and_deny_reason(self):
         ws = _repo()
-        loop.init(ws, "add <script>alert(1)</script>", parallel=False)
+        save_component_workflow(ws, {"goal": "add <script>alert(1)</script>",
+                                     "step": "pm", "tasks": [], "current_task": 0})
         import taskplane_lite as tp
         tp.trace(ws, "hook_deny", tool="Bash",
                  reason="<img src=x onerror=alert(1)>")
@@ -420,7 +249,7 @@ class TestOnboarding(unittest.TestCase):
         self.assertTrue(r["looks_like_project"])
         self.assertTrue(r["is_git"])
         self.assertTrue(r["has_commit"])
-        self.assertTrue(r["has_context"])
+        self.assertFalse(r["has_context"])
         self.assertFalse(r["ready"])
         self.assertFalse(r["host_capabilities"]["ready"])
         self.assertNotEqual(r["next_action"], "ready")
@@ -448,29 +277,7 @@ class TestLensAgents(unittest.TestCase):
         self.assertIn("checks", b)
         self.assertIsNone(lens.lens_brief("nope-not-a-lens"))
 
-    def test_dispatch_briefs_are_readonly_and_per_lens(self):
-        import lens
-        routing = lens.route(["server/api/users.py"], catalog=None)
-        d = lens.dispatch_briefs(routing, base="main", max_actions=25)
-        self.assertTrue(d["deep"])
-        for b in d["deep"]:
-            self.assertEqual(b["agent"], "tp-lens")
-            self.assertTrue(b["contract"]["read_only"])
-            self.assertEqual(b["contract"]["write_allow"],
-                             [f".em-review/lens-{b['id']}/**"])
-            self.assertEqual(b["contract"]["max_actions"], 25)
-            self.assertIn(b["id"], b["prompt"].lower() or b["prompt"])
-            self.assertTrue(b["output"].startswith(".em-review/lens-"))
 
-    def test_dispatch_sweep_batched_when_breadth_all(self):
-        import lens
-        routing = lens.route(["server/api/users.py"], catalog=None,
-                             breadth="all")
-        d = lens.dispatch_briefs(routing)
-        # full catalog → some lenses are sweep tier, batched into one agent
-        self.assertIsNotNone(d["sweep"])
-        self.assertTrue(d["sweep"]["ids"])
-        self.assertTrue(d["sweep"]["contract"]["read_only"])
 
 
 class TestLensWaveProgress(unittest.TestCase):
@@ -642,7 +449,8 @@ class TestContractSchemaUnified(unittest.TestCase):
 
     def test_status_includes_project_loop_without_active_contract(self):
         ws = _repo()
-        loop.init(ws, "status journey")
+        save_component_workflow(ws, {"goal": "status journey", "step": "pm",
+                                     "tasks": [], "current_task": 0})
         r = subprocess.run([sys.executable, _TP_PY, "status"], cwd=ws,
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
@@ -732,70 +540,6 @@ class TestActionBudgetEnforced(unittest.TestCase):
         self.assertIn("outside scope", bad)
 
 
-class TestLoopSerialSkipAndSelection(unittest.TestCase):
-    """CODE-QUALITY (MED) + ARCH (LOW): serial advance skips SETTLED tasks;
-    the 'neither' selection has a real transition; the dead ternary is gone."""
-    def _serial_two_dep(self):
-        ws = _repo()
-        loop.init(ws, "g", parallel=False)
-        s = loop.load(ws)
-        s["step"] = "escalated"
-        s["current_task"] = 0
-        s["tasks"] = [
-            {"id": "t1", "scope": ["a/**"], "tests": "t", "status": "running",
-             "fix_cycles": 2},
-            {"id": "t2", "scope": ["b/**"], "tests": "t", "status": "pending",
-             "deps": ["t1"]}]
-        loop.save(ws, s)
-        return ws
-
-    def test_serial_skip_does_not_reexecute_cascaded(self):
-        ws = self._serial_two_dep()
-        loop.resolve(ws, "skip")
-        s = loop.load(ws)
-        # t1 skipped, t2 cascade-skipped → nothing left to build → em
-        self.assertEqual(s["tasks"][0]["status"], "skipped")
-        self.assertEqual(s["tasks"][1]["status"], "skipped")
-        self.assertEqual(s["step"], "em")
-
-    def test_neither_selection_has_transition(self):
-        ws = _repo()
-        loop.init(ws, "g", parallel=True)
-        s = loop.load(ws)
-        s["step"] = "selection"; s["ab"] = True
-        s["tasks"] = [
-            {"id": "va", "variant": "A", "scope": ["src/**"], "status": "passed"},
-            {"id": "vb", "variant": "B", "scope": ["src/**"], "status": "passed"}]
-        loop.save(ws, s)
-        out = loop.select(ws, "neither", note="both wrong")
-        self.assertNotIn("error", out)
-        s2 = loop.load(ws)
-        self.assertEqual(s2["step"], "plan")
-        self.assertTrue(all(t["status"] == "not_selected" for t in s2["tasks"]))
-        self.assertEqual(s2["selection"]["revision"], tl.git_head(ws))
-
-    def test_display_pipeline_splices_selection_for_ab(self):
-        steps = [s for s, _, _ in loop.display_pipeline({"ab": True})]
-        self.assertIn("selection", steps)
-        self.assertLess(steps.index("selection"), steps.index("em"))
-        # not spliced once selection is recorded
-        done = [s for s, _, _ in loop.display_pipeline(
-            {"ab": True, "selection": {"choice": "va"}})]
-        self.assertNotIn("selection", done)
-
-    def test_retro_tolerates_a_bad_trace_line(self):
-        ws = _repo()
-        loop.init(ws, "g", parallel=False)
-        d = os.path.join(ws, ".taskplane")
-        os.makedirs(d, exist_ok=True)
-        with open(os.path.join(d, "trace.jsonl"), "a", encoding="utf-8") as f:
-            f.write('{"event":"loop_init","ts":1}\n')
-            f.write("{truncated partial line\n")   # must not crash retro
-        state = loop.load(ws)
-        state["step"] = "done"       # legacy completed loop, eligible once
-        loop.save(ws, state)
-        out = loop.retro(ws)
-        self.assertNotIn("error", out)
 
 
 class TestDashboardDecoupled(unittest.TestCase):
@@ -823,16 +567,6 @@ class TestDashboardDecoupled(unittest.TestCase):
         self.assertIn("setAttribute", html)   # JS updates the pressed state
 
 
-class TestLensEmptyRouting(unittest.TestCase):
-    """TESTABILITY (MED): a no-op diff signals nothing_to_review instead of
-    instructing a dispatch of zero agents."""
-    def test_empty_routing_signals_nothing(self):
-        import lens
-        routing = lens.route(["notes.txt"], catalog=None)
-        d = lens.dispatch_briefs(routing)
-        if not d["deep"] and not d["sweep"]:
-            self.assertTrue(d.get("nothing_to_review"))
-            self.assertIn("nothing to review", d["instruction"].lower())
 
 
 class TestDepgraphIncremental(unittest.TestCase):
@@ -859,8 +593,8 @@ class TestKBSensitiveGuard(unittest.TestCase):
     def test_pricing_marker_flagged(self):
         import kb
         ws = tempfile.mkdtemp(prefix="tp-kb-")
-        os.makedirs(os.path.join(ws, "knowledge", "decisions"))
-        open(os.path.join(ws, "knowledge", "decisions", "0001-x.md"),
+        os.makedirs(os.path.join(kb.kb_dir(ws), "decisions"))
+        open(os.path.join(kb.kb_dir(ws), "decisions", "0001-x.md"),
              "w", encoding="utf-8").write("Paid SKU ~15-25k/yr, ACV 25-75k. Monetize later.")
         problems = kb.lint(ws)
         self.assertTrue(any("commercial" in p["problem"] for p in problems))

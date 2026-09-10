@@ -8,6 +8,10 @@ continuity only; none claims cryptographic actor authenticity.
 """
 
 from __future__ import annotations
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 
 import base64
 import hashlib
@@ -408,14 +412,8 @@ def _closed(value: Any, fields: frozenset[str], name: str) -> Mapping[str, Any]:
 
 
 def _fingerprint(value: Any, field_name: str, *, optional: bool = False) -> str | None:
-    if optional and value is None:
-        return None
-    text = _text(value, field_name)
-    if len(text) != 64 or any(character not in "0123456789abcdef" for character in text):
-        raise ReleaseEvidenceError(
-            f"{field_name} must be a 64-character lowercase SHA-256 fingerprint"
-        )
-    return text
+    return _shared_primitives.fingerprint_text(
+        value, field_name, optional=optional, error=ReleaseEvidenceError)
 
 
 def _source_sha(value: Any, field_name: str = "source_sha") -> str:
@@ -1796,13 +1794,7 @@ _PUBLICATION_LOCKS: dict[tuple[Any, ...], threading.RLock] = {}
 
 
 def _store_key(store: EvidenceStore) -> tuple[Any, ...]:
-    identity = tuple(
-        getattr(store, field_name, None)
-        for field_name in ("caller_root", "repository_fingerprint", "run_namespace")
-    )
-    if all(value is not None for value in identity):
-        return ("release-evidence-store", *(str(value) for value in identity))
-    return ("release-evidence-store-object", id(store))
+    return _shared_primitives.store_identity(store, "release-evidence-store")
 
 
 def _state_and_lock(

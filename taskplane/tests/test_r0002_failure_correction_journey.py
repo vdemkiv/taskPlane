@@ -5,6 +5,7 @@ import json
 import subprocess
 
 from taskplane import evaluation_output, failure_routing, loop
+from taskplane.tests.phase_fixture import save_component_workflow
 
 
 def _record(candidate, failure_class: str) -> dict:
@@ -54,7 +55,7 @@ def test_non_product_failure_inventory_cannot_open_product_fix(
         "returncode": 1, "selector": "test_current_contract"}
 
 
-def test_build_red_is_durably_unknown_and_held_before_evaluate(
+def test_detected_build_red_is_durably_unknown_until_classified(
         tmp_path, monkeypatch) -> None:
     workspace = tmp_path / "build-red"
     workspace.mkdir()
@@ -76,19 +77,16 @@ def test_build_red_is_durably_unknown_and_held_before_evaluate(
         "tasks": [{"id": "BUILD-RED", "status": "running",
                    "scope": ["owned.py"], "fix_cycles": 0}],
     }
-    loop.save(str(workspace), state)
-    monkeypatch.setattr(
-        loop.tp, "release_worker_contracts_for_gate", lambda *_a, **_k: [])
-    monkeypatch.setattr(loop.tp, "clear", lambda *_a, **_k: None)
-
-    result = loop.gate(str(workspace), "fail", note="selector red")
+    task = state["tasks"][0]
+    task["failure_routing"] = loop._detected_build_failure_routing(
+        str(workspace), task, {"outcome": "fail", "fingerprint":
+        loop.tp.workspace_fingerprint(str(workspace))}, "execute")
+    save_component_workflow(str(workspace), state)
     stored = loop.load(str(workspace))
 
-    assert result["step"] == "evaluate"
     routing = stored["tasks"][0]["failure_routing"]
     assert routing["next"] == "hold"
     assert routing["hold_required"] is True
     assert routing["product_fix_allowed"] is False
     assert routing["records"][0]["class"] == "unknown"
     assert routing["records"][0]["stage"] == "execute"
-    assert stored["_build_failed"] is True

@@ -3,10 +3,12 @@ links, product depends-edges, product_impact — and the loop wiring that
 maintains them (plan-gate annotation, EM true-up)."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import depgraph  # noqa: E402
@@ -35,6 +37,7 @@ def _repo():
 class TestProductLayer(unittest.TestCase):
     def setUp(self):
         self.ws = _repo()
+        self.addCleanup(shutil.rmtree, self.ws)
 
     def test_link_requirement_and_replace(self):
         r = depgraph.link_requirement(
@@ -79,19 +82,9 @@ class TestProductLayer(unittest.TestCase):
             self.ws, "R-0009", ["src/api/**"], kind="realizes")
         requirement = requirements.record_requirement(
             self.ws, "API change", acceptance=["API remains correct"])
-        loop.init(self.ws, "goal")
-        state = loop.load(self.ws)
-        state["step"] = "plan"
-        loop.save(self.ws, state)
-        os.makedirs(os.path.join(self.ws, "plan"), exist_ok=True)
-        json.dump({"tasks": [{"id": "t1", "req": requirement["id"],
-                              "scope": ["src/api/**"], "tests": "true",
-                              "criteria": ["API remains correct"]}]},
-                  open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop, usage="measured")
-        loop.gate(self.ws, "pass")
-        state = loop.load(self.ws)
+        state = {"tasks": [{"id": "t1", "req": requirement["id"],
+                            "scope": ["src/api/**"]}]}
+        loop._annotate_plan_graph(self.ws, state)
         blast = state["tasks"][0].get("blast")
         self.assertIsNotNone(blast)
         self.assertIn("req:R-0009", blast["shared_with"])
@@ -100,6 +93,47 @@ class TestProductLayer(unittest.TestCase):
         self.assertTrue(any(e["from"] == "req:" + requirement["id"]
                             and e["kind"] == "planned"
                             for e in g["edges"]))
+
+
+@pytest.mark.parametrize("parallel", [False, True], ids=["serial", "parallel"])
+def test_graph_evidence_requires_dependents_and_requirements_in_each_mode(tmp_path, parallel):
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    for folder, text in (("provider", "VALUE = 1\n"), ("consumer", "from provider import value\n"),
+                         ("src/design", "from provider import value\n")):
+        target = workspace / folder / "value.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(text)
+    for path in ("design/contract.json", "plan/tasks.json", "waves/execute/T1.json"):
+        target = workspace / path
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({"source": "provider/value.py"}))
+    ws = str(workspace)
+    _git(ws, "init", "-q")
+    _git(ws, "add", ".")
+    _git(ws, "-c", "user.name=Fixture", "-c", "user.email=f@example.invalid", "commit", "-qm", "source")
+    baseline = loop.tp.git_head(ws)
+    depgraph.scan(ws)
+    depgraph.link_requirement(ws, "R-OTHER", ["provider/value.py"], kind="realizes")
+    (workspace / "provider/value.py").write_text("VALUE = 2\n")
+    depgraph.scan(ws)
+    task = {"id":"T1", "scope":["provider/value.py"], "contracts":["contract:value"]}
+    state = {"parallel":parallel, "baseline":baseline, "graph_governance":True, "requirement_id":"R-OWN"}
+    errors = loop._task_graph_evidence_errors(ws, state, task, {})
+    assert "graph impact has no evidenced disposition: consumer" in errors
+    # src/design shares the module ID with design/contract.json; mixed
+    # modules still require product evidence, regardless of their name.
+    assert "graph impact has no evidenced disposition: design" in errors
+    impacted = loop._task_graph_dod(ws, state, task)["impact"]["impacted"][1]
+    assert {"design", "plan", "waves/execute"} <= {row["module"] for row in impacted}
+    assert "affected requirement was not re-checked: req:R-OTHER" in errors
+    assert "declared contract was not verified: contract:value" in errors
+    graph = {"dispositions":[{"node":node, "status":"tested", "evidence":"Consumer regression passed"}
+                            for node in ("consumer", "design")],
+        "requirements_checked":["req:R-OTHER"], "contracts_checked":["contract:value"]}
+    assert loop._task_graph_evidence_errors(ws, state, task, {"graph":graph}) == []
+    graph["dispositions"][0]["status"] = "requires-replan"
+    assert "graph impact requires replanning: consumer" in loop._task_graph_evidence_errors(ws, state, task, {"graph":graph})
 
 
 if __name__ == "__main__":

@@ -19,6 +19,11 @@ Nodes are MODULES (directory-level, e.g. `src/auth`) plus INFRA components
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import ast
 import base64
 import contextlib
@@ -38,7 +43,12 @@ import graph_decomposition
 import glob_match
 import graph_primitives
 import storage as runtime_storage
-import taskplane_lite as tp
+if __package__:
+    from . import primitives as tp, storage as project_storage, audit_projection
+else:
+    import primitives as tp
+    import storage as project_storage
+    import audit_projection
 
 GRAPH_FILE = "graph.json"
 CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".go", ".cs", ".java", ".rb")
@@ -92,7 +102,7 @@ def _path(ws: str) -> str:
     if locator:
         return os.path.join(locator["paths"]["graph"], GRAPH_FILE)
     # Legacy/non-run graph lives in the external per-project knowledge store.
-    return os.path.join(tp.kb_root(ws), GRAPH_FILE)
+    return os.path.join(project_storage.kb_root(ws), GRAPH_FILE)
 
 
 def _empty() -> dict:
@@ -394,8 +404,13 @@ def _managed_cache_path(ws: str, *, decompose: bool) -> tuple[str, str] | None:
     locator = runtime_storage.load_workspace_locator(ws)
     if not locator:
         return None
-    head = tp.git_head(ws)
+    head = _git_head(ws)
     if not head:
+        return None
+    # A revision cache may contain only committed source facts. Dirty source
+    # and workspace Design overlays belong to this checkout's live graph.
+    source_status = tp._run(["git", "status", "--porcelain"], cwd=ws)
+    if _design_file_fingerprint(ws) or source_status.returncode or source_status.stdout.strip():
         return None
     path = os.path.join(
         locator["home"],
@@ -419,7 +434,7 @@ def _restore_managed_cache(ws: str, *, decompose: bool) -> dict | None:
         return None
     if (
         not isinstance(value, dict)
-        or value.get("schema") != "taskplane.graph-cache/v1"
+        or value.get("schema") != "taskplane.graph-cache/v2"
         or value.get("head") != head
         or value.get("scanner_version") != scanner_cache_version(decompose=decompose)
         or not isinstance(value.get("graph"), dict)
@@ -428,11 +443,21 @@ def _restore_managed_cache(ws: str, *, decompose: bool) -> dict | None:
     ):
         return None
     graph = value["graph"]
+    if not _source_only_cache_graph(graph):
+        return None
     save(ws, graph)
     return graph
 
 
+def _source_only_cache_graph(graph: dict) -> bool:
+    return not graph.get("recorded") and all(
+        row.get("source") == "scanner" and not row.get("recorded")
+        and not row.get("declared") for row in graph.get("edges", []))
+
+
 def _write_managed_cache(ws: str, graph: dict, *, decompose: bool) -> None:
+    if not _source_only_cache_graph(graph):
+        return
     located = _managed_cache_path(ws, decompose=decompose)
     if not located:
         return
@@ -440,7 +465,7 @@ def _write_managed_cache(ws: str, graph: dict, *, decompose: bool) -> None:
     tp.atomic_write_json(
         path,
         {
-            "schema": "taskplane.graph-cache/v1",
+            "schema": "taskplane.graph-cache/v2",
             "head": head,
             "scanner_version": scanner_cache_version(decompose=decompose),
             "components_fingerprint": _components_file_fingerprint(ws),
@@ -575,7 +600,7 @@ def _stamp_meta(ws: str, g: dict, *, scanned: bool = False) -> dict:
     )
     if scanned:
         meta["scanned_at"] = int(time.time())
-        meta["scanned_head"] = tp.git_head(ws)
+        meta["scanned_head"] = _git_head(ws)
     g["meta"] = meta
     return g
 
@@ -951,9 +976,7 @@ def scan(ws: str, decompose: bool = False, *, strict: bool = False) -> dict:
 
 def _canonical_fingerprint(value: object) -> str:
     return hashlib.sha256(
-        json.dumps(
-            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-        ).encode("utf-8")
+        _json_primitives.canonical_bytes(value, ensure_ascii=False)
     ).hexdigest()
 
 
@@ -1143,7 +1166,7 @@ def prepare_design_decomposition(ws: str, context_files, *, settings_digest: str
     else:
         raise ValueError("Design decomposition context files must be a list")
 
-    head_before = str(tp.git_head(ws) or "")
+    head_before = str(_git_head(ws) or "")
     if not head_before or head_before == "unknown":
         raise ValueError("Design decomposition requires an exact git HEAD")
     graph = scan(ws, decompose=True)
@@ -1207,7 +1230,7 @@ def prepare_design_decomposition(ws: str, context_files, *, settings_digest: str
     quality = scan_quality(graph)
     meta = graph.get("meta") or {}
     floors = str((meta.get("decompose") or {}).get("floors") or "")
-    head = str(tp.git_head(ws) or "")
+    head = str(_git_head(ws) or "")
     scanned_head = str(meta.get("scanned_head") or "")
     degraded_reasons = []
     if quality.get("degraded"):
@@ -1350,7 +1373,7 @@ def publish_design_decomposition(ws: str, artifact_root, receipt: object) -> dic
     authenticates that governed owner and its settings without rebinding it.
     """
     checked = validate_design_decomposition_receipt(receipt)
-    current_head = str(tp.git_head(ws) or "")
+    current_head = str(_git_head(ws) or "")
     current_graph = load(ws)
     current_graph_fingerprint = str(
         (current_graph.get("meta") or {}).get("content_fingerprint") or ""
@@ -3259,7 +3282,7 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
         dstats,
         architecture,
         decompose=decompose,
-        scanned_revision=tp.git_head(ws) or "",
+        scanned_revision=_git_head(ws) or "",
     )
     if into is not None:
         # Active batch: replace the batched graph's contents in place so the
@@ -3274,7 +3297,7 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
         }
         if dstats.get("error"):
             payload["error"] = dstats["error"]
-        tp.trace(ws, "graph_decompose", **payload)
+        audit_projection.trace(ws, "graph_decompose", **payload)
     if into is None:
         # --decompose no-change rescan is a NO-OP: when nothing but the
         # volatile meta timestamps moved, skip the write so graph.json stays
@@ -3284,7 +3307,7 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
             and os.path.exists(os.path.abspath(_path(ws)))
             and _scan_volatile_stripped(g) == _scan_volatile_stripped(prev)
         ):
-            tp.trace(
+            audit_projection.trace(
                 ws,
                 "graph_scan",
                 modules=len(modules),
@@ -3293,7 +3316,7 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
             )
             return prev
         save(ws, g)
-    tp.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]), files=len(file_entries))
+    audit_projection.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]), files=len(file_entries))
     return g
 
 
@@ -3344,7 +3367,7 @@ def record_edge(
         g["edges"] = [x for x in g.get("edges", []) if not same(x)] + [e]
         for x in (src, dst):
             g["modules"].setdefault(x, {"kind": _node_kind(x), "files": 0})
-    tp.trace(ws, "graph_edge_recorded", src=src, dst=dst, kind=kind)
+    audit_projection.trace(ws, "graph_edge_recorded", src=src, dst=dst, kind=kind)
     return e
 
 
@@ -3449,7 +3472,7 @@ def link_requirement(
             g["edges"].append(e)
             g["modules"].setdefault(m, {"kind": "module", "files": 0})
         g["modules"].setdefault(node, {"kind": "requirement", "files": 0})
-    tp.trace(ws, "graph_req_link", requirement=node, kind=kind, modules=mods)
+    audit_projection.trace(ws, "graph_req_link", requirement=node, kind=kind, modules=mods)
     return {"requirement": node, "kind": kind, "modules": mods}
 
 
@@ -4338,7 +4361,7 @@ def to_html(
     # let the remainder execute as markup. Escape `<` (and U+2028/9) so the
     # embedded JSON can never break out of the script element.
     safe_data = (
-        json.dumps(data).replace("<", "\\u003c").replace(" ", "\\u2028").replace(" ", "\\u2029")
+        json.dumps(data).replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     )
     html = (
         _HTML.replace("__TITLE__", _esc(title or os.path.basename(ws)))
@@ -4357,3 +4380,7 @@ def to_html(
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
     return out
+
+
+def _git_head(ws: str) -> str | None:
+    return project_storage._git_value(ws, "rev-parse", "HEAD")

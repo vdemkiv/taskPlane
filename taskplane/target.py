@@ -29,6 +29,11 @@ Nothing here writes to the reviewed source, and nothing here is a gate on
 its own: it produces the record that tp.py's screener and the sign-off gate
 check. Enforcement stays where enforcement lives.
 """
+
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 import hashlib
 import json
 import os
@@ -559,11 +564,8 @@ def record_path(ws: str) -> str:
 
 
 def save(ws: str, rec: dict) -> dict:
-    p = record_path(ws)
     try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(rec, f, indent=2, sort_keys=True)
+        _shared_primitives.atomic_json(record_path(ws), rec, trailing_newline=False)
     except OSError:
         pass
     return rec

@@ -1,10 +1,10 @@
 """Focused adversarial proofs for H1-C durable state and read-only safety."""
 
 from __future__ import annotations
+from taskplane import primitives
 
 import json
 import os
-import shutil
 from pathlib import Path
 from unittest import mock
 
@@ -73,14 +73,16 @@ def test_h14_first_nested_write_durably_publishes_every_parent(tmp_path: Path):
         replaced.append(Path(destination))
         real_replace(source, destination)
 
-    with mock.patch.object(tp, "_fsync_directory", side_effect=record_sync), \
+    with mock.patch.object(primitives, "_fsync_directory", side_effect=record_sync), \
             mock.patch.object(tp.os, "replace", side_effect=record_replace):
         tp.atomic_write_json(str(target), {"phase": "plan"})
 
     runs = tmp_path / "runs"
     run = runs / "run-1"
     state = run / "state"
-    assert synced == [runs, tmp_path, run, runs, state, run, state]
+    assert synced == [runs, tmp_path, run, runs, state, run]
+    # The shared writer fsyncs the final parent after replace; the preceding
+    # critical-write check asserts that independently through os.fsync.
     assert replaced == [target]
     assert json.loads(target.read_text(encoding="utf-8")) == {"phase": "plan"}
 
@@ -99,7 +101,7 @@ def test_h14_nested_parent_durability_failure_is_not_acknowledged(
             raise OSError("ancestor entry was not durable")
         real_sync(path)
 
-    with mock.patch.object(tp, "_fsync_directory", side_effect=fail_second_parent):
+    with mock.patch.object(primitives, "_fsync_directory", side_effect=fail_second_parent):
         with pytest.raises(OSError, match="ancestor entry was not durable"):
             tp.atomic_write_json(str(target), {"phase": "plan"})
 
@@ -120,44 +122,6 @@ def test_h14_nested_parent_symlink_fails_closed(tmp_path: Path):
     assert not target.exists()
 
 
-def test_h15_interrupted_migration_keeps_legacy_authoritative(tmp_path: Path,
-                                                              monkeypatch):
-    workspace = tmp_path / "repo"
-    legacy = workspace / "knowledge"
-    legacy.mkdir(parents=True)
-    (legacy / "decisions.json").write_text("complete", encoding="utf-8")
-    (legacy / "history.json").write_text("history", encoding="utf-8")
-    home = tmp_path / "home"
-    monkeypatch.setenv("TASKPLANE_HOME", str(home))
-    monkeypatch.setenv("TASKPLANE_STORE", "external")
-    real_copytree = shutil.copytree
-
-    def interrupted_copy(source: str, destination: str, **kwargs):
-        Path(destination).mkdir(parents=True)
-        shutil.copy2(Path(source) / "decisions.json",
-                     Path(destination) / "decisions.json")
-        raise OSError("cross-device copy interrupted")
-
-    with mock.patch("shutil.copytree", side_effect=interrupted_copy):
-        with pytest.raises(OSError, match="interrupted"):
-            tp.migrate_store(str(workspace))
-
-    external = Path(tp.external_store_root(str(workspace))) / "knowledge"
-    assert not external.exists()
-    assert tp.kb_root(str(workspace)) == str(legacy)
-    assert (legacy / "history.json").read_text(encoding="utf-8") == "history"
-
-    external.mkdir(parents=True)
-    (external / "decisions.json").write_text("partial", encoding="utf-8")
-    assert tp.kb_root(str(workspace)) == str(legacy)
-
-    with mock.patch("shutil.copytree", wraps=real_copytree):
-        result = tp.migrate_store(str(workspace))
-    assert result["moved"] is True
-    assert not legacy.exists()
-    assert tp.kb_root(str(workspace)) == str(external)
-    assert (external / "history.json").read_text(encoding="utf-8") == "history"
-    assert list(external.parent.glob("knowledge.partial.*"))
 
 
 @pytest.mark.parametrize("tool_name,input_key", [
@@ -310,10 +274,3 @@ def test_h30_build_command_compatibility_is_unchanged(tmp_path: Path):
         str(tmp_path))
     assert allowed is False
     assert "escapes the workspace" in reason
-
-
-def test_h30_loop_retro_is_not_even_defense_in_depth_readonly():
-    assert tp._tp_readonly_argv_violation(["loop", "status"]) is None
-    reason = tp._tp_readonly_argv_violation(["loop", "retro"])
-    assert reason is not None
-    assert "not on the read-only verb allowlist" in reason

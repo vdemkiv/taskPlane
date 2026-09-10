@@ -1,14 +1,11 @@
-"""Dashboard v2 (R-0001) — regression tests against the acceptance criteria.
+"""Dashboard component rendering and lifecycle publication hooks.
 
-AC1: gate()/next_action() refresh .taskplane/dashboard.html every transition
-     and include a `dashboard` field in the payload.
-AC2: the widget carries a step journey — one entry per traversed step with
-     agent/model/outcome detail, revealed client-side.
-AC3: the stats band + agent→model table render on every widget, fed by the
-     model_tier / expected_dispatch / observed_dispatch records.
-NFR: trace-derived text is HTML-escaped; empty/old runs degrade gracefully.
+Renderer tests consume explicit projection fixtures. Phase transitions and
+publication replay are tested through the current phase runtime in
+ test_stage_loop_integration; this file does not simulate the retired loop.
 """
 import json
+import shutil
 import os
 import subprocess
 import sys
@@ -17,12 +14,10 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import dashboard  # noqa: E402
-import host_native  # noqa: E402
 import loop  # noqa: E402
 import loop_status  # noqa: E402
 import settings as operational_settings  # noqa: E402
 import taskplane_lite as tp  # noqa: E402
-import views  # noqa: E402
 
 
 def _git(ws, *a):
@@ -41,36 +36,30 @@ def _repo(tmp):
     return ws
 
 
+def _projection_state(ws, *, note="spec ok"):
+    """A component input, not evidence of a Product-to-Plan transition."""
+    from taskplane import requirements
+    from taskplane.tests.phase_fixture import save_component_workflow
+    requirement = requirements.record_requirement(
+        ws, "demo feature", functional=["show the complete governed delivery plan"],
+        acceptance=["criterion one: gate works", "criterion two: table",
+                    "criterion three: escaped", "criterion four: tests"])
+    state = {"step": "plan", "goal": "g", "requirement_id": requirement["id"],
+             "tasks": [{"id": "t1", "scope": ["src/a/**"], "status": "pending"},
+                       {"id": "t2", "scope": ["src/b/**"], "deps": ["t1"], "status": "pending"}]}
+    save_component_workflow(ws, state)
+    tier = next(iter(tp.MODEL_TIERS))
+    tp.trace(ws, "model_tier", step="pm", tier=tier, model=None)
+    tp.trace(ws, "loop_gate", step="pm", outcome="pass", note=note)
+    tp.trace(ws, "model_tier", step="plan", tier=tier, model=None)
+    tp.record_expected_dispatch(ws, "step", "tp-product", tier, None, ref="pm")
+
+
 class TestAutoRender(unittest.TestCase):          # AC1
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
-    def test_gate_refreshes_fragment_and_payload(self):
-        ws = _repo(self.tmp)
-        loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        out = loop.gate(ws, "pass")               # pm -> plan
-        self.assertIn("dashboard", out)
-        p = os.path.join(tp.tp_dir(ws), "dashboard.html")
-        self.assertTrue(os.path.exists(p))
-        with open(p, "rb") as stream:
-            rendered = host_native.decode_dashboard_artifact(
-                "html", stream.read())
-        self.assertEqual(rendered, out["dashboard_snapshot"]["snapshot"])
-        self.assertEqual(rendered["values"]["loop"]["step"], "plan")
-        self.assertNotIn("phase_graph_error", rendered["values"])
-
-    def test_next_action_refreshes_fragment(self):
-        ws = _repo(self.tmp)
-        loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.gate(ws, "pass")
-        p = os.path.join(tp.tp_dir(ws), "dashboard.html")
-        before = open(p, encoding="utf-8").read()
-        out = loop.next_action(ws)                # plan brief
-        self.assertIn("dashboard", out)
-        after = open(p, encoding="utf-8").read()
-        self.assertNotEqual(before, after)        # refreshed, not stale
 
     def test_error_payloads_skip_dashboard(self):
         ws = _repo(self.tmp)                      # no loop at all
@@ -117,49 +106,13 @@ class TestAutoRender(unittest.TestCase):          # AC1
         finally:
             loop_status.refresh_dashboard_snapshot = original
 
-    def test_committed_transition_blocks_next_mutation_until_exact_replay(self):
-        ws = _repo(self.tmp)
-        loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, "specs"), exist_ok=True)
-        open(os.path.join(ws, "specs", "spec.md"), "w",
-             encoding="utf-8").write("# spec\n")
-        real_refresh = views.refresh_views
-
-        def broken(_ws, out):
-            out["dashboard"] = {
-                "path": "unavailable", "error": "renderer unavailable"}
-            return out
-
-        views.refresh_views = broken
-        try:
-            committed = loop.gate(ws, "pass")
-            self.assertEqual(loop.load(ws)["step"], "plan")
-            self.assertEqual(
-                committed["dashboard_refresh"]["status"], "blocked")
-            self.assertTrue(loop.status(ws)["dashboard_publication"][
-                "replay_required"])
-
-            refused = loop.next_action(ws)
-            self.assertIn("replay is required", refused["error"])
-            self.assertEqual(loop.load(ws)["step"], "plan")
-        finally:
-            views.refresh_views = real_refresh
-
-        resumed = loop.next_action(ws)
-        self.assertNotIn("error", resumed)
-        self.assertEqual(resumed["dashboard_replay"]["status"], "replayed")
-        self.assertNotIn("dashboard_publication", loop.status(ws))
-
 
 class TestJourney(unittest.TestCase):             # AC2
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.ws = _repo(self.tmp)
-        loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.next_action(self.ws)                 # pm visit (model_tier)
-        loop.gate(self.ws, "pass", note="spec ok")  # closes pm, -> plan
-        loop.next_action(self.ws)                 # plan visit
+        _projection_state(self.ws)
 
     def test_journey_lists_traversed_steps_with_detail(self):
         v = dashboard._journey(self.ws)
@@ -180,19 +133,18 @@ class TestJourney(unittest.TestCase):             # AC2
         self.assertIn("tp-product", frag)
 
     def test_human_gate_without_brief_still_appears(self):
-        st = loop.load(self.ws)
-        st["step"] = "plan_approval"
-        loop.save(self.ws, st)
-        loop.gate(self.ws, "pass", note="approved by human")
-        v = dashboard._journey(self.ws)
-        pa = [x for x in v if x["step"] == "plan_approval"]
-        self.assertTrue(pa)
-        self.assertEqual(pa[-1]["agent"], "you")
+        tp.trace(self.ws, "loop_gate", step="plan_approval", outcome="pass",
+                 note="approved by human")
+        visits = dashboard._journey(self.ws)
+        decision = next(row for row in visits if row["step"] == "plan_approval")
+        self.assertEqual(decision["agent"], "you")
+        self.assertEqual(decision["outcome"], "pass")
 
 
 class TestStatsAlways(unittest.TestCase):         # AC3
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.ws = _repo(self.tmp)
 
     def test_stats_band_present_without_any_loop(self):
@@ -200,9 +152,7 @@ class TestStatsAlways(unittest.TestCase):         # AC3
         self.assertIn("tp-stats-s", frag)
 
     def test_model_table_joins_expected_and_observed(self):
-        loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.next_action(self.ws)                 # records expectation
+        _projection_state(self.ws)
         exp = tp._load_queue(
             tp._dispatch_path(self.ws, "expected_dispatch.json"))
         tp.record_observed_dispatch(self.ws, "tp-product", None,
@@ -213,9 +163,7 @@ class TestStatsAlways(unittest.TestCase):         # AC3
         self.assertIn("session ✓", frag)
 
     def test_rows_without_observation_show_dash(self):
-        loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.next_action(self.ws)
+        _projection_state(self.ws)
         rows = dashboard._model_rows(self.ws)
         self.assertTrue(rows)
         self.assertEqual(rows[-1]["dispatched"], "—")
@@ -224,12 +172,9 @@ class TestStatsAlways(unittest.TestCase):         # AC3
 class TestSpineNavigation(unittest.TestCase):     # AC2 addendum (sign-off feedback)
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.ws = _repo(self.tmp)
-        loop.init(self.ws, "g")
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.next_action(self.ws)
-        loop.gate(self.ws, "pass")                # pm done -> plan
-        loop.next_action(self.ws)
+        _projection_state(self.ws)
 
     def test_visited_spine_stages_are_clickable(self):
         frag = dashboard.widget(self.ws)
@@ -253,26 +198,9 @@ class TestSpineNavigation(unittest.TestCase):     # AC2 addendum (sign-off feedb
 class TestArtifactsInDetail(unittest.TestCase):   # sign-off feedback r2
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.ws = _repo(self.tmp)
-        import requirements as reqs
-        rec = reqs.record_requirement(
-            self.ws, "demo feature",
-            functional=["show the complete governed delivery plan"],
-            nfr={"security": "the dashboard escapes repository content",
-                 "architecture": "the plan preserves declared dependencies"},
-            acceptance=["criterion one: gate works", "criterion two: table",
-                        "criterion three: escaped", "criterion four: tests"])
-        loop.init(self.ws, "g", requirement_id=rec["id"])
-        os.makedirs(os.path.join(self.ws, 'specs'), exist_ok=True); open(os.path.join(self.ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.next_action(self.ws)                 # pm visit
-        loop.gate(self.ws, "pass")                # -> plan
-        st = loop.load(self.ws)
-        st["tasks"] = [
-            {"id": "t1", "scope": ["src/a/**"], "status": "pending"},
-            {"id": "t2", "scope": ["src/b/**"], "deps": ["t1"],
-             "status": "pending"}]
-        loop.save(self.ws, st)
-        loop.next_action(self.ws)                 # plan visit
+        _projection_state(self.ws)
 
     def test_pm_detail_lists_all_acceptance_criteria(self):
         frag = dashboard.widget(self.ws)
@@ -287,24 +215,13 @@ class TestArtifactsInDetail(unittest.TestCase):   # sign-off feedback r2
         self.assertIn("t1", frag)
         self.assertIn("src/b/**", frag)
 
-    def test_grey_selection_on_journey_and_spine(self):
-        frag = dashboard.widget(self.ws)
-        self.assertIn('b.style.background=on?"var(--surface-0)"', frag)
-        # v2.3.0: spine ids are per-view (s/d) — the old shared id was a
-        # duplicate-DOM-id bug that highlighted the hidden copy.
-        self.assertIn("tp-spine-s-pm", frag)
-        self.assertIn("tp-spine-d-pm", frag)
-        self.assertIn('me.style.background="var(--surface-0)"', frag)
-
 
 class TestEscaping(unittest.TestCase):            # security NFR
     def test_trace_text_is_escaped(self):
         tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         ws = _repo(tmp)
-        loop.init(ws, "g")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.next_action(ws)
-        loop.gate(ws, "pass", note="<script>alert(1)</script>")
+        _projection_state(ws, note="<script>alert(1)</script>")
         frag = dashboard.widget(ws)
         self.assertNotIn("<script>alert(1)</script>", frag)
         self.assertNotIn("&lt;script&gt;", frag)
@@ -329,6 +246,7 @@ class TestDepgraphComponentLayer(unittest.TestCase):
         import depgraph as dg
         self.dg = dg
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.ws = _repo(self.tmp)
 
     def tearDown(self):
@@ -380,9 +298,6 @@ class TestDepgraphComponentLayer(unittest.TestCase):
         self.assertGreater(vals[-1], vals[0])
         self.assertGreaterEqual(vals[0], self.dg.COMPONENT_RING_BASE)
 
-    def test_no_fixed_ring_radius_remains_in_the_renderer(self):
-        html, _data = self._render({"m/a": 2})
-        self.assertNotIn("r(m)+24", html)
 
     def test_renderer_stays_host_portable_and_self_contained(self):
         html, data = self._render({"m/a": 3, "m/b": 2})

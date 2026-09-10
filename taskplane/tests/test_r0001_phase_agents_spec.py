@@ -113,6 +113,22 @@ def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=
         # Plan authority and stores declared outputs before runtime collection.
         candidates = loop.produce_spec_phase_candidates(store, definition, authored,
             package=package, state=state, workspace=str(tmp_path / "source"))
+        from taskplane.tests.phase_fixture import write_lens_results
+        from taskplane import phase_harness
+        material = {"bindings": bindings, "package": [item.projection() for item in artifacts],
+            "output_paths": {}}
+        requirement = authored.get("requirement") or package.read("requirement")
+        material["lens_plan"] = phase_harness.prepare_lenses(loop,
+            {"definition": definition, "artifacts": store, "workspace": str(tmp_path / "source")}, material,
+            {"requirement": requirement}, candidates)
+        if phase == "plan":
+            envelope = store.read(store.read(material["lens_plan"])["envelope"])
+            assert envelope["diff"]["phase_inputs"]["candidate"] == candidates
+            assert envelope["impact"]["graph"]["content_fingerprint"]
+            for name in ("source-coverage", "decomposition", "seam-manifest"):
+                assert envelope["diff"]["phase_inputs"][name] == candidates[name]
+        write_lens_results(store, material["lens_plan"])
+        candidates["lens-evidence"] = phase_harness.lens_evidence(store, material)
         outputs = loop.store_spec_phase_outputs(store, definition, candidates)
         calls.append("observe")
         return agent_runtime.Observation("simulated-start-" + phase, (), "simulated-stop-" + phase, "effect_free", outputs)
@@ -123,7 +139,7 @@ def _run(tmp_path, store, registry, phase, authored, predecessor=None, *, state=
         lambda reason: {"kind": "hold" if reason else "evaluate", "phase_id": phase})
     dispatch = agent_runtime.Dispatch(bindings, artifacts, knowledge, issued, binding, envelope)
     result = runtime.run(dispatch) if driver is None else driver(runtime, dispatch)
-    assert result["status"] == "accepted", result
+    assert result["status"] == "accepted", json.dumps(result, indent=2)
     assert calls == ["launch", "observe"]
     reference = loop.produce_phase_handoff(store, registry=registry, phase_result=result, dispatch=dispatch,
         predecessor=predecessor, authorization=_authority(), producer_stage_id="stage-" + phase,
@@ -156,7 +172,7 @@ def _journey(tmp_path, *, seam_selectors=None, driver=None):
             "path": "design/test-strategy.json", "strategy_fingerprint": strategy["contract_fingerprint_sha256"]}}}
     state = {"run_id": "run-t11", "design_required": True, "design_fingerprint": review_evidence.content_fingerprint(design)}
     design_ref, result = _run(tmp_path, store, registry, "design", {"design": design, "test-strategy": strategy}, product, state=state, driver=driver)
-    task = {"id": "T11", "tests": "python3 -m pytest -q " + SELECTOR,
+    task = {"id": "T11", "scope": ["provider/**", "consumer/**"], "tests": "python3 -m pytest -q " + SELECTOR,
         "criteria": ["Quality reaches fresh Build"], "acceptance_refs": ["Quality reaches fresh Build"],
         "test_contract": {"changed_producers": ["taskplane/loop.py"]},
         "test_strategy_authority": {"schema": "taskplane.plan-test-strategy-reference/v1",
@@ -175,26 +191,25 @@ def _consume(store, registry, state, plan_ref):
     return package, authority
 
 
-def test_definition_drives_stateless_product_design_plan(tmp_path, record_property):
+def test_definition_drives_stateless_product_design_plan(tmp_path, evidence_metadata):
     store, registry, state, design_ref, plan_ref, result = _journey(tmp_path)
     package, authority = _consume(store, registry, state, plan_ref)
     assert authority["artifact"]["strategy_fingerprint"] == package.read("test-strategy")["contract_fingerprint_sha256"]
     assert authority["selection"]["selectors"] == [SELECTOR]
     assert authority["package_binding"]["candidate_fingerprint"] == "a" * 64
     assert authority["package_binding"]["definition_set_fingerprint"] == registry.definition_set_fingerprint
-    assert authority["selection"]["selectors"] == [SELECTOR]
     assert {artifact.artifact_class for artifact in package.artifacts} == {"requirement", "design", "test-strategy", "plan-task",
-        "source-coverage", "decomposition", "seam-manifest"}
+        "source-coverage", "decomposition", "seam-manifest", "lens-evidence"}
     assert stage_handoff.read_v2_manifest(store, design_ref, expected_authority_revision=1,
         expected_authority_fingerprint="f" * 64)["phase_result"] == result
-    record_property("evidence_mode", "local-production-with-simulated-host-and-authority")
-    record_property("producer_reference", plan_ref["fingerprint"])
+    evidence_metadata.append(('evidence_mode', 'local-production-with-simulated-host-and-authority'))
+    evidence_metadata.append(('producer_reference', plan_ref['fingerprint']))
 
 
 @pytest.mark.parametrize("edge", ["design-bytes", "strategy-bytes", "plan-bytes", "handoff-bytes",
     "missing-design", "missing-strategy", "missing-plan", "authority", "definition", "run", "candidate",
     "plan-selection", "quality-receipt", "design-state", "build-cannot-mint-plan"])
-def test_severed_product_design_plan_binding_fails_independently(tmp_path, record_property, edge):
+def test_severed_product_design_plan_binding_fails_independently(tmp_path, evidence_metadata, edge):
     store, registry, state, design_ref, plan_ref, _ = _journey(tmp_path)
     package, baseline = _consume(store, registry, state, plan_ref)
     changed_registry, changed_state = registry, state
@@ -232,5 +247,5 @@ def test_severed_product_design_plan_binding_fails_independently(tmp_path, recor
     if path is not None:
         path.write_bytes(saved)
     assert _consume(store, registry, state, plan_ref)[1] == baseline
-    record_property("severed_edge", edge)
-    record_property("evidence_mode", "local-production-with-simulated-host-and-authority")
+    evidence_metadata.append(('severed_edge', edge))
+    evidence_metadata.append(('evidence_mode', 'local-production-with-simulated-host-and-authority'))

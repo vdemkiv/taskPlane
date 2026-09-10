@@ -57,7 +57,7 @@ IMPACT_NAME = "impact.json"
 BRIEF_NAME = "blast-radius.md"
 # The start/collection manifest is aggregate control-plane data: it contains
 # one bounded reference/lease row per dispatched slot. It must not share the
-# 16 KiB limit used for an individual model-facing scoped view. The complete
+# inline-content packing target used for model-facing scoped views. The complete
 # lens catalog currently contains 26 lenses; 128 KiB leaves bounded headroom
 # for a full deep dispatch while still rejecting accidentally inlined review
 # evidence or dashboard payloads.
@@ -157,7 +157,7 @@ def engineering_phase_source(ws: str, *, kernel_run_id: str, candidate_sha: str)
     store = review_evidence_runtime.ArtifactStore(ws)
     envelope = review_evidence_runtime._load_complete_envelope(store, state["envelope"])
     target = envelope["target"]
-    if state.get("stage") != "review" or manifest.get("stage") != "review" or \
+    if state.get("stage") != "review" or \
             state.get("run_id") != kernel_run_id or manifest.get("run_id") != kernel_run_id or \
             target.get("step") != "em" or target.get("head") != candidate_sha or \
             os.path.realpath(str(target.get("workspace") or "")) != os.path.realpath(ws) or \
@@ -1023,48 +1023,6 @@ def _host_user_message(host: str, record: dict
             str(record.get("sessionId") or "").strip(), texts)
 
 
-def _host_review_action_receipt(*, run_id: str, action_id: str,
-                                response: str,
-                                receipt_ref: str | None = None
-                                ) -> _HostObservedReviewAction:
-    """Resolve exact human consent through the active host adapter."""
-    expected = _review_action_prompt(run_id, action_id, response)
-    wanted_ref = str(receipt_ref or "").strip()
-    if wanted_ref in {"", "latest"}:
-        wanted_ref = ""
-    _, _, wanted_receipt = _review_receipt_reference(wanted_ref)
-    matches = []
-    try:
-        transcripts = _host_review_transcripts(wanted_ref)
-    except HostTranscriptUnavailable as exc:
-        raise ReviewKernelError(
-            "review action requires an exact host-observed user receipt") \
-            from exc
-    for host, path in transcripts:
-        for record in reversed(_host_review_records(path)):
-            observed = _host_user_message(host, record)
-            if not observed:
-                continue
-            message_id, turn_id, texts = observed
-            if expected not in texts or (wanted_receipt and wanted_receipt not in {
-                    message_id, turn_id}):
-                continue
-            receipt_id = message_id or turn_id
-            if receipt_id:
-                matches.append((host, path, receipt_id))
-                break
-    if len(matches) == 1:
-        host, path, receipt_id = matches[0]
-        owner_id = _review_receipt_digest(host, path)
-        action_digest = _review_receipt_digest(
-            owner_id, run_id, action_id, response, receipt_id, "human")
-        return _HostObservedReviewAction(
-            source=f"{host}-session:user-message", receipt_id=receipt_id,
-            run_id=run_id, action_id=action_id, response=response,
-            actor="human", authority=_REVIEW_HOST_ACTION_AUTHORITY,
-            owner_id=owner_id, action_digest=action_digest)
-    raise ReviewKernelError(
-        "review action requires an exact host-observed user receipt")
 
 
 def _tool_result_bytes(value: object) -> bytes:
@@ -3066,9 +3024,6 @@ def _verify_v3_view(store, envelope_ref: dict, view_ref: dict) -> dict:
     import review_evidence as evidence
 
     view = store.read(view_ref)
-    if len(evidence.canonical_bytes(view)) > evidence.MAX_SCOPED_VIEW_BYTES:
-        raise evidence.ProvenanceError(
-            "scoped review view exceeds canonical byte bound")
     if view.get("schema") != "taskplane.scoped-review-view/v3" or \
             view.get("view_fingerprint") != view_ref.get("fingerprint"):
         raise evidence.ProvenanceError("scoped view fingerprint mismatch")
@@ -3197,7 +3152,7 @@ def _create_verified_v3_lease(store, envelope_ref: dict, view_ref: dict, *,
     payload = dict(base, lease_fingerprint=fingerprint)
     if run_id is not None:
         envelope = store.read(envelope_ref)
-        payload["execution_binding"] = evidence.create_execution_binding(
+        payload["execution_binding"] = create_execution_binding(
             store.workspace, target=envelope.get("target") or {},
             run_id=run_id, lens_ids=lenses, slot_id=slot_id,
             lease_fingerprint=fingerprint, producer=view["producer"])
@@ -3262,18 +3217,90 @@ def _collect_verified_slot_results(store, lease_refs, result_refs) -> dict:
     return evidence.collect_slot_results(store, lease_refs, result_refs)
 
 
+def prepare_lens_plan(store, envelope_ref: dict, routing: dict, *, phase: str,
+                      binding: dict) -> dict:
+    """Shared phase adapter: policy selects; the kernel alone allocates slots."""
+    import lens
+    decision = _routing_decision(routing, lens.load_catalog())
+    slots, manifest = _slot_plan(store, envelope_ref, routing, decision,
+        base=str(binding.get("candidate_fingerprint") or ""), runnability={}, stage=phase,
+        dispatch_binding=binding)
+    _prepare_slot_result_dirs(store.workspace, slots)
+    return store.put("lens-plan", {"schema": "taskplane.lens-plan/v1",
+        "phase": phase, "binding": copy.deepcopy(binding), "decision": decision,
+        "envelope": envelope_ref, "slots": slots, "dispatch": manifest})
+
+
+def collect_lens_slots(store, slots: list) -> tuple[list, list, list, list]:
+    """Ingest every selected producer once; preserve valid siblings and gaps."""
+    import review_evidence as evidence
+    ws = store.workspace
+    state = {"slots": slots}
+    refs, lens_results, result_validations = [], [], []
+    repairs = []
+    try:
+        for slot in state.get("slots") or []:
+            try:
+                ref, rows, validation_ref = _read_slot_output(
+                    ws, store, slot)
+            except evidence.ProvenanceError as exc:
+                brief = store.read(slot["brief"])
+                producer = brief.get("producer_contract") or {}
+                role = brief.get("role") or {}
+                repairs.append({
+                    "slot_id": str(slot.get("slot_id") or ""),
+                    "result_path": str(slot.get("result_path") or ""),
+                    "producer_task": str(
+                        role.get("task_name") or
+                        producer.get("task_slot") or
+                        producer.get("task") or ""),
+                    "reason": str(exc),
+                })
+                continue
+            refs.append(ref)
+            lens_results.extend(rows)
+            result_validations.append(validation_ref)
+    finally:
+        # Once every producer has submitted its exact leased file, its
+        # work is over even when schema validation finds a defect.  The
+        # canonical run state/results remain durable for retry; leaked
+        # child contracts must not govern the parent collector forever.
+        paths = [str(slot.get("result_path") or "")
+                 for slot in state.get("slots") or []]
+        if paths and all(os.path.isfile(
+                path if os.path.isabs(path) else os.path.join(ws, path))
+                for path in paths):
+            _release_slot_contracts(ws, state)
+    return refs, lens_results, result_validations, repairs
+
+
+def collect_lens_plan(store, plan_ref: dict) -> dict:
+    """Use the same ingestion, adjudication and collector in every phase."""
+    import review_evidence as evidence
+    plan = store.read(plan_ref)
+    if plan.get("schema") != "taskplane.lens-plan/v1":
+        raise evidence.ProvenanceError("invalid lens plan")
+    refs, _, validations, gaps = collect_lens_slots(store, plan["slots"])
+    collection = evidence.collect_partial_slot_results(store,
+        [slot["lease"] for slot in plan["slots"]], refs, gaps=gaps)
+    return {"plan": evidence.portable_artifact_reference(store, plan_ref),
+        "collection": evidence.portable_artifact_reference(store, store.put("lens-collection", collection)),
+        "validations": [evidence.portable_artifact_reference(store, ref) for ref in validations],
+        "status": collection["status"]}
+
+
 def _slot_plan(store, envelope_ref: dict, routing: dict,
                decision: dict, *, base: str, runnability: dict,
                stage: str, settled_ref: dict | None = None,
                run_id: str | None = None,
                canonical_revision: int | None = None,
-               review_policy: dict | None = None) -> tuple[list, list]:
+               review_policy: dict | None = None,
+               dispatch_binding: dict | None = None) -> tuple[list, list]:
     """Allocate one immutable lease/producer slot per selected sweep lens."""
     import lens as lensmod
     import review_evidence as evidence
     from taskplane.settings import load_settings
 
-    full = lensmod.dispatch_briefs(routing, base=base, runnability=runnability)
     review_max_attempts = load_settings().runtime.review_max_attempts
     deep = [lid for lid, row in sorted(decision.items())
             if row["verdict"] == "deep"]
@@ -3287,12 +3314,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             ", ".join(deep))
     revision = (evidence.next_revision(store) if canonical_revision is None
                 else int(canonical_revision))
-    full_briefs = {row["id"]: row for row in full.get("deep") or []}
-    if full.get("sweep"):
-        full_briefs["light-sweep"] = full["sweep"]
     internal, manifest = [], []
     routing_fingerprint = evidence.content_fingerprint({
-        "routing": routing, "decision": decision})
+        "routing": routing, "decision": decision, "phase": stage,
+        "dispatch_binding": dispatch_binding})
     sweep_set = {
         "schema": "taskplane.dispatch-set/v1",
         "id": f"automatic-review-sweep-{routing_fingerprint[:12]}",
@@ -3316,12 +3341,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             store, envelope_ref, view_ref, slot_id=slot_id,
             lens_ids=lens_ids, canonical_revision=revision, run_id=run_id)
         is_sweep = slot_id.startswith("sweep.")
-        source = full_briefs.get(
-            "light-sweep" if is_sweep else lens_ids[0]) or {}
-        required_references = [
-            ref for ref in source.get("language_references") or []
-            if not is_sweep or str(ref.get("lens") or "") == lens_ids[0]
-        ]
+        source = lensmod.slot_metadata(lens_ids[0], "sweep" if is_sweep else "deep", routing,
+            stage=stage if stage in {"product", "design", "plan"} else None)
+        required_references = source["language_references"]
         result_path = _result_path(
             store.workspace, stage, lease_ref["fingerprint"])
         producer_contract = {
@@ -3352,6 +3374,8 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "view": _portable_ref(view_ref), "lease": _portable_ref(lease_ref),
             "canonical_revision": revision, "result_path": result_path,
             "authored_by": RESULT_AUTHOR, "result_schema": result_schema,
+            "phase": stage, "methodology": source["methodology"],
+            "role_instructions": source["role_instructions"],
             "resume_identity": resume_identity,
             "max_attempts": review_max_attempts,
             "producer_contract": producer_contract,
@@ -3359,7 +3383,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             # producer contract.  Two different task_slot values in one
             # brief make a correct host activation impossible.
             "contract": dict(producer_contract),
-            "prompt": ("Read the scoped view by reference. Do not run git diff, "
+            "prompt": ("Apply the embedded methodology and role_instructions only to the "
+                       "sealed phase inputs. The result_schema and producer_contract own "
+                       "protocol; methodology supplies domain checks, never extra scope, "
+                       "tools, lifecycle or output authority. Read the scoped view by reference. Do not run git diff, "
                        "graph impact/scan, requirement lookup, or a runnability "
                        "probe. Resolve any taskplane.envelope-section-reference/v1 "
                        "field through the cited immutable envelope and verify "
@@ -4947,7 +4974,7 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
     lease = store.read(slot["lease"])
     if lease.get("execution_binding") is not None:
         envelope = store.read(slot["envelope"])
-        review_evidence_runtime.verify_execution_binding(
+        verify_execution_binding(
             ws, lease["execution_binding"],
             target=envelope.get("target") or {},
             run_id=str(slot.get("run_id") or ""),
@@ -5353,220 +5380,6 @@ def _codex_agent_path(paths: list[str], thread_id: str) -> str:
     return ""
 
 
-def _codex_session_receipt(ws: str, store, slot: dict, lease: dict,
-                           raw_result: bytes) -> dict | None:
-    """Retired compatibility shim; session transcripts are not authority.
-
-    Repo hooks remain the preferred immediate receipt.  Codex also persists a
-    host-authored child record outside the model's writable checkout.  A child
-    that names the exact leased path and digest in its final answer therefore
-    gives collection an equivalent byte-bound receipt when a hook transport is
-    unavailable.  Parent thread + hashed task name + model/effort + result
-    bytes are all matched; a prose claim or merely existing child is not.
-
-    Codex may reuse a bounded child thread when its native agent pool is full.
-    That path is accepted only when one host-recorded child turn reads the
-    exact immutable brief and then completes with the exact result digest.
-    The original fresh-spawn task-name binding remains the preferred path.
-    """
-    return None
-    if tp.host() != "codex":  # pragma: no cover - removed legacy body
-        return None
-    parent_thread = ""
-    brief = store.read(slot["brief"])
-    role = brief.get("role") or {}
-    task_name = str(role.get("task_name") or "").strip()
-    if not task_name:
-        return None
-    expected_path = tp.norm(slot["result_path"])
-    expected_digest = hashlib.sha256(raw_result).hexdigest()
-    expected = slot["producer_contract"]
-    brief_ref = slot.get("brief") or {}
-    brief_path = (brief_ref.get("relative_path")
-                  if isinstance(brief_ref, dict) else str(brief_ref))
-    home = _canonical_host_root("codex")
-    sessions = os.path.join(home, "sessions")
-    paths = []
-    for directory, _dirs, names in os.walk(sessions):
-        paths.extend(os.path.join(directory, name) for name in names
-                     if name.startswith("rollout-") and name.endswith(".jsonl"))
-    collector_agent_path = _codex_agent_path(paths, parent_thread)
-    observed = None
-    for path in sorted(paths, reverse=True)[:512]:
-        spawn = None
-        child_id = None
-        model = None
-        effort = None
-        final_messages = []
-        turns = {}
-        calls = {}
-        try:
-            with open(path, encoding="utf-8", errors="replace") as stream:
-                for ordinal, line in enumerate(stream):
-                    if len(line) > 2 * 1024 * 1024:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except (TypeError, ValueError):
-                        continue
-                    payload = event.get("payload") or {}
-                    turn_id = _codex_event_turn(payload)
-                    if event.get("type") == "session_meta" and spawn is None:
-                        source = payload.get("source") or {}
-                        candidate = (((source.get("subagent") or {})
-                                      .get("thread_spawn"))
-                                     if isinstance(source, dict) else None)
-                        if isinstance(candidate, dict):
-                            spawn = candidate
-                            child_id = str(payload.get("id") or "")
-                    elif event.get("type") == "turn_context" and model is None:
-                        model = payload.get("model")
-                        effort = (payload.get("effort") or
-                                  payload.get("reasoning_effort"))
-                    if turn_id:
-                        turn = turns.setdefault(turn_id, {})
-                        if event.get("type") == "turn_context":
-                            turn["model"] = payload.get("model")
-                            turn["effort"] = (payload.get("effort") or
-                                              payload.get("reasoning_effort"))
-                        elif event.get("type") == "event_msg" and \
-                                payload.get("type") == "task_started":
-                            turn["started"] = ordinal
-                        elif payload.get("type") == "agent_message":
-                            turn.setdefault("delegations", []).append({
-                                "ordinal": ordinal,
-                                "delegator": str(payload.get("author") or ""),
-                                "recipient": str(payload.get("recipient") or ""),
-                            })
-                        elif payload.get("type") in {
-                                "custom_tool_call", "function_call"}:
-                            call_id = str(payload.get("call_id") or
-                                          payload.get("id") or "")
-                            calls[call_id] = {
-                                "turn_id": turn_id, "ordinal": ordinal,
-                                "input": str(payload.get("input") or
-                                             payload.get("arguments") or ""),
-                            }
-                        elif payload.get("type") in {
-                                "custom_tool_call_output",
-                                "function_call_output"}:
-                            call_id = str(payload.get("call_id") or "")
-                            call = calls.get(call_id) or {}
-                            call_turn = turns.setdefault(
-                                str(call.get("turn_id") or turn_id), {})
-                            output = payload.get("output")
-                            output_text = (output if isinstance(output, str)
-                                           else json.dumps(output,
-                                                           sort_keys=True))
-                            required_output = (
-                                task_name, str(role.get("role_marker") or ""),
-                                expected_path, expected["task_slot"],
-                                lease["lease_fingerprint"])
-                            if brief_path and brief_path in str(
-                                    call.get("input") or "") and all(
-                                    token and token in output_text
-                                    for token in required_output):
-                                call_turn["brief_delivered"] = ordinal
-                    if event.get("type") == "event_msg" and \
-                            payload.get("type") == "task_complete":
-                        message = str(payload.get("last_agent_message") or "")
-                        final_messages.append(message)
-                        if turn_id:
-                            turns.setdefault(turn_id, {})["complete"] = {
-                                "ordinal": ordinal, "message": message}
-        except OSError:
-            continue
-        if not spawn:
-            continue
-        direct_parent = spawn.get("parent_thread_id") == parent_thread
-        spawn_agent_path = str(spawn.get("agent_path") or "")
-        path_line = "taskplane-result-path:" + expected_path
-        digest_line = "taskplane-result-sha256:" + expected_digest
-        fresh = direct_parent and os.path.basename(spawn_agent_path) == task_name
-        if fresh:
-            if role.get("model") not in (None, model) or \
-                    role.get("reasoning_effort") not in (None, effort):
-                continue
-            if not any(
-                    path_line in {part.strip() for part in message.splitlines()}
-                    and digest_line in {
-                        part.strip() for part in message.splitlines()}
-                    for message in final_messages):
-                continue
-            observed = {"child_id": child_id, "model": model,
-                        "effort": effort, "reused": False}
-            break
-        for turn in turns.values():
-            delivered = turn.get("brief_delivered")
-            complete = turn.get("complete") or {}
-            message = str(complete.get("message") or "")
-            lines = {part.strip() for part in message.splitlines()}
-            delegated = direct_parent
-            if not delegated and delivered is not None:
-                delegated = any(
-                    bool(collector_agent_path)
-                    and row.get("delegator") == collector_agent_path
-                    and row.get("recipient") == spawn_agent_path
-                    and int(row.get("ordinal", -1)) <= int(delivered)
-                    for row in turn.get("delegations") or [])
-            if not delegated or turn.get("started") is None or delivered is None or \
-                    not (turn["started"] <= delivered <
-                         int(complete.get("ordinal", -1))) or \
-                    path_line not in lines or digest_line not in lines:
-                continue
-            if role.get("model") not in (None, turn.get("model")) or not \
-                    _codex_effort_satisfies(
-                        role.get("reasoning_effort"), turn.get("effort")):
-                continue
-            observed = {"child_id": child_id, "model": turn.get("model"),
-                        "effort": turn.get("effort"), "reused": True}
-            break
-        if observed:
-            break
-    if not observed or not observed["child_id"]:
-        return None
-    assignment = {
-        "schema": "taskplane.slot-producer-assignment/v1",
-        "run_id": slot.get("run_id"),
-        "lease_fingerprint": lease["lease_fingerprint"],
-        "slot_id": lease["slot_id"], "result_path": slot["result_path"],
-        "contract_task": expected["task"],
-        "contract_task_slot": expected["task_slot"],
-        "producer_host": "codex", "producer_session": parent_thread,
-        "producer_child_id": observed["child_id"],
-    }
-    assignment_path = _producer_assignment_path(
-        ws, lease["lease_fingerprint"])
-    prior_assignment = tp.load_json(
-        assignment_path, default=None, what="slot producer assignment")
-    if prior_assignment is not None and prior_assignment != assignment:
-        return None
-    if prior_assignment is None:
-        tp.atomic_write_json(assignment_path, assignment, sort_keys=True)
-    assignment_fingerprint = hashlib.sha256(json.dumps(
-        assignment, sort_keys=True, separators=(",", ":"))
-        .encode("utf-8")).hexdigest()
-    receipt = {
-        "schema": "taskplane.slot-write-observation/v3",
-        **{key: assignment[key] for key in (
-            "run_id", "lease_fingerprint", "slot_id", "result_path",
-            "contract_task", "contract_task_slot", "producer_session",
-            "producer_host", "producer_child_id")},
-        "producer_assignment_fingerprint": assignment_fingerprint,
-        "result_sha256": expected_digest, "result_bytes": len(raw_result),
-        "host_event": ("CodexTaskFollowupComplete" if observed["reused"]
-                       else "CodexTaskComplete"),
-        "tool": ("native-session-reuse-receipt" if observed["reused"]
-                 else "native-session-result-receipt"),
-    }
-    receipt_path = _receipt_path(ws, lease["lease_fingerprint"])
-    prior_receipt = tp.load_json(
-        receipt_path, default=None, what="slot write observation")
-    if prior_receipt is not None and prior_receipt != receipt:
-        return None
-    if prior_receipt is None:
-        tp.atomic_write_json(receipt_path, receipt, sort_keys=True)
-    return receipt
 
 
 def _validate_finding(row: dict, lens_ids: list[str]) -> dict:
@@ -5792,7 +5605,7 @@ def _read_slot_output(ws: str, store,
     lease = store.read(slot["lease"])
     if lease.get("execution_binding") is not None:
         envelope = store.read(slot["envelope"])
-        evidence.verify_execution_binding(
+        verify_execution_binding(
             ws, lease["execution_binding"],
             target=envelope.get("target") or {},
             run_id=str(slot.get("run_id") or ""),
@@ -5883,14 +5696,6 @@ def _read_slot_output(ws: str, store,
         source=slot["result_path"],
         lens_results=[by_lens[lid] for lid in sorted(by_lens)],
         repair_audit=recovery["audit"])
-    canonical = store.read(ref)
-    canonical.update({key: lease[key] for key in (
-        "reference_manifest_fingerprint", "routing_fingerprint", "producer")})
-    material = {key: value for key, value in canonical.items()
-                if key != "result_fingerprint"}
-    canonical["result_fingerprint"] = evidence.content_fingerprint(material)
-    ref = store.put("slot-result", canonical,
-                    fingerprint=canonical["result_fingerprint"])
     validation_ref = store.put("slot-validation", {
         "schema": "taskplane.slot-result-validation/v1",
         "run_id": slot.get("run_id"),
@@ -6074,9 +5879,6 @@ def _collection_lock_path(ws: str) -> str:
     return os.path.join(_kernel_root(ws), "revision-reservation.json")
 
 
-def _assert_collection_reservation(ws: str, run_id: str) -> None:
-    """Compatibility wrapper around the explicit owner lease."""
-    _acquire_collection_reservation(ws, run_id)
 
 
 def _acquire_collection_reservation(ws: str, run_id: str) -> dict:
@@ -6630,41 +6432,8 @@ def _collect_review_transaction(
         elif empty_lens_collection is not None:
             raise ReviewKernelError(
                 "empty-lens collection receipt lacks delivery-mode authority")
-        refs, lens_results, result_validations = [], [], []
-        repairs = []
-        try:
-            for slot in state.get("slots") or []:
-                try:
-                    ref, rows, validation_ref = _read_slot_output(
-                        ws, store, slot)
-                except evidence.ProvenanceError as exc:
-                    brief = store.read(slot["brief"])
-                    producer = brief.get("producer_contract") or {}
-                    role = brief.get("role") or {}
-                    repairs.append({
-                        "slot_id": str(slot.get("slot_id") or ""),
-                        "result_path": str(slot.get("result_path") or ""),
-                        "producer_task": str(
-                            role.get("task_name") or
-                            producer.get("task_slot") or
-                            producer.get("task") or ""),
-                        "reason": str(exc),
-                    })
-                    continue
-                refs.append(ref)
-                lens_results.extend(rows)
-                result_validations.append(validation_ref)
-        finally:
-            # Once every producer has submitted its exact leased file, its
-            # work is over even when schema validation finds a defect.  The
-            # canonical run state/results remain durable for retry; leaked
-            # child contracts must not govern the parent collector forever.
-            paths = [str(slot.get("result_path") or "")
-                     for slot in state.get("slots") or []]
-            if paths and all(os.path.isfile(
-                    path if os.path.isabs(path) else os.path.join(ws, path))
-                    for path in paths):
-                _release_slot_contracts(ws, state)
+        refs, lens_results, result_validations, repairs = collect_lens_slots(
+            store, state.get("slots") or [])
         leases = [row["lease"] for row in state.get("slots") or []]
         if repairs:
             _consume_review_authority(
@@ -7077,3 +6846,56 @@ def context_note(paths: dict) -> str:
     lines.append("  Every lens agent in this wave reads the SAME files. "
                  "They were written once, before dispatch.")
     return "\n".join(lines) + "\n"
+
+
+def create_execution_binding(workspace: str, *, target: dict, run_id: str,
+                             lens_ids, slot_id: str,
+                             lease_fingerprint: str,
+                             producer: str) -> dict:
+    """Bind review evidence to its exact governed execution identity."""
+    root = tp.review_execution_root_identity(workspace)
+    target_row = {
+        "fingerprint": str((target or {}).get("fingerprint") or "").strip(),
+        "base": str((target or {}).get("merge_base") or
+                    (target or {}).get("base") or "").strip(),
+        "head": str((target or {}).get("head") or "").strip(),
+    }
+    identity = {
+        "run_id": str(run_id or "").strip(),
+        "lens_ids": review_evidence_runtime._strings(lens_ids),
+        "slot_id": str(slot_id or "").strip(),
+        "lease_fingerprint": str(lease_fingerprint or "").strip(),
+        "producer": str(producer or "").strip(),
+    }
+    if not target_row["fingerprint"] or not target_row["head"] or \
+            any(not value for key, value in identity.items()
+                if key != "lens_ids") or not identity["lens_ids"]:
+        raise review_evidence_runtime.ProvenanceError("review execution binding is incomplete")
+    material = {
+        "schema": "taskplane.review-execution-binding/v1",
+        "repository_id": root["repository_id"],
+        "repository_kind": root["repository_kind"],
+        "worktree_fingerprint": root["worktree_fingerprint"],
+        "engine_fingerprint": root["engine_fingerprint"],
+        "target": target_row,
+        **identity,
+    }
+    return dict(material, binding_fingerprint=review_evidence_runtime.content_fingerprint(material))
+
+
+def verify_execution_binding(workspace: str, binding: dict, *, target: dict,
+                             run_id: str, lens_ids, slot_id: str,
+                             lease_fingerprint: str,
+                             producer: str) -> bool:
+    """Recompute the complete execution binding; no partial match is valid."""
+    try:
+        expected = create_execution_binding(
+            workspace, target=target, run_id=run_id, lens_ids=lens_ids,
+            slot_id=slot_id, lease_fingerprint=lease_fingerprint,
+            producer=producer)
+    except Exception as exc:
+        raise review_evidence_runtime.ProvenanceError(f"review execution binding is invalid: {exc}") \
+            from None
+    if not isinstance(binding, dict) or binding != expected:
+        raise review_evidence_runtime.ProvenanceError("review execution binding does not match")
+    return True

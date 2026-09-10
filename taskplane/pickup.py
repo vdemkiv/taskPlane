@@ -1,6 +1,11 @@
 """Stateless shelf front door for one approved Design Contract element."""
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import hashlib
 import json
 import math
@@ -127,9 +132,7 @@ def _serialize_operator_trust(
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=True)
 
 
 def _digest(value: object) -> str:

@@ -349,6 +349,13 @@ def check_inventory(policy: Mapping, current: Mapping) -> dict:
     violations = []
     for row in current["sccs"]:
         members = set(row["members"])
+        protected = members.intersection({f"taskplane.{name}" for name in (
+            "stage_handoff", "stage_entities", "phase_harness", "run_store",
+            "run_context", "review_evidence", "dispatch_telemetry")})
+        if protected:
+            violations.append(_violation(
+                "phase-boundary-cycle", row, baseline=None,
+                affected_modules=protected, affected_edges=row["internal_edges"]))
         candidate_indexes = [
             index for index, baseline in enumerate(baseline_rows)
             if members.issubset(set(baseline["members"]))

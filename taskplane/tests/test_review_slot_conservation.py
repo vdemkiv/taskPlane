@@ -89,3 +89,46 @@ def test_slot_conservation_requires_identical_identities():
         review._assert_slot_conservation(
             selected=expected, prepared=expected,
             dispatched=["deep.security"], collected=expected)
+
+
+def test_all_26_lenses_share_protocol_and_preserve_full_results(tmp_path):
+    import lens
+    from taskplane.tests.phase_fixture import write_lens_results
+    store = evidence.ArtifactStore(str(tmp_path))
+    routing = {"lenses": [dict(row, tier="sweep", evidence=["catalog conservation fixture"])
+        for row in lens.load_catalog()["lenses"]]}
+    plan = review.prepare_lens_plan(store, _envelope(store), routing, phase="review",
+        binding={"run_id": "fixture", "operation_id": "review-one"})
+    slots = store.read(plan)["slots"]
+    assert len(slots) == len({slot["result_path"] for slot in slots}) == 26
+    briefs = [store.read(slot["brief"]) for slot in slots]
+    assert len({evidence.content_fingerprint(brief["result_schema"]) for brief in briefs}) == 1
+    assert {brief["methodology"]["id"] for brief in briefs} == {row["id"] for row in routing["lenses"]}
+    write_lens_results(store, plan, findings=[{"kind": "note", "severity": "info", "class": "observation",
+        "file": "app.py", "line": 1, "title": "fixture note", "scenario": "retained limitation", "fix": "fixture only"}])
+    collected = review.collect_lens_plan(store, plan)
+    value = store.read(collected["collection"])
+    assert collected["status"] == "complete"
+    assert len(collected["validations"]) == len(value["results"]) == 26
+    assert all(row["notes"] and row["lens_results"][0]["checked_evidence"] for row in value["results"])
+    assert review.collect_lens_plan(store, plan) == collected
+
+
+def test_same_input_parallel_phase_plans_cannot_share_results(tmp_path):
+    import lens
+    from taskplane.tests.phase_fixture import write_lens_results
+    store = evidence.ArtifactStore(str(tmp_path))
+    routing = {"lenses": [dict(row, tier="sweep" if row["id"] == "security" else "n/a",
+        evidence=["selected fixture"], negative_evidence=["not selected"])
+        for row in lens.load_catalog()["lenses"]]}
+    envelope = _envelope(store)
+    plans = [review.prepare_lens_plan(store, envelope, routing, phase=phase,
+        binding={"run_id": "fixture", "operation_id": phase}) for phase in ("design", "plan")]
+    write_lens_results(store, plans[0])
+    assert review.collect_lens_plan(store, plans[0])["status"] == "complete"
+    assert review.collect_lens_plan(store, plans[1])["status"] == "incomplete"
+    slots = [store.read(plan)["slots"][0] for plan in plans]
+    from pathlib import Path
+    Path(tmp_path / slots[1]["result_path"]).write_bytes(Path(tmp_path / slots[0]["result_path"]).read_bytes())
+    value = store.read(review.collect_lens_plan(store, plans[1])["collection"])
+    assert value["status"] == "incomplete" and "lease" in value["gaps"][0]["reason"]

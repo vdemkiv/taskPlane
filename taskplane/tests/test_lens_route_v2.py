@@ -1,25 +1,7 @@
-"""route() v2 — stage profiles + signal-driven verdicts (t2, R-0001).
+"""Stage profiles, applicability signals, routing floors and refusals.
 
-Pins, in order of importance:
-- LEGACY BYTE-IDENTITY: route() without a stage (or with use_signals=False,
-  or on a catalog without stage_profiles) produces EXACTLY the pre-v2
-  output — snapshot-pinned below, captured before route v2 landed.
-- STAGE RESTRICTION: the candidate set is the stage profile (design never
-  yields code-quality); profile membership is DATA — adding a lens to a
-  profile changes routing with zero code change.
-- SIGNAL INTEGRATION: verdicts come from lens_signals, then automatic
-  Review/Evaluate projects them to one 4–5-lens sweep (an i18n fixture pins
-  i18n into that sweep; a stdlib diff keeps i18n n/a WITH its negative
-  evidence visible — coverage honesty).
-- AUTOMATIC BUDGET + FLOORS through route(): no deep/full dispositions;
-  exactly 4–5 sweeps; architecture is always in the sweep; contextual
-  security/QA/documentation signals compete inside that fixed budget.
-- AUTOMATIC SELECT / SKIP: --only pins membership inside the 4–5-lens
-  automatic sweep without granting deep authority; --skip is a hard,
-  evidenced exclusion. Architecture remains the mandatory sweep floor.
-- ENGINE FAILURE FAILS CLOSED: lens_signals raising emits a named
-  mapper_unavailable decision with zero dispatch.
-- breadth="all" stays the legacy full-catalog sweep, byte-identical.
+These verify the configured routing contract; historical catalog prose and
+pre-refactor byte snapshots are not behavior authority.
 """
 import copy
 import json
@@ -28,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from taskplane.tests.lens_fixture import tree_files
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -52,16 +35,6 @@ def tiers(routing):
     return {x["id"]: x["tier"] for x in routing["lenses"]}
 
 
-def tree_files(root):
-    out = []
-    for dirpath, dirs, names in os.walk(root):
-        dirs.sort()
-        for n in sorted(names):
-            out.append(os.path.relpath(os.path.join(dirpath, n),
-                                       root).replace(os.sep, "/"))
-    return out
-
-
 def write_ws(spec):
     """Materialize {relpath: content} into a temp workspace."""
     ws = tempfile.mkdtemp(prefix="tp-lens-v2-")
@@ -73,251 +46,7 @@ def write_ws(spec):
     return ws
 
 
-# --------------------------------------------------------------------------
-# The EXACT output of the pre-v2 router for this fixture diff, captured on
-# the t2 baseline BEFORE route v2 landed. route() without a stage must keep
-# producing this byte-for-byte — that is the legacy pin.
-# --------------------------------------------------------------------------
-LEGACY_FILES = ["src/auth/session.py", "web/components/Card.tsx",
-                "docs/guide.md"]
-LEGACY_TASK_TYPE = "feature"
-# REGENERATED for lenses 2.0 (R-0012). This snapshot pins the LEGACY
-# routing surface byte-for-byte so route v2 can never silently change it.
-# It necessarily also pins catalog CONTENT (looks_for, checks, reasons),
-# so a deliberate catalog change requires regenerating it — which is what
-# happened here: 26 lens charters, looks-for lines and routing surfaces
-# were rewritten. The guardrail keeps its value: any FUTURE unintended
-# routing change still breaks this. Regenerate with:
-#   python3 -c "import sys;sys.path.insert(0,'taskplane');import lens,json;print(json.dumps(lens.route(FILES,task_type='feature',catalog=CAT),indent=1))"
-LEGACY_SNAPSHOT = json.loads(r"""
-{
- "lenses": [
-  {
-   "id": "product",
-   "name": "Product",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "task type 'feature'"
-   ],
-   "checks": [],
-   "looks_for": "requirements met, requirement QUALITY (verifiable, singular, unambiguous acceptance criteria), scope gaps/creep, journey completeness incl. non-happy states, existing-user regression, success metrics with baseline + guardrail + decision rule, user-facing naming"
-  },
-  {
-   "id": "security",
-   "name": "Security",
-   "mode": "subagent",
-   "tier": "deep",
-   "reasons": [
-    "touches **/auth/** (src/auth/session.py)",
-    "baseline (any code change)"
-   ],
-   "checks": [
-    "gitleaks",
-    "semgrep --config auto",
-    "dependency audit",
-    "zizmor (GitHub Actions workflows, when `.github/**` is in the diff)"
-   ],
-   "looks_for": "secrets (exposure = compromise, rotate not delete), authz gaps incl. object-level/IDOR, injection, SSRF, unsafe input, security misconfiguration, supply-chain & build integrity (deps, lockfiles, CI workflows, install scripts, pinning), fail-open error paths, AI/agent surface risk"
-  },
-  {
-   "id": "code-quality",
-   "name": "Code quality",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "baseline (any code change)"
-   ],
-   "checks": [
-    "lint (repo's configured linter, warnings included)",
-    "typecheck",
-    "jscpd / `dupl` / pylint R0801 — copy-paste census, diff-scoped",
-    "**suppression delta**: NEW escape hatches introduced by this diff only —"
-   ],
-   "looks_for": "logic correctness at boundaries, error handling that swallows or mislabels, names and comments that lie, duplication that is real coupling, dead and unreachable code, unjustified suppressions, speculative generality"
-  },
-  {
-   "id": "testability",
-   "name": "Testability",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "baseline (any code change)"
-   ],
-   "checks": [
-    "coverage — use ONLY as evidence for check 4: which new branches NO test can reach at all. Do not report a coverage percentage or judge coverage adequacy; that is qa's. [Inozemtseva & Holmes, ICSE 2014: coverage correlates only weakly-to-moderately with suite effectiveness once suite size is controlled — a number here would be an unsupported quality claim]"
-   ],
-   "looks_for": "seams and substitutability (clock, network, filesystem, DB, model/LLM client), hidden globals and shared state OUTSIDE the process, non-determinism, parallel-safety, reachability of new branches from a public surface, a pure side-effect-free core that invariants could be stated against"
-  },
-  {
-   "id": "design",
-   "name": "Design & UX",
-   "mode": "subagent",
-   "tier": "deep",
-   "reasons": [
-    "touches **/*.tsx (web/components/Card.tsx)"
-   ],
-   "checks": [],
-   "looks_for": "UX flow, loading/empty/error/partial/success states, error recoverability, latency-proportional feedback, visual consistency against declared tokens, hierarchy"
-  },
-  {
-   "id": "tech-writer",
-   "name": "Technical writing",
-   "mode": "subagent",
-   "tier": "deep",
-   "reasons": [
-    "touches **/*.md (docs/guide.md)",
-    "task type 'feature'",
-    "baseline (any code change)"
-   ],
-   "checks": [],
-   "looks_for": "documented commands/flags/endpoints/paths/defaults/outputs that the diff has made untrue, capabilities removed or renamed with docs left behind, examples that no longer run, the right documentation TYPE for the change (reference / how-to / explanation / tutorial) and one reader-question per document, prerequisites and destructive-step warnings placed after the step they govern, new documentation nobody can reach, one name per concept, decisions made in the diff and recorded nowhere, changelog entries that describe commits rather than user outcomes"
-  },
-  {
-   "id": "qa",
-   "name": "QA",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "task type 'feature'",
-    "untested change (code changed, no test file)"
-   ],
-   "checks": [],
-   "looks_for": "test strategy, behaviour coverage (never a coverage %), assertion strength, regression risk, edge/negative cases, flake patterns, rerun/retry used as suppression, tests that encode the implementation rather than the requirement, E2E paths"
-  },
-  {
-   "id": "frontend",
-   "name": "Front-end engineering",
-   "mode": "subagent",
-   "tier": "deep",
-   "reasons": [
-    "touches **/*.tsx (web/components/Card.tsx)"
-   ],
-   "checks": [],
-   "looks_for": "component architecture, state mgmt, async race safety, render/bundle perf, Core Web Vitals impact (LCP/INP/CLS) with a named code cause, browser/device compat against a Baseline target, FE error/loading handling"
-  },
-  {
-   "id": "tradeoffs",
-   "name": "Design trade-offs",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "task type 'feature'"
-   ],
-   "checks": [],
-   "looks_for": "unexamined single-option designs, one-way-door choices taken without deliberation, strawman alternatives, criteria reverse-engineered after the winner was picked, hidden costs of the chosen path, what the rejected option would have bought, missing or unobservable revisit triggers, decisions made in code but never recorded durably, choices that silently contradict or supersede an accepted D-record, trade-off tables that never name the quality attribute being optimised"
-  },
-  {
-   "id": "time-to-market",
-   "name": "Time to market",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "task type 'feature'"
-   ],
-   "checks": [],
-   "looks_for": "over-engineering vs the stated goal, deferrable work inside the critical path, ONE-WAY DOORS inside a proposed fast path, the PRICE of deferring (backfill / migration / re-teach cost), named slicing seams (vertical slice, dark launch, branch by abstraction), missing debt records for deliberate cuts"
-  },
-  {
-   "id": "architecture",
-   "name": "System design & architecture",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "baseline (system design is always on)"
-   ],
-   "checks": [],
-   "looks_for": "component/service decomposition, data flow & coupling measured against the dependency graph, state & consistency, scaling & failure modes, structure introduced without a requirement that needs it",
-   "effort": "light"
-  },
-  {
-   "id": "accessibility",
-   "name": "Accessibility (a11y)",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "touches **/*.tsx (web/components/Card.tsx)"
-   ],
-   "checks": [
-    "axe-core (via axe DevTools / jest-axe / cypress-axe / Playwright `@axe-core/playwright`)",
-    "a11y-lint (eslint-plugin-jsx-a11y, vue/svelte a11y compiler warnings)",
-    "contrast checker"
-   ],
-   "looks_for": "keyboard operability and order, ARIA role-vs-implementation honesty, accessible-name appropriateness, focus management, announcement timing, non-text contrast, pointer alternatives, accessible authentication, WCAG 2.2 AA"
-  },
-  {
-   "id": "i18n",
-   "name": "Localization / i18n (optional)",
-   "mode": "inline",
-   "tier": "deep",
-   "reasons": [
-    "touches **/*.tsx (web/components/Card.tsx)",
-    "task type 'feature'"
-   ],
-   "checks": [],
-   "looks_for": "externalized strings incl. backend-generated text, plural/gender selection, sentence assembly by concatenation, locale formatting AND parsing, currency minor units, timezone intent, text expansion, bidi isolation and RTL, collation and grapheme-safe text"
-  }
- ],
- "context": {
-  "changed_files": 3,
-  "has_code": true,
-  "large_change": false,
-  "task_type": "feature",
-  "artifact_type": null,
-  "breadth": "routed",
-  "hub_dependents": 0,
-  "deep_cap": 8,
-  "deep_dispatched": 4
- }
-}
-""")
-
-
-class TestLegacyByteIdentity(unittest.TestCase):
-    """The snapshot guards that ROUTE V2 never changed legacy routing. It
-    was updated once, for D-0005, and only in `context`: the legacy path had
-    no dispatch budget at all, so `--all` fanned out 26 subagents under a cap
-    of 8. The two new keys REPORT the budget; the `lenses` list in this
-    snapshot is byte-unchanged, which is the part that decides what runs.
-    `test_the_lens_selection_itself_is_untouched` below pins that separately
-    so a future edit cannot hide a selection change inside a context diff."""
-
-    @staticmethod
-    def _routing_only(value):
-        """Language references are an intentional additive handoff field."""
-        value = copy.deepcopy(value)
-        value.get("context", {}).pop("language_references", None)
-        for row in value.get("lenses") or []:
-            row.pop("language_references", None)
-        return value
-
-    def test_the_lens_selection_itself_is_untouched(self):
-        """The half of the snapshot that must never move for a disclosure
-        change: same lenses, same modes, same tiers, same reasons."""
-        r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT)
-        self.assertEqual(self._routing_only(r)["lenses"],
-                         LEGACY_SNAPSHOT["lenses"])
-        self.assertEqual(
-            [(e["id"], e["mode"], e["tier"]) for e in r["lenses"]],
-            [(e["id"], e["mode"], e["tier"])
-             for e in LEGACY_SNAPSHOT["lenses"]])
-
-    def test_route_without_stage_is_byte_identical_to_snapshot(self):
-        r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT)
-        self.assertEqual(self._routing_only(r), LEGACY_SNAPSHOT)
-
-    def test_no_stage_profiles_key_means_legacy_even_with_stage(self):
-        cat = copy.deepcopy(CAT)
-        cat.pop("stage_profiles", None)
-        r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=cat,
-                       stage="review")
-        self.assertEqual(self._routing_only(r), LEGACY_SNAPSHOT)
-
-    def test_use_signals_false_forces_legacy(self):
-        r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT,
-                       stage="review", use_signals=False)
-        self.assertEqual(self._routing_only(r), LEGACY_SNAPSHOT)
-
+class TestStageProfiles(unittest.TestCase):
     def test_catalog_carries_stage_profiles_data(self):
         # contract:stage-profiles — the key exists, every profile id is a
         # real lens id, and the review profile is the FULL catalog (a final
@@ -747,70 +476,6 @@ class TestEngineFailureStopsDispatch(unittest.TestCase):
         self.assertEqual(r["context"]["status"], "mapper_unavailable")
         self.assertEqual(r["context"]["breadth"], "routed")
         self.assertEqual(r["lenses"], [])
-
-
-class TestBreadthAllUnchanged(unittest.TestCase):
-    def test_breadth_all_is_legacy_even_with_stage(self):
-        files = ["src/todo/core.py"]
-        legacy = lens.route(files, catalog=CAT, breadth="all")
-        with_stage = lens.route(files, catalog=CAT, breadth="all",
-                                stage="review", workspace=".")
-        self.assertEqual(with_stage, legacy)
-        # legacy shape: no v2 verdict/score keys anywhere
-        for x in with_stage["lenses"]:
-            self.assertNotIn("verdict", x)
-            self.assertNotIn("score", x)
-
-
-class TestDispatchBriefsV2(unittest.TestCase):
-    def _routing(self):
-        ws = write_ws(BUDGET_WS_SPEC)
-        try:
-            return lens.route(sorted(BUDGET_WS_SPEC), stage="review",
-                              catalog=CAT, workspace=ws)
-        finally:
-            shutil.rmtree(ws)
-
-    def test_na_lenses_get_no_brief_but_full_decision_is_carried(self):
-        r = self._routing()
-        d = lens.dispatch_briefs(r, base="HEAD")
-        t = tiers(r)
-        deep_ids = {b["id"] for b in d["deep"]}
-        self.assertEqual(deep_ids,
-                         {lid for lid, tier in t.items() if tier == "deep"})
-        # Automatic sweep dispositions batch into the single sweep brief.
-        self.assertEqual(set(d["sweep"]["ids"]),
-                         {lid for lid, tier in t.items() if tier == "sweep"})
-        # n/a lenses appear in NO brief ...
-        na_ids = {lid for lid, tier in t.items() if tier == "n/a"}
-        self.assertFalse(na_ids & deep_ids)
-        self.assertFalse(na_ids & set(d["sweep"]["ids"]))
-        # ... but the decision object carries ALL catalog dispositions,
-        # each n/a with its negative evidence (coverage honesty)
-        self.assertEqual(set(d["routing_decision"]), set(ALL_IDS))
-        for lid in na_ids:
-            self.assertTrue(d["routing_decision"][lid]["negative_evidence"])
-
-    def test_deep_briefs_carry_additive_verdict_fields(self):
-        r = self._routing()
-        d = lens.dispatch_briefs(r, base="HEAD")
-        for b in d["deep"]:
-            self.assertEqual(b["verdict"], "deep")
-            self.assertIsInstance(b["score"], float)
-            self.assertTrue(b["evidence"])
-            # contract:lens-brief shape otherwise unchanged
-            self.assertEqual(b["task_slot"], f"lens-{b['id']}")
-            self.assertEqual(b["contract"]["task_slot"], f"lens-{b['id']}")
-            self.assertTrue(b["contract"]["read_only"])
-            self.assertIn(f"export TASKPLANE_TASK=lens-{b['id']}", b["prompt"])
-
-    def test_legacy_dispatch_shape_untouched(self):
-        r = lens.route(LEGACY_FILES, task_type=LEGACY_TASK_TYPE, catalog=CAT)
-        d = lens.dispatch_briefs(r, base="HEAD")
-        self.assertNotIn("routing_decision", d)
-        for b in d["deep"]:
-            self.assertNotIn("verdict", b)
-            self.assertNotIn("score", b)
 
 
 class TestDeterminism(unittest.TestCase):

@@ -7,6 +7,7 @@ lens-signals API, including its test/embedding monkeypatch seam.
 """
 from __future__ import annotations
 
+import json
 import sys
 import types
 
@@ -78,34 +79,8 @@ def hybrid_verdict(token_reduction_pct: float, escaped_findings: int) -> str:
     return "decline"
 
 
-def _prompt_bytes(payload: dict) -> int:
-    """Token proxy for one dispatch payload: UTF-8 bytes of every prompt
-    that would actually be sent (deep briefs + the batched sweep brief)."""
-    total = 0
-    for b in payload.get("deep") or []:
-        total += len((b.get("prompt") or "").encode("utf-8"))
-    sw = payload.get("sweep")
-    if sw:
-        total += len((sw.get("prompt") or "").encode("utf-8"))
-    return total
 
 
-def verification_brief_prompt(decision: dict) -> str:
-    """The hybrid's ONE batched negative-evidence verification sweep: a
-    single prompt asking a cheap agent to verify each n/a lens's
-    negative-evidence claims against the diff (never a deep review)."""
-    nas = [(lid, list(d.get("negative_evidence") or []))
-           for lid, d in sorted((decision or {}).items())
-           if d.get("verdict") == "n/a"]
-    if not nas:
-        return ""
-    lines = ["Batched NEGATIVE-EVIDENCE VERIFICATION sweep (routed-audit "
-             "hybrid): for each n/a-routed lens below, verify its "
-             "negative-evidence claims against the diff — flag any claim "
-             "the diff contradicts, one line per lens. READ-ONLY."]
-    for lid, claims in nas:
-        lines.append(f"- {lid}: " + ("; ".join(claims) or "no claims"))
-    return "\n".join(lines) + "\n"
 
 
 def measure_audit_hybrid(corpus_entries, workspace=None, base: str = "HEAD",
@@ -124,15 +99,15 @@ def measure_audit_hybrid(corpus_entries, workspace=None, base: str = "HEAD",
     for entry in corpus_entries:
         files = list(entry.get("files") or [])
         req = entry.get("requirement_text") or ""
-        full = lens.dispatch_briefs(
-            lens.route(files, breadth="all"), base=base)
-        routed = lens.route(files, stage=stage, workspace=workspace,
-                            requirement_text=req)
-        hyb = lens.dispatch_briefs(routed, base=base)
-        decision = hyb.get("routing_decision") or {}
-        ftok = _prompt_bytes(full)
-        htok = (_prompt_bytes(hyb)
-                + len(verification_brief_prompt(decision).encode("utf-8")))
+        full = lens.route(files, breadth="all")
+        routed = lens.route(files, stage=stage, workspace=workspace, requirement_text=req)
+        decision = {row["id"]: {"verdict": row.get("tier"),
+            "negative_evidence": row.get("negative_evidence", [])} for row in routed["lenses"]}
+        def instruction_bytes(route):
+            return sum(len(json.dumps(lens.slot_metadata(row["id"], "sweep", route)).encode())
+                for row in route["lenses"] if row.get("tier") != "n/a")
+        ftok = instruction_bytes(full)
+        htok = instruction_bytes(routed)
         na = {lid for lid, d in decision.items()
               if d.get("verdict") == "n/a"}
         esc = sorted({(f.get("lens") or "?") for f in

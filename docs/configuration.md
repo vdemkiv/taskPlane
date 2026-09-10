@@ -1,15 +1,36 @@
-# Configuration — every environment variable taskplane reads
+# Configuration — settings and host inputs
 
-taskplane has no config file of its own; every knob is an environment
-variable. This page is the complete reference, derived from the code
-(`taskplane/taskplane_lite.py`, `tp.py`, `loop.py`) — when a release adds
-a variable, it must be added here (grep for `TASKPLANE_` to audit). An
-unset variable always means the documented default; nothing here is
-required for normal use.
+Operational defaults live in [`taskplane/operational-settings.json`](../taskplane/operational-settings.json).
+The typed loader in [`settings.py`](../taskplane/settings.py) validates them and
+seals an effective settings digest into each run. Every phase, parallel worker,
+review and dashboard consumes that run's snapshot; later defaults or environment
+changes cannot rewrite it.
 
-**Enforcement-relevant** marks variables that change what the guardrails
-do — set those deliberately, and treat them as part of your governance
-configuration, not personal preference.
+The delivery graph has one owner:
+[`agents/spec-phase-definitions.json`](../agents/spec-phase-definitions.json).
+It declares Product → Design → Plan → Build → Evaluate → Engineering → Retro,
+including roles, skills, lenses and artifacts. The loader rejects a second
+`phase_definitions` list in operational settings. The empty compatibility field
+is retained only so existing sealed snapshots remain readable.
+
+Each phase has its own `stages.<phase>.model` and `.reasoning`, including Retro;
+Fix uses `stages.fix`. Model `inherit` omits the host model argument. The current
+default reasoning is `high`. Routed lenses use their owning phase's settings.
+`lenses.routing` names mandatory lenses and `lenses.counts` bounds the focused
+selection. Product, Design and Plan may route lenses; Build, Fix, Evaluate,
+Engineering and Retro require zero lens workers.
+
+For a fresh invocation the loader applies defaults, an explicitly supplied
+settings file, supported environment aliases and an authorized overlay, in that
+order. Normal CLI commands use the shipped settings file; they do not scan
+repository folders for configuration. A bound run instead restores its exact
+snapshot. The API accepts an explicit file path; there is no implicit per-repo
+settings file or `--settings` CLI switch.
+
+`tp onboard --json` reports the resolved phase settings and digest and validates
+the phase registry against its actual skill bytes before declaring readiness.
+Environment variables below are supported aliases, storage selectors or host
+observations. They are not an alternate owner of operational defaults.
 
 ## Supported Python runtime
 
@@ -70,8 +91,7 @@ restart every already-green cluster.
 | `TASKPLANE_ORPHAN_TTL_SECONDS` (`TASKPLANE_ORPHAN_TTL` legacy alias) | canonical `runtime.orphan_ttl_seconds` (`3600`) | Idle backstop for a contract with **no** recorded PID. The canonical settings file owns the positive default; either one-release environment alias is accepted only with an exact authority receipt, and ambiguous or zero values fail closed. A per-contract `orphan_ttl_seconds` field takes precedence. Budget-**exhausted** contracts are a human gate and are never auto-released, regardless of TTL. | **Yes** — changing TTL can weaken or prematurely release the wall, so ordinary environment input cannot change it. |
 | `TASKPLANE_TASK` | *(unset — legacy single slot)* | Selects the exact child-owned contract slot (`.taskplane/active/<slot>.json`) governing this process; the dispatch bootstrap passes it to the native worker and `SubagentStart` binds ownership. Worker-scoped slots are excluded from a slot-less orchestrator's authority. Value must match the task id (`[A-Za-z0-9][A-Za-z0-9._-]*`, ≤ 64 chars). Set with **no** matching slot file → hard refusal (StateError), never a fallback. | **Yes** — fail-closed by design: an ill-formed or unmatched value blocks rather than letting an agent run under a sibling's contract or escape screening. |
 | `TASKPLANE_ENFORCE_SCREEN` | host-sensitive (`strict` for a declared Claude session; otherwise `warn`) | Selects `strict`, `warn`, or `off` enforcement for the PreToolUse screen. Any other explicit value is refused instead of guessed. | **Yes** — `strict` blocks denied actions, `warn` reports without blocking, and `off` is the rollback lever. |
-| `TASKPLANE_STAGE_NATIVE` | *(unset — disabled)* | Explicit native-stage rollout mode. `new-run` permits only a pristine, attributable v4 bootstrap; `enabled` permits native stage operations on an already bound run. All other spellings, including truthy aliases, remain disabled. | **Yes** — it enables stage mutation only at an explicit rollout boundary. |
-| `TASKPLANE_SESSION_ID` | *(unset; falls back to `CODEX_THREAD_ID` or `CLAUDE_SESSION_ID`)* | Stable host-session identity required by `TASKPLANE_STAGE_NATIVE=new-run` and bound into the root bootstrap authority. Replay under a different session is refused. | **Yes** — it supplies attributable session identity; it does not grant approval by itself. |
+| `TASKPLANE_SESSION_ID` | *(unset; falls back to `CODEX_THREAD_ID` or `CLAUDE_SESSION_ID`)* | Stable host-session identity required by new v4 runs and bound into the root bootstrap authority. Replay under a different session is refused. | **Yes** — it supplies attributable session identity; it does not grant approval by itself. |
 | `TASKPLANE_BARE_ROOT` | *(unset)* | `os.pathsep`-separated **extra** roots for the bare-workspace guard (`tp new` refuses to activate a contract in a bare root / session home). Only ever ADDS protected roots — the built-in set (`~`, `/`, `/root`, `/home/claude`) cannot be removed via this variable. | **Yes**, additive-only — it can strengthen the guard for a new host layout, never weaken it. |
 | `TASKPLANE_AUDIT_EVERY` | canonical `runtime.audit_every` (`5`) | Audit-sweep cadence: every Nth completed engineering review runs the full-catalog audit. The canonical settings file owns the positive default; this one-release environment alias requires an exact authority receipt, and invalid/non-positive values fail closed. Machinery: `taskplane/audit.py`. | **Yes** — increasing the cadence can reduce audit coverage, so ordinary environment input cannot change it. |
 | `TASKPLANE_QA_BASELINE` | unset | Forces the `qa` lens back to baseline firing (every code change) instead of its default untested-change trigger (a code change that adds no test file). The trigger reaches the same Blocker — "an acceptance criterion with no failing-capable test evidence, including the case where the change ships with no tests at all" — at a fraction of the cost: measured over 40 real changes, baseline fired on 32 and the trigger on 2. Set it on a codebase where tests are routinely omitted and you want QA on every change regardless. Accepts `1`/`true`/`yes`/`on`. Machinery: `taskplane/lens.py::_adds_no_test`. | Yes — unset it to return to the default trigger. |
@@ -80,8 +100,7 @@ restart every already-green cluster.
 | `TASKPLANE_REGRESSION_TIMEOUT_SECONDS` | `1200` (seconds) | Shared hard timeout for both the current-checkout and detached-baseline pytest processes in the graph-scoped regression gate. Accepts an integer from `30` through `1800`; invalid or out-of-range values block as runner-configuration errors. A process that reaches the bound remains a named gate failure—it is never treated as skipped, comparable, or passing. Machinery: `taskplane/regression.py`. | **Yes** — it controls how long the gate permits both sides of the comparison to establish trustworthy evidence. The same bounded value always applies to current and baseline runners. |
 | `TASKPLANE_PUBLISH_REVIEW` | *(unset — withheld)* | `1`/`true`/`yes`/`on` allows model-authored review artifacts (managed run `findings.json`, `report.md`, `retro.md`, and the rendered dashboard; legacy unmanaged workspaces use `.em-review/`) to be copied into an **in-repo** store (`.taskplane-kb/`, the team/enterprise plan) by the automatic gate snapshot. Unset, managed artifacts remain in the private external run store and the snapshot NAMES what it withheld. Publishing to a shared store remains a deliberate human act. | No — it changes publication, never review validity. |
 | `TASKPLANE_OBLIGATIONS` | *(unset — blocking on)* | `off`/`0`/`false`/`advisory` disables the **binding-obligation** block while leaving the ledger recording exactly as before. A binding obligation is the one place where an obligation is converted into a PROHIBITION: a run started with `tp new --owes <run-type>` records the artifacts it owes a human BEFORE the work begins, and the PreToolUse screener then refuses taskplane's own completion commands (`dod`, `loop submit`, `loop approve`, `loop retro`, `loop gate`) until each has been shown and acknowledged. It exists because a hook can DENY an action but cannot COMPEL one, so every prohibition in this product held at 100% while every instruction to render something held at 0%. Deliberately narrow: it can never block an edit, a test, a search, or any other part of doing the work — only the act of declaring it finished. Discharge with `tp ack <id>` (or by rendering the engine's exact bytes, which the `mcp__visualize__.*` hook observes); list with `tp ack --status`. | Yes — setting it `off` removes a block. It is documented BECAUSE a governance mechanism with no stated way out is one people route around by uninstalling; the escape is recorded in the refusal message itself. |
-| `TASKPLANE_WORKFLOWS` | *(unset)* | Workflow dispatch-path opt-in for the review wave AND the stage waves: `1`/`true`/`yes`/`on` lets `tp lens dispatch --emit auto`, `tp loop wave --emit auto`, and `tp loop next --emit auto` choose the Claude workflow path (`workflows/review-wave.js`, `execute-wave.js`, `evaluate-wave.js`, `fix-wave.js`); any of `0`/`false`/`no`/`off` is the kill-switch forcing the Task-dispatch path everywhere. Unset = the `CLAUDE_CODE_WORKFLOWS` runtime marker decides, else the conservative Task path. On Codex hosts the Task path is ALWAYS used regardless of this variable. See `docs/routing-and-flows.md`. | No — both paths are traced (`review_dispatch_path` / `stage_dispatch_path`), the Task path's output is byte-identical, and no gate is reachable only via workflows. |
-| `TASKPLANE_CONSOLIDATED_FLOW` | *(unset — legacy transition compatibility)* | Enables the R-0001 consolidated authority derivation and bounded automatic recovery path. A truthy value (`1`/`true`/`yes`/`on`) derives routine Product-through-evaluation authority from one bound pre-implementation receipt; material scope/authority drift and final sign-off remain human-owned. | **Yes** — it selects the consolidated authority transition model; it never authenticates a reply or weakens a mechanical gate. |
+| `TASKPLANE_WORKFLOWS` | *(unset)* | Stage workflow opt-in: `1`/`true`/`yes`/`on` lets `tp loop wave --emit auto` and `tp loop next --emit auto` select the Claude workflow transport (`execute-wave.js`, `evaluate-wave.js`, `fix-wave.js`). `0`/`false`/`no`/`off` forces the Task transport. When unset, the `CLAUDE_CODE_WORKFLOWS` marker decides; otherwise Task is the default. Codex always uses Task transport. Standalone `tp lens dispatch` uses the shared sealed lens plan and has no `--emit` option. | No — stage transport selection is traced as `stage_dispatch_path` and does not change gate authority. |
 | `TASKPLANE_HOST_SESSION_EVENT` | *(unset)* | JSON host-adapter observation for the current trusted local/private Codex, Claude, or Slack-capable session. The adapter binds actor, thread, revision, target, event reference, source, and event-content fingerprint; missing or mismatched fields fail closed. | **Yes** — it supplies attribution only. Native UI state is not authority, and Taskplane does not add signing keys or a second same-user trust boundary. |
 | `TASKPLANE_INLINE_MAX` | `24000` (characters) | Above this size, `tp findings` stops handing back a renderable HTML blob and hands back a **path** — `RENDER-BY-REFERENCE: <file>` — for the driver to DELIVER (SendUserFile / the host's artifact channel) rather than retype through a widget tool. It exists because the v2.9.0 render obligation, which made showing an artifact enforceable, also made the cheapest compliance path the most expensive one: on one measured review the driver pasted back ~52k characters of HTML that taskplane had already written to disk, and inline dashboards came to 450k effective tokens — the largest single addressable slice, caused by the enforcement rather than by the work. A delivered file is the SAME bytes, so `tp ack <id> --delivered <path>` corroborates exactly as a widget render does; the fingerprint is what the ledger compares either way. `0` disables reference mode entirely (always inline). | No — it changes the CHANNEL an artifact arrives on, never whether one is owed. The obligation still blocks completion until the artifact is shown, and a delivered substitute is still recorded as a mismatch. |
 | `TASKPLANE_RUNNABILITY` | *(unset — probe on)* | `off`/`0`/`false`/`no` skips the build/test **runnability probe** that `tp lens dispatch` runs before composing briefs. The probe answers one question about the CHECKOUT — would `go test ./...`, local TypeScript `tsc --noEmit`, `npm test`, or `pytest` get off the ground here — using a bounded, cheap subcommand (`go list ./...`, local `tsc --version`, `node --version`, `import pytest`, or `cargo metadata --offline`), never the suite itself, and states the verdict in every dispatched brief plus the wave board. It exists because on `aws/karpenter-provider-aws#9464` six lens agents were dispatched in parallel and all six independently spent actions discovering that `go test` could not run in that sandbox: one environment fact, paid for six times. The answer is cached in `.taskplane/runnability.json`, keyed by the manifests, local dependency/compiler presence, and `PATH` that resolve the toolchain, so a whole wave shares one probe while installing the missing toolchain mid-review re-probes. | No — it is information, never a gate: no screener, contract, or gate consults it (pinned by `test_runnability_probe.py::TestItIsInformationNotEnforcement`). Setting it `off` only makes agents rediscover the fact themselves. |
@@ -137,8 +156,8 @@ toward the governed fallback. Users normally inspect these through
 ## Model tiers (cost routing)
 
 Focused routing does not use an environment variable to widen normal delivery.
-Product and Design use minimum-sufficient quick routes, non-trivial Plan and
-Evaluate use exactly 3–4 quick lenses, and Build and Fix launch zero lens
+Product and Design use minimum-sufficient quick routes; non-trivial Plan uses
+3–4 quick lenses. Build, Fix, Evaluate, Engineering and Retro launch zero lens
 workers. More than four independent mandatory risks must split scope or use the
 protected expanded-route provider; a worker-controlled environment value cannot
 grant that authority.

@@ -1,4 +1,6 @@
 """Stateless controller regressions; all stores/host inputs here are simulated."""
+
+from taskplane import phase_records
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import json
@@ -10,7 +12,7 @@ import sys
 import pytest
 
 from taskplane import loop, phase_harness, run_context, settings
-from taskplane.tests.test_r0001_j1_native import _supporting_pristine_phase_run
+from taskplane.tests.phase_fixture import _supporting_pristine_phase_run, phase_pending
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +69,7 @@ def test_context_cannot_leak_across_runs_or_replace_policy_with_an_overlay():
         assert settings.load_settings().digest == second["settings_digest"]
 
 
-def test_restore_exact_old_configuration_never_upgrades_policy(tmp_path, monkeypatch):
+def test_restore_exact_saved_configuration_never_upgrades_policy(tmp_path, monkeypatch):
     ws, store, run_id, _ = _supporting_pristine_phase_run(tmp_path, monkeypatch)
     original = loop._load_raw(ws)
     old_file = tmp_path / "original-settings.json"
@@ -76,7 +78,7 @@ def test_restore_exact_old_configuration_never_upgrades_policy(tmp_path, monkeyp
     legacy.pop("settings_snapshot")
     loop.save(ws, legacy)
     manifest = store.load(run_id)
-    assert "snapshot is missing" in loop.next_action(ws)["error"]
+    assert "snapshot is missing" in loop.next_action(ws)["obligations"]["error"]
     assert store.load(run_id) == manifest
     assert loop.resume(ws)["goal"] == original["goal"]
     changed = tmp_path / "changed-settings.json"
@@ -88,7 +90,7 @@ def test_restore_exact_old_configuration_never_upgrades_policy(tmp_path, monkeyp
     restored = run_context.restore_settings(loop, ws, str(old_file))
     assert restored["policy_changed"] is False and restored["dispatch_allowed"] is False
     assert loop._load_raw(ws) == original
-    assert store.load(run_id) == manifest
+    assert store.load(run_id)["revision"] > manifest["revision"]
     assert run_context.restore_settings(loop, ws, str(old_file))["replay"] is True
     assert loop._load_raw(ws) == original
 
@@ -113,15 +115,15 @@ print(json.dumps(action))
     assert first.returncode == 0, first.stderr
     prepared = json.loads(first.stdout)
     assert not prepared.get("error"), prepared
-    assert prepared["phase_runtime"]["run_id"] == run_id
-    assert prepared["settings_digest"] == original["settings_digest"]
+    assert phase_harness.read_input(loop, ws, prepared["stage_runtime_dispatch"])["run_id"] == run_id
+    assert prepared["obligations"]["settings_digest"] == original["settings_digest"]
     after = store.load(run_id)
     environment["TASKPLANE_SESSION_ID"] = "third-controller"
     second = subprocess.run([sys.executable, "-c", code, ws], env=environment,
         cwd=ws, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
     assert second.returncode == 0, second.stderr
     pending = json.loads(second.stdout)
-    assert pending["phase_runtime"]["operation_id"] == prepared["phase_runtime"]["operation_id"]
+    assert pending["obligations"]["phase_operation"] == prepared["obligations"]["phase_operation"]
     assert "task_name" not in pending
     assert store.load(run_id) == after
     assert loop._load_raw(ws)["_stage_native_root_authority"] == original["_stage_native_root_authority"]
@@ -132,34 +134,10 @@ def test_overlapping_controllers_reserve_only_one_attempt(tmp_path, monkeypatch)
     with ThreadPoolExecutor(max_workers=2) as workers:
         results = list(workers.map(lambda _: loop.next_action(ws), range(2)))
     assert all(not result.get("error") for result in results), results
-    assert sum("task_name" in result for result in results) == 1
-    assert len({result["phase_runtime"]["operation_id"] for result in results}) == 1
+    assert sum("task_name" in result["obligations"] for result in results) == 1
+    assert len({result["obligations"]["phase_operation"] for result in results}) == 1
     records = store.load(run_id)["phase_records"]
     assert sum(row["operation"] == "phase_prepare" for row in records.values()) == 1
-
-
-@pytest.mark.parametrize("phase", ["product", "design", "plan", "build", "evaluate", "engineering", "retro"])
-def test_every_declared_phase_uses_same_brief_compiler(phase):
-    from taskplane.tests.test_r0001_phase_agents_spec import _registry
-    definition = _registry().admit(phase, ()).to_dict()
-    before = copy.deepcopy(definition)
-    produced = definition["produces"]
-    worker_outputs = {produced[0]["artifact_class"]: "declared/output.json"}
-    action = {"instruction": "Existing domain evidence and submission obligations.",
-              "phase_runtime": {"outputs": worker_outputs}}
-    requirement = {"id": "R-0001", "acceptance": ["preserve scope"]}
-    phase_harness.admit_lens_plan({"definition": definition})
-    phase_harness.compile_brief({"definition": definition}, action, requirement)
-    assert action["execution_mode"] == "stateless-phase"
-    assert action["phase_definition"] == before == definition
-    assert action["requirement"] == requirement
-    assert action["phase_outputs"][0]["owner"] == "worker"
-    assert all(row["owner"] == "runtime" for row in action["phase_outputs"][1:])
-    assert "orchestrator" in action["instruction"]
-    assert "Existing domain evidence" not in action["instruction"]
-    assert "review_kernel.slots" not in action["instruction"]
-    if phase == "plan":
-        assert "not an already-sealed" in action["instruction"]
 
 
 def test_public_pending_pickup_needs_neither_settings_nor_host_admission(tmp_path, monkeypatch, capsys):
@@ -171,7 +149,7 @@ def test_public_pending_pickup_needs_neither_settings_nor_host_admission(tmp_pat
     state = loop._load_raw(ws)
     state.pop("settings_snapshot")  # Digest-only historical run, already in flight.
     loop.save(ws, state)
-    before = Path(loop._loop_path(ws)).read_bytes()
+    before = Path(store._manifest_path(run_id)).read_bytes()
     manifest = store.load(run_id)
     for name in ("_graph_quality_refusal", "_enforcement_check"):
         monkeypatch.setattr(cli, name, lambda *args, **kwargs: pytest.fail("admitted a read"))
@@ -181,10 +159,10 @@ def test_public_pending_pickup_needs_neither_settings_nor_host_admission(tmp_pat
     args = Namespace(cmd="loop", workspace=ws, loop_action="next", fn=cli.cmd_loop)
     assert cli._invoke_run_command(args, ws) == 0
     picked = json.loads(capsys.readouterr().out)
-    assert picked["read_only"] is True and picked["dispatch_allowed"] is False
-    assert picked["phase_runtime"]["operation_id"] == prepared["phase_runtime"]["operation_id"]
-    assert loop.next_action(ws)["phase_runtime"] == picked["phase_runtime"]
-    assert Path(loop._loop_path(ws)).read_bytes() == before
+    assert picked["obligations"]["read_only"] is True and picked["obligations"]["dispatch_allowed"] is False
+    assert picked["obligations"]["phase_operation"] == prepared["obligations"]["phase_operation"]
+    assert loop.next_action(ws)["obligations"]["phase_operation"] == picked["obligations"]["phase_operation"]
+    assert Path(store._manifest_path(run_id)).read_bytes() == before
     assert store.load(run_id) == manifest
 
     # Exercise the actual executable parser, not just an imported CLI handler.
@@ -195,8 +173,8 @@ def test_public_pending_pickup_needs_neither_settings_nor_host_admission(tmp_pat
         "loop", "--workspace", ws, "next"], env=environment,
         cwd=ws, text=True, encoding="utf-8", errors="replace", capture_output=True, timeout=60)
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout)["phase_runtime"] == picked["phase_runtime"]
-    assert Path(loop._loop_path(ws)).read_bytes() == before
+    assert json.loads(completed.stdout)["obligations"]["phase_operation"] == picked["obligations"]["phase_operation"]
+    assert Path(store._manifest_path(run_id)).read_bytes() == before
     assert store.load(run_id) == manifest
 
 
@@ -215,15 +193,15 @@ def test_public_unprepared_run_reports_missing_snapshot_without_traceback(tmp_pa
     assert store.load(run_id) == manifest
 
 
-def test_nonempty_phase_lenses_cannot_disappear_into_legacy_routing():
-    with pytest.raises(ValueError, match="phase-owned"):
+def test_evidence_consuming_phase_cannot_dispatch_lens_workers():
+    with pytest.raises(ValueError, match="cannot dispatch workers"):
         phase_harness.admit_lens_plan({"definition": {
-            "working_lenses": ["security"], "evaluation_lenses": []}})
+            "id":"engineering", "working_lenses": ["security"], "evaluation_lenses": []}})
 
 
 def test_advisory_run_prepares_without_session_owned_signing_and_keeps_waiting(tmp_path, monkeypatch):
     import time
-    from taskplane.tests.test_r0001_phase_cutover import _normal_phase_workspace
+    from taskplane.tests.phase_fixture import _normal_phase_workspace
     ws, store, stage, _, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
     run_id = stage["run_id"]
     original = loop._load_raw(ws)
@@ -233,14 +211,14 @@ def test_advisory_run_prepares_without_session_owned_signing_and_keeps_waiting(t
     assert policy["resource_policy"]["mode"] == "advisory"
     action = loop.next_action(ws)
     assert not action.get("error"), action
-    assert action["resource_policy"]["mode"] == "advisory"
-    assert "advisory" in action["instruction"]
+    inputs = phase_harness.read_input(loop, ws, action["stage_runtime_dispatch"])
+    assert inputs["resource_policy"]["mode"] == "advisory"
     manifest = store.load(run_id)
     future = time.time() + 3600
     monkeypatch.setattr(time, "time", lambda: future)
     pending = loop.next_action(ws)
-    assert pending["phase_runtime"]["status"] == "pending", pending
-    assert pending["dispatch_allowed"] is False
+    assert pending["obligations"]["status"] == "pending", pending
+    assert pending["obligations"]["dispatch_allowed"] is False
     assert store.load(run_id) == manifest
     assert loop._load_raw(ws)["settings_snapshot"] == original["settings_snapshot"]
     monkeypatch.setenv("TASKPLANE_TASK", "worker-test")
@@ -251,12 +229,11 @@ def test_advisory_run_prepares_without_session_owned_signing_and_keeps_waiting(t
 def test_native_shaped_stop_without_inline_usage_keeps_real_budget(tmp_path, monkeypatch, total):
     """Production phase path with simulated host files; not native proof."""
     from datetime import datetime, timezone
-    from taskplane import stage_migration
-    from taskplane.tests.test_r0001_phase_cutover import (
+    from taskplane.tests.phase_fixture import (
         _normal_phase_workspace, _emit_host_hook, _authored_requirement)
     ws, store, stage, artifacts, route, authorize = _normal_phase_workspace(tmp_path, monkeypatch)
     config = dict(route["result"]["configuration"], host_kind="codex")
-    stage_migration.change_phase_routing(store, stage["run_id"], owner="agent-runtime",
+    phase_records.change_phase_routing(store, stage["run_id"], owner="agent-runtime",
         configuration=config, expected_previous=route["result_fingerprint"],
         expected_revision=store.load(stage["run_id"])["revision"], operation_id="native-shaped-host",
         validate_authority=authorize)
@@ -265,7 +242,7 @@ def test_native_shaped_stop_without_inline_usage_keeps_real_budget(tmp_path, mon
     child = "01a07da3-a886-7261-aae9-1126caff4b6c"
     # No PreToolUse dispatch observation: native Start itself must bind the ledger.
     parent = "simulated-session"
-    name = action["task_name"]
+    name = action["obligations"]["task_name"]
     now = datetime.now(timezone.utc)
     home = tmp_path / "codex"
     path = home / "sessions" / now.strftime("%Y/%m/%d") / f"rollout-test-{child}.jsonl"
@@ -287,7 +264,7 @@ def test_native_shaped_stop_without_inline_usage_keeps_real_budget(tmp_path, mon
     _authored_requirement(ws, stage)
     _emit_host_hook(ws, action, "SubagentStop", monkeypatch, **fields)
     pending = loop.next_action(ws)
-    completion = pending["phase_runtime"]["completion"]
+    completion = phase_pending(ws)["completion"]
     if total == 100:
         assert completion is not None, pending
         assert artifacts.read(completion["runtime_result"])["status"] == "accepted"
@@ -297,13 +274,13 @@ def test_native_shaped_stop_without_inline_usage_keeps_real_budget(tmp_path, mon
             Path(artifacts.root, "phase-collection-refusal").glob("*.json")]
         assert refusals[-1]["reason_code"] == (
             "budget_exhausted" if total else "observation_unavailable")
-    assert loop._load_raw(ws)["settings_snapshot"]["phase_definitions"][0]["budget"]["tokens"] == 100000
+    assert artifacts.read(action["stage_runtime_dispatch"]["startup"]["phase_input"])["phase_definition"]["budget"]["tokens"] == 100000
     if total == 100000:
         import time
         original = loop._load_raw(ws)
         saved_snapshot = copy.deepcopy(original["settings_snapshot"])
         actor = original["_stage_native_root_authority"]["actor"]
-        operation = action["phase_runtime"]["operation_id"]
+        operation = action["obligations"]["phase_operation"]
         assert loop.resolve(ws, "limits-advisory", by="human:foreign").get("error")
         # The real-shaped terminal is already recorded. Only resource time
         # passes; neither the worker nor a Stop callback is run again.
@@ -318,13 +295,13 @@ def test_native_shaped_stop_without_inline_usage_keeps_real_budget(tmp_path, mon
         assert reconciled.get("status") == "collected", reconciled
         assert reconciled["worker_released"] is True
         assert loop.resolve(ws, "reconcile", phase_operation=operation)["replay"] is True
-        completed = loop.next_action(ws)["phase_runtime"]["completion"]
+        completed = phase_pending(ws)["completion"]
         assert completed["resource_usage"]["tokens"] == total
         assert completed["resource_usage"]["advisory"] is True
         assert artifacts.read(completed["runtime_result"])["budget"]["tokens"] == 100000
         assert loop._load_raw(ws)["settings_snapshot"] == saved_snapshot
         assert loop._load_raw(ws)["requirement_id"] == original["requirement_id"]
-        assert len([row for row in stage_migration.phase_records(store.load(stage["run_id"])).values()
+        assert len([row for row in phase_records.phase_records(store.load(stage["run_id"])).values()
             if row["operation"] == "phase_prepare"]) == 1
         # A sealed result is durable evidence, not a lease on a conversation.
         # Its signing window may end, but current key revocation still applies.

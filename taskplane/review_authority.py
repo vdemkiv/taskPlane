@@ -1,6 +1,10 @@
 """Human authority and append-only persistence for ReviewKernel rebinding."""
 
 from __future__ import annotations
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 
 import base64
 import json
@@ -52,13 +56,7 @@ _LOCKS: dict[tuple[Any, ...], threading.RLock] = {}
 
 
 def _store_key(store: EvidenceStore) -> tuple[Any, ...]:
-    identity = tuple(
-        getattr(store, field_name, None)
-        for field_name in ("caller_root", "repository_fingerprint", "run_namespace")
-    )
-    if all(value is not None for value in identity):
-        return ("evidence-store", *(str(value) for value in identity))
-    return ("evidence-store-object", id(store))
+    return _shared_primitives.store_identity(store, "evidence-store")
 
 
 def _state_and_lock(store: EvidenceStore) -> tuple[_StoreState, threading.RLock]:
@@ -76,16 +74,8 @@ def _required_text(value: Any, field_name: str) -> str:
 
 
 def _fingerprint(value: Any, field_name: str, *, optional: bool = False) -> str | None:
-    if optional and value is None:
-        return None
-    text = _required_text(value, field_name)
-    if len(text) != 64 or any(
-        character not in "0123456789abcdef" for character in text
-    ):
-        raise ReviewAuthorityError(
-            f"{field_name} must be a lowercase SHA-256 fingerprint"
-        )
-    return text
+    return _shared_primitives.fingerprint_text(
+        value, field_name, optional=optional, error=ReviewAuthorityError)
 
 
 def _binding(value: Any, field_name: str) -> tuple[dict[str, Any], str]:

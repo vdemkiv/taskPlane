@@ -57,7 +57,8 @@ def produce_dependency_plan(workspace: str, *, binding: Mapping[str, Any],
     coverage = graph["meta"]["source_coverage"]
     manifest = _wiring_closure.build_seam_manifest(decomposition,
         binding={**binding, "source_tree": decomposition["source_tree"],
-            "graph_fingerprint": decomposition["fingerprint"]}, contracts=seam_contracts)
+            "graph_fingerprint": decomposition["fingerprint"]}, contracts=seam_contracts,
+        expected=expected_dependency_topology(decomposition, plan, seam_contracts))
     return {"source-coverage": coverage, "decomposition": decomposition,
         "seam-manifest": manifest}
 
@@ -76,6 +77,66 @@ def dependency_plan_projection(graph: dict, plan: Mapping[str, Any] | None = Non
                         raise ValueError("source module has ambiguous Plan task ownership")
                     owners[module] = task["id"]
     return _depgraph.graph_decomposition.dependency_decomposition(graph, task_owners=owners)
+
+
+def expected_dependency_topology(decomposition, plan, contracts):
+    """Apply approved additions without relabeling them as scanner observations."""
+    if plan is None:
+        return None
+    owners = {node: task["id"] for task in decomposition["tasks"] for node in task["nodes"]}
+    files = {node: sorted({path for row in decomposition["components"]
+        if row["module"] == node for path in row["files"]}) for node in owners}
+    tasks = {task["id"]: task for task in plan["tasks"]}
+    new_nodes = set()
+    for task in tasks.values():
+        for node in task.get("new_modules", []):
+            if node in owners:
+                raise ValueError("planned new module already has observed ownership")
+            owners[node] = task["id"]
+            files[node] = []
+            new_nodes.add(node)
+    edges = {(row["producer"], row["consumer"], row["kind"]) for row in decomposition["edges"]}
+    declared = {edge for task in tasks.values() for edge in task.get("design_edges", [])}
+    for contract in contracts:
+        a, b, kind = (contract[key] for key in ("producer", "consumer", "kind"))
+        if (a, b, kind) not in edges:
+            if f"{b}->{a}:{kind}" not in declared or a not in owners or b not in owners:
+                raise ValueError("new seam is not an approved Design edge")
+            edges.add((a, b, kind))
+        for side, node in (("producer", a), ("consumer", b)):
+            if node in new_nodes:
+                path = contract[side + "_symbol"].replace(".", "/") + ".py"
+                if not any(_scope_matches(scope, path) for scope in tasks[owners[node]]["scope"]):
+                    raise ValueError("planned seam endpoint is outside its task scope")
+                files[node] = sorted(set(files[node]) | {path})
+    dependencies = {owner: set(tasks[owner].get("deps", [])) for owner in set(owners.values())}
+    for a, b, _ in edges:
+        if owners[a] != owners[b]:
+            dependencies[owners[b]].add(owners[a])
+    # Include non-source tasks as ordering nodes, retaining their approved deps.
+    dependencies.update({key: set(task.get("deps", [])) for key, task in tasks.items()
+        if key not in dependencies})
+    return {"nodes": sorted(owners), "owners": owners, "files": files,
+        "edges": [{"producer": a, "consumer": b, "kind": kind} for a, b, kind in sorted(edges)],
+        "dependencies": {task: sorted(deps) for task, deps in dependencies.items()},
+        "order": {task: index for index, task in enumerate(_topological_order(dependencies))}}
+
+
+def task_conformance_scope(topology, task_id):
+    """Current task and predecessor obligations from the same Plan topology."""
+    dependencies = topology["dependencies"]
+    if task_id not in dependencies:
+        raise ValueError("Build conformance task is absent from the sealed Plan")
+    required = set()
+    pending = [task_id]
+    while pending:
+        current = pending.pop()
+        if current not in required:
+            required.add(current)
+            pending.extend(dependencies[current])
+    return {"task_id": task_id, "required_tasks": sorted(required),
+        "required_nodes": sorted(node for node, owner in topology["owners"].items()
+            if owner in required)}
 
 
 def canonical_plan_fingerprint(plan: Mapping[str, Any]) -> str:

@@ -21,6 +21,7 @@ import os
 import re
 
 import taskplane_lite as tp
+from primitives import atomic_json
 
 
 def kb_dir(ws: str) -> str:
@@ -42,11 +43,7 @@ def load_index(ws: str) -> dict:
 
 
 def _atomic_json(path: str, obj) -> None:
-    """tmp + os.replace — a reader never sees a torn index (v1.5.1)."""
-    tmp = path + f".tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8", newline="") as f:
-        json.dump(obj, f, indent=2)
-    os.replace(tmp, path)
+    atomic_json(path, obj, indent=2, sort_keys=False, trailing_newline=False)
 
 
 def _save_index(ws: str, idx: dict) -> None:

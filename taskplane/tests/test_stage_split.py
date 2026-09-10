@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from taskplane import (review_evidence, run_store, stage_entities,
-                       stage_handoff, storage)
+                       stage_handoff, stage_values, storage)
 
 
 RUN_ID = "run-split-001"
@@ -387,7 +387,7 @@ def test_deterministic_child_id_collision_rejects_the_whole_split(
     parent = _parent()
     before = copy.deepcopy(parent)
     monkeypatch.setattr(
-        stage_entities, "split_child_id",
+        stage_values, "split_child_id",
         lambda _run, _parent, _operation, _ordinal: "stage-child-collision")
 
     with pytest.raises(stage_entities.StageValidationError, match="collision"):

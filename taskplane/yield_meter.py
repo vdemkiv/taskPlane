@@ -48,6 +48,10 @@ is the property that makes it safe to have added, and easy to remove if it
 turns out not to earn its own keep.
 """
 from __future__ import annotations
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 
 import hashlib
 import json
@@ -120,16 +124,11 @@ def fingerprint(finding: dict) -> str:
 
 
 def _append(ws: str, record: dict) -> None:
-    """Best effort, always. A meter must never cost anyone a gate."""
     try:
         path = ledger_path(ws)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        record.setdefault("ts", time.time())
-        with tp.file_lock(path):
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, default=str, sort_keys=True) + "\n")
     except Exception:
-        pass
+        return
+    _shared_primitives.append_instrument(path, record)
 
 
 def record_review(ws: str, routed_lenses, *, caught_at: str,

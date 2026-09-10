@@ -6,6 +6,11 @@ host-native authority, reads secrets, or mutates process state.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
@@ -15,26 +20,24 @@ from types import MappingProxyType
 from typing import Any
 
 from taskplane.authority import DECISION_SCHEMA
-from taskplane import stage_entities
+from taskplane import stage_values as stage_entities
 DEFAULT_SETTINGS_PATH = Path(__file__).with_name("operational-settings.json")
 DEFAULT_LENS_CATALOG_PATH = \
     Path(__file__).resolve().parent.parent / "lenses" / "catalog.json"
 RECEIPT_SCHEMA = "taskplane.operational-settings-receipt/v1"
 CURRENT_SCHEMA = "taskplane.operational-settings/v2"
-LEGACY_SCHEMA = "taskplane.operational-settings/v1"
-V1_SCHEMA = LEGACY_SCHEMA
 STAGES = (
     "product", "design", "plan", "build", "evaluate", "fix",
-    "engineering",
+    "engineering", "retro",
 )
 ROUTED_LENS_STAGES = frozenset(("product", "design", "plan"))
-ZERO_LENS_STAGES = frozenset(("build", "evaluate", "fix", "engineering"))
+ZERO_LENS_STAGES = frozenset(("build", "evaluate", "fix", "engineering", "retro"))
 DESIGN_LENS_MAX = 16
 PLAN_LENS_MAX = 4
 REASONING = frozenset(("inherit", "low", "medium", "high", "xhigh", "max", "ultra"))
 TEST_SELECTIONS = frozenset(("targeted", "affected", "all"))
 _SECRET_PARTS = ("secret", "password", "credential", "private_key", "access_token", "api_key")
-_LEGACY_ENV_TIERS = {
+_ENV_TIERS = {
     "CHEAP": ("evaluate", "fix"),
     "STANDARD": ("build",),
     "DEEP": ("product", "design", "plan"),
@@ -234,8 +237,7 @@ def load_phase_registry(
 
 def _canonical(value: object) -> bytes:
     try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                          ensure_ascii=True, allow_nan=False).encode("utf-8")
+        return _json_primitives.canonical_bytes(value, ensure_ascii=True)
     except (TypeError, ValueError) as exc:
         raise SettingsError("settings must contain portable JSON values") from exc
 
@@ -469,7 +471,6 @@ class OperationalSettings:
     receipt: Mapping[str, Any]
     schema: str = CURRENT_SCHEMA
     phase_definitions: tuple[bytes, ...] = ()
-    legacy_snapshot: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -482,8 +483,7 @@ class OperationalSettings:
             "dashboard": self.dashboard.to_dict(),
             "overrides": self.overrides.to_dict(),
             "observability": self.observability.to_dict(),
-            **({} if self.legacy_snapshot else {
-                "phase_definitions": [json.loads(value) for value in self.phase_definitions]}),
+            "phase_definitions": [json.loads(value) for value in self.phase_definitions],
         }
 
 
@@ -596,14 +596,18 @@ def _nonnegative_number(value: object, label: str) -> int | float:
 def _validate_and_type(
     data: Mapping[str, Any], receipt: Mapping[str, Any], *,
     catalog_ids: frozenset[str],
-    legacy_snapshot: bool = False,
 ) -> OperationalSettings:
     if data.get("schema") != CURRENT_SCHEMA:
         raise SettingsError("unsupported operational settings schema")
+    if data.get("phase_definitions") and receipt.get("precedence") != ["durable-run"]:
+        raise SettingsError("phase_definitions are owned by agents/spec-phase-definitions.json; remove the settings copy")
     phase_definitions = _phase_bytes(data.get("phase_definitions", []))
     stages_raw = _plain_mapping(data.get("stages"), "stages")
+    # Historical sealed runs retain their exact settings bytes. Fresh loads
+    # merge the current defaults and always include Retro.
+    stage_names = tuple(name for name in STAGES if name != "retro" or "retro" in stages_raw)
     stages: dict[str, StageSettings] = {}
-    for name in STAGES:
+    for name in stage_names:
         row = _plain_mapping(stages_raw.get(name), f"stages.{name}")
         model = row.get("model")
         if model == "inherit":
@@ -625,7 +629,7 @@ def _validate_and_type(
     counts_raw = _plain_mapping(lenses_raw.get("counts"), "lenses.counts")
     routing: dict[str, tuple[str, ...]] = {}
     counts: dict[str, int] = {}
-    for name in STAGES:
+    for name in stage_names:
         route = routes_raw.get(name)
         if not isinstance(route, list) or not all(isinstance(item, str) and item.strip() for item in route):
             raise SettingsError(f"lenses.routing.{name} must be a string list")
@@ -641,7 +645,7 @@ def _validate_and_type(
         if len(routing[name]) > counts[name]:
             raise SettingsError(
                 f"lenses.routing.{name} cannot exceed its maximum count")
-    for name in ZERO_LENS_STAGES:
+    for name in ZERO_LENS_STAGES.intersection(stage_names):
         if routing[name] or counts[name] != 0:
             raise SettingsError(
                 f"{name} must preserve the zero lens worker invariant")
@@ -843,8 +847,6 @@ def _validate_and_type(
                       "governance_paths": typed_governance_paths},
         "observability": dict(observable_raw),
     }
-    if legacy_snapshot:
-        normalized.pop("phase_definitions")
     digest = _digest(normalized)
     sealed_receipt = dict(receipt)
     sealed_receipt["settings_digest"] = digest
@@ -870,7 +872,6 @@ def _validate_and_type(
         observability=ObservabilitySettings(observable_raw["receipt"], False),
         digest=digest, receipt=_freeze(sealed_receipt),
         phase_definitions=phase_definitions,
-        legacy_snapshot=legacy_snapshot,
     )
 
 
@@ -881,41 +882,6 @@ def _read_json(path: Path) -> dict[str, Any]:
         raise SettingsError(f"cannot read valid settings JSON: {exc}") from exc
     return _plain_mapping(raw, "settings")
 
-
-def _migrate_v1_settings(
-    raw: Mapping[str, Any], defaults: Mapping[str, Any], *,
-    source_schema: str = V1_SCHEMA,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Insert only the Product-approved v2 Part A block.
-
-    The legacy digest is evidence and is never presented as the digest of the
-    effective v2 value.  This is the sole v1 compatibility path.
-    """
-    legacy = _plain_mapping(raw, "legacy v1 settings")
-    if legacy.get("schema") != V1_SCHEMA:
-        raise SettingsError("only operational settings v1 can migrate to v2")
-    workflow = _plain_mapping(legacy.get("workflow"), "legacy workflow")
-    if "root_session" in workflow:
-        raise SettingsError(
-            "legacy v1 settings cannot carry a root_session block")
-    root_defaults = _plain_mapping(
-        _plain_mapping(defaults.get("workflow"), "default workflow").get(
-            "root_session"), "default workflow.root_session")
-    migrated = _merge(legacy, {
-        "schema": CURRENT_SCHEMA,
-        "workflow": {"root_session": root_defaults},
-    })
-    return migrated, {
-        "from": source_schema,
-        "to": CURRENT_SCHEMA,
-        "legacy_digest": _digest(legacy),
-        "inserted": [
-            "workflow.root_session.resume",
-            "workflow.root_session.seed",
-            "workflow.root_session.seed_budget_tokens",
-            "workflow.root_session.root_budget_tokens",
-        ],
-    }
 
 
 def _require_v2_root_session(raw: Mapping[str, Any]) -> None:
@@ -962,7 +928,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                   environment: Mapping[str, str] | None = None,
                   authority: Mapping[str, Any] | None = None,
                   host_capabilities: object | None = None) -> OperationalSettings:
-    """Load defaults < file < legacy environment < receipted overlay.
+    """Load defaults < file < environment < receipted overlay.
 
     ``host_capabilities`` is accepted to make the boundary explicit, but does
     not alter settings or receipts. Host support is negotiated later by the
@@ -978,20 +944,16 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     if bound is not None and Path(path) == DEFAULT_SETTINGS_PATH:
         if overlay is not None:
             raise SettingsError("a bound run cannot replace settings through a transient overlay")
-        return from_snapshot(bound[0], expected_digest=bound[1],
-                             allow_legacy="phase_definitions" not in bound[0])
+        return from_snapshot(bound[0], expected_digest=bound[1])
     defaults = _read_json(DEFAULT_SETTINGS_PATH)
     raw = _read_json(Path(path))
     _reject_secrets(raw)
     migration: dict[str, Any] | None = None
-    if raw.get("schema") == V1_SCHEMA:
-        raw, migration = _migrate_v1_settings(raw, defaults)
-    elif raw.get("schema") == CURRENT_SCHEMA:
+    if raw.get("schema") == CURRENT_SCHEMA:
         _require_v2_root_session(raw)
     else:
         raise SettingsError(
-            "unsupported settings schema; only one-release v1 migration "
-            "and canonical v2 are accepted")
+            "unsupported settings schema; current v2 settings are required")
     _validate_keys(raw)
     effective = _merge(defaults, raw)
     precedence = ["defaults", "file"]
@@ -999,7 +961,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     if environment is not None:
         environment_overlay: dict[str, Any] = {"stages": {}, "tests": {}}
         applied: list[str] = []
-        for tier, stages in _LEGACY_ENV_TIERS.items():
+        for tier, stages in _ENV_TIERS.items():
             for field, prefix in (("model", "TASKPLANE_MODEL_"),
                                   ("reasoning", "TASKPLANE_REASONING_")):
                 name = prefix + tier
@@ -1029,10 +991,10 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 integer_value = int(raw_value)
             except ValueError as exc:
                 raise SettingsError(
-                    f"legacy environment {name} must be an integer") from exc
+                    f"environment {name} must be an integer") from exc
             if field in runtime_overlay:
                 raise SettingsError(
-                    "duplicate legacy environment aliases for runtime." +
+                    "duplicate environment aliases for runtime." +
                     field)
             runtime_overlay[field] = integer_value
             applied.append(f"runtime.{field}")
@@ -1052,7 +1014,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             raw_value = str(environment[name]).strip().lower()
             if raw_value not in aliases:
                 raise SettingsError(
-                    f"legacy environment {name} is unsupported")
+                    f"environment {name} is unsupported")
             runtime_overlay[field] = aliases[raw_value]
             applied.append(f"runtime.{field}")
         if runtime_overlay:
@@ -1065,7 +1027,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             }
             if raw_value not in cache_aliases:
                 raise SettingsError(
-                    "legacy environment TASKPLANE_NO_SUITE_CACHE is unsupported")
+                    "environment TASKPLANE_NO_SUITE_CACHE is unsupported")
             environment_overlay["tests"]["cache"] = cache_aliases[raw_value]
             applied.append("tests.cache")
         if "TASKPLANE_SUITE_CACHE_MAX_AGE" in environment:
@@ -1075,13 +1037,13 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 parsed = float(raw_value)
             except ValueError as exc:
                 raise SettingsError(
-                    "legacy environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
+                    "environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
                     "be a finite number") from exc
             try:
                 _canonical(parsed)
             except SettingsError as exc:
                 raise SettingsError(
-                    "legacy environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
+                    "environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
                     "be a finite number") from exc
             # Historic zero and negative values both meant "never cite".
             cache_age_value: int | float = max(0.0, parsed)
@@ -1115,7 +1077,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             precedence.append("environment")
             environment_receipt = {
                 "applied": sorted(applied),
-                "adapter": "legacy-environment/v1",
+                "adapter": "environment/v1",
                 "authority_fingerprint": authority_fingerprint,
             }
     overlay_receipt: dict[str, Any] | None = None
@@ -1165,12 +1127,10 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         effective, receipt, catalog_ids=catalog_ids)
 
 
-def from_snapshot(value: Mapping[str, Any], *, expected_digest: str,
-                  allow_legacy: bool = False) -> OperationalSettings:
+def from_snapshot(value: Mapping[str, Any], *, expected_digest: str) -> OperationalSettings:
     """Validate complete durable values without merging today's defaults/env."""
     raw = json.loads(_canonical(dict(value)))
-    legacy = allow_legacy and set(raw) == _TOP - {"phase_definitions"}
-    if (set(raw) != _TOP and not legacy) or raw.get("schema") != CURRENT_SCHEMA or _digest(raw) != expected_digest:
+    if set(raw) != _TOP or raw.get("schema") != CURRENT_SCHEMA or _digest(raw) != expected_digest:
         raise SettingsError("run settings snapshot is incomplete or its digest changed")
     _reject_secrets(raw)
     _validate_keys(raw)
@@ -1178,8 +1138,7 @@ def from_snapshot(value: Mapping[str, Any], *, expected_digest: str,
     catalog_ids, catalog_digest = _read_lens_catalog()
     checked = _validate_and_type(raw, {"schema": RECEIPT_SCHEMA,
         "precedence": ["durable-run"], "migration": None, "environment": None,
-        "overlay": None, "lens_catalog_digest": catalog_digest}, catalog_ids=catalog_ids,
-        legacy_snapshot=legacy)
+        "overlay": None, "lens_catalog_digest": catalog_digest}, catalog_ids=catalog_ids)
     if checked.digest != expected_digest:
         raise SettingsError("run settings snapshot is not canonical")
     return checked

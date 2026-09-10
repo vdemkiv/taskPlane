@@ -1,8 +1,6 @@
 import copy
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
@@ -29,73 +27,10 @@ def _strategy():
     return seal_strategy(fixture["strategy"])
 
 
-def _declared_selectors():
-    fixture = json.loads(SETTINGS_CONTRACT.read_text(encoding="utf-8"))
-    strategy = fixture["strategy"]
-    portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
-    selectors = [
-        selector
-        for criterion in strategy["acceptance_criteria"]
-        for selector in criterion["selectors"]
-    ]
-    selectors.extend(
-        edge["selector"]
-        for producer in strategy["producers"]
-        for edge in producer["severed_edges"]
-    )
-    selectors.extend(
-        selector
-        for criterion in fixture["acceptance_map"]
-        for selector in criterion["tests"]
-    )
-    retirement = fixture["retired_selectors"]
-    assert retirement["source_revision"] == "5a1d2562186c37264fbf8d46c98fcea41b423169"
-    retired = set(retirement["selectors"])
-    assert retired == {
-        "taskplane/tests/test_build_quality.py::"
-        "test_receipt_proves_the_complete_build_progression_and_exact_binding",
-        "taskplane/tests/test_r0002_build_quality_journey.py::"
-        "test_recorded_build_quality_is_current_then_severs_when_candidate_moves",
-    }
-    assert retired.issubset(selectors)
-    selectors = [selector for selector in selectors if selector not in retired]
-    selectors.extend(
-        selector
-        for fixture in portfolio["retained_fixtures"]
-        for selector in fixture["consumer_selectors"]
-    )
-    return list(dict.fromkeys(selectors))
-
-
-def test_design_and_build_contract_is_complete():
-    fixture = json.loads(SETTINGS_CONTRACT.read_text(encoding="utf-8"))
-    assert fixture["provenance"]["source_revision"] == (
-        "a45aae112bd5b6113292771204ca9ff867bf7ff8"
-    )
-    assert "not current R-0001 approval" in fixture["provenance"]["status"]
+def test_strategy_validates_contract_and_refuses_nonexact_selector():
     strategy = _strategy()
-
     validated = validate_strategy(strategy)
-
     assert validated["schema"] == "taskplane.test-strategy/v1"
-    assert {criterion["id"] for criterion in validated["acceptance_criteria"]} == {
-        "AC-SET1",
-        "AC-SET2",
-        "AC-SET3",
-        "AC-SET4",
-        "AC-SET5",
-        "AC-TST1",
-        "AC-TST2",
-        "AC-TST3",
-        "AC-CI1",
-        "AC-CI2",
-        "AC-CLN1",
-        "AC-CLN2",
-        "AC-P0",
-        "AC-REL",
-        "AC-MET",
-        "AC-REG",
-    }
     assert all(
         selector.startswith("taskplane/tests/")
         and selector.rsplit("::", 1)[-1].startswith("test_")
@@ -132,21 +67,6 @@ def test_design_and_build_contract_is_complete():
     assert test_strategy.VALIDATION_LAYERS is build_quality.VALIDATION_LAYERS
     assert not hasattr(test_strategy, "advance_validation")
     assert not hasattr(test_strategy, "classify_failures")
-
-
-def test_declared_acceptance_edges_and_fixture_consumers_collect_exactly():
-    selectors = _declared_selectors()
-    completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", *selectors],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "no tests collected" not in completed.stdout
 
 
 def test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures():

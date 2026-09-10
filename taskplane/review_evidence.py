@@ -5,6 +5,15 @@ semantic record fingerprint and the digest of the exact stored bytes; the
 former binds cross-artifact identity while the latter detects mutation.
 """
 from __future__ import annotations
+if __package__:
+    from .primitives import file_lock
+else:
+    from primitives import file_lock
+
+if __package__:
+    from .primitives import canonical_bytes as canonical_bytes, content_fingerprint as content_fingerprint
+else:
+    from primitives import canonical_bytes as canonical_bytes, content_fingerprint as content_fingerprint
 
 import copy
 import hashlib
@@ -16,13 +25,12 @@ from typing import Any, Iterable, Iterator, Mapping, TypeAlias, TypedDict
 
 if __package__:
     from . import storage as runtime_storage
-    from . import taskplane_lite as tp
 else:
     import storage as runtime_storage
-    import taskplane_lite as tp
 
 
-MAX_SCOPED_VIEW_BYTES = 16 * 1024
+# Packing target for optional inline evidence, never a repository-size limit.
+INLINE_REVIEW_CONTENT_TARGET_BYTES = 16 * 1024
 MAX_INLINE_REQUIREMENTS_BYTES = 4 * 1024
 _KIND = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _SLOT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
@@ -115,66 +123,12 @@ def assert_summary_only_repair(before: dict, after: dict) -> None:
         raise ProvenanceError("summary repair changes review substance or provenance")
 
 
-def canonical_bytes(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
-def content_fingerprint(value) -> str:
-    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
-def create_execution_binding(workspace: str, *, target: dict, run_id: str,
-                             lens_ids, slot_id: str,
-                             lease_fingerprint: str,
-                             producer: str) -> dict:
-    """Bind review evidence to its exact governed execution identity."""
-    root = tp.review_execution_root_identity(workspace)
-    target_row = {
-        "fingerprint": str((target or {}).get("fingerprint") or "").strip(),
-        "base": str((target or {}).get("merge_base") or
-                    (target or {}).get("base") or "").strip(),
-        "head": str((target or {}).get("head") or "").strip(),
-    }
-    identity = {
-        "run_id": str(run_id or "").strip(),
-        "lens_ids": _strings(lens_ids),
-        "slot_id": str(slot_id or "").strip(),
-        "lease_fingerprint": str(lease_fingerprint or "").strip(),
-        "producer": str(producer or "").strip(),
-    }
-    if not target_row["fingerprint"] or not target_row["head"] or \
-            any(not value for key, value in identity.items()
-                if key != "lens_ids") or not identity["lens_ids"]:
-        raise ProvenanceError("review execution binding is incomplete")
-    material = {
-        "schema": "taskplane.review-execution-binding/v1",
-        "repository_id": root["repository_id"],
-        "repository_kind": root["repository_kind"],
-        "worktree_fingerprint": root["worktree_fingerprint"],
-        "engine_fingerprint": root["engine_fingerprint"],
-        "target": target_row,
-        **identity,
-    }
-    return dict(material, binding_fingerprint=content_fingerprint(material))
 
 
-def verify_execution_binding(workspace: str, binding: dict, *, target: dict,
-                             run_id: str, lens_ids, slot_id: str,
-                             lease_fingerprint: str,
-                             producer: str) -> bool:
-    """Recompute the complete execution binding; no partial match is valid."""
-    try:
-        expected = create_execution_binding(
-            workspace, target=target, run_id=run_id, lens_ids=lens_ids,
-            slot_id=slot_id, lease_fingerprint=lease_fingerprint,
-            producer=producer)
-    except Exception as exc:
-        raise ProvenanceError(f"review execution binding is invalid: {exc}") \
-            from None
-    if not isinstance(binding, dict) or binding != expected:
-        raise ProvenanceError("review execution binding does not match")
-    return True
 
 
 def require_approvable_collection(collected: dict) -> bool:
@@ -210,8 +164,8 @@ def commit_evaluator_selection(store, *, binding: dict, assignments: list[dict],
                                evaluation_lenses: list[str]) -> dict:
     """Persist the orchestrator's full selection before any evaluator effects.
 
-    Inactive phase adapter. This records supplied authority, never issues it.
-    A selection cannot be replaced for the same run/candidate/phase identity;
+    This records supplied authority, never issues it.
+    A selection cannot be replaced for the same run/task/candidate/phase identity;
     bounded replacement attempts must already be named in its assignment set.
     """
     required = {"run_id", "phase_id", "candidate_fingerprint", "candidate_sha",
@@ -232,7 +186,7 @@ def commit_evaluator_selection(store, *, binding: dict, assignments: list[dict],
     # Freshness inputs are retained in the record, but cannot mint a new
     # selection identity to hide an earlier assignment for this candidate.
     identity = {key: binding[key] for key in
-                ("run_id", "phase_id", "candidate_fingerprint")}
+                ("run_id", "task_id", "phase_id", "candidate_fingerprint", "candidate_sha")}
     return store.put("evaluator-selection", {
         "schema": "taskplane.evaluator-selection/v1", "binding": copy.deepcopy(binding),
         "assignments": copy.deepcopy(assignments), "evaluation_lenses": [],
@@ -254,69 +208,6 @@ def evaluator_attempt_key(selection_ref: dict, assignment: dict) -> str:
         "attempt": assignment["attempt_id"], "operation": assignment["operation_id"]})
 
 
-def collect_evaluator_attempts(store, selection_ref: dict) -> dict:
-    """Read every precommitted attempt; no caller-selected result subset exists.
-
-    This is evidence collection only. Canonical evaluator validation still owns
-    substantive admissibility, and the orchestrator alone owns progression.
-    """
-    if __package__:
-        from . import evaluation_output, stage_entities
-    else:
-        import evaluation_output, stage_entities
-    selected = read_evaluator_selection(store, selection_ref)
-    starts = {ref["fingerprint"]: ref for ref in store.references("evaluator-attempt")}
-    results = {ref["fingerprint"]: ref for ref in store.references("evaluator-attempt-result")}
-    attempts, gaps, unfavorable = [], [], []
-    for assignment in selected["assignments"]:
-        key = evaluator_attempt_key(selection_ref, assignment)
-        row = {"attempt_id": assignment["attempt_id"], "operation_id": assignment["operation_id"],
-               "status": "pending", "result": None, "judgments": []}
-        attempts.append(row)
-        if key not in starts or key not in results:
-            row["status"] = "uncertain" if key in starts else "pending"
-            gaps.append({"attempt_id": row["attempt_id"], "reason": "terminal_evidence_missing"})
-            continue
-        expected_start = {"selection_digest": selection_ref["digest"], "assignment": assignment}
-        if store.read(starts[key]) != expected_start:
-            raise ProvenanceError("evaluator attempt selection mismatch")
-        result = stage_entities.validate_contract(store.read(results[key]))
-        if any(result.get(field) != value for field, value in assignment.items()):
-            raise ProvenanceError("evaluator attempt result binding mismatch")
-        row.update(status=result["status"], result=results[key])
-        if result["status"] != "accepted":
-            unfavorable.append(row["attempt_id"])
-        for reference in result["collected_output_references"]:
-            value = store.read(reference)
-            if value.get("schema") == "taskplane.stage/v1":
-                metadata = stage_entities.validate_stage(value)
-                if metadata["run_id"] != selected["binding"]["run_id"] or \
-                        metadata["stage_kind"] != selected["binding"]["phase_id"]:
-                    raise ProvenanceError("evaluator stage metadata is foreign")
-                continue
-            row["judgments"].append(reference)
-            try:
-                # Pass evidence is validated by the incumbent durable child
-                # evidence owner. A self-authored pass cannot stand in for it.
-                checked = evaluation_output.validate_evaluator_value(value,
-                    expected_lenses=selected["evaluation_lenses"],
-                    expected_evidence_binding={**{key: value for key, value in selected["binding"].items()
-                        if key not in {"run_id", "phase_id", "candidate_fingerprint"}},
-                        "evaluator_attempt_id": assignment["attempt_id"]})
-                if checked["task"] != selected["binding"]["task_id"] or \
-                        checked["requirement"] != selected["binding"]["requirement_id"]:
-                    raise ProvenanceError("evaluator judgment is foreign")
-                if checked["verdict"] != "pass" or any(
-                        criterion["status"] != "met" for criterion in checked["criteria"]):
-                    unfavorable.append(row["attempt_id"])
-            except (ValueError, KeyError):
-                gaps.append({"attempt_id": row["attempt_id"], "reason": "judgment_inadmissible"})
-        if not row["judgments"]:
-            gaps.append({"attempt_id": row["attempt_id"], "reason": "judgment_missing"})
-    return {"schema": "taskplane.phase-review-collection/v1", "selection": selection_ref,
-        "binding": selected["binding"], "attempts": attempts, "gaps": gaps,
-        "unfavorable_attempts": sorted(set(unfavorable)),
-        "admissible": not gaps and not unfavorable, "progression_authority": False}
 
 
 class ArtifactStore:
@@ -326,10 +217,10 @@ class ArtifactStore:
         self.workspace = os.path.abspath(workspace)
         if root is None:
             locator = runtime_storage.load_workspace_locator(self.workspace)
-            root = (os.path.join(locator["paths"]["artifacts"],
-                                 "review-artifacts-v2")
+            root = (os.path.join(locator["home"], "runs", locator["run_id"],
+                                 "artifacts", "review-artifacts-v2")
                     if locator else os.path.join(
-                        tp.tp_dir(self.workspace), "review-artifacts-v2"))
+                        runtime_storage.control_root(self.workspace), "review-artifacts-v2"))
         self.root = os.path.abspath(root)
         os.makedirs(self.root, exist_ok=True)
         if os.path.islink(self.root):
@@ -379,7 +270,7 @@ class ArtifactStore:
         digest = hashlib.sha256(data).hexdigest()
         identity = fingerprint or digest
         path = self._path(kind, identity)
-        with tp.file_lock(path):
+        with file_lock(path):
             if os.path.lexists(path):
                 if os.path.islink(path):
                     raise ArtifactIntegrityError("artifact final path is a symlink")
@@ -556,37 +447,8 @@ def verify_portable_artifact_reference(
     return store.verify(native)
 
 
-def store_stage_handoff(
-        store: ArtifactStore,
-        manifest: Mapping[str, object]) -> dict[str, object]:
-    """Persist a stage handoff through the shared production artifact API.
-
-    The local import keeps the artifact kernel independent at import time;
-    every host and stage adapter already shares this module and can use this
-    single integration point instead of rebuilding storage semantics.
-    """
-    if __package__:
-        from . import stage_handoff
-    else:
-        import stage_handoff
-    return stage_handoff.store_manifest(store, manifest)
 
 
-def read_stage_handoff(
-        store: ArtifactStore, reference: Mapping[str, object], *,
-        expected_authority_revision: int,
-        expected_authority_fingerprint: str,
-        allow_nonconsumable_reuse: bool = False) -> dict[str, object]:
-    """Consume a stored handoff using trusted control-plane authority."""
-    if __package__:
-        from . import stage_handoff
-    else:
-        import stage_handoff
-    return stage_handoff.read_manifest(
-        store, reference,
-        expected_authority_revision=expected_authority_revision,
-        expected_authority_fingerprint=expected_authority_fingerprint,
-        allow_nonconsumable_reuse=allow_nonconsumable_reuse)
 
 
 def retained_cleanup_evidence(primary_workspace: str, worker_workspace: str,
@@ -624,100 +486,32 @@ def retained_cleanup_evidence(primary_workspace: str, worker_workspace: str,
 
 def retain_worktree_governance(primary_workspace: str, worker_workspace: str,
                                task_id: str) -> dict:
-    """Make legacy worker evidence primary-owned before cleanup.
-
-    Managed workers already write outside their checkout and are only
-    inventoried. Legacy workers are copied byte-for-byte into ignored primary
-    governance storage. No source byte is removed here.
-    """
-    primary = os.path.realpath(primary_workspace)
+    """Verify that this task's managed evidence survives worktree removal."""
     worker = os.path.realpath(worker_workspace)
-    token = re.sub(r"[^A-Za-z0-9._-]+", "-", str(task_id)).strip("-.") \
-        or "task"
-    destination = os.path.join(tp.tp_dir(primary),
-                               "retained-worktree-evidence", token)
-    candidates = [
-        runtime_storage.evaluation_root(worker),
-        runtime_storage.review_public_root(worker),
-        ArtifactStore(worker).root,
-    ]
-    retained = []
-
-    def add_file(source: str, relative: str) -> None:
-        if os.path.islink(source):
-            raise ArtifactIntegrityError("worktree evidence contains a symlink")
-        with open(source, "rb") as handle:
-            data = handle.read()
-        digest = hashlib.sha256(data).hexdigest()
-        target = os.path.join(destination, *relative.split("/"))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        if os.path.exists(target):
-            with open(target, "rb") as handle:
-                if handle.read() != data:
-                    raise ArtifactIntegrityError(
-                        "retained evidence destination changed")
-        else:
-            fd, temporary = tempfile.mkstemp(
-                prefix=".retain-", dir=os.path.dirname(target))
-            try:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.replace(temporary, target)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-        retained.append({"path": os.path.realpath(target), "digest": digest,
-                         "bytes": len(data), "source": relative})
-
-    seen = set()
-    for root in candidates:
-        real_root = os.path.realpath(root)
-        if real_root in seen or not os.path.exists(real_root):
-            continue
-        seen.add(real_root)
-        if os.path.commonpath((worker, real_root)) != worker:
-            # Canonical managed storage survives directly; inventory files.
-            for base, dirs, files in os.walk(real_root):
-                dirs[:] = [name for name in dirs
-                           if not os.path.islink(os.path.join(base, name))]
-                for name in files:
-                    path = os.path.join(base, name)
-                    if os.path.islink(path):
-                        continue
-                    with open(path, "rb") as handle:
-                        data = handle.read()
-                    retained.append({
-                        "path": os.path.realpath(path),
-                        "digest": hashlib.sha256(data).hexdigest(),
-                        "bytes": len(data), "source": "canonical"})
-            continue
-        label = os.path.basename(real_root) or "evidence"
-        if os.path.isfile(real_root):
-            add_file(real_root, label)
-            continue
-        for base, dirs, files in os.walk(real_root):
-            dirs[:] = [name for name in dirs
-                       if not os.path.islink(os.path.join(base, name))]
-            for name in files:
-                source = os.path.join(base, name)
-                relative = os.path.join(
-                    label, os.path.relpath(source, real_root)).replace(
-                        os.sep, "/")
-                add_file(source, relative)
-    reasons = []
+    primary = runtime_storage.load_workspace_locator(primary_workspace)
+    selected = runtime_storage.load_workspace_locator(worker_workspace)
+    if not primary or not selected or selected.get("task_id") != task_id or any(
+            primary.get(key) != selected.get(key)
+            for key in ("home", "repository_key", "run_id")):
+        raise ArtifactIntegrityError("cleanup requires matching current run and task locators")
+    roots = (runtime_storage.evaluation_root(worker),
+             runtime_storage.review_public_root(worker), ArtifactStore(worker).root)
+    if any(os.path.commonpath((worker, os.path.realpath(root))) == worker for root in roots):
+        raise ArtifactIntegrityError("managed evidence must remain outside the removable worktree")
     verdict = runtime_storage.evaluation_path(worker)
-    if not os.path.isfile(verdict) and not any(
-            row.get("source", "").endswith("verdict.json") for row in retained):
+    reasons = []
+    retained = []
+    if os.path.islink(verdict) or not os.path.isfile(verdict):
         reasons.append("canonical evaluator verdict is unavailable")
-    return {
-        "schema": "taskplane.retained-worktree-governance/v1",
-        "task_id": str(task_id),
-        "status": "released" if not reasons else "evidence-needed",
-        "evidence_needed": bool(reasons), "reasons": reasons,
-        "records": sorted(retained, key=lambda row: row["path"]),
-    }
+    else:
+        with open(verdict, "rb") as handle:
+            data = handle.read()
+        retained.append({"path": os.path.realpath(verdict),
+                         "digest": hashlib.sha256(data).hexdigest(),
+                         "bytes": len(data), "source": "canonical"})
+    return {"schema": "taskplane.retained-worktree-governance/v1",
+            "task_id": task_id, "status": "released" if not reasons else "evidence-needed",
+            "evidence_needed": bool(reasons), "reasons": reasons, "records": retained}
 
 
 def _target_fingerprint(target: dict) -> str:
@@ -867,106 +661,10 @@ def read_envelope_section(store: ArtifactStore,
     return value
 
 
-def _requirements_view(envelope_ref: dict, requirements: dict) -> dict:
-    """Keep small requirements inline; reference large canonical records."""
-    if len(canonical_bytes(requirements)) <= MAX_INLINE_REQUIREMENTS_BYTES:
-        return copy.deepcopy(requirements)
-    requirement = requirements.get("requirement") or {}
-    identity = {key: copy.deepcopy(requirement[key])
-                for key in ("id", "title", "status") if key in requirement}
-    return {
-        "reference": _envelope_section_reference(
-            envelope_ref, "requirements", requirements),
-        "requirement": identity,
-        "acceptance_count": len(requirements.get("acceptance") or []),
-    }
 
 
-def _impact_view(envelope_ref: dict, impact: dict) -> dict:
-    """Keep the blast radius complete without copying it into every slot."""
-    if len(canonical_bytes(impact)) <= MAX_INLINE_REQUIREMENTS_BYTES:
-        return copy.deepcopy(impact)
-    touched = _strings(impact.get("touched"))
-    summary = {
-        "reference": _envelope_section_reference(
-            envelope_ref, "impact", impact),
-        "total_impacted": int(impact.get("total_impacted") or 0),
-        "touched_count": len(touched),
-        "unknown_count": len(impact.get("unknown") or []),
-        "depth_limit": impact.get("depth_limit"),
-        "truncated": bool(impact.get("truncated")),
-    }
-    if len(canonical_bytes(touched)) <= 2048:
-        summary["touched"] = touched
-    else:
-        summary["touched_by_reference"] = True
-    return summary
 
 
-def _create_scoped_view_v2(store: ArtifactStore, envelope_ref: dict, *,
-                           slot_id: str, lens_ids, relevant_files=None,
-                           evidence=None) -> dict:
-    """Derive the fitting legacy view while active v2 leases drain."""
-    if not _SLOT.fullmatch(str(slot_id or "")):
-        raise ProvenanceError("invalid slot id")
-    envelope = _load_complete_envelope(store, envelope_ref)
-    graph_quality = envelope.get("graph_quality") or {}
-    if graph_quality.get("status") == "impact_incomplete" and not (
-            graph_quality.get("review_fallback") or {}).get("mode") == \
-            "immutable_diff":
-        raise ProvenanceError("impact_incomplete creates zero scoped views")
-    diff = envelope.get("diff") or {}
-    wanted = set(_strings(relevant_files))
-    files = _strings(diff.get("files"))
-    if wanted:
-        files = [path for path in files if path in wanted]
-    symbols = _strings(diff.get("changed_symbols"))
-    # The full canonical indexes remain available through the verified
-    # envelope/diff artifact.  Copy small indexes into the prompt view for
-    # convenience, but large reviews stay reference-first instead of paying
-    # for the same file/symbol lists once per lens.
-    diff_view = {
-        "file_count": len(files),
-        "changed_symbol_count": len(symbols),
-    }
-    if diff.get("artifact"):
-        diff_view["artifact"] = copy.deepcopy(diff["artifact"])
-    if len(canonical_bytes(files)) <= 4096 or not diff.get("artifact"):
-        diff_view["files"] = files
-    else:
-        diff_view["files_by_reference"] = True
-    if len(canonical_bytes(symbols)) <= 2048 or not diff.get("artifact"):
-        diff_view["changed_symbols"] = symbols
-    else:
-        diff_view["changed_symbols_by_reference"] = True
-    base = {
-        "schema": "taskplane.scoped-review-view/v2",
-        "context_fingerprint": envelope["context_fingerprint"],
-        "envelope": copy.deepcopy(envelope_ref),
-        "slot_id": slot_id,
-        "lens_ids": _strings(lens_ids),
-        "target": copy.deepcopy(envelope["target"]),
-        "target_fingerprint": envelope["target_fingerprint"],
-        "diff": diff_view,
-        "impact": _impact_view(
-            envelope_ref, envelope.get("impact") or {}),
-        "graph_quality": copy.deepcopy(envelope.get("graph_quality") or {}),
-        "runnability": copy.deepcopy(envelope.get("runnability") or {}),
-        "requirements": _requirements_view(
-            envelope_ref, envelope.get("requirements") or {}),
-        "contracts": copy.deepcopy(envelope.get("contracts") or []),
-        "change": copy.deepcopy(envelope.get("change") or {}),
-        "evidence": copy.deepcopy(evidence or {}),
-        "forbidden_derivations": ["git diff", "graph impact", "graph scan",
-                                  "requirement lookup", "runnability probe"],
-    }
-    view_fp = content_fingerprint(base)
-    payload = dict(base, view_fingerprint=view_fp)
-    data = canonical_bytes(payload)
-    if len(data) > MAX_SCOPED_VIEW_BYTES:
-        raise ArtifactIntegrityError(
-            f"scoped view exceeds {MAX_SCOPED_VIEW_BYTES} byte bound")
-    return store.put("view", payload, fingerprint=view_fp)
 
 
 def _evidence_reference(store: ArtifactStore, envelope: dict, *, section: str,
@@ -1208,7 +906,7 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
                            canonical_revision: int,
                            routing_fingerprint: str,
                            producer: str) -> dict:
-    """Project a deterministic bounded identity spine plus verified overflow."""
+    """Keep the complete identity and file scope; reference large evidence."""
     if not _SLOT.fullmatch(str(slot_id or "")):
         raise ProvenanceError("invalid slot id")
     if not str(routing_fingerprint or "").strip():
@@ -1306,7 +1004,7 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
         candidate_inline[section] = frame_review_evidence(
             section, envelope.get(section))
         if len(canonical_bytes(shaped_payload(
-                candidate_inline, candidate_manifest))) <= MAX_SCOPED_VIEW_BYTES:
+                candidate_inline, candidate_manifest))) <= INLINE_REVIEW_CONTENT_TARGET_BYTES:
             inline_sections = candidate_inline
             manifest = candidate_manifest
 
@@ -1315,14 +1013,9 @@ def _create_scoped_view_v3(store: ArtifactStore, envelope_ref: dict, *,
             if key not in ("integrity", "view_fingerprint")}
     integrity = content_fingerprint(base)
     # shaped_payload and this explicit calculation intentionally agree; keep
-    # the final binding adjacent to the boundary check for auditability.
+    # the final binding explicit for auditability.
     payload["integrity"] = {"algorithm": "sha256", "fingerprint": integrity}
     payload["view_fingerprint"] = integrity
-    size = len(canonical_bytes(payload))
-    if size > MAX_SCOPED_VIEW_BYTES:
-        raise ArtifactIntegrityError(
-            "mandatory scoped view spine exceeds "
-            f"{MAX_SCOPED_VIEW_BYTES} byte bound ({size} bytes)")
     return store.put("view", payload, fingerprint=integrity)
 
 
@@ -1331,21 +1024,15 @@ def create_scoped_view(store: ArtifactStore, envelope_ref: dict, *,
                        evidence=None, canonical_revision: int | None = None,
                        routing_fingerprint: str | None = None,
                        producer: str | None = None) -> dict:
-    """Derive a bounded view; v3 is selected by its explicit identity spine."""
-    v3_values = (canonical_revision, routing_fingerprint, producer)
-    if any(value is not None for value in v3_values):
-        if not all(value is not None for value in v3_values):
-            raise ProvenanceError("v3 scoped view identity is incomplete")
-        if evidence:
-            raise ProvenanceError("v3 evidence must use governed references")
-        return _create_scoped_view_v3(
-            store, envelope_ref, slot_id=slot_id, lens_ids=lens_ids,
-            relevant_files=relevant_files,
-            canonical_revision=canonical_revision,
-            routing_fingerprint=routing_fingerprint, producer=producer)
-    return _create_scoped_view_v2(
+    """Require the current review identity and governed evidence references."""
+    if any(value is None for value in (canonical_revision, routing_fingerprint, producer)):
+        raise ProvenanceError("scoped view requires current revision, routing and producer identity")
+    if evidence:
+        raise ProvenanceError("review evidence must use governed references")
+    return _create_scoped_view_v3(
         store, envelope_ref, slot_id=slot_id, lens_ids=lens_ids,
-        relevant_files=relevant_files, evidence=evidence)
+        relevant_files=relevant_files, canonical_revision=canonical_revision,
+        routing_fingerprint=routing_fingerprint, producer=producer)
 
 
 def next_revision(store: ArtifactStore) -> int:
@@ -1353,39 +1040,6 @@ def next_revision(store: ArtifactStore) -> int:
     return int(current.get("canonical_revision", 0)) + 1 if current else 1
 
 
-def create_slot_lease(store: ArtifactStore, envelope_ref: dict, view_ref: dict,
-                      *, slot_id: str, lens_ids,
-                      canonical_revision: int | None = None) -> dict:
-    envelope = _load_complete_envelope(store, envelope_ref)
-    view = store.read(view_ref)
-    cited_envelope = view.get("envelope") or {}
-    if view.get("schema") != "taskplane.scoped-review-view/v2" or \
-            view.get("view_fingerprint") != view_ref.get("fingerprint"):
-        raise ProvenanceError("slot lease scoped view is invalid")
-    if view.get("context_fingerprint") != envelope["context_fingerprint"] or \
-            view.get("target_fingerprint") != envelope["target_fingerprint"] or \
-            cited_envelope.get("fingerprint") != envelope_ref.get("fingerprint"):
-        raise ProvenanceError("slot lease view belongs to another envelope")
-    lenses = _strings(lens_ids)
-    if view.get("slot_id") != slot_id or view.get("lens_ids") != lenses:
-        raise ProvenanceError("slot lease does not match scoped view")
-    expected_revision = next_revision(store)
-    revision = expected_revision if canonical_revision is None \
-        else int(canonical_revision)
-    if revision != expected_revision:
-        raise RevisionError("slot lease canonical revision is stale or skipped")
-    base = {
-        "schema": "taskplane.slot-lease/v1",
-        "slot_id": slot_id,
-        "lens_ids": lenses,
-        "target_fingerprint": envelope["target_fingerprint"],
-        "context_fingerprint": envelope["context_fingerprint"],
-        "view_fingerprint": view["view_fingerprint"],
-        "canonical_revision": revision,
-    }
-    lease_fp = content_fingerprint(base)
-    return store.put("lease", dict(base, lease_fingerprint=lease_fp),
-                     fingerprint=lease_fp)
 
 
 def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
@@ -1425,8 +1079,10 @@ def write_slot_result(store: ArtifactStore, lease_ref: dict, *,
                 repair_audit.get("equivalence") != "proven":
             raise ProvenanceError("slot result repair audit is invalid")
         base["repair_audit"] = copy.deepcopy(repair_audit)
-    if lease.get("execution_binding") is not None:
-        base["execution_binding"] = copy.deepcopy(lease["execution_binding"])
+    for field in ("execution_binding", "reference_manifest_fingerprint",
+                  "routing_fingerprint", "producer"):
+        if field in lease:
+            base[field] = copy.deepcopy(lease[field])
     if source:
         # This is supplied by ReviewKernel from the sealed lease, never by
         # the lens payload.  It is therefore immutable producer provenance,
@@ -1487,7 +1143,7 @@ def collect_partial_slot_results(store: ArtifactStore,
     revisions = {row.get("canonical_revision") for row in leases}
     targets = {row.get("target_fingerprint") for row in leases}
     contexts = {row.get("context_fingerprint") for row in leases}
-    if len(revisions) != 1 or len(targets) != 1 or len(contexts) != 1:
+    if leases and (len(revisions) != 1 or len(targets) != 1 or len(contexts) != 1):
         raise ProvenanceError("slot results mix canonical identities")
     expected_by_slot = {str(row.get("slot_id") or ""): row for row in leases}
     if "" in expected_by_slot or len(expected_by_slot) != len(leases):
@@ -1535,9 +1191,9 @@ def collect_partial_slot_results(store: ArtifactStore,
             "expected": len(leases), "collected": len(ordered),
             "missing": len(normalized_gaps), "complete": complete,
         },
-        "target_fingerprint": next(iter(targets)),
-        "context_fingerprint": next(iter(contexts)),
-        "canonical_revision": next(iter(revisions)),
+        "target_fingerprint": next(iter(targets), None),
+        "context_fingerprint": next(iter(contexts), None),
+        "canonical_revision": next(iter(revisions), None),
     }
 
 
@@ -1618,7 +1274,7 @@ def _read_current(store: ArtifactStore) -> dict | None:
 def _advance_current(store: ArtifactStore, record: dict, *,
                      expected_current: dict | None) -> None:
     path = _current_path(store)
-    with tp.file_lock(path):
+    with file_lock(path):
         prior = _read_current_file(store)
         if prior != expected_current:
             raise RevisionError("canonical revision changed concurrently")

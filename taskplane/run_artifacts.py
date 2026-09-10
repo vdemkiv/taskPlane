@@ -7,6 +7,12 @@ run/stage/candidate/settings/source binding so a portable reference cannot be
 silently replayed into another working candidate.
 """
 from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING or __package__:
+    from .primitives import canonical_bytes, manifest_record, lock_file as _lock, unlock_file as _unlock
+else:
+    from primitives import canonical_bytes, manifest_record, lock_file as _lock, unlock_file as _unlock
 
 from contextlib import contextmanager
 import copy
@@ -284,13 +290,9 @@ DirectoryHandle = int | _PortableDirectory
 
 def _canonical(value: object) -> bytes:
     try:
-        return json.dumps(
-            value, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False, allow_nan=False,
-        ).encode("utf-8")
+        return canonical_bytes(value)
     except (TypeError, ValueError) as exc:
-        raise RunArtifactError("run artifact value is not canonical JSON") \
-            from exc
+        raise RunArtifactError("run artifact value is not canonical JSON") from exc
 
 
 def _digest(value: object) -> str:
@@ -827,32 +829,6 @@ def _list_directory(directory: DirectoryHandle) -> list[str]:
     return os.listdir(directory)
 
 
-def _lock(handle: BinaryIO) -> None:
-    try:
-        import fcntl
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-    except ImportError:  # pragma: no cover - Windows compatibility path
-        import msvcrt as msvcrt_module
-        msvcrt = cast(Any, msvcrt_module)
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-
-
-def _unlock(handle: BinaryIO) -> None:
-    try:
-        import fcntl
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except ImportError:  # pragma: no cover - Windows compatibility path
-        import msvcrt as msvcrt_module
-        msvcrt = cast(Any, msvcrt_module)
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-
-
 @contextmanager
 def _manifest_lock(root_fd: DirectoryHandle) -> Iterator[None]:
     with _lock_handle(root_fd) as handle:
@@ -1038,8 +1014,7 @@ def _load_manifest_at(root_fd: DirectoryHandle) -> JsonObject:
 
 def _save_manifest_at(root_fd: DirectoryHandle,
                       manifest: JsonObject) -> JsonObject:
-    value = copy.deepcopy(manifest)
-    value["manifest_digest"] = _manifest_digest(value)
+    value = manifest_record(manifest, fingerprint_field="manifest_digest")
     payload = _canonical(value) + b"\n"
     if len(payload) > _MAX_MANIFEST_BYTES:
         raise RunArtifactError("run artifact manifest exceeds its byte bound")
@@ -1200,23 +1175,6 @@ def publish_artifact(root: str | os.PathLike[str], artifact_class: str,
         metadata=dict(metadata or {}), schema=ARTIFACT_SCHEMA)
 
 
-def publish_root_hygiene(
-        root: str | os.PathLike[str], receipt: Mapping[str, object]) -> JsonObject:
-    """Retain one canonical root seal under its explicit bounded policy."""
-    from taskplane import wave_metrics
-
-    checked = wave_metrics.validate_root_hygiene(receipt)
-    value, _ = _payload_bytes(checked)
-    if len(value) > _MAX_ROOT_HYGIENE_ENTRY_BYTES:
-        raise RunArtifactError("root hygiene receipt exceeds its byte bound")
-    binding = load_manifest(root)["binding"]
-    if checked["candidate"]["source_sha"] != \
-            binding["candidate"].get("revision"):
-        raise RunArtifactError("root hygiene receipt belongs to another candidate")
-    return publish_artifact(
-        root, "telemetry", checked,
-        metadata={"kind": "root-hygiene",
-                  "receipt_fingerprint": checked["fingerprint"]})
 
 
 def _activity_metadata(event: Mapping[str, object]) -> JsonObject:
@@ -1450,7 +1408,6 @@ __all__ = [
     "load_manifest",
     "manifest_locator_reference",
     "publish_artifact",
-    "publish_root_hygiene",
     "validate_binding",
     "validate_durable_reference",
     "validate_manifest_locator_reference",

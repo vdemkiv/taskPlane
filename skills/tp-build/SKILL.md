@@ -169,20 +169,7 @@ loop. Do not run standalone `/tp-product` and then repeat PM inside Build.
    and commit the KB — the next feature starts smarter, and its contracts
    inherit an accurate map of who owns what.
 
-**Rollout and rollback.** `TASKPLANE_STAGE_NATIVE` is fail-closed and disabled
-by default. Only `new-run` (fresh-run canary) and `enabled` (verified migrated
-runs) enable v4 writes; arbitrary truthy values do not. Shadow migration
-compares bounded legacy/v4 summaries, retained-reference counts, lineage, and
-authority without changing readers. Cut bounded readers over only after the
-migration receipt and conservation proof verify. Rollback disables new v4
-mutations while retaining immutable stage objects, handoffs, receipts, source
-artifacts, and v4 reads for migrated runs. Never reverse-collapse history,
-reopen a terminal stage, guess an unknown legacy outcome, delete retained
-artifacts, weaken authority/evidence, or broaden/force R-0003 cleanup. A
-migrated run resumes only after the feature is re-enabled or an explicit
-forward migration succeeds; there is no lossy reverse migration.
-
-Stage terminalization and rollback never invoke worktree cleanup. The R-0003
+Stage terminalization never invoke worktree cleanup. The R-0003
 post-merge cleanup remains a separate, orchestrator-owned, fail-closed action
 requiring the exact registered managed worktree, merged-tip proof, re-resolved
 primary main, and every last-moment eligibility check.

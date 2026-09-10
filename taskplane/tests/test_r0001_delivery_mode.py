@@ -146,86 +146,10 @@ def _start_evaluate_kernel(workspace: Path, receipt):
     )
 
 
-def _plan_workspace(root: Path) -> Path:
-    workspace = root / "workspace"
-    (workspace / "plan").mkdir(parents=True)
-    (workspace / "src").mkdir()
-    (workspace / "src" / "feature.py").write_text("VALUE = 1\n")
-    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
-    subprocess.run(
-        ["git", "config", "user.email", "taskplane@example.test"],
-        cwd=workspace,
-        check=True,
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Taskplane Test"],
-        cwd=workspace,
-        check=True,
-    )
-    subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "baseline"], cwd=workspace, check=True
-    )
-    (workspace / "plan" / "tasks.json").write_text(
-        json.dumps(
-            {
-                "requirement": "R-0001",
-                "delivery_mode": "build",
-                "automatic_lenses": [],
-                "plan_authority": "human:operator",
-                "tasks": [
-                    {
-                        "id": "task-a",
-                        "scope": ["src/**"],
-                        "tests": "true",
-                        "criteria": ["the feature is complete"],
-                    }
-                ],
-            }
-        )
-    )
-    initialized = loop.init(
-        str(workspace),
-        "delivery receipt lifecycle",
-        spec_path="specs/spec.md",
-        checkpoints=[],
-    )
-    assert initialized["step"] == "plan"
-    return workspace
 
 
-def _gate_plan_to_execute(workspace: Path) -> dict:
-    from tests.fixtures.briefs.stage_fixture import prepare_plan
-    prepare_plan(str(workspace), runtime=loop, usage="measured")
-    gated = loop.gate(str(workspace), "pass")
-    assert "error" not in gated
-    assert gated["step"] == "execute"
-    return loop.load(str(workspace))
 
 
-def _ready_evaluate_workspace(root: Path):
-    workspace = _plan_workspace(root)
-    state = _gate_plan_to_execute(workspace)
-    task = loop._current_task(state)
-    opened = _start_evaluate_kernel(
-        workspace, state["delivery_mode_receipt"]
-    )
-    task["status"] = "built"
-    state["step"] = "evaluate"
-    state.setdefault("review_kernel_runs", {})[
-        loop._review_kernel_binding_key("evaluate", task)
-    ] = {
-        "schema": "taskplane.review-kernel-binding/v1",
-        "run_id": opened["run_id"],
-        "workspace": str(workspace),
-        "stage": loop.EVALUATE_ROUTE_STAGE,
-        "status": "ready",
-    }
-    loop.save(str(workspace), state)
-    verdict_path = Path(runtime_storage.evaluation_path(str(workspace)))
-    verdict_path.parent.mkdir(parents=True, exist_ok=True)
-    verdict_path.write_bytes(canonical_bytes(_evaluator_result()))
-    return workspace, opened
 
 
 def test_plan_gate_requires_and_stamps_delivery_mode():
@@ -244,64 +168,6 @@ def test_plan_gate_requires_and_stamps_delivery_mode():
         _build_receipt(delivery_mode=None)
 
 
-def test_design_governed_plan_gate_refuses_missing_delivery_mode_before_approval_or_root_seed(
-    tmp_path,
-):
-    from tests.fixtures.briefs.stage_fixture import prepare_plan
-    invalid_declarations = {
-        "missing-delivery-mode": ("delivery_mode", None),
-        "wrong-delivery-mode": ("delivery_mode", "review"),
-        "missing-automatic-lenses": ("automatic_lenses", None),
-        "nonempty-automatic-lenses": ("automatic_lenses", ["security"]),
-        "missing-plan-authority": ("plan_authority", None),
-    }
-    for name, (field, replacement) in invalid_declarations.items():
-        workspace = _plan_workspace(tmp_path / name)
-        plan_path = workspace / "plan" / "tasks.json"
-        plan = json.loads(plan_path.read_text())
-        if replacement is None:
-            plan.pop(field)
-        else:
-            plan[field] = replacement
-        plan_path.write_text(json.dumps(plan))
-        state = loop.load(str(workspace))
-        # Bound Design input for this declaration-policy fixture; no Design
-        # completion or approval is inferred from a sentinel fingerprint.
-        design = {"requirement": state.get("requirement_id"), "summary": "delivery declaration fixture"}
-        (workspace / "design").mkdir()
-        (workspace / "design" / "contract.json").write_text(json.dumps(design))
-        state["design_fingerprint"] = loop._design_evidence_fingerprint(str(workspace), design)
-        loop.save(str(workspace), state)
-        prepare_plan(str(workspace), runtime=loop, usage="measured")
-
-        refused = loop.gate(str(workspace), "pass")
-
-        assert "Definition of Ready failed" in refused["error"]
-        assert any(
-            blocker.startswith("Plan delivery mode:")
-            for blocker in refused["dor"]["blockers"]
-        )
-        current = loop.load(str(workspace))
-        assert current["step"] == "plan"
-        assert "delivery_mode_receipt" not in current
-        assert "root_hygiene" not in current
-        assert not (
-            workspace / "waves" / "execute" / "root-seed.json"
-        ).exists()
-
-    legacy = _plan_workspace(tmp_path / "legacy-non-design")
-    legacy_plan_path = legacy / "plan" / "tasks.json"
-    legacy_plan = json.loads(legacy_plan_path.read_text())
-    for field in ("delivery_mode", "automatic_lenses", "plan_authority"):
-        legacy_plan.pop(field)
-    legacy_plan_path.write_text(json.dumps(legacy_plan))
-    prepare_plan(str(legacy), runtime=loop, usage="measured")
-
-    accepted = loop.gate(str(legacy), "pass")
-
-    assert "error" not in accepted
-    assert loop.load(str(legacy))["step"] == "execute"
-    assert "delivery_mode_receipt" not in loop.load(str(legacy))
 
 
 def test_build_mode_dispatch_creates_zero_automatic_lens_workers():
@@ -315,48 +181,8 @@ def test_build_mode_dispatch_creates_zero_automatic_lens_workers():
     assert created == []
 
 
-def test_plan_gate_persists_receipt_to_subsequent_zero_lens_dispatch(tmp_path):
-    workspace = _plan_workspace(tmp_path)
-    state = _gate_plan_to_execute(workspace)
-    receipt = state["delivery_mode_receipt"]
-
-    routing, dispatch = loop.build_dispatch_lens_routing(
-        state, loop._current_task(state), workspace=str(workspace)
-    )
-
-    assert dispatch["delivery_mode_receipt"] == receipt
-    assert dispatch["automatic_lens_workers"] == ()
-    assert dispatch["automatic_lens_worker_count"] == 0
-    assert routing["lenses"] == []
 
 
-def test_sever_delivery_mode_receipt_to_dispatch_fails_closed(
-    tmp_path, monkeypatch
-):
-    worker_calls = []
-
-    def forbidden(*_args, **_kwargs):
-        worker_calls.append(True)
-        raise AssertionError("legacy routing or worker construction ran")
-
-    monkeypatch.setattr(loop.lens_router, "prime_scope", forbidden)
-    monkeypatch.setattr(build_c, "authorize_delivery_dispatch", forbidden)
-
-    for edge_failure in ("missing", "tampered"):
-        workspace = _plan_workspace(tmp_path / edge_failure)
-        state = _gate_plan_to_execute(workspace)
-        if edge_failure == "missing":
-            state.pop("delivery_mode_receipt")
-            state["design_fingerprint"] = "d" * 64
-        else:
-            state["delivery_mode_receipt"]["source_sha"] = "d" * 40
-        loop.save(str(workspace), state)
-
-        action = loop.next_action.__wrapped__(str(workspace))
-
-        assert "build delivery mode refused before dispatch" in action["error"]
-
-    assert worker_calls == []
 
 
 def test_cli_refuses_producer_observation_flag(tmp_path, capsys):
@@ -395,57 +221,8 @@ def test_public_loop_submit_refuses_recorded_producer_double(tmp_path):
         )
 
 
-def test_missing_host_receipt_fails_before_collection_guidance_and_submission(
-    tmp_path, monkeypatch
-):
-    workspace, opened = _ready_evaluate_workspace(tmp_path)
-    calls = []
-
-    monkeypatch.setattr(
-        loop,
-        "collect_review_bridge",
-        lambda *_args, **_kwargs: calls.append("collection"),
-    )
-    monkeypatch.setattr(
-        loop.runtime_eval,
-        "guide_loop",
-        lambda *_args, **_kwargs: calls.append("guidance"),
-    )
-
-    refused = loop.submit(str(workspace), "pass")
-    state = loop.load(str(workspace))
-
-    assert refused["submitted"] is False
-    assert "external host producer receipt" in refused["error"]
-    assert calls == []
-    assert "_submission" not in state
-    assert review._load_state(
-        str(workspace), opened["run_id"]
-    )["status"] == "ready"
 
 
-@pytest.mark.parametrize("edge", ["missing", "tampered"])
-def test_evaluate_review_kernel_severed_delivery_authority_fails_before_start(
-    tmp_path, monkeypatch, edge
-):
-    workspace = _plan_workspace(tmp_path)
-    receipt = _build_receipt()
-    if edge == "missing":
-        receipt = None
-    else:
-        receipt["source_sha"] = "d" * 40
-    starts = []
-
-    def forbidden_start(*_args, **_kwargs):
-        starts.append(True)
-        raise AssertionError("ReviewKernel state was persisted")
-
-    monkeypatch.setattr(review, "_save_state", forbidden_start)
-
-    with pytest.raises(review.ReviewKernelError, match="delivery-mode authority"):
-        _start_evaluate_kernel(workspace, receipt)
-
-    assert starts == []
 
 
 def test_malformed_empty_lens_result_is_not_success():

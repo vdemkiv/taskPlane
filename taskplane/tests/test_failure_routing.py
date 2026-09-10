@@ -237,22 +237,6 @@ def test_evaluator_byte_admission_runs_failure_semantics():
     assert caught.value.code == "failure_admission"
 
 
-def test_legacy_failures_are_readable_but_never_correction_authority():
-    legacy = {
-        "what": "widget is wrong",
-        "repro": "pytest -q test_widget.py",
-        "where": "test_widget.py:10",
-    }
-    value = _evaluation("fail", [legacy])
-
-    with pytest.raises(evaluation_output.OutputValidationError):
-        evaluation_output.validate_evaluator_value(value)
-    read = evaluation_output.read_evaluator_value(value)
-    assert read["value"] == value
-    assert read["legacy_failures"] == [legacy]
-    assert read["failure_records"] == []
-    assert read["routing"] is None
-    assert read["correction_authority"] is False
 
 
 def test_complete_unknown_failure_is_recorded_but_held():

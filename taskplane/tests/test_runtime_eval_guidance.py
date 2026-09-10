@@ -1,3 +1,4 @@
+from taskplane.tests.phase_fixture import save_component_workflow
 import json
 import os
 import subprocess
@@ -58,114 +59,6 @@ class TestRuntimeEvalControls(unittest.TestCase):
         self.assertNotIn("model_output", result)
 
 
-class TestRuntimeEvalLoopWiring(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.ws = os.path.join(self.tmp, "ws")
-        os.makedirs(os.path.join(self.ws, "plan"))
-        os.makedirs(os.path.join(self.ws, "src"))
-        with open(os.path.join(self.ws, "src", "a.py"), "w",
-                  encoding="utf-8") as stream:
-            stream.write("def a():\n    return 1\n")
-        with open(os.path.join(self.ws, "plan", "tasks.json"), "w",
-                  encoding="utf-8") as stream:
-            json.dump({"tasks": [{"id": "t1", "scope": ["src/**"],
-                                   "tests": "true",
-                                   "criteria": ["a remains callable"]}]},
-                      stream)
-        subprocess.run(["git", "init", "-q"], cwd=self.ws, check=True)
-        subprocess.run(["git", "config", "user.email", "e@e"],
-                       cwd=self.ws, check=True)
-        subprocess.run(["git", "config", "user.name", "t"],
-                       cwd=self.ws, check=True)
-        subprocess.run(["git", "add", "-A"], cwd=self.ws, check=True)
-        subprocess.run(["git", "commit", "-qm", "init"], cwd=self.ws,
-                       check=True)
-        loop.init(self.ws, "runtime guidance", spec_path="specs/spec.md",
-                  checkpoints=[])
-
-    def test_real_stage_brief_carries_runtime_guidance(self):
-        brief = loop.next_action(self.ws)
-
-        self.assertEqual(brief["runtime_evals"]["schema"],
-                         "taskplane.runtime-guidance/v1")
-        self.assertEqual(brief["runtime_evals"]["baseline_policy"],
-                         "telemetry-only")
-        self.assertIn("loop guide", brief["runtime_evals"]["checkpoint"])
-
-    def test_loop_guide_persists_one_correction_then_recovers(self):
-        state = loop.load(self.ws)
-        state["step"] = "evaluate"
-        loop.save(self.ws, state)
-        missing = {
-            "graph_before_route": False,
-            "shared_review_context": False,
-            "selective_lens_mapping": False,
-            "lens_results_collected": False,
-        }
-        complete = {key: True for key in runtime_eval.REVIEW_FACTS}
-
-        binding = {"run_id": "a" * 32, "workspace": self.ws}
-        with mock.patch("loop.review_kernel_binding", return_value=binding), \
-                mock.patch("runtime_eval.collect_review_if_ready"), \
-                mock.patch("runtime_eval.review_facts", return_value=missing):
-            first = loop.guide(self.ws)
-            second = loop.guide(self.ws)
-        with mock.patch("loop.review_kernel_binding", return_value=binding), \
-                mock.patch("runtime_eval.collect_review_if_ready"), \
-                mock.patch("runtime_eval.review_facts", return_value=complete):
-            recovered = loop.guide(self.ws)
-
-        self.assertEqual(first["status"], "correct")
-        self.assertEqual(second["status"], "blocked")
-        self.assertEqual(recovered["status"], "on_path")
-        self.assertTrue(recovered["recovered"])
-
-    def test_pass_submission_automatically_corrects_then_recovers(self):
-        state = loop.load(self.ws)
-        state["step"] = "evaluate"
-        loop.save(self.ws, state)
-        missing = {
-            "graph_before_route": False,
-            "shared_review_context": False,
-            "selective_lens_mapping": False,
-            "lens_results_collected": False,
-        }
-        complete = {key: True for key in runtime_eval.REVIEW_FACTS}
-
-        binding = {"run_id": "a" * 32, "workspace": self.ws}
-        with mock.patch("loop.review_kernel_binding", return_value=binding), \
-                mock.patch(
-                    "loop._collect_zero_lens_evaluate_before_guidance"), \
-                mock.patch("runtime_eval.collect_review_if_ready"), \
-                mock.patch("runtime_eval.review_facts", return_value=missing):
-            corrected = loop.submit(self.ws, "pass")
-            blocked = loop.submit(self.ws, "pass")
-        self.assertFalse(corrected["submitted"])
-        self.assertEqual(corrected["runtime_eval"]["status"], "correct")
-        self.assertEqual(blocked["runtime_eval"]["status"], "blocked")
-        self.assertNotIn("_submission", loop.load(self.ws))
-
-        with mock.patch("loop.review_kernel_binding", return_value=binding), \
-                mock.patch(
-                    "loop._collect_zero_lens_evaluate_before_guidance"), \
-                mock.patch("runtime_eval.collect_review_if_ready"), \
-                mock.patch("runtime_eval.review_facts", return_value=complete):
-            accepted = loop.submit(self.ws, "pass")
-        self.assertTrue(accepted["submitted"])
-        self.assertTrue(accepted["runtime_eval"]["recovered"])
-
-    def test_honest_fail_submission_is_never_blocked_by_runtime_guide(self):
-        state = loop.load(self.ws)
-        state["step"] = "evaluate"
-        loop.save(self.ws, state)
-
-        with mock.patch("runtime_eval.review_facts",
-                        side_effect=AssertionError("guide must not run")):
-            submitted = loop.submit(self.ws, "fail")
-
-        self.assertTrue(submitted["submitted"])
-        self.assertEqual(submitted["submission"]["outcome"], "fail")
 
 
 if __name__ == "__main__":

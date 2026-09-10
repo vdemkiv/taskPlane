@@ -61,16 +61,6 @@ def _identity(tmp_path: Path, **updates) -> dict:
     return em_outage.outage_identity(**values)
 
 
-def _guarded_task(status="pending") -> dict:
-    return {
-        "id": "REL-2181", "status": status, "deps": [],
-        "scope": ["src/**"], "tests": "true", "criteria": ["green"],
-        "staged_dispatch_guard": {
-            "schema": "taskplane.staged-task-dispatch-guard/v1",
-            "reason": "mandatory_replan_required",
-            "task": "REL-2181", "required_predecessor": "EM-OUTAGE",
-        },
-    }
 
 
 def test_identity_is_deterministic_and_every_bound_input_invalidates(tmp_path):
@@ -255,29 +245,6 @@ def test_existing_public_cli_exposes_only_the_approved_resolve_shape():
     assert "--by" in help_text
 
 
-def test_staged_guard_blocks_serial_wave_and_claim(tmp_path, monkeypatch):
-    ws = _git_ws(tmp_path)
-    task = _guarded_task()
-    loop.init(ws, "g", spec_path="s", parallel=False)
-    state = loop.load(ws)
-    state.update({"step": "execute", "tasks": [task], "current_task": 0,
-                  "parallel": False})
-    loop.save(ws, state)
-    serial = loop.next_action(ws)
-    assert serial["reason"] == "mandatory_replan_required"
-
-    state = loop.load(ws)
-    state["parallel"] = True
-    loop.save(ws, state)
-    monkeypatch.setattr(loop, "_ensure_dispatch_telemetry", lambda _ws: {})
-    monkeypatch.setattr(loop.dispatch_telemetry, "budget_projection",
-                        lambda *_: {"dispatch_allowed": True,
-                                    "triggered": []})
-    waved = loop.wave(ws)
-    assert waved["reason"] == "mandatory_replan_required"
-    assert waved["wave"] == []
-    claimed = loop.claim(ws, "REL-2181", str(tmp_path / "agent"))
-    assert claimed["reason"] == "mandatory_replan_required"
 
 
 def _outage_state(identity: dict, snapshot: dict) -> dict:
@@ -298,14 +265,10 @@ def _outage_state(identity: dict, snapshot: dict) -> dict:
 
 def _save_outage_state(ws: str, identity: dict, snapshot: dict) -> None:
     """Place outage evidence on a real initialized run control plane."""
-    state = loop.load(ws)
-    if state is None:
-        initialized = loop.init(ws, "resolve an engineering review outage")
-        assert "error" not in initialized, initialized
-        state = loop.load(ws)
-    assert state is not None
+    from taskplane.tests.phase_fixture import save_component_workflow
+    state = loop.load(ws) or {"goal": "outage component"}
     state.update(_outage_state(identity, snapshot))
-    loop.save(ws, state)
+    save_component_workflow(ws, state)
 
 
 def _patch_resolution(monkeypatch, identity, snapshot):
@@ -411,21 +374,6 @@ def test_control_plane_identity_rejects_real_worker_slot_context(
         loop._em_outage_control_plane_identity(ws, {"step": "em"})
 
 
-def test_outage_sealing_refuses_non_producer_blockers_without_state_change(
-        tmp_path, monkeypatch):
-    ws = _git_ws(tmp_path)
-    loop.save(ws, {"step": "em", "tasks": [], "current_task": 0})
-    before = json.dumps(loop.load(ws), sort_keys=True)
-    monkeypatch.setattr(
-        loop, "_em_outage_candidate",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            em_outage.EmOutageError("EM has non-producer blockers")))
-    refused = loop._record_em_producer_receipt_outage(
-        ws, loop.load(ws), None,
-        loop.producer_observation_policy.ProducerObservationError(
-            "missing host producer observation"))
-    assert "fail-closed" in refused["error"]
-    assert json.dumps(loop.load(ws), sort_keys=True) == before
 
 
 def test_stage_transition_failure_rolls_back_consumption_and_signoff(

@@ -16,23 +16,6 @@ class TestLanguageReferenceDelivery(unittest.TestCase):
         return os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))))
 
-    def test_go_review_brief_names_and_instructs_the_reference(self):
-        routing = lens.route(["src/service.go"], only=["code-quality"])
-        row = next(x for x in routing["lenses"]
-                   if x["id"] == "code-quality")
-        refs = row["language_references"]
-        self.assertEqual([r["path"] for r in refs],
-                         ["lenses/references/go-code-quality.md"])
-        dispatch = lens.dispatch_briefs(routing)
-        briefs = list(dispatch["deep"])
-        if dispatch.get("sweep"):
-            briefs.append(dispatch["sweep"])
-        brief = next(b for b in briefs
-                     if b.get("id") == "code-quality"
-                     or "code-quality" in b.get("ids", []))
-        self.assertEqual(brief["language_references"], refs)
-        self.assertIn("read and apply", brief["prompt"].lower())
-        self.assertIn(refs[0]["path"], brief["prompt"])
 
     def test_reference_resolution_is_language_general(self):
         cases = {

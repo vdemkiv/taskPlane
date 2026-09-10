@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from taskplane.tests.phase_fixture import save_component_workflow
+
 import hashlib
 import io
 import json
@@ -177,7 +179,7 @@ def _write_codex_transcript(path: os.PathLike[str], *, label: str,
                         "parent_thread_id": event["session_id"],
                         "agent_path": "/root/" + event["task_name"]}}}}
                    if event else {}),
-                **({"history_base": {"kind": "resume"}}
+                **({"history_base": {"thread_id": event["agent_id"] if event else native_session_id, "end_ordinal_exclusive": 1, "end_byte_offset": 1}}
                    if resumed else {}),
             },
         }) + "\n")
@@ -712,7 +714,7 @@ def test_root_screen_and_worker_binding_are_one_idempotent_admission_operation()
 def test_subagent_stop_seals_content_bound_usage_and_actual_outcome(
         tmp_path, monkeypatch, capsys, outcome, terminal_kind):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(workspace, label=terminal_kind)
 
     assert not any(
@@ -763,7 +765,7 @@ def test_subagent_stop_seals_content_bound_usage_and_actual_outcome(
 def test_native_counter_reaches_nonzero_retro_and_dashboard_consumers(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(workspace, label="consumer_wire")
     _screen_dispatch(workspace, expected, monkeypatch, capsys)
     _activate_worker(workspace, expected, slot="task_consumer_wire")
@@ -806,7 +808,7 @@ def test_native_counter_reaches_nonzero_retro_and_dashboard_consumers(
         "lessons": [],
     }
     retro._write_report(workspace, state, report, [])
-    retro_text = (tmp_path / ".taskplane" / "retro.md").read_text(
+    retro_text = (Path(tp.tp_dir(workspace)) / "retro.md").read_text(
         encoding="utf-8")
     assert "token usage status: available" in retro_text
     assert "observed total tokens: 18" in retro_text
@@ -822,7 +824,7 @@ def test_native_counter_reaches_nonzero_retro_and_dashboard_consumers(
 def test_resumed_native_session_reset_is_attributed_as_a_new_segment(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     shared_session = str(uuid5(NAMESPACE_URL, "session-resumed-worker"))
     expected_totals = [12, 20]
     for index, total in enumerate(expected_totals, start=1):
@@ -862,7 +864,7 @@ def test_resumed_native_session_reset_is_attributed_as_a_new_segment(
 def test_missing_native_counter_blocks_terminal_release_without_zero_fallback(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(workspace, label="missing")
     assert not any(
         (row.get("hookSpecificOutput") or {}).get("permissionDecision") ==
@@ -891,7 +893,7 @@ def test_missing_native_counter_blocks_terminal_release_without_zero_fallback(
 def test_terminal_native_counter_at_pickup_ceiling_blocks_release(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(workspace, label="terminal_ceiling")
     _screen_dispatch(workspace, expected, monkeypatch, capsys)
     contract = _activate_worker(
@@ -921,7 +923,7 @@ def test_terminal_native_counter_at_pickup_ceiling_blocks_release(
 def test_dispatch_refuses_severed_context_boundary_before_binding(
         tmp_path, monkeypatch, capsys, observed):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(workspace, label=f"context-{observed}")
 
     output = _screen_dispatch(
@@ -941,7 +943,7 @@ def test_dispatch_refuses_severed_context_boundary_before_binding(
 def test_null_or_zero_native_meter_refuses_before_worker_dispatch_binding(
         tmp_path, monkeypatch, capsys, preflight_tokens):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(workspace, label="null-preflight")
 
     output = _screen_dispatch(
@@ -990,7 +992,7 @@ def test_canonical_context_flows_from_intent_into_observed_spawn_boundary(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
     state = _state()
-    loop.save(workspace, state)
+    save_component_workflow(workspace, state)
     task_name = _task_name("context-live")
     native_intent = loop._native_dispatch_intent(
         workspace, state, step="execute", task_id="task-a",
@@ -1059,7 +1061,7 @@ def test_canonical_pickup_budget_is_nonzero_and_controls_real_screen(
 def test_ungoverned_main_hook_keeps_active_loop_native_total_current(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     transcript = tmp_path / "native-main.jsonl"
 
     def screen(total_tokens: int) -> None:
@@ -1096,7 +1098,7 @@ def test_ungoverned_main_hook_keeps_active_loop_native_total_current(
 def test_main_meter_observability_failure_never_claims_ungoverned_authority(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     monkeypatch.setattr(
         cli.tp, "trace", lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("trace unavailable")))
@@ -1115,7 +1117,7 @@ def test_main_meter_observability_failure_never_claims_ungoverned_authority(
 def test_usage_and_terminal_replay_are_idempotent_for_one_exact_attempt(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(workspace, label="replay")
     _screen_dispatch(workspace, expected, monkeypatch, capsys)
     usage = {
@@ -1163,7 +1165,7 @@ def test_usage_and_terminal_replay_are_idempotent_for_one_exact_attempt(
 def test_retry_attempts_with_same_plan_task_cannot_cross_bind_usage(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     attempts = [
         _record_expectation(workspace, label="retry-one"),
         _record_expectation(workspace, label="retry-two"),
@@ -1232,7 +1234,7 @@ def test_retry_attempts_with_same_plan_task_cannot_cross_bind_usage(
 def test_cross_run_intent_is_denied_and_remains_retryable(
         tmp_path, monkeypatch, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state())
+    save_component_workflow(workspace, _state())
     expected = _record_expectation(
         workspace, label="wrong-run", run_id="another-run")
 
@@ -1281,10 +1283,10 @@ def test_terminal_intent_census_mismatch_reports_usage_unavailable(
 def test_active_run_refuses_standalone_lens_dispatch_before_untracked_state(
         tmp_path, capsys):
     workspace = str(tmp_path)
-    loop.save(workspace, _state(step="em"))
+    save_component_workflow(workspace, _state(step="em"))
 
     rc = cli.main([
-        "lens", "dispatch", "--workspace", workspace, "--emit", "task",
+        "lens", "dispatch", "--workspace", workspace,
     ])
 
     captured = capsys.readouterr()

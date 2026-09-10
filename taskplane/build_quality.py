@@ -4,6 +4,11 @@ This effect-free policy does not impose a receipt or CI step on Build/Fix.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 import copy
 import hashlib
 import json
@@ -31,13 +36,7 @@ class BuildQualityError(ValueError):
 
 def _canonical(value: object) -> bytes:
     try:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        ).encode("utf-8")
+        return _json_primitives.canonical_bytes(value, ensure_ascii=True)
     except (TypeError, ValueError) as exc:
         raise BuildQualityError(
             "portable_json", "build-quality values must be portable JSON"

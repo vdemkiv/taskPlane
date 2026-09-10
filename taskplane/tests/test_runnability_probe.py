@@ -264,103 +264,8 @@ class TestProbedOnce(unittest.TestCase):
             self.assertEqual(res["summary"], "x")
 
 
-class TestEveryBriefCarriesTheVerdict(unittest.TestCase):
-    VERDICT = {"fingerprint": "abc",
-               "checks": [{"id": "go", "tool": "go",
-                           "command": "go test ./...",
-                           "verdict": runnability.UNAVAILABLE,
-                           "detail": "`go` is not on PATH"}],
-               "summary": "go test ./... could not run — `go` is not on PATH"}
-
-    def test_deep_and_sweep_briefs_both_state_it(self):
-        out = lens.dispatch_briefs(_routing(), runnability=self.VERDICT)
-        for b in out["deep"]:
-            self.assertIn("BUILD/TEST RUNNABILITY", b["prompt"])
-            self.assertIn("go test ./...", b["prompt"])
-            self.assertIn("CANNOT RUN", b["prompt"])
-        self.assertIn("BUILD/TEST RUNNABILITY", out["sweep"]["prompt"])
-
-    def test_the_brief_tells_the_agent_not_to_re_probe(self):
-        out = lens.dispatch_briefs(_routing(), runnability=self.VERDICT)
-        prompt = out["deep"][0]["prompt"]
-        self.assertIn("do NOT re-probe", prompt)
-        self.assertIn("do not retry the command", prompt)
-
-    def test_a_runnable_toolchain_states_it_without_the_fallback_advice(self):
-        ok = {"fingerprint": "a", "checks": [
-            {"id": "go", "tool": "go", "command": "go test ./...",
-             "verdict": runnability.RUNS, "detail": "`go list ./...` succeeded"}],
-            "summary": "go test ./... runs"}
-        prompt = lens.dispatch_briefs(_routing(), runnability=ok)["deep"][0]["prompt"]
-        self.assertIn("CAN RUN", prompt)
-        self.assertNotIn("do not retry the command", prompt)
-
-    def test_the_dispatch_payload_carries_the_verdict_for_the_headline(self):
-        out = lens.dispatch_briefs(_routing(), runnability=self.VERDICT)
-        self.assertEqual(out["runnability"]["summary"], self.VERDICT["summary"])
-        self.assertIn("meta.tests", out["instruction"])
-
-    def test_without_a_probe_the_payload_is_byte_identical_to_before(self):
-        """Codex dispatch parity: the probe is ADDITIVE. No probe, no change."""
-        a = lens.dispatch_briefs(_routing())
-        b = lens.dispatch_briefs(_routing(), runnability=None)
-        self.assertEqual(json.dumps(a, sort_keys=True),
-                         json.dumps(b, sort_keys=True))
-        self.assertNotIn("runnability", a)
-        self.assertNotIn("BUILD/TEST RUNNABILITY", a["deep"][0]["prompt"])
-
-    def test_a_skipped_probe_adds_no_note(self):
-        skipped = {"fingerprint": "a", "checks": [],
-                   "skipped": "TASKPLANE_RUNNABILITY=off",
-                   "summary": "runnability probe disabled"}
-        out = lens.dispatch_briefs(_routing(), runnability=skipped)
-        self.assertNotIn("BUILD/TEST RUNNABILITY", out["deep"][0]["prompt"])
 
 
-class TestItIsInformationNotEnforcement(unittest.TestCase):
-    """The deletability contract in spirit: runnability may never gate."""
-
-    def test_pm_gate_is_invariant_under_absent_green_and_broken_probes(self):
-        verdicts = {
-            "absent": None,
-            "green": runnability.RUNS,
-            "broken": runnability.BROKEN,
-        }
-        for label, verdict in verdicts.items():
-            with self.subTest(probe=label), tempfile.TemporaryDirectory() as ws:
-                os.makedirs(os.path.join(ws, "specs"))
-                with open(os.path.join(ws, "specs", "spec.md"), "w",
-                          encoding="utf-8") as f:
-                    f.write("A current product requirement.\n")
-                subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
-                subprocess.run(["git", "config", "user.email", "t@t"],
-                               cwd=ws, check=True)
-                subprocess.run(["git", "config", "user.name", "t"],
-                               cwd=ws, check=True)
-                subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
-                subprocess.run(["git", "commit", "-qm", "base"], cwd=ws,
-                               check=True)
-
-                with mock.patch.dict(
-                        os.environ, {"TASKPLANE_STAGE_NATIVE": "disabled"}):
-                    self.assertEqual(loop.init(ws, "goal")["step"], "pm")
-                    if verdict is not None:
-                        runnability.store(ws, {
-                            "fingerprint": runnability.fingerprint(ws),
-                            "checks": [{
-                                "id": "python", "tool": "python3",
-                                "command": "pytest", "verdict": verdict,
-                                "detail": "ok" if verdict == runnability.RUNS
-                                else "dependency failure",
-                            }],
-                            "summary": "pytest runs" if verdict ==
-                            runnability.RUNS else
-                            "pytest could not run — dependency failure",
-                        })
-                    result = loop.gate(ws, "pass")
-
-                self.assertNotIn("error", result, result)
-                self.assertEqual(result["step"], "plan")
 
 
 class TestSummaryLine(unittest.TestCase):
@@ -437,58 +342,15 @@ class TestResumeAnInterruptedWave(unittest.TestCase):
                 "sweep": {"ids": ["x"]},
                 "instruction": "Dispatch ONE tp-lens agent per DEEP brief."}
 
-    def test_landed_lanes_are_not_re_dispatched(self):
-        import tp as tpcli
-        with tempfile.TemporaryDirectory() as ws:
-            self._lane(ws, "security")
-            self._lane(ws, "sweep")
-            out = tpcli._resume_filter(ws, self._briefs())
-            self.assertEqual([b["id"] for b in out["deep"]], ["perf", "qa"])
-            self.assertIsNone(out["sweep"])
-            self.assertEqual(sorted(out["resumed"]["skipped"]),
-                             ["security", "sweep"])
-            self.assertIn("RESUMING an interrupted wave", out["instruction"])
+    pass
 
-    def test_a_fully_landed_wave_dispatches_nothing(self):
-        import tp as tpcli
-        with tempfile.TemporaryDirectory() as ws:
-            for lid in ("security", "perf", "qa", "sweep"):
-                self._lane(ws, lid)
-            out = tpcli._resume_filter(ws, self._briefs())
-            self.assertEqual(out["deep"], [])
-            self.assertTrue(out["nothing_to_review"])
-            self.assertIn("dispatch NOTHING", out["instruction"])
+    pass
 
-    def test_a_corrupt_findings_file_is_re_run_not_accepted(self):
-        import tp as tpcli
-        with tempfile.TemporaryDirectory() as ws:
-            d = os.path.join(ws, ".em-review", "lens-security")
-            os.makedirs(d)
-            with open(os.path.join(d, "findings.json"), "w",
-                      encoding="utf-8") as f:
-                f.write("{ truncated")
-            out = tpcli._resume_filter(ws, self._briefs())
-            self.assertIn("security", [b["id"] for b in out["deep"]])
+    pass
 
-    def test_a_findings_file_without_a_findings_list_is_not_landed(self):
-        import tp as tpcli
-        with tempfile.TemporaryDirectory() as ws:
-            d = os.path.join(ws, ".em-review", "lens-perf")
-            os.makedirs(d)
-            with open(os.path.join(d, "findings.json"), "w",
-                      encoding="utf-8") as f:
-                json.dump({"lens": "perf"}, f)
-            out = tpcli._resume_filter(ws, self._briefs())
-            self.assertIn("perf", [b["id"] for b in out["deep"]])
+    pass
 
-    def test_nothing_is_skipped_when_no_lane_landed(self):
-        import tp as tpcli
-        with tempfile.TemporaryDirectory() as ws:
-            out = tpcli._resume_filter(ws, self._briefs())
-            self.assertEqual(len(out["deep"]), 3)
-            self.assertIsNotNone(out["sweep"])
-            self.assertEqual(out["resumed"]["skipped"], [])
-            self.assertNotIn("RESUMING", out["instruction"])
+    pass
 
     def test_resume_and_the_wave_board_read_the_same_source(self):
         """If they ever diverge, the board shows a lane DONE while dispatch

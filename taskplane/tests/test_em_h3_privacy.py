@@ -1,6 +1,9 @@
 """Focused adversarial evidence for H3 privacy and retention closure."""
 from __future__ import annotations
 
+import audit_projection
+import storage
+
 import json
 import os
 from pathlib import Path
@@ -87,7 +90,7 @@ def test_h23_durable_command_artifacts_are_minimized_and_sanitized(
                for row in rows)
 
 
-def test_h23_command_retention_migrates_and_purges_owned_logs(
+def test_h23_command_retention_bounds_current_handles(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     clock = [100.0]
     root = tmp_path / "commands"
@@ -105,23 +108,9 @@ def test_h23_command_retention_migrates_and_purges_owned_logs(
         runtime.transition(handle, "succeeded")
         handles.append(handle)
 
-    # Simulate an installed pre-policy generation with a raw output copy.
-    legacy = root / handles[-1]
-    snapshot_path = legacy / "snapshot.json"
-    snapshot = json.loads(snapshot_path.read_text())
-    snapshot.pop("privacy_retention")
-    snapshot["output_summary"] = "patient Rowan diagnosis"
-    snapshot_path.write_text(json.dumps(snapshot))
-    (legacy / "artifacts" / "output.log").write_text(
-        "patient Rowan diagnosis")
-    (root / "legacy-command.log").write_text("patient Rowan diagnosis")
-
     restarted = CommandRuntime(
         str(root), workspace="repository", authorization="operator",
         clock=lambda: clock[0])
-    assert not (root / "legacy-command.log").exists()
-    assert not (legacy / "artifacts").exists()
-    assert "Rowan" not in snapshot_path.read_text()
     monkeypatch.setattr(command_runtime, "COMMAND_RETENTION_MAX_HANDLES", 2)
     result = restarted.enforce_retention()
     assert result["retained"] == 2
@@ -301,8 +290,8 @@ def test_h25_rotated_audit_archives_are_bounded(
     workspace = _repository(tmp_path / "repo")
     root = Path(tp.tp_dir(str(workspace)))
     root.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(tp, "_TRACE_ARCHIVE_MAX_FILES", 2)
-    monkeypatch.setattr(tp, "_TRACE_ARCHIVE_MAX_BYTES", 1024)
+    monkeypatch.setattr(audit_projection, "_TRACE_ARCHIVE_MAX_FILES", 2)
+    monkeypatch.setattr(audit_projection, "_TRACE_ARCHIVE_MAX_BYTES", 1024)
     for suffix in range(1, 5):
         archive = root / f"trace.jsonl.{suffix}"
         archive.write_text(json.dumps(tp.audit_record(
@@ -367,7 +356,7 @@ def test_l04_shared_metadata_write_failure_quarantines_stale_raw_file(
     def fail_write(*_args, **_kwargs):
         raise OSError("disk refused replacement")
 
-    monkeypatch.setattr(tp, "atomic_write_json", fail_write)
+    monkeypatch.setattr(storage, "atomic_write_json", fail_write)
     with pytest.raises(tp.StateError, match="failed closed"):
         tp.write_store_meta(str(workspace))
     assert not path.exists()

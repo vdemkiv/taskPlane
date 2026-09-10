@@ -1,6 +1,7 @@
 """Behavioral proof that dashboard graphs belong to the active run snapshot."""
 
 from __future__ import annotations
+from taskplane import host_native
 
 import json
 from pathlib import Path
@@ -41,15 +42,15 @@ def _publish(workspace: Path, *, step: str, target: str, revision: str) -> dict:
         committed_at=f"2026-09-01T00:00:0{revision}Z",
         settings_digest="settings-current",
         source_loader=lambda _ws: {
-            "mode": "legacy", "status": "ready", "run_id": "run-current",
+            "mode": "v4", "status": "ready", "run_id": "run-current",
             "revision": revision, "target": target, "state": state,
             "evidence": ["current-run-state"],
         },
         graph_projector=dashboard.phase_graph_projection,
         metrics_projector=lambda value, **_kwargs: value,
-        publication_loader=storage.load_dashboard_publication,
-        snapshot_committer=storage.commit_dashboard_snapshot,
-        event_committer=storage.commit_dashboard_event,
+        publication_loader=host_native.load_dashboard_publication,
+        snapshot_committer=host_native.commit_dashboard_snapshot,
+        event_committer=host_native.commit_dashboard_event,
         error_formatter=str,
     )
 

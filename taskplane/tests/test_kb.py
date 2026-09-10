@@ -65,40 +65,6 @@ class TestKB(unittest.TestCase):
         self.assertIn("knowledge base", text)
 
 
-class TestKBLoopIntegration(unittest.TestCase):
-    def test_approve_records_and_next_recalls(self):
-        import json
-        import subprocess
-        import loop
-        from tests.root_session_fixture import open_delivery_root
-
-        ws = tempfile.mkdtemp()
-        os.makedirs(os.path.join(ws, "plan"))
-        os.makedirs(os.path.join(ws, "src", "todo"))
-        open(os.path.join(ws, "src", "todo", "a.py"), "w", encoding="utf-8").write("x=1\n")
-        for c in (["init", "-q"], ["add", "-A"]):
-            subprocess.run(["git", *c], cwd=ws)
-        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
-                        "commit", "-qm", "i"], cwd=ws)
-        json.dump({"tasks": [{"id": "t1", "scope": ["src/todo/**"],
-                              "criteria": ["complete() marks done"],
-                              "tests": "true"}]},
-                  open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-
-        loop.init(ws, "add complete()", spec_path="s", checkpoints=["plan", "em"])
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(ws, runtime=loop, usage="measured")
-        loop.gate(ws, "pass")     # plan → plan_approval
-        loop.approve(ws)                                 # records a decision
-        self.assertTrue(kb.list_decisions(ws))           # KB has an entry
-
-        authority = open_delivery_root(ws)
-        act = loop.next_action(                          # execute step
-            ws, root_observation_authority=authority)
-        self.assertIn("knowledge", act)
-        recalled = act["knowledge"]["decisions"]
-        self.assertTrue(any(d["title"].startswith("Plan approved")
-                            for d in recalled))           # relevant recall
 
 
 if __name__ == "__main__":
@@ -151,12 +117,14 @@ class TestStateInExternalStore(unittest.TestCase):
         import loop
         import track
         ws = tempfile.mkdtemp()
-        loop.save(ws, {"goal": "g", "step": "plan", "tasks": None,
+        from taskplane.tests.phase_fixture import save_component_workflow
+        save_component_workflow(ws, {"goal": "g", "step": "plan", "tasks": None,
                        "current_task": 0, "max_fix_cycles": 2,
                        "checkpoints": []})
         track.new(ws, "t1", "goal")
-        self.assertTrue(os.path.exists(
-            os.path.join(loop._state_dir(ws), "loop.json")))   # external store
+        from taskplane import storage
+        locator = storage.load_workspace_locator(ws)
+        self.assertTrue(os.path.isfile(os.path.join(locator["home"], "runs", locator["run_id"], "manifest.json")))
         self.assertTrue(os.path.exists(
             os.path.join(track._state_dir(ws), "tracks.json")))
         # nothing loop/track-shaped left in the runtime dir

@@ -65,7 +65,7 @@ def test_canonical_partition_is_complete_disjoint_and_verified(tmp_path):
     assert omitted == referenced
 
 
-def test_recomputed_oversized_view_is_rejected_before_lease(tmp_path):
+def test_large_verified_view_is_accepted_without_a_byte_ceiling(tmp_path):
     store, envelope_ref, view_ref = _slot(tmp_path)
     envelope = store.read(envelope_ref)
 
@@ -82,9 +82,8 @@ def test_recomputed_oversized_view_is_rejected_before_lease(tmp_path):
 
     oversized = _recomputed_ref(store, view_ref, inline_large_diff)
     assert len(evidence.canonical_bytes(store.read(oversized))) > \
-        evidence.MAX_SCOPED_VIEW_BYTES
-    with pytest.raises(evidence.ProvenanceError, match="byte bound"):
-        review._verify_v3_view(store, envelope_ref, oversized)
+        evidence.INLINE_REVIEW_CONTENT_TARGET_BYTES
+    assert review._verify_v3_view(store, envelope_ref, oversized)["inline_sections"]["diff"]
 
 
 def test_same_target_revision_cross_envelope_reference_is_rejected(tmp_path):

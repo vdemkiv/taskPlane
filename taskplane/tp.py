@@ -60,11 +60,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from taskplane.dispatch_telemetry import AttemptTelemetryInputs
-    from taskplane.loop import PhaseAuthorityCheck
     from taskplane.review_evidence import ArtifactStore
     from taskplane.settings import PhaseRegistry
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_ENGINE_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(_ENGINE_DIRECTORY))
+sys.path.insert(0, _ENGINE_DIRECTORY)
 import taskplane_lite as tp  # noqa: E402
 import host_capabilities as host_caps  # noqa: E402
 import enforcement as enforcement_kernel  # noqa: E402
@@ -81,12 +82,6 @@ else:  # pragma: no cover - direct CLI execution
 
 def _publish_worker_dashboard_refresh(workspace: str, **kwargs):
     """Composition-root adapter for the enforcement kernel's refresh intent."""
-    import loop as loopmod
-    if ((loopmod._load_raw(workspace) or {}).get("legacy_worker_cancellation") or {}).get("cleanup") == "pending":
-        # Administrative cancellation owns only its journal and exact slot.
-        # The ordinary dashboard loader may flush the authority outbox; keep
-        # publication deferred until recoverable lifecycle cleanup completes.
-        raise ValueError("dashboard refresh deferred during legacy worker cancellation")
     import loop_status
     return loop_status.refresh_dashboard_snapshot(workspace, **kwargs)
 
@@ -382,10 +377,7 @@ def _codex_hooks_report(ws: str) -> dict:
     if family:
         installed_engine = _resolve_taskplane_engine(family)
     else:
-        legacy = _codex_runner_engine(runner_body)
-        current = os.path.normcase(os.path.abspath(__file__))
-        installed_engine = (legacy if legacy and os.path.normcase(
-            os.path.abspath(legacy)) == current else None)
+        installed_engine = None
     runner = bool(installed_engine and os.path.isfile(installed_engine))
     return {
         "ok": bool(configured and runner),
@@ -575,19 +567,6 @@ def _enforcement_check(
     return decision, None
 
 
-def _codex_runner_engine(runner_body: str) -> str | None:
-    """Read a legacy generated ENGINE literal.
-
-    Kept only so onboarding can identify and replace pre-v2.16.4 bridges.
-    """
-    match = re.search(r"^ENGINE = (.+)$", str(runner_body or ""), re.MULTILINE)
-    if not match:
-        return None
-    try:
-        value = ast.literal_eval(match.group(1))
-    except (SyntaxError, ValueError):
-        return None
-    return value if isinstance(value, str) and value else None
 
 
 def _codex_runner_family(runner_body: str) -> str | None:
@@ -603,60 +582,10 @@ def _codex_runner_family(runner_body: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _valid_plugin_root(
-        root: str, family: str
-) -> tuple[tuple[int, int, int], str, str] | None:
-    """Validate one contained taskplane installation candidate."""
-    family_real = os.path.realpath(family)
-    root_real = os.path.realpath(root)
-    try:
-        if os.path.commonpath((family_real, root_real)) != family_real:
-            return None
-    except ValueError:
-        return None
-    manifest = os.path.join(root_real, _PLUGIN_MANIFEST)
-    engine = os.path.realpath(os.path.join(root_real, "taskplane", "tp.py"))
-    try:
-        if os.path.commonpath((family_real, engine)) != family_real:
-            return None
-        with open(manifest, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError, TypeError):
-        return None
-    version = data.get("version") if isinstance(data, dict) else None
-    match = _PLUGIN_SEMVER_RE.fullmatch(str(version or ""))
-    if (not isinstance(data, dict) or not match
-            or data.get("name") != "taskplane"
-            or not os.path.isfile(engine)):
-        return None
-    # Installed cache children are named by version. The family itself is
-    # also accepted so a source checkout remains a valid development runner.
-    if (root_real != family_real
-            and os.path.basename(root_real) != str(version)):
-        return None
-    return tuple(int(part) for part in match.groups()[:3]), str(version), engine
-
-
-def _resolve_taskplane_engine(family: str | None) -> str | None:
-    """Resolve the newest valid engine inside one installation family."""
-    if not isinstance(family, str) or not family:
-        return None
-    family_real = os.path.realpath(os.path.expanduser(family))
-    roots = [family_real]
-    try:
-        roots.extend(os.path.join(family_real, name)
-                     for name in os.listdir(family_real))
-    except OSError:
-        return None
-    candidates = [row for root in roots
-                  if (row := _valid_plugin_root(root, family_real))]
-    if not candidates:
-        return None
-    newest_version = max(row[0] for row in candidates)
-    newest = [row for row in candidates if row[0] == newest_version]
-    if len(newest) != 1:
-        return None
-    return newest[0][2]
+from host_capabilities import (
+    valid_plugin_root as _valid_plugin_root,
+    resolve_plugin_engine as _resolve_taskplane_engine,
+)
 
 
 def _plugin_family_for_engine(engine: str) -> str:
@@ -671,50 +600,19 @@ def _plugin_family_for_engine(engine: str) -> str:
 
 
 def _codex_runner_body(family: str) -> str:
-    """Render a standalone bridge that survives removal of old versions."""
-    return f'''# Generated locally by taskplane onboarding; .taskplane is ignored.
-import json, os, re, runpy, sys
-PLUGIN_FAMILY = {os.path.abspath(family)!r}
-family = os.path.realpath(os.path.expanduser(PLUGIN_FAMILY))
-version_re = re.compile(
-    r"^(\\d+)\\.(\\d+)\\.(\\d+)(?:\\+codex\\."
-    r"[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$")
-candidates = []
-try:
-    roots = [family] + [os.path.join(family, name) for name in os.listdir(family)]
-except OSError:
-    roots = []
-for root in roots:
-    real_root = os.path.realpath(root)
-    manifest = os.path.join(real_root, ".codex-plugin", "plugin.json")
-    engine = os.path.realpath(os.path.join(real_root, "taskplane", "tp.py"))
-    try:
-        if os.path.commonpath((family, real_root)) != family:
-            continue
-        if os.path.commonpath((family, engine)) != family:
-            continue
-        with open(manifest, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError, TypeError):
-        continue
-    version = data.get("version") if isinstance(data, dict) else None
-    match = version_re.fullmatch(str(version or ""))
-    if not isinstance(data, dict) or not match or data.get("name") != "taskplane" or not os.path.isfile(engine):
-        continue
-    if real_root != family and os.path.basename(real_root) != str(version):
-        continue
-    candidates.append((tuple(int(part) for part in match.groups()[:3]),
-                       str(version), engine))
-if not candidates:
-    raise SystemExit("taskplane Codex hook bridge found no valid installed engine")
-newest_version = max(row[0] for row in candidates)
-newest = [row for row in candidates if row[0] == newest_version]
-if len(newest) != 1:
-    raise SystemExit("taskplane Codex hook bridge found ambiguous newest installed engines")
-ENGINE = newest[0][2]
-sys.argv = [ENGINE, *sys.argv[1:]]
-runpy.run_path(ENGINE, run_name="__main__")
-'''
+    """Embed the same standalone resolver used by onboarding."""
+    import inspect
+    return ("# Generated locally by taskplane onboarding; .taskplane is ignored.\n"
+        "from __future__ import annotations\n"
+        "import json, os, re, runpy, sys\n"
+        + inspect.getsource(_valid_plugin_root)
+        + inspect.getsource(_resolve_taskplane_engine)
+        + f"\nPLUGIN_FAMILY = {os.path.abspath(family)!r}\n"
+        + "ENGINE = resolve_plugin_engine(PLUGIN_FAMILY)\n"
+        + "if ENGINE is None:\n"
+        + "    raise SystemExit('taskplane Codex hook bridge found no unique valid installed engine')\n"
+        + "sys.argv = [ENGINE, *sys.argv[1:]]\n"
+        + "runpy.run_path(ENGINE, run_name='__main__')\n")
 
 
 def _codex_hook_action(command: str) -> str:
@@ -980,11 +878,33 @@ def _onboard_report(ws: str) -> dict:
     ]
     recovery_command = ["python3", ".taskplane/codex-hook.py", "repository",
                         "prepare", os.path.realpath(ws)]
+    retired_run = run_readiness["status"] == "unsupported_run_schema"
+    if retired_run:
+        recovery_command = ["python3", ".taskplane/codex-hook.py", "loop", "archive",
+                            "--workspace", os.path.realpath(ws), "--by", "human:owner"]
     checks.append({
         "id": "run_binding", "label": "Declared run manifest",
         "ok": run_readiness["ready"], "detail": run_readiness["status"],
-        "hint": "Use repository prepare to recover the declared run binding; "
-                "preserve existing knowledge and artifacts."})
+        "hint": ("Archive the retained run with human authorization before starting current delivery."
+                 if retired_run else "Use repository prepare to recover the declared run binding; "
+                 "preserve existing knowledge and artifacts.")})
+    from taskplane import loop as phase_runtime
+    effective = _effective_settings_snapshot()
+    phase_configuration = {"source": "agents/spec-phase-definitions.json",
+                           "settings_digest": effective.digest}
+    try:
+        registry, _ = phase_runtime._phase_bridge_registry({
+            "definition_source": phase_configuration["source"]})
+        phase_configuration.update(status="ready",
+            definition_set_fingerprint=registry.definition_set_fingerprint,
+            phases=[phase.id for phase in registry.phases])
+    except (OSError, ValueError) as exc:
+        phase_configuration.update(status="invalid", error=str(exc))
+    phase_ready = phase_configuration["status"] == "ready"
+    checks.append({"id": "phase_configuration", "label": "Phase configuration",
+        "ok": phase_ready, "detail": phase_configuration.get("error") or
+        " → ".join(phase_configuration["phases"]),
+        "hint": "Use one validated plugin build whose phase definitions match its skills; preserve the current run."})
     codex_hooks = _codex_hooks_report(ws) if is_codex else None
     host_capabilities = None
     if codex_hooks is not None:
@@ -1047,15 +967,19 @@ def _onboard_report(ws: str) -> dict:
             },
         ))
     base_ready = (looks_like_project and inside_git and has_commit and has_context
-                  and run_readiness["ready"])
+                  and run_readiness["ready"] and phase_ready)
     ready = base_ready and (host_capabilities is None
                             or bool(host_capabilities["ready"]))
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
         nxt = "init_git"
+    elif retired_run:
+        nxt = "archive_run"
     elif not run_readiness["ready"]:
         nxt = "recover_run_binding"
+    elif not phase_ready:
+        nxt = "repair_phase_configuration"
     elif not has_context:
         nxt = "tp_init"
     elif host_capabilities is not None and not host_capabilities["ready"]:
@@ -1096,6 +1020,11 @@ def _onboard_report(ws: str) -> dict:
             "has_context": has_context, "ready": ready,
             "checks": checks, "next_action": nxt,
             "run_readiness": run_readiness,
+            "phase_configuration": phase_configuration,
+            "settings": {"source": str(effective.receipt.get("source") or
+                          "taskplane/operational-settings.json"),
+                         "digest": effective.digest,
+                         "stages": {name: value.to_dict() for name, value in effective.stages.items()}},
             "recovery": ({"command_argv": recovery_command,
                           "preserve_existing_state": True}
                          if not run_readiness["ready"] else None),
@@ -1706,24 +1635,6 @@ def cmd_screen_dispatch(a) -> int:
                     "permissionDecision": "deny",
                     "permissionDecisionReason": reason}}))
                 return 0
-        # Focused lens assignments become durable only when this exact native
-        # dispatch has passed every role/model/intent check. The append is
-        # receipt-idempotent so a hook retry cannot manufacture activity.
-        if ok and exp is not None and any(exp.get(key) for key in (
-                "design_host_authority", "plan_host_authority")):
-            try:
-                tp.record_design_dispatch_assignment_activity(ws, exp)
-            except Exception as activity_error:
-                reason = (
-                    "taskplane lens dispatch activity failed closed for "
-                    f"{exp.get('ref') or agent!r} "
-                    f"({type(activity_error).__name__}: {activity_error}); "
-                    "the expectation remains pending for a safe retry.")
-                print(json.dumps({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason}}))
-                return 0
         if ok and exp is not None and exp.get("intent_id"):
             try:
                 import loop as _loop_runtime
@@ -1905,6 +1816,17 @@ def cmd_subagent_start(a) -> int:
     if binding is not None:
         try:
             tp.record_worker_start_activity(ws, binding, event)
+            if binding["contract"].get("evidence_input"):
+                from taskplane import loop as evidence_loop
+                lifecycle = binding["contract"]["worker_lifecycle"]
+                route, child = evidence_loop.observed_evaluate_evidence_child(
+                    evidence_loop.load(ws), lifecycle["expected_task_name"])
+                if child is None or child["evidence_input"] != binding["contract"]["evidence_input"]:
+                    raise ValueError("evidence worker Start has no exact assignment")
+                evidence_loop.record_native_dispatch_observation(ws, expected={
+                    "kind": "step", "agent": child["role"], "ref": lifecycle["task"],
+                    "intent_id": lifecycle["dispatch_intent_id"], "intent_run_id": route["run_id"]},
+                    native_task_name=lifecycle["expected_task_name"])
         except Exception as exc:
             reason = (
                 "taskplane blocked governed worker startup because host-issued "
@@ -1970,6 +1892,65 @@ def cmd_subagent_start(a) -> int:
     return 0
 
 
+def _collect_delivery_producer_on_stop(ws, lifecycle_contract, event):
+    producer_error = None
+    producer_binding = (lifecycle_contract or {}).get("producer_dispatch") or {}
+    required_delivery = producer_binding.get("stage") in {"evaluate", "em"}
+    delivery = None
+    try:
+        import loop as _loop_runtime
+        import producer_observation as _producer_observation
+        state = _loop_runtime.load(ws)
+        step = (state or {}).get("step")
+        task = _loop_runtime._current_task(state or {})
+        required_delivery = required_delivery or (step in {"evaluate", "em"} and
+                             (state or {}).get(
+                                 "delivery_mode_receipt") is not None)
+        delivery = (_loop_runtime._validated_delivery_mode(state or {})
+                    if step in {"evaluate", "em"} else None)
+        existing = (state or {}).get("_submission") or {}
+        if required_delivery and (delivery is None or step not in {"evaluate", "em"}):
+            raise _producer_observation.ProducerObservationError(
+                "bound producer requires its current delivery observation authority")
+        if delivery is not None and step in {"evaluate", "em"}:
+            if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() \
+                    not in {"native", "bridge"}:
+                raise _producer_observation.ProducerObservationError(
+                    "producer observation requires a claimed host hook")
+            contract = lifecycle_contract or {}
+            binding = contract.get("submission_contract") or {}
+            expected_task = str((task or {}).get("id") or
+                                "engineering-signoff")
+            if binding.get("stage") != step or \
+                    binding.get("task") != expected_task:
+                raise _producer_observation.ProducerObservationError(
+                    "active submission contract does not match producer")
+            material = _loop_runtime.producer_output_identity(
+                ws, state, task, step, active_contract=contract)
+            if isinstance(existing.get("producer_observation"), dict):
+                _producer_observation.validate_consumed_matching_observation(
+                    existing["producer_observation"], **material)
+            else:
+                receipt = _producer_observation.record_codex_subagent_stop(
+                    event=event,
+                    hook_claim_id=str(
+                        event.get("_taskplane_hook_claim_id") or ""),
+                    **material)
+                tp.trace(ws, "producer_observation_recorded", step=step,
+                         task=expected_task, run_id=material["run_id"],
+                         fingerprint=receipt["fingerprint"][:12])
+            _loop_runtime.collect_submission_observation(
+                ws, slot=str(contract.get("task_slot") or ""))
+    except Exception as exc:
+        if ('delivery' in locals() and delivery is not None) or \
+                ('required_delivery' in locals() and required_delivery):
+            producer_error = f"{type(exc).__name__}: {exc}"
+            tp.trace(ws, "producer_observation_failed", step=(state or {}).get(
+                "step") if 'state' in locals() else None,
+                error=type(exc).__name__)
+    return producer_error
+
+
 def cmd_subagent_stop(a) -> int:
     """Trace completion and observe sealed evaluator/EM output bytes."""
     event = _subagent_event()
@@ -1988,6 +1969,8 @@ def cmd_subagent_stop(a) -> int:
     if isinstance(lifecycle_contract, dict) and lifecycle_contract.get("phase_runtime") is not None:
         try:
             from taskplane import loop as _phase_loop
+            if producer_error := _collect_delivery_producer_on_stop(ws, lifecycle_contract, event):
+                raise ValueError(producer_error)
             collected = _phase_loop.observe_phase_runtime_hook(ws, lifecycle_contract, event)
             if not isinstance(collected, dict) or collected.get("status") != "collected":
                 raise ValueError("phase output remains pending: " + str((collected or {}).get("reason_code")))
@@ -2009,13 +1992,8 @@ def cmd_subagent_stop(a) -> int:
     try:
         import loop as _loop_runtime
         state = _loop_runtime.load(ws) or {}
-        route = state.get("evaluate_child_evidence")
         native_task_name = str(event.get("task_name") or event.get("agent_type") or "")
-        evidence_child = (next((row for row in route.get(
-            "child_dispatches") or []
-            if isinstance(row, dict) and
-            row.get("task_name") == native_task_name), None)
-            if isinstance(route, dict) else None)
+        route, evidence_child = _loop_runtime.observed_evaluate_evidence_child(state, native_task_name)
         if isinstance(evidence_child, dict):
             raw_result = event.get("last_assistant_message")
             if not isinstance(raw_result, str) or not raw_result.strip():
@@ -2083,9 +2061,9 @@ def cmd_subagent_stop(a) -> int:
                     str(terminal_state.get("run_id") or "") or
                     str(telemetry_ledger.get("source_sha") or "") !=
                     str(terminal_state.get("baseline") or "") or
-                    str(telemetry_ledger.get("design_fingerprint") or "") !=
+                    str(terminal_state.get("design_fingerprint") or "") !=
                     str(binding.get("design_fingerprint") or "") or
-                    str(telemetry_ledger.get("plan_fingerprint") or "") !=
+                    str(terminal_state.get("plan_fingerprint") or "") !=
                     str(binding.get("plan_fingerprint") or "") or
                     str(terminal_state.get("settings_digest") or "") !=
                     str(binding.get("settings_digest") or "") or
@@ -2103,6 +2081,13 @@ def cmd_subagent_stop(a) -> int:
                     "exact terminal outcome")
         child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
             ws, event)
+        if child_result is not None:
+            terminal_event = {**event, "usage_reference": {
+                "schema": "taskplane.native-dispatch-usage-reference/v1",
+                "dispatch_receipt": telemetry_receipt,
+                "native_session": telemetry.get("native_session")}}
+            tp.terminalize_worker_contract(ws, terminal_event,
+                outcome=normalized_outcome, submission_status="evidence-collected")
     except Exception as exc:
         reason = (
             "taskplane blocked Evaluate evidence-child completion because "
@@ -2117,62 +2102,7 @@ def cmd_subagent_stop(a) -> int:
     if child_result is not None:
         print("{}")
         return 0
-    producer_error = None
-    producer_binding = (lifecycle_contract or {}).get("producer_dispatch") or {}
-    required_delivery = producer_binding.get("stage") in {"evaluate", "em"}
-    delivery = None
-    try:
-        import loop as _loop_runtime
-        import producer_observation as _producer_observation
-        state = _loop_runtime.load(ws)
-        step = (state or {}).get("step")
-        task = _loop_runtime._current_task(state or {})
-        required_delivery = required_delivery or (step in {"evaluate", "em"} and
-                             (state or {}).get(
-                                 "delivery_mode_receipt") is not None)
-        delivery = (_loop_runtime._validated_delivery_mode(state or {})
-                    if step in {"evaluate", "em"} else None)
-        existing = (state or {}).get("_submission") or {}
-        if required_delivery and (delivery is None or step not in {"evaluate", "em"}):
-            raise _producer_observation.ProducerObservationError(
-                "bound producer requires its current delivery observation authority")
-        if delivery is not None and step in {"evaluate", "em"}:
-            if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() \
-                    not in {"native", "bridge"}:
-                raise _producer_observation.ProducerObservationError(
-                    "producer observation requires a claimed host hook")
-            contract = lifecycle_contract or {}
-            binding = contract.get("submission_contract") or {}
-            expected_task = str((task or {}).get("id") or
-                                "engineering-signoff")
-            if binding.get("stage") != step or \
-                    binding.get("task") != expected_task:
-                raise _producer_observation.ProducerObservationError(
-                    "active submission contract does not match producer")
-            material = _loop_runtime.producer_output_identity(
-                ws, state, task, step, active_contract=contract)
-            if isinstance(existing.get("producer_observation"), dict):
-                _producer_observation.validate_consumed_matching_observation(
-                    existing["producer_observation"], **material)
-            else:
-                receipt = _producer_observation.record_codex_subagent_stop(
-                    event=event,
-                    hook_claim_id=str(
-                        event.get("_taskplane_hook_claim_id") or ""),
-                    **material)
-                tp.trace(ws, "producer_observation_recorded", step=step,
-                         task=expected_task, run_id=material["run_id"],
-                         fingerprint=receipt["fingerprint"][:12])
-            if step == "evaluate" and existing.get("outcome") == "fail":
-                _loop_runtime.collect_failed_submission_observation(
-                    ws, slot=str(contract.get("task_slot") or ""))
-    except Exception as exc:
-        if ('delivery' in locals() and delivery is not None) or \
-                ('required_delivery' in locals() and required_delivery):
-            producer_error = f"{type(exc).__name__}: {exc}"
-            tp.trace(ws, "producer_observation_failed", step=(state or {}).get(
-                "step") if 'state' in locals() else None,
-                error=type(exc).__name__)
+    producer_error = _collect_delivery_producer_on_stop(ws, lifecycle_contract, event)
     submission = _submission_stop_check(event)
     worker_scoped = isinstance(lifecycle_contract, dict) and \
         lifecycle_contract.get("worker_scoped") is True
@@ -3789,19 +3719,6 @@ def _loop_evidence_workspaces(loopmod, workspace: str,
                      f"task {task.get('id')!r}"}
     return authority, evidence_ws, None
 
-def phase_continuation_output(value: object, *, inputs: AttemptTelemetryInputs,
-        registry: PhaseRegistry, store: ArtifactStore,
-        revision: Mapping[str, object], authorize: PhaseAuthorityCheck) -> dict[str, object]:
-    """Project the existing loop owner's sealed result without CLI authority.
-
-    Phase adapters provide trusted incumbent ports; JSON, worker role labels
-    and native UI state never supply these capabilities. Activation remains
-    with the separately governed phase cutover.
-    """
-    from taskplane import loop as loop_owner
-
-    return loop_owner.require_phase_continuation(value, inputs, registry,
-        store, revision, authorize)
 
 
 def cmd_loop(a) -> int:
@@ -3809,13 +3726,25 @@ def cmd_loop(a) -> int:
     import loop as loopmod
     ws = _workspace(a.workspace)
     action = a.loop_action
+    if action in {"next", "wave"} and getattr(a, "emit", "auto") == "workflow":
+        refusal = _emit_workflow_refusal(workflow_available(ws))
+        if refusal is not None:
+            stage = (loopmod.load(ws) or {}).get("step", action)
+            tp.trace(ws, "stage_dispatch_path", stage=stage, path="refused",
+                     reason=refusal, emit="workflow")
+            print("taskplane: " + refusal, file=sys.stderr)
+            return 1
+    if action == "archive":
+        result = loopmod.archive(ws, by=a.by)
+        print(json.dumps(result, sort_keys=True))
+        return 1 if result.get("error") else 0
     out = None
     enforcement = None
     if action == "next":
         observed = loopmod.read_pending_action(ws)
         if observed is not None:
             print(json.dumps(observed, sort_keys=True))
-            return 1 if observed.get("error") else 0
+            return 1 if observed.get("error") or observed.get("obligations", {}).get("error") else 0
     if action == "init" and getattr(a, "advisory", False):
         # Validate an explicit waiver before acquiring any run storage.
         _, refusal = _enforcement_check(ws, advisory=True,
@@ -3865,7 +3794,10 @@ def cmd_loop(a) -> int:
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
             return 1
-        if current is not None and action != "init":
+        if current is not None and action != "init" and \
+                loopmod.loop_status._dashboard_replay_block(ws) is None:
+            # Admission is still checked, but publication replay must observe
+            # the exact committed state before another receipt is recorded.
             loopmod.record_enforcement(ws, enforcement)
     if action == "init":
         checkpoints = (a.checkpoints.split(",") if a.checkpoints is not None
@@ -3948,14 +3880,6 @@ def cmd_loop(a) -> int:
     elif action == "restore-settings":
         from taskplane import run_context
         out = run_context.restore_settings(loopmod, ws, a.settings_from)
-    elif action in {"continue-build", "cancel-worker", "amend-delivery"}:
-        saved = loopmod._load_raw(ws) or {}
-        handler = {"continue-build":loopmod.continue_build, "cancel-worker":loopmod.cancel_worker,
-            "amend-delivery":loopmod.amend_delivery}[action]
-        out = handler(ws, source=a.amendment_from, by=a.by,
-            request=a.request, expected_fingerprint=a.fingerprint, check=a.check,
-            observation_authority=(_transcript_projection_authority(ws, create=False)
-                if (saved.get("root_hygiene") or {}).get("meter") else None))
     elif action == "resolve":
         out = loopmod.resolve(
             ws, a.decision, by=getattr(a, "by", None),
@@ -4043,12 +3967,18 @@ def cmd_loop(a) -> int:
     # BYTE-IDENTICAL to the pre-workflow payload (the MANDATORY fallback
     # and the only Codex path — R-0004's core promise).
     if isinstance(out, dict):
-        saved_loop = loopmod._load_raw(ws) if action in {"continue-build", "cancel-worker", "amend-delivery"} else loopmod.load(ws)
+        saved_loop = loopmod.load(ws)
         canonical = enforcement or _saved_enforcement(
             (saved_loop or {}).get("enforcement"))
         if canonical:
-            out.setdefault("enforcement", canonical)
+            if out.get("schema") == "taskplane.stage-dispatch/v1":
+                out["obligations"].setdefault("enforcement", canonical)
+            else:
+                out.setdefault("enforcement", canonical)
     if action in ("wave", "next"):
+        if isinstance(out, dict) and out.get("schema") == "taskplane.stage-dispatch/v1":
+            print(json.dumps(loopmod.project_next_action_for_host(ws, out), sort_keys=True))
+            return 1 if out["obligations"].get("error") else 0
         wrapped = _emit_stage(ws, out, getattr(a, "emit", None) or "auto")
         if wrapped is _STAGE_REFUSED:
             # C3/E5: the emission was refused (reason already traced and
@@ -4163,20 +4093,6 @@ def cmd_root_seed(a) -> int:
     return 0
 
 
-def cmd_production_gate(a) -> int:
-    """Validate retained R-0013 authority against the current live roots."""
-    if __package__:
-        from . import native_authority
-    else:  # pragma: no cover - direct installed CLI
-        import native_authority
-    try:
-        out = native_authority.validate_retained_r0013_authority(
-            _workspace(a.workspace), audit_path=getattr(a, "audit_path", None))
-    except native_authority.NativeAuthorityError as exc:
-        out = {"schema": "taskplane.production-design-gate/v1",
-               "status": "unavailable", "error": str(exc)}
-    print(json.dumps(out, sort_keys=True, separators=(",", ":")))
-    return 0 if out.get("status") == "ready" else 1
 
 
 def cmd_preview(a) -> int:
@@ -4284,6 +4200,16 @@ def cmd_stage(a) -> int:
         print(json.dumps(error, indent=2))
         return 1
     import loop as loopmod
+    if a.stage_action in {"read-input", "prepare-lenses", "collect-lenses"}:
+        from taskplane import phase_harness
+        try:
+            out = (phase_harness.read_input(loopmod, _workspace(a.workspace), request)
+                if a.stage_action == "read-input" else phase_harness.collect_lenses(
+                    loopmod, _workspace(a.workspace), request, prepare=a.stage_action == "prepare-lenses"))
+        except (ValueError, OSError, KeyError) as exc:
+            out = {"error": "phase input refused: " + str(exc)}
+        print(json.dumps(out, sort_keys=True))
+        return 1 if out.get("error") else 0
     out = loopmod.stage_command(
         _workspace(a.workspace), a.stage_action, request)
     if not isinstance(out, dict):
@@ -4657,43 +4583,6 @@ def _lane_landed(ws: str, lid: str) -> bool:
         return False
 
 
-def _resume_filter(ws: str, briefs: dict) -> dict:
-    """Drop the briefs whose evidence is already on disk.
-
-    An interrupted wave is the single most expensive accident in this
-    product: four of ten sub-agent transcripts in one measured session
-    existed because a fan-out was spawned in a turn that died before the
-    agents reported, and the whole wave was paid for twice (~16% of that
-    session's effective tokens). Everything needed to avoid it was already
-    written down — each lens writes its own findings.json the moment it
-    lands. This reads it."""
-    out = dict(briefs)
-    kept, skipped = [], []
-    for b in briefs.get("deep") or []:
-        (skipped if _lane_landed(ws, b["id"]) else kept).append(b)
-    out["deep"] = kept
-    sw = briefs.get("sweep")
-    if sw and _lane_landed(ws, "sweep"):
-        out["sweep"] = None
-        skipped.append(sw)
-    out["resumed"] = {
-        "skipped": [b.get("id") or "sweep" for b in skipped],
-        "dispatching": [b["id"] for b in kept] + (["sweep"] if out.get("sweep")
-                                                  else []),
-    }
-    if skipped and not kept and not out.get("sweep"):
-        out["nothing_to_review"] = True
-        out["instruction"] = (
-            "Every lane already has findings on disk — dispatch NOTHING. "
-            "Merge the existing lens findings into `tp findings` and render "
-            "them for the human review gate.")
-    elif skipped:
-        out["instruction"] = (
-            f"RESUMING an interrupted wave: "
-            f"{len(skipped)} lane(s) already reported and are NOT being "
-            f"re-dispatched ({', '.join(out['resumed']['skipped'])}). "
-            + out.get("instruction", ""))
-    return out
 
 
 _REVIEW_FINDINGS_SCHEMA = {
@@ -4727,75 +4616,23 @@ _REVIEW_FINDINGS_SCHEMA = {
 }
 
 
-def _review_workflow_args(briefs: dict) -> dict:
-    """Project Task-path lens briefs into the workflow's governed slots.
-
-    The Task payload remains the portable fallback contract.  The workflow
-    receives an explicit execution projection so every routed brief has the
-    schema, result path, lease, retry ceiling, and semantic resume identity
-    its host runtime needs.  Missing execution authority refuses emission
-    instead of silently compiling an empty wave.
-    """
-    digest = briefs.get("settings_digest")
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError("review dispatch lacks canonical settings digest")
-    settings = _effective_settings_snapshot()
-    if settings.digest != digest:
-        raise ValueError("review dispatch settings changed during composition")
-    raw = list(briefs.get("deep") or [])
-    if briefs.get("sweep") is not None:
-        raw.append(briefs["sweep"])
-    slots = []
-    for index, brief in enumerate(raw):
-        if not isinstance(brief, dict):
-            raise ValueError(f"review brief {index} is not an object")
-        slot_id = str(brief.get("id") or (
-            "sweep" if brief is briefs.get("sweep") else ""))
-        prompt = brief.get("prompt")
-        result_path = brief.get("output")
-        lease = brief.get("contract")
-        task_slot = lease.get("task_slot") if isinstance(lease, dict) else None
-        if not slot_id or not isinstance(prompt, str) or not prompt or \
-                not isinstance(result_path, str) or not result_path or \
-                not isinstance(lease, dict) or not lease or \
-                task_slot != brief.get("task_slot"):
-            raise ValueError(
-                f"review brief {index} lacks its governed execution contract")
-        worker = {key: brief.get(key) for key in (
-            "task_name", "agent", "role_marker", "model", "model_tier",
-            "reasoning_effort")}
-        if any(not isinstance(worker[key], str) or not worker[key]
-               for key in ("task_name", "agent", "role_marker", "model_tier",
-                           "reasoning_effort")) or \
-                worker["model"] is not None and \
-                (not isinstance(worker["model"], str) or not worker["model"]):
-            raise ValueError(
-                f"review brief {index} lacks its canonical worker route")
-        schema = json.loads(json.dumps(_REVIEW_FINDINGS_SCHEMA))
-        identity_material = {
-            "settings_digest": digest, "slot_id": slot_id,
-            "prompt": prompt, "result_schema": schema,
-            "result_path": result_path, "lease": lease, "worker": worker,
-        }
-        resume_identity = hashlib.sha256(json.dumps(
-            identity_material, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False).encode("utf-8")).hexdigest()
-        slots.append({
-            "slot_id": slot_id,
-            "lens_ids": list(brief.get("ids") or [slot_id]),
-            "prompt": prompt, "result_schema": schema,
-            "resume_identity": resume_identity,
-            "result_path": result_path, "lease": dict(lease),
-            "max_attempts": settings.runtime.review_max_attempts,
-            **worker,
-        })
-    return {"settings_digest": digest, "slots": slots}
 
 
 def cmd_lens(a) -> int:
     """Route / list / show / dispatch lenses."""
     ws = _workspace(a.workspace)
     action = getattr(a, "lens_action", "route")
+
+    if action == "collect":
+        import review
+        import review_evidence
+        request, error = _stage_command_request(a.request)
+        try:
+            out = error or review.collect_lens_plan(review_evidence.ArtifactStore(ws), request)
+        except (ValueError, OSError, KeyError) as exc:
+            out = {"error": str(exc)}
+        print(json.dumps(out, indent=2))
+        return 1 if out.get("error") or out.get("status") == "incomplete" else 0
 
     # ``lens dispatch`` is the standalone review-wave surface.  A live
     # delivery loop owns all of its native dispatches through run-bound
@@ -4888,175 +4725,30 @@ def cmd_lens(a) -> int:
                                          breadth=breadth, stage=stage)
 
     if action == "dispatch":
-        # C3 (R-0009): an explicit --emit workflow on a definitively
-        # workflow-less host (Codex, operator kill-switch) is refused UP
-        # FRONT — before briefs are composed or expected dispatches are
-        # recorded — so a refusal leaves no verify-dispatch expectations
-        # behind. The merely-undetected default keeps the override
-        # (dispatch-parity pins prove the payload is identical either way).
-        if (getattr(a, "emit", "auto") or "auto") == "workflow" \
-                and not getattr(a, "dashboard", False):
-            refusal = _emit_workflow_refusal(workflow_available(ws))
-            if refusal is not None:
-                tp.trace(ws, "review_dispatch_path", path="refused",
-                         reason=refusal, emit="workflow")
-                print("taskplane: " + refusal, file=sys.stderr)
-                return 1
-        impact_ctx = None
-        try:
-            import depgraph as dg
-            _files = (routing.get("context") or {}).get("files") or []
-            if _files and dg.load(ws).get("modules"):
-                _imp = dg.impact(ws, _files)
-                if _imp["touched"]:
-                    impact_ctx = dg.render_context(_imp)
-        except Exception:
-            impact_ctx = None
-        # B9 (v2.10.0): probe build/test runnability ONCE, here, and put the
-        # verdict in every brief. On karpenter#9464 six lens agents each
-        # burned actions discovering `go test` could not run — one fact about
-        # the checkout, paid for six times. Cached per tree state, so
-        # re-rendering the wave board costs nothing.
-        run_probe = None
-        try:
-            import runnability as runmod
-            run_probe = runmod.probe_once(ws)
-            if not (run_probe.get("checks") or run_probe.get("skipped")):
-                run_probe = None
-        except Exception:
-            run_probe = None
-        # v2.13.0: write the diff + blast radius ONCE and cite the paths,
-        # instead of embedding a copy in every brief at output weight.
-        ctx_paths = {}
-        if not getattr(a, "dashboard", False):
-            try:
-                import review as _rv
-                _diff = ""
-                if a.base:
-                    _rc, _diff = _rv.canonical_diff_patch(ws, a.base)
-                    if _rc:
-                        refusal = (json.loads(_diff)
-                                   if _rc == _rv.CANONICAL_DIFF_TOO_LARGE else {
-                                       "reason_code": "canonical_diff_unavailable",
-                                       "reason": _diff or "canonical diff derivation failed"})
-                        print(json.dumps({"status": "start_failed", **refusal}))
-                        return 1
-                ctx_paths = _rv.write_context(
-                    ws, diff=_diff, blast_radius=impact_ctx or "")
-            except Exception:
-                ctx_paths = {}
-        briefs = lensmod.dispatch_briefs(routing, base=a.base,
-                                         max_actions=a.max_actions,
-                                         impact_context=(
-                                             None if ctx_paths else impact_ctx),
-                                         runnability=run_probe,
-                                         context_paths=ctx_paths)
-        # --resume: a wave interrupted mid-flight (a killed turn, a crashed
-        # host) used to cost the WHOLE fan-out again — measured at ~16% of
-        # one real session's tokens, because four of ten lens agents were
-        # spawned twice. Landed evidence is already on disk and the wave
-        # board already reads status from it; this makes the DISPATCH read
-        # the same source. A lane with findings.json is done, so it is not
-        # re-briefed. Deliberately NOT the default: a fresh review of a
-        # changed diff must re-run every lens, and silently reusing stale
-        # findings would be the worse failure.
-        # ...and never on --dashboard: the board is the human's view of the
-        # WHOLE wave, including the lanes that already landed. Filtering it
-        # would hide exactly the progress it exists to show.
-        if getattr(a, "resume", False) and not getattr(a, "dashboard", False):
-            briefs = _resume_filter(ws, briefs)
-        # --dashboard is a PURE VIEW that the driver re-runs as agents land;
-        # recording expectations there would append a fresh unmatched set on
-        # every re-render and turn `loop verify-dispatch` into noise. Only a
-        # real dispatch (JSON briefs) records what SHOULD be dispatched.
-        if not getattr(a, "dashboard", False):
-            for b in briefs.get("deep") or []:
-                tp.record_expected_dispatch(ws, "lens",
-                                            b.get("agent", "tp-lens"),
-                                            b.get("model_tier", "standard"),
-                                            b.get("model"), ref=b.get("id"),
-                                            task_name=b.get("task_name"),
-                                            reasoning_effort=b.get(
-                                                "reasoning_effort"))
-            sw = briefs.get("sweep")
-            if sw:
-                tp.record_expected_dispatch(ws, "lens",
-                                            sw.get("agent", "tp-lens"),
-                                            sw.get("model_tier", "cheap"),
-                                            sw.get("model"), ref="sweep",
-                                            task_name=sw.get("task_name"),
-                                            reasoning_effort=sw.get(
-                                                "reasoning_effort"))
-        if getattr(a, "dashboard", False):
-            import dashboard
-
-            def _lane(lid, name):
-                # R1 (v2.2.1): status derives from the lens's findings file —
-                # deterministic, zero-token. Re-run `lens dispatch
-                # --dashboard` after agents land and the wave shows DONE
-                # lanes with counts, so the human watches the fan-out
-                # instead of trusting the driver to narrate it.
-                import storage as runtime_storage
-                p = runtime_storage.lane_findings_path(ws, lid)
-                if os.path.isfile(p):
-                    try:
-                        with open(p, encoding="utf-8") as f:
-                            n = len(json.load(f).get("findings") or [])
-                    except (OSError, ValueError):
-                        n = None
-                    return {"id": lid, "name": name, "status": "done",
-                            "findings": n}
-                return {"id": lid, "name": name, "status": "running",
-                        "findings": None}
-
-            lanes = [_lane(b["id"], b["name"]) for b in briefs["deep"]]
-            if briefs["sweep"]:
-                lanes.append(_lane("sweep", "sweep"))
-            done = sum(1 for x in lanes if x["status"] == "done")
-            _sub = (f"{done}/{len(lanes)} lens-agents reported · read-only, "
-                    f"in parallel · diff vs {briefs['base']}")
-            if run_probe and run_probe.get("checks"):
-                # The wave board is where the human watches the fan-out, so
-                # it is where "the tests can't run here" belongs — before
-                # they read a review that had to be static.
-                _sub += " · " + run_probe.get("summary", "")
-            print(dashboard.render_lens_wave(
-                lanes, {"title": ("review — wave complete"
-                                  if done == len(lanes) else
-                                  "review — lenses running"),
-                        "subtitle": _sub}))
-            return 0
-        # Emit path (R-W2): 'auto' picks the workflow when the host has a
-        # runtime, else today's Task dispatch. The chosen path + reason are
-        # TRACED (review_dispatch_path) on BOTH paths, but printed only on
-        # the workflow path — the task-path stdout stays BYTE-IDENTICAL to
-        # the pre-workflow payload (Codex parity, R-0002's core promise).
-        emit = getattr(a, "emit", "auto") or "auto"
-        avail = workflow_available(ws)
-        if emit == "workflow":
-            path = "workflow"
-            reason = "explicit --emit workflow" + (
-                "" if avail["available"] else f" (forced: {avail['reason']})")
-        elif emit == "task":
-            path, reason = "task", "explicit --emit task"
-        else:
-            path = "workflow" if avail["available"] else "task"
-            reason = avail["reason"]
-        tp.trace(ws, "review_dispatch_path", path=path, reason=reason,
-                 emit=emit)
-        if path == "workflow":
-            out = dict(briefs)
-            out["dispatch_path"] = "workflow"
-            out["reason"] = reason
-            # Compile the portable Task briefs into the workflow runtime's
-            # explicit governed slot contract.  This must never omit routed
-            # deep/sweep work: review-wave refuses a missing slots array.
-            workflow_args = _review_workflow_args(briefs)
-            out["workflow"] = {"name": "review-wave",
-                               "args": workflow_args}
-            print(json.dumps(out, indent=2))
-            return 0
-        print(json.dumps(briefs, indent=2))
+        import review
+        import review_evidence
+        # Standalone CLI is a thin adapter to the same phase/kernel protocol.
+        code, patch = review.canonical_diff_patch(ws, a.base)
+        if code:
+            print(json.dumps({"error": patch}))
+            return 1
+        for row in routing["lenses"]:
+            if row.get("tier") not in {"n/a", "sweep", "light"}:
+                row["tier"] = row["verdict"] = "sweep"
+        store = review_evidence.ArtifactStore(ws)
+        target = {"head": tp.git_head(ws), "base": a.base,
+            "fingerprint": review_evidence.content_fingerprint({"base": a.base, "patch": patch})}
+        envelope = review_evidence.create_envelope(store, target=target,
+            diff={"files": routing.get("context", {}).get("files", []), "patch": patch},
+            impact={}, graph_quality={}, runnability={}, requirement={}, acceptance=[], contracts=[])
+        plan = review.prepare_lens_plan(store, envelope, routing, phase="review",
+            binding={"candidate_fingerprint": target["fingerprint"]})
+        bound = loopmod._bind_stateless_review_contract_actions(ws,
+            {"status": "ready", "run_id": plan["fingerprint"][:32],
+             "slots": store.read(plan)["dispatch"]}, task_id="standalone-review")
+        print(json.dumps({"plan": plan, "dispatch": bound["slots"],
+            "wait_invocation": bound.get("wait_invocation"),
+            "collect": "tp lens collect --request <file containing this exact plan reference>"}, indent=2))
         return 0
 
     if a.json:
@@ -5121,26 +4813,8 @@ def cmd_kb(a) -> int:
                   f"tags={','.join(d['tags']) or '—'}")
     elif a.kb_action == "where":
         store = tp.store_root(ws)
-        legacy = os.path.join(ws, "knowledge")
-        print(json.dumps({
-            "store": store,
-            "knowledge": tp.kb_root(ws),
-            "meta": tp.store_meta_path(ws),
-            "legacy_in_repo_present": os.path.isdir(legacy),
-            "migrated": os.path.isdir(os.path.join(store, "knowledge")),
-        }, indent=2))
-    elif a.kb_action == "migrate":
-        res = _migrate_kb(ws)
-        if res["moved"]:
-            print(f"taskplane: moved in-repo knowledge/ → {res['store']}")
-        else:
-            print(f"taskplane: nothing to move — knowledge base already at "
-                  f"{res['store']}")
-        if res["untracked"]:
-            print("  · untracked knowledge/ in git (commit the removal to "
-                  "finish)")
-        if res["gitignored"]:
-            print("  · added knowledge/ to .gitignore")
+        print(json.dumps({"store": store, "knowledge": tp.kb_root(ws),
+                          "meta": tp.store_meta_path(ws)}, indent=2))
     return 0
 
 
@@ -5366,37 +5040,6 @@ def _ensure_gitignored(ws, entries, header) -> list:
     return missing
 
 
-def _migrate_kb(ws) -> dict:
-    """Relocate a legacy in-repo knowledge/ to the external store, UNTRACK it
-    in git, and gitignore it. Idempotent — a no-op once migrated."""
-    legacy = os.path.join(ws, "knowledge")
-    was_tracked = False
-    if os.path.isdir(legacy):
-        tracked = tp._run(["git", "ls-files", "knowledge"], cwd=ws).stdout
-        was_tracked = bool(tracked.strip())
-        if was_tracked:
-            tp._run(["git", "rm", "-r", "--cached", "--ignore-unmatch",
-                     "--quiet", "knowledge"], cwd=ws)
-    res = tp.migrate_store(ws)            # move data + write meta.json
-    # ANCHORED pattern: a bare `knowledge/` also matches `.taskplane-kb/
-    # knowledge/`, so on a team plan the shared store became uncommittable
-    # and sharing silently never worked (v1.5.2). `/knowledge/` matches only
-    # the repo-root legacy dir this rule is about. Rewrite any pre-existing
-    # unanchored line in place.
-    gi_path = os.path.join(ws, ".gitignore")
-    if os.path.exists(gi_path):
-        with open(gi_path, encoding="utf-8") as f:
-            body = f.read()
-        fixed = re.sub(r'(?m)^knowledge/\s*$', '/knowledge/', body)
-        if fixed != body:
-            with open(gi_path, "w", encoding="utf-8") as f:
-                f.write(fixed)
-    ignored = _ensure_excluded(
-        ws, ["/knowledge/"],
-        "taskplane knowledge base — lives in the external store "
-        "(~/.taskplane), never the repo")
-    res.update({"untracked": was_tracked, "gitignored": bool(ignored)})
-    return res
 
 
 def cmd_share(a) -> int:
@@ -5500,8 +5143,7 @@ def cmd_share(a) -> int:
 
 def cmd_init(a) -> int:
     """Scaffold a project for governed work: context docs, KB dirs, graph.
-    The knowledge base lives in the EXTERNAL per-project store (~/.taskplane),
-    not the repo — any legacy in-repo knowledge/ is migrated out here."""
+    Knowledge is created only in the explicitly selected project store."""
     import depgraph as dg
     ws = _workspace(a.workspace)
     # v1.5.1 (B3): the plan decides WHERE the store lives — record it
@@ -5509,7 +5151,7 @@ def cmd_init(a) -> int:
     # wrong store and the project looks un-initialized right after init.
     if getattr(a, "plan", None):
         tp.set_mode(ws, plan=a.plan)
-    mig = _migrate_kb(ws)                 # relocate + untrack + gitignore
+    tp.write_store_meta(ws)
     store = tp.store_root(ws)
     ctx = os.path.join(tp.kb_root(ws), "context")
     os.makedirs(ctx, exist_ok=True)
@@ -5534,8 +5176,7 @@ def cmd_init(a) -> int:
         head = None    # empty repo: rev-parse echoes "HEAD"
     mode = tp.get_mode(ws)
     tp.trace(ws, "project_init", context_docs=wrote,
-             graph_modules=len(g["modules"]), store=store,
-             migrated=mig.get("moved"))
+             graph_modules=len(g["modules"]), store=store)
     print(json.dumps({
         "knowledge_store": store,
         "mode": mode,
@@ -5547,7 +5188,6 @@ def cmd_init(a) -> int:
             "(~/.taskplane); shared keeps it in-repo (.taskplane-kb/). "
             "On a team plan, `tp share set private` works privately and "
             "`tp share push` publishes selected decisions later.",
-        "migrated_from_repo": mig.get("moved") or False,
         "context_docs_created": wrote or "(already present)",
         "graph": {"modules": len(g["modules"]), "edges": len(g["edges"])},
         "gitignored_runtime": missing or "(already present)",
@@ -5790,29 +5430,35 @@ def _replay_hook_response(command: str, response_class: str) -> int:
 def _invoke_run_command(a, workspace: str) -> int:
     # Scope discovery and exact historical configuration restoration stay
     # reachable even when the saved configuration is absent or corrupt.
-    if a.cmd in {"context", "summary"} or (
+    if a.cmd in {"context", "summary", "status", "contracts"} or (
             a.cmd == "loop" and getattr(a, "loop_action", None) in {
-                "resume", "status", "restore-settings", "continue-build", "cancel-worker", "amend-delivery"}):
+                "archive", "resume", "status", "restore-settings"}):
         return a.fn(a)
-    from taskplane import run_context, settings
+    from taskplane import run_context, run_store, settings
     import loop as loopmod
     if a.cmd == "loop" and getattr(a, "loop_action", None) == "next":
         observed = loopmod.read_pending_action(workspace)
         if observed is not None:
             print(json.dumps(observed, sort_keys=True))
-            return 1 if observed.get("error") else 0
+            return 1 if observed.get("error") or observed.get("obligations", {}).get("error") else 0
     # Admission inputs belong to the selected run, not CLI construction.
     # Initialize/prepare keep their existing validation-before-write rule.
-    state = None if a.cmd in {"repository", "onboard"} or (
-        a.cmd == "loop" and getattr(a, "loop_action", None) == "init") else loopmod._load_raw(workspace)
     try:
+        state = None
+        if a.cmd not in {"repository", "onboard"} and not (
+                a.cmd == "loop" and getattr(a, "loop_action", None) == "init"):
+            state = loopmod._load_raw(workspace)
         with run_context.bind(workspace, state):
             _set_effective_settings_snapshot(settings.load_settings(environment=os.environ))
             return a.fn(a)
-    except (run_context.RunContextError, settings.SettingsError) as exc:
-        print(json.dumps({"error": "operational settings are invalid: " + str(exc),
+    except (run_context.RunContextError, run_store.RunStoreError,
+            settings.SettingsError, ValueError) as exc:
+        code = ("unsupported_run_schema" if isinstance(exc, run_store.UnsupportedRunSchemaError)
+                else "invalid_run_settings" if isinstance(exc, (run_context.RunContextError, settings.SettingsError))
+                else "invalid_run")
+        print(json.dumps({"error": str(exc), "code": code,
                           "dispatch_allowed": False}, sort_keys=True))
-        print(f"taskplane: operational settings are invalid: {exc}", file=sys.stderr)
+        print(f"taskplane: {code}: {exc}", file=sys.stderr)
         return 1
 
 
@@ -7190,12 +6836,6 @@ def cmd_repository(a) -> int:
     action = str(getattr(a, "repository_action", None) or "status")
     ws = _workspace(a.workspace)
     engine = repository_preflight_module.RepositoryPreflight()
-    if action == "migrate":
-        import storage_migration
-        value = storage_migration.migrate_legacy_checkouts(
-            _workspace(a.workspace))
-        print(json.dumps(value, sort_keys=True, separators=(",", ":")))
-        return 0 if not value.get("review_required") else 2
     if action == "status":
         try:
             value = repository_run_store.RunStore().load(a.run_id)
@@ -8173,7 +7813,7 @@ def _cli_stage_request_note() -> list[str]:
         "",
         "#### Automatic pristine new-run bootstrap",
         "",
-        "Set `TASKPLANE_STAGE_NATIVE=new-run` before `tp.py loop init`. Supply",
+        "New runs use the phase runtime automatically. Supply",
         "an exact existing requirement with `--req` and the accountable human",
         "with `--by`; use stage identifier syntax such as",
         "`human:vdemkiv` (letters, digits, `.`, `_`, `:`, or `-`; no spaces).",
@@ -8181,7 +7821,7 @@ def _cli_stage_request_note() -> list[str]:
         "stable session identity must already be present in",
         "`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.",
         "The workspace must already have a governed locator bound to an",
-        "unmigrated v3 run with an exact target revision.",
+        "current v4 run with an exact target revision.",
         "",
         "Only that successful normal initialization mints the private",
         "pristine-new-run marker; do not add, copy, or infer the marker later.",
@@ -8196,19 +7836,12 @@ def _cli_stage_request_note() -> list[str]:
         "`tp.py loop wave` never bootstraps a root: it requires the already",
         "bound v4 journey and fails closed when that binding is missing.",
         "",
-        "New-run initialization also refuses any existing singleton history,",
-        "including terminal history and `--force`; use a fresh governed run.",
-        "Initialization refuses without singleton or stage mutation when the",
-        "requirement is missing or unknown, `--by` is missing, stable session",
-        "identity is missing, the governed locator is missing, the bound run is",
-        "not unmigrated v3, or its exact target revision is unavailable.",
-        "Bootstrap also refuses when `new-run` was enabled only after init, the",
-        "private marker is absent, the singleton is no longer structurally",
-        "pristine, legacy progress exists, or the bound locator/run/store",
-        "identity becomes mismatched or corrupt. After the v4 root commit, the",
-        "singleton retains a durable run binding; losing or corrupting its",
-        "locator or store remains a",
-        "fail-closed refusal rather than a fallback to legacy dispatch.",
+        "Initialization requires a known requirement, accountable human, stable",
+        "session identity, a valid current run binding, and an exact target revision.",
+        "It refuses an already initialized workflow, including terminal history and",
+        "`--force`. Bootstrap requires the marker recorded by normal initialization",
+        "and a pristine workflow. A missing or corrupt locator, aggregate, or marker",
+        "is a refusal; another runtime cannot supply the missing state.",
         "",
         "#### Closed nested shapes",
         "",
@@ -8761,6 +8394,9 @@ def main(argv=None) -> int:
     lp = sub.add_parser("loop", help="drive the Evaluate-Loop engine")
     lp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lsub = lp.add_subparsers(dest="loop_action", required=True)
+    la = lsub.add_parser("archive", help="detach a run and retain its evidence")
+    la.add_argument("--by", required=True, help="human identity authorizing archival")
+    la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lsub.add_parser("resume", help="read durable run scope and continuation without dispatch")
     li = lsub.add_parser("init", help="start an Evaluate-Loop for a goal")
     li.add_argument("goal", nargs="*")
@@ -8770,7 +8406,7 @@ def main(argv=None) -> int:
                          "to the human (default 2)")
     li.add_argument("--checkpoints", help="comma list: plan,em (default both)")
     li.add_argument("--req", help="anchor the loop to a requirement R-id; "
-                    "TASKPLANE_STAGE_NATIVE=new-run requires an exact "
+                    "requires an exact "
                     "existing requirement")
     li.add_argument("--parallel", action="store_true",
                     help="execute waves of scope-disjoint tasks concurrently, "
@@ -8792,7 +8428,7 @@ def main(argv=None) -> int:
                     help="continue with visibly advisory screen enforcement")
     li.add_argument("--by", default=None,
                     help="human identity required with --advisory and with "
-                         "TASKPLANE_STAGE_NATIVE=new-run; the new-run value "
+                         "new runs; the value "
                          "becomes the root stage authority.actor and must use "
                          "identifier syntax (for example human:vdemkiv; no "
                          "spaces)")
@@ -8866,11 +8502,9 @@ def main(argv=None) -> int:
     lr = lsub.add_parser(
         "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort")
     lr.add_argument(
-        "decision", choices=["retry", "pass", "skip", "defer", "abort", "limits-advisory", "reconcile", "defer-review", "review-baseline"])
+        "decision", choices=["retry", "pass", "skip", "defer", "abort", "limits-advisory", "reconcile"])
     lr.add_argument("--by",
                     help="human approving the exact recovery decision")
-    lr.add_argument("--run-id", help="exact admitted legacy run for defer-review or review-baseline")
-    lr.add_argument("--task", help="exact human-accepted legacy Build task for defer-review or review-baseline")
     lr.add_argument("--reason", help="explicit Build acceptance, review deferral or EM baseline selection")
     lr.add_argument("--phase-operation", help="exact existing phase operation to reconcile or retry once")
     lr.add_argument("--candidate-fingerprint", help="exact candidate SHA-256 for the new phase attempt")
@@ -8878,30 +8512,6 @@ def main(argv=None) -> int:
         help="restore a digest-only run's exact original settings without changing policy")
     lrestore.add_argument("--from", dest="settings_from", required=True,
         help="original complete settings JSON matching the saved run digest")
-    lcontinue = lsub.add_parser("continue-build",
-        help="human: validate and consume an exact legacy Build scope append without resetting work")
-    lcontinue.add_argument("--from", dest="amendment_from", required=True,
-        help="exact legacy amendment JSON packet with original Plan and settings")
-    lcontinue.add_argument("--by", required=True, help="original human policy owner")
-    lcontinue.add_argument("--request", required=True, help="explicit approved scope and advisory-resource instruction")
-    lcontinue.add_argument("--fingerprint", required=True, help="approved canonical amendment packet SHA-256")
-    lcontinue.add_argument("--check", action="store_true", help="validate without committing loop state or dispatching")
-    lcontinue.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    lcancel = lsub.add_parser("cancel-worker",
-        help="human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion")
-    lcancel.add_argument("--from", dest="amendment_from", required=True, help="exact legacy worker cancellation packet")
-    lcancel.add_argument("--by", required=True, help="original human policy owner")
-    lcancel.add_argument("--request", required=True, help="explicit human cancellation permission")
-    lcancel.add_argument("--fingerprint", required=True, help="canonical cancellation packet SHA-256")
-    lcancel.add_argument("--check", action="store_true", help="read-only validation; no terminalization or outbox flush")
-    lcancel.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    lamend = lsub.add_parser("amend-delivery", help="human: exact legacy publication or scope-inventory amendment")
-    lamend.add_argument("--from", dest="amendment_from", required=True, help="exact approved publication packet or Plan scope inventory")
-    lamend.add_argument("--by", required=True, help="original human policy owner")
-    lamend.add_argument("--request", required=True, help="exact publication or scope-inventory human decision")
-    lamend.add_argument("--fingerprint", required=True, help="canonical approved packet SHA-256")
-    lamend.add_argument("--check", action="store_true", help="read-only validation; no journal, projection or outbox write")
-    lamend.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lr.add_argument("--worker-stopped", action="store_true",
                     help="attest the expired unbound worker is stopped; not a completion or pass")
     lr.add_argument(
@@ -8960,6 +8570,9 @@ def main(argv=None) -> int:
     sg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     sgsub = sg.add_subparsers(dest="stage_action", required=True)
     for action, help_text in (
+            ("read-input", "read only the verified input named by a stage startup"),
+            ("collect-lenses", "collect the exact lens plan saved in a phase startup"),
+            ("prepare-lenses", "dispatch shared lenses for the exact current phase candidate"),
             ("start", "start a root or verified successor stage"),
             ("resume", "create a fresh attempt in an active stage root"),
             ("terminalize", "record one immutable terminal outcome"),
@@ -8995,6 +8608,11 @@ def main(argv=None) -> int:
     lnr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnr.set_defaults(fn=cmd_lens)
 
+    lnc = lnsub.add_parser("collect", help="collect an exact immutable lens plan")
+    lnc.add_argument("--request", required=True, help="plan reference JSON or - for stdin")
+    lnc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    lnc.set_defaults(fn=cmd_lens)
+
     lnl = lnsub.add_parser("list", help="every lens in the catalog")
     lnl.add_argument("--json", action="store_true",
                      help="print the catalog as JSON")
@@ -9007,7 +8625,7 @@ def main(argv=None) -> int:
     lns.set_defaults(fn=cmd_lens)
 
     lnd = lnsub.add_parser("dispatch", help="ready-to-dispatch lens-agent "
-                           "briefs — one read-only agent per deep lens, "
+                           "briefs — one read-only agent per selected lens, "
                            "fanned out in parallel")
     lnd.add_argument("--base", default="HEAD",
                      help="git base to diff against (default HEAD)")
@@ -9020,30 +8638,6 @@ def main(argv=None) -> int:
     lnd.add_argument("--all", action="store_true", dest="breadth_all",
                      help="full catalog: routed lenses run deep, the rest "
                           "as a quick sweep — nothing skipped")
-    lnd.add_argument("--max-actions", type=int, default=None,
-                     dest="max_actions",
-                     help="per-agent action ceiling written into each "
-                          "dispatched lens brief. Default scales with the "
-                          "brief: 45 for a deep lens (it owns one subject at "
-                          "full depth and reads widely), 30 for the sweep. "
-                          "An explicit value applies to every brief.")
-    lnd.add_argument("--artifact-type",
-                     help="route on an artifact instead of the diff — "
-                          "'strategy' summons the advisory (board) tier")
-    lnd.add_argument("--dashboard", action="store_true",
-                     help="print the live lens-wave progress board instead "
-                          "of the JSON briefs (render this BEFORE dispatch)")
-    lnd.add_argument("--resume", action="store_true",
-                     help="re-dispatch ONLY the lanes that have no "
-                          "findings.json yet — an interrupted wave costs "
-                          "the lenses that did not land, not all of them")
-    lnd.add_argument("--emit", choices=["workflow", "task", "auto"],
-                     default="auto",
-                     help="dispatch path: 'workflow' wraps the briefs as "
-                          "/taskplane:review-wave args, 'task' prints "
-                          "today's Task-dispatch payload byte-identically, "
-                          "'auto' (default) picks workflow only when the "
-                          "host runtime is detected (Codex: always task)")
     lnd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnd.set_defaults(fn=cmd_lens)
 
@@ -9083,10 +8677,7 @@ def main(argv=None) -> int:
                     help="most decisions to return (default 5)")
     kbsub.add_parser("list", help="list every recorded decision")
     kbsub.add_parser("lint", help="check the knowledge base for malformed or empty records")
-    kbsub.add_parser("where", help="show the external store path for this "
-                     "project (and whether a legacy in-repo KB remains)")
-    kbsub.add_parser("migrate", help="move a legacy in-repo knowledge/ to the "
-                     "external store, untrack it, and gitignore it")
+    kbsub.add_parser("where", help="show the selected project knowledge store")
     kbp.set_defaults(fn=cmd_kb)
 
     rq = sub.add_parser("req", help="requirements: record, refine, mode, debt")
@@ -9552,12 +9143,6 @@ def main(argv=None) -> int:
                      help="canonical repository/run manifest id")
     rps.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rps.set_defaults(fn=cmd_repository)
-    rpm = rpsub.add_parser(
-        "migrate", help="register clean legacy .em-review/scratch clones "
-        "without moving or deleting anything")
-    rpm.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    rpm.set_defaults(fn=cmd_repository)
-
     rs = sub.add_parser(
         "root-seed", help="prepare the reference-only seed before root start")
     rs.add_argument("--request", required=True,
@@ -9566,15 +9151,6 @@ def main(argv=None) -> int:
                     help="workspace-relative root-seed.json destination")
     rs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rs.set_defaults(fn=cmd_root_seed)
-
-    pg = sub.add_parser(
-        "production-gate", help="validate retained Design authority against "
-        "the current live Taskplane delivery roots")
-    pg.add_argument(
-        "--audit-path", help="exact retained R-0013 Codex audit JSONL "
-        "(defaults to TASKPLANE_R0013_CODEX_AUDIT or its original locator)")
-    pg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    pg.set_defaults(fn=cmd_production_gate)
 
     pv = sub.add_parser(
         "preview", help="launch a private governed working preview from a "

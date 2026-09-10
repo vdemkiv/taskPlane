@@ -1,6 +1,11 @@
 """Deterministic, reference-only bootstrap seed for a fresh delivery root."""
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 from collections.abc import Mapping
 from datetime import datetime, timezone
 import hashlib
@@ -92,9 +97,7 @@ def _exact(
 
 def _canonical(value: object) -> bytes:
     try:
-        return json.dumps(
-            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-            allow_nan=False).encode("utf-8")
+        return _json_primitives.canonical_bytes(value, ensure_ascii=True)
     except (TypeError, ValueError) as exc:
         raise RootSeedError("root seed must contain portable JSON") from exc
 

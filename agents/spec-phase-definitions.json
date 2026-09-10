@@ -19,7 +19,7 @@
     ],
     "entry": true,
     "evaluation_lenses": [],
-    "fingerprint": "dd9cd896575f94246e10a2e72bd6f6ff4853572970bbd24786568923dedc99dc",
+    "fingerprint": "2ddbacfead26e06845f37439db83b7b2b43a3d8fc7631690122a952fa5a13dd0",
     "gate": "human",
     "id": "product",
     "model_tier": "inherit",
@@ -28,6 +28,12 @@
       {
         "artifact_class": "requirement",
         "artifact_schema_version": "taskplane.requirement/v1",
+        "cardinality": "one",
+        "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
         "cardinality": "one",
         "required": true
       }
@@ -44,7 +50,9 @@
     ],
     "terminal": false,
     "validator_inventory_fingerprint": "1ecc525f4c01aab9769a97af6f0f518ae79a97533909e109f045475629b0cbc2",
-    "working_lenses": []
+    "working_lenses": [
+      "product"
+    ]
   },
   {
     "budget": {
@@ -61,6 +69,13 @@
         "knowledge_fingerprint_required": true,
         "knowledge_scope": [],
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
       }
     ],
     "domain_validator_refs": [
@@ -74,7 +89,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "3d06fa5ec2d40ca777c4a6a099a066ff9b8fd976af22a8357932b98315de54ae",
+    "fingerprint": "6b50a7d941c082bc9f0defbdd4eedd122a8c06a58d6e8cca0b47722fa7c94639",
     "gate": "human",
     "id": "design",
     "model_tier": "inherit",
@@ -93,11 +108,17 @@
         "artifact_schema_version": "taskplane.test-strategy/v1",
         "cardinality": "one",
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "cardinality": "one",
+        "required": true
       }
     ],
     "role": "tp-design",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "ab98526dcc3d6d95eacb3da25d502e8e85331259b6c76532b10bd48994f17453",
+    "skill_content_fingerprint": "b8a32c574bd8feac6ed714c2f99d0e099eab568fa8f9e97f6c6b49ea31e4d3cc",
     "skill_ref": "skills/tp-design/SKILL.md",
     "successors": [
       "plan"
@@ -107,7 +128,9 @@
     ],
     "terminal": false,
     "validator_inventory_fingerprint": "1ecc525f4c01aab9769a97af6f0f518ae79a97533909e109f045475629b0cbc2",
-    "working_lenses": []
+    "working_lenses": [
+      "solution-design"
+    ]
   },
   {
     "budget": {
@@ -138,6 +161,13 @@
         "knowledge_fingerprint_required": true,
         "knowledge_scope": [],
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
       }
     ],
     "domain_validator_refs": [
@@ -151,7 +181,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "7ffab7e9fb5a68cf2c6a49f9725de023abb0ab64a339ddde96516984b09e46af",
+    "fingerprint": "4ad724503c7eab7f792161094719f819efa4a682d85d14fb52068abac7df0067",
     "gate": "human",
     "id": "plan",
     "model_tier": "inherit",
@@ -182,11 +212,17 @@
         "artifact_schema_version": "taskplane.cross-task-seam-manifest/v1",
         "cardinality": "one",
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "cardinality": "one",
+        "required": true
       }
     ],
     "role": "tp-plan",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "e634bb60a7f05e683906c7d7b3a78e6577f3829f4d86abeaa9fc91f0ed0c5810",
+    "skill_content_fingerprint": "fb2afb2e8a06ac2be449ba4085aff1ff02b9518d0402660455a0ec7ae561c3c5",
     "skill_ref": "skills/tp-go/SKILL.md",
     "successors": [
       "build"
@@ -196,7 +232,11 @@
     ],
     "terminal": false,
     "validator_inventory_fingerprint": "1ecc525f4c01aab9769a97af6f0f518ae79a97533909e109f045475629b0cbc2",
-    "working_lenses": []
+    "working_lenses": [
+      "architecture",
+      "project-management",
+      "testability"
+    ]
   },
   {
     "budget": {
@@ -255,6 +295,13 @@
         "knowledge_fingerprint_required": true,
         "knowledge_scope": [],
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
       }
     ],
     "domain_validator_refs": [
@@ -268,7 +315,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "f9d6e9878e0d82b8de5448623f6bb12d65e9a1413f45c96807cef611ed486903",
+    "fingerprint": "7fc28cb6ec27a410f8156adcaf9984ba3acd5e06c774c277114e65e1aeb74e0d",
     "gate": "human",
     "id": "build",
     "model_tier": "inherit",
@@ -287,11 +334,17 @@
         "artifact_schema_version": "taskplane.realized-seam-conformance/v1",
         "cardinality": "one",
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "cardinality": "one",
+        "required": true
       }
     ],
     "role": "tp-build",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "910a307cd4a1f5411e799d740bcd6d4e29b30b0416a3df0396c1e241e5d1ccdf",
+    "skill_content_fingerprint": "aa82a746c08ccb68aeb567f4cc9097b6ebbcb53fe57f88377f2412a57d56d3da",
     "skill_ref": "skills/tp-build/SKILL.md",
     "successors": [
       "evaluate"
@@ -313,8 +366,43 @@
     "capability_requirements": [],
     "consumes": [
       {
+        "artifact_class": "requirement",
+        "artifact_schema_version": "taskplane.requirement/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
         "artifact_class": "stage",
         "artifact_schema_version": "taskplane.stage/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "design",
+        "artifact_schema_version": "taskplane.design/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "test-strategy",
+        "artifact_schema_version": "taskplane.test-strategy/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "plan-task",
+        "artifact_schema_version": "taskplane.plan-task/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
         "knowledge_fingerprint_required": true,
         "knowledge_scope": [],
         "required": true
@@ -331,7 +419,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "0ff52038fcf185c6655c58a164f1bb873c43eb3a5a3549ae409ae0f0c59ca8a5",
+    "fingerprint": "cb5d2924d4854af92d88bfd194db252b48f261dbbe8d11abb57bd27e00430ffe",
     "gate": "human",
     "id": "evaluate",
     "model_tier": "inherit",
@@ -350,11 +438,17 @@
         "artifact_schema_version": "taskplane.stage/v1",
         "cardinality": "one",
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "cardinality": "one",
+        "required": true
       }
     ],
     "role": "tp-evaluate",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "63a6cd33f137bf9233607ca107e96c8da454216202c312e74f96826c85e5c573",
+    "skill_content_fingerprint": "53f9950271bd1455db78ed03071a3c0c3a702cf3c56c7048f341eca5bc56ef08",
     "skill_ref": "skills/tp-engineering/SKILL.md",
     "successors": [
       "engineering"
@@ -376,6 +470,13 @@
     "capability_requirements": [],
     "consumes": [
       {
+        "artifact_class": "requirement",
+        "artifact_schema_version": "taskplane.requirement/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
         "artifact_class": "judgment",
         "artifact_schema_version": "taskplane.evaluator-output/v2",
         "knowledge_fingerprint_required": true,
@@ -385,6 +486,34 @@
       {
         "artifact_class": "stage",
         "artifact_schema_version": "taskplane.stage/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "design",
+        "artifact_schema_version": "taskplane.design/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "test-strategy",
+        "artifact_schema_version": "taskplane.test-strategy/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "plan-task",
+        "artifact_schema_version": "taskplane.plan-task/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
         "knowledge_fingerprint_required": true,
         "knowledge_scope": [],
         "required": true
@@ -401,7 +530,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "a6b680d87f1a1990874cfb4513f751656c1957ce2193934eb1e969b56a785ba9",
+    "fingerprint": "c27de43054914ab1b5a25f9a797354a170bcf507db1418d9dc0d451ae933cb98",
     "gate": "human",
     "id": "engineering",
     "model_tier": "inherit",
@@ -420,11 +549,17 @@
         "artifact_schema_version": "taskplane.stage/v1",
         "cardinality": "one",
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "cardinality": "one",
+        "required": true
       }
     ],
     "role": "tp-engineering",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "63a6cd33f137bf9233607ca107e96c8da454216202c312e74f96826c85e5c573",
+    "skill_content_fingerprint": "53f9950271bd1455db78ed03071a3c0c3a702cf3c56c7048f341eca5bc56ef08",
     "skill_ref": "skills/tp-engineering/SKILL.md",
     "successors": [
       "retro"
@@ -446,8 +581,22 @@
     "capability_requirements": [],
     "consumes": [
       {
+        "artifact_class": "requirement",
+        "artifact_schema_version": "taskplane.requirement/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
         "artifact_class": "stage",
         "artifact_schema_version": "taskplane.stage/v1",
+        "knowledge_fingerprint_required": true,
+        "knowledge_scope": [],
+        "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
         "knowledge_fingerprint_required": true,
         "knowledge_scope": [],
         "required": true
@@ -459,7 +608,7 @@
     "edge_conditions": [],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "5f60496dadfeeb71e3777b90e2e345ae56682a8c7808aa23176df5e1076a16f6",
+    "fingerprint": "ed1b3eca5a25f34633aa8b5b35a36f2e174c88ff8a0cc5de5a4cb60fc0e622bd",
     "gate": "human",
     "id": "retro",
     "model_tier": "inherit",
@@ -472,11 +621,17 @@
         "artifact_schema_version": "taskplane.stage/v1",
         "cardinality": "one",
         "required": true
+      },
+      {
+        "artifact_class": "lens-evidence",
+        "artifact_schema_version": "taskplane.lens-evidence/v1",
+        "cardinality": "one",
+        "required": true
       }
     ],
     "role": "tp-retro",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "e634bb60a7f05e683906c7d7b3a78e6577f3829f4d86abeaa9fc91f0ed0c5810",
+    "skill_content_fingerprint": "fb2afb2e8a06ac2be449ba4085aff1ff02b9518d0402660455a0ec7ae561c3c5",
     "skill_ref": "skills/tp-go/SKILL.md",
     "successors": [],
     "telemetry_scope": [

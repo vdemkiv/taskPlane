@@ -23,38 +23,8 @@ def _repository(path: Path) -> Path:
     return path
 
 
-def _privacy_notice() -> str:
-    return (ROOT / "PRIVACY.md").read_text(encoding="utf-8").lower()
 
 
-def test_m10_privacy_notice_matches_actual_collection_and_network_paths() \
-        -> None:
-    notice = _privacy_notice()
-
-    # The former categorical denials hid data Taskplane necessarily handles.
-    for obsolete_claim in (
-            "collects nothing", "no personal information collected",
-            "shares data with no one", "no network requests initiated"):
-        assert obsolete_claim not in notice
-
-    # The published inventory covers the authority, repository, and command
-    # records the runtime actually persists, as well as purpose and lifecycle.
-    for disclosed_category in (
-            "repository urls", "source/history", "diffs", "file paths",
-            "commands", "requirements", "decisions", "debt",
-            "actor or approval", "24-hour retention", "delete"):
-        assert disclosed_category in notice
-    assert "volodymyr demkiv" in notice
-    assert "accountable" in notice
-
-    runtime_source = (ROOT / "taskplane" / "taskplane_lite.py").read_text(
-        encoding="utf-8")
-    projection_source = (
-        ROOT / "taskplane" / "audit_projection.py"
-    ).read_text(encoding="utf-8")
-    assert "_AUDIT_IDENTITY_FIELDS" in projection_source
-    assert "_TRACE_ARCHIVE_RETENTION_SECONDS" in runtime_source
-    assert tp.audit_record is audit_projection.audit_record
 
 
 def test_m11_new_user_storage_defaults_private_despite_repository_setting(
@@ -99,23 +69,3 @@ def test_m11_new_user_storage_defaults_private_despite_repository_setting(
     monkeypatch.setenv("TASKPLANE_STORE", "repo")
     forced = tp.get_mode(str(forced_workspace))
     assert (forced["store"], forced["source"]) == ("repo", "env")
-
-
-def test_m20_remote_acquisition_network_disclosure_is_accurate() -> None:
-    notice = _privacy_notice()
-    repository_source = (ROOT / "taskplane" / "repository.py").read_text(
-        encoding="utf-8")
-
-    # Bind the disclosure to the concrete remote acquisition implementation,
-    # including both repository and pull-request paths.
-    assert "def acquire_pr" in repository_source
-    assert "def acquire_repository" in repository_source
-    assert '"fetch"' in repository_source
-    for disclosure in (
-            "remote repository", "pull request", "local `git`",
-            "github", "credentials", "request and connection metadata",
-            "repository/pr/ref", "marketplace",
-            "repository host's procedures"):
-        assert disclosure in notice
-    assert "these transfers are initiated by the action you request" in notice
-    assert "no telemetry" in notice

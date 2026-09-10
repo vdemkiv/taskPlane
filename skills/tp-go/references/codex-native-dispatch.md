@@ -5,51 +5,40 @@ Codex. The CLI has already decided the role, contract, model tier, reasoning
 effort, and evidence obligations. Codex supplies the transport; it does not
 reinterpret those decisions.
 
-## One brief, one exact task
+## One bounded startup, one exact task
 
-For every brief:
+`loop next` emits exactly `schema`, `stage_runtime_dispatch`, and `obligations`.
+The driver uses `obligations` to launch the worker. The delegated message contains
+only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`, and
+the exact `contract_bootstrap.environment`. Host roots belong only in that
+environment. Never forward the full action, a prior role brief, a conversation,
+ambient knowledge, or an unrelated Design.
 
-1. Open the brief's exact `role_instructions` path, read that file completely,
-   and include it with the full action payload in the delegated
-   message. Never replace it with a summary. Include the payload's exact
-   `role_marker` as a standalone line so strict dispatch can bind this native
-   Codex task to the taskplane role that owns the contract.
-   For review/evaluation briefs, the payload references a canonical review
-   context and a scoped view. Pass those references and fingerprints unchanged;
-   never paste the full diff/impact into the message or ask the child to run
-   `git diff`, graph impact, routing, or runnability discovery again.
-2. Call Codex's native `spawn_agent` with the brief's exact `task_name`,
-   `reasoning_effort`, and `fork_turns`. The emitted value is currently
-   `fork_turns="none"`; pass it explicitly so the child receives zero parent
-   conversation turns. Never omit the field or substitute the host default.
-   Pass `model` only when it is non-null; null means let the subagent inherit
-   Codex's model choice. The human-facing taskplane role remains the payload's
-   `role`/`agent` and must not be renamed.
-3. Independent, scope-disjoint briefs may be spawned concurrently. Never give
-   two write-capable agents the same checkout: use the worktree and contract
-   slot emitted for a parallel build wave.
-4. Use one event-driven wait per outstanding set. Prefer an unbounded native
-   wait; when the host requires a timeout, use at least 1800 seconds and never
-   less than 300 seconds for a spawned set. Reissue only after a completion or
-   attention wake while obligations remain—never on a timer or scheduled
-   polling cadence. Collect every final result before synthesis or an
-   orchestrator gate; a fast result does not cancel a slower obligation.
-5. If an agent is stalled, working the wrong scope, or violating its role,
-   send a bounded correction. If that cannot restore the contract, use
-   `interrupt_agent`, preserve the partial evidence, and escalate through the
-   loop's human gate. Do not silently replace, waive, or mark the task done.
+1. Use the exact `task_name`, model and `reasoning_effort` in `obligations`.
+   Set `fork_turns="none"` explicitly. Omit a null model so the host inherits it.
+2. The worker verifies the startup and reads its pinned phase input with
+   `$TP stage read-input --request -`, supplying the envelope as JSON on stdin.
+   The engine verifies its size, digest, authority and committed input reference.
+   The input declares the phase skill and typed artifact references. Read only
+   those inputs and files permitted by the scoped contract.
+3. Independent wave entries use the same envelope and verification protocol.
+   Each write-capable worker uses its own registered checkout and contract slot.
+4. Follow the emitted wait policy for the outstanding set. Collect every result
+   before asking for an orchestrator gate. A faster worker does not cancel another.
+5. A bounded correction preserves the current scope and attempt identity. If a
+   worker cannot continue, retain its evidence and use an attributable stage
+   close/discard operation. Do not infer completion from interruption.
 
-`SubagentStart` binds the exact pending worker contract from
-`contract_bootstrap.environment`. `SubagentStop` terminalizes and quarantines
-that slot on success, failure, cancellation, interruption, or handoff; a
-committed loop gate and SessionStart sweep are fail-safe cleanup paths. These
-hooks are authoritative for contract lifecycle, but not completion evidence. The
-`PreToolUse` screen, worker submission, evaluator evidence, orchestrator-only
-gate, and human checkpoints remain authoritative.
+`SubagentStart` binds the pending slot to the worker. `SubagentStop` records its
+actual terminal outcome and releases the slot. These observations do not grant
+human approval. The driver alone requests the declared gate.
+
+Standalone Review has its own scoped brief protocol; it does not replace phase
+startup or inject a lens route into Evaluate or Engineering.
 
 ## Sealed phase continuation
 
-For adapters using the additive phase interfaces, `taskplane/loop.py` owns
+For the active phase runtime, `taskplane/loop.py` owns
 `phase_evaluator_request` and `continue_phase_result`. Evaluation lenses come
 from the admitted registry; the agent's working lenses are omitted. The loop
 requires the current signed runtime result and canonical review, applies the
@@ -61,8 +50,7 @@ role label. `taskplane/tp.py:phase_continuation_output` and the loop's
 `require_phase_continuation` revalidate committed evidence and current
 authority at consumption. Missing evidence or authority holds progression;
 knowledge conflicts and rejections remain visible while the accepted runtime
-result is preserved. These interfaces do not activate a new phase rail or
-change rollout gates. Simulated host identity and unavailable usage keep their
+result is preserved. The run aggregate owns phase selection. Simulated host identity and unavailable usage keep their
 original provenance in the output.
 
 ## Long-running loops

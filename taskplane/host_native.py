@@ -7,6 +7,17 @@ canonical value/evidence/action set when a host has to use a fallback.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+if __package__:
+    from . import storage as runtime_storage
+    from .primitives import atomic_json as _atomic_json
+else:
+    import storage as runtime_storage  # type: ignore[no-redef]
+    from primitives import atomic_json as _atomic_json  # type: ignore[no-redef]
+
 import base64
 import contextlib
 import copy
@@ -30,8 +41,10 @@ from typing import Any, Callable, Iterable, Mapping, Sequence, TYPE_CHECKING
 
 try:
     from . import wave_metrics
+    from .gates import signoff_dod
 except ImportError:  # pragma: no cover - direct module loading
     import wave_metrics  # type: ignore
+    from gates import signoff_dod  # type: ignore
 
 if TYPE_CHECKING:
     from .host_capabilities import SurfaceSelection
@@ -245,8 +258,7 @@ def _plain(value: Any) -> Any:
 
 
 def _fingerprint(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False).encode("utf-8")
+    encoded = _json_primitives.canonical_bytes(payload, ensure_ascii=False)
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -1297,9 +1309,7 @@ _DASHBOARD_SURFACES = ("native", "json", "markdown", "html")
 
 
 def _canonical_fingerprint(value: object) -> str:
-    material = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")
+    material = _json_primitives.canonical_bytes(value, ensure_ascii=False)
     return hashlib.sha256(material).hexdigest()
 
 
@@ -1369,7 +1379,10 @@ def _v4_dashboard_source(
         projection = manifest["active_stage_projection"]
         active_ids = list(projection["active_stage_ids"])
         foreground = projection["foreground_stage_id"]
-        if foreground is None and len(active_ids) > 1:
+        workflow = manifest.get("workflow") or {}
+        if not isinstance(workflow, dict) or (workflow and workflow.get("run_id") != run_id):
+            raise ValueError("dashboard workflow belongs to another run")
+        if foreground is None and len(active_ids) > 1 and not workflow.get("parallel"):
             return {
                 "mode": "v4", "status": "ambiguous", "run_id": run_id,
                 "revision": str(manifest.get("revision") or "unknown"),
@@ -1379,12 +1392,22 @@ def _v4_dashboard_source(
                     "active stage projection has several active stages and "
                     "no foreground stage"],
             }
-        stage_id = foreground or (active_ids[0] if active_ids else None)
+        stage_id = foreground or (active_ids[0] if len(active_ids) == 1 else None)
         heads = manifest["stage_heads"]
         summary = copy.deepcopy(heads[stage_id]["summary"]) \
             if stage_id is not None else None
-        state = {
-            "step": ((summary or {}).get("stage_kind") or
+        # This projection comes from the same verified aggregate revision as
+        # its stage heads. Do not reload a mutable workflow or another run.
+        fields = ("run_id", "goal", "step", "requirement_id", "tasks", "current_task", "baseline",
+            "authority_receipt", "design_required",
+            "parallel", "settings_digest", "design_fingerprint", "design_graph_fingerprint",
+            "design_decomposition_receipt", "design_control_plane_binding", "delivery_mode_receipt",
+            "plan_fingerprint", "graph_dor", "graph_dod", "wave_metrics_receipt",
+            "wave_metrics_unavailable", "run_artifact_binding", "root_hygiene_receipt",
+            "_stage_native_root_authority", "signoff_evidence")
+        state = {key: copy.deepcopy(workflow[key]) for key in fields if key in workflow}
+        state.update({
+            "step": (workflow.get("step") or (summary or {}).get("stage_kind") or
                      ("done" if not active_ids else "unknown")),
             "stage_view": {
                 "schema": "taskplane.bounded-stage-view/v1",
@@ -1393,7 +1416,7 @@ def _v4_dashboard_source(
                 "current_stage": summary,
                 "active_stage_ids": active_ids,
             },
-        }
+        })
         return {
             "mode": "v4", "status": "ready", "run_id": run_id,
             "revision": str(manifest.get("revision") or "unknown"),
@@ -1409,60 +1432,13 @@ def _v4_dashboard_source(
             error_formatter=error_formatter)
 
 
-def _v3_dashboard_source(
-        state: object, manifest: dict[str, Any], run_id: str, *,
-        error_formatter: Callable[[Exception], str],
-) -> dict[str, Any]:
-    try:
-        fingerprint = _canonical_fingerprint({
-            "manifest": manifest, "state": state,
-        })
-        if manifest.get("schema") != "taskplane.run/v3" or \
-                manifest.get("run_id") != run_id:
-            raise ValueError(
-                "run manifest identity/schema is not taskplane.run/v3")
-        if not isinstance(state, dict):
-            raise ValueError("managed v3 loop state is unavailable")
-        if state.get("run_id") not in (None, run_id):
-            raise ValueError(
-                "managed v3 loop state contradicts the run manifest identity")
-        raw_tasks = state.get("tasks")
-        tasks = [] if raw_tasks is None else raw_tasks
-        if not isinstance(tasks, list):
-            raise ValueError("managed v3 tasks are not a list")
-        task = None
-        index = state.get("current_task")
-        if isinstance(index, int) and 0 <= index < len(tasks):
-            task = tasks[index]
-            if not isinstance(task, Mapping):
-                raise ValueError("managed v3 selected task is not an object")
-        target = str((task or {}).get("id") or state.get("step") or "run")
-        manifest_fingerprint = _canonical_fingerprint(manifest)
-        state_fingerprint = _canonical_fingerprint(state)
-    except Exception as exc:
-        return _corrupt_dashboard_source(
-            mode="v3", run_id=run_id, revision=manifest.get("revision"),
-            target="run", error=exc, error_formatter=error_formatter)
-
-    return {
-        "mode": "v3", "status": "ready", "run_id": run_id,
-        "revision": str(manifest.get("revision") or
-                        state.get("baseline") or fingerprint),
-        "target": target,
-        "state": state, "source_fingerprint": fingerprint,
-        "evidence": ["run-manifest:" + manifest_fingerprint,
-                     "loop-state:" + state_fingerprint],
-    }
-
-
 def select_dashboard_source(
         ws: str, *, locator_loader: Callable[..., Any],
-        legacy_loader: Callable[..., Any],
         manifest_loader: Callable[..., Any],
         manifest_validator: Callable[..., Any],
         error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
-    """Select a locator-authenticated v3 or v4 adapter exactly once."""
+    """Read the aggregate selected by the explicit workspace locator."""
     try:
         locator = locator_loader(ws)
     except Exception as exc:
@@ -1470,36 +1446,7 @@ def select_dashboard_source(
             mode="managed", run_id="unknown-managed", revision="unknown",
             target="run", error=exc, error_formatter=error_formatter)
     if locator is None:
-        try:
-            state = legacy_loader(ws)
-        except Exception as exc:
-            return _corrupt_dashboard_source(
-                mode="legacy", run_id="unknown-legacy", revision="unknown",
-                target="loop", error=exc, error_formatter=error_formatter)
-        if state is None:
-            return {"mode": "none", "status": "no_active", "state": None,
-                    "evidence": []}
-        if not isinstance(state, dict) or not isinstance(
-                state.get("run_id"), str) or not state["run_id"]:
-            error = ValueError("legacy loop state has no valid run identity")
-            return _corrupt_dashboard_source(
-                mode="legacy", run_id="unknown-legacy", revision="unknown",
-                target="loop", error=error, error_formatter=error_formatter)
-        try:
-            state_fingerprint = _canonical_fingerprint(state)
-        except Exception as exc:
-            return _corrupt_dashboard_source(
-                mode="legacy", run_id=str(state["run_id"]),
-                revision="unknown", target="loop", error=exc,
-                error_formatter=error_formatter)
-        return {
-            "mode": "legacy", "status": "ready",
-            "run_id": str(state["run_id"]),
-            "revision": str(state.get("baseline") or state_fingerprint),
-            "target": "loop", "state": state,
-            "source_fingerprint": state_fingerprint,
-            "evidence": ["loop-state:" + state_fingerprint],
-        }
+        return {"mode": "none", "status": "no_active", "state": None, "evidence": []}
     if not isinstance(locator, dict) or not isinstance(
             locator.get("run_id"), str) or not locator["run_id"]:
         error = ValueError("workspace locator has no valid run identity")
@@ -1524,20 +1471,7 @@ def select_dashboard_source(
         return _v4_dashboard_source(
             manifest, run_id, manifest_validator=manifest_validator,
             error_formatter=error_formatter)
-    if schema == "taskplane.run/v3":
-        if manifest.get("run_id") != run_id:
-            return _v3_dashboard_source(
-                None, manifest, run_id, error_formatter=error_formatter)
-        try:
-            state = legacy_loader(ws)
-        except Exception as exc:
-            return _corrupt_dashboard_source(
-                mode="v3", run_id=run_id,
-                revision=manifest.get("revision"), target="run", error=exc,
-                error_formatter=error_formatter)
-        return _v3_dashboard_source(
-            state, manifest, run_id, error_formatter=error_formatter)
-    error = ValueError("run manifest schema is not taskplane.run/v3 or v4")
+    error = ValueError("unsupported_run_schema: archive the old run and start a new v4 run")
     return _corrupt_dashboard_source(
         mode="managed", run_id=run_id, revision=manifest.get("revision"),
         target="run", error=error, error_formatter=error_formatter)
@@ -1567,6 +1501,8 @@ def _phase_graph_values(
         error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
     """Consume the projection slice when present; never invent graph truth."""
+    if state is None:
+        return {}
     try:
         project = projector
         if not callable(project):
@@ -1622,7 +1558,7 @@ def _authority_receipt_binding(state: Mapping[str, Any] | None) -> str | None:
 
 def _dashboard_candidate_values(
         state: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Name a migrated legacy run's observed candidate without hiding baseline."""
+    """Project the current run baseline without inferred historical candidates."""
     if not isinstance(state, Mapping):
         return {}
     baseline = state.get("baseline")
@@ -1633,38 +1569,7 @@ def _dashboard_candidate_values(
         "candidate_sha": baseline,
         "baseline_sha": baseline,
     }
-    try:
-        if __package__:
-            from . import run_artifacts
-        else:  # pragma: no cover - direct module loading
-            import run_artifacts  # type: ignore
-        binding = run_artifacts.validate_binding(
-            state.get("run_artifact_binding"))
-    except Exception:
-        return values
-    candidate = binding.get("candidate")
-    if not isinstance(candidate, Mapping) or candidate.get("schema") != \
-            "taskplane.legacy-terminal-observation/v1":
-        return values
-    observation = {key: candidate.get(key) for key in (
-        "schema", "run_id", "baseline", "observed_revision",
-        "workspace_fingerprint", "source_state_fingerprint",
-        "tasks_fingerprint", "execution_status",
-    )}
-    observed = observation["observed_revision"]
-    if candidate.get("fingerprint") != _canonical_fingerprint(observation) or \
-            observation["run_id"] != state.get("run_id") or \
-            observation["baseline"] != baseline or \
-            observation["execution_status"] != "unproven" or \
-            not isinstance(observed, str) or \
-            not re.fullmatch(r"[0-9a-f]{40}", observed):
-        return values
-    return {
-        **values,
-        "candidate_sha": observed,
-        "observed_revision": observed,
-        "candidate_execution_status": "unproven",
-    }
+    return values
 
 
 def _next_dashboard_sequence(
@@ -1781,12 +1686,9 @@ def refresh_dashboard_snapshot(
            else {}),
     }
     safe_actions: tuple[str, ...] = ()
-    metrics_signoff_ready = \
-        ((metrics_values.get("wave_metrics") or {}).get("signoff") or {}).get(
-            "ready") is True
     if healthy and stage in {"design_approval", "plan_approval"}:
         safe_actions = ("approve", "reject")
-    elif healthy and stage == "signoff" and metrics_signoff_ready:
+    elif healthy and stage == "signoff" and signoff_dod(state or {}).get("passed") is True:
         safe_actions = ("approve", "reject")
     elif healthy and stage == "escalated":
         safe_actions = ("retry", "skip", "defer", "abort")
@@ -2005,3 +1907,132 @@ def render_wave_metrics_projection(projection: Mapping[str, Any] | None) -> str:
         f'<p class="tp-lede">receipt <code>{_dashboard_escape(receipt)}</code> · sign-off '
         f'{"ready" if signoff.get("ready") is True else "blocked"}</p><ol>'
         + "".join(rows) + "</ol></section>")
+
+
+DASHBOARD_PUBLICATION_SCHEMA = "taskplane.dashboard-publication-store/v1"
+
+
+def dashboard_snapshot_store_path(workspace: str) -> str:
+    """Return the workspace-local atomic dashboard publication head."""
+    root = os.path.realpath(os.path.abspath(workspace))
+    return os.path.join(root, ".taskplane", "dashboard-state", "current.json")
+
+
+def load_dashboard_publication(workspace: str) -> dict[str, Any] | None:
+    """Load and authenticate the complete persisted snapshot history."""
+    path = dashboard_snapshot_store_path(workspace)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise runtime_storage.StorageIdentityError(
+            f"dashboard publication is unreadable: {exc}") from exc
+    if not isinstance(value, dict) or value.get("schema") != \
+            DASHBOARD_PUBLICATION_SCHEMA or set(value) != {
+                "schema", "current", "history"}:
+        raise runtime_storage.StorageIdentityError("dashboard publication schema is invalid")
+    history = value.get("history")
+    if not isinstance(history, list) or not history:
+        raise runtime_storage.StorageIdentityError("dashboard publication history is invalid")
+    try:
+        checked = [HostSurfaceSnapshot.from_dict(row) for row in history]
+    except (TypeError, ValueError) as exc:
+        raise runtime_storage.StorageIdentityError(
+            f"dashboard publication snapshot is invalid: {exc}") from exc
+    identities: dict[tuple[str, str, str, str, int], str] = {}
+    for snapshot in checked:
+        key = (snapshot.workflow_id, snapshot.run_id, snapshot.target,
+               snapshot.revision, snapshot.sequence)
+        prior = identities.get(key)
+        if prior is not None and prior != snapshot.fingerprint:
+            raise ContradictorySnapshotError(
+                "contradictory snapshots share one sequence")
+        identities[key] = snapshot.fingerprint
+    current = HostSurfaceSnapshot.from_dict(value["current"])
+    if current.to_dict() != checked[-1].to_dict():
+        raise runtime_storage.StorageIdentityError(
+            "dashboard publication current head does not match history")
+    return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+            "current": current.to_dict(),
+            "history": [snapshot.to_dict() for snapshot in checked]}
+
+
+def commit_dashboard_snapshot(workspace: str, snapshot: HostSurfaceSnapshot) -> dict[str, Any]:
+    """CAS one authenticated HostSurfaceSnapshot into the durable head.
+
+    An exact duplicate is idempotent. Equal sequence with different bytes is
+    contradictory, and lower/non-monotonic updates fail closed.
+    """
+    try:
+        authenticated = HostSurfaceSnapshot.from_dict(snapshot.to_dict())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise runtime_storage.StorageIdentityError(
+            f"dashboard snapshot is invalid: {exc}") from exc
+    path = dashboard_snapshot_store_path(workspace)
+    with runtime_storage._storage_file_lock(path + ".lock"):
+        prior = load_dashboard_publication(workspace)
+        history = list((prior or {}).get("history") or [])
+        if history:
+            previous = HostSurfaceSnapshot.from_dict(history[-1])
+            stable = (authenticated.workflow_id, authenticated.run_id,
+                      authenticated.target, authenticated.revision)
+            previous_stable = (previous.workflow_id, previous.run_id,
+                               previous.target, previous.revision)
+            if stable == previous_stable and \
+                    authenticated.sequence == previous.sequence:
+                if authenticated.fingerprint != previous.fingerprint:
+                    raise ContradictorySnapshotError(
+                        "contradictory snapshots share one sequence")
+                return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+                        "current": previous.to_dict(), "history": history,
+                        "replayed": True}
+            if (authenticated.workflow_id, authenticated.run_id,
+                    authenticated.target) == (
+                    previous.workflow_id, previous.run_id, previous.target) \
+                    and authenticated.sequence <= previous.sequence:
+                raise runtime_storage.StorageIdentityError(
+                    "dashboard snapshot sequence is not monotonic")
+        history.append(authenticated.to_dict())
+        # Publication history is bounded presentation evidence, not the event
+        # journal. The authoritative workflow journal retains the full run.
+        history = history[-256:]
+        stored = {"schema": DASHBOARD_PUBLICATION_SCHEMA,
+                  "current": authenticated.to_dict(), "history": history}
+        _atomic_json(path, stored)
+        return {**stored, "replayed": False}
+
+
+def commit_dashboard_event(workspace: str, event: HostSurfaceEvent) -> dict[str, Any]:
+    """Durably append one authenticated snapshot event, idempotently."""
+    try:
+        checked = HostSurfaceEvent.from_dict(event.to_dict())
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise runtime_storage.StorageIdentityError(f"dashboard event is invalid: {exc}") \
+            from exc
+    root = os.path.dirname(dashboard_snapshot_store_path(workspace))
+    path = os.path.join(root, "events.json")
+    with runtime_storage._storage_file_lock(path + ".lock"):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                stored = json.load(handle)
+        except FileNotFoundError:
+            stored = {"schema": "taskplane.dashboard-events/v1",
+                      "events": []}
+        except (OSError, ValueError) as exc:
+            raise runtime_storage.StorageIdentityError(
+                f"dashboard event history is unreadable: {exc}") from exc
+        if not isinstance(stored, dict) or stored.get("schema") != \
+                "taskplane.dashboard-events/v1" or \
+                not isinstance(stored.get("events"), list):
+            raise runtime_storage.StorageIdentityError("dashboard event history is invalid")
+        events = [HostSurfaceEvent.from_dict(row)
+                  for row in stored["events"]]
+        if any(row.fingerprint == checked.fingerprint for row in events):
+            return {"event": checked.to_dict(), "replayed": True}
+        events.append(checked)
+        value = {"schema": "taskplane.dashboard-events/v1",
+                 "events": [row.to_dict() for row in events[-512:]]}
+        _atomic_json(path, value)
+        return {"event": checked.to_dict(), "replayed": False}

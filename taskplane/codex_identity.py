@@ -124,9 +124,9 @@ def terminal_transcript(workspace: str, contract: dict[str, Any], event: dict[st
     return matched[1], matched[2]
 
 
-def terminal_usage(workspace: str, terminal: dict[str, Any], *,
+def observed_usage(workspace: str, terminal: dict[str, Any], *,
                    codex_home: str | None = None) -> dict[str, Any]:
-    """Read the exact stopped child's host counter when Stop has no usage.
+    """Read the exact child's counter at an authenticated Start or Stop.
 
     The caller must authenticate the terminal receipt first. This does not
     rewrite that receipt, replay a hook, read messages or invent a counter.

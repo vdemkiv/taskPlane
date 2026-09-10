@@ -506,20 +506,6 @@ def test_terminal_stage_cannot_be_dispatched_or_resumed() -> None:
             attempt_id="attempt-terminal")
 
 
-@pytest.mark.parametrize(
-    ("environment", "expected"),
-    [
-        ({}, "disabled"),
-        ({"TASKPLANE_STAGE_NATIVE": "true"}, "disabled"),
-        ({"TASKPLANE_STAGE_NATIVE": "new-run"}, "new-run"),
-        ({"TASKPLANE_STAGE_NATIVE": "enabled"}, "enabled"),
-    ],
-)
-def test_stage_native_rollout_mode_is_explicit_and_fail_closed(
-        environment: dict[str, str], expected: str) -> None:
-    assert taskplane_lite.stage_native_mode(environment) == expected
-    assert taskplane_lite.stage_native_enabled(environment) is \
-        (expected != "disabled")
 
 
 def test_loop_dispatch_consumes_the_verified_receipt_at_runtime_boundary() \
@@ -559,102 +545,8 @@ def test_loop_dispatch_consumes_the_verified_receipt_at_runtime_boundary() \
     assert dispatch["telemetry"]["predecessor_root_opens"] == 0
 
 
-def test_loop_stage_command_refuses_disabled_legacy_mutation_but_reads_history(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    import loop
-    import run_store
-
-    class Store:
-        def load(self, run_id: str) -> dict[str, object]:
-            assert run_id == "legacy-run"
-            return {"schema": "taskplane.run/v3", "run_id": run_id}
-
-    monkeypatch.setattr(run_store, "RunStore", Store)
-    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE", raising=False)
-
-    refused = loop.stage_command(
-        "/repo", "start", {"stage": {"run_id": "legacy-run"}})
-    history = loop.stage_command(
-        "/repo", "history", {"run_id": "legacy-run", "limit": 10})
-
-    assert refused == {
-        "schema": "taskplane.stage-command-result/v1",
-        "command": "start",
-        "run_id": "legacy-run",
-        "enabled": False,
-        "legacy": True,
-        "error": "stage-native mutation is disabled",
-    }
-    assert history == {
-        "schema": "taskplane.stage-history-page/v1",
-        "run_id": "legacy-run",
-        "legacy": True,
-        "stages": [],
-        "lineage": [],
-        "next_cursor": None,
-    }
 
 
-def test_loop_stage_command_allows_an_explicit_new_run_canary(
-        monkeypatch: pytest.MonkeyPatch) -> None:
-    import loop
-    import run_store
-
-    stage, handoff_value = _root_stage_and_handoff()
-    receipt = _receipt(stage)
-
-    class Store:
-        def load(self, run_id: str) -> dict[str, object]:
-            assert run_id == stage["run_id"]
-            return {"schema": "taskplane.run/v3", "run_id": run_id}
-
-    class Lifecycle:
-        def _read_handoff(self, *_args, **_kwargs) -> dict[str, object]:
-            return handoff_value
-
-        def start_stage(self, candidate: dict[str, object], **kwargs) \
-                -> dict[str, object]:
-            assert candidate == stage
-            assert kwargs["expected_revision"] == 3
-            assert kwargs["operation_id"] == "start-canary-001"
-            assert kwargs["expected_predecessor_fingerprints"] == {}
-            return receipt
-
-    dispatch = {"schema": "taskplane.stage-dispatch/v1", "bounded": True}
-    monkeypatch.setattr(run_store, "RunStore", Store)
-    monkeypatch.setattr(
-        loop, "_stage_lifecycle",
-        lambda *_args: (stage_entities, Lifecycle()))
-    monkeypatch.setattr(
-        loop, "_verified_stage_handoff",
-        lambda *_args: handoff_value)
-    monkeypatch.setattr(loop, "_stage_dispatch", lambda *_args, **_kwargs: dispatch)
-    monkeypatch.setattr(loop, "load", lambda _workspace: {
-        "step": "plan",
-        "tasks": None,
-        "current_task": 0,
-        "_stage_native_new_run_pristine": True,
-    })
-    monkeypatch.setattr(
-        loop, "_persist_stage_run_binding", lambda *_args, **_kwargs: {})
-    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "new-run")
-
-    result = loop.stage_command("/repo", "start", {
-        "schema": "taskplane.stage-command/v1",
-        "stage": stage,
-        "expected_revision": 3,
-        "operation_id": "start-canary-001",
-        "expected_predecessor_fingerprints": {},
-        "authority": stage["authority"],
-    })
-
-    assert result == {
-        "schema": "taskplane.stage-command-result/v1",
-        "command": "start",
-        "run_id": stage["run_id"],
-        "receipt": receipt,
-        "dispatch": dispatch,
-    }
 
 
 def test_cli_preserves_verified_receipt_and_bounded_startup_telemetry(

@@ -3,14 +3,19 @@
   "scope": {
     "claim": "targeted-evidence-only",
     "complete_inventory_adjudication": false,
-    "description": "Records explicit removals and selected current contracts; it does not claim every repository test was individually adjudicated."
+    "description": "Records explicit removals and selected current contracts; it does not claim every repository test was individually adjudicated.",
+    "authority": "Verification only. User decisions and Product/Design acceptance criteria define expected behavior; tests and this ledger do not define it.",
+    "evidence_boundary": "Local fixtures and simulated host events are not live-host or delivery acceptance evidence."
   },
   "policy": {
     "evidence_rule": "A retained-value claim names an exact collected selector which exercises observable behavior or a semantic refusal.",
     "excluded_as_correctness_evidence": [
-      "source-string-presence", "yaml-string-presence",
-      "prose-string-presence", "byte-identity",
-      "physical-line-or-count-ratchet", "history-replay",
+      "source-string-presence",
+      "yaml-string-presence",
+      "prose-string-presence",
+      "byte-identity",
+      "physical-line-or-count-ratchet",
+      "history-replay",
       "self-declared-hash"
     ]
   },
@@ -19,16 +24,17 @@
       "path": "taskplane/tests/test_a4_engine_skew_bites.py",
       "category": "history-replay",
       "reason": "Replayed a closed incident instead of protecting the current engine-skew refusal.",
-      "replacement_selectors": ["taskplane/tests/test_loop.py::TestEngineSkewRefusal::test_recorded_t7_skew_is_refused_then_gates_through_after_merge"]
+      "replacement_selectors": [],
+      "coverage_note": "Prior replacement tests were retired during the harness refactor. Remaining selectors describe component checks only; no equivalent full-journey coverage is claimed."
     },
     {
       "path": "taskplane/tests/test_agents_skills_focused_routing.py",
       "category": "source-and-prose-string-checks",
-      "reason": "Inspected implementation text; the cross-host journey now exercises selected portable Design dispatch and receipts.",
+      "reason": "Inspected implementation text instead of executing the selected role contract.",
       "replacement_selectors": [
-        "taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts",
         "taskplane/tests/test_lens_route_telemetry.py::test_route_telemetry_covers_every_terminal_path"
-      ]
+      ],
+      "coverage_note": "Prior replacement tests were retired during the harness refactor. Remaining selectors describe component checks only; no equivalent full-journey coverage is claimed."
     },
     {
       "path": "taskplane/tests/test_dashboard_coverage_v2.py",
@@ -43,22 +49,24 @@
       "path": "taskplane/tests/test_dashboard_tiers.py",
       "category": "duplicate",
       "reason": "Duplicated dashboard tier assertions already covered by the real browser lifecycle.",
-      "replacement_selectors": ["taskplane/tests/test_dashboard_browser.py::test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale"]
+      "replacement_selectors": [
+        "taskplane/tests/test_dashboard_browser.py::test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale"
+      ]
     },
     {
       "path": "taskplane/tests/test_debt_burndown.py",
       "category": "obsolete-product-policy",
       "reason": "Enforced a retired debt policy rather than current risk-sensitive routing.",
-      "replacement_selectors": ["taskplane/tests/test_lens_signals_fixtures.py::TestD0002InflationCaseClosed::test_fixture_only_diff_no_longer_routes_i18n_mobile_deep"]
+      "replacement_selectors": [
+        "taskplane/tests/test_lens_signals_fixtures.py::TestD0002InflationCaseClosed::test_fixture_only_diff_no_longer_routes_i18n_mobile_deep"
+      ]
     },
     {
       "path": "taskplane/tests/test_design_conformance_r0001.py",
       "category": "closed-acceptance-replay",
-      "reason": "Replayed a closed requirement bundle; current Design mutation refusal and Plan coverage remain protected.",
-      "replacement_selectors": [
-        "taskplane/tests/test_design_workflow.py::DesignWorkflowTest::test_design_gate_rejects_graph_mutation",
-        "taskplane/tests/test_design_workflow.py::DesignWorkflowTest::test_plan_dor_covers_approved_design"
-      ]
+      "reason": "Replayed a closed requirement bundle; historical acceptance is not authority for the current phase flow.",
+      "replacement_selectors": [],
+      "coverage_note": "Prior replacement tests were retired during the harness refactor. Remaining selectors describe component checks only; no equivalent full-journey coverage is claimed."
     },
     {
       "path": "taskplane/tests/test_design_contract_overlay_modules.py",
@@ -73,7 +81,9 @@
       "path": "taskplane/tests/test_em_m2_docs.py",
       "category": "prose-string-presence",
       "reason": "Searched documentation text instead of validating release topology.",
-      "replacement_selectors": ["taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate"]
+      "replacement_selectors": [
+        "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate"
+      ]
     },
     {
       "path": "taskplane/tests/test_lens_routing_product_truth.py",
@@ -87,8 +97,9 @@
     {
       "path": "taskplane/tests/test_r0001_live_host_canary.py",
       "category": "non-hermetic-canary",
-      "reason": "Depended on ambient host state; the hermetic cross-host journey proves portable roles and authenticated lifecycle receipts.",
-      "replacement_selectors": ["taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts"]
+      "reason": "Depended on ambient host state; an isolated fixture cannot substitute for a live-host canary.",
+      "replacement_selectors": [],
+      "coverage_note": "Prior replacement tests were retired during the harness refactor. Remaining selectors describe component checks only; no equivalent full-journey coverage is claimed."
     },
     {
       "path": "taskplane/tests/test_r0002_reviewkernel_regression_floor.py",
@@ -103,17 +114,18 @@
     {
       "path": "taskplane/tests/test_r0007_sweep_bootstrap.py",
       "category": "closed-requirement-replay",
-      "reason": "Replayed closed bootstrap acceptance; cross-host dispatch and terminal routing are stronger public evidence.",
+      "reason": "Replayed closed bootstrap acceptance instead of the current dispatch contract.",
       "replacement_selectors": [
-        "taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts",
         "taskplane/tests/test_lens_route_telemetry.py::test_route_telemetry_covers_every_terminal_path"
-      ]
+      ],
+      "coverage_note": "Prior replacement tests were retired during the harness refactor. Remaining selectors describe component checks only; no equivalent full-journey coverage is claimed."
     },
     {
       "path": "taskplane/tests/test_r0013_wave_ceiling.py",
       "category": "closed-plan-replay",
-      "reason": "Replayed a historical Plan ceiling; dynamic cross-host dispatch proves the selected set without a frozen count.",
-      "replacement_selectors": ["taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts"]
+      "reason": "Replayed a historical Plan ceiling instead of the current configured dispatch policy.",
+      "replacement_selectors": [],
+      "coverage_note": "Prior replacement tests were retired during the harness refactor. Remaining selectors describe component checks only; no equivalent full-journey coverage is claimed."
     },
     {
       "path": "taskplane/tests/test_stage_r0003_preservation.py",
@@ -123,6 +135,34 @@
         "taskplane/tests/test_run_artifacts.py::test_all_artifacts_and_activity_repeat_full_working_binding_and_verify",
         "taskplane/tests/test_owned_cleanup.py::test_cleanup_preserves_evidence_and_proves_zero_leaks"
       ]
+    },
+    {
+      "path": "taskplane/tests/run_lr10_parallel.py",
+      "category": "unused-runner",
+      "reason": "Retired LR09/LR10 profiles selected deleted files; CI discovers the current suite. Removed eight tests of this unused runner.",
+      "replacement_selectors": [
+        "taskplane/tests/test_ci_local.py::test_pytest_inventory_discovers_checkout_and_ignores_compact_evidence"
+      ]
+    },
+    {
+      "path": "taskplane/tests/test_lens_routing_wired.py",
+      "category": "retired-dispatch-and-prose-pins",
+      "reason": "Old deep/sweep payload assertions, all-lens execution claims and Markdown sentence checks conflict with current dispatch contracts. The public route check is retained in the integration file.",
+      "replacement_selectors": [
+        "taskplane/tests/test_lens_routing_integration.py::test_cli_route_applies_signals_to_the_explicit_repository"
+      ]
+    },
+    {
+      "path": "taskplane/tests/test_review_wave.py",
+      "category": "retired-emitter-and-duplicate-capability-placement",
+      "reason": "Removed seven tests of the retired lens --emit producer and its unreferenced review-wave transport. Moved nine live shared workflow-capability checks to the stage transport suite. Public lens dispatch now checks the shared sealed plan across bare, opt-in, and Codex host markers.",
+      "replacement_selectors": [
+        "taskplane/tests/test_stage_waves.py::TestWorkflowAvailable::test_codex_beats_explicit_opt_in",
+        "taskplane/tests/test_stage_waves.py::TestWorkflowAvailable::test_kill_switch_beats_marker",
+        "taskplane/tests/test_lens_routing_integration.py::test_cli_dispatch_binds_the_shared_plan_on_every_host[host_environment0]",
+        "taskplane/tests/test_lens_routing_integration.py::test_cli_dispatch_binds_the_shared_plan_on_every_host[host_environment1]",
+        "taskplane/tests/test_lens_routing_integration.py::test_cli_dispatch_binds_the_shared_plan_on_every_host[host_environment2]"
+      ]
     }
   ],
   "removed_fixture_families": [
@@ -130,46 +170,147 @@
     "taskplane/tests/fixtures/test-strategy/dashboard-snapshot.json",
     "taskplane/tests/fixtures/test-strategy/dashboard-phase-graphs.json",
     "taskplane/tests/fixtures/test-strategy/dashboard-publication.json",
-    "taskplane/tests/fixtures/r0013-approved-wave-authority.json"
+    "taskplane/tests/fixtures/r0013-approved-wave-authority.json",
+    "taskplane/tests/fixtures/settings-inventory/**"
   ],
   "protected_contracts": [
-    {"contract": "unknown mutation capabilities are denied", "selector": "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied"},
-    {"contract": "cleanup refuses ambiguous or unowned targets", "selector": "taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets"},
-    {"contract": "emitted worker paths remain portable", "selector": "taskplane/tests/test_windows_portability.py::TestEmittedArtifactPathsAreSlashShaped::test_worker_workspace_is_normalized_on_the_way_into_a_brief"},
-    {"contract": "release tag requires exact protected-main evidence", "selector": "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green"},
-    {"contract": "first-parent topology matches the release gate", "selector": "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate"},
-    {"contract": "real browser accepts only a newer dashboard snapshot", "selector": "taskplane/tests/test_dashboard_browser.py::test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale"},
-    {"contract": "fresh Design and Plan never reuse prior-run graph evidence", "selector": "taskplane/tests/test_dashboard_stage_graph_provenance.py::test_fresh_design_and_plan_do_not_reuse_prior_run_graph_artifacts"},
-    {"contract": "non-product failures cannot authorize product Fix", "selector": "taskplane/tests/test_failure_routing.py::test_known_classes_split_without_cross_authorizing_product_fixes"},
-    {"contract": "Retro reports measured token and evaluator truth", "selector": "taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth"},
-    {"contract": "non-normal terminal outcomes preserve evidence and clean owned state", "selector": "taskplane/tests/test_r0002_terminal_journey.py::test_public_non_normal_terminal_journey_is_bound_clean_and_replay_safe"}
+    {
+      "contract": "unknown mutation capabilities are denied",
+      "selector": "taskplane/tests/test_governance_invariants.py::TestGovernanceInvariants::test_unknown_mutation_capability_is_denied"
+    },
+    {
+      "contract": "cleanup refuses ambiguous or unowned targets",
+      "selector": "taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets"
+    },
+    {
+      "contract": "emitted worker paths remain portable",
+      "selector": "taskplane/tests/test_windows_portability.py::TestEmittedArtifactPathsAreSlashShaped::test_worker_workspace_is_normalized_on_the_way_into_a_brief"
+    },
+    {
+      "contract": "release tag requires exact protected-main evidence",
+      "selector": "taskplane/tests/test_release_tags.py::test_tag_requires_exact_protected_main_green"
+    },
+    {
+      "contract": "first-parent topology matches the release gate",
+      "selector": "taskplane/tests/test_release_provenance.py::test_premerge_first_parent_topology_matches_release_gate"
+    },
+    {
+      "contract": "real browser accepts only a newer dashboard snapshot",
+      "selector": "taskplane/tests/test_dashboard_browser.py::test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale"
+    },
+    {
+      "contract": "fresh Design and Plan never reuse prior-run graph evidence",
+      "selector": "taskplane/tests/test_dashboard_stage_graph_provenance.py::test_fresh_design_and_plan_do_not_reuse_prior_run_graph_artifacts"
+    },
+    {
+      "contract": "non-product failures cannot authorize product Fix",
+      "selector": "taskplane/tests/test_failure_routing.py::test_known_classes_split_without_cross_authorizing_product_fixes"
+    },
+    {
+      "contract": "Retro reports measured token and evaluator truth",
+      "selector": "taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth"
+    }
   ],
   "retained_fixtures": [
-    {"path": "taskplane/tests/fixtures/dashboard-contract/snapshot-v1.json", "consumer_selectors": ["taskplane/tests/test_host_native_capabilities.py::test_generated_at_sequence_revision_and_fingerprint_survive_restart"]},
-    {"path": "taskplane/tests/fixtures/dashboard-phase/design-contract.json", "consumer_selectors": ["taskplane/tests/test_dashboard_phase_graphs.py::test_design_graph_plan_dag_waves_and_module_impact_are_distinct"]},
-    {"path": "taskplane/tests/fixtures/dashboard-phase/plan-tasks.json", "consumer_selectors": ["taskplane/tests/test_dashboard_phase_graphs.py::test_design_graph_plan_dag_waves_and_module_impact_are_distinct"]},
-    {"path": "taskplane/tests/fixtures/dashboard-phase/module-impact.json", "consumer_selectors": ["taskplane/tests/test_dashboard_phase_graphs.py::test_design_graph_plan_dag_waves_and_module_impact_are_distinct"]},
-    {"path": "taskplane/tests/fixtures/dashboard-browser/environment.json", "consumer_selectors": ["taskplane/tests/test_dashboard_browser.py::test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale"]},
-    {"path": "taskplane/tests/fixtures/dashboard-browser/topology.json", "consumer_selectors": ["taskplane/tests/test_dashboard_browser.py::test_real_browser_svg_graphs_and_single_document_are_truthful"]},
-    {"path": "taskplane/tests/fixtures/test-strategy/settings-contract.json", "consumer_selectors": ["taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete", "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"]},
-    {"path": "taskplane/tests/fixtures/test-strategy/failure-classes.json", "consumer_selectors": ["taskplane/tests/test_test_strategy_contract.py::test_design_and_build_contract_is_complete"]},
-    {"path": "taskplane/tests/fixtures/test-strategy/severed-edges.json", "consumer_selectors": ["taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"]}
+    {
+      "path": "taskplane/tests/fixtures/dashboard-contract/snapshot-v1.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_host_native_capabilities.py::test_generated_at_sequence_revision_and_fingerprint_survive_restart"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/dashboard-phase/design-contract.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_dashboard_phase_graphs.py::test_design_graph_plan_dag_waves_and_module_impact_are_distinct"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/dashboard-phase/plan-tasks.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_dashboard_phase_graphs.py::test_design_graph_plan_dag_waves_and_module_impact_are_distinct"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/dashboard-phase/module-impact.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_dashboard_phase_graphs.py::test_design_graph_plan_dag_waves_and_module_impact_are_distinct"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/dashboard-browser/environment.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_dashboard_browser.py::test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/dashboard-browser/topology.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_dashboard_browser.py::test_real_browser_svg_graphs_and_single_document_are_truthful"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/test-strategy/settings-contract.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_test_strategy_contract.py::test_strategy_validates_contract_and_refuses_nonexact_selector",
+        "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/test-strategy/failure-classes.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_test_strategy_contract.py::test_strategy_validates_contract_and_refuses_nonexact_selector"
+      ]
+    },
+    {
+      "path": "taskplane/tests/fixtures/test-strategy/severed-edges.json",
+      "consumer_selectors": [
+        "taskplane/tests/test_test_strategy_contract.py::test_dashboard_producers_name_consumers_freshness_severed_edges_and_same_slice_fixtures"
+      ]
+    }
   ],
   "audited_evidence": [
-    {"selector": "taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts", "mechanism": "cross-host-public-journey", "observed_behavior": "A dynamically selected Design set completes through portable roles and authenticated host assignment, start, and terminal receipts."},
-    {"selector": "taskplane/tests/test_r0002_control_plane_journey.py::test_dynamic_design_team_creates_one_portable_authorized_worker_per_lens", "mechanism": "composition-contract", "observed_behavior": "Loop composition creates one exact worker contract per selected lens; it proves composition only, not host execution."},
-    {"selector": "taskplane/tests/test_host_native_publication.py::test_delayed_prior_run_and_wrong_expected_head_cannot_replace_current", "mechanism": "severed-edge", "observed_behavior": "A stale or wrong-head dashboard publication cannot replace the current generation."},
-    {"selector": "taskplane/tests/test_failure_routing.py::test_known_classes_split_without_cross_authorizing_product_fixes", "mechanism": "semantic-refusal", "observed_behavior": "Test, infrastructure, and environment failures are routed without product-Fix authority."},
-    {"selector": "taskplane/tests/test_run_artifacts.py::test_all_artifacts_and_activity_repeat_full_working_binding_and_verify", "mechanism": "artifact-lifecycle", "observed_behavior": "All artifact classes and activity entries verify against one complete run binding."},
-    {"selector": "taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth", "mechanism": "terminal-telemetry", "observed_behavior": "Retro derives token and evaluator values from authenticated terminal activity and reports unavailable evidence honestly."},
-    {"selector": "taskplane/tests/test_r0007_governed_commands.py::test_supported_cli_and_loop_run_one_real_durable_command", "mechanism": "public-command-journey", "observed_behavior": "The supported CLI launches, reconnects to, and retains one durable governed command lifecycle."},
-    {"selector": "taskplane/tests/test_workflow_review_kernel_parity.py::test_reused_codex_child_final_claim_without_brief_delivery_is_rejected", "mechanism": "semantic-refusal", "observed_behavior": "A reused child cannot satisfy a governed review lease without host-observed delivery of the exact brief."},
-    {"selector": "taskplane/tests/test_native_terminal_telemetry.py::test_subagent_stop_seals_content_bound_usage_and_actual_outcome", "mechanism": "native-lifecycle", "observed_behavior": "SubagentStop binds authenticated transcript usage and the actual terminal outcome to one emitted intent."},
-    {"selector": "taskplane/tests/test_native_terminal_telemetry.py::test_missing_native_counter_blocks_terminal_release_without_zero_fallback", "mechanism": "semantic-refusal", "observed_behavior": "Missing native transcript evidence blocks terminal release, preserves the active worker for retry, and never invents a zero token total."},
-    {"selector": "taskplane/tests/test_native_terminal_telemetry.py::test_retry_attempts_with_same_plan_task_cannot_cross_bind_usage", "mechanism": "severed-edge", "observed_behavior": "Retry attempts for one Plan task cannot cross-bind usage across exact native identities."}
+    {
+      "selector": "taskplane/tests/test_host_native_publication.py::test_delayed_prior_run_and_wrong_expected_head_cannot_replace_current",
+      "mechanism": "severed-edge",
+      "observed_behavior": "A stale or wrong-head dashboard publication cannot replace the current generation."
+    },
+    {
+      "selector": "taskplane/tests/test_failure_routing.py::test_known_classes_split_without_cross_authorizing_product_fixes",
+      "mechanism": "semantic-refusal",
+      "observed_behavior": "Test, infrastructure, and environment failures are routed without product-Fix authority."
+    },
+    {
+      "selector": "taskplane/tests/test_run_artifacts.py::test_all_artifacts_and_activity_repeat_full_working_binding_and_verify",
+      "mechanism": "artifact-lifecycle",
+      "observed_behavior": "All artifact classes and activity entries verify against one complete run binding."
+    },
+    {
+      "selector": "taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth",
+      "mechanism": "terminal-telemetry",
+      "observed_behavior": "Retro derives token and evaluator values from authenticated terminal activity and reports unavailable evidence honestly."
+    },
+    {
+      "selector": "taskplane/tests/test_r0007_governed_commands.py::test_supported_cli_and_loop_run_one_real_durable_command",
+      "mechanism": "public-command-journey",
+      "observed_behavior": "The supported CLI launches, reconnects to, and retains one durable governed command lifecycle."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_subagent_stop_seals_content_bound_usage_and_actual_outcome",
+      "mechanism": "native-lifecycle",
+      "observed_behavior": "SubagentStop binds authenticated transcript usage and the actual terminal outcome to one emitted intent."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_missing_native_counter_blocks_terminal_release_without_zero_fallback",
+      "mechanism": "semantic-refusal",
+      "observed_behavior": "Missing native transcript evidence blocks terminal release, preserves the active worker for retry, and never invents a zero token total."
+    },
+    {
+      "selector": "taskplane/tests/test_native_terminal_telemetry.py::test_retry_attempts_with_same_plan_task_cannot_cross_bind_usage",
+      "mechanism": "severed-edge",
+      "observed_behavior": "Retry attempts for one Plan task cannot cross-bind usage across exact native identities."
+    }
   ],
   "behavior_probes": [
-    "taskplane/tests/test_r0002_cross_host_journey.py::test_exact_dynamic_design_set_uses_portable_roles_and_host_receipts",
     "taskplane/tests/test_failure_routing.py::test_known_classes_split_without_cross_authorizing_product_fixes",
     "taskplane/tests/test_owned_cleanup.py::test_cleanup_refuses_ambiguous_or_unowned_targets",
     "taskplane/tests/test_retro_metrics_truth.py::test_real_terminal_ledger_renders_token_and_evaluator_truth"

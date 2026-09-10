@@ -606,11 +606,6 @@ class CommandAdapter:
                     native_event = self._native_wait(
                         binding, timeout, interrupted)
                 except OSError as exc:
-                    consolidated = os.environ.get(
-                        "TASKPLANE_CONSOLIDATED_FLOW", "").strip().lower() in {
-                            "1", "true", "yes", "on"}
-                    if not consolidated:
-                        raise
                     decision = self.runtime.record_recovery(
                         handle, failure_class="transient",
                         detail=f"{exc.__class__.__name__}: {exc}")

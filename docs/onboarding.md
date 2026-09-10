@@ -6,11 +6,11 @@ knowledge storage / sharing-mode choice, and the two setup decisions (model
 tiers and context storage) that decide how efficiently the whole system runs. The
 README's [Onboarding summary](../README.md) covers the short version.
 
-## The three green checks
+## Readiness checks
 
 Say **taskplane help** for the tour, or just state a goal — `taskplane` routes
 it and runs onboarding for you on a fresh folder. `tp onboard` shows the
-onboarding dashboard and won't hand you to a governed run until three
+onboarding dashboard and won't hand you to a governed run until the prerequisite
 checks are green for a local target. A repository URL or pull request first
 runs the automatic repository precondition, which creates a verified managed
 checkout and then applies these checks there:
@@ -103,14 +103,12 @@ permissions and sandbox controls enabled.
    sign-off (plus a named exceptional boundary such as A/B selection or
    material authority change).
 
-For independent briefs, Codex uses its native subagent task orchestration:
-each taskplane brief provides an exact `task_name`, taskplane role and
-`role_marker`, the exact `role_instructions` file path, optional model, and
-`reasoning_effort`. The driver includes that exact role marker plus the complete
-role instructions and payload in the delegated message, spawns scope-disjoint
-work concurrently, waits in bounded intervals for every requested result, and
-interrupts/escalates a stalled or mis-scoped agent rather than declaring partial
-work complete.
+For each phase, Codex receives the current bounded startup envelope and the
+exact host dispatch fields. The worker uses `stage read-input` to consume its
+pinned phase definition and selected immutable artifacts. It does not inherit
+predecessor conversations, mutable execution state or sibling workspaces.
+Parallel Build, Fix and Evaluate tasks retain separate bindings and evidence;
+EM receives all accepted evaluations at the join, and sign-off leads to Retro.
 Repo-local `SubagentStart`/`SubagentStop` hooks bind exact child contracts and
 terminalize/quarantine them while adding bounded context and lifecycle traces; the
 PreToolUse screen and evidence gates remain authoritative. For a long run you
@@ -148,39 +146,25 @@ unpublished count.
 
 ## Models (cost routing)
 
-Lens routing is stage-owned, not a setup choice. Product and Design choose a
-minimum-sufficient focused quick route; non-trivial Plan and Evaluate execute
-exactly 3–4 quick lenses; Build and Fix launch zero lens workers. Every routed
-stage still publishes all 26 evidenced dispositions. Overflow splits scope or
-requires protected exact-target expanded-route authority. A Fix invalidates
-only changed fingerprint inputs, so the next Evaluate reuses unchanged sealed
-evidence. Route telemetry is bounded and redacted.
+Lens routing is stage-owned. Product and Design use focused routes; Plan uses
+three or four quick lenses for non-trivial work. Build, Fix, Evaluate,
+Engineering and Retro launch zero lens workers. Routed phases retain all 26
+dispositions, and later phases consume the sealed results.
 
-Every loop step, task, and lens brief carries a capability tier —
-`cheap` / `standard` / `deep` — and taskplane resolves it to a model at
-dispatch time. `tp onboard` reports the resolved map. Claude retains the
-historical `cheap → haiku` default; Codex inherits its session model for
-every tier unless you explicitly map one:
+Models and reasoning come from the canonical
+[operational settings](configuration.md), including a separate Retro entry.
+All phases inherit the session model by default and request `high` reasoning;
+there is no implicit Claude model pin. Environment tier aliases remain
+compatibility inputs, while each current phase role selects its own settings.
+`tp onboard --json` reports those phase settings, the effective digest and the
+validated phase registry.
 
-| Tier | Default | Used for | Override |
-| --- | --- | --- | --- |
-| `cheap` | Claude: `haiku`; Codex: inherit session model | the lens sweep; tasks a planner marks simple | `TASKPLANE_MODEL_CHEAP` |
-| `standard` | inherit session model | execute / evaluate / fix | `TASKPLANE_MODEL_STANDARD` |
-| `deep` | inherit session model | spec, plan, engineering review, hard lenses (security, architecture, …) | `TASKPLANE_MODEL_DEEP` |
-
-On Codex those same tiers also resolve to native reasoning effort: `cheap →
-low`, `standard → medium`, and `deep → high`. Override with
-`TASKPLANE_REASONING_CHEAP`, `TASKPLANE_REASONING_STANDARD`, or
-`TASKPLANE_REASONING_DEEP` using a Codex-supported effort value.
-
-For cost-differentiated runs, set the overrides before starting with model
-ids your host understands — on Claude e.g. `export
-TASKPLANE_MODEL_STANDARD=sonnet TASKPLANE_MODEL_DEEP=opus`; on Codex use your
-host's model ids the same way. No cross-provider model ids are hardcoded;
-tiers are yours to map as models change. Routing is *verified*, not assumed:
-`tp loop verify-dispatch` audits a run, and
-`TASKPLANE_ENFORCE_DISPATCH=warn|strict` turns on a dispatch-time check
-(opt-in, inert by default). Details: `discipline/model-tiers.md`.
+The registry and its skill links must validate before readiness. A mismatch
+returns `repair_phase_configuration`; use one consistent installed build rather
+than borrowing another version's files. A declared run manifest must also match
+the current checkout. Recover only that binding through the named action.
+Existing runs keep their sealed settings; onboarding never adopts old Plan or
+Design artifacts as inputs to a fresh Product phase.
 
 ## Context storage (token efficiency)
 

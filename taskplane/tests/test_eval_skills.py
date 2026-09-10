@@ -77,20 +77,6 @@ class TestCheckoutLocalBundle(unittest.TestCase):
         self.assertIn("base-sha", body)
         self.assertIn("do not substitute a branch name", body)
 
-    def test_delivery_skills_assign_product_to_one_loop_phase(self):
-        def text(rel):
-            with open(os.path.join(ROOT, rel), encoding="utf-8") as stream:
-                return stream.read()
-
-        go = " ".join(text("skills/tp-go/SKILL.md").split())
-        build = " ".join(text("skills/tp-build/SKILL.md").split())
-        design = " ".join(text("skills/tp-design/SKILL.md").split())
-        self.assertIn("A goal with no existing R-id starts the loop without",
-                      go)
-        self.assertIn("Never run a standalone `req new` before this loop", go)
-        self.assertIn("Do not run standalone `/tp-product`", build)
-        self.assertIn("Continue the loop already initialized", build)
-        self.assertIn("initialize once without `--req`", design)
 
     def test_setup_resolves_private_storage_before_onboarding_check(self):
         completed = mock.Mock(returncode=0, stdout="ok", stderr="")

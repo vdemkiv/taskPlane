@@ -95,24 +95,18 @@ class ReferenceFirstProjectionTest(unittest.TestCase):
             row["section"] for row in view["reference_manifest"]))
         self.assertLessEqual(len(evidence.canonical_bytes(view)), 16 * 1024)
 
-    def test_exact_budget_boundary_is_accepted_and_impossible_spine_fails(self):
+    def test_large_file_scope_remains_complete_and_consumable(self):
+        import review
+
         envelope = self.envelope(2048)
-        original = evidence.MAX_SCOPED_VIEW_BYTES
-        try:
-            evidence.MAX_SCOPED_VIEW_BYTES = 16 * 1024
-            view = self.store.read(self.project(envelope))
-            exact = len(evidence.canonical_bytes(view))
-            evidence.MAX_SCOPED_VIEW_BYTES = exact
-            self.project(envelope)
-            # A one-byte reduction may legitimately externalize another exact
-            # candidate.  A budget below the mandatory provenance spine must
-            # still fail closed rather than truncate it.
-            evidence.MAX_SCOPED_VIEW_BYTES = 1
-            with self.assertRaisesRegex(evidence.ArtifactIntegrityError,
-                                        "mandatory scoped view spine"):
-                self.project(envelope)
-        finally:
-            evidence.MAX_SCOPED_VIEW_BYTES = original
+        files = self.store.read(envelope)["diff"]["files"]
+        ref = self.project(envelope, relevant_files=files)
+        view = review._verify_v3_view(self.store, envelope, ref)
+        self.assertGreater(len(evidence.canonical_bytes(view)), 16 * 1024)
+        self.assertEqual(view["relevance"]["files"], files)
+        self.assertEqual(view["relevance"]["file_count"], 1000)
+        self.assertEqual({row["section"] for row in view["reference_manifest"]},
+                         evidence.REVIEW_EVIDENCE_SECTIONS)
 
     def test_projection_is_deterministic_across_input_ordering(self):
         envelope = self.envelope(8192)

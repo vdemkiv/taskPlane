@@ -87,7 +87,14 @@ MUST_CONTAIN = (
     "taskplane/lens_signals.py",
     "taskplane/stage_entities.py",
     "taskplane/stage_handoff.py",
-    "taskplane/stage_migration.py",
+    "taskplane/phase_records.py",
+    "taskplane/phase_harness.py",
+    "taskplane/stage_values.py",
+    "taskplane/stage_artifacts.py",
+    "taskplane/stage_loop.py",
+    "taskplane/dispatch.py",
+    "taskplane/gates.py",
+    "taskplane/primitives.py",
     "taskplane/loop_status.py",
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
@@ -228,7 +235,7 @@ def package_files() -> list:
              lambda p: p.suffix.lower() in {".svg", ".png", ".jpg", ".jpeg",
                                             ".webp"})
     add_tree(files, ROOT / "skills", lambda p: True)
-    add_tree(files, ROOT / "agents", lambda p: p.suffix == ".md")
+    add_tree(files, ROOT / "agents", lambda p: p.suffix in {".md", ".json"})
     add_tree(files, ROOT / "discipline", lambda p: p.suffix == ".md")
     add_tree(files, ROOT / "docs",
              lambda p: p.suffix == ".md" or

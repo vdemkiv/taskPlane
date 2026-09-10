@@ -1,10 +1,8 @@
-"""Final cross-surface conformance for accepted drift D-0014 (LR-09)."""
+"""Shared lens CLI protocol and execution-stage zero-lens policy."""
 
 from __future__ import annotations
 
 import json
-import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -13,7 +11,6 @@ from taskplane import delivery_policy
 from taskplane import evaluation_output
 from taskplane import review
 from taskplane import runtime_eval
-from taskplane.tests import run_lr10_parallel as parallel_runner
 
 
 def _origin(stage: str) -> dict:
@@ -131,209 +128,55 @@ def test_evaluate_kernel_output_and_guidance_have_no_lens_surface(
     assert "do not create or collect lens work" in guidance_text
 
 
-def _flatten_shards(shards: dict[str, tuple[str, ...]]) -> list[str]:
-    return [selector for selectors in shards.values() for selector in selectors]
+@pytest.fixture
+def lens_workspace(tmp_path, git_ws):
+    import subprocess
+    workspace = git_ws(tmp_path / "repo")
+    source = workspace / "service.py"
+    source.write_text("def greeting(): return 'hello'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "service.py"], cwd=workspace, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "commit", "-qm", "base"],
+                   cwd=workspace, check=True)
+    source.write_text("def greeting(): return 'welcome'\n", encoding="utf-8")
+    return workspace
 
 
-def test_lr09_parallel_profile_is_closed_exact_and_default_safe() -> None:
-    default = parallel_runner.resolve_profile([])
-    lr09 = parallel_runner.resolve_profile(["--profile", "lr09"])
-
-    assert default.name == "lr10"
-    assert default.shards == parallel_runner.SHARDS
-    assert len(_flatten_shards(default.shards)) == 11
-    assert lr09.name == "lr09"
-    assert 3 <= len(lr09.shards) <= 5
-    assigned = _flatten_shards(lr09.shards)
-    assert len(assigned) == len(set(assigned)) == 14
-    assert set(assigned) == {
-        "taskplane/tests/test_delivery_policy.py",
-        "taskplane/tests/test_lens_route_policy.py",
-        "taskplane/tests/test_lens_route_telemetry.py",
-        "taskplane/tests/test_expanded_route_authority_provider.py",
-        "taskplane/tests/test_expanded_lens_route_authority.py",
-        "taskplane/tests/test_review_routing.py",
-        "taskplane/tests/test_evaluation_output_contract.py",
-        "taskplane/tests/test_evaluate_child_evidence.py",
-        "taskplane/tests/test_runtime_eval_guidance.py",
-        "taskplane/tests/test_focused_lens_routing.py",
-        "taskplane/tests/test_loop.py",
-        "taskplane/tests/test_agents_skills_focused_routing.py",
-        "taskplane/tests/test_lens_routing_product_truth.py",
-        "taskplane/tests/test_lens_routing_integration.py",
-    }
-    assert default.hermetic_pytest is False
-    assert lr09.hermetic_pytest is True
-
-    rejected = (
-        ["--profile", "unknown"],
-        ["--profile=lr09"],
-        ["--profile", "lr09", "extra"],
-        ["extra"],
-    )
-    for argv in rejected:
-        with pytest.raises(ValueError, match="usage"):
-            parallel_runner.resolve_profile(argv)
+def test_cli_route_applies_signals_to_the_explicit_repository(lens_workspace, capsys):
+    from taskplane import tp as cli
+    from taskplane import lens
+    workspace = lens_workspace
+    assert cli.main(["lens", "route", "--workspace", str(workspace), "--json"]) == 0
+    routing = json.loads(capsys.readouterr().out)
+    assert {row["id"] for row in routing["lenses"]} == {
+        row["id"] for row in lens.load_catalog()["lenses"]}
+    assert all(row.get("verdict") for row in routing["lenses"])
 
 
-def test_lr09_shard_subprocess_is_argv_safe_and_hermetic(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed: dict[str, object] = {}
-
-    class Process:
-        returncode = 0
-
-    def popen(argv: list[str], **kwargs: object) -> Process:
-        observed["argv"] = argv
-        observed.update(kwargs)
-        return Process()
-
-    monkeypatch.setenv("TASKPLANE_TASK", "must-not-leak")
-    monkeypatch.setenv("PYTEST_ADDOPTS", "--collect-only")
-    monkeypatch.setenv("PYTEST_PLUGINS", "host_plugin")
-    process = parallel_runner._start(
-        "proof", ("one.py", "two.py"), tmp_path,
-        popen_factory=popen, hermetic_pytest=True,
-    )
-
-    assert isinstance(process, Process)
-    assert observed["argv"] == [
-        sys.executable, "-m", "pytest", "-q", "-x",
-        "-p", "no:cacheprovider", "one.py", "two.py",
-    ]
-    assert observed["cwd"] == parallel_runner.ROOT
-    assert observed["shell"] is False
-    env = observed["env"]
-    assert isinstance(env, dict)
-    assert "TASKPLANE_TASK" not in env
-    assert "PYTEST_ADDOPTS" not in env
-    assert "PYTEST_PLUGINS" not in env
-    assert env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
-    assert env["TMPDIR"] == env["TEMP"] == env["TMP"] == str(tmp_path)
-    assert os.fspath(tmp_path) not in os.environ.get("PYTEST_ADDOPTS", "")
-
-
-@pytest.mark.parametrize("returncode", [0, 3])
-def test_runner_collects_all_results_and_cleans_owned_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
-) -> None:
-    started: list[str] = []
-    collected: list[str] = []
-
-    class Process:
-        def __init__(self, selector: str) -> None:
-            self.selector = selector
-            self.returncode = returncode if selector == "first.py" else 0
-
-        def communicate(self, timeout: float) -> tuple[str, str]:
-            collected.append(self.selector)
-            return self.selector, ""
-
-    def popen(argv: list[str], **_kwargs: object) -> Process:
-        selector = argv[-1]
-        started.append(selector)
-        return Process(selector)
-
-    parent = tmp_path / "runner"
-
-    def roots(shards: dict[str, tuple[str, ...]]) -> tuple[Path, dict[str, Path]]:
-        parent.mkdir()
-        output: dict[str, Path] = {}
-        for index, name in enumerate(shards, 1):
-            child = parent / f"{index:02d}-{name}"
-            child.mkdir()
-            output[name] = child
-        return parent, output
-
-    monkeypatch.setattr(parallel_runner, "_create_temp_roots", roots)
-    shards = {"first": ("first.py",), "second": ("second.py",)}
-    returned_parent, results = parallel_runner.run_shards(
-        shards, popen_factory=popen, clock=lambda: 100.0,
-        hermetic_pytest=True,
-    )
-
-    assert started == ["first.py", "second.py"]
-    assert collected == ["first.py", "second.py"]
-    assert [row.status for row in results] == (
-        ["passed", "passed"] if returncode == 0 else ["failed", "passed"]
-    )
-    assert returned_parent == parent
-    assert not parent.exists()
-
-
-@pytest.mark.parametrize(
-    "terminal_signal",
-    [KeyboardInterrupt(), SystemExit("cancelled"), SystemExit("handed-off")],
-)
-def test_runner_finally_terminates_collects_and_cleans_on_terminal_signal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    terminal_signal: BaseException,
-) -> None:
-    events: list[str] = []
-
-    class Process:
-        returncode = None
-
-        def poll(self) -> None:
-            return None
-
-        def terminate(self) -> None:
-            events.append("terminate")
-
-        def kill(self) -> None:
-            events.append("kill")
-
-        def communicate(self, timeout: float) -> tuple[str, str]:
-            events.append("collect")
-            self.returncode = -15
-            return "partial", "interrupted"
-
-    parent = tmp_path / "runner"
-
-    def roots(shards: dict[str, tuple[str, ...]]) -> tuple[Path, dict[str, Path]]:
-        parent.mkdir()
-        child = parent / "01-only"
-        child.mkdir()
-        return parent, {"only": child}
-
-    monkeypatch.setattr(parallel_runner, "_create_temp_roots", roots)
-    monkeypatch.setattr(
-        parallel_runner, "_collect_run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(terminal_signal),
-    )
-
-    with pytest.raises(type(terminal_signal)):
-        parallel_runner.run_shards(
-            {"only": ("only.py",)},
-            popen_factory=lambda *_args, **_kwargs: Process(),
-            clock=lambda: 100.0,
-            hermetic_pytest=True,
-        )
-
-    assert events[:2] == ["terminate", "collect"]
-    assert not parent.exists()
-
-
-def test_runner_rejects_incomplete_or_nonpassing_aggregate(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    shards = {"one": ("one.py",), "two": ("two.py",)}
-    passed = parallel_runner.ShardResult(
-        "01-one", "one", ("one.py",), "passed", 0, "ok", "", 1.0,
-    )
-    failed = parallel_runner.ShardResult(
-        "02-two", "two", ("two.py",), "timeout", None,
-        "partial", "timeout", 2.0,
-    )
-
-    with pytest.raises(RuntimeError, match="incomplete"):
-        parallel_runner.validate_results(shards, [passed])
-    false_pass = parallel_runner.ShardResult(
-        "02-two", "two", ("two.py",), "passed", None, "", "", 2.0,
-    )
-    with pytest.raises(RuntimeError, match="false pass"):
-        parallel_runner.validate_results(shards, [passed, false_pass])
-    assert parallel_runner._render_results([passed, failed]) == 1
-    output = capsys.readouterr().out
-    assert output.index("01-one") < output.index("02-two")
+@pytest.mark.parametrize("host_environment", [
+    {}, {"TASKPLANE_WORKFLOWS": "1"},
+    {"CODEX_THREAD_ID": "fixture-thread", "TASKPLANE_WORKFLOWS": "1"},
+])
+def test_cli_dispatch_binds_the_shared_plan_on_every_host(
+        lens_workspace, capsys, monkeypatch, host_environment):
+    from taskplane import tp as cli
+    from taskplane import review_evidence
+    for key in ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_WORKFLOWS",
+                "CLAUDE_CODE_WORKFLOWS"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in host_environment.items():
+        monkeypatch.setenv(key, value)
+    assert cli.main(["lens", "dispatch", "--workspace", str(lens_workspace)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    store = review_evidence.ArtifactStore(str(lens_workspace))
+    plan = store.read(payload["plan"])
+    assert plan["schema"] == "taskplane.lens-plan/v1"
+    assert payload["dispatch"]
+    assert {row["slot_id"] for row in payload["dispatch"]} == {
+        row["slot_id"] for row in plan["slots"]}
+    assert len({row["result_path"] for row in payload["dispatch"]}) == len(plan["slots"])
+    for emitted, sealed in zip(payload["dispatch"], plan["dispatch"]):
+        assert emitted["brief"] == sealed["brief"]
+        brief = store.read(emitted["brief"])
+        assert brief["methodology"]["id"] in emitted["lens_ids"]
+        assert brief["producer_contract"]["write_allow"] == [emitted["result_path"]]

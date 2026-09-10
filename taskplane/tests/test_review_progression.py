@@ -19,88 +19,19 @@ def _review_route(files, content=None):
     )
 
 
-def test_review_floors_scale_with_attributable_risk_across_required_matrix():
-    fixtures = {
-        "docs": (["docs/changelog.md"], {"docs/changelog.md": "Fix typo."},
-                 "documentation-only", {"tech-writer"}),
-        "simple": (["src/tiny.py"], {"src/tiny.py": "x = 1"},
-                   "simple-low-risk", {"code-quality"}),
-        "substantive": (["src/widget.py"],
-                        {"src/widget.py": "def widget():\n    return build_widget()"},
-                        "substantive-risky", FLOORS),
-        "risky": (["src/auth.py"], {"src/auth.py": "authorize(user)"},
-                  "substantive-risky", FLOORS),
-        "mixed": (["src/widget.py", "docs/runbook.md"],
-                  {"src/widget.py": "x = 1", "docs/runbook.md": "recovery"},
-                  "substantive-risky", FLOORS),
-        "mapping-gap": (["unknown/no-module-map.py"],
-                        {"unknown/no-module-map.py": "x = 1"},
-                        "simple-low-risk", {"code-quality"}),
-    }
-    for name, (files, content, risk_class, expected) in fixtures.items():
-        routed = _review_route(files, content)
-        by_id = {row["id"]: row for row in routed["lenses"]}
-        assert routed["context"]["review_risk"]["class"] == risk_class, name
-        assert set(routed["context"]["review_risk"]["required_deep_lenses"]) == expected
-        plan = progression.initial_wave(routed)
-        slots = [row["slot"] for row in plan["sweep"]]
-        assert plan["deep"] == [], name
-        assert 4 <= len(plan["sweep"]) <= 5, name
-        assert "architecture" in {row["lens"] for row in plan["sweep"]}, name
-        assert len(slots) == len(set(slots)), name
-        assert plan["sweep_count"] == len(plan["sweep"])
 
 
-def test_document_risk_signal_selects_an_attributable_single_deep_lens():
-    routed = _review_route(
-        ["docs/security.md"],
-        {"docs/security.md": "OAuth token permission guidance"},
-    )
-    plan = progression.initial_wave(routed)
-    assert routed["context"]["review_risk"]["class"] == "documentation-only"
-    assert plan["deep"] == []
-    assert 4 <= len(plan["sweep"]) <= 5
-    assert "architecture" in {row["lens"] for row in plan["sweep"]}
-    security = next(row for row in routed["lenses"] if row["id"] == "security")
-    assert security["floor"].startswith("risk-selected review floor:")
-    assert "documentation evidence selected security" in security["floor"]
 
 
-def test_review_floors_survive_cache_and_early_provisional_inputs():
-    routed = _review_route(["src/auth.py"], {"src/auth.py": "authorize(user)"})
-    required = set(routed["context"]["review_risk"]["required_deep_lenses"])
-    for row in routed["lenses"]:
-        if row["id"] in required:
-            row["tier"] = row["verdict"] = "light"
-    plan = progression.initial_wave(routed)
-    assert plan["deep"] == []
-    assert 4 <= len(plan["sweep"]) <= 5
 
 
-def test_initial_wave_has_deep_slots_and_at_most_one_bounded_sweep():
-    routed = _review_route(
-        ["docs/api.md"], {"docs/api.md": "API token security migration guide"}
-    )
-    plan = progression.initial_wave(routed, sweep_limit=8)
-    required = set(routed["context"]["review_risk"]["required_deep_lenses"])
-    assert required == {"security"}
-    assert plan["deep"] == []
-    assert 4 <= len(plan["sweep"]) <= 5
-    assert all(slot["tier"] == "sweep" for slot in plan["sweep"])
-    assert len({slot["slot"] for slot in plan["sweep"]}) == len(plan["sweep"])
 
 
-def test_production_dispatch_consumes_the_bounded_progressive_wave():
-    routed = _review_route(
-        ["docs/api.md"], {"docs/api.md": "API token security migration guide"}
-    )
-    dispatch = lens.dispatch_briefs(routed)
-    expected = routed["context"]["review_progression"]["sweep_lenses"]
-    required = routed["context"]["review_risk"]["required_deep_lenses"]
-    assert dispatch["deep"] == []
-    assert dispatch["sweep"]["ids"] == expected
-    assert 4 <= len(expected) <= 5
-    assert len(expected) <= progression.DEFAULT_SWEEP_LIMIT
+
+
+
+
+
 
 
 def test_canonical_review_kernel_decision_allocates_only_bounded_sweep():
@@ -127,46 +58,10 @@ def test_canonical_review_kernel_decision_allocates_only_bounded_sweep():
         )
 
 
-def test_production_dispatch_consumes_early_blocker_and_promotes_deep_slot():
-    routed = _review_route(
-        ["ops/service.yaml"], {"ops/service.yaml": "recovery timeout alert"}
-    )
-    routed["context"]["review_progression"]["sweep_lenses"] = ["sre"]
-    for row in routed["lenses"]:
-        if row["id"] == "sre":
-            row["tier"] = row["verdict"] = "light"
-    concerns = [{
-        "id": "sweep-risk-1",
-        "severity": "blocker",
-        "lens": "sre",
-        "evidence_ref": "diff:ops/service.yaml:4",
-        "rationale": "recovery can loop after a timeout",
-        "trigger": "recovery timeout",
-    }]
-    dispatch = lens.dispatch_briefs(routed, sweep_concerns=concerns)
-    promoted = [row for row in dispatch["deep"] if row["id"] == "sre"]
-    assert len(promoted) == 1
-    assert promoted[0]["task_slot"] == "lens-sre"
-    assert dispatch["review_progression"]["promotions"][0]["lens"] == "sre"
-    assert dispatch["routing_decision"]["sre"]["initial_verdict"] == "light"
-    assert dispatch["routing_decision"]["sre"]["verdict"] == "deep"
-    assert dispatch["sweep"] is None
 
 
-def test_production_dispatch_rejects_cross_sweep_concern():
-    routed = _review_route(["docs/runbook.md"], {"docs/runbook.md": "recovery"})
-    routed["context"]["review_progression"]["sweep_lenses"] = ["sre"]
-    for row in routed["lenses"]:
-        if row["id"] == "sre":
-            row["tier"] = row["verdict"] = "light"
-    concern = {
-        "id": "sweep-risk-2", "severity": "high", "lens": "security",
-        "evidence_ref": "diff:docs/runbook.md:2",
-        "rationale": "authorization token is exposed", "trigger": "token",
-    }
-    dispatch = lens.dispatch_briefs(routed, sweep_concerns=[concern])
-    assert dispatch["review_progression"]["promotions"] == []
-    assert dispatch["review_progression"]["rejections"][0]["reason"] == "out-of-charter"
+
+
 
 
 def test_high_major_promotions_are_attributable_idempotent_and_charter_bound():

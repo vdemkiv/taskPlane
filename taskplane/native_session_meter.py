@@ -9,6 +9,11 @@ Taskplane ledger.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 import hashlib
 import hmac
 import json
@@ -59,10 +64,7 @@ class _RootObservationError(NativeSessionMeterError):
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        allow_nan=False,
-    ).encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=True)
 
 
 def _fingerprint(value: object) -> str:
@@ -342,7 +344,7 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for row in ordered_segments:
         sessions.setdefault(str(row["session_id"]), []).append(row)
     for rows in sessions.values():
-        rows.sort(key=lambda row: (str(row.get("observed_at") or ""), row["ordinal"]))
+        rows.sort(key=lambda row: (str(row.get("observed_at") or ""), row["ordinal"], bool(row.get("resumed"))))
         if any(not row.get("resumed") for row in rows[1:]):
             raise NativeSessionMeterError("native source replacement has no restart evidence")
     usage_keys = (

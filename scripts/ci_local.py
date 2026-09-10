@@ -493,6 +493,8 @@ INVENTORY = (
     Check("release-history", (PYTHON, "scripts/ci_release_tags.py", "--json")),
     Check("unittest-canary", (PYTHON, "-m", "unittest", "taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation", "-v")),
     Check("loop-cost", (PYTHON, "scripts/ci_loop_cost.py")),
+    Check("source-policy", (PYTHON, "scripts/ci_source_policy.py")),
+    Check("refactor-metrics", (PYTHON, "scripts/ci_refactor_metrics.py", "--check")),
     Check("import-cycle-current", (PYTHON, "taskplane/import_cycles.py", "--root", ".", "--policy", "taskplane/tests/fixtures/import-cycles.json", "--check")),
     Check("generated-lens-drift", (PYTHON, __file__, "--internal", "generated-lens-drift")),
     Check("generated-cli-drift", (PYTHON, __file__, "--internal", "generated-cli-drift")),
@@ -507,7 +509,7 @@ AUXILIARY_CHECK_IDS = (
     "compile-import", "generated-lens-drift", "ruff", "version-verify",
     "release-surface", "generated-cli-drift", "mypy", "zero-token-corpus",
     "release-history", "package-openai", "host-platform", "unittest-canary",
-    "loop-cost", "import-cycle-current", "package-claude",
+    "loop-cost", "import-cycle-current", "package-claude", "source-policy", "refactor-metrics",
 )
 
 
@@ -1054,6 +1056,8 @@ def _ci_cell_commands(cell: Mapping[str, Any], root: Path) -> list[list[str]]:
             [PYTHON, "taskplane/tp.py", "version", "--verify"],
             [PYTHON, "scripts/ci_evals.py", "--verify-release-surface", "--json"],
             [PYTHON, "scripts/ci_release_tags.py", "--json"],
+            [PYTHON, "scripts/ci_source_policy.py"],
+            [PYTHON, "scripts/ci_refactor_metrics.py", "--check"],
             [PYTHON, "taskplane/import_cycles.py", "--root", ".", "--policy",
              "taskplane/tests/fixtures/import-cycles.json", "--check"],
             [PYTHON, __file__, "--internal", "generated-lens-drift"],

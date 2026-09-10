@@ -156,28 +156,6 @@ def test_stage_request_must_be_a_json_object(
     }
 
 
-def test_stage_runtime_refusal_is_nonzero_and_machine_readable(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    import loop
-
-    request_path = _request_file(tmp_path, {"run_id": "legacy-run"})
-    monkeypatch.setattr(
-        loop, "stage_command",
-        lambda *_args, **_kwargs: {
-            "error": "stage-native writes are disabled for an unmigrated run",
-            "fallback": "legacy-read-only",
-        }, raising=False)
-
-    assert cli.main([
-        "stage", "--workspace", str(tmp_path), "start",
-        "--request", str(request_path),
-    ]) == 1
-    assert json.loads(capsys.readouterr().out) == {
-        "error": "stage-native writes are disabled for an unmigrated run",
-        "fallback": "legacy-read-only",
-    }
-
-
 def test_importing_cli_does_not_eagerly_import_stage_entities() -> None:
     taskplane_dir = Path(cli.__file__).resolve().parent
     script = (

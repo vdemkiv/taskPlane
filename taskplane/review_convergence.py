@@ -7,6 +7,11 @@ cycle is justified or whether a named human boundary has been reached.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 import hashlib
 import json
 from collections.abc import Iterable
@@ -40,7 +45,7 @@ def _fingerprint(finding_ids: Iterable[str], *, evidence: int,
                  tests: int) -> str:
     payload = {"findings": sorted(set(finding_ids)), "evidence": evidence,
                "tests": tests}
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    encoded = _json_primitives.canonical_bytes(payload, ensure_ascii=True)
     return hashlib.sha256(encoded).hexdigest()
 
 

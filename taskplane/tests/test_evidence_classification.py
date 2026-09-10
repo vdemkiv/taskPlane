@@ -1,4 +1,6 @@
 """Failure classification must not collect acceptance-suite success."""
+
+from taskplane.tests.phase_fixture import save_component_workflow
 import copy
 import json
 import os
@@ -32,7 +34,7 @@ def evidence_workspace(tmp_path, monkeypatch):
         "review_kernel_runs":{"evaluate:T19":{"run_id":"a" * 32, "workspace":ws}}}
     task["failure_routing"] = loop._detected_build_failure_routing(ws, task,
         {"outcome":"fail", "fingerprint":loop.tp.workspace_fingerprint(ws)}, "execute")
-    loop.save(ws, state)
+    save_component_workflow(ws, state)
     classification = loop._failed_build_classification(ws, state, task, evaluator_attempt_id="a" * 32)
     contract = loop.tp.build_contract("Independent failed Build classifier", read_only=True)
     contract["failure_classification"] = classification
@@ -46,10 +48,10 @@ def evidence_workspace(tmp_path, monkeypatch):
 @pytest.mark.parametrize("existing_verdict", [False, True])
 def test_classification_evidence_write_never_runs_or_cites_acceptance_suite(evidence_workspace, monkeypatch, existing_verdict):
     ws, root, state, _ = evidence_workspace
-    path = root / ".eval/verdict.json"
+    path = Path(loop.runtime_storage.evaluation_path(ws))
     old = b'{"verdict":"fail","note":"honest historical finding"}'
     if existing_verdict:
-        path.parent.mkdir()
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(old)
     for name in ("run_suite_command", "suite_cache_lookup", "suite_cache_store", "_suite_cache_key"):
         monkeypatch.setattr(loop.tp, name, lambda *a, **k:pytest.fail("classification touched acceptance suite"))
@@ -94,7 +96,7 @@ def test_classification_refuses_invalid_binding_before_suite_or_verdict_write(ev
     elif damage == "not-failed": state.pop("_build_failed")
     if damage != "missing-contract":
         loop.tp.atomic_write_json(loop.tp.active_contract_path(ws, contract["task_slot"]), active)
-    loop.save(ws, state)
+    save_component_workflow(ws, state)
     monkeypatch.setattr(loop.tp, "run_suite_command", lambda *a, **k:pytest.fail("invalid classification ran suite"))
     result = loop.evidence(ws, write=True)
     assert "classification" in result.get("error", ""), result
@@ -116,7 +118,7 @@ def test_ordinary_evidence_retains_real_suite_and_citation_paths(evidence_worksp
             "key":loop.tp._suite_cache_key(ws, tests, env), "returncode":0, "tail":"real prior test fixture", "duration_s":1}}
     if source == "cache":
         loop.tp.suite_cache_store(ws, tests, env, returncode=0, tail="real prior test fixture", duration_s=1)
-    loop.save(ws, state)
+    save_component_workflow(ws, state)
     original = loop.tp.run_suite_command
     calls = []
     def run(*args, **kwargs):

@@ -1,0 +1,71 @@
+{
+  "title": "Harness S0: trustworthy instruments, review bounds and startup readiness",
+  "functional": [
+    "Deliver exactly S0 from backlog/harness-refactor-spec.md with RF-2 deduplicated into H6 and RF-8 startup validation added; preserve every later H/GD/RF item, non-goal and unresolved decision in specs/spec.md roadmap. Design is required; no inherited Design or approval applies.",
+    "Preserve and verify the existing function-local import-cycle ratchet; isolate default tests from inherited host markers with explicit opt-in host tests and honest optional-dependency skips.",
+    "Seal complete root and worker-attempt lineage with proven restart segments, idempotent replay, positive usage totals and explicit partial coverage; record a reproducible three-task baseline before S1.",
+    "Use one 2000000-byte canonical review default at standalone and loop entry points; support validated explicit limit/path selection and actionable typed oversize refusals without changing scope authority or zero-lens Evaluate/EM.",
+    "Onboarding validates any bound run manifest and repository/checkout identity before readiness; classify unavailable/corrupt/mismatched/access-denied states and use supported repository preparation recovery without modifying retained artifacts."
+  ],
+  "acceptance": [
+    "S0-AC01 \u2014 Preserve and measure the cycle ratchet (H8.1). The existing scanner includes function-local import edges, emits deterministic semantic topology for the same source tree, and the CI check fails when a fixture adds an SCC member or prohibited internal edge while allowing genuine decreases. Record current revision, SCC membership/counts/edges and policy result; do not replace a stricter policy with the historical 70/341 snapshot. Verify with the existing public scanner/check entry point plus a small positive/negative graph fixture and the CI integration receipt. A failure is reported and corrected within scope or returned, never waived by baseline rewrite.",
+    "S0-AC02 \u2014 Isolate ordinary tests from active hosts (H5.2). Default test/CLI fixture invocations remove inherited `CLAUDE_*`, `CODEX_*`, and `TASKPLANE_*` host/session values before installing only explicit test-controlled store/identity values. Host tests opt in with declared markers; the caller environment is restored. A test seeded with sentinel values proves ordinary children cannot see them and opt-in host tests can see only their supplied values. Existing store isolation and environment-leak guard remain effective. Verify focused isolation cases and full suite cells launched under Claude and Codex markers; require zero failures/errors attributable to inherited host state and a green supported full suite.",
+    "S0-AC03 \u2014 Make optional dependencies explicit (H5.3). Tests needing Chromium, mypy or a specific Python capability declare that dependency and give a named skip when absent; a supported CI cell with the dependency installed must run the required behavior. Missing prerequisites must not hide a product failure or turn a mandatory host proof into PASS. Verify one absent/present case per affected dependency and record executed/skipped counts and reasons in the suite evidence.",
+    "S0-AC04 \u2014 Count the complete run lineage exactly once (H7.2). A sealed run includes root and every dispatched worker attempt/pickup, including resumed sessions, failed/cancelled attempts and terminal attempts with missing usage. Publish observed/expected attempt counts and missing identities. A counter restart, including a new cumulative value equal to the previous last-usage value, starts a new segment only when host-native identity/restart evidence proves it; exact replay adds zero. Ambiguous reset/source replacement remains explicitly unavailable/partial, not guessed. Verify a public meter/seal producer journey with root plus at least three workers, a worker pickup, proven equal-value reset, duplicate replay and ambiguous-reset negatives; asserted totals match known positive counters.",
+    "S0-AC05 \u2014 Report honest coverage and the baseline (H7.2/H2.4 prerequisite). Full lineage coverage is 100%; anything less marks the seal `partial` and the existing summary/retro headline states partial coverage. Unavailable usage is not zero. Record root share, total and uncached usage, coverage, host, source revision and wall time for a three-task governed wave. Root-share calculation is reproducible from the sealed totals; if coverage is incomplete the percentage is explicitly partial and cannot substantiate S1's \u226425% claim. Verify complete and one-missing-attempt variants and their consumer projection. This adds no unrelated retro redesign.",
+    "S0-AC06 \u2014 One canonical diff policy at both review entries (H6.1/RF-2). Standalone and loop Review call the incumbent canonical diff producer with one shared default byte bound and consistent scoped-input semantics. Set the shared default to the current loop's 2,000,000 bytes, preserving the existing loop capacity; neither path silently truncates, returns success for dropped evidence, nor borrows the separate 16 MiB raw artifact limit. An explicit positive `--max-diff-bytes N` override and `--paths` selection are accepted by standalone review, validated before collection, bound into target/evidence identity, and cannot broaden the active contract. Verify identical input/limit parity, invalid and out-of-scope values, and changed-parameter invalidation.",
+    "S0-AC07 \u2014 Give actionable oversize refusals (H6.2/RF-2). A synthetic 3 MB review diff fails closed at the shared default with `canonical_diff_too_large`, actual UTF-8 byte count, allowed byte bound and executable recovery using the supported scoped path or explicit limit option. A non-size derivation error stays distinguishable. Scoped retry or an authorized larger bound succeeds and contains exactly the selected evidence. Verify through public standalone and loop review entry points; the default refusal must not say only \u201cderivation failed.\u201d",
+    "S0-AC08 \u2014 Review the release without synthetic history (H6.3). A bounded public-CLI CI integration case opens the source release target `9a6a87e` versus `1cf41e9` using `--paths taskplane/` and an explicit sufficient limit if the measured selected diff exceeds the shared default. Record selected paths, bytes, resolved revisions and effective bound. Use available local history; no network or invented base is required. A small deterministic fixture covers the same selection and refusal semantics independently of that historical repository test. Zero-lens loop Evaluate/EM and the standalone-only review routing surface remain unchanged.",
+    "S0-AC09 \u2014 Refuse false startup readiness (RF-8). Before reporting `ready:true`/`next_action:ready`, onboarding validates any existing bound locator's manifest readability, schema/run identity, repository identity and checkout identity. Missing, corrupt, mismatched and access-denied state produce distinguishable non-ready reasons; a missing manifest is not represented as intentional rollback or stage-mode disablement. Valid bindings stay ready when other prerequisites pass; an unbound fresh checkout retains its supported setup path. Verify public onboarding cases for absent manifest, invalid JSON, wrong run/repository/checkout, denied access, valid binding and no locator.",
+    "S0-AC10 \u2014 Recover without losing retained runs (RF-8). Missing/corrupt/mismatched bound state supplies the incumbent `repository prepare <workspace>` recovery when applicable; access denial identifies access recovery instead of promising preparation can cure permissions. A public-CLI journey creates a stale locator and absent manifest, observes non-ready, executes the supplied supported preparation, then observes ready and successfully initializes the loop. All pre-existing retained run artifacts keep identical bytes; no automatic deletion, fabricated receipt, runtime-home substitution, or direct locator patch is permitted. Verify with isolated repositories/stores and sentinel retained artifacts, plus negative proof that invalid identity cannot be admitted.",
+    "S0-AC11 \u2014 Preserve governance and deterministic evidence. Claude and Codex paths retain R-0003 enforcement, real session-compatible hook checks, human-attributed advisory `verified_source:false`, existing human gates, and zero-lens Evaluate/EM. Changed instrument/refusal/readiness/usage fields use the incumbent schemas/owners or explicitly versioned additive contracts; unsupported evidence stays unavailable. Verify existing enforcement/host-parity negatives plus the S0 public journeys, and repeat semantic seal/projection checks for identical bound inputs. Metrics may change as telemetry but must not masquerade as source content identity.",
+    "S0-AC12 \u2014 Deliver a traceable measured handoff. The S0 evidence artifact maps every AC to its exact producer, command/selector, result and revision, separates observed results from unavailable host evidence, preserves the roadmap below, and reports current cycle, suite, root-share and lineage baselines. It records no S1 activation, S2 retirement or later backlog completion. Verify the acceptance map has all 12 AC ids and actual evidence; missing mandatory proof prevents completion under existing gates."
+  ],
+  "nfr": {
+    "security": "Validate path selections, limit overrides, run/checkout identities and host receipts at existing trust boundaries. Fail closed on mismatched/ambiguous evidence; preserve R-0003 and advisory provenance. Negative tests must reject out-of-scope reads and false readiness; no weaker bypass is introduced.",
+    "architecture": "Reuse `import_cycles`, canonical Review, native/dispatch metering and run-storage/preflight owners. No new harness, secondary scanner, meter, store or readiness authority. Preserve/decrease the existing cycle ratchet. Design must name producer/consumer boundaries and keep ordinary telemetry separate from content identity.",
+    "data-safety": "Meter replay is idempotent; recovery does not delete or overwrite retained run artifacts. Verify sentinel byte identity and reset/replay totals; no migration or synthetic receipts.",
+    "integrability": "Same effective review policy across standalone/loop; preserve consumers with explicit field/version handling. Claude/Codex test and CLI contracts have equivalent refusal and readiness semantics.",
+    "sre": "Startup and review failures include typed reasons and a usable supported recovery. Coverage distinguishes observed, expected and unavailable; ambiguous counters remain diagnostic. Every S0 baseline carries revision, host and relevant bounds.",
+    "cost-finops": "Existing bounds remain enforced; shared diff default is 2,000,000 UTF-8 bytes and overrides are explicit and recorded. Run costs cover every attempt or say partial. No unbounded scan, transcript ingestion or lens fan-out is added.",
+    "privacy-compliance": "Lineage uses existing minimal native identifiers/fingerprints and counters. Do not add transcript contents, secrets or user prompts to usage/readiness artifacts or public diagnostics; verify failure outputs expose only necessary bounded identity/reason data."
+  },
+  "files": [
+    ".github/workflows/ci.yml",
+    "docs/import-cycle-baseline.md",
+    "docs/onboarding.md",
+    "docs/storage-and-repositories.md",
+    "scripts/ci_local.py",
+    "scripts/ci_loop_cost.py",
+    "specs/spec.md",
+    "taskplane/dispatch_telemetry.py",
+    "taskplane/host_capabilities.py",
+    "taskplane/host_native.py",
+    "taskplane/import_cycles.py",
+    "taskplane/loop.py",
+    "taskplane/loop_status.py",
+    "taskplane/native_session_meter.py",
+    "taskplane/preflight.py",
+    "taskplane/retro.py",
+    "taskplane/review.py",
+    "taskplane/review_evidence.py",
+    "taskplane/review_session.py",
+    "taskplane/run_context.py",
+    "taskplane/run_store.py",
+    "taskplane/storage.py",
+    "taskplane/tests/**",
+    "taskplane/tp.py",
+    "taskplane/wave_metrics.py",
+    "taskplane/yield_meter.py"
+  ],
+  "contracts": [
+    "consumes:taskplane.import-cycle-topology",
+    "changes:taskplane.test-host-isolation",
+    "changes:taskplane.run-usage-seal",
+    "changes:taskplane.canonical-review-diff",
+    "changes:taskplane.onboarding-readiness",
+    "consumes:taskplane.repository-preparation",
+    "consumes:taskplane.enforcement-receipt"
+  ],
+  "depends_on": []
+}

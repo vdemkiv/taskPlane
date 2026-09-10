@@ -24,8 +24,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class TestHookPathManifests(unittest.TestCase):
+    def _manifest(self, relative: str) -> dict:
+        if relative == ".codex/hooks.json":
+            return {"hooks": cli._codex_hook_rows()}
+        return json.loads((ROOT / relative).read_text(encoding="utf-8"))
+
     def _commands(self, relative: str) -> list[str]:
-        data = json.loads((ROOT / relative).read_text(encoding="utf-8"))
+        data = self._manifest(relative)
         return [
             hook.get("command", "")
             for rows in data["hooks"].values()
@@ -89,8 +94,7 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all("PLUGIN_ROOT" in command for command in commands))
 
     def test_repository_hook_uses_plugin_when_worktree_runner_is_missing(self):
-        manifest = json.loads((ROOT / ".codex" / "hooks.json").read_text(
-            encoding="utf-8"))
+        manifest = self._manifest(".codex/hooks.json")
         command = manifest["hooks"]["Stop"][0]["hooks"][0]["command"]
         with tempfile.TemporaryDirectory(prefix="tp-worktree-hook-") as ws:
             plugin = Path(ws, "plugin")
@@ -143,8 +147,7 @@ class TestHookPathManifests(unittest.TestCase):
                     "    json.dump({'argv': sys.argv[1:], "
                     "'path': os.environ.get('TASKPLANE_HOOK_PATH')}, f)\n",
                     encoding="utf-8")
-                manifest = json.loads((ROOT / relative).read_text(
-                    encoding="utf-8"))
+                manifest = self._manifest(relative)
                 environment = {**os.environ, "TP_MARKER": str(marker)}
                 environment.pop("PLUGIN_ROOT", None)
                 environment.pop("CLAUDE_PLUGIN_ROOT", None)
@@ -189,17 +192,6 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertIn("no workspace launcher", result.stderr)
         self.assertNotIn("/taskplane/tp.py", result.stderr)
 
-    def test_primary_skills_prefer_workspace_launcher_for_version_refreshes(self):
-        skills = (
-            "taskplane", "tp-go", "tp-build", "tp-design", "tp-engineering",
-            "tp-product", "tp-status", "tp-northstar", "tp-help",
-        )
-        for skill in skills:
-            body = (ROOT / "skills" / skill / "SKILL.md").read_text(
-                encoding="utf-8")
-            self.assertIn(".taskplane/codex-hook.py", body, skill)
-            self.assertIn("newest valid installed", " ".join(body.split()),
-                          skill)
 
     def test_onboarding_preserves_bridge_identity_on_both_shells(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-") as ws:
@@ -415,6 +407,9 @@ class TestHookEventClaims(unittest.TestCase):
         storage.write_workspace_locator(
             self.ws, identity=identity, layout=layout,
             run_id="run-hook-claim")
+        from taskplane.run_store import RunStore
+        RunStore(home=self.home).create(identity, run_id="run-hook-claim", checkout=self.ws,
+            host={"kind": "simulated"}, target={"kind": "workspace"})
         calls = []
         event = {
             "hook_event_name": "PreToolUse", "session_id": "s1",

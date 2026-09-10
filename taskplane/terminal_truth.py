@@ -8,6 +8,11 @@ all eight derived projections reconcile byte-identically to that bundle.
 
 from __future__ import annotations
 
+if __package__:
+    from .primitives import canonical_bytes
+else:
+    from primitives import canonical_bytes
+
 import ast
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -317,13 +322,7 @@ class _ExpandedRouteProviderTransportOverflow(RuntimeError):
 
 
 def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode("utf-8")
+    return canonical_bytes(value)
 
 
 def _digest(value: object) -> str:

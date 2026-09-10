@@ -26,6 +26,11 @@ Three design rules, each of which a previous attempt got wrong:
      and the hooks (see the deletability contract) — never here, and never
      in loop.py.
 """
+
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 import hashlib
 import json
 import os
@@ -94,9 +99,9 @@ _LANGUAGE_QUALITY_CHECKS = {
         {"id": "format", "module": "ruff",
          "arguments": ("format", "--check")},
         {"id": "strict-typing", "module": "mypy",
-         "arguments": ("--strict", "--config-file", "pyproject.toml")},
+         "arguments": ("--strict",)},
         {"id": "security-static", "module": "bandit",
-         "arguments": ("-r", "taskplane", "-ll")},
+         "arguments": ("-ll",)},
     ),
 }
 
@@ -358,13 +363,10 @@ def cached(workspace: str, root: str | None = None) -> dict | None:
 
 
 def store(workspace: str, result: dict) -> dict:
-    path = _cache_path(workspace)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2, sort_keys=True)
+        _shared_primitives.atomic_json(_cache_path(workspace), result, trailing_newline=False)
     except OSError:
-        pass          # a cache that cannot be written must not fail a review
+        pass
     return result
 
 

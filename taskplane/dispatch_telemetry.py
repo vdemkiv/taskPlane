@@ -18,6 +18,10 @@ import stat as stat_runtime
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+if __package__:
+    from .primitives import content_fingerprint as artifact_fingerprint
+else:
+    from primitives import content_fingerprint as artifact_fingerprint  # type: ignore[no-redef]
 
 # Mypy checks the package imports as the authoritative typed boundary.  At
 # runtime Taskplane also supports loading this file directly from the
@@ -234,7 +238,12 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
         if result[field] != nonce[field]:
             raise DispatchTelemetryError("telemetry attempt binding mismatch")
     ledger = validate_ledger(inputs.ledger)
-    if ledger["run_id"] != result["run_id"] or ledger["source_sha"] != inputs.freshness["candidate_sha"]:
+    # The run ledger retains its original target. Build signs its produced
+    # commit, and later phases review that commit; those revisions may differ.
+    # The nonce and signed result also bind the original target digest.
+    source_matches = ledger["source_sha"] == inputs.freshness["candidate_sha"] or \
+        artifact_fingerprint({"revision": ledger["source_sha"]}) == result["candidate_fingerprint"]
+    if ledger["run_id"] != result["run_id"] or not source_matches:
         raise DispatchTelemetryError("telemetry ledger identity mismatch")
     binding = next((row for row in ledger.get("bindings", [])
                     if row["dispatch_id"] == result["attempt_id"]), None)

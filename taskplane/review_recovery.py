@@ -9,6 +9,11 @@ back only to the affected producer.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import copy
 import hashlib
 import json
@@ -39,9 +44,7 @@ class RepairRejected(ValueError):
 
 
 def _canonical_bytes(value) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=False, allow_nan=False) + "\n").encode(
-                           "utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=False) + b"\n"
 
 
 def _fingerprint(value) -> str:

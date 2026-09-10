@@ -8,6 +8,11 @@ workflow-compliance verdict.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import hashlib
 import json
 import os
@@ -38,9 +43,7 @@ DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 
 def canonical_bytes(value) -> bytes:
     """Stable host-neutral JSON, including one terminating newline."""
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=False, allow_nan=False)
-            + "\n").encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=False) + b"\n"
 
 
 def digest(data: bytes) -> str:

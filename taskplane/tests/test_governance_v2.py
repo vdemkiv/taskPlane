@@ -48,68 +48,9 @@ class TestGovernanceV2(unittest.TestCase):
         if self.old_store is not None:
             os.environ["TASKPLANE_STORE"] = self.old_store
 
-    def _plan_to_execute(self, task=None):
-        task = task or {"id": "t1", "scope": ["src/core/**"],
-                        "tests": "true", "criteria": ["works"]}
-        loop.init(self.ws, "governed change", spec_path="specs/spec.md",
-                  checkpoints=["em"])
-        with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-            json.dump({"requirement": "governance-v2-fixture",
-                       "delivery_mode": "build", "automatic_lenses": [],
-                       "plan_authority": "human:test-fixture",
-                       "tasks": [task]}, f)
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop, usage="measured")
-        result = loop.gate(self.ws, "pass")
-        self.assertNotIn("error", result)
-        self.assertEqual(loop.load(self.ws)["step"], "execute")
 
-    def test_rejected_plan_keeps_its_contract_active(self):
-        loop.init(self.ws, "g", spec_path="specs/spec.md")
-        loop.next_action(self.ws)
-        self.assertIsNotNone(tp.worker_contract_for_stage(
-            self.ws, stage="plan", task="plan"))
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop)
-        rejected = loop.gate(self.ws, "fail")
-        self.assertIn("rejected", rejected["error"])
-        self.assertEqual(loop.load(self.ws)["step"], "plan")
-        self.assertIsNotNone(tp.worker_contract_for_stage(
-            self.ws, stage="plan", task="plan"))
 
-    def test_requirement_contracts_cannot_be_erased_by_plan(self):
-        base = requirements.record_requirement(
-            self.ws, "base capability", acceptance=["base stays valid"])
-        child = requirements.record_requirement(
-            self.ws, "distributed capability", acceptance=["works"],
-            depends_on=[base["id"]],
-            contracts=[{"relation": "changes",
-                        "id": "contract:orders-v1"}])
-        task = {"id": "t1", "req": child["id"],
-                "type": "distributed", "scope": ["src/core/**"],
-                "tests": "true", "criteria": ["works"],
-                "contracts": []}
-        self._plan_to_execute(task)
-        inherited = loop.load(self.ws)["tasks"][0]["contracts"]
-        self.assertEqual(inherited[0]["id"], "contract:orders-v1")
 
-    def test_missing_requirement_dependency_blocks_graph_dor(self):
-        child = requirements.record_requirement(
-            self.ws, "unsafe dependency", acceptance=["works"],
-            depends_on=["R-9999"],
-            contracts=[{"relation": "changes", "id": "contract:x"}])
-        task = {"id": "t1", "req": child["id"],
-                "type": "distributed", "scope": ["src/core/**"],
-                "tests": "true"}
-        loop.init(self.ws, "g", spec_path="specs/spec.md")
-        loop.next_action(self.ws)
-        with open(os.path.join(self.ws, "plan", "tasks.json"), "w", encoding="utf-8") as f:
-            json.dump({"tasks": [task]}, f)
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(self.ws, runtime=loop)
-        blocked = loop.gate(self.ws, "pass")
-        self.assertIn("requirement dependency R-9999", " ".join(
-            blocked["dor"]["blockers"]))
 
     def test_high_cost_new_surface_must_be_declared(self):
         task = {"id": "new", "scope": ["src/new/**"],

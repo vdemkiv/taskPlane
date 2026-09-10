@@ -43,6 +43,7 @@ def test_readiness_checks_only_declared_run_without_mutation(bound_workspace):
 
 @pytest.mark.parametrize("damage,status", [
     ("missing", "missing_manifest"), ("corrupt", "invalid_manifest"),
+    ("unsupported_schema", "unsupported_run_schema"),
     ("foreign_run", "invalid_manifest"), ("foreign_repo", "binding_mismatch"),
     ("foreign_checkout", "binding_mismatch"), ("foreign_paths", "binding_mismatch"),
 ])
@@ -55,7 +56,9 @@ def test_onboarding_fails_closed_and_preserves_damaged_binding(
     elif damage == "corrupt":
         manifest.write_text("{broken")
     else:
-        if damage == "foreign_run":
+        if damage == "unsupported_schema":
+            data["schema"] = "unsupported"
+        elif damage == "foreign_run":
             data["run_id"] = "another-run"
         elif damage == "foreign_repo":
             data["repository"]["repo_id"] = "another-repository"
@@ -67,7 +70,8 @@ def test_onboarding_fails_closed_and_preserves_damaged_binding(
     before = manifest.read_bytes() if manifest.exists() else None
     report = cli._onboard_report(ws)
     assert report["ready"] is False
-    assert report["next_action"] == "recover_run_binding"
+    assert report["next_action"] == (
+        "archive_run" if damage == "unsupported_schema" else "recover_run_binding")
     assert report["run_readiness"]["status"] == status
     assert report["recovery"]["preserve_existing_state"] is True
     assert (manifest.read_bytes() if manifest.exists() else None) == before

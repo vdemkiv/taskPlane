@@ -1,6 +1,11 @@
 """Evaluate child contracts backed only by the canonical run ledger."""
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 import copy
 import hashlib
 import json
@@ -19,56 +24,30 @@ else:  # pragma: no cover
     import runnability
     import test_strategy
 
+
+if TYPE_CHECKING or __package__:
+    from .stage_artifacts import (
+        ASSIGNMENT_SCHEMA, BINDING_FIELDS, EVENT_TYPES, EvidenceContractError, FORBIDDEN_AUTHORITIES, LANGUAGE_PRODUCER, LANGUAGE_RESULT_SCHEMA, LIFECYCLE_KINDS, LIFECYCLE_SCHEMA, PRODUCER_KINDS, RESULT_SCHEMAS, TEST_DESIGN_PRODUCER, TEST_DESIGN_RESULT_SCHEMA, _assignment_digest, _canonical, _digest, _reuse_key, _text, _validate_assignment,
+    )
+else:
+    from stage_artifacts import (
+        ASSIGNMENT_SCHEMA, BINDING_FIELDS, EVENT_TYPES, EvidenceContractError, FORBIDDEN_AUTHORITIES, LANGUAGE_PRODUCER, LANGUAGE_RESULT_SCHEMA, LIFECYCLE_KINDS, LIFECYCLE_SCHEMA, PRODUCER_KINDS, RESULT_SCHEMAS, TEST_DESIGN_PRODUCER, TEST_DESIGN_RESULT_SCHEMA, _assignment_digest, _canonical, _digest, _reuse_key, _text, _validate_assignment,
+    )
+
 IMPACT_MANIFEST_SCHEMA = "taskplane.evaluate-impact-manifest/v1"
-ASSIGNMENT_SCHEMA = "taskplane.evaluate-child-assignment/v2"
-LIFECYCLE_SCHEMA = "taskplane.evaluate-child-lifecycle/v1"
-LANGUAGE_RESULT_SCHEMA = "taskplane.evaluate-language-code-quality/v2"
-TEST_DESIGN_RESULT_SCHEMA = "taskplane.evaluate-test-design/v2"
 RESULT_INDEX_SCHEMA = "taskplane.evaluate-child-result-index/v1"
 CONSUMPTION_SCHEMA = "taskplane.evaluate-evidence-consumption/v2"
-LANGUAGE_PRODUCER = "language-code-quality"
-TEST_DESIGN_PRODUCER = "test-design"
-PRODUCER_KINDS = (LANGUAGE_PRODUCER, TEST_DESIGN_PRODUCER)
-LIFECYCLE_KINDS = ("assignment", "start", "activity", "result", "terminal")
 QUALITY_CHECK_IDS = ("lint", "format", "strict-typing", "security-static")
 REJECTED_EVIDENCE_KINDS = test_strategy.REJECTED_BEHAVIORAL_EVIDENCE
-FORBIDDEN_AUTHORITIES = (
-    "verdict", "gate", "dispatch", "mutation", "delivery-classification",
-    "repair",
-)
-BINDING_FIELDS = (
-    "task_id", "requirement_id", "candidate_sha", "source_tree",
-    "design_fingerprint", "plan_fingerprint", "settings_digest",
-    "evaluator_attempt_id", "impact_manifest_fingerprint",
-)
-EVENT_TYPES = ("assignment", "start", "progress", "evidence-reference", "terminal")
-RESULT_SCHEMAS = {
-    LANGUAGE_PRODUCER: LANGUAGE_RESULT_SCHEMA,
-    TEST_DESIGN_PRODUCER: TEST_DESIGN_RESULT_SCHEMA,
-}
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
-class EvidenceContractError(ValueError):
-    """Evidence cannot authorize an evaluator decision."""
 
 
-def _canonical(value: object) -> bytes:
-    try:
-        return (json.dumps(value, sort_keys=True, separators=(",", ":"),
-                           ensure_ascii=True, allow_nan=False) + "\n").encode()
-    except (TypeError, ValueError) as exc:
-        raise EvidenceContractError(f"evidence is not canonical JSON: {exc}") from None
 
 
-def _digest(value: object) -> str:
-    return hashlib.sha256(_canonical(value)).hexdigest()
 
 
-def _text(value: object, label: str, minimum: int = 1) -> str:
-    if not isinstance(value, str) or len(value.strip()) < minimum:
-        raise EvidenceContractError(f"{label} must be substantive")
-    return value
 
 
 def _list(value: object, label: str) -> list[str]:
@@ -128,22 +107,23 @@ def _ledger(root: str | Path | None = None, run_id: str | None = None) \
             f"durable evidence ledger is unavailable or corrupt: {exc}") from None
 
 
-def _assignment_digest(value: Mapping[str, Any]) -> str:
-    return _digest({key: copy.deepcopy(item) for key, item in value.items()
-                    if key != "assignment_digest"})
 
 
-def _reuse_key(kind: str, binding: Mapping[str, Any], obligations: Mapping[str, Any],
-               ledger_fingerprint: str) -> str:
-    stable = {key: copy.deepcopy(item) for key, item in binding.items()
-              if key != "evaluator_attempt_id"}
-    return _digest({
-        "producer_kind": kind, "binding": stable,
-        "ledger_binding_fingerprint": ledger_fingerprint,
-        "obligations": copy.deepcopy(dict(obligations)),
-        "lifecycle": [LIFECYCLE_SCHEMA, *LIFECYCLE_KINDS, *EVENT_TYPES],
-        "result_schema": RESULT_SCHEMAS[kind],
-    })
+
+
+def _candidate_matches(manifest: Mapping[str, Any], binding: Mapping[str, Any]) -> bool:
+    """A run retains its baseline; task evidence names its collected Build."""
+    ledger = manifest["binding"]
+    run = run_store.RunStore().load(ledger["run_id"])
+    tasks = (run.get("workflow") or {}).get("tasks") or []
+    if tasks:
+        matches = [row for row in tasks if row.get("id") == binding["task_id"]]
+        return len(matches) == 1 and (
+            matches[0].get("target_commit") == binding["candidate_sha"] and
+            matches[0].get("source_tree") == binding["source_tree"])
+    candidate = ledger["candidate"]
+    return bool(binding["candidate_sha"] == candidate.get("revision") and
+                binding["source_tree"] == candidate.get("source_tree"))
 
 
 def _assert_current_assignment(value: Mapping[str, Any],
@@ -151,11 +131,9 @@ def _assert_current_assignment(value: Mapping[str, Any],
     """Rebind a durable assignment to the manifest that is consuming it."""
     row = _validate_assignment(value)
     ledger = manifest["binding"]
-    candidate = ledger["candidate"]
     binding = row["binding"]
     if row["ledger_binding_fingerprint"] != ledger["fingerprint"] or \
-            binding["candidate_sha"] != candidate.get("revision") or \
-            binding["source_tree"] != candidate.get("source_tree") or \
+            not _candidate_matches(manifest, binding) or \
             binding["settings_digest"] != ledger["settings_digest"]:
         raise EvidenceContractError("durable child assignment is foreign")
     for field in ("design_fingerprint", "plan_fingerprint", "settings_digest",
@@ -202,10 +180,8 @@ def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
     for field in BINDING_FIELDS:
         _text(bound[field], f"binding {field}")
     ledger_binding = manifest["binding"]
-    candidate = ledger_binding["candidate"]
     if bound["settings_digest"] != ledger_binding["settings_digest"] or \
-            bound["candidate_sha"] != candidate.get("revision") or \
-            candidate.get("source_tree", bound["source_tree"]) != bound["source_tree"]:
+            not _candidate_matches(manifest, bound):
         raise EvidenceContractError("evidence candidate is foreign")
     implementation = list(impact_manifest["implementation_files"])
     try:
@@ -230,17 +206,17 @@ def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
             raise EvidenceContractError("language quality checks are incomplete")
         if any(row.get("verdict") != runnability.RUNS for row in checks):
             raise EvidenceContractError("required language quality tool is unavailable")
+        implementation_files = sorted(path for path in implementation if reference["language"] in
+            language_references.implementation_languages([path]))
         required = [{
-            "id": row["id"], "argv": _list(row.get("argv"), "quality argv"),
+            "id": row["id"], "argv": _list(row.get("argv"), "quality argv") + implementation_files,
             "tool": _text(row.get("tool"), "quality tool"),
             "tool_version": _text(row.get("tool_version"), "quality tool version"),
         } for row in checks]
         language_rows.append({
             "language": reference["language"], "reference": copy.deepcopy(reference),
             "toolchain_fingerprint": _text(probe.get("fingerprint"), "toolchain"),
-            "implementation_files": sorted(
-                path for path in implementation if reference["language"] in
-                language_references.implementation_languages([path])),
+            "implementation_files": implementation_files,
             "required_commands": required,
         })
     obligations: dict[str, dict[str, Any]] = {
@@ -264,26 +240,6 @@ def prepare_assignments(workspace: str | Path, binding: Mapping[str, Any],
     return result
 
 
-def _validate_assignment(value: object) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or value.get("schema") != ASSIGNMENT_SCHEMA or \
-            value.get("producer_kind") not in PRODUCER_KINDS or \
-            value.get("capabilities") != {
-                name: False for name in FORBIDDEN_AUTHORITIES}:
-        raise EvidenceContractError("child assignment is invalid")
-    row = copy.deepcopy(dict(value))
-    binding = row.get("binding")
-    if not isinstance(binding, Mapping) or set(binding) != set(BINDING_FIELDS):
-        raise EvidenceContractError("child assignment binding is incomplete")
-    obligations = ({"implementation_files": row.get("implementation_files"),
-                    "language_obligations": row.get("language_obligations")}
-                   if row["producer_kind"] == LANGUAGE_PRODUCER else
-                   {"test_obligations": row.get("test_obligations")})
-    expected = _reuse_key(row["producer_kind"], binding, obligations,
-                          _text(row.get("ledger_binding_fingerprint"), "ledger"))
-    if row.get("reuse_key_digest") != expected or \
-            row.get("assignment_digest") != _assignment_digest(row):
-        raise EvidenceContractError("child assignment or reuse key is stale")
-    return row
 
 
 def _runtime(value: object, label: str, *, workspace: Path, run_id: str,
@@ -476,9 +432,28 @@ def _entry(manifest: Mapping[str, Any], reference: object) -> dict[str, Any]:
     return copy.deepcopy(dict(rows[0]))
 
 
+def _assignment_workspace(assignment: Mapping[str, Any], primary: Path, run_id: str) -> Path:
+    """Resolve execution receipts in the exact task checkout recorded by this run."""
+    binding = assignment["binding"]
+    owner = run_store.RunStore().load(run_id)
+    workflow = owner.get("workflow") or {}
+    if not workflow.get("parallel"):
+        return primary
+    tasks = [row for row in workflow.get("tasks") or [] if row.get("id") == binding["task_id"]]
+    if len(tasks) != 1 or not tasks[0].get("workspace"):
+        raise EvidenceContractError("parallel evidence has no exact task workspace")
+    workspace = Path(tasks[0]["workspace"]).absolute()
+    from taskplane import storage
+    locator = storage.load_workspace_locator(str(workspace)) or {}
+    if locator.get("run_id") != run_id or locator.get("task_id") != binding["task_id"]:
+        raise EvidenceContractError("parallel evidence workspace belongs to another task")
+    return workspace
+
+
 def _producer(root: Path, manifest: Mapping[str, Any], workspace: Path,
               assignment: Mapping[str, Any]) -> dict[str, Any]:
     checked = _assert_current_assignment(assignment, manifest)
+    workspace = _assignment_workspace(checked, workspace, manifest["binding"]["run_id"])
     _fixture_digests(checked, workspace)
     attempt_id = checked["binding"]["evaluator_attempt_id"] + "-" + checked["producer_kind"]
     rows = [row for row in manifest["classes"]["agent-activity"]["entries"]

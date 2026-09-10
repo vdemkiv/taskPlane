@@ -226,3 +226,11 @@ def test_evidence_projects_existing_command_wave_only(monkeypatch):
     assert evidence.command_wave_evidence(state)["schema"] == \
         "taskplane.command-wave-evidence/v1"
     assert evidence.command_wave_evidence({}) is None
+
+
+def test_runtime_projection_retains_positive_polling_measurement():
+    wave = loop.command_wave_create("measured-wave", ["a"])
+    projection = runtime_eval.command_wave_projection(wave, efficiency={
+        "launches": 1, "model_wakes": 1, "unchanged_model_polls": 1,
+        "polling_raw_tokens": 20, "total_raw_tokens": 100})
+    assert projection["efficiency"]["polling_raw_token_share"] > 0

@@ -8,6 +8,11 @@ mapping that looks like a receipt.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import fnmatch
 import hashlib
 import json
@@ -151,9 +156,7 @@ def terminal_tasks_and_gates_surface(
 
 
 def _canonical_digest(value: object) -> str:
-    return hashlib.sha256(json.dumps(
-        value, sort_keys=True, separators=(",", ":"), default=str
-    ).encode("utf-8")).hexdigest()
+    return hashlib.sha256(_json_primitives.canonical_bytes(value, ensure_ascii=True, default=str)).hexdigest()
 
 
 def _bounded_process_output(process) -> tuple[str, str, int, bool]:
@@ -649,6 +652,10 @@ def _validated_runtime_result(
     if snapshot.get("command_fingerprint") != expected_runtime_command:
         raise CheckpointReceiptError(
             "command result does not match the focused proof exact revision")
+
+    if state != _GREEN_STATE or event.get("exit_code") != 0:
+        raise CheckpointReceiptError(
+            f"focused_proof ended {state}; later phases stopped: {snapshot.get('reason') or state}")
 
     artifact = event.get("artifact")
     if artifact != snapshot.get("artifact"):

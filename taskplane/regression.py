@@ -28,7 +28,10 @@ import subprocess
 import sys
 import tempfile
 
-import taskplane_lite as tp
+if __package__:
+    from . import primitives as tp
+else:
+    import primitives as tp
 
 # Enforcement / public entry points: a change here that ships with no covering
 # test is the coverage-gap the v2.3.0 wave fell through (broken CI invocation,

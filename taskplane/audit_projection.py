@@ -1,13 +1,18 @@
 """Closed, bounded projections for append-only audit traces.
 
-This stdlib-only leaf owns the privacy-safe record shape. The enforcement
-kernel retains ownership of trace persistence, rotation, and retention.
+This stdlib-only leaf owns the privacy-safe record shape, persistence,
+rotation, and retention.
 """
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 from collections.abc import Mapping
+from typing import Any, cast
 import hashlib
 import json
+import os
+import stat
+import secrets
 import re
 import time as _time
 
@@ -187,3 +192,212 @@ def audit_record(
     if root_projection is not None:
         rec["root_hygiene"] = root_projection
     return rec
+
+if TYPE_CHECKING or __package__:
+    from .primitives import StateError, file_lock, _fsync_directory, _ensure_self_ignored
+    from .storage import tp_dir
+else:
+    from primitives import StateError, file_lock, _fsync_directory, _ensure_self_ignored
+    from storage import tp_dir
+
+
+_TRACE_FAILED_WARNED = False
+
+
+_TRACE_MAX_BYTES = 5 * 1024 * 1024
+
+
+_TRACE_ARCHIVE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+
+
+_TRACE_ARCHIVE_MAX_FILES = 8
+
+
+_TRACE_ARCHIVE_MAX_BYTES = 40 * 1024 * 1024
+
+
+def _reserve_trace_archive(path: str) -> "str | None":
+    """Claim the next unused `trace.jsonl.<n>`, atomically.
+
+    O_CREAT|O_EXCL is the claim: two processes rotating at once cannot both
+    win the same n, so neither can land on top of the other's history. The
+    empty placeholder is then replaced by the real file.
+    """
+    n = 1
+    directory = os.path.dirname(path) or "."
+    prefix = os.path.basename(path) + "."
+    try:
+        n = max([int(name[len(prefix):]) for name in os.listdir(directory)
+                 if name.startswith(prefix) and
+                 name[len(prefix):].isdigit()] or [0]) + 1
+    except OSError:
+        pass
+    while n < 100000:
+        dest = f"{path}.{n}"
+        try:
+            fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            n += 1
+            continue
+        except OSError:
+            return None
+        os.close(fd)
+        return dest
+    return None
+
+
+def _maybe_rotate_trace(path: str) -> "str | None":
+    """The archive path this call created, or None if it did not rotate."""
+    try:
+        if os.path.getsize(path) <= _TRACE_MAX_BYTES:
+            return None
+        dest = _reserve_trace_archive(path)
+        if dest is None:
+            return None      # cannot archive without overwriting: do not
+        os.replace(path, dest)
+        return dest
+    except OSError:
+        return None
+
+
+def _purge_trace_archive(path: str) -> None:
+    directory = os.path.dirname(path) or "."
+    staged = os.path.join(
+        directory, ".privacy-purge-" + os.path.basename(path) + "-" +
+        secrets.token_hex(8))
+    os.replace(path, staged)
+    os.unlink(staged)
+
+
+def _enforce_trace_retention_locked(path: str, observed_at: float) -> dict[str, Any]:
+    """Bound rotated audit history while leaving the active trace intact."""
+    directory = os.path.dirname(path) or "."
+    prefix = os.path.basename(path) + "."
+    candidates = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        names = []
+    for name in names:
+        suffix = name[len(prefix):] if name.startswith(prefix) else ""
+        if not suffix.isdigit():
+            continue
+        archive = os.path.join(directory, name)
+        try:
+            info = os.lstat(archive)
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("audit archive is not a regular file")
+            candidates.append((float(info.st_mtime), int(suffix),
+                               int(info.st_size), archive))
+        except OSError:
+            if os.path.lexists(archive):
+                _purge_trace_archive(archive)
+    retained = 0
+    retained_bytes = 0
+    removed = 0
+    for modified_at, _suffix, size, archive in sorted(
+            candidates, reverse=True):
+        expired = modified_at + _TRACE_ARCHIVE_RETENTION_SECONDS <= observed_at
+        excess = (retained >= _TRACE_ARCHIVE_MAX_FILES or
+                  retained_bytes + size > _TRACE_ARCHIVE_MAX_BYTES)
+        if expired or excess:
+            _purge_trace_archive(archive)
+            removed += 1
+        else:
+            retained += 1
+            retained_bytes += size
+    if removed:
+        _fsync_directory(directory)
+    return {"removed": removed, "retained": retained,
+            "retained_bytes": retained_bytes,
+            "retention_seconds": _TRACE_ARCHIVE_RETENTION_SECONDS,
+            "max_files": _TRACE_ARCHIVE_MAX_FILES,
+            "max_bytes": _TRACE_ARCHIVE_MAX_BYTES}
+
+
+def enforce_trace_retention(workspace: str, *, now: float | None = None,
+                            _lock_held: bool = False) -> dict[str, Any]:
+    path = os.path.join(tp_dir(workspace), "trace.jsonl")
+    observed_at = float(_time.time() if now is None else now)
+    if _lock_held:
+        return _enforce_trace_retention_locked(path, observed_at)
+    with file_lock(path + ".retention"):
+        return _enforce_trace_retention_locked(path, observed_at)
+
+
+def trace_paths(workspace: str) -> list[str]:
+    """Retained trace files for this workspace, OLDEST first, active last.
+
+    Rotation splits one logical audit trace across files; a consumer that
+    reads only `trace.jsonl` is reading the tail of the record and cannot
+    tell. Anything mining a whole track's history (retro, cost analysis)
+    reads this instead.
+    """
+    d = tp_dir(workspace)
+    base = os.path.join(d, "trace.jsonl")
+    archives = []
+    try:
+        for name in os.listdir(d):
+            if not name.startswith("trace.jsonl."):
+                continue
+            suffix = name[len("trace.jsonl."):]
+            if suffix.isdigit():
+                archives.append((int(suffix), os.path.join(d, name)))
+    except OSError:
+        pass
+    out = [p for _n, p in sorted(archives)]
+    if os.path.exists(base):
+        out.append(base)
+    return out
+
+
+def trace(workspace: str, event: str, **data: Any) -> None:
+    import time
+    global _TRACE_FAILED_WARNED
+    # Every record carries a monotonic wall-clock ts so the mission-control
+    # feed can order events across parallel worker trace files by TIME, not
+    # by which file they happened to be concatenated from.
+    rec = audit_record(event, cast(Mapping[object, object], data), observed_at=time.time())
+    try:
+        d = tp_dir(workspace)
+        os.makedirs(d, exist_ok=True)
+        _ensure_self_ignored(d)
+        path = os.path.join(d, "trace.jsonl")
+        with file_lock(path + ".retention"):
+            enforce_trace_retention(workspace, _lock_held=True)
+            if os.path.islink(path):
+                raise OSError("audit trace is a symlink")
+            archived_to = _maybe_rotate_trace(path)
+            with open(path, "a", encoding="utf-8") as f:
+                if archived_to:
+                    rotation = audit_record("trace_rotated", {
+                        "archived_to": os.path.relpath(archived_to, workspace).replace("\\", "/"),
+                        "note": "earlier events moved to bounded archive",
+                    }, observed_at=time.time())
+                    f.write(json.dumps(rotation, default=str) + "\n")
+                f.write(json.dumps(rec, default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            enforce_trace_retention(workspace, _lock_held=True)
+    except (OSError, StateError) as e:
+        # NEVER crash the hook over a broken audit log — but never go dark
+        # silently either: one stderr warning per process (v2.3.0).
+        if not _TRACE_FAILED_WARNED:
+            _TRACE_FAILED_WARNED = True
+            import sys
+            print(f"taskplane: WARNING — audit trace write failed ({e}); "
+                  "governance events are NO LONGER being recorded for "
+                  f"{workspace}. Fix the .taskplane dir (disk/permissions) "
+                  "before trusting this session's audit trail.",
+                  file=sys.stderr)
+        return
+
+    # Keep the cheap status read model current from the same production event
+    # path. It is presentation-only: snapshot damage or an unavailable disk
+    # must never turn into authority or block the audit transition above.
+    try:
+        import progress
+        progress.record_trace_event(
+            workspace, event, rec, observed_at=rec["ts"], state_dir=d)
+    except Exception:
+        pass

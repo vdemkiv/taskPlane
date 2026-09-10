@@ -6,8 +6,10 @@ projection of it; they never walk traces, archives, DOM state, or CI reruns.
 """
 
 from __future__ import annotations
+from taskplane import run_artifacts
 
 import copy
+import os
 from datetime import datetime, timezone
 import math
 import re
@@ -1262,3 +1264,21 @@ __all__ = [
     "token_usage_projection", "validate_terminal_evidence",
     "unavailable_consumer_projection", "validate_wave_receipt",
 ]
+
+
+def publish_root_hygiene(
+        root: str | os.PathLike[str], receipt: Mapping[str, object]) -> dict[str, Any]:
+    """Retain one canonical root seal under its explicit bounded policy."""
+
+    checked = validate_root_hygiene(receipt)
+    value, _ = run_artifacts._payload_bytes(checked)
+    if len(value) > run_artifacts._MAX_ROOT_HYGIENE_ENTRY_BYTES:
+        raise run_artifacts.RunArtifactError("root hygiene receipt exceeds its byte bound")
+    binding = run_artifacts.load_manifest(root)["binding"]
+    if checked["candidate"]["source_sha"] != \
+            binding["candidate"].get("revision"):
+        raise run_artifacts.RunArtifactError("root hygiene receipt belongs to another candidate")
+    return run_artifacts.publish_artifact(
+        root, "telemetry", checked,
+        metadata={"kind": "root-hygiene",
+                  "receipt_fingerprint": checked["fingerprint"]})

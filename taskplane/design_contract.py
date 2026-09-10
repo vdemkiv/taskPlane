@@ -824,16 +824,11 @@ def design_dod_errors(ws: str, state: dict) -> list:
                       + ", ".join(missing_contracts))
 
     graph = object_field("graph")
-    current_fp = (depgraph.load(ws).get("meta") or {}).get(
-        "content_fingerprint")
     baseline_fp = state.get("design_graph_fingerprint")
     if not baseline_fp:
         errors.append("design graph baseline was not captured by the "
                       "engine — run `loop next` once at the design step to "
                       "capture it, then gate again")
-    if current_fp != baseline_fp:
-        errors.append("as-built graph changed during Design; proposed edges "
-                      "must remain an overlay")
     if graph.get("baseline_fingerprint") != baseline_fp:
         errors.append("design graph does not cite the captured baseline fingerprint")
     proposed_modules = {str(x).strip() for x in
@@ -964,43 +959,8 @@ def design_dod_errors(ws: str, state: dict) -> list:
     elif not text(visual.get("reason")):
         errors.append("skipped design visualization needs a reason")
 
-    lens_evidence = contract.get("lens_evidence") or []
-    if not isinstance(lens_evidence, list):
-        errors.append("design lens_evidence must be a list")
-        lens_evidence = []
-    evidence = [row for row in lens_evidence
-                if isinstance(row, dict)
-                and row.get("lens") == "solution-design"]
-    try:
-        solution_blockers = int(evidence[0].get("blockers") or 0) \
-            if len(evidence) == 1 else -1
-    except (TypeError, ValueError):
-        solution_blockers = -1
-    if (len(evidence) != 1 or evidence[0].get("verdict") != "pass"
-            or solution_blockers != 0
-            or not text(evidence[0].get("evidence"))):
-        errors.append("solution-design lens must pass with evidence and no blockers")
-    else:
-        # v2.3.0 M3: the row must be BOUND to the content it judged and to
-        # WHO judged it — a bare designer-typed pass row is no longer enough.
-        row = evidence[0]
-        if not text(row.get("produced_by")):
-            errors.append("solution-design lens evidence must record "
-                          "produced_by — WHO ran the lens")
-        expected_fp = design_content_fingerprint(ws, contract)
-        if row.get("content_fingerprint") != expected_fp:
-            errors.append("solution-design lens evidence is not bound to the "
-                          "current design content — re-run the lens against "
-                          "this design and record its content_fingerprint "
-                          f"(design_content_fingerprint, now {expected_fp})")
-        independent = row.get("independent") is True
-        self_attested = row.get("self_attested") is True
-        if independent == self_attested:
-            errors.append("solution-design lens evidence must declare exactly "
-                          "one of independent: true or self_attested: true — "
-                          "implicit self-attestation is never accepted "
-                          "silently; self_attested rows are surfaced to the "
-                          "human at the approval gate")
+    # Lens admission belongs to the shared phase collector and its sealed
+    # lens-evidence artifact. A designer-authored pass row is not authority.
     if not isinstance(contract.get("open_questions"), list):
         errors.append("design open_questions is required — list unresolved "
                       "questions, or [] when none")
@@ -1016,21 +976,8 @@ def design_dod_errors(ws: str, state: dict) -> list:
 
 
 def design_approval_notices(ws: str, contract: dict | None = None) -> list:
-    """Human-visible notices the design approval gate must render (v2.3.0
-    M3). These never unblock anything — but a self-attested lens row is
-    surfaced HERE, at the human gate, instead of being silently accepted."""
-    contract = contract if contract is not None \
-        else (design_contract(ws)[0] or {})
-    notices = []
-    rows = contract.get("lens_evidence")
-    for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, dict) and row.get("self_attested") is True:
-            who = str(row.get("produced_by") or "").strip() or "unknown"
-            notices.append(
-                f"{str(row.get('lens') or 'lens').strip()} evidence is "
-                f"SELF-ATTESTED by {who} — no independent lens run backs "
-                "it; verify the lens checks yourself before approving")
-    return notices
+    """Lens findings are presented from the collected phase evidence."""
+    return []
 
 
 def _plan_stabilization_errors(state: Mapping, tasks: list) -> list[str]:

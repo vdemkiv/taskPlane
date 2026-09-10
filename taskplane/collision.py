@@ -6,6 +6,16 @@ process-global signal or from a similarly named directory.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
+if __package__:
+    from . import storage as runtime_storage
+else:
+    import storage as runtime_storage
+
 import copy
 import hashlib
 import json
@@ -22,8 +32,7 @@ _ACTIONS = {"no_op", "allow", "advise", "deny", "observed"}
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True).encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=True)
 
 
 def _fingerprint(value: object) -> str:
@@ -282,8 +291,7 @@ def validate_ledger(value: dict) -> dict:
 
 
 def ledger_path(workspace: str) -> str:
-    import taskplane_lite as tp
-    return os.path.join(tp.tp_dir(workspace), "foreign-interference.json")
+    return os.path.join(runtime_storage.tp_dir(workspace), "foreign-interference.json")
 
 
 def load_ledger(workspace: str) -> dict | None:
@@ -299,15 +307,14 @@ def persist(workspace: str, *, decision: dict | None = None,
             roots: list | None = None, run_id: str | None = None,
             observed_at: int | None = None) -> dict:
     """Lock and atomically update the workspace's durable bounded ledger."""
-    import taskplane_lite as tp
 
     path = ledger_path(workspace)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with tp.file_lock(path, timeout=10.0):
+    with _json_primitives.file_lock(path, timeout=10.0):
         current = load_ledger(workspace) or empty_ledger(run_id=run_id)
         if decision is not None:
             current = record(current, decision, observed_at=observed_at)
         if roots is not None:
             current = record_state_roots(current, roots, run_id=run_id)
-        tp.atomic_write_json(path, current, indent=2, sort_keys=True)
+        _json_primitives.atomic_write_json(path, current, indent=2, sort_keys=True)
     return current

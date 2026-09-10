@@ -41,6 +41,52 @@ Windows support — that gap is closed at this one seam.)
 """
 
 from __future__ import annotations
+if __package__:
+    from .host_capabilities import (MODEL_TIERS, REASONING_EFFORTS, STEP_DEFAULT_TIER,
+        _default_tier_models, reasoning_for_tier, dispatch_fields, model_for_tier, step_tier)
+else:
+    from host_capabilities import (MODEL_TIERS, REASONING_EFFORTS, STEP_DEFAULT_TIER,
+        _default_tier_models, reasoning_for_tier, dispatch_fields, model_for_tier, step_tier)
+if __package__:
+    from .producer_observation import hook_event_identity, _bounded_hook_identity
+else:
+    from producer_observation import hook_event_identity, _bounded_hook_identity
+if __package__:
+    from .primitives import StateError, file_lock
+else:
+    from primitives import StateError, file_lock
+
+if __package__:
+    from .primitives import canonical_bytes as canonical_json_bytes
+else:
+    from primitives import canonical_bytes as canonical_json_bytes
+
+if __package__:
+    from .primitives import (
+        _CHECKOUT_PYTHON_TRAMPOLINE, _LOAD_RAISE, _checkout_bound_main, _checkout_bound_python_args, _checkout_bound_python_argv, _durable_directory_identity, _durable_makedirs, _ensure_self_ignored, _flush_windows_directory, _fsync_directory, _python_program, _run, atomic_write_bytes, atomic_write_json, load_json, run_suite_command,
+    )
+else:
+    from primitives import (
+        _CHECKOUT_PYTHON_TRAMPOLINE, _LOAD_RAISE, _checkout_bound_main, _checkout_bound_python_args, _checkout_bound_python_argv, _durable_directory_identity, _durable_makedirs, _ensure_self_ignored, _flush_windows_directory, _fsync_directory, _python_program, _run, atomic_write_bytes, atomic_write_json, load_json, run_suite_command,
+    )
+
+if __package__:
+    from .storage import (
+        _mode_file, _path_slug, _persistent_mode, _quarantine_shared_store_meta, _read_personal_mode, _remote_mode_file, _workspace_identity, external_store_root, get_mode, kb_root, project_key, repo_store_root, set_mode, store_env, store_home, store_meta_path, store_root, tp_dir, write_store_meta,
+    )
+else:
+    from storage import (
+        _mode_file, _path_slug, _persistent_mode, _quarantine_shared_store_meta, _read_personal_mode, _remote_mode_file, _workspace_identity, external_store_root, get_mode, kb_root, project_key, repo_store_root, set_mode, store_env, store_home, store_meta_path, store_root, tp_dir, write_store_meta,
+    )
+
+if __package__:
+    from .audit_projection import (
+        _TRACE_ARCHIVE_MAX_BYTES, _TRACE_ARCHIVE_MAX_FILES, _TRACE_ARCHIVE_RETENTION_SECONDS, _TRACE_FAILED_WARNED, _TRACE_MAX_BYTES, _enforce_trace_retention_locked, _maybe_rotate_trace, _purge_trace_archive, _reserve_trace_archive, enforce_trace_retention, trace, trace_paths,
+    )
+else:
+    from audit_projection import (
+        _TRACE_ARCHIVE_MAX_BYTES, _TRACE_ARCHIVE_MAX_FILES, _TRACE_ARCHIVE_RETENTION_SECONDS, _TRACE_FAILED_WARNED, _TRACE_MAX_BYTES, _enforce_trace_retention_locked, _maybe_rotate_trace, _purge_trace_archive, _reserve_trace_archive, enforce_trace_retention, trace, trace_paths,
+    )
 
 import fnmatch
 import ast
@@ -83,281 +129,27 @@ except (ImportError, ValueError):  # direct ``taskplane_lite`` import
 # can never destroy state and concurrency never silently degrades.
 # ---------------------------------------------------------------------------
 
-class StateError(RuntimeError):
-    """A governance state file is unreadable or unprotectable.
-
-    Raised instead of a bare traceback (fail-closed WITH a remedy) — never
-    swallowed into a silent default: masking a corrupt control file is how a
-    user's `private` flag or a track registry quietly disappears."""
-
-    def __init__(self, path: str, why: str, remedy: str = ""):
-        self.path = path
-        msg = f"{why}: {path}"
-        if remedy:
-            msg += f" — {remedy}"
-        super().__init__(msg)
 
 
-def atomic_write_json(path: str, data, *, indent: int = 1,
-                      sort_keys: bool = False, private: bool = False) -> None:
-    """Write JSON durably: fsynced temp + replace + parent-directory fsync.
-
-    A crash mid-write leaves the previous version intact instead of a torn
-    file. Same-directory temp keeps the replace atomic across filesystems."""
-    d = os.path.dirname(path) or "."
-    _durable_makedirs(d)
-    tmp = os.path.join(
-        d, f".{os.path.basename(path)}.tmp.{os.getpid()}."
-        f"{secrets.token_hex(8)}")
-    try:
-        # newline="" disables the host's newline translation. Windows
-        # text mode turns every "\n" json.dump writes into "\r\n", so the
-        # SAME state written on two hosts produced different BYTES — and
-        # these artifacts are fingerprinted and byte-compared (the audit
-        # differential caught it: b'{\r\n  "reviews": 6\r\n}').
-        with open(tmp, "x", encoding="utf-8", newline="") as f:
-            if private:
-                # Set custody before writing any secret, including to the
-                # temporary inode used by the incumbent atomic replacement.
-                os.fchmod(f.fileno(), 0o600)
-            json.dump(data, f, indent=indent, sort_keys=sort_keys)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-        _fsync_directory(d)
-    finally:
-        try:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-        except OSError:
-            pass
 
 
-def atomic_write_bytes(path: str, data: bytes) -> None:
-    """Durably replace one file with exact caller-owned bytes.
-
-    This is the byte-preserving counterpart of :func:`atomic_write_json` for
-    recovery paths that must restore the exact prior artifact representation,
-    rather than merely an equivalent decoded JSON value.
-    """
-    if not isinstance(data, bytes):
-        raise TypeError("atomic_write_bytes requires bytes")
-    directory = os.path.dirname(path) or "."
-    _durable_makedirs(directory)
-    temporary = os.path.join(
-        directory, f".{os.path.basename(path)}.tmp.{os.getpid()}."
-        f"{secrets.token_hex(8)}")
-    try:
-        with open(temporary, "xb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        _fsync_directory(directory)
-    finally:
-        try:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-        except OSError:
-            pass
 
 
-def _durable_makedirs(path: str) -> None:
-    """Create a directory chain without acknowledging volatile ancestors.
-
-    ``os.makedirs`` makes the complete chain but provides no point at which a
-    caller can persist each newly linked directory.  Governance state may be
-    the first write beneath a fresh run/store hierarchy, so create each
-    missing component separately.  The child is flushed first, then the
-    parent that owns its name.  Any failure propagates before the state file
-    is opened; a partially created (but unacknowledged) empty chain is safe to
-    retry.
-    """
-    target = os.path.abspath(path)
-    missing = []
-    cursor = target
-    while not os.path.lexists(cursor):
-        missing.append(cursor)
-        parent = os.path.dirname(cursor)
-        if parent == cursor:
-            break
-        cursor = parent
-    _durable_directory_identity(cursor)
-
-    for directory in reversed(missing):
-        parent = os.path.dirname(directory) or "."
-        try:
-            os.mkdir(directory)
-        except FileExistsError:
-            # Treat a concurrent creator exactly like our own mkdir: verify
-            # its object type and establish durability ourselves before
-            # descending.  Never assume another process completed its fsync.
-            pass
-        identity = _durable_directory_identity(directory)
-        _fsync_directory(directory)
-        _fsync_directory(parent)
-        if _durable_directory_identity(directory) != identity:
-            raise StateError(directory,
-                             "durable directory identity changed during fsync")
 
 
-def _durable_directory_identity(path: str) -> tuple[int, int]:
-    """Return a stable non-symlink directory identity or fail closed."""
-    try:
-        value = os.lstat(path)
-    except OSError as exc:
-        raise StateError(path, f"durable directory is unavailable ({exc})") \
-            from None
-    if stat.S_ISLNK(value.st_mode):
-        raise StateError(path, "durable directory anchor is a symlink")
-    if not stat.S_ISDIR(value.st_mode):
-        raise StateError(path, "durable directory anchor is not a directory")
-    return int(value.st_dev), int(value.st_ino)
 
 
-def _flush_windows_directory(path: str) -> None:
-    """Flush one directory through the native backup-semantics handle."""
-    import ctypes
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateFileW.restype = ctypes.c_void_p
-    kernel.CreateFileW.argtypes = (
-        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
-        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
-    kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
-    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-    handle = kernel.CreateFileW(
-        str(path), 0x80000000, 0x00000007, None, 3, 0x02000000, None)
-    invalid = ctypes.c_void_p(-1).value
-    if handle == invalid:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        if not kernel.FlushFileBuffers(handle):
-            error = ctypes.get_last_error()
-            if error != 5:  # ERROR_ACCESS_DENIED
-                raise ctypes.WinError(error)
-            # Windows accepts a backup-semantics directory handle but does
-            # not support FlushFileBuffers for directories. The preceding
-            # file fsync and atomic replace remain authoritative; only this
-            # unavailable directory-metadata flush is acknowledged here.
-    finally:
-        if not kernel.CloseHandle(handle):
-            raise ctypes.WinError(ctypes.get_last_error())
 
 
-def _fsync_directory(path: str) -> None:
-    """Persist a directory entry update before its caller acknowledges it."""
-    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-             | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        fd = os.open(path, flags)
-    except OSError:
-        if os.name != "nt":
-            raise
-        # Windows may refuse opening directories through os.open.
-        _flush_windows_directory(path)
-        return
-    try:
-        try:
-            os.fsync(fd)
-        except PermissionError:
-            if os.name != "nt":
-                raise
-            # CPython can open the directory descriptor on Windows while the
-            # CRT still rejects fsync on it. FlushFileBuffers is the durable
-            # native fallback; the error remains fatal if that flush fails.
-            _flush_windows_directory(path)
-    finally:
-        os.close(fd)
 
 
-_LOAD_RAISE = object()
 
 
-def load_json(path: str, default=_LOAD_RAISE, *, what: str = "state file"):
-    """Read a JSON governance file with a strict corruption contract.
-
-    Missing file  -> `default` when given, else StateError (fail closed).
-    Corrupt file  -> ALWAYS StateError naming the path and a remedy — a
-                     corrupt control file must never be silently replaced by
-                     a default (that is fail-open data loss)."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        if default is not _LOAD_RAISE:
-            return default
-        raise StateError(path, f"missing {what}",
-                         "re-run the command that creates it") from None
-    except ValueError as e:
-        raise StateError(
-            path, f"corrupt {what} ({e})",
-            "inspect/restore it (git checkout or delete after review); "
-            "taskplane will not guess its contents") from None
-    except OSError as e:
-        raise StateError(path, f"unreadable {what} ({e})") from None
 
 
 _LOCK_STALE_S = 120.0
 
 
-@_contextlib.contextmanager
-def file_lock(path: str, *, timeout: float = 10.0):
-    """Advisory exclusive lock on <path>.lock — NEVER silently lock-free.
-
-    Primary: fcntl.flock. Where flock is unavailable or refused (Windows,
-    some FUSE/network mounts — exactly the hosts this plugin targets), fall
-    back to an atomic mkdir spin-lock with staleness recovery instead of
-    proceeding unlocked. If even that cannot be acquired within `timeout`,
-    raise StateError: failing closed beats corrupting shared state."""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    lock_path = path + ".lock"
-    # ACQUISITION failures fall through to the mkdir lock; an exception
-    # raised by the CALLER'S BODY must propagate unchanged (v2.3.0 — the
-    # earlier shape caught the body's OSError too, then yielded a second
-    # time from the fallback path).
-    lf = None
-    try:
-        lf = open(lock_path, "w", encoding="utf-8", newline="")
-        import fcntl
-        fcntl.flock(lf, fcntl.LOCK_EX)
-    except (ImportError, OSError):
-        if lf is not None:
-            lf.close()
-        lf = None     # fall through to the mkdir lock — not to "no lock"
-    if lf is not None:
-        try:
-            yield
-        finally:
-            lf.close()
-        return
-    lockdir = path + ".lockdir"
-    deadline = _time.monotonic() + max(0.1, timeout)
-    while True:
-        try:
-            os.mkdir(lockdir)
-            break
-        except FileExistsError:
-            try:  # steal a lock left behind by a dead process
-                if _time.time() - os.stat(lockdir).st_mtime > _LOCK_STALE_S:
-                    os.rmdir(lockdir)
-                    continue
-            except OSError:
-                pass
-            if _time.monotonic() >= deadline:
-                raise StateError(
-                    lockdir, "could not acquire state lock",
-                    "another process holds it; if it is dead, remove the "
-                    "lockdir") from None
-            _time.sleep(0.05)
-        except OSError as e:
-            raise StateError(lockdir, f"lock unavailable ({e})") from None
-    try:
-        yield
-    finally:
-        try:
-            os.rmdir(lockdir)
-        except OSError:
-            pass
 
 # Host write tools → the input key that carries the path. Codex sends
 # apply_patch with the patch body in ``command``; its targets are extracted
@@ -1826,132 +1618,6 @@ def _git_readonly_violation(args) -> "str | None":
     return None
 
 
-def _readonly_lex_segments(command: str):
-    """Lex the deliberately small shell subset admitted for read-only work.
-
-    Each word retains whether its spelling used quotes or escapes.  ``shlex``
-    intentionally erases that fact, but it changes shell grammar: bare ``if``
-    is syntax while ``'if'`` and ``\\if`` are executable names.  Returning a
-    structural error is safer than trying to emulate the full shell parser.
-    """
-    segments: list[list[tuple[str, bool]]] = []
-    segment: list[tuple[str, bool]] = []
-    word: list[str] = []
-    word_started = False
-    decorated = False
-    quote = None
-    i = 0
-
-    def finish_word():
-        nonlocal word, word_started, decorated
-        if word_started:
-            segment.append(("".join(word), decorated))
-        word = []
-        word_started = False
-        decorated = False
-
-    def finish_segment():
-        finish_word()
-        if segment:
-            segments.append(list(segment))
-            segment.clear()
-
-    text = str(command or "")
-    while i < len(text):
-        ch = text[i]
-        if quote == "'":
-            word_started = True
-            decorated = True
-            if ch == "'":
-                quote = None
-            else:
-                word.append(ch)
-            i += 1
-            continue
-        if quote == '"':
-            word_started = True
-            decorated = True
-            if ch == '"':
-                quote = None
-                i += 1
-                continue
-            if ch == "`":
-                return [], ("legacy backtick command substitution is outside "
-                            "the admitted read-only grammar")
-            if ch == "$":
-                label = ("command/arithmetic substitution"
-                         if i + 1 < len(text) and text[i + 1] == "("
-                         else "shell variable expansion")
-                return [], f"{label} is outside the admitted read-only grammar"
-            if ch == "\\":
-                decorated = True
-                if i + 1 >= len(text):
-                    return [], "trailing shell escape cannot be screened"
-                word.append(text[i + 1])
-                i += 2
-                continue
-            word.append(ch)
-            i += 1
-            continue
-
-        if ch in "'\"":
-            quote = ch
-            word_started = True
-            decorated = True
-            i += 1
-            continue
-        if ch == "\\":
-            decorated = True
-            word_started = True
-            if i + 1 >= len(text):
-                return [], "trailing shell escape cannot be screened"
-            word.append(text[i + 1])
-            i += 2
-            continue
-        if ch == "`":
-            return [], ("legacy backtick command substitution is outside the "
-                        "admitted read-only grammar")
-        if ch == "$":
-            label = ("command/arithmetic substitution" if i + 1 < len(text)
-                     and text[i + 1] == "(" else "shell variable expansion")
-            return [], f"{label} is outside the admitted read-only grammar"
-        if ch in "<>":
-            label = ("process substitution" if i + 1 < len(text)
-                     and text[i + 1] == "(" else "shell redirection/heredoc")
-            return [], f"{label} is outside the admitted read-only grammar"
-        if ch in "*?[]~":
-            return [], ("unquoted glob/tilde expansion is outside the "
-                        "admitted read-only grammar")
-        if ch in "(){}":
-            return [], ("shell grouping/compound syntax is outside the "
-                        "admitted read-only grammar")
-        if ch in " \t\r":
-            finish_word()
-            i += 1
-            continue
-        if ch == "\n":
-            finish_segment()
-            i += 1
-            continue
-        if ch in ";|&":
-            finish_segment()
-            if ch == "&" and not (i + 1 < len(text)
-                                  and text[i + 1] == "&"):
-                return [], ("background execution is outside the admitted "
-                            "read-only grammar")
-            if i + 1 < len(text) and text[i + 1] == ch:
-                i += 2
-            else:
-                i += 1
-            continue
-        word_started = True
-        word.append(ch)
-        i += 1
-
-    if quote is not None:
-        return [], "unclosed shell quote cannot be screened"
-    finish_segment()
-    return segments, None
 
 
 _TP_READONLY_TOP_LEVEL = frozenset({
@@ -1972,177 +1638,10 @@ _TP_READONLY_NESTED = frozenset({
 })
 
 
-def _tp_readonly_argv_violation(args) -> "str | None":
-    """Refuse trusted Taskplane CLI verbs that can mutate governance state."""
-    dangerous_flags = {
-        "--all", "--approved-by", "--by", "--grant", "--install",
-        "--install-codex-hooks", "--out", "--response", "--write",
-        "--workspace",
-    }
-    if any(arg in dangerous_flags
-           or any(arg.startswith(flag + "=") for flag in dangerous_flags)
-           for arg in args):
-        return "canonical Taskplane CLI argv includes a mutating/output flag"
-    positional = [arg for arg in args if not arg.startswith("-")]
-    if not positional:
-        if args and args[0] in {"--help", "--version"}:
-            return None
-        return "canonical Taskplane CLI is missing a read-only verb"
-    if positional[0] in _TP_READONLY_TOP_LEVEL:
-        return None
-    if len(positional) > 1 and tuple(positional[:2]) in _TP_READONLY_NESTED:
-        return None
-    return (
-        f"canonical Taskplane CLI verb `{' '.join(positional[:2])}` is not "
-        "on the read-only verb allowlist")
 
 
-def _readonly_argv_violation(program: str, args) -> "str | None":
-    """Reject write/exec-capable argv forms of otherwise familiar tools."""
-    if program == "git":
-        return _git_readonly_violation(args)
-    if (program in _WRITE_PROGRAMS or program in _INTERPRETERS
-            or _python_program(program) or program in _SHELLS
-            or program in _WRAPPERS or program in _ARCHIVE_EXTRACTORS
-            or program in {"eval", "find", "patch", "xargs"}):
-        return f"`{program}` is not admitted by the direct read-only argv grammar"
-    if program not in _READONLY_SAFE_PROGRAMS - {"tp"}:
-        return f"`{program}` has no admitted read-only argv schema"
-
-    # These tools have useful, unambiguous positional read forms.  Options are
-    # refused rather than inheriting each utility's much larger grammar (for
-    # example xxd -r, diff --output, file --compile, or a future extension).
-    positional_only = frozenset({
-        "basename", "cat", "cmp", "comm", "cut", "diff", "dirname", "du",
-        "file", "head", "jq", "ls", "md5", "md5sum", "od", "readlink",
-        "realpath", "sha256sum", "shasum", "stat", "strings", "tail", "tr",
-        "uniq", "wc", "whereis", "which", "xxd", "zipinfo",
-    })
-    if program in positional_only:
-        option_mode = True
-        for arg in args:
-            if option_mode and arg == "--":
-                option_mode = False
-                continue
-            if option_mode and arg.startswith("-") and arg != "-":
-                return (
-                    f"`{program}` option `{arg}` is outside its exact "
-                    "positional-only read-only argv schema")
-        return None
-
-    if program == "rg":
-        safe_flags = frozenset({
-            "-a", "--text", "-F", "--fixed-strings", "-i", "--ignore-case",
-            "-l", "--files-with-matches", "--files-without-match", "-n",
-            "--line-number", "--no-line-number", "--no-heading", "--heading",
-            "-o", "--only-matching", "-q", "--quiet", "-s",
-            "--case-sensitive", "-S", "--smart-case", "-U", "--multiline",
-            "--multiline-dotall", "-v", "--invert-match", "-w",
-            "--word-regexp", "-x", "--line-regexp", "--count",
-            "--count-matches", "--crlf", "--files", "--hidden", "--json",
-            "--no-ignore", "--no-ignore-vcs", "--no-messages", "--pcre2",
-            "--stats",
-        })
-        value_flags = frozenset({
-            "-A", "--after-context", "-B", "--before-context", "-C",
-            "--context", "--color", "--colors", "-e", "--regexp",
-            "--encoding", "-f", "--file", "-g", "--glob", "-m",
-            "--max-count", "--max-depth", "--path-separator", "-r",
-            "--replace", "--sort", "--sortr", "-t", "--type", "-T",
-            "--type-not",
-        })
-        glued_short = re.compile(r"^-(?:[ABCfgemrtT]).+$")
-        i = 0
-        while i < len(args):
-            arg = args[i]
-            if arg == "--":
-                return None
-            if not arg.startswith("-") or arg == "-":
-                i += 1
-                continue
-            if arg in safe_flags or glued_short.match(arg):
-                i += 1
-                continue
-            if arg in value_flags:
-                if i + 1 >= len(args):
-                    return f"`rg` option `{arg}` is missing its value"
-                i += 2
-                continue
-            if any(arg.startswith(flag + "=")
-                   for flag in value_flags if flag.startswith("--")):
-                i += 1
-                continue
-            return f"`rg` option `{arg}` is outside its exact read-only argv schema"
-        return None
-
-    # Shell-built read primitives have no external helper or filesystem-write
-    # mode once expansion and redirection have already been excluded.
-    if program in _READONLY_SHELL_BUILTINS | {"expr", "printf"}:
-        return None
-    # Date can set the system clock on supported hosts; omit it rather than
-    # attempting to reconcile GNU/BSD flag grammars.
-    if program == "date":
-        return "`date` is omitted because some host argv forms set system time"
-    return f"`{program}` has no exact admitted read-only argv schema"
 
 
-def _readonly_command_grammar_violation(command: str,
-                                        workspace: str | None,
-                                        write_allow) -> "str | None":
-    """Validate the complete executable grammar before semantic screening.
-
-    Read-only shell access admits direct simple commands separated by ``;``,
-    newlines, ``&&``, ``||``, or pipelines.  It deliberately refuses shell
-    keywords/groups, wrappers, shells, eval, xargs, and substitutions.  Every
-    admitted command token is bare, unquoted/unescaped, and bound to the same
-    executable identity observed on the hook's startup PATH.  The sole
-    path-qualified exception is this package's exact canonical ``tp.py``.
-    """
-    segments, error = _readonly_lex_segments(command)
-    if error:
-        return error
-    if not segments and str(command or "").strip():
-        return "shell command contains no directly screenable executable"
-
-    complex_launchers = (_WRAPPERS | _SHELLS | {"eval", "xargs"})
-    for words in segments:
-        raw_program, decorated = words[0]
-        args = [value for value, _ in words[1:]]
-        if decorated:
-            return (
-                f"executable token `{raw_program}` is quoted or escaped; "
-                "read-only executables must be bare lexical tokens")
-        if (raw_program in _SHELL_KEYWORDS
-                or raw_program in {"{", "}", "[[", "]]"}):
-            return (
-                f"shell keyword `{raw_program}` is outside the admitted "
-                "read-only grammar")
-        if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", raw_program):
-            return (
-                "execution environment assignment is outside the admitted "
-                "read-only grammar")
-
-        normalized = raw_program.replace("\\", "/")
-        if "/" in normalized:
-            if _is_tp_cli(raw_program, workspace):
-                return _tp_readonly_argv_violation(args)
-            return (
-                f"path-qualified executable `{raw_program}` cannot be "
-                "accepted as a trusted read-only program")
-
-        program = os.path.basename(raw_program)
-        if program in complex_launchers:
-            return (
-                f"`{program}` is outside the admitted direct-command "
-                "read-only grammar")
-        identity_violation = _readonly_executable_identity_violation(
-            raw_program, workspace, write_allow)
-        if identity_violation:
-            return identity_violation
-        argv_violation = _readonly_argv_violation(program, args)
-        if argv_violation:
-            return argv_violation
-    return None
 
 
 def _analyze(command: str, _depth: int = 0,
@@ -2702,7 +2201,7 @@ DEFAULT_MAX_TEST_TIMEOUT_SECONDS = 3600
 MAX_TEST_TIMEOUT_SECONDS = 14400
 
 
-def _canonical_operational_settings(*, legacy_environment: bool = False,
+def _canonical_operational_settings(*, environment_overrides: bool = False,
                                     authority: dict | None = None):
     """Load one immutable settings snapshot without creating a local cache.
 
@@ -2716,7 +2215,7 @@ def _canonical_operational_settings(*, legacy_environment: bool = False,
     except (ImportError, ValueError):
         from settings import load_settings
     return load_settings(
-        environment=os.environ if legacy_environment else None,
+        environment=os.environ if environment_overrides else None,
         authority=authority)
 
 
@@ -2742,131 +2241,18 @@ def task_test_timeout_seconds(task: dict) -> int:
             "task_seconds"]), validator=validate_test_timeout_seconds)
 
 
-def _run(cmd, cwd, shell=False, timeout=600, env=None):
-    # env=None inherits the parent environment (subprocess default) — every
-    # pre-existing caller is unchanged; dod_check passes a sanitized copy
-    # (A3, R-0007).
-    return subprocess.run(cmd, cwd=cwd, shell=shell, capture_output=True,
-                          text=True, timeout=timeout, env=env, encoding="utf-8", errors="replace")
 
 
-_CHECKOUT_PYTHON_TRAMPOLINE = (
-    "import os,sys;"
-    "root=os.path.realpath(sys.argv[1]);"
-    "sys.path.insert(0,os.path.realpath(sys.argv[2]));"
-    "import taskplane_lite as _tp;"
-    "_tp._checkout_bound_main(root,sys.argv[3:])")
 
 
-def _python_program(value) -> bool:
-    try:
-        program = os.path.basename(os.fspath(value)).lower()
-    except TypeError:
-        return False
-    return bool(re.fullmatch(
-        r"python(?:\d+(?:\.\d+)?)?(?:\.exe)?", program))
 
 
-def _checkout_bound_python_args(workspace: str, args) -> list:
-    return [sys.executable, "-c", _CHECKOUT_PYTHON_TRAMPOLINE,
-            os.path.realpath(workspace),
-            os.path.dirname(os.path.realpath(__file__)), *list(args)]
 
 
-def _checkout_bound_main(workspace: str, args) -> None:
-    """Execute Python argv with a checkout namespace, transitively.
-
-    Tests and regression probes legitimately start nested Python/pytest
-    processes. They must inherit the same checkout boundary instead of
-    falling back to an unrelated editable install from system site-packages.
-    Intercepting only explicit Python argv keeps ordinary subprocesses and
-    shell commands byte-for-byte unchanged.
-    """
-    import importlib.machinery
-    import runpy
-    import types
-
-    root = os.path.realpath(workspace)
-    python_args = list(args or ())
-    package_path = os.path.join(root, "taskplane")
-    package = types.ModuleType("taskplane")
-    package.__package__ = "taskplane"
-    package.__path__ = [package_path]
-    package.__spec__ = importlib.machinery.ModuleSpec(
-        "taskplane", loader=None, is_package=True)
-    package.__spec__.submodule_search_locations = package.__path__
-    sys.modules["taskplane"] = package
-    # Reprioritize checkout paths even when PYTHONPATH already contains them.
-    sys.path[:] = [p for p in sys.path if p not in (root, package_path)]
-    sys.path[:0] = [root, package_path]
-
-    original_popen = subprocess.Popen
-
-    def checkout_popen(command, *popen_args, **popen_kwargs):
-        if isinstance(command, (list, tuple)) and command and \
-                _python_program(command[0]):
-            command = _checkout_bound_python_args(root, command[1:])
-        return original_popen(command, *popen_args, **popen_kwargs)
-
-    subprocess.Popen = checkout_popen
-    if not python_args:
-        raise SystemExit("checkout-bound Python command is empty")
-    if python_args[0] == "-m" and len(python_args) >= 2:
-        module = python_args[1]
-        sys.argv = [module, *python_args[2:]]
-        runpy.run_module(module, run_name="__main__", alter_sys=True)
-    elif python_args[0] == "-c" and len(python_args) >= 2:
-        sys.argv = ["-c", *python_args[2:]]
-        exec(compile(python_args[1], "<string>", "exec"),
-             {"__name__": "__main__"})
-    else:
-        script = python_args[0]
-        if not os.path.isabs(script):
-            script = os.path.join(root, script)
-        sys.argv = [script, *python_args[1:]]
-        runpy.run_path(script, run_name="__main__")
 
 
-def _checkout_bound_python_argv(workspace: str, command: str) -> "list | None":
-    """Translate one plain Python suite command to the current interpreter.
-
-    The checkout intentionally has no ``taskplane/__init__.py``. A globally
-    installed regular package would therefore beat the checkout namespace.
-    The bootstrap pins that namespace in-process without PATH aliases,
-    PYTHONPATH shims, or a machine-specific interpreter name.
-    """
-    try:
-        lexer = shlex.shlex(str(command or ""), posix=True,
-                           punctuation_chars="|&;<>")
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    if not tokens or any(token and set(token) <= set("|&;<>")
-                         for token in tokens):
-        return None
-    if not _python_program(tokens[0]):
-        return None
-    if len(tokens) < 2:
-        return None
-    return _checkout_bound_python_args(workspace, tokens[1:])
 
 
-def run_suite_command(workspace: str, command, *, env=None,
-                      timeout: int = 600):
-    """Run a declared suite portably while retaining its original identity."""
-    if isinstance(command, (list, tuple)):
-        argv = (_checkout_bound_python_args(workspace, command[1:])
-                if command and _python_program(command[0]) else list(command))
-        return _run(argv, cwd=workspace, shell=False,
-                    timeout=timeout, env=env)
-    argv = _checkout_bound_python_argv(workspace, command)
-    if argv is not None:
-        return _run(argv, cwd=workspace, shell=False,
-                    timeout=timeout, env=env)
-    return _run(command, cwd=workspace, shell=True,
-                timeout=timeout, env=env)
 
 
 def plan_test_command_errors(command) -> list[str]:
@@ -3077,7 +2463,7 @@ def _suite_cache_key(workspace: str, command, env: dict) -> "str | None":
     try:
         h.update(b"\0engine\0" + engine_fingerprint().encode())
         settings = _canonical_operational_settings(
-            legacy_environment=True)
+            environment_overrides=True)
         h.update(b"\0settings\0" + settings.digest.encode())
     except Exception:
         return None            # can't bind evidence to an engine → run it
@@ -3093,7 +2479,7 @@ def _suite_cache_path(key: str) -> str:
 def suite_cache_enabled() -> bool:
     """Return the validated per-run cache policy from canonical settings."""
     return bool(_canonical_operational_settings(
-        legacy_environment=True).tests.cache)
+        environment_overrides=True).tests.cache)
 
 
 # D-0008. `tests_pass` is the gate that says behaviour was verified, and a
@@ -3112,7 +2498,7 @@ def suite_cache_enabled() -> bool:
 def suite_cache_max_age() -> float:
     """Return the canonical freshness bound for cached suite evidence."""
     return float(_canonical_operational_settings(
-        legacy_environment=True).tests.cache_max_age_seconds)
+        environment_overrides=True).tests.cache_max_age_seconds)
 
 
 def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
@@ -3697,669 +3083,84 @@ def workspace_engine_fingerprint(workspace: str) -> "str | None":
     return h.hexdigest() if found else None
 
 
-def canonical_json_bytes(value) -> bytes:
-    """Stable JSON bytes for small cross-module identity records."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 # ------------------------------------------------------- stage runtime seam
 
-STAGE_NATIVE_ENV = "TASKPLANE_STAGE_NATIVE"
-STAGE_DISPATCH_SCHEMA = "taskplane.stage-dispatch/v1"
-STAGE_STARTUP_SCHEMA = "taskplane.stage-startup/v1"
-STAGE_RECEIPT_SCHEMA = "taskplane.stage-operation-receipt/v1"
-STAGE_AUTHORITY_REFERENCE_SCHEMA = \
-    "taskplane.stage-authority-reference/v1"
-STAGE_HANDOFF_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v1"
-STAGE_HANDOFF_V2_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v2"
-MAX_STAGE_STARTUP_BYTES = 128 * 1024
-MAX_STAGE_RECEIPT_BYTES = 2 * 1024 * 1024
-_STAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
-_STAGE_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
-_STAGE_RECEIPT_FIELDS = frozenset({
-    "schema", "operation_id", "request_fingerprint", "operation",
-    "stage_ids", "committed_revision", "result", "result_fingerprint",
-})
-_STAGE_HANDOFF_FIELDS = frozenset({
-    "schema", "producer", "requirement", "design", "target", "commit",
-    "contracts", "deliverables", "evidence_references",
-    "selected_artifacts", "exclusions", "authorization", "fingerprint",
-})
-_STAGE_DISPATCH_RECEIPTS = frozenset({
-    "start_stage", "terminalize_and_start", "split_stage", "resume_stage",
-})
-_STAGE_RUNTIME_FORBIDDEN_KEYS = frozenset({
-    "activecontract", "agent", "agents", "approval", "approvals", "argv",
-    "command", "commands", "conversation", "conversations", "credential",
-    "credentials", "cwd", "environment", "env", "event", "events",
-    "eventlog", "eventlogs", "hostpath", "lease", "leases", "log", "logs",
-    "meter", "meters", "path", "process", "prompt", "prompts",
-    "relativepath", "absolutepath", "root", "runtime", "runtimeenvironment",
-    "runtimestate", "secret", "secrets", "tool", "tools",
-    "tooltranscript", "tooltranscripts", "trace", "traces", "transcript",
-    "transcripts", "workspace",
-})
-
-
-class StageDispatchError(ValueError):
-    """A stage receipt or bounded startup value is unsafe to dispatch."""
-
-
-def _stage_modules():
-    """Import the optional v4 stage surface only at a native-stage call.
-
-    ``taskplane_lite`` is also the legacy enforcement kernel.  Importing the
-    stage modules at module load would make disabled and unmigrated v3 flows
-    depend on the new runtime, defeating the rollout boundary.
-    """
-    try:
-        from . import stage_entities, stage_handoff
-    except (ImportError, ValueError):  # direct ``taskplane_lite`` import
-        import stage_entities
-        import stage_handoff
-    return stage_entities, stage_handoff
-
-
-def stage_native_mode(env=None) -> str:
-    """Return the fail-closed stage rollout mode.
-
-    Only the two documented explicit values enable mutations.  Missing,
-    boolean, numeric, and convenient truthy spellings deliberately remain
-    disabled so upgrading the plugin cannot silently migrate an existing
-    singleton run.
-    """
-    source = os.environ if env is None else env
-    try:
-        raw = source.get(STAGE_NATIVE_ENV)
-    except AttributeError:
-        return "disabled"
-    if not isinstance(raw, str):
-        return "disabled"
-    value = raw.lower()
-    return value if value in {"new-run", "enabled"} else "disabled"
-
-
-def stage_native_enabled(env=None) -> bool:
-    """Whether native stage mutation is explicitly enabled in this process.
-
-    Callers that distinguish new v3 canaries from already-v4 runs use
-    :func:`stage_native_mode`; both modes enable the v4 runtime itself.
-    """
-    return stage_native_mode(env) != "disabled"
-
-
-def _json_detach(value, label: str):
-    try:
-        return json.loads(canonical_json_bytes(value).decode("utf-8"))
-    except (TypeError, ValueError, UnicodeError) as exc:
-        raise StageDispatchError(f"{label} must be canonical JSON") from exc
-
-
-def _stage_identifier(value, label: str) -> str:
-    if not isinstance(value, str) or value.strip() != value or \
-            not _STAGE_ID_RE.fullmatch(value):
-        raise StageDispatchError(f"{label} is invalid")
-    return value
-
-
-def _stage_fingerprint(value, label: str) -> str:
-    if not isinstance(value, str) or not _STAGE_FINGERPRINT_RE.fullmatch(value):
-        raise StageDispatchError(f"{label} is invalid")
-    return value
-
-
-def _reject_runtime_context(value, label: str) -> None:
-    """Reject predecessor/host runtime channels at the serialization seam."""
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise StageDispatchError(f"{label} has a non-string field")
-            normalized = re.sub(r"[-_. ]", "", key).lower()
-            if normalized in _STAGE_RUNTIME_FORBIDDEN_KEYS:
-                raise StageDispatchError(
-                    f"{label} contains forbidden runtime field {key!r}")
-            _reject_runtime_context(child, label)
-    elif isinstance(value, list):
-        for child in value:
-            _reject_runtime_context(child, label)
-
-
-def verify_stage_receipt(receipt: dict, *, expected_operation: str | None = None,
-                         expected_stage_id: str | None = None) -> dict:
-    """Verify and detach one persisted v4 operation receipt.
-
-    The RunStore is authoritative for durability.  This boundary rechecks its
-    closed schema and content fingerprint immediately before a lifecycle
-    result is allowed to become executable startup context.
-    """
-    if not isinstance(receipt, dict):
-        raise StageDispatchError("stage receipt must be an object")
-    required = _STAGE_RECEIPT_FIELDS - {"result", "result_fingerprint"}
-    optional = {"result", "result_fingerprint"}
-    if not required.issubset(receipt) or set(receipt) - (required | optional):
-        raise StageDispatchError("stage receipt fields are invalid")
-    if ("result" in receipt) != ("result_fingerprint" in receipt):
-        raise StageDispatchError("stage receipt result fields are incomplete")
-    if receipt.get("schema") != STAGE_RECEIPT_SCHEMA:
-        raise StageDispatchError("stage receipt schema is invalid")
-    _stage_identifier(receipt.get("operation_id"), "stage receipt operation id")
-    _stage_fingerprint(
-        receipt.get("request_fingerprint"), "stage receipt request fingerprint")
-    operation = _stage_identifier(
-        receipt.get("operation"), "stage receipt operation")
-    if expected_operation is not None and operation != expected_operation:
-        raise StageDispatchError(
-            f"stage receipt operation is {operation}, expected "
-            f"{expected_operation}")
-    stage_ids = receipt.get("stage_ids")
-    if not isinstance(stage_ids, list) or any(
-            not isinstance(stage_id, str) for stage_id in stage_ids):
-        raise StageDispatchError("stage receipt stage ids are invalid")
-    checked_ids = [_stage_identifier(value, "stage receipt stage id")
-                   for value in stage_ids]
-    if checked_ids != sorted(set(checked_ids)):
-        raise StageDispatchError(
-            "stage receipt stage ids must be sorted and unique")
-    if not checked_ids and operation != "rebuild_active_stage_projection":
-        raise StageDispatchError("stage receipt stage ids are empty")
-    if expected_stage_id is not None:
-        expected = _stage_identifier(expected_stage_id, "expected stage id")
-        if expected not in checked_ids:
-            raise StageDispatchError(
-                "stage receipt does not bind the expected stage")
-    revision = receipt.get("committed_revision")
-    if isinstance(revision, bool) or not isinstance(revision, int) or \
-            revision < 1:
-        raise StageDispatchError(
-            "stage receipt committed revision is invalid")
-    if "result" in receipt:
-        try:
-            result_bytes = canonical_json_bytes(receipt["result"])
-        except (TypeError, ValueError, UnicodeError) as exc:
-            raise StageDispatchError(
-                "stage receipt result must be canonical JSON") from exc
-        if len(result_bytes) > MAX_STAGE_RECEIPT_BYTES:
-            raise StageDispatchError("stage receipt result exceeds its bound")
-        expected_result = hashlib.sha256(result_bytes).hexdigest()
-        if receipt.get("result_fingerprint") != expected_result:
-            raise StageDispatchError(
-                "stage receipt result fingerprint mismatch")
-    checked = _json_detach(receipt, "stage receipt")
-    if len(canonical_json_bytes(checked)) > MAX_STAGE_RECEIPT_BYTES:
-        raise StageDispatchError("stage receipt exceeds its bound")
-    return checked
-
-
-def _expected_dispatch_head(stage: dict, stage_entities) -> dict:
-    payload = canonical_json_bytes(stage) + b"\n"
-    stage_id = str(stage["stage_id"])
-    fingerprint = str(stage["fingerprint"])
-    return {
-        "object": {
-            "schema": "taskplane.stage-object-ref/v1",
-            "stage_id": stage_id,
-            "fingerprint": fingerprint,
-            "digest": hashlib.sha256(payload).hexdigest(),
-            "bytes": len(payload),
-            "locator": f"stages/objects/{stage_id}/{fingerprint}.json",
-        },
-        "summary": stage_entities.bounded_stage_summary(stage),
-    }
-
-
-def _verify_dispatch_result(stage: dict, receipt: dict,
-                            stage_entities) -> None:
-    """Bind a dispatch to the operation's exact committed active head."""
-    result = receipt.get("result")
-    if not isinstance(result, dict):
-        raise StageDispatchError("stage dispatch receipt has no bounded result")
-    operation = receipt["operation"]
-    if operation == "resume_stage":
-        # Resume has no new head.  _dispatch_claim validates its exact stage,
-        # fingerprint, execution root, attempt id, and attempt claim below.
-        return
-    stage_id = str(stage["stage_id"])
-    if operation == "start_stage":
-        head = result.get("head")
-    elif operation == "terminalize_and_start":
-        head = result.get("successor_head")
-    else:
-        child_heads = result.get("child_heads")
-        head = (child_heads.get(stage_id)
-                if isinstance(child_heads, dict) else None)
-    if head != _expected_dispatch_head(stage, stage_entities):
-        raise StageDispatchError(
-            "stage dispatch receipt committed head does not match stage")
-
-
-def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
-                                   selected_artifacts: list) -> dict:
-    entities, stage_handoff = _stage_modules()
-    is_v2 = isinstance(handoff, dict) and handoff.get("schema") == entities.HANDOFF_V2_SCHEMA
-    fields = _STAGE_HANDOFF_FIELDS | (entities._HANDOFF_V2_ADDITIONS if is_v2 else frozenset())
-    if not isinstance(handoff, dict) or set(handoff) != fields:
-        raise StageDispatchError("verified handoff fields are invalid")
-    if handoff.get("schema") != "taskplane.stage-handoff/v1" and not is_v2:
-        raise StageDispatchError("verified handoff schema is invalid")
-    if is_v2:
-        try:
-            entities.validate_contract(handoff["phase_result"])
-            selected = set()
-            produced = []
-            for group in ("produced_artifacts", "inherited_artifacts"):
-                entities._schema_artifacts(handoff[group], group, references=True)
-                for row in handoff[group]:
-                    reference = row["reference"]
-                    identity = (reference["kind"], reference["fingerprint"])
-                    if identity in selected:
-                        raise ValueError("v2 artifact has duplicate ownership")
-                    selected.add(identity)
-                    if group == "produced_artifacts":
-                        produced.append(reference)
-            if selected != {(ref["kind"], ref["fingerprint"]) for ref in selected_artifacts} or \
-                    sorted(produced, key=lambda ref: (ref["kind"], ref["fingerprint"])) != sorted(
-                        handoff["phase_result"]["collected_output_references"],
-                        key=lambda ref: (ref["kind"], ref["fingerprint"])):
-                raise ValueError("v2 package differs from its collected outputs")
-            for receipt in handoff["knowledge_apply_receipts"]:
-                entities.validate_contract(receipt)
-            entities._contract_strings(handoff["unresolved_issues"], "unresolved issues")
-        except ValueError as exc:
-            raise StageDispatchError("verified v2 handoff is invalid") from exc
-        result = handoff["phase_result"]
-        if result["status"] != "accepted" or handoff["producer"]["outcome"] != "done" or \
-                result["run_id"] != stage["run_id"] or \
-                result["authority_fingerprint"] != stage["authority"]["authority_fingerprint"]:
-            raise StageDispatchError("verified v2 result binding is invalid")
-    try:
-        expected = stage_handoff.manifest_fingerprint(handoff)
-    except (TypeError, ValueError) as exc:
-        raise StageDispatchError("verified handoff is not canonical JSON") \
-            from exc
-    if handoff.get("fingerprint") != expected:
-        raise StageDispatchError("verified handoff fingerprint mismatch")
-    handoff_bytes = canonical_json_bytes(handoff)
-    if len(handoff_bytes) > 64 * 1024:
-        raise StageDispatchError("verified handoff exceeds its bound")
-    producer = handoff.get("producer")
-    if not isinstance(producer, dict) or set(producer) != {
-            "stage_id", "outcome"} or \
-            producer.get("outcome") not in {"done", "closed", "discarded"}:
-        raise StageDispatchError("verified handoff producer is invalid")
-    _stage_identifier(producer.get("stage_id"), "handoff producer stage id")
-    predecessors = stage.get("predecessor_stage_ids") or []
-    if predecessors and producer.get("stage_id") not in predecessors:
-        raise StageDispatchError(
-            "verified handoff producer is not a stage predecessor")
-    if handoff.get("requirement") != stage.get("requirement") or \
-            handoff.get("design") != stage.get("design"):
-        raise StageDispatchError(
-            "verified handoff revision does not match stage")
-    exclusions = handoff.get("exclusions")
-    if not isinstance(exclusions, list) or exclusions != sorted(set(exclusions)) \
-            or not stage_handoff.REQUIRED_EXCLUSIONS.issubset(exclusions):
-        raise StageDispatchError("verified handoff exclusions are invalid")
-    evidence = handoff.get("evidence_references")
-    if not isinstance(evidence, list) or not evidence:
-        raise StageDispatchError(
-            "verified handoff evidence references are incomplete")
-    authorization = handoff.get("authorization")
-    authority_record = (authorization.get("authority_record")
-                        if isinstance(authorization, dict) else None)
-    revision = (authority_record.get("revision")
-                if isinstance(authority_record, dict) else None)
-    authority = stage.get("authority")
-    if not isinstance(authorization, dict) or \
-            not isinstance(authority_record, dict) or \
-            not isinstance(authority, dict) or \
-            authority_record.get("schema") != \
-            "taskplane.authority-record-reference/v1" or \
-            authority_record.get("authority_schema") != \
-            "taskplane.consolidated-authorization/v1" or \
-            isinstance(revision, bool) or not isinstance(revision, int) or \
-            revision < 0 or not _STAGE_FINGERPRINT_RE.fullmatch(
-                str(authority_record.get("fingerprint") or "")):
-        raise StageDispatchError(
-            "verified handoff authority record is invalid")
-    if authorization.get("actor") != authority.get("actor") or \
-            authorization.get("session_id") != authority.get("session_id") or \
-            revision != authority.get("authority_revision") or \
-            authority_record.get("fingerprint") != \
-            authority.get("authority_fingerprint"):
-        raise StageDispatchError(
-            "verified handoff authorization does not match stage authority")
-    input_reference = stage.get("input_manifest_ref")
-    if not isinstance(input_reference, dict) or \
-            input_reference.get("fingerprint") != expected or \
-            input_reference.get("bytes") != len(handoff_bytes):
-        raise StageDispatchError(
-            "stage input does not bind the verified handoff")
-    if not isinstance(selected_artifacts, list):
-        raise StageDispatchError("selected artifacts must be a list")
-    detached = _json_detach(selected_artifacts, "selected artifacts")
-    if detached != stage.get("selected_artifacts") or \
-            detached != handoff.get("selected_artifacts"):
-        raise StageDispatchError(
-            "selected artifacts do not match stage and handoff")
-    _reject_runtime_context(handoff, "verified handoff")
-    _reject_runtime_context(detached, "selected artifacts")
-    return _json_detach(handoff, "verified handoff")
-
-
-def _dispatch_claim(stage: dict, receipt: dict,
-                    attempt_id: str | None) -> tuple[dict, str | None]:
-    run_id = str(stage["run_id"])
-    stage_id = str(stage["stage_id"])
-    execution_root_id = str(stage["execution_root_id"])
-    operation = str(receipt["operation"])
-    if operation == "resume_stage":
-        result = receipt.get("result")
-        if not isinstance(result, dict):
-            raise StageDispatchError("resume receipt has no bounded result")
-        claim = result.get("claim")
-        recorded_attempt = result.get("attempt_id")
-        if not isinstance(claim, dict):
-            raise StageDispatchError("resume receipt has no attempt claim")
-        attempt = _stage_identifier(
-            recorded_attempt, "resume receipt attempt id")
-        if attempt_id is not None and \
-                _stage_identifier(attempt_id, "stage attempt id") != attempt:
-            raise StageDispatchError("resume receipt attempt id mismatch")
-        if result.get("stage_id") != stage_id or \
-                result.get("execution_root_id") != execution_root_id or \
-                result.get("stage_fingerprint") != stage.get("fingerprint"):
-            raise StageDispatchError("resume receipt does not match stage")
-        expected_claim = {
-            "schema": "taskplane.stage-execution-attempt-claim/v1",
-            "run_id": run_id,
-            "stage_id": stage_id,
-            "execution_root_id": execution_root_id,
-            "attempt_id": attempt,
-        }
-        if claim != expected_claim:
-            raise StageDispatchError("resume receipt attempt claim is invalid")
-        return expected_claim, attempt
-    if attempt_id is not None:
-        raise StageDispatchError(
-            "only a verified resume receipt may select an attempt")
-    return {
-        "schema": "taskplane.stage-execution-root-claim/v1",
-        "run_id": run_id,
-        "stage_id": stage_id,
-        "execution_root_id": execution_root_id,
-    }, None
-
-
-def _declared_stage_scope(value) -> dict | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict) or set(value) != {
-            "scope_paths", "out_of_scope_paths"}:
-        raise StageDispatchError(
-            "declared scope needs scope_paths and out_of_scope_paths")
-    checked: dict[str, list[str]] = {}
-    for field in ("scope_paths", "out_of_scope_paths"):
-        rows = value.get(field)
-        if not isinstance(rows, list) or len(rows) > 64 or any(
-                not isinstance(row, str) or not row.strip() or
-                row.strip() != row or len(row.encode("utf-8")) > 512
-                for row in rows):
-            raise StageDispatchError(f"declared {field} is invalid")
-        if rows != sorted(set(rows)):
-            raise StageDispatchError(
-                f"declared {field} must be sorted and unique")
-        checked[field] = list(rows)
-    _reject_runtime_context(checked, "declared scope")
-    return checked
-
-
-def _stage_authority_reference(authority: dict) -> dict:
-    """Project attributable local authority to a pseudonymous reference.
-
-    The caller has already validated the stage aggregate and matched its raw
-    actor/session attribution to the verified handoff.  Hashing that complete
-    binding preserves a deterministic, cross-host proof link without placing
-    the identifying values in agent-facing startup bytes.
-    """
-    checked = _json_detach(authority, "stage authority")
-    return {
-        "schema": STAGE_AUTHORITY_REFERENCE_SCHEMA,
-        "fingerprint": hashlib.sha256(canonical_json_bytes(checked)).hexdigest(),
-    }
-
-
-def _verify_stage_authority_reference(value) -> dict:
-    if not isinstance(value, dict) or set(value) != {"schema", "fingerprint"} \
-            or value.get("schema") != STAGE_AUTHORITY_REFERENCE_SCHEMA:
-        raise StageDispatchError("stage authority reference is invalid")
-    _stage_fingerprint(
-        value.get("fingerprint"), "stage authority reference fingerprint")
-    # The complete startup serialization below is the closed JSON boundary.
-    # Avoid serializing this already closed two-field projection a second
-    # time during read-side verification.
-    return dict(value)
-
-
-def _dispatch_handoff_projection(handoff: dict,
-                                 authority_reference: dict) -> dict:
-    """Make a content-addressed handoff projection safe for a stage worker."""
-    projected = _json_detach(handoff, "verified handoff")
-    source_fingerprint = projected.pop("fingerprint")
-    projected["schema"] = (STAGE_HANDOFF_V2_DISPATCH_SCHEMA
-        if handoff["schema"] == "taskplane.stage-handoff/v2"
-        else STAGE_HANDOFF_DISPATCH_SCHEMA)
-    projected["source_fingerprint"] = source_fingerprint
-    projected["authorization"] = _json_detach(
-        authority_reference, "stage authority reference")
-    projected["fingerprint"] = hashlib.sha256(
-        canonical_json_bytes(projected)).hexdigest()
-    return projected
-
-
-def _verify_dispatch_handoff_projection(value, authority_reference: dict) \
-        -> dict:
-    fields = _STAGE_HANDOFF_FIELDS | {"source_fingerprint"}
-    is_v2 = isinstance(value, dict) and value.get("schema") == STAGE_HANDOFF_V2_DISPATCH_SCHEMA
-    if is_v2:
-        entities, _ = _stage_modules()
-        fields |= entities._HANDOFF_V2_ADDITIONS
-    if not isinstance(value, dict) or set(value) != fields or \
-            value.get("schema") not in {STAGE_HANDOFF_DISPATCH_SCHEMA, STAGE_HANDOFF_V2_DISPATCH_SCHEMA}:
-        raise StageDispatchError("stage dispatch handoff projection is invalid")
-    _stage_fingerprint(
-        value.get("source_fingerprint"), "source handoff fingerprint")
-    supplied = _stage_fingerprint(
-        value.get("fingerprint"), "stage dispatch handoff fingerprint")
-    payload = dict(value)
-    payload.pop("fingerprint")
-    expected = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
-    if supplied != expected:
-        raise StageDispatchError(
-            "stage dispatch handoff projection fingerprint mismatch")
-    if value.get("authorization") != authority_reference:
-        raise StageDispatchError(
-            "stage dispatch handoff authority reference mismatch")
-    # ``payload`` was just canonicalized to verify its fingerprint and the
-    # complete startup is canonicalized once more below.  A third detach
-    # serialization adds startup cost without strengthening the boundary.
-    return dict(value)
-
-
-def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
-                           selected_artifacts: list, *,
-                           attempt_id: str | None = None,
-                           declared_scope: dict | None = None) -> dict:
-    """Build the sole bounded context admitted to a native stage worker.
-
-    No workspace path or predecessor execution state is accepted as input.
-    The exact startup bytes are obtained with :func:`stage_startup_bytes`.
-    """
-    stage_entities, _ = _stage_modules()
-    try:
-        checked_stage = stage_entities.validate_stage(stage)
-    except (TypeError, ValueError) as exc:
-        raise StageDispatchError(f"stage is invalid: {exc}") from exc
-    if checked_stage.get("state") != "active":
-        raise StageDispatchError("only an active stage can be dispatched")
-    checked_receipt = verify_stage_receipt(
-        receipt, expected_stage_id=str(checked_stage["stage_id"]))
-    if checked_receipt["operation"] not in _STAGE_DISPATCH_RECEIPTS:
-        raise StageDispatchError(
-            "receipt operation does not create or resume stage execution")
-    _verify_dispatch_result(
-        checked_stage, checked_receipt, stage_entities)
-    checked_handoff = _verified_handoff_for_dispatch(
-        checked_stage, handoff, selected_artifacts)
-    claim, attempt = _dispatch_claim(
-        checked_stage, checked_receipt, attempt_id)
-    scope = _declared_stage_scope(declared_scope)
-    authority_reference = _stage_authority_reference(
-        checked_stage["authority"])
-    dispatch_handoff = _dispatch_handoff_projection(
-        checked_handoff, authority_reference)
-    startup = {
-        "schema": STAGE_STARTUP_SCHEMA,
-        "stage_id": checked_stage["stage_id"],
-        "authority": authority_reference,
-        "input_manifest_bytes":
-            checked_stage["input_manifest_ref"]["bytes"],
-        "input_handoff": dispatch_handoff,
-        "selected_artifacts": _json_detach(
-            selected_artifacts, "selected artifacts"),
-        "budget": checked_stage["budget"],
-        "execution_claim": claim,
-        "attempt_id": attempt,
-    }
-    if scope is not None:
-        startup["declared_scope"] = scope
-    _reject_runtime_context(startup, "stage startup")
-    startup = _json_detach(startup, "stage startup")
-    serialized = canonical_json_bytes(startup)
-    if len(serialized) > MAX_STAGE_STARTUP_BYTES:
-        raise StageDispatchError(
-            f"stage startup exceeds {MAX_STAGE_STARTUP_BYTES} bytes")
-    selected_bytes = sum(int(reference.get("bytes") or 0)
-                         for reference in startup["selected_artifacts"])
-    telemetry = {
-        # Preserve the size of the verified repository-resident input
-        # manifest.  The agent-facing handoff is a privacy projection and is
-        # intentionally a different byte sequence.
-        "manifest_bytes": checked_stage["input_manifest_ref"]["bytes"],
-        "startup_bytes": len(serialized),
-        # This is a deterministic budgeting estimate, not provider usage.
-        "startup_tokens": (len(serialized) + 3) // 4,
-        "selected_ref_count": len(startup["selected_artifacts"]),
-        "selected_ref_bytes": selected_bytes,
-        "predecessor_root_opens": 0,
-    }
-    return {
-        "schema": STAGE_DISPATCH_SCHEMA,
-        "startup": startup,
-        "startup_sha256": hashlib.sha256(serialized).hexdigest(),
-        "telemetry": telemetry,
-    }
-
-
-def stage_dispatch_payload(stage: dict, verified_handoff: dict,
-                           selected_artifacts: list, claim: dict, *,
-                           attempt_id: str | None = None,
-                           declared_scope: dict | None = None) -> dict:
-    """Preflight bounded startup against one proposed path-free claim.
-
-    This compatibility seam exists only so the loop can prove serialization
-    before it commits a lifecycle mutation.  The post-commit dispatch path
-    uses :func:`stage_runtime_dispatch` with the durable RunStore receipt.
-    """
-    if not isinstance(claim, dict):
-        raise StageDispatchError("stage execution claim must be an object")
-    operation = "resume_stage" if attempt_id is not None else "start_stage"
-    stage_entities, _ = _stage_modules()
-    checked_stage = stage_entities.validate_stage(stage)
-    result = {"head": _expected_dispatch_head(
-        checked_stage, stage_entities)}
-    if operation == "resume_stage":
-        result = {
-            "stage_id": stage.get("stage_id"),
-            "attempt_id": attempt_id,
-            "execution_root_id": stage.get("execution_root_id"),
-            "claim": claim,
-            "stage_fingerprint": stage.get("fingerprint"),
-        }
-    receipt = {
-        "schema": STAGE_RECEIPT_SCHEMA,
-        "operation_id": "bounded-startup-preflight",
-        "request_fingerprint": hashlib.sha256(canonical_json_bytes({
-            "stage": stage.get("fingerprint"), "claim": claim,
-        })).hexdigest(),
-        "operation": operation,
-        "stage_ids": [stage.get("stage_id")],
-        "committed_revision": 1,
-    }
-    receipt["result"] = result
-    receipt["result_fingerprint"] = hashlib.sha256(
-        canonical_json_bytes(result)).hexdigest()
-    dispatch = stage_runtime_dispatch(
-        stage, receipt, verified_handoff, selected_artifacts,
-        attempt_id=attempt_id, declared_scope=declared_scope)
-    if claim != dispatch["startup"]["execution_claim"]:
-        raise StageDispatchError("stage execution claim is invalid")
-    return dispatch
-
-
-def stage_startup_bytes(dispatch: dict) -> bytes:
-    """Return and re-verify the byte-identical bounded startup serialization."""
-    if not isinstance(dispatch, dict) or set(dispatch) != {
-            "schema", "startup", "startup_sha256", "telemetry"} or \
-            dispatch.get("schema") != STAGE_DISPATCH_SCHEMA:
-        raise StageDispatchError("stage dispatch envelope is invalid")
-    startup = dispatch.get("startup")
-    if not isinstance(startup, dict) or \
-            startup.get("schema") != STAGE_STARTUP_SCHEMA:
-        raise StageDispatchError("stage startup payload is invalid")
-    required = {
-        "schema", "stage_id", "authority", "input_manifest_bytes",
-        "input_handoff",
-        "selected_artifacts", "budget", "execution_claim", "attempt_id",
-    }
-    fields = frozenset(startup)
-    if fields not in {frozenset(required),
-                      frozenset(required | {"declared_scope"})}:
-        raise StageDispatchError("stage startup fields are invalid")
-    authority_reference = _verify_stage_authority_reference(
-        startup.get("authority"))
-    projected_handoff = _verify_dispatch_handoff_projection(
-        startup.get("input_handoff"), authority_reference)
-    _reject_runtime_context(startup, "stage startup")
-    serialized = canonical_json_bytes(startup)
-    if len(serialized) > MAX_STAGE_STARTUP_BYTES:
-        raise StageDispatchError("stage startup exceeds its bound")
-    if dispatch.get("startup_sha256") != \
-            hashlib.sha256(serialized).hexdigest():
-        raise StageDispatchError("stage startup fingerprint mismatch")
-    selected = startup.get("selected_artifacts")
-    if not isinstance(selected, list):
-        raise StageDispatchError("stage startup selected artifacts are invalid")
-    if projected_handoff.get("selected_artifacts") != selected:
-        raise StageDispatchError(
-            "stage startup handoff selected artifacts mismatch")
-    expected_telemetry = {
-        "manifest_bytes": startup.get("input_manifest_bytes"),
-        "startup_bytes": len(serialized),
-        "startup_tokens": (len(serialized) + 3) // 4,
-        "selected_ref_count": len(selected),
-        "selected_ref_bytes": sum(int(row.get("bytes") or 0)
-                                  for row in selected
-                                  if isinstance(row, dict)),
-        "predecessor_root_opens": 0,
-    }
-    input_manifest_bytes = startup.get("input_manifest_bytes")
-    if isinstance(input_manifest_bytes, bool) or not isinstance(
-            input_manifest_bytes, int) or input_manifest_bytes < 0:
-        raise StageDispatchError("stage startup telemetry mismatch")
-    if dispatch.get("telemetry") != expected_telemetry:
-        raise StageDispatchError("stage startup telemetry mismatch")
-    return serialized
+if __package__:
+    from .stage_handoff import (
+        STAGE_DISPATCH_SCHEMA,
+        STAGE_STARTUP_SCHEMA,
+        STAGE_RECEIPT_SCHEMA,
+        STAGE_AUTHORITY_REFERENCE_SCHEMA,
+        STAGE_HANDOFF_DISPATCH_SCHEMA,
+        STAGE_HANDOFF_V2_DISPATCH_SCHEMA,
+        MAX_STAGE_STARTUP_BYTES,
+        MAX_STAGE_RECEIPT_BYTES,
+        _STAGE_ID_RE,
+        _STAGE_FINGERPRINT_RE,
+        _STAGE_RECEIPT_FIELDS,
+        _STAGE_HANDOFF_FIELDS,
+        _STAGE_DISPATCH_RECEIPTS,
+        _STAGE_RUNTIME_FORBIDDEN_KEYS,
+        StageDispatchError,
+        _stage_modules,
+        _json_detach,
+        _stage_identifier,
+        _stage_fingerprint,
+        _reject_runtime_context,
+        verify_stage_receipt,
+        _expected_dispatch_head,
+        _verify_dispatch_result,
+        _verified_handoff_for_dispatch,
+        _dispatch_claim,
+        _declared_stage_scope,
+        _stage_authority_reference,
+        _verify_stage_authority_reference,
+        _dispatch_handoff_projection,
+        _verify_dispatch_handoff_projection,
+        stage_runtime_dispatch,
+        stage_dispatch_payload,
+        stage_startup_bytes,
+        attach_phase_input,
+    )
+else:
+    from stage_handoff import (
+        STAGE_DISPATCH_SCHEMA,
+        STAGE_STARTUP_SCHEMA,
+        STAGE_RECEIPT_SCHEMA,
+        STAGE_AUTHORITY_REFERENCE_SCHEMA,
+        STAGE_HANDOFF_DISPATCH_SCHEMA,
+        STAGE_HANDOFF_V2_DISPATCH_SCHEMA,
+        MAX_STAGE_STARTUP_BYTES,
+        MAX_STAGE_RECEIPT_BYTES,
+        _STAGE_ID_RE,
+        _STAGE_FINGERPRINT_RE,
+        _STAGE_RECEIPT_FIELDS,
+        _STAGE_HANDOFF_FIELDS,
+        _STAGE_DISPATCH_RECEIPTS,
+        _STAGE_RUNTIME_FORBIDDEN_KEYS,
+        StageDispatchError,
+        _stage_modules,
+        _json_detach,
+        _stage_identifier,
+        _stage_fingerprint,
+        _reject_runtime_context,
+        verify_stage_receipt,
+        _expected_dispatch_head,
+        _verify_dispatch_result,
+        _verified_handoff_for_dispatch,
+        _dispatch_claim,
+        _declared_stage_scope,
+        _stage_authority_reference,
+        _verify_stage_authority_reference,
+        _dispatch_handoff_projection,
+        _verify_dispatch_handoff_projection,
+        stage_runtime_dispatch,
+        stage_dispatch_payload,
+        stage_startup_bytes,
+        attach_phase_input,
+    )
 
 
 def review_execution_root_identity(workspace: str) -> dict:
@@ -5444,11 +4245,6 @@ WORKER_TERMINAL_RECEIPT_SCHEMA = \
 WORKER_CONTRACT_AUTHORITY_SCHEMA = \
     "taskplane.worker-contract-authority/v1"
 ROLE_REFERENCE_SCHEMA = "taskplane.role-reference/v1"
-DESIGN_LENS_DISPATCH_INTENT_SCHEMA = \
-    "taskplane.design-lens-dispatch-intent/v1"
-DESIGN_LENS_HOST_AUTHORITY_SCHEMA = \
-    "taskplane.design-lens-host-authority/v1"
-WORKER_HOST_RECEIPT_SCHEMA = "taskplane.worker-host-receipt/v1"
 _WORKER_RELEASE_FIELDS = frozenset({
     "schema", "key_id", "action_id", "workspace_fingerprint", "slot",
     "contract_id", "stage", "task", "issued_at", "signature",
@@ -5526,20 +4322,8 @@ def _worker_signature(secret: bytes, value: dict) -> str:
                     hashlib.sha256).hexdigest()
 
 
-def verify_worker_host_receipt(
-        workspace: str, value: object, *, event: str, plan: dict,
-        worker: dict, owner: dict | None = None) -> dict:
-    return _design_host_transport().verify_worker_host_receipt(
-        sys.modules[__name__], workspace, value, event=event, plan=plan,
-        worker=worker, owner=owner)
 
 
-def register_design_lens_dispatch_plan(
-        workspace: str, plan: dict, *, artifact_root: str,
-        artifact_binding: dict, now: int | None = None) -> dict:
-    return _design_host_transport().register_design_lens_dispatch_plan(
-        sys.modules[__name__], workspace, plan, artifact_root=artifact_root,
-        artifact_binding=artifact_binding, now=now)
 
 
 def _worker_lifecycle_error(workspace: str, reason: str) -> StateError:
@@ -5801,16 +4585,6 @@ def native_worker_role_matches(workspace: str, expected: dict,
         return False
     _verify_worker_release_action(
         workspace, slot, lifecycle.get("release_action"), contract)
-    if any(lifecycle.get(key) is not None for key in (
-            "design_host_authority", "plan_host_authority")):
-        authority = _design_host_transport()._contract_authority(
-            sys.modules[__name__], workspace, contract)
-        if authority is None or authority["assignment"].get(
-                "task_name") != task_name or lifecycle.get(
-                "dispatch_intent_id") != expected.get("intent_id") or \
-                lifecycle.get("dispatch_intent_run_id") != expected.get(
-                    "intent_run_id"):
-            return False
     return True
 
 
@@ -5841,39 +4615,20 @@ def _bind_worker_contract_slot(workspace: str, slot: str, owner: dict, *, now=No
     return {"slot": slot, "contract": contract, "replay": False}
 
 
-def attach_design_lens_host_authority(
-        contract: dict, worker_authority: dict, *, artifact_root: str,
-        artifact_binding: dict) -> dict:
-    return _design_host_transport().attach_design_lens_host_authority(
-        contract, worker_authority, artifact_root=artifact_root,
-        artifact_binding=artifact_binding)
 
 
-def record_design_dispatch_assignment_activity(
-        workspace: str, expected: dict) -> dict | None:
-    return _design_host_transport().record_design_dispatch_assignment_activity(
-        sys.modules[__name__], workspace, expected)
 
 
-def record_design_worker_start_activity(
-        workspace: str, binding: dict, event: dict,
-        *, now: int | None = None) -> dict | None:
-    return _design_host_transport().record_design_worker_start_activity(
-        sys.modules[__name__], workspace, binding, event, now=now)
 
 
 def _generic_activity_authority(workspace: str, contract: dict) \
         -> tuple[str, dict] | None:
     """Authenticate the run-artifact locator carried by a stage contract.
 
-    Design lenses retain their stricter signed host authority and are
-    deliberately excluded here.  This adapter only preserves lifecycle
+    This adapter only preserves lifecycle
     evidence; it cannot activate, release, gate, or route a worker.
     """
     lifecycle = contract.get("worker_lifecycle") or {}
-    if any(lifecycle.get(key) is not None for key in (
-            "design_host_authority", "plan_host_authority")):
-        return None
     root = contract.get("run_artifact_root")
     binding = contract.get("run_artifact_binding")
     if root is None and binding is None:
@@ -5950,10 +4705,6 @@ def record_worker_start_activity(
         workspace: str, binding: dict, event: dict,
         *, now: int | None = None) -> dict | None:
     """Preserve start activity for Design and every zero-lens stage."""
-    design = record_design_worker_start_activity(
-        workspace, binding, event, now=now)
-    if design is not None:
-        return design
     contract = binding.get("contract") if isinstance(binding, dict) else None
     if not isinstance(contract, dict):
         return None
@@ -6149,17 +4900,8 @@ def record_worker_terminal(
     return receipt
 
 
-def _design_terminal_activity(
-        workspace: str, contract: dict, receipt: dict,
-        event: dict | None) -> list[dict]:
-    return _design_host_transport().design_terminal_activity(
-        sys.modules[__name__], workspace, contract, receipt, event)
 
 
-def record_design_worker_activity(
-        workspace: str, event: dict, *, event_type: str) -> dict | None:
-    return _design_host_transport().record_design_worker_activity(
-        sys.modules[__name__], workspace, event, event_type=event_type)
 
 
 def _verify_worker_release_action(workspace: str, slot: str,
@@ -6311,39 +5053,23 @@ def terminalize_worker_contract(
     receipt = record_worker_terminal(
         workspace, slot, event=event, outcome=outcome,
         submission_status=submission_status, now=now)
-    activity_error = None
-    try:
-        _design_terminal_activity(workspace, contract, receipt, event)
-    except Exception as exc:
-        activity_error = exc
     released = release_worker_contract(
         workspace, slot,
         action=contract["worker_lifecycle"]["release_action"],
         terminal_receipt=receipt)
     released["terminal_receipt"] = receipt
-    if activity_error is not None:
-        raise _worker_lifecycle_error(
-            workspace,
-            "Design lens terminal activity could not be preserved") \
-            from activity_error
     return released
 
 
-def validate_design_lens_dispatch_completion(
-        workspace: str, plan: dict, authority: object) -> dict:
-    return _design_host_transport().validate_design_lens_dispatch_completion(
-        sys.modules[__name__], workspace, plan, authority)
 
 
 def _worker_loop_completed(contract: dict, state: dict | None) -> bool:
     lifecycle = contract.get("worker_lifecycle") or {}
     stage = lifecycle.get("stage")
-    if stage not in {"pm", "design", "plan", "em", "execute", "fix", "evaluate", "design-lens", "plan-lens"}:
+    if stage not in {"pm", "design", "plan", "em", "execute", "fix", "evaluate"}:
         return False  # Unknown workers never inherit an ordinary task's completion.
     if lifecycle.get("status") == "terminal":
         return True
-    if stage in {"design-lens", "plan-lens"}:
-        return False  # Only their authenticated terminal owner can complete lenses.
     if not isinstance(state, dict):
         return False
     task = str(lifecycle.get("task") or "")
@@ -6361,76 +5087,10 @@ def _worker_loop_completed(contract: dict, state: dict | None) -> bool:
     return step != stage or str((current or {}).get("id") or "") != task
 
 
-def _legacy_loop_worker_identity(contract: dict) -> tuple[str, str] | None:
-    """Recognize the exact pre-lifecycle loop contract shapes.
-
-    Old `loop next` calls activated these in the legacy root slot. They have
-    no signed child lifecycle metadata, so migration recovery is intentionally
-    limited to the canonical stage labels minted by `_step_contract`.
-    """
-    label = str(contract.get("task") or "").strip()
-    prefixes = {
-        "PM: ": "pm", "DESIGN: ": "design", "PLAN: ": "plan",
-        "EXECUTE: ": "execute", "FIX: ": "fix",
-        "EVALUATE: ": "evaluate",
-    }
-    if label == "EM review":
-        return "em", "em"
-    for prefix, stage in prefixes.items():
-        if not label.startswith(prefix):
-            continue
-        suffix = label[len(prefix):].strip()
-        if not suffix:
-            return None
-        task = suffix if stage in {"execute", "fix", "evaluate"} else stage
-        return stage, task
-    return None
 
 
-def _legacy_loop_worker_completed(contract: dict,
-                                  state: dict | None) -> bool:
-    identity = _legacy_loop_worker_identity(contract)
-    if identity is None or not isinstance(state, dict):
-        return False
-    stage, task = identity
-    projected = {
-        "worker_lifecycle": {"stage": stage, "task": task,
-                             "status": "legacy"},
-    }
-    return _worker_loop_completed(projected, state)
 
 
-def _quarantine_legacy_loop_worker_contract(
-        workspace: str, contract: dict, *, now: int | None = None) -> dict:
-    """Migrate one loop-proven completed pre-lifecycle root contract."""
-    identity = _legacy_loop_worker_identity(contract)
-    if identity is None:
-        raise _worker_lifecycle_error(
-            workspace, "legacy contract is not a recognized loop worker")
-    stage, task = identity
-    terminal_at = int(_time.time() if now is None else now)
-    archived = json.loads(json.dumps(contract))
-    archived["legacy_worker_recovery"] = {
-        "schema": "taskplane.legacy-worker-contract-recovery/v1",
-        "stage": stage, "task": task, "outcome": "completed",
-        "authority": "session-start", "terminal_at": terminal_at,
-    }
-    quarantine = os.path.join(tp_dir(workspace), "quarantine", "contracts")
-    os.makedirs(quarantine, exist_ok=True)
-    contract_id = re.sub(
-        r"[^A-Za-z0-9._-]+", "_",
-        str(contract.get("task_id") or "legacy"))[:64] or "legacy"
-    archive = os.path.join(
-        quarantine, f"{contract_id}-legacy-{terminal_at}.json")
-    atomic_write_json(archive, archived, sort_keys=True)
-    safe_remove(os.path.join(tp_dir(workspace), "active_contract.json"))
-    with _contextlib.suppress(OSError):
-        safe_remove(os.path.join(tp_dir(workspace), "snapshot"))
-    trace(workspace, "legacy_worker_contract_quarantined",
-          task_id=contract.get("task_id"), stage=stage, task=task,
-          authority="session-start", quarantine=archive)
-    return {"released": True, "legacy": True,
-            "slot": None, "outcome": "completed", "quarantine": archive}
 
 
 def sweep_completed_worker_contracts(
@@ -6476,13 +5136,6 @@ def sweep_completed_worker_contracts(
         released.append(release_worker_contract(
             workspace, slot, action=lifecycle["release_action"],
             terminal_receipt=receipt))
-    legacy_path = os.path.join(tp_dir(workspace), "active_contract.json")
-    if os.path.exists(legacy_path):
-        legacy = load_json(legacy_path, what="legacy active contract")
-        if isinstance(legacy, dict) and \
-                _legacy_loop_worker_completed(legacy, loop_state):
-            released.append(_quarantine_legacy_loop_worker_contract(
-                workspace, legacy, now=now))
     return released
 
 
@@ -6736,7 +5389,7 @@ def orphan_status(workspace: str, contract: dict,
     # the contract releases — recovering a genuine leak WITHOUT ever releasing
     # a live, on-budget, actively-screening agent.
     settings = _canonical_operational_settings(
-        legacy_environment=True, authority=settings_authority)
+        environment_overrides=True, authority=settings_authority)
     ttl = float(contract["orphan_ttl_seconds"]
                 if "orphan_ttl_seconds" in contract
                 else settings.runtime.orphan_ttl_seconds)
@@ -6988,111 +5641,12 @@ def snapshot_ref(workspace: str, *, task_slot_override: str | None = None) \
 
 # --------------------------------------------------------------- state
 
-def _ensure_self_ignored(d: str) -> None:
-    """The runtime dir ignores itself — a worker's `git add -A` must never
-    commit contracts/traces, and merges must never collide on them."""
-    gi = os.path.join(d, ".gitignore")
-    if not os.path.isdir(d):
-        return
-    body = ""
-    try:
-        with open(gi, encoding="utf-8") as f:
-            body = f.read()
-    except OSError:
-        body = ""
-    # Content check, not existence: a cloned repo can pre-plant a permissive
-    # .gitignore here (e.g. "!trace.jsonl") to make the trace committable.
-    if "*" not in body.splitlines():
-        try:
-            with open(gi, "w", encoding="utf-8", newline="") as f:
-                f.write("*\n")
-        except OSError:
-            pass
-
-
-# ------------------------------------------------ model capability tiers
-#
-# taskplane pins NO model in an agent's frontmatter — agents stay
-# `model: inherit` so the plugin is portable across runtimes (the sibling
-# orchestrator's hardcoded `model: sonnet` is exactly why its agents fail to
-# spawn on a host that names models differently). Instead a loop STEP, a
-# planned TASK, or a review LENS carries an ABSTRACT capability tier, and the
-# loop DRIVER resolves it to a concrete model at dispatch time (the Agent
-# tool's `model` param). Match model power to task difficulty: mechanical work
-# runs on a cheaper/faster model, hard reasoning on a stronger one. Lower
-# cost/latency is the natural benefit of capability-tiering — it is NOT a
-# pricing feature and carries no pricing data (kb-lint still forbids that).
-MODEL_TIERS = ("cheap", "standard", "deep")
-REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
-
-# Legacy tiers are projections only. Their values come from stage settings;
-# legacy environment aliases are interpreted by the typed loader for one
-# compatibility release and never become another default authority.
-def _default_tier_models() -> dict:
-    """Compatibility tier projection of the canonical stage settings."""
-    settings = _canonical_operational_settings(legacy_environment=True)
-    return {"cheap": settings.stages["evaluate"].model,
-            "standard": settings.stages["build"].model,
-            "deep": settings.stages["design"].model}
-
-
-def reasoning_for_tier(tier: str | None) -> str | None:
-    """Resolve a capability tier to Codex's native reasoning effort.
-
-    Unlike model ids, reasoning effort is provider-neutral metadata: every
-    emitted brief carries it, while only Codex's native subagent dispatch
-    consumes it. Invalid overrides fall back to the tier default instead of
-    injecting an unsupported value into a host tool call.
-    """
-    t = (tier or "standard").strip().lower()
-    settings = _canonical_operational_settings(legacy_environment=True)
-    stage = {"cheap": "evaluate", "standard": "build", "deep": "design"}.get(
-        t, "build")
-    return settings.stages[stage].reasoning
 
 
 dispatch_task_name = _delivery_ports.dispatch_task_name
 role_marker = _delivery_ports.role_marker
 
 
-def dispatch_fields(kind: str, agent: str, ref: str,
-                    model_tier: str, *, capability_snapshot=None,
-                    enforcement_mode: str | None = None,
-                    observed_route: dict | None = None,
-                    settings_context=None, lens_stage: str | None = None) -> dict:
-    """Resolve one settings snapshot, then delegate pure brief assembly."""
-    settings = settings_context or _canonical_operational_settings(
-        legacy_environment=True)
-    stage = {
-        "tp-product": "product", "tp-designer": "design",
-        "tp-planner": "plan", "tp-executor": "build",
-        "tp-evaluator": "evaluate", "tp-fixer": "fix",
-        "tp-engineering": "engineering",
-    }.get(agent)
-    selected = stage or {
-        "cheap": "evaluate", "standard": "build", "deep": "design",
-    }.get((model_tier or "standard").strip().lower(), "build")
-    if lens_stage is not None:
-        if agent != "tp-lens" or lens_stage not in {"design", "plan"}:
-            raise ValueError("explicit lens stage must be Design or Plan")
-        selected = lens_stage
-    route = None
-    if capability_snapshot is not None:
-        import host_capabilities
-        route = host_capabilities.resolve_dispatch_route(
-            capability_snapshot, tier=model_tier,
-            requested_model=settings.stages[selected].model,
-            requested_effort=settings.stages[selected].reasoning,
-            mode=enforcement_mode or os.environ.get(
-                "TASKPLANE_ENFORCE_DISPATCH", "default"),
-            observed=observed_route)
-    return _delivery_ports.dispatch_envelope(
-        kind, agent, ref, model_tier,
-        role_instructions=to_posix(os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "agents", agent + ".md"))),
-        requested_model=settings.stages[selected].model,
-        requested_effort=settings.stages[selected].reasoning,
-        settings_digest=settings.digest, route=route)
 
 
 # --- dispatch verification (tier routing is only real if the driver passes
@@ -7436,45 +5990,6 @@ def _now() -> float:
     return time.time()
 
 
-# Effective tier per loop step when a task doesn't override it. Reasoning-heavy
-# steps ask for `deep` (a no-op unless the operator points DEEP at a stronger
-# model); build/verify steps stay `standard`. A planner marks an individual
-# SIMPLE task `"model": "cheap"` in tasks.json to route just that task cheaper.
-STEP_DEFAULT_TIER = {
-    "pm": "deep", "design": "deep", "plan": "deep", "em": "deep",
-    "execute": "standard", "fix": "standard", "evaluate": "standard",
-}
-
-
-def model_for_tier(tier: str | None) -> str | None:
-    """Resolve an abstract capability tier to a concrete model id for the Agent
-    tool's `model` param, or None meaning "inherit the session model". The
-    one-release alias is resolved inside the canonical loader. An unknown tier
-    degrades to inherit (None) rather than raising."""
-    t = (tier or "standard").strip().lower()
-    return _default_tier_models().get(t)
-
-
-def step_tier(step: str, task: dict | None = None) -> str:
-    """The effective tier for a loop step: an explicit, valid per-task `model`
-    tier wins; otherwise the step default (see STEP_DEFAULT_TIER). An invalid
-    task tier is ignored (falls back to the step default)."""
-    if task and task.get("model") in MODEL_TIERS:
-        return task["model"]
-    return STEP_DEFAULT_TIER.get(step, "standard")
-
-
-def tp_dir(workspace: str) -> str:
-    # Managed hybrid checkouts keep their complete control plane in the
-    # canonical run root.  Unmanaged/local workspaces preserve the historic
-    # per-checkout runtime for compatibility and isolated worktree workers.
-    import storage as runtime_storage
-    locator = runtime_storage.load_workspace_locator(workspace)
-    if locator:
-        return os.path.join(locator["paths"]["state"], "control")
-    return os.path.join(workspace, ".taskplane")
-
-
 # ----------------------------------------------- host hook exactly-once seam
 
 HOOK_CLAIM_SCHEMA = "taskplane.hook-claims/v1"
@@ -7510,62 +6025,8 @@ def _resolved_worktree(workspace: str) -> str:
     return _workspace_identity(top) if top else candidate
 
 
-def _bounded_hook_identity(value, limit: int = 160) -> str:
-    raw = str(value or "").encode("utf-8", errors="replace")[:limit]
-    while raw:
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            raw = raw[:-1]
-    return ""
 
 
-def hook_event_identity(workspace: str, action: str, event: dict) -> str:
-    """Canonical stable hook identity, excluding prompts and tool arguments.
-
-    Native and bridge entry points intentionally produce the same value.  A
-    tool event needs a host call/event id; lifecycle events may use their
-    bounded session + turn/child identity.  Returning ``""`` means the host
-    supplied too little authority to deduplicate safely.
-    """
-    if not isinstance(event, dict):
-        return ""
-    action = _bounded_hook_identity(action, 64).strip().lower()
-    event_name = _bounded_hook_identity(
-        event.get("hook_event_name") or event.get("event_name") or action,
-        64).strip()
-    session = _bounded_hook_identity(
-        event.get("session_id") or event.get("thread_id")
-        or os.environ.get("CODEX_THREAD_ID")
-        or os.environ.get("CLAUDE_SESSION_ID"), 160).strip()
-    stable_id = _bounded_hook_identity(
-        event.get("hook_event_id") or event.get("event_id")
-        or event.get("tool_use_id") or event.get("call_id"), 160).strip()
-    turn = _bounded_hook_identity(event.get("turn_id"), 160).strip()
-    child = _bounded_hook_identity(
-        event.get("agent_id") or event.get("child_id"), 160).strip()
-    lower = event_name.lower().replace("_", "-")
-    if not stable_id:
-        if lower in {"sessionstart", "session-start", "stop", "sessionend",
-                     "session-end"}:
-            stable_id = turn or session
-        elif lower in {"subagentstart", "subagent-start", "subagentstop",
-                       "subagent-stop"}:
-            stable_id = "|".join(part for part in (turn, child) if part)
-    if not action or not event_name or not session or not stable_id:
-        return ""
-    payload = {
-        "action": action,
-        "event": event_name,
-        "session": session,
-        "event_identity": stable_id,
-        "slot": _bounded_hook_identity(
-            event.get("task_slot") or os.environ.get("TASKPLANE_TASK"),
-            64).strip(),
-        "workspace": hashlib.sha256(os.path.normcase(
-            _resolved_worktree(workspace)).encode("utf-8")).hexdigest(),
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _load_hook_claims(path: str) -> dict:
@@ -7726,111 +6187,18 @@ def complete_hook_event(workspace: str, claim: dict, *,
 # lives OUTSIDE the repo, one folder per project, mirroring how Claude keys
 # its own per-project state under ~/.claude/projects/<slugified-path>/.
 
-def store_home() -> str:
-    """Root of the taskplane store — holds every project's KB, out of any
-    repo. Defaults to ~/.taskplane; TASKPLANE_HOME overrides it (tests, or a
-    synced/shared drive)."""
-    return (os.environ.get("TASKPLANE_HOME")
-            or os.path.join(os.path.expanduser("~"), ".taskplane"))
 
 
-def _workspace_identity(workspace: str) -> str:
-    """Canonical checkout identity shared by parent and child processes."""
-    return os.path.realpath(os.path.abspath(workspace))
 
 
-def _path_slug(workspace: str) -> str:
-    ap = _workspace_identity(workspace)
-    return re.sub(r"[^A-Za-z0-9]+", "-", ap) or "-"
 
 
-def project_key(workspace: str) -> str:
-    """Stable, COLLISION-FREE per-project key: a readable path slug plus a
-    short hash of the canonical absolute path.
-
-    The slug alone (the v0.9.6 scheme) collapses every run of non-alphanumerics
-    to '-', so distinct projects whose paths differ only by punctuation —
-    /x/my-app, /x/my_app, /x/my.app — all map to ONE key and silently share a
-    store (KB, requirements, and loop.json — a gate in one corrupts the other).
-    An 8-char hash guarantees distinct keys while the slug stays readable."""
-    # A managed hybrid checkout carries one validated, ignored locator.  It
-    # binds every clone/worktree of the same hosted repository to the same
-    # durable project knowledge root while run state remains run-scoped.
-    # Local/unmanaged checkouts preserve the historical path identity.
-    import storage as runtime_storage
-    locator = runtime_storage.load_workspace_locator(workspace)
-    if locator:
-        return str(locator["repository_key"])
-    ap = _workspace_identity(workspace)
-    slug = _path_slug(workspace)
-    readable = slug[:80].rstrip("-") if len(slug) > 80 else slug
-    return f"{readable}-{hashlib.sha1(ap.encode('utf-8')).hexdigest()[:8]}"
 
 
-def _adopt_alias_store(workspace: str, new_root: str) -> None:
-    """Adopt a pre-canonical store whose metadata names the same checkout."""
-    import shutil
-    projects = os.path.join(store_home(), "projects")
-    if os.path.isdir(new_root) or not os.path.isdir(projects):
-        return
-    identity = _workspace_identity(workspace)
-    for name in sorted(os.listdir(projects)):
-        candidate = os.path.join(projects, name)
-        if candidate == new_root or not os.path.isdir(candidate):
-            continue
-        try:
-            with open(os.path.join(candidate, "meta.json"), encoding="utf-8") as f:
-                meta = json.load(f)
-            owner = meta.get("workspace_realpath") or meta.get("workspace")
-            if not owner or _workspace_identity(owner) != identity:
-                continue
-            os.makedirs(os.path.dirname(new_root), exist_ok=True)
-            shutil.move(candidate, new_root)
-            return
-        except (OSError, ValueError):
-            continue
 
 
-def _adopt_legacy_store(workspace: str, new_root: str) -> None:
-    """One-time in-place migration for stores created under the v0.9.6 pure-
-    slug key. If a legacy `projects/<slug>/` dir exists and belongs to THIS
-    workspace (its meta records our abspath, or it has no meta), move it to the
-    collision-free key so existing KB/loop state is preserved. A legacy store
-    another workspace already claimed (meta workspace differs) is left untouched
-    — that is the collision this fix removes, so this project starts fresh."""
-    import shutil
-    legacy_root = os.path.join(store_home(), "projects", _path_slug(workspace))
-    if legacy_root == new_root or not os.path.isdir(legacy_root):
-        return
-    ap = _workspace_identity(workspace)
-    owns = None                 # True=provably ours, False=sibling's,
-    try:                        # None=unprovable (no/unreadable meta)
-        with open(os.path.join(legacy_root, "meta.json"), encoding="utf-8") as f:
-            owner = json.load(f).get("workspace")
-        if owner:
-            owns = _workspace_identity(owner) == ap
-    except (OSError, ValueError):
-        owns = None
-    if owns is False:
-        return                  # belongs to a colliding sibling — don't steal
-    try:
-        os.makedirs(os.path.dirname(new_root), exist_ok=True)
-        if owns:
-            shutil.move(legacy_root, new_root)
-        else:
-            # Ownership unprovable (pre-meta store; two punctuation-colliding
-            # projects share this slug). COPY and leave the original in place
-            # so a rightful sibling never silently loses its KB to a
-            # destructive move (v2.3.0).
-            shutil.copytree(legacy_root, new_root)
-    except OSError:
-        pass
 
 
-def store_env() -> str:
-    """The TASKPLANE_STORE override, normalized ('repo' | 'external' | '').
-    One reader so the kernel and loop can't drift on how the env is parsed."""
-    return os.environ.get("TASKPLANE_STORE", "").strip().lower()
 
 
 def host(env=None) -> str:
@@ -7848,436 +6216,43 @@ def host(env=None) -> str:
     return "claude"
 
 
-def external_store_root(workspace: str) -> str:
-    """The classic PRIVATE external store (~/.taskplane/projects/<key>/),
-    resolved unconditionally — mode config never redirects this. It is the
-    private side of `tp share push` and the home of mode.json itself."""
-    import storage as runtime_storage
-    locator = runtime_storage.load_workspace_locator(workspace)
-    home = str(locator["home"]) if locator else store_home()
-    root = os.path.join(home, "projects", project_key(workspace))
-    if not os.path.isdir(root):
-        _adopt_alias_store(workspace, root)
-        _adopt_legacy_store(workspace, root)
-    return root
 
 
-def repo_store_root(workspace: str) -> str:
-    """The SHARED in-repo store (<ws>/.taskplane-kb/) — committed with the
-    work, so it survives Claude Tag's ephemeral sandbox and is visible to
-    every teammate who clones the branch."""
-    return os.path.join(os.path.abspath(workspace), ".taskplane-kb")
 
 
-def _mode_file(workspace: str) -> str:
-    return os.path.join(external_store_root(workspace), "mode.json")
 
 
-def _remote_mode_file(workspace: str) -> str | None:
-    """Fallback mode file keyed by the git remote URL, so plan/privacy
-    settings follow the REPO across checkouts/paths (a second clone without
-    its own mode.json inherits the user's choice, closing the quiet privacy
-    hole where `share set private` in checkout A did nothing in checkout B)."""
-    if not os.path.isdir(workspace):
-        return None
-    try:
-        r = _run(["git", "remote", "get-url", "origin"], cwd=workspace)
-        url = (r.stdout or "").strip()
-    except OSError:
-        return None
-    if not url:
-        return None
-    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
-    return os.path.join(store_home(), "modes", f"{h}.json")
 
 
-def _read_personal_mode(workspace: str) -> tuple[dict, bool]:
-    """(settings, found) — path-keyed mode.json first; the remote-keyed
-    fallback (which shells out to git) is consulted only on a miss.
-
-    FAIL SAFE (v2.3.0): a mode file that EXISTS but won't read/parse is a
-    damaged privacy control, not "no setting recorded". Resolve it as
-    private=True — the more restrictive residency — so corruption can never
-    silently downgrade a user's `share set private` to the committed SHARED
-    in-repo store. (set_mode heals the file on the next explicit setting.)"""
-    for p in (_mode_file(workspace), _remote_mode_file(workspace)):
-        if not p:
-            continue
-        try:
-            with open(p, encoding="utf-8") as f:
-                return json.load(f), True
-        except FileNotFoundError:
-            continue
-        except (OSError, ValueError):
-            return {"private": True}, True   # corrupt/unreadable -> private
-    return {}, False
 
 
-def _persistent_mode(workspace: str) -> dict:
-    """Mode resolution EXCLUDING the TASKPLANE_STORE env override — the
-    durable truth that set_mode may materialize into a committed config.
-    (v1.5.1: deciding the config.json write from the env-influenced mode let
-    a transient env var create a committable artifact for the whole team.)
-
-    A committed shared config expresses the repository owner's preference;
-    it is not consent from a newly arrived user.  Until that user records a
-    local choice, keep writes in the external store and make the one-command
-    shared opt-in explicit.  Managed hosts that deliberately force
-    ``TASKPLANE_STORE=repo`` still take the environment-override path in
-    :func:`get_mode`.
-    """
-    personal, found = _read_personal_mode(workspace)
-    plan = personal.get("plan")
-    private = bool(personal.get("private"))
-    if private:
-        return {"plan": plan, "store": "external", "private": True,
-                "source": "private-setting"}
-    shared_cfg = os.path.join(repo_store_root(workspace), "config.json")
-    if os.path.exists(shared_cfg):
-        if not plan:
-            try:
-                with open(shared_cfg, encoding="utf-8") as f:
-                    plan = json.load(f).get("plan")
-            except (AttributeError, OSError, ValueError):
-                pass
-        if not found:
-            return {
-                "plan": plan or "team",
-                "store": "external",
-                "private": True,
-                "source": "shared-config-unconfirmed",
-                "notice": (
-                    "this repo offers a SHARED in-repo store "
-                    "(.taskplane-kb/ — committed with the code), but this "
-                    "new local user remains PRIVATE in the external store "
-                    "until sharing is explicitly confirmed. Run `tp share "
-                    "set shared` to opt in; `tp share set private` keeps "
-                    "knowledge local."
-                ),
-            }
-        out = {"plan": plan or "team", "store": "repo", "private": False,
-               "source": "shared-config"}
-        return out
-    if plan in ("team", "enterprise"):
-        return {"plan": plan, "store": "repo", "private": False,
-                "source": "plan"}
-    return {"plan": plan or "personal", "store": "external",
-            "private": False, "source": "default"}
 
 
-def get_mode(workspace: str) -> dict:
-    """v1.5.0 — plan-aware store resolution. Returns
-    {"plan", "store" ("external"|"repo"), "private", "source"[, "notice"]}.
-
-    Precedence:
-      1. TASKPLANE_STORE env (explicit override — Tag skill, tests)
-      2. the user's PRIVATE setting (mode.json; also remote-keyed fallback)
-      3. the user's recorded shared choice
-      4. an unconfirmed committed shared config remains external/private
-      5. the recorded plan: team/enterprise -> repo, personal -> external
-      6. default: external (personal)."""
-    env = store_env()
-    if env in ("repo", "external"):
-        personal, _ = _read_personal_mode(workspace)
-        return {"plan": personal.get("plan"), "store": env,
-                "private": bool(personal.get("private")), "source": "env"}
-    return _persistent_mode(workspace)
 
 
-def set_mode(workspace: str, plan: str | None = None,
-             private: bool | None = None) -> dict:
-    """Update the plan and/or private flag (both changeable any time).
-    Personal settings persist in the external store's mode.json AND a
-    remote-keyed copy (so they follow the repo across checkouts). The
-    committed shared config (<ws>/.taskplane-kb/config.json) is written
-    ONLY from the env-independent resolution, and ONLY for an explicit
-    team/enterprise plan — a transient TASKPLANE_STORE, or one user's
-    personal-plan declaration, must never rewrite the team's file."""
-    cfg, _ = _read_personal_mode(workspace)
-    if plan is not None:
-        cfg["plan"] = plan
-        if plan == "personal":
-            # A personal-plan selection is an explicit private/local choice,
-            # not acknowledgement of a repository's shared-store proposal.
-            cfg["private"] = True
-    if private is not None:
-        cfg["private"] = bool(private)
-    targets = [p for p in (_mode_file(workspace),
-                           _remote_mode_file(workspace)) if p]
-    wrote_any, last_err = False, None
-    for p in targets:
-        try:
-            # Atomic (v2.3.0): mode.json is the private-vs-shared CONTROL
-            # file — a torn write must keep the old file, never drop the
-            # user's `private` flag.
-            atomic_write_json(p, cfg, indent=2)
-            wrote_any = True
-        except OSError as e:
-            last_err = e
-    if targets and not wrote_any:
-        # Every persistence target failed — a silent no-op here means the
-        # user's `share set private` never took effect. Surface it. (v1.5.2)
-        raise OSError(f"could not persist taskplane mode to any of "
-                      f"{targets}: {last_err}")
-    persistent = _persistent_mode(workspace)
-    if persistent["store"] == "repo" \
-            and persistent["plan"] in ("team", "enterprise") \
-            and cfg.get("plan") in ("team", "enterprise"):
-        try:
-            os.makedirs(repo_store_root(workspace), exist_ok=True)
-            with open(os.path.join(repo_store_root(workspace),
-                                   "config.json"), "w", encoding="utf-8") as f:
-                json.dump({"plan": persistent["plan"], "store": "repo"},
-                          f, indent=2)
-        except OSError:
-            pass
-    return get_mode(workspace)
 
 
-def store_root(workspace: str) -> str:
-    """This project's store dir — external (private, ~/.taskplane) or
-    in-repo (<ws>/.taskplane-kb, the Claude Tag / team-shared mode),
-    resolved by get_mode(): TASKPLANE_STORE env wins, then the user's
-    private setting, then a committed shared config, then the plan
-    (team/enterprise -> repo, personal -> external)."""
-    if get_mode(workspace)["store"] == "repo":
-        return repo_store_root(workspace)
-    return external_store_root(workspace)
 
 
-def kb_root(workspace: str) -> str:
-    """The knowledge-base dir for a project — the external replacement for the
-    old in-repo <ws>/knowledge/. Resolution, with a no-surprises fallback:
-
-      * external store exists            -> use it (migrated / new writes)
-      * else a legacy in-repo knowledge/ -> use IT (unmigrated project keeps
-                                            working in place until `tp kb
-                                            migrate` / `tp init` relocates it)
-      * else (brand-new project)         -> external store (repo stays clean
-                                            from the very first write)
-
-    Reads and writes share this root, so a reader never sees an empty store
-    while the real data still sits in the repo."""
-    ext = os.path.join(store_root(workspace), "knowledge")
-    legacy = os.path.join(workspace, "knowledge")
-    # If both roots exist, only a tree published by the verified migration
-    # protocol may supersede the complete legacy source. An unmarked external
-    # directory can be the residue of shutil.move's cross-filesystem copy
-    # fallback and must not hide source-only knowledge.
-    if os.path.isdir(ext) and (
-            not os.path.isdir(legacy) or _kb_migration_complete(ext)):
-        return ext
-    if os.path.isdir(legacy):
-        return legacy
-    return ext
 
 
-def store_meta_path(workspace: str) -> str:
-    return os.path.join(store_root(workspace), "meta.json")
 
 
-def _quarantine_shared_store_meta(path: str) -> str | None:
-    """Move a stale shared locator into private recovery storage."""
-    if not os.path.lexists(path):
-        return None
-    quarantine = os.path.join(store_home(), "privacy-quarantine")
-    _durable_makedirs(quarantine)
-    identity = hashlib.sha256(os.path.abspath(path).encode("utf-8")).hexdigest()
-    destination = os.path.join(quarantine, f"store-meta-{identity}.json")
-    if os.path.exists(destination):
-        destination += "." + secrets.token_hex(8)
-    os.replace(path, destination)
-    _fsync_directory(os.path.dirname(path) or ".")
-    _fsync_directory(quarantine)
-    return destination
 
 
-def write_store_meta(workspace: str) -> dict:
-    """Record the store owner without publishing workstation identity.
-
-    The private external store retains the exact checkout locator needed by
-    legacy adoption and local recovery.  A repository store is committed and
-    shared, so it carries only stable pseudonyms and a repository fingerprint;
-    neither an absolute path nor a credential-bearing remote URL crosses that
-    boundary.
-    """
-    root = store_root(workspace)
-    os.makedirs(root, exist_ok=True)
-    remote = _run(["git", "config", "--get", "remote.origin.url"],
-                  cwd=workspace).stdout.strip() or None
-    shared = get_mode(workspace)["store"] == "repo"
-    if shared:
-        workspace_digest = hashlib.sha256(
-            _workspace_identity(workspace).encode("utf-8")).hexdigest()
-        repository_material = remote or project_key(workspace)
-        meta = {
-            "schema": "taskplane.store-meta/v2",
-            "shared": True,
-            "workspace_key": "workspace:" + workspace_digest[:24],
-            "repository_fingerprint": hashlib.sha256(
-                repository_material.encode("utf-8")).hexdigest(),
-        }
-    else:
-        meta = {"key": project_key(workspace),
-                "workspace": os.path.abspath(workspace),
-                "workspace_realpath": _workspace_identity(workspace),
-                "git_remote": remote,
-                "shared": False}
-    path = store_meta_path(workspace)
-    try:
-        atomic_write_json(path, meta, indent=2,
-                          sort_keys=True)
-    except OSError as exc:
-        if shared:
-            try:
-                quarantined = _quarantine_shared_store_meta(path)
-            except OSError as quarantine_error:
-                raise StateError(
-                    path, "shared store metadata write failed and stale raw "
-                    "metadata could not be quarantined",
-                    str(quarantine_error)) from exc
-            raise StateError(
-                path, "shared store metadata write failed closed",
-                ("stale raw metadata moved to private quarantine " +
-                 str(quarantined)) if quarantined else
-                "no shared metadata was published") from exc
-        raise StateError(path, "private store metadata write failed",
-                         str(exc)) from exc
-    return meta
 
 
-_KB_MIGRATION_MARKER = ".taskplane-migration.json"
 
 
-def _kb_tree_manifest(root: str) -> list[dict]:
-    """Content manifest for a KB tree, excluding our publication marker."""
-    manifest: list[dict] = []
-    for current, dirs, files in os.walk(root, topdown=True,
-                                        followlinks=False):
-        dirs.sort()
-        files.sort()
-        rel_current = os.path.relpath(current, root)
-        prefix = "" if rel_current == "." else rel_current.replace("\\", "/")
-        descend = []
-        for name in dirs:
-            full = os.path.join(current, name)
-            rel = "/".join(filter(None, (prefix, name)))
-            if os.path.islink(full):
-                manifest.append({"path": rel, "type": "link",
-                                 "target": os.readlink(full)})
-            else:
-                manifest.append({"path": rel + "/", "type": "dir"})
-                descend.append(name)
-        dirs[:] = descend
-        for name in files:
-            rel = "/".join(filter(None, (prefix, name)))
-            if rel == _KB_MIGRATION_MARKER:
-                continue
-            full = os.path.join(current, name)
-            if os.path.islink(full):
-                manifest.append({"path": rel, "type": "link",
-                                 "target": os.readlink(full)})
-                continue
-            if not os.path.isfile(full):
-                raise StateError(full, "unsupported knowledge entry",
-                                 "replace it with a regular file or symlink")
-            digest = hashlib.sha256()
-            with open(full, "rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            manifest.append({"path": rel, "type": "file",
-                             "size": os.path.getsize(full),
-                             "sha256": digest.hexdigest()})
-    return manifest
 
 
-def _kb_manifest_digest(manifest: list[dict]) -> str:
-    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(raw).hexdigest()
 
 
-def _kb_migration_complete(root: str) -> bool:
-    marker = os.path.join(root, _KB_MIGRATION_MARKER)
-    try:
-        record = load_json(marker, what="knowledge migration marker")
-        return record.get("schema") == 1 and record.get("manifest_sha256") == \
-            _kb_manifest_digest(_kb_tree_manifest(root))
-    except (StateError, OSError, AttributeError):
-        return False
 
 
-def _fsync_kb_tree(root: str) -> None:
-    """Flush copied KB bytes and directory entries before publication."""
-    directories = []
-    for current, dirs, files in os.walk(root, topdown=True,
-                                        followlinks=False):
-        directories.append(current)
-        dirs[:] = [name for name in dirs
-                   if not os.path.islink(os.path.join(current, name))]
-        for name in files:
-            path = os.path.join(current, name)
-            if os.path.islink(path) or not os.path.isfile(path):
-                continue
-            with open(path, "rb") as handle:
-                os.fsync(handle.fileno())
-    for directory in reversed(directories):
-        _fsync_directory(directory)
 
 
-def migrate_store(workspace: str) -> dict:
-    """Publish a verified legacy KB tree, then remove its source.
 
-    Copying occurs in a unique sibling staging directory. The destination is
-    authoritative only after byte-manifest verification, fsync, an atomic
-    rename, and a parent-directory fsync. Interrupted or old partial final
-    directories are quarantined instead of hiding the legacy source.
-    """
-    import shutil
-    legacy = os.path.join(workspace, "knowledge")
-    ext = os.path.join(store_root(workspace), "knowledge")
-    moved = False
-    parent = os.path.dirname(ext)
-    os.makedirs(parent, exist_ok=True)
-    lock_path = os.path.join(parent, ".knowledge-migration")
-    with file_lock(lock_path):
-        if os.path.isdir(legacy):
-            if os.path.isdir(ext) and _kb_migration_complete(ext):
-                shutil.rmtree(legacy)
-                moved = True
-            else:
-                if os.path.isdir(ext):
-                    quarantine = os.path.join(
-                        parent, f"knowledge.partial.{os.getpid()}."
-                        f"{secrets.token_hex(8)}")
-                    os.rename(ext, quarantine)
-                    _fsync_directory(parent)
-                stage = os.path.join(
-                    parent, f".knowledge.migrate.{os.getpid()}."
-                    f"{secrets.token_hex(8)}")
-                try:
-                    before = _kb_tree_manifest(legacy)
-                    shutil.copytree(legacy, stage, symlinks=True)
-                    after = _kb_tree_manifest(legacy)
-                    copied = _kb_tree_manifest(stage)
-                    if before != after or after != copied:
-                        raise StateError(
-                            legacy, "knowledge changed during migration",
-                            "retry when no writer is changing the knowledge tree")
-                    _fsync_kb_tree(stage)
-                    atomic_write_json(
-                        os.path.join(stage, _KB_MIGRATION_MARKER),
-                        {"schema": 1,
-                         "manifest_sha256": _kb_manifest_digest(copied)},
-                        sort_keys=True)
-                    os.rename(stage, ext)
-                    _fsync_directory(parent)
-                    shutil.rmtree(legacy)
-                    moved = True
-                finally:
-                    if os.path.isdir(stage):
-                        shutil.rmtree(stage, ignore_errors=True)
-    write_store_meta(workspace)
-    return {"moved": moved, "store": ext, "legacy": legacy}
 
 
 def list_task_slots(workspace: str) -> list:
@@ -8293,174 +6268,19 @@ def list_task_slots(workspace: str) -> list:
                   if n.endswith(".json") and not n.startswith("."))
 
 
-def _common_write_root(contracts: list) -> "str | None":
-    """The single directory every member's write_allow lives under, or None.
-
-    This is the test for a SIBLING WAVE: N contracts minted by one dispatch,
-    each owning its own artifact directory beneath a common review root
-    (`.em-review/lens-security/**`, `.em-review/lens-qa/**`, …). It is a
-    deliberately narrow shape and every clause matters — a member that can
-    write outside the root, or writes nothing, or is not read-only, is not a
-    sibling and the caller must fall back to intersection.
-    """
-    if len(contracts) < 2:
-        return None
-    root = None
-    for c in contracts:
-        if not c.get("read_only"):
-            return None            # a writer is never a review sibling
-        allow = c.get("write_allow") or []
-        if not allow:
-            return None            # nothing to merge
-        for g in allow:
-            g = str(g).replace("\\", "/").lstrip("./")
-            head = g.split("/", 1)[0]
-            if not head or head in ("*", "**") or head.startswith(".."):
-                return None        # unrooted or escaping — not a sibling
-            if root is None:
-                root = head
-            elif head != root:
-                return None        # different roots — genuinely competing
-    return root
-
-
-def _union_contract(contracts: list) -> dict:
-    """The MOST RESTRICTIVE union of several active contracts — what governs
-    a process that carries no TASKPLANE_TASK while per-task contracts are
-    active. An action passes only if EVERY member contract approves it
-    (screen_tool recurses over ``_union``); the budget ceiling is the
-    minimum of the members'; read_only if ANY member is. Never pick one
-    contract arbitrarily — that re-opens the exact overwrite/void-enforcement
-    bug the per-task slots fixed (v2.3.0)."""
-    ids = sorted(str(c.get("task_id") or "?") for c in contracts)
-    ceilings = [c.get("budget", {}).get("max_actions") for c in contracts
-                if isinstance(c.get("budget"), dict)]
-    defined = [int(x) for x in ceilings if x is not None]
-    u = {
-        "task_id": "union-" + hashlib.sha1(
-            "+".join(ids).encode("utf-8")).hexdigest()[:8],
-        "task": ("most-restrictive union of active contracts: "
-                 + ", ".join(ids)),
-        "_union": list(contracts),
-        "activated_at": max((float(c.get("activated_at") or 0)
-                             for c in contracts), default=0) or _time.time(),
-    }
-    if any(c.get("read_only") for c in contracts):
-        u["read_only"] = True
-
-    # SIBLING WAVES. Intersecting write_allow is the right operation when
-    # contracts are competing claims over one tree. It is the WRONG one when
-    # they are disjoint artifact dirs minted by a single dispatch: six lens
-    # contracts allowing `.em-review/lens-<id>/**` intersect to the EMPTY
-    # set, so every lens agent was blocked from writing its own findings and
-    # the marquee parallel-review feature could not work with more than one
-    # agent. Observed on aws/karpenter-provider-aws#9464: 4 of 6 lenses
-    # produced no on-disk evidence at all.
-    #
-    # The widening is bounded and stated: it applies ONLY when every member
-    # is read-only and every member's write_allow lives under one common
-    # root. Nothing else about the union loosens — read_only still latches
-    # on, scope still intersects, denies still union, and a non-sibling pair
-    # still resolves to the empty intersection. `tests_no_loosening` pins
-    # exactly that.
-    root = _common_write_root(contracts)
-    if root:
-        merged: list = []
-        for c in contracts:
-            for g in c.get("write_allow") or []:
-                if g not in merged:
-                    merged.append(g)
-        u["write_allow"] = merged
-        u["_sibling_root"] = root
-    if defined:
-        if root:
-            # One wave, one budget. The minimum is right for contracts that
-            # compete; siblings were each GRANTED their ceiling, so taking
-            # the minimum silently gave N agents one agent's allowance and
-            # killed them mid-task at roughly their tenth action each.
-            u["budget"] = {"max_actions": sum(defined),
-                           "note": f"sum across {len(defined)} sibling "
-                                   f"contracts under {root}/"}
-        else:
-            u["budget"] = {"max_actions": min(defined),
-                           "note": "minimum ceiling across the union's members"}
-    return u
-
-
 def load_active(workspace: str) -> dict | None:
-    """The contract governing THIS process (see task_slot / the per-task
-    contract-slot protocol).
-
-    TASKPLANE_TASK set: the per-task slot is authoritative. A MISSING or
-    CORRUPT slot raises StateError — REFUSE, never silently fall back to the
-    legacy slot (that would govern this agent by a sibling's contract, or by
-    nothing). The screener's fail-closed boundary turns the raise into a
-    block.
-
-    TASKPLANE_TASK unset: worker-scoped slots are excluded because they are
-    owned by exact native children; older/non-worker per-task slots retain
-    the MOST RESTRICTIVE UNION behavior (plus the legacy slot). A corrupt
-    slot raises StateError (fail closed) rather than being silently dropped
-    from the union. Control-plane code that needs a worker's evidence uses
-    ``worker_contract_for_stage`` and an exact snapshot override; it does not
-    turn that worker contract into root authority."""
-    slot = task_slot()                       # may raise (ill-formed value)
+    """Read only the explicitly selected worker slot or this run's root slot."""
+    slot = task_slot()
     path = active_contract_path(workspace, slot)
-    if slot is not None:
-        if not os.path.exists(path):
-            # Host lifecycle processes may inherit TASKPLANE_TASK from the
-            # task that spawned them. That authority is meaningful only in
-            # the exact worktree containing the slot. A sibling worktree
-            # with no contract state of its own is ungoverned; it must not be
-            # blocked (or governed) by the parent's slot. Preserve fail-closed
-            # behavior when this checkout has any contract state: there a
-            # missing named slot is a real local mismatch.
-            legacy_path = os.path.join(tp_dir(workspace),
-                                       "active_contract.json")
-            active_dir = os.path.join(tp_dir(workspace), "active")
-            if not os.path.exists(legacy_path) and \
-                    not os.path.isdir(active_dir):
-                return None
-            raise StateError(
-                path, f"unknown TASKPLANE_TASK slot '{slot}' — no per-task "
-                "contract activated for it",
-                "activate this task's contract (tp.py new / loop dispatch) "
-                "or unset TASKPLANE_TASK; refusing to fall back to another "
-                "task's contract")
-        return load_json(path, what="active contract")   # corrupt -> raise
-    legacy = None
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                legacy = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            legacy = None
-    members = []
-    for s in list_task_slots(workspace):
-        # corrupt slot -> StateError -> the screener blocks (fail closed);
-        # a torn sibling contract must not quietly weaken the union.
-        c = load_json(active_contract_path(workspace, s),
-                      what=f"active contract (slot {s})")
-        # Worker-scoped slots are owned by a verified native child and are
-        # selected through ``load_active_for_event``.  Folding them into a
-        # slot-less union binds their least-privilege contract to the root
-        # orchestrator — the lifecycle leak this boundary exists to prevent.
-        # Older/non-worker slots retain the conservative union semantics.
-        if isinstance(c, dict) and c.get("worker_scoped") is not True:
-            members.append(c)
-    if not members:
-        return legacy
-    if isinstance(legacy, dict):
-        members.append(legacy)
-    if len(members) == 1:
-        return members[0]
-    return _union_contract(members)
+    if slot is not None and not os.path.isfile(path):
+        raise StateError(path, f"unknown TASKPLANE_TASK slot '{slot}'",
+            "use this task's registered workspace and active contract; no other slot is authority")
+    return load_json(path, default=None, what="active contract")
 
 
 # One warning per process when the audit trail goes dark (v2.3.0) — a trace
 # that silently stops recording lets a later incident review mistake "denies
 # happened but tracing was broken" for "no denies happened".
-_TRACE_FAILED_WARNED = False
 # Rotation bound for the only-growing trace.jsonl. Past this size the ACTIVE
 # file is archived and a fresh one opens with a trace_rotated record naming
 # the archive.
@@ -8475,143 +6295,16 @@ _TRACE_FAILED_WARNED = False
 # Archives use monotonic names while retained and are never overwritten.
 # The active file and retained archive set have independent size bounds;
 # expired or excess archives are privacy-purged under the trace lock.
-_TRACE_MAX_BYTES = 5 * 1024 * 1024
-_TRACE_ARCHIVE_RETENTION_SECONDS = 7 * 24 * 60 * 60
-_TRACE_ARCHIVE_MAX_FILES = 8
-_TRACE_ARCHIVE_MAX_BYTES = 40 * 1024 * 1024
-def _reserve_trace_archive(path: str) -> "str | None":
-    """Claim the next unused `trace.jsonl.<n>`, atomically.
-
-    O_CREAT|O_EXCL is the claim: two processes rotating at once cannot both
-    win the same n, so neither can land on top of the other's history. The
-    empty placeholder is then replaced by the real file.
-    """
-    n = 1
-    directory = os.path.dirname(path) or "."
-    prefix = os.path.basename(path) + "."
-    try:
-        n = max([int(name[len(prefix):]) for name in os.listdir(directory)
-                 if name.startswith(prefix) and
-                 name[len(prefix):].isdigit()] or [0]) + 1
-    except OSError:
-        pass
-    while n < 100000:
-        dest = f"{path}.{n}"
-        try:
-            fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            n += 1
-            continue
-        except OSError:
-            return None
-        os.close(fd)
-        return dest
-    return None
 
 
-def _maybe_rotate_trace(path: str) -> "str | None":
-    """The archive path this call created, or None if it did not rotate."""
-    try:
-        if os.path.getsize(path) <= _TRACE_MAX_BYTES:
-            return None
-        dest = _reserve_trace_archive(path)
-        if dest is None:
-            return None      # cannot archive without overwriting: do not
-        os.replace(path, dest)
-        return dest
-    except OSError:
-        return None
 
 
-def _purge_trace_archive(path: str) -> None:
-    directory = os.path.dirname(path) or "."
-    staged = os.path.join(
-        directory, ".privacy-purge-" + os.path.basename(path) + "-" +
-        secrets.token_hex(8))
-    os.replace(path, staged)
-    os.unlink(staged)
 
 
-def _enforce_trace_retention_locked(path: str, observed_at: float) -> dict:
-    """Bound rotated audit history while leaving the active trace intact."""
-    directory = os.path.dirname(path) or "."
-    prefix = os.path.basename(path) + "."
-    candidates = []
-    try:
-        names = os.listdir(directory)
-    except OSError:
-        names = []
-    for name in names:
-        suffix = name[len(prefix):] if name.startswith(prefix) else ""
-        if not suffix.isdigit():
-            continue
-        archive = os.path.join(directory, name)
-        try:
-            info = os.lstat(archive)
-            if not stat.S_ISREG(info.st_mode):
-                raise OSError("audit archive is not a regular file")
-            candidates.append((float(info.st_mtime), int(suffix),
-                               int(info.st_size), archive))
-        except OSError:
-            if os.path.lexists(archive):
-                _purge_trace_archive(archive)
-    retained = 0
-    retained_bytes = 0
-    removed = 0
-    for modified_at, _suffix, size, archive in sorted(
-            candidates, reverse=True):
-        expired = modified_at + _TRACE_ARCHIVE_RETENTION_SECONDS <= observed_at
-        excess = (retained >= _TRACE_ARCHIVE_MAX_FILES or
-                  retained_bytes + size > _TRACE_ARCHIVE_MAX_BYTES)
-        if expired or excess:
-            _purge_trace_archive(archive)
-            removed += 1
-        else:
-            retained += 1
-            retained_bytes += size
-    if removed:
-        _fsync_directory(directory)
-    return {"removed": removed, "retained": retained,
-            "retained_bytes": retained_bytes,
-            "retention_seconds": _TRACE_ARCHIVE_RETENTION_SECONDS,
-            "max_files": _TRACE_ARCHIVE_MAX_FILES,
-            "max_bytes": _TRACE_ARCHIVE_MAX_BYTES}
 
 
-def enforce_trace_retention(workspace: str, *, now: float | None = None,
-                            _lock_held: bool = False) -> dict:
-    path = os.path.join(tp_dir(workspace), "trace.jsonl")
-    observed_at = float(_time.time() if now is None else now)
-    if _lock_held:
-        return _enforce_trace_retention_locked(path, observed_at)
-    with file_lock(path + ".retention"):
-        return _enforce_trace_retention_locked(path, observed_at)
 
 
-def trace_paths(workspace: str) -> list:
-    """Retained trace files for this workspace, OLDEST first, active last.
-
-    Rotation splits one logical audit trace across files; a consumer that
-    reads only `trace.jsonl` is reading the tail of the record and cannot
-    tell. Anything mining a whole track's history (retro, cost analysis)
-    reads this instead.
-    """
-    d = tp_dir(workspace)
-    base = os.path.join(d, "trace.jsonl")
-    archives = []
-    try:
-        for name in os.listdir(d):
-            if not name.startswith("trace.jsonl."):
-                continue
-            suffix = name[len("trace.jsonl."):]
-            if suffix.isdigit():
-                archives.append((int(suffix), os.path.join(d, name)))
-    except OSError:
-        pass
-    out = [p for _n, p in sorted(archives)]
-    if os.path.exists(base):
-        out.append(base)
-    return out
 
 
 def screen_liveness(workspace: str, contract: dict | None = None,
@@ -8649,56 +6342,3 @@ def screen_liveness(workspace: str, contract: dict | None = None,
                    "governance may be silently absent; verify the hook "
                    "before trusting this session's audit trail")
     return {"governed": True, "hook_seen": False, "warning": warning}
-
-
-def trace(workspace: str, event: str, **data) -> None:
-    import time
-    global _TRACE_FAILED_WARNED
-    # Every record carries a monotonic wall-clock ts so the mission-control
-    # feed can order events across parallel worker trace files by TIME, not
-    # by which file they happened to be concatenated from.
-    rec = audit_record(event, data, observed_at=time.time())
-    try:
-        d = tp_dir(workspace)
-        os.makedirs(d, exist_ok=True)
-        _ensure_self_ignored(d)
-        path = os.path.join(d, "trace.jsonl")
-        with file_lock(path + ".retention"):
-            enforce_trace_retention(workspace, _lock_held=True)
-            if os.path.islink(path):
-                raise OSError("audit trace is a symlink")
-            archived_to = _maybe_rotate_trace(path)
-            with open(path, "a", encoding="utf-8") as f:
-                if archived_to:
-                    rotation = audit_record("trace_rotated", {
-                        "archived_to": to_posix(
-                            os.path.relpath(archived_to, workspace)),
-                        "note": "earlier events moved to bounded archive",
-                    }, observed_at=time.time())
-                    f.write(json.dumps(rotation, default=str) + "\n")
-                f.write(json.dumps(rec, default=str) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            enforce_trace_retention(workspace, _lock_held=True)
-    except (OSError, StateError) as e:
-        # NEVER crash the hook over a broken audit log — but never go dark
-        # silently either: one stderr warning per process (v2.3.0).
-        if not _TRACE_FAILED_WARNED:
-            _TRACE_FAILED_WARNED = True
-            import sys
-            print(f"taskplane: WARNING — audit trace write failed ({e}); "
-                  "governance events are NO LONGER being recorded for "
-                  f"{workspace}. Fix the .taskplane dir (disk/permissions) "
-                  "before trusting this session's audit trail.",
-                  file=sys.stderr)
-        return
-
-    # Keep the cheap status read model current from the same production event
-    # path. It is presentation-only: snapshot damage or an unavailable disk
-    # must never turn into authority or block the audit transition above.
-    try:
-        import progress
-        progress.record_trace_event(
-            workspace, event, rec, observed_at=rec["ts"], state_dir=d)
-    except Exception:
-        pass

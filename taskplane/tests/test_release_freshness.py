@@ -150,7 +150,6 @@ def test_source_checkout_does_not_track_ignored_run_data() -> None:
     assert set(ignored.stdout.splitlines()) == set(samples)
     # Root-local exclusions must not hide reusable regression inputs or policy.
     source = [
-        "taskplane/tests/fixtures/r0001/approved-plan.json",
         "taskplane/tests/fixtures/terminal-export/successor-template.json",
         "design/compatibility.json", "design/schemas/r0001-evidence-schemas.json",
         "taskplane/tests/fixtures/detectors/project-management/positive/plan/plan.md",

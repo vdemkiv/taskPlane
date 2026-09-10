@@ -760,7 +760,18 @@ def _checkpoint_submit_task(spec):
 
 
 def _save_checkpoint_submit_loop(workspace, task):
+    from taskplane import run_store, storage
+    identity = storage.resolve_repository_identity(str(workspace))
+    store = run_store.RunStore()
+    store.create(identity, run_id="loop", checkout=str(workspace),
+        host={"kind": "codex"}, target={"kind": "workspace", "revision": loop.tp.git_head(str(workspace))})
+    storage.write_workspace_locator(str(workspace), identity=identity,
+        layout=storage.resolve_layout(identity, home=store.home, run_id="loop"), run_id="loop")
+    contract = contract_engine.build_contract("checkpoint-task", scope=[str(workspace)],
+        tools=["exec_command"], plan_minted=True)
+    contract_engine.activate(str(workspace), contract, snapshot=None)
     loop.save(str(workspace), {
+        "run_id": "loop",
         "governance_revision": 2,
         "submission_required": True,
         "graph_governance": False,
@@ -799,7 +810,7 @@ def test_submit_checkpoint_runs_live_runtime_and_mints_receipt(
 
     submitted = loop.submit(str(workspace), "pass")
 
-    assert submitted["submitted"] is True
+    assert submitted["submitted"] is True, submitted
     receipt = submitted["submission"]["checkpoint_receipt"]
     assert receipt["producer"] == "taskplane.checkpoint-engine/v1"
     assert receipt["worktree_revision"] == spec["worktree_revision"]
@@ -1039,7 +1050,19 @@ def _run_governed_checkpoint_command(workspace, argv, task_id):
 
 
 def test_checkpoint_receipt_refuses_generic_runtime_without_post_proof_receipt(
-        tmp_path):
+        tmp_path, monkeypatch):
+    # Give the generic runner an executable proof without semantic authority.
+    # The fixture's placeholder checkpoint module must not shadow the engine.
+    executable = tmp_path / "bin" / "pytest"
+    executable.parent.mkdir()
+    executable.write_text(f"#!{sys.executable}\nimport pytest\nraise SystemExit(pytest.main())\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(executable.parent) + os.pathsep + os.defpath)
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((
+        str(Path(checkpoint.__file__).resolve().parent.parent),
+        str(Path(checkpoint.__file__).resolve().parent))))
     workspace, spec, _ = _checkpoint_workspace(tmp_path)
     runtime_argv = _checkpoint_runtime_argv(workspace, spec)
     result = _run_governed_checkpoint_command(

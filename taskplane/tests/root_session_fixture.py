@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 
 
 def open_delivery_root(workspace: str) -> bytes:
@@ -21,6 +22,7 @@ def open_delivery_root(workspace: str) -> bytes:
     import settings
     import tp
 
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     state = loop.load(workspace) or {}
     current = state.get("root_hygiene")
     authority = tp._transcript_projection_authority(workspace)
@@ -34,7 +36,7 @@ def open_delivery_root(workspace: str) -> bytes:
             task_ids, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         loop.prepare_delivery_root(
             workspace, seed_ref=".taskplane/test-root/root-seed.json",
-            wave_id="test-wave", prepared_at="2026-01-01T00:00:00Z",
+            wave_id="test-wave", prepared_at=now,
             operation_id="test-root-prepare",
             design={"path": "design/contract.json",
                     "fingerprint": str(state.get("design_fingerprint") or
@@ -59,7 +61,7 @@ def open_delivery_root(workspace: str) -> bytes:
     rows = [
         {"type": "session_meta", "payload": {
             "session_id": "test-fresh-root", "id": "test-fresh-root",
-            "timestamp": "2026-01-01T00:00:00Z",
+            "timestamp": now,
             "thread_source": "agent_created_thread"}},
         {"ordinal": 1, "type": "event_msg", "payload": {
             "type": "token_count", "info": {"total_token_usage": {
@@ -74,7 +76,7 @@ def open_delivery_root(workspace: str) -> bytes:
     observations = {
         name: host_capabilities.Observation(
             status="supported", source="test-host", confidence="high",
-            observed_at="2026-01-01T00:00:00Z")
+            observed_at=now)
         for name in (
             "native_plugin_hooks_loaded", "managed_policy_permission",
             "root_fresh_start", "root_cumulative_meter", "root_turn_mapping")
@@ -83,7 +85,7 @@ def open_delivery_root(workspace: str) -> bytes:
         workspace, host="codex", install_context="personal",
         native_installed=True, bridge_configured=False,
         observations=observations, session_id="test-fresh-root",
-        now="2026-01-01T00:00:00Z")
+        now=now)
     capability = host_capabilities.root_session_capability(
         host, settings_digest=effective.digest, native_snapshot=native,
         turn_id="test-root-turn")
@@ -93,7 +95,7 @@ def open_delivery_root(workspace: str) -> bytes:
         wave_id=str(seed["wave_id"]), candidate_sha=str(seed["candidate_sha"]),
         settings_digest=effective.digest,
         session_pseudonym=hashlib.sha256(authority).hexdigest(),
-        started_at="2026-01-01T00:00:00Z", issuer_sequence=1,
+        started_at=now, issuer_sequence=1,
         authority=authority)
     observation = native_session_meter.seal_root_observation(
         native, sequence=1, session_role="root",
