@@ -1,4 +1,4 @@
-"""Additive registry admission; no native dispatch or lifecycle activation."""
+"""Admission of the same phase registry consumed by the harness."""
 from __future__ import annotations
 
 import hashlib
@@ -11,12 +11,12 @@ from taskplane import review_evidence, settings, stage_entities, stage_handoff
 
 
 ROOT = Path(__file__).resolve().parents[2]
-VALIDATORS = {"taskplane.stage_entities.validate_stage": "taskplane.stage/v1"}
-ARTIFACTS = {"stage": "taskplane.stage/v1"}
+VALIDATORS = {"taskplane.loop.validate_spec_phase_artifact": "spec-phase/v1"}
+from taskplane.stage_artifacts import SCHEMAS as ARTIFACTS
 
 
 def _rows() -> list[dict[str, object]]:
-    return json.loads(settings.DEFAULT_SETTINGS_PATH.read_text())["phase_definitions"]
+    return json.loads((ROOT / "agents/spec-phase-definitions.json").read_text())
 
 
 def _skills(rows: list[dict[str, object]]) -> dict[str, bytes]:
@@ -71,8 +71,6 @@ def test_phase_registry_topological_order(case: str) -> None:
     assert [phase.id for phase in registry.phases] == expected
     assert registry.definition_set_fingerprint == review_evidence.content_fingerprint(list(reversed(rows)))
     assert registry.admit("design", ()).to_dict() == rows[1]
-    assert settings.load_settings().phase_definitions == tuple(
-        stage_entities.canonical_contract_bytes(row) for row in rows)
 
 
 @pytest.mark.parametrize("severed", [False, True], ids=["producer-connected", "producer-severed"])

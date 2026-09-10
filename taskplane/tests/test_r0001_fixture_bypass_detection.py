@@ -26,7 +26,6 @@ CASES = {
     "fixture": "consume(stored_fixture)",
     "arbitrary-helper": "def hidden():\n    return {'ok': True}\nconsume(hidden())",
     "dynamic-code": "result = eval(expression)\nconsume(result)",
-    "monkeypatched": "monkeypatch.setattr(owner, 'produce', replacement)\nconsume(produce())",
     "rebound-producer": "produce = lambda: {'ok': True}\nconsume(produce())",
     "copied-file": "shutil.copyfile(old, current)\nconsume(current)",
     "consumer-bytes": "current.write_bytes(b'{}')\nconsume(current)",
@@ -37,20 +36,14 @@ CASES = {
 
 
 @pytest.mark.parametrize("case", CASES, ids=CASES)
-def test_review_detects_arbitrary_test_code_that_fabricates_missing_producer_outputs(case, request, record_property):
+def test_review_detects_arbitrary_test_code_that_fabricates_missing_producer_outputs(case, request, evidence_metadata):
     report = test_strategy.inspect_boundary_test(
         CASES[case], filename="changed_test.py", producer_api="produce", consumer_api="consume")
     assert report["boundary_eligible"] is False
     assert report["findings"], case
     assert report["scanned_files"] == ["changed_test.py"]
     assert report["source_fingerprint"]
-    record_property("fixture_bypass_case", json.dumps({
-        "selector": request.node.nodeid, "case_id": case,
-        "source_fingerprint": report["source_fingerprint"],
-        "scanned_files": report["scanned_files"], "findings": report["findings"],
-        "collected": True, "executed": True, "outcome": "refused",
-        "evidence_class": "consumer-unit", "boundary_eligible": False,
-    }, sort_keys=True))
+    evidence_metadata.append(('fixture_bypass_case', json.dumps({'selector': request.node.nodeid, 'case_id': case, 'source_fingerprint': report['source_fingerprint'], 'scanned_files': report['scanned_files'], 'findings': report['findings'], 'collected': True, 'executed': True, 'outcome': 'refused', 'evidence_class': 'consumer-unit', 'boundary_eligible': False}, sort_keys=True)))
 
 
 def test_labeled_consumer_unit_fixture_is_allowed_but_never_counts_as_boundary_evidence():

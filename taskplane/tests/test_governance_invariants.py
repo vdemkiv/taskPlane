@@ -1,3 +1,4 @@
+from taskplane.tests.phase_fixture import save_component_workflow
 """Fail-closed DoR/DoD invariants shared by Claude and Codex hosts."""
 
 import json
@@ -42,7 +43,7 @@ def _state(ws, step, tests="true"):
                    "tasks": [task]}, stream)
     if step == "evaluate":
         loop._plan_delivery_mode_from_file(ws, state, apply=True)
-    loop.save(ws, state)
+    save_component_workflow(ws, state)
     return state
 
 
@@ -51,8 +52,8 @@ class TestGovernanceInvariants(unittest.TestCase):
         ws = _repo()
         _state(ws, "execute", tests=None)
         out = loop.next_action(ws)
-        self.assertIn("error", out)
-        self.assertFalse(out["dor"]["ready"])
+        self.assertIn("error", out["obligations"])
+        self.assertFalse(out["obligations"]["dispatch_allowed"])
         active = tp.load_active(ws)
         self.assertIsNone(active)
         self.assertEqual(loop.load(ws)["step"], "execute")

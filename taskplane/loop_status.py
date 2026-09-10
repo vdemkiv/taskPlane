@@ -7,10 +7,17 @@ their historical signatures without creating an import cycle.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+from taskplane import host_native
+
 from collections.abc import Mapping
 import copy
 from datetime import datetime, timezone
 import hashlib
+from functools import wraps
 import json
 import os
 import re
@@ -116,7 +123,7 @@ def bounded_stage_view(ws: str, *, limit: int = 100) -> dict:
             error=_stage_view_error(exc))
     if not isinstance(locator, dict):
         return _empty_stage_view(
-            limit=limit, mode="legacy", status="legacy")
+            limit=limit, mode="none", status="no_active")
 
     run_id = locator.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -131,9 +138,6 @@ def bounded_stage_view(ws: str, *, limit: int = 100) -> dict:
             limit=limit, mode="v4", status="corrupt", run_id=run_id,
             error=_stage_view_error(exc))
 
-    if manifest.get("schema") == "taskplane.run/v3":
-        return _empty_stage_view(
-            limit=limit, mode="legacy", status="legacy", run_id=run_id)
     if manifest.get("schema") != "taskplane.run/v4":
         return _empty_stage_view(
             limit=limit, mode="v4", status="corrupt", run_id=run_id,
@@ -245,9 +249,7 @@ def _include_stage_view(view: dict) -> bool:
 
 
 def _canonical_fingerprint(value: object) -> str:
-    material = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")
+    material = _json_primitives.canonical_bytes(value, ensure_ascii=False)
     return hashlib.sha256(material).hexdigest()
 
 
@@ -268,13 +270,17 @@ def _dashboard_replay_block(ws: str) -> dict | None:
         "schema", "event_type", "outcome", "state_fingerprint",
         "source_fingerprint", "error", "recorded_at", "fingerprint",
     }
-    if not isinstance(value, dict) or set(value) != fields or \
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {"dispatch"}) or \
             value.get("schema") != DASHBOARD_REPLAY_BLOCK_SCHEMA:
         raise ValueError("dashboard publication replay block is invalid")
     payload = {key: value[key] for key in value if key != "fingerprint"}
     if value.get("fingerprint") != _canonical_fingerprint(payload):
         raise ValueError(
             "dashboard publication replay block fingerprint is invalid")
+    if "dispatch" in value and (value.get("event_type") != "next_action" or
+            not isinstance(value["dispatch"], dict) or
+            value["dispatch"].get("schema") != "taskplane.stage-dispatch/v1"):
+        raise ValueError("dashboard replay dispatch is invalid")
     for field in ("event_type", "outcome", "state_fingerprint", "error",
                   "recorded_at"):
         if not isinstance(value.get(field), str) or not value[field]:
@@ -310,7 +316,7 @@ def _dashboard_source_fingerprint(ws: str) -> str | None:
 def _write_dashboard_replay_block(
         ws: str, *, event_type: str, outcome: str,
         state_fingerprint: str, source_fingerprint: str | None,
-        error: str) -> dict:
+        error: str, dispatch: dict | None = None) -> dict:
     payload = {
         "schema": DASHBOARD_REPLAY_BLOCK_SCHEMA,
         "event_type": str(event_type), "outcome": str(outcome),
@@ -319,6 +325,7 @@ def _write_dashboard_replay_block(
         "error": str(error),
         "recorded_at": datetime.now(timezone.utc).isoformat().replace(
             "+00:00", "Z"),
+        **({"dispatch": copy.deepcopy(dispatch)} if dispatch is not None else {}),
     }
     value = {**payload, "fingerprint": _canonical_fingerprint(payload)}
     tp.atomic_write_json(_dashboard_block_path(ws), value, sort_keys=True)
@@ -355,7 +362,10 @@ def load_tasks(ws: str, state: dict) -> None:
     with open(path, encoding="utf-8") as stream:
         data = json.load(stream)
     tasks = data.get("tasks", data) if isinstance(data, dict) else data
+    requirement_id = (data.get("requirement") if isinstance(data, dict) else None) or state.get("requirement_id")
     for task in tasks:
+        if requirement_id:
+            task.setdefault("req", requirement_id)
         task.setdefault("status", "pending")
         task.setdefault("fix_cycles", 0)
     state["tasks"] = tasks
@@ -375,7 +385,10 @@ def status(ws: str) -> dict:
     import loop
 
     stage_view = bounded_stage_view(ws)
-    state = loop.load(ws)
+    try:
+        state = loop.load(ws)
+    except (ValueError, RuntimeError, OSError) as exc:
+        return {"loop": "invalid", "error": str(exc), "stage_view": stage_view}
     if state is None:
         out = {
             "loop": "none",
@@ -419,6 +432,13 @@ def status(ws: str) -> dict:
     blocked = _dashboard_block_status(ws)
     if blocked is not None:
         out["dashboard_publication"] = blocked
+    locator = runtime_storage.load_workspace_locator(ws)
+    if locator:
+        from taskplane.run_store import RunStore
+        manifest = RunStore(home=locator["home"]).inspect(locator["run_id"])
+        tp.atomic_write_json(os.path.join(locator["paths"]["state"], "loop.json"), {
+            "schema": "taskplane.run-projection/v1", "run_id": locator["run_id"],
+            "revision": manifest["revision"], **out}, indent=2)
     return out
 
 
@@ -428,7 +448,10 @@ def user_summary(ws: str, host: str | None = None,
     import loop
 
     stage_view = bounded_stage_view(ws)
-    state = loop.load(ws)
+    try:
+        state = loop.load(ws)
+    except (ValueError, RuntimeError, OSError) as exc:
+        return {"loop": "invalid", "error": str(exc), "stage_view": stage_view}
     if state is None:
         return {"state": "not_started", "action_required": False,
                 "headline": "No active taskplane run.",
@@ -520,7 +543,7 @@ def user_summary(ws: str, host: str | None = None,
 DASHBOARD_PUBLICATION_SCHEMA = host_native.DASHBOARD_PUBLICATION_SCHEMA
 
 
-def _load_legacy_state(ws: str) -> dict | None:
+def _load_workflow_state(ws: str) -> dict | None:
     import loop
     return loop.load(ws)
 
@@ -542,7 +565,7 @@ def _validate_v4_manifest(manifest: dict) -> None:
 def _select_dashboard_source(ws: str) -> dict:
     return host_native.select_dashboard_source(
         ws, locator_loader=runtime_storage.load_workspace_locator,
-        legacy_loader=_load_legacy_state, manifest_loader=_load_v4_manifest,
+        manifest_loader=_load_v4_manifest,
         manifest_validator=_validate_v4_manifest,
         error_formatter=_stage_view_error)
 
@@ -597,7 +620,7 @@ def phase_graph_projection(
             design_artifact_fingerprint = None
     return plan_topology.phase_graph_projection(
         workspace, state, snapshot_values=snapshot_values, impact=impact,
-        module_impact_limit=module_impact_limit, loop_loader=_load_legacy_state,
+        module_impact_limit=module_impact_limit, loop_loader=_load_workflow_state,
         impact_loader=lambda ws, tasks: _phase_graph_impact(ws, tasks),
         require_bound=require_bound,
         design_artifact_fingerprint=design_artifact_fingerprint)
@@ -620,9 +643,9 @@ def refresh_dashboard_snapshot(
         settings_digest=settings.digest, source_loader=_select_dashboard_source,
         graph_projector=projector,
         metrics_projector=wave_metrics.consumer_projection,
-        publication_loader=runtime_storage.load_dashboard_publication,
-        snapshot_committer=runtime_storage.commit_dashboard_snapshot,
-        event_committer=runtime_storage.commit_dashboard_event,
+        publication_loader=host_native.load_dashboard_publication,
+        snapshot_committer=host_native.commit_dashboard_snapshot,
+        event_committer=host_native.commit_dashboard_event,
         error_formatter=_stage_view_error)
 
 def publish_artifacts(ws: str) -> "str | None":
@@ -736,6 +759,7 @@ def _replay_dashboard_block(ws: str, block: dict) -> dict:
 
 
 def with_dashboard(fn):
+    @wraps(fn)
     def wrapped(ws, *args, **kwargs):
         # Load before the wrapped transition so malformed settings cannot
         # follow a state write with a merely stale dashboard warning.
@@ -751,6 +775,8 @@ def with_dashboard(fn):
             }
         replay_result = None
         if block is not None:
+            if block.get("dispatch") and fn.__name__ != "next_action":
+                return {"error": "call next_action to recover the unpublished dispatch first"}
             try:
                 replay_result = _replay_dashboard_block(ws, block)
             except Exception as exc:
@@ -764,9 +790,17 @@ def with_dashboard(fn):
                     },
                     "status": status(ws),
                 }
+            if block.get("dispatch"):
+                result = copy.deepcopy(block["dispatch"])
+                result["obligations"].update(dashboard_snapshot=replay_result["snapshot"],
+                    dashboard=replay_result["dashboard"], dashboard_replay=replay_result)
+                return result
         before_fingerprint = _loop_state_fingerprint(ws)
+        before_source = _dashboard_source_fingerprint(ws)
         result = fn(ws, *args, **kwargs)
         if isinstance(result, dict):
+            surface = result.setdefault("obligations", {}) if result.get(
+                "schema") == "taskplane.stage-dispatch/v1" else result
             # A stage-native refusal is a proven read-only boundary.  Do not
             # turn that refusal into dashboard/event/artifact writes against
             # the mismatched or disabled store it explicitly rejected.
@@ -787,33 +821,39 @@ def with_dashboard(fn):
                         raise ValueError(
                             "dashboard publication found no active governed run")
                 else:
-                    result["dashboard_snapshot"] = publication
+                    # Dispatch envelopes keep their exact worker boundary;
+                    # dashboard delivery is an orchestrator launch obligation.
+                    surface["dashboard_snapshot"] = publication
                     import views
-                    views.refresh_views(ws, result)
-                    problem = _publication_problem(ws, publication, result)
+                    views.refresh_views(ws, surface)
+                    problem = _publication_problem(ws, publication, surface)
                     if problem is not None:
                         raise ValueError(problem)
                 if replay_result is not None:
-                    result["dashboard_replay"] = replay_result
+                    surface["dashboard_replay"] = replay_result
             except Exception as exc:
                 after_fingerprint = _loop_state_fingerprint(ws)
                 detail = _stage_view_error(exc)
-                if after_fingerprint is not None and \
-                        after_fingerprint != before_fingerprint:
+                if after_fingerprint is not None and (
+                        after_fingerprint != before_fingerprint or
+                        _dashboard_source_fingerprint(ws) != before_source):
                     block = _write_dashboard_replay_block(
                         ws, event_type=fn.__name__, outcome=str(outcome),
                         state_fingerprint=after_fingerprint,
                         source_fingerprint=_dashboard_source_fingerprint(ws),
-                        error=detail)
-                    result["dashboard_refresh"] = {
+                        error=detail, dispatch=result if surface is not result else None)
+                    surface["dashboard_refresh"] = {
                         "status": "blocked", "replay_required": True,
                         "error": detail, "fingerprint": block["fingerprint"],
                     }
                 else:
-                    result["dashboard_refresh"] = {
+                    surface["dashboard_refresh"] = {
                         "status": "stale", "replay_required": False,
                         "error": detail,
                     }
+                if surface is not result:
+                    surface["dispatch_allowed"] = False
+                    surface["error"] = "dashboard publication required before dispatch: " + detail
         return result
     wrapped.__name__ = fn.__name__
     wrapped.__doc__ = fn.__doc__

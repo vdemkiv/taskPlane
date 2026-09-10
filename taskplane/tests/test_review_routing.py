@@ -223,7 +223,7 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         sweep = state["slots"][0]
         brief = review_evidence.ArtifactStore(self.ws).read(sweep["brief"])
         dispatch = tp.dispatch_fields(
-            "lens", "tp-lens", "sweep", "cheap")
+            "lens", "tp-lens", sweep["lens_ids"][0], "cheap")
         expected_role = {
             "agent": "tp-lens",
             **{key: dispatch[key] for key in (
@@ -342,21 +342,30 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         with open(os.path.join(ws, "task_test.py"), "w",
                   encoding="utf-8") as handle:
             handle.write("def test_value():\n    assert True\n")
+        unusual = "test_é\nname.py"
+        with open(os.path.join(ws, unusual), "w", encoding="utf-8") as handle:
+            handle.write("UNICODE_SENTINEL = 'é'\n")
         with open(os.path.join(ws, "unrelated.md"), "w",
                   encoding="utf-8") as handle:
             handle.write("x" * 20_000)
 
         rc, patch = review.canonical_diff_patch(
-            ws, base, paths=["task.py", "task_test.py"], max_bytes=4_000)
+            ws, base, paths=["task.py", "task_test.py", unusual], max_bytes=4_000)
 
         self.assertEqual(rc, 0)
         self.assertIn("task.py", patch)
         self.assertIn("task_test.py", patch)
+        self.assertIn("UNICODE_SENTINEL", patch)
+        self.assertIn(unusual, review.canonical_diff_files(ws, base))
+        self.assertEqual(review.select_diff_paths(["src/a.py", "other.py"], ["src/"]), ["src/a.py"])
         self.assertNotIn("unrelated.md", patch)
         overflow_rc, overflow_patch = review.canonical_diff_patch(
-            ws, base, paths=["task.py", "task_test.py"], max_bytes=16)
+            ws, base, paths=["task.py", "task_test.py", unusual], max_bytes=16)
         self.assertEqual(overflow_rc, review.CANONICAL_DIFF_TOO_LARGE)
-        self.assertEqual(overflow_patch, "")
+        refusal = json.loads(overflow_patch)
+        self.assertEqual(refusal["reason_code"], "canonical_diff_too_large")
+        self.assertEqual(refusal["bytes"], len(patch.encode("utf-8")))
+        self.assertEqual(refusal["max_diff_bytes"], 16)
 
     def test_canonical_diff_explicit_empty_scope_stays_empty(self):
         ws = tempfile.mkdtemp(prefix="tp-review-empty-scope-")
@@ -382,6 +391,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertEqual(patch, "")
 
     def test_loop_review_kernel_requests_only_governed_implementation_files(self):
+        from taskplane.tests.phase_fixture import save_component_workflow
+        save_component_workflow(self.ws, {"run_id": "a" * 32, "step": "evaluate",
+                                         "goal": "selected review diff", "tasks": []})
         changed = [
             "taskplane/review.py",
             "taskplane/tests/new_regression.py",
@@ -963,69 +975,6 @@ class TestSelectiveReviewKernel(unittest.TestCase):
         self.assertTrue(any("exact language references" in gap["reason"]
                             for gap in manifest["gaps"]))
 
-    def test_legacy_codex_session_inference_is_not_provenance(self):
-        """Session prose cannot replace the sealed leased-result contract."""
-        import hashlib
-
-        self._start()
-        state = review._load_state(self.ws)
-        store = review_evidence.ArtifactStore(self.ws)
-        codex_home = tempfile.mkdtemp(prefix="tp-codex-session-")
-        session_dir = os.path.join(codex_home, "sessions", "2026", "08", "14")
-        os.makedirs(session_dir)
-        parent = "codex-parent-thread"
-        for index, slot in enumerate(state["slots"]):
-            lease = store.read(slot["lease"])
-            brief = store.read(slot["brief"])
-            row = {**lease, "schema": "taskplane.lens-slot-output/v2",
-                   "authored_by": "lens-slot", "findings": [],
-                   "lens_results": [
-                       {"lens": lens_id, "verdict": "pass", "blockers": 0,
-                        "checked_evidence": [{"file": "src/service.py",
-                                              "line": 1,
-                                              "claim": "reviewed source"}]}
-                       for lens_id in lease["lens_ids"]]}
-            if brief.get("language_references"):
-                row["references_applied"] = list(
-                    brief["language_references"])
-            raw = json.dumps(row, sort_keys=True,
-                             separators=(",", ":")).encode("utf-8")
-            result = os.path.join(self.ws, slot["result_path"])
-            os.makedirs(os.path.dirname(result), exist_ok=True)
-            with open(result, "wb") as stream:
-                stream.write(raw)
-            role = brief["role"]
-            final = ("review complete\n"
-                     f"taskplane-result-path:{slot['result_path']}\n"
-                     "taskplane-result-sha256:"
-                     f"{hashlib.sha256(raw).hexdigest()}")
-            events = [
-                {"type": "session_meta", "payload": {
-                    "id": f"child-{index}", "source": {"subagent": {
-                        "thread_spawn": {
-                            "parent_thread_id": parent,
-                            "agent_path": "/root/" + role["task_name"]}}}}},
-                {"type": "turn_context", "payload": {
-                    "model": "gpt-test",
-                    "reasoning_effort": role["reasoning_effort"]}},
-                {"type": "event_msg", "payload": {
-                    "type": "task_complete", "last_agent_message": final}},
-            ]
-            rollout = os.path.join(session_dir, f"rollout-{index}.jsonl")
-            with open(rollout, "w", encoding="utf-8") as stream:
-                for event in events:
-                    stream.write(json.dumps(event) + "\n")
-        with mock.patch.dict(os.environ, {
-                "CODEX_HOME": codex_home, "CODEX_THREAD_ID": parent}):
-            for slot in state["slots"]:
-                lease = store.read(slot["lease"])
-                with open(os.path.join(self.ws, slot["result_path"]),
-                          "rb") as stream:
-                    raw = stream.read()
-                self.assertIsNone(review._codex_session_receipt(
-                    self.ws, store, slot, lease, raw))
-            out = review.collect_review(self.ws, publish=False)
-        self.assertEqual(out["status"], "complete")
 
     def test_valid_leased_artifacts_collect_without_hook_receipts(self):
         self._start()
@@ -1744,66 +1693,6 @@ def test_historical_focused_evaluate_adapter_cannot_create_a_route():
     with pytest.raises(lens_route_policy.LensRoutePolicyError,
                        match="product, design, or plan"):
         review._focused_evaluate_route(mapped, catalog=catalog, **inputs)
-    return
-
-    assert route["status"] == "ready"
-    assert 3 <= len(route["selected"]) <= 4
-    assert len(projected["lenses"]) == len(catalog["lenses"]) == 26
-    assert all(row["disposition"] == "execute_light"
-               for row in route["dispositions"]
-               if row["lens"] in route["selected"])
-    assert {row["id"] for row in projected["lenses"]
-            if row["tier"] == "sweep"} == set(route["selected"])
-
-    with tempfile.TemporaryDirectory(prefix="tp-focused-evaluate-") as ws:
-        os.makedirs(os.path.join(ws, "src"))
-        with open(os.path.join(ws, "src", "service.py"), "w",
-                  encoding="utf-8") as stream:
-            stream.write(content["src/service.py"])
-        started = review.start_review(
-            ws, target=inputs["target"],
-            graph={"meta": {"scanned_head": "abc123",
-                            "content_fingerprint": "graph-v1"},
-                   "modules": {"src": {"files": files}}, "edges": []},
-            impact=inputs["impact"], diff=inputs["diff"],
-            runnability=inputs["test_evidence"],
-            requirement=inputs["requirement"], acceptance=inputs["acceptance"],
-            contracts=["resource:review.route-fingerprint"], stage="build",
-            task_type="reliability", router=lambda: mapped,
-            routing_content=content,
-            design_contract=inputs["design_contract"],
-            unresolved_findings=inputs["unresolved_findings"])
-        state = review._load_state(ws, started["run_id"])
-        stored = review_evidence.ArtifactStore(ws).read(
-            state["routing_decision"])["focused_route"]
-        assert stored["status"] == "ready"
-        assert len(stored["dispositions"]) == 26
-        assert 3 <= len(stored["selected"]) <= 4
-        assert {lens_id for slot in started["slots"]
-                for lens_id in slot["lens_ids"]} == set(stored["selected"])
-
-    mutations = [
-        {"diff": {**inputs["diff"],
-                  "changed_symbols": ["changed", "changed_again"]}},
-        {"diff": {**inputs["diff"],
-                  "files": ["src/service.py", "tests/test_service.py"]}},
-        {"impact": {**inputs["impact"], "total_impacted": 3}},
-        {"test_evidence": {"summary": "passed", "selectors": ["focused", "radius"]}},
-        {"unresolved_findings": [{"lens": "architecture",
-                                  "fingerprint": "finding-v1"}]},
-    ]
-    for mutation in mutations:
-        changed, _ = review._focused_evaluate_route(
-            mapped, catalog=catalog, **{**inputs, **mutation})
-        assert changed["route_fingerprint"] != route["route_fingerprint"]
-
-    overflow, refused = review._focused_evaluate_route(
-        mapped, catalog=catalog, **inputs,
-        mandatory_lenses={"architecture", "code-quality", "testability",
-                          "security", "product"})
-    assert overflow["status"] == "expanded_approval_required"
-    assert len(overflow["selected"]) == 5
-    assert not [row for row in refused["lenses"] if row["tier"] == "sweep"]
 
 
 def test_historical_focused_evaluate_adapter_rejects_integer_depth_impact_too():
@@ -1842,17 +1731,6 @@ def test_historical_focused_evaluate_adapter_rejects_integer_depth_impact_too():
                        match="product, design, or plan"):
         review._focused_evaluate_route(
             mapped, catalog=catalog, impact=impact, **inputs)
-    return
-    string_depth_impact = {
-        **impact,
-        "impacted": {str(depth): rows
-                     for depth, rows in impact["impacted"].items()},
-    }
-    string_route, _ = review._focused_evaluate_route(
-        mapped, catalog=catalog, impact=string_depth_impact, **inputs)
-
-    assert route["status"] == "ready"
-    assert route["route_fingerprint"] == string_route["route_fingerprint"]
 
 
 def test_fix_reruns_only_invalidated_fingerprinted_lens_evidence():
@@ -1902,29 +1780,6 @@ def test_fix_reruns_only_invalidated_fingerprinted_lens_evidence():
 
     # The helper remains readable for historical artifacts, but Evaluate no
     # longer calls it. Runtime bypass is pinned by focused-lens-routing tests.
-    return
-
-    fixture = TestSelectiveReviewKernel()
-    fixture.setUp()
-    try:
-        first = fixture._start(
-            stage="build", task_type="reliability", design_contract={},
-            unresolved_findings=[])
-        fixture._write_slot_results(run_id=first["run_id"])
-        review.collect_review(fixture.ws, publish=False, run_id=first["run_id"])
-        second = fixture._start(
-            stage="build", task_type="reliability", design_contract={},
-            unresolved_findings=[], retry_source_run_id=first["run_id"],
-            retry_lenses={"architecture"})
-        assert second["slots"] == []
-        second_state = review._load_state(fixture.ws, second["run_id"])
-        assert set(second_state["reuse_plan"]["reused"]) == set(
-            second_state["focused_route"]["selected"])
-        assert review.collect_review(
-            fixture.ws, publish=False, run_id=second["run_id"]
-        )["status"] == "complete"
-    finally:
-        __import__("shutil").rmtree(fixture.ws, ignore_errors=True)
 
 
 if __name__ == "__main__":

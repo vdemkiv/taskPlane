@@ -34,9 +34,10 @@ remain, split the scope; if it cannot be split, refuse pending an authenticated
 expanded-route approval that names the extra lenses and cost. Never silently
 drop a mandatory risk or treat the ledger as a full-catalog execution request.
 
-1. Read the spec/requirement (the action payload carries the R-record and
-   recalled KB decisions — honor settled calls), the context docs
-   (`knowledge/context/*.md`), and the dependency graph with exactly one
+1. Read the action's spec/requirement, explicitly supplied decisions and
+   context, and cited current repository sources. Empty knowledge fields
+   never authorize discovering historical context docs, old Design/Plan
+   artifacts, prior runs, or other installations. Read the dependency graph with exactly one
    `tp.py graph impact --files "comma,separated,paths" --json` call before
    shaping tasks. `--files` takes ONE comma-separated value: do not try
    positional paths, an empty/default call, or repeated `--files` flags. If `design` is

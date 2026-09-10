@@ -6,6 +6,20 @@ output artifacts, consumer delivery leases, and reconnect accounting.
 """
 from __future__ import annotations
 
+if __package__:
+    from .primitives import content_fingerprint
+else:
+    from primitives import content_fingerprint
+
+if __package__:
+    from .primitives import atomic_json as _atomic_json
+else:
+    from primitives import atomic_json as _atomic_json
+if __package__:
+    from .primitives import lock_file as _lock_file, unlock_file as _unlock_file
+else:
+    from primitives import lock_file as _lock_file, unlock_file as _unlock_file
+
 import hashlib
 import json
 import math
@@ -28,11 +42,6 @@ try:
 except ImportError:  # package import path
     from taskplane import dispatch_telemetry
 
-try:
-    import fcntl as _file_lock
-except ImportError:  # pragma: no cover - exercised by windows-latest
-    _file_lock = None
-    import msvcrt as _windows_lock
 
 
 SCHEMA = "taskplane.command-state/v1"
@@ -96,24 +105,8 @@ _PERSONAL_DATA_PATTERNS = (
 )
 
 
-def _lock_file(handle) -> None:
-    if _file_lock is not None:
-        _file_lock.flock(handle.fileno(), _file_lock.LOCK_EX)
-        return
-    handle.seek(0, os.SEEK_END)
-    if handle.tell() == 0:
-        handle.write(b"\0")
-        handle.flush()
-    handle.seek(0)
-    _windows_lock.locking(handle.fileno(), _windows_lock.LK_LOCK, 1)
 
 
-def _unlock_file(handle) -> None:
-    if _file_lock is not None:
-        _file_lock.flock(handle.fileno(), _file_lock.LOCK_UN)
-        return
-    handle.seek(0)
-    _windows_lock.locking(handle.fileno(), _windows_lock.LK_UNLCK, 1)
 
 
 class CommandRuntimeError(RuntimeError):
@@ -366,9 +359,7 @@ def _fingerprint(value: str) -> str:
 
 
 def _canonical_digest(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
-                         default=str).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return content_fingerprint(value, ensure_ascii=True, default=str)
 
 
 def _redact(value: str) -> tuple[str, int]:
@@ -387,21 +378,6 @@ def _redact(value: str) -> tuple[str, int]:
     return redacted, count
 
 
-def _atomic_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="") as handle:
-            json.dump(value, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _atomic_bytes(path: Path, value: bytes) -> None:
@@ -443,23 +419,6 @@ def _closed_reason_code(value: object | None) -> str | None:
     return value
 
 
-def _legacy_reason_code(value: object | None) -> str | None:
-    """Recover only known codes from pre-field minimized representations."""
-    if not isinstance(value, str):
-        return None
-    representations = {
-        "binding_lost": "binding_lost",
-        "detached_worker_ownership_lost":
-            "detached_worker_ownership_lost",
-    }
-    representations.update({
-        f"automatic command recovery stopped: {code}": code
-        for code in _COMMAND_REASON_CODES
-    })
-    for text, code in representations.items():
-        if value in {text, _minimized_text(text, label="REASON")[0]}:
-            return code
-    return None
 
 
 def _journal_projection(snapshot: dict) -> dict:
@@ -494,33 +453,6 @@ def _privacy_retention(snapshot: Mapping, *, terminal_at: float | None = None) \
     }
 
 
-def _minimize_legacy_snapshot(snapshot: dict) -> dict:
-    """Migrate authority state without retaining pre-policy free text."""
-    migrated = json.loads(json.dumps(snapshot))
-    migrated["reason"] = (_minimized_text(
-        migrated["reason"], label="REASON")[0]
-        if migrated.get("reason") is not None else None)
-    migrated["reason_code"] = (_closed_reason_code(migrated["reason_code"])
-                               if migrated.get("reason_code") is not None else
-                               _legacy_reason_code(migrated.get("reason")))
-    migrated["output_summary"] = ""
-    migrated["artifact"] = None
-    for field in ("events", "lifecycle"):
-        rows = []
-        for source in migrated.get(field) or []:
-            row = dict(source)
-            row["output_delta"] = ""
-            if row.get("reason") is not None:
-                row["reason"] = _minimized_text(
-                    row["reason"], label="REASON")[0]
-            row["reason_code"] = (_closed_reason_code(row["reason_code"])
-                                  if row.get("reason_code") is not None else
-                                  _legacy_reason_code(row.get("reason")))
-            row["artifact"] = None
-            rows.append(row)
-        migrated[field] = rows
-    migrated["privacy_retention"] = _privacy_retention(migrated)
-    return migrated
 
 
 def _bounded_tree_size(directory: Path) -> int:
@@ -558,8 +490,8 @@ def _valid_retention(value: object, snapshot: Mapping) -> bool:
             "schema", "created_at", "terminal_at", "expires_at",
             "max_handles", "max_bytes", "delete_on_expiry"} or \
             value.get("schema") != COMMAND_RETENTION_SCHEMA or \
-            value.get("max_handles") != COMMAND_RETENTION_MAX_HANDLES or \
-            value.get("max_bytes") != COMMAND_RETENTION_MAX_BYTES or \
+            any(type(value.get(key)) is not int or value[key] <= 0
+                for key in ("max_handles", "max_bytes")) or \
             value.get("delete_on_expiry") is not True:
         return False
     try:
@@ -606,10 +538,9 @@ class CommandRuntime:
         self.enforce_retention()
 
     def enforce_retention(self, *, now: float | None = None) -> dict:
-        """Migrate legacy logs and purge terminal state by age/count/bytes."""
+        """Purge current terminal state by its declared retention policy."""
         observed_at = float(self._clock() if now is None else now)
         removed = []
-        migrated = []
         retained = []
         lock_path = self.root / ".retention.lock"
         with lock_path.open("a+b") as root_lock:
@@ -617,11 +548,6 @@ class CommandRuntime:
             try:
                 for stale in list(self.root.glob(".privacy-purge-*")):
                     _purge_private_path(stale, self.root)
-                for legacy in list(self.root.iterdir()):
-                    if legacy.is_file() and legacy.name != ".retention.lock" \
-                            and legacy.suffix in {".log", ".jsonl"}:
-                        _purge_private_path(legacy, self.root)
-                        removed.append(legacy.name)
                 for directory in sorted(self.root.iterdir()):
                     if not re.fullmatch(r"[0-9a-f]{32}", directory.name):
                         continue
@@ -643,22 +569,7 @@ class CommandRuntime:
                                 raise ValueError("command snapshot is invalid")
                             if not _valid_retention(
                                     snapshot.get("privacy_retention"), snapshot):
-                                snapshot = _minimize_legacy_snapshot(snapshot)
-                                artifacts = directory / "artifacts"
-                                if os.path.lexists(artifacts):
-                                    _purge_private_path(artifacts, directory)
-                                _atomic_json(snapshot_path, snapshot)
-                                _atomic_bytes(
-                                    directory / "transitions.jsonl",
-                                    (json.dumps({
-                                        "event": {
-                                            "state": "privacy_migrated",
-                                            "revision": snapshot.get("revision"),
-                                        },
-                                        "snapshot": _journal_projection(snapshot),
-                                    }, sort_keys=True,
-                                        separators=(",", ":")) + "\n").encode())
-                                migrated.append(directory.name)
+                                raise ValueError("command snapshot has no valid retention policy")
                             size = _bounded_tree_size(directory)
                             retention = snapshot["privacy_retention"]
                             expires_at = retention.get("expires_at")
@@ -692,7 +603,6 @@ class CommandRuntime:
                         kept_count += 1
                         kept_bytes += size
                 return {"removed": sorted(set(removed)),
-                        "migrated": sorted(set(migrated)),
                         "retained": kept_count,
                         "retained_bytes": kept_bytes,
                         "retention_seconds": COMMAND_RETENTION_SECONDS,
@@ -746,13 +656,7 @@ class CommandRuntime:
             raise BindingMismatch(
                 "command handle is not bound to this workspace and actor")
         if "reason_code" not in snapshot:
-            snapshot["reason_code"] = _legacy_reason_code(
-                snapshot.get("reason"))
-        for field in ("events", "lifecycle"):
-            for row in snapshot.get(field) or []:
-                if "reason_code" not in row:
-                    row["reason_code"] = _legacy_reason_code(
-                        row.get("reason"))
+            raise UnknownHandle("command snapshot has no current reason code")
         return snapshot
 
     def _save(self, handle: str, snapshot: dict, event: dict | None = None) -> None:

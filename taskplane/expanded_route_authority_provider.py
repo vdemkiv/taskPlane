@@ -9,6 +9,7 @@ remain inside this process and its protected external root.
 
 from __future__ import annotations
 
+
 import base64
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -109,10 +110,8 @@ class ProviderError(RuntimeError):
 
 def _canonical(value: object) -> bytes:
     try:
-        return json.dumps(
-            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
+        return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ProviderError("schema", "provider value is not canonical JSON") from exc
 

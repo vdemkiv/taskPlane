@@ -53,20 +53,19 @@ not repeated in the tables.
 | `tp.py kb` | knowledge base (decisions) |
 | `tp.py kb lint` | check the knowledge base for malformed or empty records |
 | `tp.py kb list` | list every recorded decision |
-| `tp.py kb migrate` | move a legacy in-repo knowledge/ to the external store, untrack it, and gitignore it |
 | `tp.py kb record` | record a decision in the knowledge base |
 | `tp.py kb retrieve` | recall the decisions that govern given files or tags |
-| `tp.py kb where` | show the external store path for this project (and whether a legacy in-repo KB remains) |
+| `tp.py kb where` | show the selected project knowledge store |
 | `tp.py lens` | route lenses for a change |
-| `tp.py lens dispatch` | ready-to-dispatch lens-agent briefs — one read-only agent per deep lens, fanned out in parallel |
+| `tp.py lens collect` | collect an exact immutable lens plan |
+| `tp.py lens dispatch` | ready-to-dispatch lens-agent briefs — one read-only agent per selected lens, fanned out in parallel |
 | `tp.py lens list` | every lens in the catalog |
 | `tp.py lens route` | decide which lenses a change needs |
 | `tp.py lens show` | the full brief for one lens |
 | `tp.py loop` | drive the Evaluate-Loop engine |
-| `tp.py loop amend-delivery` | human: exact legacy publication or scope-inventory amendment |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
+| `tp.py loop archive` | detach a run and retain its evidence |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
-| `tp.py loop cancel-worker` | human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
@@ -74,7 +73,6 @@ not repeated in the tables.
 | `tp.py loop command reconnect` | reconnect a durable command |
 | `tp.py loop command show` | show a durable command |
 | `tp.py loop command wait` | wait a durable command |
-| `tp.py loop continue-build` | human: validate and consume an exact legacy Build scope append without resetting work |
 | `tp.py loop evidence` | assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill |
 | `tp.py loop gate` | orchestrator-only: judge the evidence and advance the loop |
 | `tp.py loop guide` | before pass submission, check deterministic workflow facts and return one bounded drift correction |
@@ -97,10 +95,8 @@ not repeated in the tables.
 | `tp.py onboard` | cold-start readiness — folder + git snapshot + init; renders the onboarding dashboard |
 | `tp.py pickup` | run one approved shelf Design Contract without a loop |
 | `tp.py preview` | launch a private governed working preview from a closed JSON request |
-| `tp.py production-gate` | validate retained Design authority against the current live Taskplane delivery roots |
 | `tp.py ready` | Definition-of-Ready entry gate |
 | `tp.py repository` | automatic source precondition: resolve, authenticate, acquire, checkout, verify, and resume |
-| `tp.py repository migrate` | register clean legacy .em-review/scratch clones without moving or deleting anything |
 | `tp.py repository prepare` | prepare a local repository or remote pull request |
 | `tp.py repository resume` | apply an explicit user action and resume the same run |
 | `tp.py repository status` | print one canonical run manifest |
@@ -134,7 +130,10 @@ not repeated in the tables.
 | `tp.py share set` | set the default visibility of new decisions |
 | `tp.py share status` | show what is private and what is shared |
 | `tp.py stage` | drive isolated stage lifecycle and bounded handoffs |
+| `tp.py stage collect-lenses` | collect the exact lens plan saved in a phase startup |
 | `tp.py stage history` | read a bounded page of immutable stage summaries |
+| `tp.py stage prepare-lenses` | dispatch shared lenses for the exact current phase candidate |
+| `tp.py stage read-input` | read only the verified input named by a stage startup |
 | `tp.py stage resume` | create a fresh attempt in an active stage root |
 | `tp.py stage reuse` | explicitly authorize non-default artifact reuse |
 | `tp.py stage split` | close a parent and atomically create isolated children |
@@ -522,10 +521,6 @@ check the knowledge base for malformed or empty records
 
 list every recorded decision
 
-## `tp.py kb migrate`
-
-move a legacy in-repo knowledge/ to the external store, untrack it, and gitignore it
-
 ## `tp.py kb record`
 
 record a decision in the knowledge base
@@ -554,26 +549,30 @@ recall the decisions that govern given files or tags
 
 ## `tp.py kb where`
 
-show the external store path for this project (and whether a legacy in-repo KB remains)
+show the selected project knowledge store
 
 ## `tp.py lens`
 
 route lenses for a change
 
+## `tp.py lens collect`
+
+collect an exact immutable lens plan
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | REQUEST (required) | plan reference JSON or - for stdin |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py lens dispatch`
 
-ready-to-dispatch lens-agent briefs — one read-only agent per deep lens, fanned out in parallel
+ready-to-dispatch lens-agent briefs — one read-only agent per selected lens, fanned out in parallel
 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--all` | flag | full catalog: routed lenses run deep, the rest as a quick sweep — nothing skipped |
-| `--artifact-type` | ARTIFACT_TYPE | route on an artifact instead of the diff — 'strategy' summons the advisory (board) tier |
 | `--base` | BASE | git base to diff against (default HEAD) |
-| `--dashboard` | flag | print the live lens-wave progress board instead of the JSON briefs (render this BEFORE dispatch) |
-| `--emit` | one of: workflow, task, auto | dispatch path: 'workflow' wraps the briefs as /taskplane:review-wave args, 'task' prints today's Task-dispatch payload byte-identically, 'auto' (default) picks workflow only when the host runtime is detected (Codex: always task) |
-| `--max-actions` | MAX_ACTIONS | per-agent action ceiling written into each dispatched lens brief. Default scales with the brief: 45 for a deep lens (it owns one subject at full depth and reads widely), 30 for the sweep. An explicit value applies to every brief. |
 | `--only` | ONLY | comma list — dispatch only these lenses |
-| `--resume` | flag | re-dispatch ONLY the lanes that have no findings.json yet — an interrupted wave costs the lenses that did not land, not all of them |
 | `--skip` | SKIP | comma list — do not dispatch these lenses |
 | `--task-type` | TASK_TYPE | declared task type (feature, bugfix, refactor, ...) — widens the routed set |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
@@ -622,19 +621,6 @@ drive the Evaluate-Loop engine
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
-## `tp.py loop amend-delivery`
-
-human: exact legacy publication or scope-inventory amendment
-
-| Flag | Value | What it does |
-| --- | --- | --- |
-| `--by` | BY (required) | original human policy owner |
-| `--check` | flag | read-only validation; no journal, projection or outbox write |
-| `--fingerprint` | FINGERPRINT (required) | canonical approved packet SHA-256 |
-| `--from` | AMENDMENT_FROM (required) | exact approved publication packet or Plan scope inventory |
-| `--request` | REQUEST (required) | exact publication or scope-inventory human decision |
-| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
-
 ## `tp.py loop approve`
 
 record a human approval at a checkpoint gate
@@ -646,6 +632,15 @@ record a human approval at a checkpoint gate
 | `--force` | flag | pass a BLOCKED refinement gate anyway |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py loop archive`
+
+detach a run and retain its evidence
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY (required) | human identity authorizing archival |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py loop authorize`
 
 derive routine authority for a real host/facade flow from the bound consolidated receipt
@@ -653,19 +648,6 @@ derive routine authority for a real host/facade flow from the bound consolidated
 Positional arguments:
 
 - `flow` (required) — routine flow identity (facade, delivery, product, design, build, engineering, status, help, north_star or tag_slack)
-
-## `tp.py loop cancel-worker`
-
-human: administratively cancel one unavailable unbound legacy Build worker; never claim host completion
-
-| Flag | Value | What it does |
-| --- | --- | --- |
-| `--by` | BY (required) | original human policy owner |
-| `--check` | flag | read-only validation; no terminalization or outbox flush |
-| `--fingerprint` | FINGERPRINT (required) | canonical cancellation packet SHA-256 |
-| `--from` | AMENDMENT_FROM (required) | exact legacy worker cancellation packet |
-| `--request` | REQUEST (required) | explicit human cancellation permission |
-| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py loop claim`
 
@@ -758,19 +740,6 @@ Positional arguments:
 | `--timeout` | TIMEOUT | single blocking wait timeout |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
-## `tp.py loop continue-build`
-
-human: validate and consume an exact legacy Build scope append without resetting work
-
-| Flag | Value | What it does |
-| --- | --- | --- |
-| `--by` | BY (required) | original human policy owner |
-| `--check` | flag | validate without committing loop state or dispatching |
-| `--fingerprint` | FINGERPRINT (required) | approved canonical amendment packet SHA-256 |
-| `--from` | AMENDMENT_FROM (required) | exact legacy amendment JSON packet with original Plan and settings |
-| `--request` | REQUEST (required) | explicit approved scope and advisory-resource instruction |
-| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
-
 ## `tp.py loop evidence`
 
 assemble every mechanically-derivable fact the evaluate gate will check (suite result, diff, criteria, routed lenses, graph obligations) with the judgment slots left empty for the evaluator to fill
@@ -819,14 +788,14 @@ Positional arguments:
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--advisory` | flag | continue with visibly advisory screen enforcement |
-| `--by` | BY | human identity required with --advisory and with TASKPLANE_STAGE_NATIVE=new-run; the new-run value becomes the root stage authority.actor and must use identifier syntax (for example human:vdemkiv; no spaces) |
+| `--by` | BY | human identity required with --advisory and with new runs; the value becomes the root stage authority.actor and must use identifier syntax (for example human:vdemkiv; no spaces) |
 | `--checkpoints` | CHECKPOINTS | comma list: plan,em (default both) |
 | `--design` | flag | run the Design Contract + human design approval before implementation planning |
 | `--design-only` | flag | stop after the human approves the Design Contract instead of continuing to Plan/Build/Review |
 | `--force` | flag | replace an in-flight loop (the old loop.json is archived first — without this flag re-init refuses) |
 | `--max-fix-cycles` | MAX_FIX_CYCLES | fix cycles the loop may run before it escalates to the human (default 2) |
 | `--parallel` | flag | execute waves of scope-disjoint tasks concurrently, one governed agent per task |
-| `--req` | REQ | anchor the loop to a requirement R-id; TASKPLANE_STAGE_NATIVE=new-run requires an exact existing requirement |
+| `--req` | REQ | anchor the loop to a requirement R-id; requires an exact existing requirement |
 | `--reuse-approved-design` | flag | start at Plan from an unchanged completed design-only loop with the same requirement/spec and attributable --by authority |
 | `--spec` | SPEC | path to an existing spec (skips PM) |
 
@@ -856,7 +825,7 @@ resolve a blocked loop: retry, pass, skip, defer or abort
 
 Positional arguments:
 
-- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`, `limits-advisory`, `reconcile`, `defer-review`, `review-baseline`)
+- `decision` (required; choices: `retry`, `pass`, `skip`, `defer`, `abort`, `limits-advisory`, `reconcile`)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -866,8 +835,6 @@ Positional arguments:
 | `--outage-fingerprint` | OUTAGE_FINGERPRINT | exact current evaluator outage fingerprint; replay-safe |
 | `--phase-operation` | PHASE_OPERATION | exact existing phase operation to reconcile or retry once |
 | `--reason` | REASON | explicit Build acceptance, review deferral or EM baseline selection |
-| `--run-id` | RUN_ID | exact admitted legacy run for defer-review or review-baseline |
-| `--task` | TASK | exact human-accepted legacy Build task for defer-review or review-baseline |
 | `--worker-stopped` | flag | attest the expired unbound worker is stopped; not a completion or pass |
 
 ## `tp.py loop restore-settings`
@@ -1012,15 +979,6 @@ launch a private governed working preview from a closed JSON request
 | `--request` | REQUEST (required) | bounded JSON request matching the documented taskplane preview request contract |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
-## `tp.py production-gate`
-
-validate retained Design authority against the current live Taskplane delivery roots
-
-| Flag | Value | What it does |
-| --- | --- | --- |
-| `--audit-path` | AUDIT_PATH | exact retained R-0013 Codex audit JSONL (defaults to TASKPLANE_R0013_CODEX_AUDIT or its original locator) |
-| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
-
 ## `tp.py ready`
 
 Definition-of-Ready entry gate
@@ -1032,14 +990,6 @@ Definition-of-Ready entry gate
 ## `tp.py repository`
 
 automatic source precondition: resolve, authenticate, acquire, checkout, verify, and resume
-
-## `tp.py repository migrate`
-
-register clean legacy .em-review/scratch clones without moving or deleting anything
-
-| Flag | Value | What it does |
-| --- | --- | --- |
-| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py repository prepare`
 
@@ -1267,7 +1217,9 @@ apply one explicit user decision and continue the same repository preflight and 
 | `--by` | BY (required) | the user's approving/cancelling chat identity |
 | `--goal` | GOAL | contract goal text after preflight resumes |
 | `--max-actions` | MAX_ACTIONS | action ceiling for the resumed review contract |
+| `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
 | `--max-tokens` | MAX_TOKENS | effective-token ceiling for the resumed review |
+| `--paths` | PATHS | changed files, directories or globs to review |
 | `--response` | one of: approve, retry, initialize, cancel (required) | the user's decision for the pending action |
 | `--run-id` | RUN_ID (required) | run-id from the needs_user preflight response |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
@@ -1313,7 +1265,9 @@ Positional arguments:
 | `--fetch` | flag | fetch pull/N/head into this checkout first |
 | `--goal` | GOAL | contract goal text (default: derived) |
 | `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
+| `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
 | `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
+| `--paths` | PATHS | changed files, directories or globs to review |
 | `--run-id` | RUN_ID | resume or deterministically name the repository preflight run |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
@@ -1440,7 +1394,7 @@ and artifact validation.
 
 #### Automatic pristine new-run bootstrap
 
-Set `TASKPLANE_STAGE_NATIVE=new-run` before `tp.py loop init`. Supply
+New runs use the phase runtime automatically. Supply
 an exact existing requirement with `--req` and the accountable human
 with `--by`; use stage identifier syntax such as
 `human:vdemkiv` (letters, digits, `.`, `_`, `:`, or `-`; no spaces).
@@ -1448,7 +1402,7 @@ That value becomes the root stage `authority.actor`. A
 stable session identity must already be present in
 `TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.
 The workspace must already have a governed locator bound to an
-unmigrated v3 run with an exact target revision.
+current v4 run with an exact target revision.
 
 Only that successful normal initialization mints the private
 pristine-new-run marker; do not add, copy, or infer the marker later.
@@ -1463,19 +1417,12 @@ artifact, or a separate `tp.py stage start` request.
 `tp.py loop wave` never bootstraps a root: it requires the already
 bound v4 journey and fails closed when that binding is missing.
 
-New-run initialization also refuses any existing singleton history,
-including terminal history and `--force`; use a fresh governed run.
-Initialization refuses without singleton or stage mutation when the
-requirement is missing or unknown, `--by` is missing, stable session
-identity is missing, the governed locator is missing, the bound run is
-not unmigrated v3, or its exact target revision is unavailable.
-Bootstrap also refuses when `new-run` was enabled only after init, the
-private marker is absent, the singleton is no longer structurally
-pristine, legacy progress exists, or the bound locator/run/store
-identity becomes mismatched or corrupt. After the v4 root commit, the
-singleton retains a durable run binding; losing or corrupting its
-locator or store remains a
-fail-closed refusal rather than a fallback to legacy dispatch.
+Initialization requires a known requirement, accountable human, stable
+session identity, a valid current run binding, and an exact target revision.
+It refuses an already initialized workflow, including terminal history and
+`--force`. Bootstrap requires the marker recorded by normal initialization
+and a pristine workflow. A missing or corrupt locator, aggregate, or marker
+is a refusal; another runtime cannot supply the missing state.
 
 #### Closed nested shapes
 
@@ -1767,9 +1714,36 @@ A validation or authority failure changes neither stage.
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py stage collect-lenses`
+
+collect the exact lens plan saved in a phase startup
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py stage history`
 
 read a bounded page of immutable stage summaries
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage prepare-lenses`
+
+dispatch shared lenses for the exact current phase candidate
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
+## `tp.py stage read-input`
+
+read only the verified input named by a stage startup
 
 | Flag | Value | What it does |
 | --- | --- | --- |

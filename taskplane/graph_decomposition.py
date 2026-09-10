@@ -73,6 +73,11 @@ only. Deterministic: every collection is sorted before use or output.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import ast
 import hashlib
 import json
@@ -776,7 +781,7 @@ def _fingerprint(members: list) -> str:
     contract:component-map cache key."""
     material = sorted([f, h, span] for f, h, span in members)
     return hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        _json_primitives.canonical_bytes(material, ensure_ascii=True)
     ).hexdigest()
 
 

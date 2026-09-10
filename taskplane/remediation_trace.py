@@ -6,6 +6,11 @@ supply outcome words, finding metadata, selectors, or free-form role labels.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import hashlib
 import json
 import os
@@ -51,9 +56,7 @@ class RemediationTraceError(ValueError):
 
 
 def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=True).encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=True)
 
 
 def _digest(value: object) -> str:
@@ -364,25 +367,7 @@ def _git_identity() -> dict:
     return {**material, "identity_fingerprint": _digest(material)}
 
 
-def _git_environment(git_path: Path) -> dict[str, str]:
-    """Build a closed environment; never inherit Git routing/config state."""
-    path_parts = [str(git_path.parent)]
-    if os.name != "nt":
-        path_parts.extend(["/usr/bin", "/bin"])
-    return {
-        "PATH": os.pathsep.join(dict.fromkeys(path_parts)),
-        "HOME": os.devnull,
-        "USERPROFILE": os.devnull,
-        "XDG_CONFIG_HOME": os.devnull,
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_ATTR_NOSYSTEM": "1",
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_OPTIONAL_LOCKS": "0",
-        "LC_ALL": "C",
-        "LANG": "C",
-    }
+_git_environment = _json_primitives.git_environment
 
 
 def _workspace_path(workspace: str) -> Path:

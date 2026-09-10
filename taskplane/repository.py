@@ -1,6 +1,11 @@
 """Deterministic managed repository and GitHub pull-request acquisition."""
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import copy
 import contextvars
 from dataclasses import dataclass
@@ -152,9 +157,7 @@ def guard_terminal_delivery(
 
 
 def _canonical_fingerprint(value: object) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")
+    encoded = _json_primitives.canonical_bytes(value, ensure_ascii=False)
     return hashlib.sha256(encoded).hexdigest()
 
 

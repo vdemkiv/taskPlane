@@ -72,6 +72,10 @@ same contract yield_meter.py holds, and the property that makes an instrument
 safe to add and easy to remove if it does not earn its keep.
 """
 from __future__ import annotations
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 
 import hashlib
 import json
@@ -193,16 +197,11 @@ def ledger_path(ws: str) -> str:
 
 
 def _append(ws: str, record: dict) -> None:
-    """Best effort, always. An instrument must never cost anyone a gate."""
     try:
         path = ledger_path(ws)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        record.setdefault("ts", time.time())
-        with tp.file_lock(path):
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, default=str, sort_keys=True) + "\n")
     except Exception:
-        pass
+        return
+    _shared_primitives.append_instrument(path, record)
 
 
 def artifact_fingerprint(path: str) -> str | None:

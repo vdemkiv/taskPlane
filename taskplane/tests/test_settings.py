@@ -99,30 +99,10 @@ def test_root_session_settings_are_required_exact_and_shipped_values_load(
     with pytest.raises(SettingsError, match="must be below"):
         load_settings(_write(tmp_path, inverted))
 
-    legacy = json.loads(json.dumps(canonical))
-    legacy["schema"] = "taskplane.operational-settings/v1"
-    legacy["workflow"].pop("root_session")
-    migrated = load_settings(_write(tmp_path, legacy))
-    assert migrated.workflow.root_session == settings.workflow.root_session
-    assert migrated.receipt["migration"]["from"] == \
-        "taskplane.operational-settings/v1"
-    assert migrated.receipt["migration"]["to"] == settings.schema
-    expected_legacy_digest = hashlib.sha256(json.dumps(
-        legacy, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        allow_nan=False).encode("utf-8")).hexdigest()
-    assert migrated.receipt["migration"]["legacy_digest"] == \
-        expected_legacy_digest
-    assert migrated.receipt["migration"]["inserted"] == [
-        "workflow.root_session.resume",
-        "workflow.root_session.seed",
-        "workflow.root_session.seed_budget_tokens",
-        "workflow.root_session.root_budget_tokens",
-    ]
-    assert migrated.receipt["migration"]["legacy_digest"] != migrated.digest
-    expected_effective_digest = hashlib.sha256(json.dumps(
-        migrated.to_dict(), sort_keys=True, separators=(",", ":"),
-        ensure_ascii=True, allow_nan=False).encode("utf-8")).hexdigest()
-    assert migrated.digest == expected_effective_digest
+    outdated = json.loads(json.dumps(canonical))
+    outdated["schema"] = "taskplane.operational-settings/v1"
+    with pytest.raises(SettingsError, match="schema"):
+        load_settings(_write(tmp_path, outdated))
 
 
 def test_invalid_or_unknown_settings_fail_closed(tmp_path):
@@ -274,7 +254,7 @@ def test_one_release_cache_environment_aliases_are_safe_and_receipted():
     assert disabled.tests.cache is False
     assert disabled.receipt["environment"]["applied"] == ["tests.cache"]
     assert disabled.receipt["environment"]["adapter"] == \
-        "legacy-environment/v1"
+        "environment/v1"
 
     shorter = load_settings(environment={
         "TASKPLANE_SUITE_CACHE_MAX_AGE": "3600"})
@@ -287,3 +267,43 @@ def test_one_release_cache_environment_aliases_are_safe_and_receipted():
     with pytest.raises(SettingsError, match="finite number"):
         load_settings(environment={
             "TASKPLANE_SUITE_CACHE_MAX_AGE": "not-a-number"})
+
+
+def test_governed_runtime_consumers_require_exact_authority(
+        tmp_path, monkeypatch):
+    from taskplane.authority import DECISION_SCHEMA
+    from taskplane import audit
+    from taskplane import taskplane_lite as lite
+
+    authority = {
+        "schema": DECISION_SCHEMA,
+        "authorized": True,
+        "authority_requested": "gate_weakening",
+        "actor": "human:test",
+        "thread": "settings-consumers",
+        "revision": "1",
+    }
+    monkeypatch.setenv("TASKPLANE_AUDIT_EVERY", "7")
+    with pytest.raises(SettingsError, match="exact authority"):
+        audit.audit_every()
+    assert audit.audit_every(authority=authority) == 7
+    monkeypatch.delenv("TASKPLANE_AUDIT_EVERY")
+
+    monkeypatch.setenv("TASKPLANE_ORPHAN_TTL_SECONDS", "7200")
+    contract = {
+        "task_id": "t1",
+        "activated_at": 1000,
+        "budget": {"max_actions": 10},
+    }
+    with pytest.raises(SettingsError, match="exact authority"):
+        lite.orphan_status(str(tmp_path), contract, now=5000)
+    assert lite.orphan_status(
+        str(tmp_path), contract, now=5000,
+        settings_authority=authority)[0] is False
+    monkeypatch.delenv("TASKPLANE_ORPHAN_TTL_SECONDS")
+
+    invalid_contract = dict(contract, orphan_ttl_seconds=0)
+    orphaned, reason = lite.orphan_status(
+        str(tmp_path), invalid_contract, now=5000)
+    assert orphaned is False
+    assert "invalid non-positive" in reason

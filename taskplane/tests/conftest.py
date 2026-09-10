@@ -25,11 +25,31 @@ import pytest
 # resolves regardless of the working directory the runner was launched from.
 import os as _os
 import sys as _sys
+import subprocess as _subprocess
 _repo_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(
     _os.path.abspath(__file__))))
 if _repo_root not in _sys.path:
     _sys.path.insert(0, _repo_root)
 from taskplane.tests import _SESSION_HOME  # noqa: F401,E402
+
+
+@pytest.fixture(scope="session")
+def _git_template(tmp_path_factory):
+    """One empty bare repository per pytest worker."""
+    template = tmp_path_factory.mktemp("git-template") / "template.git"
+    _subprocess.run(["git", "init", "--bare", "-q", "-b", "main", str(template)], check=True)
+    return template
+
+
+@pytest.fixture
+def git_ws(_git_template):
+    """Clone isolated refs/index/config while sharing immutable template objects."""
+    def create(path):
+        _subprocess.run(["git", "clone", "--shared", "-q", str(_git_template), str(path)],
+                        check=True, capture_output=True)
+        _subprocess.run(["git", "remote", "remove", "origin"], cwd=path, check=True)
+        return path
+    return create
 
 
 def _workflow_command_value(value, *, property_value=False):
@@ -143,3 +163,14 @@ def _env_mutation_guard(request):
         + ". Restore every variable you set (addCleanup/monkeypatch/"
           "try-finally); a leaked variable changes what every LATER test "
           "module sees.")
+
+
+@pytest.fixture(autouse=True)
+def evidence_metadata(request, record_property):
+    """Emit test evidence in one place; fixtures never certify a live host."""
+    metadata = []
+    yield metadata
+    record_property("test_case", request.node.nodeid)
+    record_property("evidence_scope", "isolated-test-execution")
+    for key, value in metadata:
+        record_property(key, value)

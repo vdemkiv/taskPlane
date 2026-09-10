@@ -25,6 +25,7 @@ _RUNTIME_LOCK = threading.RLock()
 _BOOTSTRAP_LOCK = threading.Lock()
 _BOOTSTRAP_CONTEXT = None
 _BOOTSTRAP_STATE = None
+_HOST_PREFIXES = ("CLAUDE_", "CODEX_", "TASKPLANE_")
 
 
 def _restore_environment(name: str, value: object) -> None:
@@ -45,7 +46,7 @@ def _clear_readonly_and_retry(func, target, _exc) -> None:
 
 
 @contextmanager
-def isolated_test_runtime():
+def isolated_test_runtime(*, host_environment=None):
     """Scope test-store, temp-dir, and runner patches to one runner.
 
     The lock deliberately serializes these process-global bindings. Nested
@@ -61,8 +62,14 @@ def isolated_test_runtime():
             unittest.TestCase, "_tp_isolated", _MISSING)
         saved_environment = {
             name: os.environ.get(name, _MISSING)
-            for name in ("TMPDIR", "PYTHONIOENCODING", "TASKPLANE_HOME")
+            for name in {"TMPDIR", "PYTHONIOENCODING", *(
+                key for key in os.environ if key.startswith(_HOST_PREFIXES))}
         }
+        host_environment = dict(host_environment or {})
+        if any(not isinstance(key, str) or not key.startswith(_HOST_PREFIXES)
+               or not isinstance(value, str)
+               for key, value in host_environment.items()):
+            raise ValueError("host_environment must contain explicit host variables")
         tmp_root = None
 
         def _force_rmtree(path, ignore_errors=False, **kwargs):
@@ -85,13 +92,17 @@ def isolated_test_runtime():
                 _restore_environment("TASKPLANE_HOME", saved_home)
 
         try:
+            for name in list(os.environ):
+                if name.startswith(_HOST_PREFIXES):
+                    os.environ.pop(name)
             # Create the aggregation root before redirecting tempfile itself.
             tmp_root = os.path.realpath(tempfile.mkdtemp(prefix="tp-tests-"))
             tempfile.tempdir = tmp_root
             os.environ["TMPDIR"] = tmp_root
             os.environ.setdefault("PYTHONIOENCODING", "utf-8")
             session_home = tempfile.mkdtemp(prefix="tp-store-test-")
-            os.environ.setdefault("TASKPLANE_HOME", session_home)
+            os.environ["TASKPLANE_HOME"] = session_home
+            os.environ.update(host_environment)
             shutil.rmtree = _force_rmtree
             shutil._tp_force_rmtree = True
             unittest.TestCase.run = _isolating_run
@@ -119,6 +130,9 @@ def isolated_test_runtime():
             else:
                 shutil._tp_force_rmtree = saved_force_marker
             tempfile.tempdir = saved_tempdir
+            for name in list(os.environ):
+                if name.startswith(_HOST_PREFIXES):
+                    os.environ.pop(name)
             for name, value in saved_environment.items():
                 _restore_environment(name, value)
             if tmp_root is not None:

@@ -1,5 +1,6 @@
 """R-0003 t08: canonical governance survives eligible tree removal."""
 from __future__ import annotations
+from taskplane.tests.phase_fixture import save_component_workflow
 
 import os
 
@@ -93,7 +94,7 @@ def test_automatic_merge_persists_receipt_before_cleanup_and_replay_recovers(
         handle.write('{"evaluation":{"status":"pass"}}\n')
     task = {"id": "task-1", "status": "passed", "workspace": worker,
             "scope": ["task.txt"]}
-    loop.save(str(primary), {"step": "em", "goal": "g", "parallel": True,
+    save_component_workflow(str(primary), {"step": "em", "goal": "g", "parallel": True,
                              "tasks": [task], "current_task": 0})
     original = cleanup.cleanup
 
@@ -123,7 +124,7 @@ def test_pre_receipt_failure_preserves_tree(tmp_path, monkeypatch):
     with open(verdict, "w", encoding="utf-8") as handle:
         handle.write("{}\n")
     task = {"id": "task-1", "status": "passed", "workspace": worker}
-    loop.save(str(primary), {"step": "em", "goal": "g", "parallel": True,
+    save_component_workflow(str(primary), {"step": "em", "goal": "g", "parallel": True,
                              "tasks": [task], "current_task": 0})
     import repository
     monkeypatch.setattr(

@@ -11,6 +11,7 @@ cd taskPlane
 git config user.email you@example.com && git config user.name you   # gates need commit identity
 awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > .requirements-test.lock
 python -m pip install --require-hashes --no-deps -r .requirements-test.lock
+python -m pip install --require-hashes --no-deps -r requirements-dev.lock
 rm .requirements-test.lock
 python -m pytest taskplane/tests -q                    # run from the repo ROOT (conftest imports the taskplane package)
 python -m unittest taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation -v

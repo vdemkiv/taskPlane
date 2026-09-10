@@ -24,6 +24,5 @@ def test_preflight_is_atomic_before_any_worker_or_worktree(
     monkeypatch.setattr(loop.tp, "activate",
                         lambda *_args, **_kwargs: calls.append("contract"))
     result = loop.claim(str(tmp_path), "t1", str(tmp_path / "worker"))
-    assert result["error"].startswith("atomic governed preflight failed")
+    assert "settings digest mismatch" in result["error"]
     assert calls == ["preflight"]
-

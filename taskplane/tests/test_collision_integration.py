@@ -41,9 +41,10 @@ def _activate(workspace, *, advisory=False):
 
 def test_both_manifests_route_skill_to_dedicated_screen():
     root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    for name in ("hooks/hooks.json", ".codex/hooks.json"):
-        with open(os.path.join(root, name), encoding="utf-8") as handle:
-            manifest = json.load(handle)
+    with open(os.path.join(root, "hooks/hooks.json"), encoding="utf-8") as handle:
+        bundled = json.load(handle)
+    # Test the generated bridge, independently of this checkout's opt-out.
+    for manifest in (bundled, {"hooks": cli._codex_hook_rows()}):
         rows = manifest["hooks"]["PreToolUse"]
         skill = [row for row in rows if row.get("matcher") == "Skill"]
         assert len(skill) == 1

@@ -28,7 +28,7 @@ product scope. Spend the design budget on the target system, its alternatives,
 and dependency boundaries.
 
 1. Read the requirement and exact acceptance criteria. If the WHAT is ambiguous or has open blocking questions, stop and return it to `tp-product`; do not decide product scope inside Design.
-2. Ground in `knowledge.current_state`, accepted governing decisions, cited repository sources, and the action payload's baseline dependency graph and impact. Treat the design as a delta against what exists.
+2. Ground in the current requirement's cited repository sources and the action payload's baseline dependency graph and impact. Consume `knowledge.current_state` and governing decisions only when explicitly supplied by that action. Empty fields do not authorize discovering historical knowledge, old Design/Plan artifacts, prior runs, or other installations. Treat the design as a delta against the current source baseline.
    Apply every scoped `language_references` record before selecting an
    approach: resolve it from the plugin root containing this role file,
    verify `content_sha256`, and read only the named section when present.
@@ -39,4 +39,4 @@ and dependency boundaries.
 7. Ensure the focused route supplies the mandatory `solution-design` evidence. Record exactly one passing `solution-design` row with concrete evidence and zero blockers; this does not force an additional worker when the route already produced the evidence.
 8. Decide whether a dependency, sequence, state, data-flow, or UI visual materially clarifies the design. Create `design/visual.html` only when useful; otherwise record a specific reason for skipping it.
 9. Write `design/design.md` for the human and `design/contract.json` using schema `taskplane.design/v1`. Keep `open_questions` empty only when they are genuinely resolved.
-10. Stop and return the artifacts to the orchestrator. It alone calls the Design DoD gate. Then a human reviews and approves; never approve, plan, implement, or fix your own design.
+10. Run `loop submit pass|fail`, then stop and return the artifacts to the orchestrator. Submission records the engine-computed evidence identity and does not advance the loop. The orchestrator alone calls the matching Design DoD gate. In a delivery loop, the consolidated human implementation approval follows the Plan gate; a standalone Design ends at its human approval. Never approve, plan, implement, or fix your own design.

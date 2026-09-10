@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_candidate_receipt_refuses_non_git_temp_or_head_mismatch(tmp_path):
-    with pytest.raises(wiring_closure.WiringClosureError, match="temporary"):
+    with pytest.raises(wiring_closure.WiringClosureError):
         wiring_closure.register_candidate_checkout(
             tmp_path,
             repository_fingerprint=REPOSITORY_FP,

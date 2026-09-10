@@ -20,7 +20,9 @@ from taskplane.tests.test_r0001_telemetry_seal import sources, FRESHNESS
 def _retro_inputs(tmp_path, monkeypatch):
     inputs = sources(tmp_path / "upstream", monkeypatch)
     runtime, dispatch, calls = _setup(tmp_path / "retro")
-    telemetry_ref = runtime.store.put("attempt-telemetry", dispatch_telemetry.produce_attempt_telemetry(inputs))
+    measured = dispatch_telemetry.produce_attempt_telemetry(inputs)
+    assert measured["token_counts_when_available"]["total_tokens"] > 0
+    telemetry_ref = runtime.store.put("attempt-telemetry", measured)
     evidence = wave_metrics.produce_terminal_evidence(dispatch_ledger=inputs.ledger,
         clock=delivery_ports.FakeClock(wall_time=120), candidate_fingerprint="a" * 64,
         evaluator_summary=retro.evaluator_summary([]), settings_digest="b" * 64)
@@ -52,7 +54,7 @@ def _retro_inputs(tmp_path, monkeypatch):
 @pytest.mark.parametrize("case", ["connected", "missing-telemetry", "missing-wave", "missing-evidence",
     "changed-telemetry", "stale-candidate", "stale-tree", "stale-impact", "foreign-run",
     "unavailable-usage", "deleted-at-effect", "missing-retro-output"])
-def test_retro_requires_terminal_telemetry(tmp_path, monkeypatch, case, record_property):
+def test_retro_requires_terminal_telemetry(tmp_path, monkeypatch, case, evidence_metadata):
     runtime, dispatch, calls, kwargs = _retro_inputs(tmp_path, monkeypatch)
     if case.startswith("missing-") and case != "missing-retro-output":
         kwargs[{"missing-telemetry": "telemetry_ref", "missing-wave": "terminal_metrics_ref",
@@ -92,8 +94,8 @@ def test_retro_requires_terminal_telemetry(tmp_path, monkeypatch, case, record_p
         with pytest.raises((ValueError, OSError)):
             retro.run_retro_phase(runtime, dispatch, **kwargs)
         assert calls == (["launch", "observe"] if case == "missing-retro-output" else [])
-    record_property("case", case)
-    record_property("evidence_mode", "local-production-with-simulated-host-and-authority")
+    evidence_metadata.append(('case', case))
+    evidence_metadata.append(('evidence_mode', 'local-production-with-simulated-host-and-authority'))
 
 
 def _publication(tmp_path, monkeypatch):
@@ -126,7 +128,7 @@ def _publication(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("case", ["connected", "sever-retro-output"])
-def test_publication_grant_valid_once(tmp_path, monkeypatch, case, record_property):
+def test_publication_grant_valid_once(tmp_path, monkeypatch, case, evidence_metadata):
     runtime, args, effects, binding = _publication(tmp_path, monkeypatch)
     if case == "sever-retro-output":
         Path(args["retro_ref"]["path"]).unlink()
@@ -136,7 +138,7 @@ def test_publication_grant_valid_once(tmp_path, monkeypatch, case, record_proper
     else:
         release_evidence.consume_publication_grant(**args)
         assert effects == [(args["package"], binding)]
-    record_property("evidence_mode", "local-production-with-simulated-publication-authority")
+    evidence_metadata.append(('evidence_mode', 'local-production-with-simulated-publication-authority'))
 
 
 @pytest.mark.parametrize("case", ["replay", "restart-replay", "reconciled-replay", "changed-package", "destination", "predecessor",
@@ -145,7 +147,7 @@ def test_publication_grant_valid_once(tmp_path, monkeypatch, case, record_proper
     "expired", "revoked", "movement-at-effect", "revoked-at-effect", "deleted-grant-at-effect",
     "publisher-failure"])
 def test_publication_grant_replay_substitution_destination_and_predecessor_movement_refused(
-        tmp_path, monkeypatch, case, record_property):
+        tmp_path, monkeypatch, case, evidence_metadata):
     runtime, args, effects, binding = _publication(tmp_path, monkeypatch)
     if case in {"replay", "restart-replay", "reconciled-replay"}:
         release_evidence.consume_publication_grant(**args)
@@ -203,5 +205,5 @@ def test_publication_grant_replay_substitution_destination_and_predecessor_movem
     with pytest.raises((ValueError, OSError, producer_observation.ProducerObservationError)):
         release_evidence.consume_publication_grant(**{k: v for k, v in args.items() if k != "revoked"})
     assert len(effects) == (1 if case in {"replay", "restart-replay", "reconciled-replay", "publisher-failure"} else 0)
-    record_property("case", case)
-    record_property("evidence_mode", "local-production-with-simulated-publication-authority")
+    evidence_metadata.append(('case', case))
+    evidence_metadata.append(('evidence_mode', 'local-production-with-simulated-publication-authority'))

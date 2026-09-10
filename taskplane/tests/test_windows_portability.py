@@ -351,7 +351,7 @@ class TestExternalStorePathsStayBounded(unittest.TestCase):
         self.assertLessEqual(len(right_key), 89)
         self.assertNotEqual(left_key, right_key,
                             "the complete canonical path must still bind the key")
-        self.assertRegex(left_key, r"-[0-9a-f]{8}$")
+        self.assertRegex(left_key, r"-[0-9a-f]{10}$")
 
 
 class TestReviewSourcePinningAcrossWindowsStatApis(unittest.TestCase):

@@ -23,6 +23,11 @@ import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, TypeVar, runtime_checkable
 
+if __package__:
+    from . import primitives
+else:
+    import primitives
+
 try:  # pragma: no cover - platform branch
     import fcntl
 except ImportError:  # Windows retains the in-process lock
@@ -303,12 +308,11 @@ def task_test_timeout_seconds(
 
 
 def canonical_json(value: Any) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    return primitives.canonical_bytes(value, trailing_newline=True)
 
 
 def content_fingerprint(value: bytes | Any) -> str:
-    raw = value if isinstance(value, bytes) else canonical_json(value)
-    return hashlib.sha256(raw).hexdigest()
+    return primitives.content_fingerprint(value, trailing_newline=True)
 
 
 @runtime_checkable

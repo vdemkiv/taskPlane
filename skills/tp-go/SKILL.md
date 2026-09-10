@@ -53,12 +53,12 @@ authoritative; do not call `$TP --help`, inspect taskplane source/tests, or
 run exploratory status/list commands during the normal path.
 
 **One owner per phase.** The orchestrator never authors Product, Design,
-Plan, Build, Evaluate, or Engineering artifacts inline. It initializes the
-loop, dispatches the exact role emitted by `loop next`, waits, and applies the
-mechanical gate. A goal with no existing R-id starts the loop without `--req`:
-the first PM action creates exactly one complete requirement and spec. Attach
-that returned R-id on the PM gate with `loop gate pass --req R-XXXX`. Never
-run standalone Product refinement first and then repeat it inside the loop.
+Plan, Build, Evaluate, or Engineering artifacts inline. It initializes from
+the exact selected requirement, dispatches the role emitted by `loop next`,
+waits, and applies the mechanical gate. Product refines the supplied requirement
+through its declared candidate output; it does not create another requirement
+or replace the run's input. Missing requirement identity is a named startup
+precondition, not permission to scan old work or initialize without `--req`.
 
 **One direct evidence kernel.** Evaluate and final EM use one pinned diff,
 graph-quality/blast-radius record, requirements/contracts, DoR/DoD envelope,
@@ -175,61 +175,43 @@ explicit approval in conversation. Never run the loop silently.
    If the report includes `artifacts`, read the latest snapshot before
    re-deriving plan, review, graph, or progress state; it is the durable
    cross-session/team handoff.
-1. **Setup (once a folder + repo exist):** if `knowledge/context/` is
+1. **Setup (once a folder + repo exist):** if onboarding reports that context is
    missing, run `$TP init` yourself (details: `references/setup.md`) and fill
-   the three context docs from the conversation — only ask what you can't
+   the four context docs from the conversation — only ask what you can't
    infer.
    Managed source, private runtime state, graph/evidence, and review artifacts
    are separate: source lives under the checkout root returned by repository
    preflight; run-private data lives under its run root; only explicitly shared
    knowledge lives in `.taskplane-kb/`. Consume paths from the run manifest,
    never assume `.em-review` is the source or artifact root.
-2. **Initialize once:** only when no run exists. Initialization establishes
-   the run and locator without requiring a loaded-hook receipt, because it
-   launches no worker. When the user supplied an existing R-id, run
-   `$TP loop init --req R-XXXX "<goal>"`. Otherwise run `$TP loop init
-   "<goal>"`; the PM step owns the first requirement/spec. Never run a
-   standalone `req new` before this loop. The `new-run` canary is the explicit
-   exception: it requires an exact existing R-id and accountable human, so run
-   `$TP loop init --req R-XXXX --by "human:owner" "<goal>"` with a stable session
-   identity already exported. Add `--design` for a
-   complex/risky/contract-changing or explicitly requested proposed-HOW phase;
-   add `--design-only` when the deliverable is the approved design itself;
-   add `--parallel` when the plan will have independent tasks; use `--spec
-   path` only for an existing complete spec. When a completed design-only loop
-   must continue into delivery, use `--reuse-approved-design --by <human>`
-   with the exact same requirement and spec; the engine verifies unchanged
-   Design bytes, preserves its approved fingerprint, archives the terminal
-   loop, and starts at Plan without rerunning or silently dropping Design.
-3. **Dispatch, never impersonate:** call `$TP loop next` once for the current
-   step and dispatch the named role under its prepared child-scoped contract. On
-   Codex, follow
-   `references/codex-native-dispatch.md`: use the exact `task_name`, model and
-   `reasoning_effort`, standalone `role_marker`, and complete
-   `role_instructions` file plus action payload, including the exact
-   `contract_bootstrap.environment`; the native `SubagentStart` hook binds
-   that pending slot to the child without binding it to the orchestrator.
-   Follow the emitted
-   `taskplane.wait-policy/v1`: one event wait per outstanding set, unbounded
-   when supported or at least 1800 seconds, reissued only after a completion
-   or attention wake. Collect the final result. If the action includes
-   `stage_runtime_dispatch`, pass it unchanged and make it the worker's only
-   stage startup context; reject mismatched stage heads, handoff fingerprints,
-   authority, scope, budget, execution claim, or selected artifacts. Do not
-   perform the role inline, call
-   `loop next` again while it is running, or replace its contract. The PM
-   worker returns one R-id; attach it on its mechanical gate with
-   `$TP loop gate pass --req R-XXXX`. Product/planner return artifacts; only
-   execute/fix/evaluate/engineering workers submit. Before the Design owner
-   runs, execute the complete `design_lens_dispatches` set returned by that
-   same `loop next`: resolve every package-relative role reference and digest,
-   spawn all selected quick lenses concurrently with their exact host fields
-   and child contracts, wait once using `design_lens_wait_policy`, and collect
-   exactly one bound terminal result for each selected lens. Do not choose the
-   workers yourself, reuse a prior route, add a familiar lens, or serialize
-   pairwise-disjoint lenses. Missing, stale, foreign, or replayed host
-   authority blocks Design. After that exact set validates, dispatch the
-   emitted `tp-designer` owner once to consolidate the result. Design writes
+2. **Initialize once:** only when no run exists. New v4 runs require the
+   exact selected R-id, accountable human and stable session identity:
+   `$TP loop init --req R-XXXX --by "human:owner" "<goal>"`.
+   Product receives that selected requirement and starts from its bounded input;
+   initialization never discovers another run's requirement or artifacts.
+   Add `--parallel` for independent tasks. An existing run uses `loop resume`;
+   do not initialize a replacement or copy authority from a prior session.
+3. **Dispatch the bounded startup:** `$TP loop next` returns exactly `schema`,
+   `stage_runtime_dispatch`, and `obligations`. Use the host launch fields in
+   `obligations`; follow `references/codex-native-dispatch.md`. Pass only the
+   unchanged startup envelope, standalone role marker, and exact
+   `contract_bootstrap.environment` to the worker with `fork_turns="none"`.
+   The worker calls `$TP stage read-input --request -` with that envelope, then
+   consumes its pinned phase definition and declared artifact references. Never
+   forward the full action payload, full prior briefs, or ambient state.
+   Follow the emitted wait policy and collect the result. Product, Design and
+   Plan author their declared candidates; the host collector retains them and
+   the orchestrator alone requests the gate. Do not dispatch again while the
+   current operation is pending.
+   Product, Design and Plan author their draft before invoking
+   `stage prepare-lenses` with their exact startup request. Use the shared
+   dispatcher, signed activation and wait policy for every selected lens.
+   `stage collect-lenses` runs the common collector against that same current
+   candidate; consume the full results before completing the phase. A changed
+   draft invalidates prior results. All later phases consume the retained
+   `lens-evidence` package, including every parallel task at EM and Retro.
+   Worker protocol lives in `agents/tp-lens.md`; no phase-specific lens
+   receipt format or self-attested result is supported. Design writes
    `design/contract.json` and
    `design/design.md`, compares alternatives, declares a proposed graph
    overlay with bounded contract-level boundaries, runs the mandatory
@@ -304,67 +286,26 @@ explicit approval in conversation. Never run the loop silently.
 6. **Finish:** after sign-off run the retro per `references/retro.md`,
    then `discipline/finishing-work.md` (debt, graph rescan, track close).
 
-**Stage rollout and rollback.** For a run not yet initialized,
-`TASKPLANE_STAGE_NATIVE` is disabled by default and accepts two enabling modes: `new-run` for a pristine new-run
-canary, and `enabled` after verified migration. Other values fail closed, and
-`new-run` refuses any existing singleton or migration-bound run, including
-terminal history and attempts using `--force`. Before
-continuing an initialized run in a fresh process, recover the runtime choice
-from its durable binding. A missing environment flag is not rollback, and a
-changed host session does not invalidate the original scoped authorization.
-Explicit disabling values still block effects; deploy rollback through the
-host's configured environment so it applies to every execution. Before
-starting a canary, set `TASKPLANE_STAGE_NATIVE=new-run` and then run normal
-`loop init` with `--req <R-id>` resolving an exact existing requirement and
-`--by human:owner` naming the accountable human who becomes the root stage
-`authority.actor`. The actor must match
-`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`; spaces are not accepted. A stable
-session identity must already be present in
-`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`. The
-workspace must already have a governed locator bound to an unmigrated v3 run
-with an exact target revision. Only a successful init with all of those facts
-mints the private pristine-new-run marker. The first normal `loop next`
-automatically creates, commits, and dispatches one deterministic root through
-the internal lifecycle, deriving its authority from verified governed run
-facts and storing its bounded input handoff internally. Replays reuse the
-committed operation. Do not create stage JSON, authority JSON, handoff
-artifacts, or a separate `stage start` request for this loop bootstrap.
-`loop wave` never bootstraps a root: it requires the already-bound v4 journey
-and fails closed when that binding is missing.
+**Current runtime.** Every new run starts at Product on the v4 stage aggregate.
+Use the exact configured workspace locator, selected requirement and accountable
+human identity. No environment opt-in or migration selects another runtime.
+An existing v3 run must be explicitly archived before a clean run starts.
+Never discover prior run inputs by scanning other folders or conversations.
 
-Enabling `new-run` only after init, copying or inferring the marker, any prior
-legacy mutation or progress, a non-pristine singleton, or a missing,
-mismatched, or corrupt bound locator/run/store identity refuses without
-singleton or stage mutation. Init also refuses when `--req`, its exact
-requirement, `--by`, stable session identity, the unmigrated v3 run, or its
-exact target revision is missing. After the root commits, the singleton
-retains a durable run binding; locator/store loss remains a fail-closed refusal rather
-than permission to fall back to legacy dispatch. Before
-cutover, shadow migration compares bounded legacy/v4 summaries,
-retained-reference counts, lineage, and authority without switching readers.
-Enable stage-native roots for new runs before migrating existing runs; keep
-legacy CLI reads available, and cut status/dashboard/review/sign-off/Retro to
-bounded readers only after the migration receipt and conservation proof
-verify. Rollback disables new v4 mutations but leaves migrated v4 history,
-immutable stage and handoff objects, receipts, and retained legacy sources
-readable. Never reverse-collapse history into `loop.json`, reopen terminal
-stages, guess unknown state, delete retained artifacts, weaken authority or
-evidence, or broaden/force R-0003 cleanup. Migrated runs resume only after
-re-enable or explicit forward migration; there is no lossy reverse migration.
+`loop next` returns only `schema`, `stage_runtime_dispatch` and `obligations`.
+Dispatch each worker with its bounded startup and the supplied host environment.
+Read its committed input through `stage read-input`; a worker cannot read a sibling's
+input. Observe real host Start and Stop events, collect the exact attempt, then
+request the existing gate. Human approval remains required where declared.
 
-The initial release is exactly one `new-run` canary. The named, accountable
-owner is exactly the human `stage_authority.actor` recorded for that run;
-an unnamed team or queue is not an owner. Record that owner before dispatch.
-Do not start a second canary or switch general traffic to `enabled` until the
-single run has completed both a 24-hour observation window and its Retro.
-Every abort signal has threshold `1`: predecessor-root open, ambiguous active
-projection, terminal-reopen attempt, handoff-integrity failure, authority
-mismatch, startup-bound exceedance, migration-conservation mismatch, or
-R-0003 cleanup-proof failure. The first occurrence stops new stage dispatch
-and starts rollback. Disable v4 mutations within at most 15 minutes while
-retaining v4 read access, immutable history, evidence, receipts, and legacy
-sources. A clean 24-hour window without the completed Retro is not promotion
-evidence, and a completed Retro before 24 hours does not shorten the window.
+A parallel wave may contain Build, Fix and Evaluate tasks at the same time.
+Each task owns its workspace, phase binding, submission and evidence. Dispatch
+only the returned ready entries. Evaluate's `obligations.children` are its two
+independent evidence workers; each receives its own startup. Complete those
+workers before submitting Evaluate's judgment. EM review consumes all accepted
+task judgments after the join; sign-off leads to the stateless Retro phase.
+Dependency graphs evolve during these phases. Every handoff retains the exact
+graph snapshot it consumed; subsequent graph updates do not rewrite that evidence.
 
 Stage terminalization is not cleanup. Post-merge worktree cleanup stays a
 separate orchestrator-only R-0003 maintenance action and remains eligible only

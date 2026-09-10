@@ -210,10 +210,6 @@ def test_l03_visible_truncation_is_grapheme_safe_and_accessible_text_is_full(
     standalone = _render_standalone(tmp_path, monkeypatch, goal)
     assert family + "…" in standalone
     assert f'<span class="sr">{goal}</span>' in standalone
-    # Guard the other approved display boundary against a return to slicing
-    # escaped/code-point text in the recent-decision production renderer.
-    assert "_visible_text(d.get(\"title\"" in inspect.getsource(
-        dashboard._context_panel)
 
 
 def test_emitted_host_controller_remains_valid_javascript():

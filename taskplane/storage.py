@@ -7,6 +7,11 @@ path it happens to use.
 """
 from __future__ import annotations
 
+if __package__:
+    from .primitives import atomic_json as _atomic_json
+else:
+    from primitives import atomic_json as _atomic_json
+
 from collections.abc import MutableMapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -251,32 +256,6 @@ def resolve_layout(identity: RepositoryIdentity, *, run_id: str,
     )
 
 
-def _atomic_json(path: str, value: dict) -> None:
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(
-        prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            json.dump(value, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        try:
-            directory_fd = os.open(directory, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError:  # directory fsync is unavailable on some hosts
-            pass
-    finally:
-        try:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-        except OSError:
-            pass
 
 
 @contextmanager
@@ -386,6 +365,23 @@ def _storage_file_lock(path: str, *, timeout: float = 10.0):
 
 
 def _locator_path(checkout: str) -> str:
+    # Run locators belong to the selected checkout's private Git directory.
+    # Read that explicit marker directly on the hot path; invoking Git for
+    # every state/trace read made a phase perform thousands of subprocesses.
+    # This resolves metadata only, never another checkout's run or artifacts.
+    marker = os.path.join(checkout, ".git")
+    directory = marker if os.path.isdir(marker) else None
+    if directory is None and os.path.isfile(marker):
+        try:
+            with open(marker, encoding="utf-8") as handle:
+                line = handle.read(4097).strip()
+        except (OSError, UnicodeError) as exc:
+            raise StorageIdentityError("workspace Git marker is unreadable") from exc
+        if len(line) > 4096 or not line.startswith("gitdir: ") or "\n" in line:
+            raise StorageIdentityError("workspace Git marker is invalid")
+        directory = os.path.join(checkout, line[len("gitdir: "):])
+    if directory is not None and os.path.isfile(os.path.join(directory, "HEAD")):
+        return os.path.realpath(os.path.join(directory, LOCATOR))
     relative = _git_value(checkout, "rev-parse", "--git-path", LOCATOR)
     if not relative:
         raise StorageIdentityError(
@@ -441,6 +437,8 @@ def load_workspace_locator(checkout: str) -> dict | None:
     primary = os.path.realpath(str(value.get("primary_checkout") or root))
     if not os.path.isabs(primary):
         raise StorageIdentityError("workspace locator has no primary checkout")
+    if primary != root and (not isinstance(value.get("task_id"), str) or not value["task_id"].strip()):
+        raise StorageIdentityError("worker workspace locator has no explicit task identity")
     stored_home = str(value.get("home") or "")
     home = os.path.realpath(os.path.abspath(os.path.expanduser(stored_home)))
     if not stored_home or not os.path.isabs(stored_home):
@@ -488,19 +486,16 @@ def bind_hook_taskplane_home(
 
     Calling this function declares that the invocation is a Taskplane hook.
     A governed checkout binds to its locator. Before governance exists,
-    only the installed native path may use the canonical user-default home.
+    both installed hook paths use the canonical user-default receipt home.
     Run initialization is independent of hook readiness and produces the
     locator before dispatch. Hooks never create a competing run binding.
     """
     expected = bind_workspace_taskplane_home(checkout, environment)
     if expected is None:
-        # A newly-created Codex task has no run locator yet.  The installed
-        # native hook is nevertheless authoritative evidence that the host
-        # loaded Taskplane, and its package command is inert unless the
-        # repository-family launcher already exists.  Bind only that narrow
-        # bootstrap case to the canonical user-default store; repository
-        # bridges and custom/untrusted homes still fail closed.
-        if str(hook_path or "").strip().lower() != "native":
+        # Installation precedes run initialization. Native and repository
+        # hooks share this receipt-only bootstrap home; neither creates or
+        # selects a run. Explicit custom homes still fail the binding below.
+        if str(hook_path or "").strip().lower() not in {"native", "bridge"}:
             raise StorageIdentityError(
                 "Taskplane hook requires a governed workspace locator")
         expected = taskplane_home(os.path.join(
@@ -1023,48 +1018,6 @@ def _linked_worktree_record(primary: str, worker: str) -> dict | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def _registration_candidates(home: str, worker: str,
-                             task_id: str) -> list[tuple[str, str, dict]]:
-    """Find exact-path registrations without trusting a checkout locator."""
-    runs = os.path.join(home, "runs")
-    try:
-        entries = sorted(os.scandir(runs), key=lambda item: item.name)
-    except FileNotFoundError:
-        return []
-    except OSError as exc:
-        raise StorageIdentityError(
-            f"managed worktree registrations are unreadable: {exc}") from exc
-    token = _worktree_token(task_id) + ".json"
-    candidates = []
-    for entry in entries:
-        if not _RUN_ID.fullmatch(entry.name) or \
-                not entry.is_dir(follow_symlinks=False):
-            continue
-        path = os.path.join(entry.path, "state", "worktree-registrations",
-                            token)
-        if not os.path.lexists(path):
-            continue
-        if os.path.islink(path) or os.path.realpath(path) != \
-                os.path.abspath(path):
-            raise StorageIdentityError(
-                "managed worktree registration uses an unsafe symlink")
-        try:
-            with open(path, encoding="utf-8") as handle:
-                value = json.load(handle)
-        except (OSError, ValueError) as exc:
-            raise StorageIdentityError(
-                f"managed worktree registration is unreadable: {exc}") \
-                from exc
-        if not isinstance(value, dict):
-            raise StorageIdentityError(
-                "managed worktree registration is invalid")
-        # Historical runs may reuse the same task id. Only a registration
-        # claiming this exact worker can authorize reconstruction.
-        if os.path.realpath(str(value.get("path") or "")) == worker:
-            candidates.append((entry.name, path, value))
-    return candidates
-
-
 def validate_task_worktree_registration(
         primary_checkout: str, worker_checkout: str, task_id: str,
         *, target_commit: str, registration: dict) -> dict:
@@ -1122,74 +1075,6 @@ def validate_task_worktree_registration(
     return registration
 
 
-def reconstruct_worker_locator(
-        primary_checkout: str, worker_checkout: str, task_id: str, *,
-        target_commit: str, home: str | None = None) -> str:
-    """Restore a missing worker locator from one exact durable registration.
-
-    This recovery is intentionally narrower than ``bind_worker_locator``:
-    the primary must have no locator; an existing worker locator is accepted
-    only when byte-equivalent in meaning to the reconstructed value. No run is
-    inferred from branch names, paths, or conversation state.
-    """
-    primary = os.path.realpath(os.path.abspath(primary_checkout))
-    supplied = os.path.abspath(os.path.expanduser(worker_checkout))
-    worker = os.path.realpath(supplied)
-    if load_workspace_locator(primary) is not None:
-        raise StorageIdentityError(
-            "primary locator exists; managed reconstruction is not applicable")
-    worker_locator = _locator_path(worker)
-    root = taskplane_home(home)
-    candidates = _registration_candidates(root, worker, task_id)
-    if len(candidates) != 1:
-        label = "missing" if not candidates else "ambiguous"
-        raise StorageIdentityError(
-            f"managed worktree registration is {label}")
-    run_dir, _, registration = candidates[0]
-    if registration.get("run_id") != run_dir:
-        raise StorageIdentityError(
-            "managed worktree registration run identity mismatch")
-    validate_task_worktree_registration(
-        primary, supplied, task_id, target_commit=target_commit,
-        registration=registration)
-    identity = resolve_repository_identity(primary)
-    layout = resolve_layout(identity, home=root, run_id=run_dir)
-    token = _worktree_token(task_id)
-    expected = os.path.realpath(os.path.join(
-        layout.checkout_root, "worktrees", "tasks", run_dir, token))
-    if worker != expected:
-        raise StorageIdentityError(
-            "managed worktree path is not canonical for its registered run")
-    git_dir = _git_value(worker, "rev-parse", "--git-dir")
-    if not git_dir:
-        raise StorageIdentityError("managed worktree Git directory is missing")
-    git_root = os.path.realpath(
-        git_dir if os.path.isabs(git_dir) else os.path.join(worker, git_dir))
-    if os.path.commonpath((git_root, worker_locator)) != git_root:
-        raise StorageIdentityError("worker locator path escapes its Git directory")
-    paths = {area: os.path.join(root_path, "worktrees", token)
-             for area, root_path in {
-                 "state": layout.state_root, "graph": layout.graph_root,
-                 "evidence": layout.evidence_root,
-                 "lenses": layout.lens_root,
-                 "artifacts": layout.artifact_root,
-             }.items()}
-    value = {
-        "schema": "taskplane.workspace/v1", "run_id": run_dir,
-        "repo_id": identity.repo_id, "repository_key": identity.key,
-        "checkout": worker, "primary_checkout": primary,
-        "home": root, "paths": paths,
-    }
-    if os.path.lexists(worker_locator):
-        existing = load_workspace_locator(worker)
-        if existing != value:
-            raise StorageIdentityError(
-                "existing worker locator does not match the exact registration")
-        return worker_locator
-    _atomic_json(worker_locator, value)
-    return worker_locator
-
-
 def load_task_worktree_registration(primary_checkout: str,
                                     task_id: str) -> dict | None:
     path = task_worktree_registration_path(primary_checkout, task_id)
@@ -1229,11 +1114,13 @@ def register_task_worktree(primary_checkout: str, worker_checkout: str,
     if worker_identity.repo_id != identity.repo_id:
         raise StorageIdentityError("worker belongs to another repository")
     parent = load_workspace_locator(primary)
+    if parent is None or parent.get("task_id"):
+        raise StorageIdentityError("managed task worktree requires an explicit primary run locator")
     value = {
         "schema": "taskplane.managed-task-worktree/v1",
         "repository": identity.to_dict(),
         "repository_key": identity.key,
-        "run_id": str((parent or {}).get("run_id") or "legacy"),
+        "run_id": parent["run_id"],
         "task_id": str(task_id), "path": worker,
         "primary_checkout": primary, "branch_ref": branch,
         "branch_tip": tip, "linked": True,
@@ -1279,15 +1166,12 @@ def refresh_task_worktree_tip(primary_checkout: str, task_id: str) -> dict:
     return refreshed
 
 
-def bind_worker_locator(primary_checkout: str, worker_checkout: str,
-                        task_id: str) -> str | None:
-    """Bind a managed linked worktree to isolated roots in the same run."""
+def _worker_locator_value(primary_checkout: str, worker_checkout: str,
+                          task_id: str) -> dict:
+    """Derive one worker binding from the explicitly selected parent run."""
     parent = load_workspace_locator(primary_checkout)
-    if parent is None:
-        return task_worktree_registration_path(
-            primary_checkout,
-            register_task_worktree(primary_checkout, worker_checkout,
-                                   task_id)["task_id"])
+    if parent is None or parent.get("task_id"):
+        raise StorageIdentityError("worker binding requires the primary run locator")
     expected = os.path.realpath(task_worktree_path(primary_checkout, task_id))
     worker = os.path.realpath(os.path.abspath(worker_checkout))
     if worker != expected:
@@ -1299,21 +1183,38 @@ def bind_worker_locator(primary_checkout: str, worker_checkout: str,
         paths[area] = os.path.join(root, "worktrees", token)
     value = {
         "schema": "taskplane.workspace/v1",
-        "run_id": parent["run_id"], "repo_id": parent["repo_id"],
+        "task_id": str(task_id), "run_id": parent["run_id"], "repo_id": parent["repo_id"],
         "repository_key": parent["repository_key"], "checkout": worker,
         "primary_checkout": parent.get("primary_checkout") or
         os.path.realpath(primary_checkout),
         "home": parent["home"], "paths": paths,
     }
-    path = _locator_path(worker)
-    _atomic_json(path, value)
+    existing = load_workspace_locator(worker)
+    if existing is not None and existing != value:
+        raise StorageIdentityError("worker locator belongs to another task or run")
+    return value
+
+
+def bind_worker_locator(primary_checkout: str, worker_checkout: str,
+                        task_id: str) -> str:
+    """Bind only the explicitly selected worker; never overwrite another owner."""
+    value = _worker_locator_value(primary_checkout, worker_checkout, task_id)
+    path = _locator_path(worker_checkout)
+    if load_workspace_locator(worker_checkout) is None:
+        _atomic_json(path, value)
     register_task_worktree(primary_checkout, worker_checkout, task_id)
     return path
 
 
 def worker_locator_error(primary: str, worker: str, task_id: str) -> str | None:
+    """Check startup identity without creating or rewriting a locator."""
     try:
-        bind_worker_locator(primary, worker, task_id)
+        _worker_locator_value(primary, worker, task_id)
+        registration = load_task_worktree_registration(primary, task_id)
+        if registration is None:
+            raise StorageIdentityError("managed worktree registration is missing")
+        validate_task_worktree_registration(primary, worker, task_id,
+            target_commit=_git_value(worker, "rev-parse", "HEAD"), registration=registration)
     except StorageIdentityError as exc:
         return str(exc)
     return None
@@ -1328,8 +1229,11 @@ def managed_write_allow(checkout: str) -> list[str] | None:
             for path in sorted(locator["paths"].values())]
 
 
-def worker_write_allow(checkout: str | None, legacy: str) -> list[str]:
-    return (managed_write_allow(checkout) if checkout else None) or [legacy]
+def worker_write_allow(checkout: str) -> list[str]:
+    paths = managed_write_allow(checkout)
+    if paths is None:
+        raise StorageIdentityError("phase worker requires an explicit run locator")
+    return paths
 
 
 def submission_evidence_paths(checkout: str, step: str) -> list[str]:
@@ -1347,146 +1251,349 @@ def instruction_artifact_paths(checkout: str | None) -> tuple[str, str]:
     return ".eval/verdict.json", ".em-review"
 
 
-DASHBOARD_PUBLICATION_SCHEMA = "taskplane.dashboard-publication-store/v1"
+def control_root(workspace: str) -> str:
+    locator = load_workspace_locator(workspace)
+    return os.path.join(locator["paths"]["state"], "control") if locator else os.path.join(workspace, ".taskplane")
 
 
-def dashboard_snapshot_store_path(workspace: str) -> str:
-    """Return the workspace-local atomic dashboard publication head."""
-    root = os.path.realpath(os.path.abspath(workspace))
-    return os.path.join(root, ".taskplane", "dashboard-state", "current.json")
-
-
-def load_dashboard_publication(workspace: str) -> dict | None:
-    """Load and authenticate the complete persisted snapshot history."""
-    path = dashboard_snapshot_store_path(workspace)
+def resolved_worktree(workspace: str) -> str:
+    candidate = os.path.realpath(os.path.abspath(workspace))
     try:
-        with open(path, encoding="utf-8") as handle:
-            value = json.load(handle)
-    except FileNotFoundError:
+        result = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=candidate,
+            capture_output=True, text=True, encoding="utf-8", timeout=10, check=False)
+        top = result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        top = ""
+    return os.path.realpath(top) if top else candidate
+
+if __package__:
+    from .primitives import (StateError, atomic_write_json, _run, _durable_makedirs, _fsync_directory)
+else:
+    from primitives import (StateError, atomic_write_json, _run, _durable_makedirs, _fsync_directory)
+
+
+def tp_dir(workspace: str) -> str:
+    # Managed hybrid checkouts keep their complete control plane in the
+    # canonical run root.  Unmanaged/local workspaces preserve the historic
+    # per-checkout runtime for compatibility and isolated worktree workers.
+    locator = load_workspace_locator(workspace)
+    if locator:
+        return os.path.join(locator["paths"]["state"], "control")
+    return os.path.join(workspace, ".taskplane")
+
+
+def store_home() -> str:
+    """Root of the taskplane store — holds every project's KB, out of any
+    repo. Defaults to ~/.taskplane; TASKPLANE_HOME overrides it (tests, or a
+    synced/shared drive)."""
+    return (os.environ.get("TASKPLANE_HOME")
+            or os.path.join(os.path.expanduser("~"), ".taskplane"))
+
+
+def _workspace_identity(workspace: str) -> str:
+    """Canonical checkout identity shared by parent and child processes."""
+    return os.path.realpath(os.path.abspath(workspace))
+
+
+def _path_slug(workspace: str) -> str:
+    ap = _workspace_identity(workspace)
+    return re.sub(r"[^A-Za-z0-9]+", "-", ap) or "-"
+
+
+def project_key(workspace: str) -> str:
+    """Stable, COLLISION-FREE per-project key: a readable path slug plus a
+    short hash of the canonical absolute path.
+
+    The slug alone (the v0.9.6 scheme) collapses every run of non-alphanumerics
+    to '-', so distinct projects whose paths differ only by punctuation —
+    /x/my-app, /x/my_app, /x/my.app — all map to ONE key and silently share a
+    store (KB, requirements, and loop.json — a gate in one corrupts the other).
+    An 8-char hash guarantees distinct keys while the slug stays readable."""
+    # A managed hybrid checkout carries one validated, ignored locator.  It
+    # binds every clone/worktree of the same hosted repository to the same
+    # durable project knowledge root while run state remains run-scoped.
+    # Local/unmanaged checkouts preserve the historical path identity.
+    locator = load_workspace_locator(workspace)
+    if locator:
+        return str(locator["repository_key"])
+    # Use the same repository identity before and after run registration.
+    # Onboarding never moves requirements or searches an older project store.
+    return resolve_repository_identity(workspace).key
+
+
+def store_env() -> str:
+    """The TASKPLANE_STORE override, normalized ('repo' | 'external' | '').
+    One reader so the kernel and loop can't drift on how the env is parsed."""
+    return os.environ.get("TASKPLANE_STORE", "").strip().lower()
+
+
+def external_store_root(workspace: str) -> str:
+    """The classic PRIVATE external store (~/.taskplane/projects/<key>/),
+    resolved unconditionally — mode config never redirects this. It is the
+    private side of `tp share push` and the home of mode.json itself."""
+    locator = load_workspace_locator(workspace)
+    home = str(locator["home"]) if locator else store_home()
+    root = os.path.join(home, "projects", project_key(workspace))
+    return root
+
+
+def repo_store_root(workspace: str) -> str:
+    """The SHARED in-repo store (<ws>/.taskplane-kb/) — committed with the
+    work, so it survives Claude Tag's ephemeral sandbox and is visible to
+    every teammate who clones the branch."""
+    return os.path.join(os.path.abspath(workspace), ".taskplane-kb")
+
+
+def _mode_file(workspace: str) -> str:
+    return os.path.join(external_store_root(workspace), "mode.json")
+
+
+def _remote_mode_file(workspace: str) -> str | None:
+    """Fallback mode file keyed by the git remote URL, so plan/privacy
+    settings follow the REPO across checkouts/paths (a second clone without
+    its own mode.json inherits the user's choice, closing the quiet privacy
+    hole where `share set private` in checkout A did nothing in checkout B)."""
+    if not os.path.isdir(workspace):
         return None
-    except (OSError, ValueError) as exc:
-        raise StorageIdentityError(
-            f"dashboard publication is unreadable: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema") != \
-            DASHBOARD_PUBLICATION_SCHEMA or set(value) != {
-                "schema", "current", "history"}:
-        raise StorageIdentityError("dashboard publication schema is invalid")
-    history = value.get("history")
-    if not isinstance(history, list) or not history:
-        raise StorageIdentityError("dashboard publication history is invalid")
     try:
-        if __package__:
-            from .host_native import (ContradictorySnapshotError,
-                                      HostSurfaceSnapshot)
-        else:
-            from taskplane.host_native import (ContradictorySnapshotError,
-                                               HostSurfaceSnapshot)
-        checked = [HostSurfaceSnapshot.from_dict(row) for row in history]
-    except (TypeError, ValueError) as exc:
-        raise StorageIdentityError(
-            f"dashboard publication snapshot is invalid: {exc}") from exc
-    identities: dict[tuple[str, str, str, str, int], str] = {}
-    for snapshot in checked:
-        key = (snapshot.workflow_id, snapshot.run_id, snapshot.target,
-               snapshot.revision, snapshot.sequence)
-        prior = identities.get(key)
-        if prior is not None and prior != snapshot.fingerprint:
-            raise ContradictorySnapshotError(
-                "contradictory snapshots share one sequence")
-        identities[key] = snapshot.fingerprint
-    current = HostSurfaceSnapshot.from_dict(value["current"])
-    if current.to_dict() != checked[-1].to_dict():
-        raise StorageIdentityError(
-            "dashboard publication current head does not match history")
-    return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-            "current": current.to_dict(),
-            "history": [snapshot.to_dict() for snapshot in checked]}
+        r = _run(["git", "remote", "get-url", "origin"], cwd=workspace)
+        url = (r.stdout or "").strip()
+    except OSError:
+        return None
+    if not url:
+        return None
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(store_home(), "modes", f"{h}.json")
 
 
-def commit_dashboard_snapshot(workspace: str, snapshot) -> dict:
-    """CAS one authenticated HostSurfaceSnapshot into the durable head.
+def _read_personal_mode(workspace: str) -> tuple[dict, bool]:
+    """(settings, found) — path-keyed mode.json first; the remote-keyed
+    fallback (which shells out to git) is consulted only on a miss.
 
-    An exact duplicate is idempotent. Equal sequence with different bytes is
-    contradictory, and lower/non-monotonic updates fail closed.
-    """
-    try:
-        if __package__:
-            from .host_native import (ContradictorySnapshotError,
-                                      HostSurfaceSnapshot)
-        else:
-            from taskplane.host_native import (ContradictorySnapshotError,
-                                               HostSurfaceSnapshot)
-        authenticated = HostSurfaceSnapshot.from_dict(snapshot.to_dict())
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise StorageIdentityError(
-            f"dashboard snapshot is invalid: {exc}") from exc
-    path = dashboard_snapshot_store_path(workspace)
-    with _storage_file_lock(path + ".lock"):
-        prior = load_dashboard_publication(workspace)
-        history = list((prior or {}).get("history") or [])
-        if history:
-            previous = HostSurfaceSnapshot.from_dict(history[-1])
-            stable = (authenticated.workflow_id, authenticated.run_id,
-                      authenticated.target, authenticated.revision)
-            previous_stable = (previous.workflow_id, previous.run_id,
-                               previous.target, previous.revision)
-            if stable == previous_stable and \
-                    authenticated.sequence == previous.sequence:
-                if authenticated.fingerprint != previous.fingerprint:
-                    raise ContradictorySnapshotError(
-                        "contradictory snapshots share one sequence")
-                return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-                        "current": previous.to_dict(), "history": history,
-                        "replayed": True}
-            if (authenticated.workflow_id, authenticated.run_id,
-                    authenticated.target) == (
-                    previous.workflow_id, previous.run_id, previous.target) \
-                    and authenticated.sequence <= previous.sequence:
-                raise StorageIdentityError(
-                    "dashboard snapshot sequence is not monotonic")
-        history.append(authenticated.to_dict())
-        # Publication history is bounded presentation evidence, not the event
-        # journal. The authoritative workflow journal retains the full run.
-        history = history[-256:]
-        stored = {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-                  "current": authenticated.to_dict(), "history": history}
-        _atomic_json(path, stored)
-        return {**stored, "replayed": False}
-
-
-def commit_dashboard_event(workspace: str, event) -> dict:
-    """Durably append one authenticated snapshot event, idempotently."""
-    try:
-        if __package__:
-            from .host_native import HostSurfaceEvent
-        else:
-            from taskplane.host_native import HostSurfaceEvent
-        checked = HostSurfaceEvent.from_dict(event.to_dict())
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise StorageIdentityError(f"dashboard event is invalid: {exc}") \
-            from exc
-    root = os.path.dirname(dashboard_snapshot_store_path(workspace))
-    path = os.path.join(root, "events.json")
-    with _storage_file_lock(path + ".lock"):
+    FAIL SAFE (v2.3.0): a mode file that EXISTS but won't read/parse is a
+    damaged privacy control, not "no setting recorded". Resolve it as
+    private=True — the more restrictive residency — so corruption can never
+    silently downgrade a user's `share set private` to the committed SHARED
+    in-repo store. (set_mode heals the file on the next explicit setting.)"""
+    for p in (_mode_file(workspace), _remote_mode_file(workspace)):
+        if not p:
+            continue
         try:
-            with open(path, encoding="utf-8") as handle:
-                stored = json.load(handle)
+            with open(p, encoding="utf-8") as f:
+                return json.load(f), True
         except FileNotFoundError:
-            stored = {"schema": "taskplane.dashboard-events/v1",
-                      "events": []}
-        except (OSError, ValueError) as exc:
-            raise StorageIdentityError(
-                f"dashboard event history is unreadable: {exc}") from exc
-        if not isinstance(stored, dict) or stored.get("schema") != \
-                "taskplane.dashboard-events/v1" or \
-                not isinstance(stored.get("events"), list):
-            raise StorageIdentityError("dashboard event history is invalid")
-        events = [HostSurfaceEvent.from_dict(row)
-                  for row in stored["events"]]
-        if any(row.fingerprint == checked.fingerprint for row in events):
-            return {"event": checked.to_dict(), "replayed": True}
-        events.append(checked)
-        value = {"schema": "taskplane.dashboard-events/v1",
-                 "events": [row.to_dict() for row in events[-512:]]}
-        _atomic_json(path, value)
-        return {"event": checked.to_dict(), "replayed": False}
+            continue
+        except (OSError, ValueError):
+            return {"private": True}, True   # corrupt/unreadable -> private
+    return {}, False
+
+
+def _persistent_mode(workspace: str) -> dict:
+    """Mode resolution EXCLUDING the TASKPLANE_STORE env override — the
+    durable truth that set_mode may materialize into a committed config.
+    (v1.5.1: deciding the config.json write from the env-influenced mode let
+    a transient env var create a committable artifact for the whole team.)
+
+    A committed shared config expresses the repository owner's preference;
+    it is not consent from a newly arrived user.  Until that user records a
+    local choice, keep writes in the external store and make the one-command
+    shared opt-in explicit.  Managed hosts that deliberately force
+    ``TASKPLANE_STORE=repo`` still take the environment-override path in
+    :func:`get_mode`.
+    """
+    personal, found = _read_personal_mode(workspace)
+    plan = personal.get("plan")
+    private = bool(personal.get("private"))
+    if private:
+        return {"plan": plan, "store": "external", "private": True,
+                "source": "private-setting"}
+    shared_cfg = os.path.join(repo_store_root(workspace), "config.json")
+    if os.path.exists(shared_cfg):
+        if not plan:
+            try:
+                with open(shared_cfg, encoding="utf-8") as f:
+                    plan = json.load(f).get("plan")
+            except (AttributeError, OSError, ValueError):
+                pass
+        if not found:
+            return {
+                "plan": plan or "team",
+                "store": "external",
+                "private": True,
+                "source": "shared-config-unconfirmed",
+                "notice": (
+                    "this repo offers a SHARED in-repo store "
+                    "(.taskplane-kb/ — committed with the code), but this "
+                    "new local user remains PRIVATE in the external store "
+                    "until sharing is explicitly confirmed. Run `tp share "
+                    "set shared` to opt in; `tp share set private` keeps "
+                    "knowledge local."
+                ),
+            }
+        out = {"plan": plan or "team", "store": "repo", "private": False,
+               "source": "shared-config"}
+        return out
+    if plan in ("team", "enterprise"):
+        return {"plan": plan, "store": "repo", "private": False,
+                "source": "plan"}
+    return {"plan": plan or "personal", "store": "external",
+            "private": False, "source": "default"}
+
+
+def get_mode(workspace: str) -> dict:
+    """v1.5.0 — plan-aware store resolution. Returns
+    {"plan", "store" ("external"|"repo"), "private", "source"[, "notice"]}.
+
+    Precedence:
+      1. TASKPLANE_STORE env (explicit override — Tag skill, tests)
+      2. the user's PRIVATE setting (mode.json; also remote-keyed fallback)
+      3. the user's recorded shared choice
+      4. an unconfirmed committed shared config remains external/private
+      5. the recorded plan: team/enterprise -> repo, personal -> external
+      6. default: external (personal)."""
+    env = store_env()
+    if env in ("repo", "external"):
+        personal, _ = _read_personal_mode(workspace)
+        return {"plan": personal.get("plan"), "store": env,
+                "private": bool(personal.get("private")), "source": "env"}
+    return _persistent_mode(workspace)
+
+
+def set_mode(workspace: str, plan: str | None = None,
+             private: bool | None = None) -> dict:
+    """Update the plan and/or private flag (both changeable any time).
+    Personal settings persist in the external store's mode.json AND a
+    remote-keyed copy (so they follow the repo across checkouts). The
+    committed shared config (<ws>/.taskplane-kb/config.json) is written
+    ONLY from the env-independent resolution, and ONLY for an explicit
+    team/enterprise plan — a transient TASKPLANE_STORE, or one user's
+    personal-plan declaration, must never rewrite the team's file."""
+    cfg, _ = _read_personal_mode(workspace)
+    if plan is not None:
+        cfg["plan"] = plan
+        if plan == "personal":
+            # A personal-plan selection is an explicit private/local choice,
+            # not acknowledgement of a repository's shared-store proposal.
+            cfg["private"] = True
+    if private is not None:
+        cfg["private"] = bool(private)
+    targets = [p for p in (_mode_file(workspace),
+                           _remote_mode_file(workspace)) if p]
+    wrote_any, last_err = False, None
+    for p in targets:
+        try:
+            # Atomic (v2.3.0): mode.json is the private-vs-shared CONTROL
+            # file — a torn write must keep the old file, never drop the
+            # user's `private` flag.
+            atomic_write_json(p, cfg, indent=2)
+            wrote_any = True
+        except OSError as e:
+            last_err = e
+    if targets and not wrote_any:
+        # Every persistence target failed — a silent no-op here means the
+        # user's `share set private` never took effect. Surface it. (v1.5.2)
+        raise OSError(f"could not persist taskplane mode to any of "
+                      f"{targets}: {last_err}")
+    persistent = _persistent_mode(workspace)
+    if persistent["store"] == "repo" \
+            and persistent["plan"] in ("team", "enterprise") \
+            and cfg.get("plan") in ("team", "enterprise"):
+        try:
+            os.makedirs(repo_store_root(workspace), exist_ok=True)
+            with open(os.path.join(repo_store_root(workspace),
+                                   "config.json"), "w", encoding="utf-8") as f:
+                json.dump({"plan": persistent["plan"], "store": "repo"},
+                          f, indent=2)
+        except OSError:
+            pass
+    return get_mode(workspace)
+
+
+def store_root(workspace: str) -> str:
+    """This project's store dir — external (private, ~/.taskplane) or
+    in-repo (<ws>/.taskplane-kb, the Claude Tag / team-shared mode),
+    resolved by get_mode(): TASKPLANE_STORE env wins, then the user's
+    private setting, then a committed shared config, then the plan
+    (team/enterprise -> repo, personal -> external)."""
+    if get_mode(workspace)["store"] == "repo":
+        return repo_store_root(workspace)
+    return external_store_root(workspace)
+
+
+def kb_root(workspace: str) -> str:
+    """Resolve only the explicitly selected project store."""
+    return os.path.join(store_root(workspace), "knowledge")
+
+
+def store_meta_path(workspace: str) -> str:
+    return os.path.join(store_root(workspace), "meta.json")
+
+
+def _quarantine_shared_store_meta(path: str) -> str | None:
+    """Move a stale shared locator into private recovery storage."""
+    if not os.path.lexists(path):
+        return None
+    quarantine = os.path.join(store_home(), "privacy-quarantine")
+    _durable_makedirs(quarantine)
+    identity = hashlib.sha256(os.path.abspath(path).encode("utf-8")).hexdigest()
+    destination = os.path.join(quarantine, f"store-meta-{identity}.json")
+    if os.path.exists(destination):
+        destination += "." + secrets.token_hex(8)
+    os.replace(path, destination)
+    _fsync_directory(os.path.dirname(path) or ".")
+    _fsync_directory(quarantine)
+    return destination
+
+
+def write_store_meta(workspace: str) -> dict:
+    """Record the store owner without publishing workstation identity.
+
+    The private external store retains the exact checkout locator needed by
+    legacy adoption and local recovery.  A repository store is committed and
+    shared, so it carries only stable pseudonyms and a repository fingerprint;
+    neither an absolute path nor a credential-bearing remote URL crosses that
+    boundary.
+    """
+    root = store_root(workspace)
+    os.makedirs(root, exist_ok=True)
+    remote = _run(["git", "config", "--get", "remote.origin.url"],
+                  cwd=workspace).stdout.strip() or None
+    shared = get_mode(workspace)["store"] == "repo"
+    if shared:
+        workspace_digest = hashlib.sha256(
+            _workspace_identity(workspace).encode("utf-8")).hexdigest()
+        repository_material = remote or project_key(workspace)
+        meta = {
+            "schema": "taskplane.store-meta/v2",
+            "shared": True,
+            "workspace_key": "workspace:" + workspace_digest[:24],
+            "repository_fingerprint": hashlib.sha256(
+                repository_material.encode("utf-8")).hexdigest(),
+        }
+    else:
+        meta = {"key": project_key(workspace),
+                "workspace": os.path.abspath(workspace),
+                "workspace_realpath": _workspace_identity(workspace),
+                "git_remote": remote,
+                "shared": False}
+    path = store_meta_path(workspace)
+    try:
+        atomic_write_json(path, meta, indent=2,
+                          sort_keys=True)
+    except OSError as exc:
+        if shared:
+            try:
+                quarantined = _quarantine_shared_store_meta(path)
+            except OSError as quarantine_error:
+                raise StateError(
+                    path, "shared store metadata write failed and stale raw "
+                    "metadata could not be quarantined",
+                    str(quarantine_error)) from exc
+            raise StateError(
+                path, "shared store metadata write failed closed",
+                ("stale raw metadata moved to private quarantine " +
+                 str(quarantined)) if quarantined else
+                "no shared metadata was published") from exc
+        raise StateError(path, "private store metadata write failed",
+                         str(exc)) from exc
+    return meta

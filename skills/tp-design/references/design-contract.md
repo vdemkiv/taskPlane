@@ -100,14 +100,6 @@
     "path": "design/visual.html",
     "reason": "Decision this visual clarifies"
   },
-  "lens_evidence": [
-    {
-      "lens": "solution-design",
-      "verdict": "pass",
-      "blockers": 0,
-      "evidence": "What was checked"
-    }
-  ],
   "open_questions": []
 }
 ```

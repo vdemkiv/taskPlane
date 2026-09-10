@@ -145,10 +145,10 @@ def test_terminal_usage_uses_only_exact_current_child_counter(native, case):
     before = path.read_bytes()
     workspace = event["cwd"] + "/foreign" if case == "foreign-cwd" else event["cwd"]
     if case == "measured":
-        snapshot = codex_identity.terminal_usage(workspace, terminal, codex_home=str(home))
+        snapshot = codex_identity.observed_usage(workspace, terminal, codex_home=str(home))
         assert snapshot["usage"]["total_tokens"] == 100
         assert snapshot["session_id"] == CHILD
     else:
         with pytest.raises(ValueError):
-            codex_identity.terminal_usage(workspace, terminal, codex_home=str(home))
+            codex_identity.observed_usage(workspace, terminal, codex_home=str(home))
     assert path.read_bytes() == before

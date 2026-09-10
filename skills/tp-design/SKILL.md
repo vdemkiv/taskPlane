@@ -96,26 +96,17 @@ Small, local, reversible, single-module work with an obvious implementation may 
 
 ## Drive the Design phase
 
-Call `loop next` exactly once for the Design step. Its
-`design_lens_dispatches` is the complete host-authorized quick-lens set, not a
-suggestion. Resolve every worker's package-relative `role_reference` against
-the currently installed taskplane package and require its content digest to
-match. Never substitute an absolute path, a role file from another checkout,
-or a previously emitted worker.
-
-Spawn every listed lens concurrently using its exact `task_name`, standalone
-`role_marker`, model when non-null, `reasoning_effort`, task slot, dispatch
-intent, brief, and child contract. Do not add a familiar lens or omit an
-unfamiliar one. Use the single emitted `design_lens_wait_policy` for the whole
-outstanding set; wake only for a terminal result or attention. Collect the
-exact selected set and let the engine validate host-issued assignment, start,
-identity, terminal, activity, and result receipts. Cancellation,
-interruption, handoff, usage, and evidence references remain terminal
-observations, not permission to silently shrink the set. Only after exact-set
-validation succeeds may the one `tp-designer` worker consolidate the Design
-Contract. If any authority, role digest, candidate binding, or result is
-missing, stale, foreign, or replayed, stop at Design with the returned
-recovery; never design inline.
+Call `loop next` once and use the saved stateless phase input. The Design
+owner authors its draft, then calls `stage prepare-lenses` with that same
+startup request. This uses the shared lens dispatcher and returns one
+isolated worker per selected disposition, with the pinned methodology,
+lease, output schema and signed activation action. Dispatch that exact set
+concurrently and follow its shared wait policy. Call `stage collect-lenses`
+with the startup request to validate every result against the current draft.
+A changed candidate requires fresh results. The phase collector retains the
+full `lens-evidence` package for Plan, Build, Evaluate, EM and Retro; do not
+write a separate Design lens receipt or self-attested pass row. Protocol and
+worker obligations are defined once in `agents/tp-lens.md`.
 
 The Design brief includes the requirement, accepted decisions, current-state
 inventory, freshly decomposed dependency graph, bounded impact, and the

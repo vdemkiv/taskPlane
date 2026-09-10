@@ -68,10 +68,8 @@ enforcement, ReviewKernel evidence/provenance, collision
 isolation, orchestrator-only gates, final human sign-off, or exact-worktree
 cleanup eligibility.
 
-When stage-native execution is disabled or the run is an unmigrated legacy
-run, retain the existing ReviewKernel/loop behavior and legacy read adapter.
-Never synthesize a v4 lifecycle outcome, mutate a singleton record through a
-stage command, or weaken a legacy R-0003 proof to emulate stage-native mode.
+Engineering reads the current run aggregate and its selected sealed evidence.
+An unsupported manifest is a refusal; no alternate runtime supplies review inputs.
 
 All review runs are read-only toward code under the contract created by the
 ReviewKernel. Do not activate a separate contract before opening the review.

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from taskplane import (
-    command_adapters, design_sweep, native_authority, preview_runtime, tp,
+    command_adapters, preview_runtime, tp,
 )
 
 
@@ -19,63 +19,6 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _production_gate_root(tmp_path: Path) -> Path:
-    root = tmp_path / "repository"
-    _write_json(root / "design/contract.json", {
-        "schema": "taskplane.design/v1",
-        "requirement": "R-0013",
-        "design_sweep": {"completed_state": {}},
-    })
-    _write_json(root / "plan/tasks.json", {
-        "schema": "taskplane.plan/v1", "requirement": "R-0013",
-        "tasks": [],
-    })
-    return root
-
-
-def test_h10_native_authority_validator_is_reachable_from_supported_flow(
-        tmp_path, monkeypatch):
-    root = _production_gate_root(tmp_path)
-    calls = []
-
-    def authority(design, plan):
-        calls.append(("authority", design["requirement"], plan["requirement"]))
-        return {"schema": "authority", "status": "ready"}
-
-    def roots(source_root):
-        calls.append(("roots", Path(source_root)))
-        return {"schema": "roots", "status": "ready"}
-
-    def sweep(source_root, *, evidence):
-        calls.append(("sweep", Path(source_root), dict(evidence)))
-        return {"schema": "sweep", "status": "ready"}
-
-    monkeypatch.setattr(native_authority, "validate_design_and_plan", authority)
-    monkeypatch.setattr(native_authority, "validate_delivery_roots", roots)
-    monkeypatch.setattr(design_sweep, "validate_retained_design_sweep", sweep)
-    receipt = native_authority.validate_production_design_gate(
-        root, sweep_evidence={"host": "retained"})
-
-    assert receipt["schema"] == "taskplane.production-design-gate/v1"
-    assert receipt["status"] == "ready"
-    assert calls == [
-        ("authority", "R-0013", "R-0013"),
-        ("roots", root.resolve()),
-        ("sweep", root.resolve(), {"host": "retained"}),
-    ]
-
-    for name in ("validate_design_and_plan", "validate_delivery_roots"):
-        monkeypatch.setattr(native_authority, name,
-                            lambda *_a, **_k: (_ for _ in ()).throw(
-                                native_authority.NativeAuthorityError("severed")))
-        with pytest.raises(native_authority.NativeAuthorityError,
-                           match="severed"):
-            native_authority.validate_production_design_gate(
-                root, sweep_evidence={"host": "retained"})
-        monkeypatch.setattr(native_authority, "validate_design_and_plan", authority)
-        monkeypatch.setattr(native_authority, "validate_delivery_roots", roots)
-
-
 @pytest.mark.parametrize(
     "flow", ["design", "build", "dynamic_review"],
 )
@@ -83,6 +26,7 @@ def test_h12_preview_entrypoints_execute_from_supported_flow(
         tmp_path, monkeypatch, capsys, flow):
     source = tmp_path / "source"
     source.mkdir()
+    monkeypatch.chdir(source)
     (source / "app.py").write_text("print('preview')\n", encoding="utf-8")
     state = tmp_path / "state"
     isolation_calls = []
@@ -157,6 +101,7 @@ def test_h12_preview_entrypoints_execute_from_supported_flow(
 
 def test_h12_preview_cli_normalizes_untyped_host_startup_failure(
         tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
     request = tmp_path / "preview.json"
     request.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -234,6 +179,7 @@ def test_h29_preview_streams_one_bounded_manifest_and_excludes_generated(
         tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
+    monkeypatch.chdir(source)
     (source / "app.py").write_bytes(b"print('bounded')\n")
     generated = source / "node_modules"
     generated.mkdir()
@@ -317,6 +263,7 @@ def test_h29_preview_preparation_exception_is_structured_and_cleans_scope(
         tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
+    monkeypatch.chdir(source)
     (source / "app.py").write_text("bounded", encoding="utf-8")
 
     def fail_preparation(*_args, **_kwargs):
@@ -343,6 +290,7 @@ def test_h29_preview_registration_has_one_aggregate_startup_deadline(
         tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
+    monkeypatch.chdir(source)
     (source / "app.py").write_text("bounded", encoding="utf-8")
     now = [0.0]
 
@@ -368,6 +316,7 @@ def test_h29_expiry_mid_cleanup_detaches_active_scope(
         tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
+    monkeypatch.chdir(source)
     (source / "app.py").write_text("bounded", encoding="utf-8")
     cleanup_started = [False]
     cleanup_now = [0.1]
@@ -417,6 +366,7 @@ def test_h29_cleanup_never_follows_root_or_subtree_symlink_swap(
         tmp_path, monkeypatch, swap):
     source = tmp_path / "source"
     source.mkdir()
+    monkeypatch.chdir(source)
     (source / "app.py").write_text("bounded", encoding="utf-8")
     outside = tmp_path / "outside"
     outside.mkdir()

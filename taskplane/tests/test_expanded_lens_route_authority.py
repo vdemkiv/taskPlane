@@ -122,10 +122,3 @@ def test_worker_module_has_no_issuance_verification_or_consumption_authority(
         "provider", "provider_path", "locator", "clock", "now", "verifier",
         "issuer", "approval_receipt",
     } & set(signature.parameters))
-    source = inspect.getsource(tp)
-    assert "import expanded_route_authority_provider" not in source
-    assert "from .expanded_route_authority_provider" not in source
-    assert "TASKPLANE_EXPANDED_ROUTE_PROVIDER" not in source
-    assert "TASKPLANE_EXPANDED_ROUTE_CLOCK" not in source
-    assert "import terminal_truth" not in source
-    assert "from .terminal_truth" not in source

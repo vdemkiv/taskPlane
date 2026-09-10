@@ -1,0 +1,272 @@
+{
+  "schema": "taskplane.product-focused-route-record/v1",
+  "action_source": {
+    "sha256": "03ee9364390f37a9c9c0fbb564ecfa581ff6357508de9873be2c423a5dfdfd8d",
+    "bytes": 238752
+  },
+  "route": {
+    "catalog_fingerprint": "da7707c6acabf07fddd68b773752c5a93d85bb4aff5b2b8d27dfc62d9fedc927",
+    "context_fingerprint": "bfbec1a4b8ea6ed5c3f958fd3189fff0fc5cfa6c314b6771acc4d1fd26c09746",
+    "dispatchable_selected": [
+      "product",
+      "security"
+    ],
+    "dispositions": [
+      {
+        "disposition": "execute_light",
+        "evidence": [
+          "product mandatory focused risk: product",
+          "requirement: mentions acceptance",
+          "automatic bounded sweep selection"
+        ],
+        "lens": "product",
+        "reason": "selected:product:product"
+      },
+      {
+        "disposition": "execute_light",
+        "evidence": [
+          "product evidence matched focused risk: security",
+          "requirement: mentions auth, enforc",
+          "automatic bounded sweep selection"
+        ],
+        "lens": "security",
+        "reason": "selected:product:security"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "code-quality",
+        "negative_evidence": [
+          "no applicable product signal for code-quality"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "testability",
+        "negative_evidence": [
+          "no applicable product signal for testability"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "design",
+        "negative_evidence": [
+          "no applicable product signal for design"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "scalability",
+        "negative_evidence": [
+          "no applicable product signal for scalability"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "integrability",
+        "negative_evidence": [
+          "no applicable product signal for integrability"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "data-safety",
+        "negative_evidence": [
+          "no applicable product signal for data-safety"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "tech-writer",
+        "negative_evidence": [
+          "no applicable product signal for tech-writer"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "qa",
+        "negative_evidence": [
+          "no applicable product signal for qa"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "devops",
+        "negative_evidence": [
+          "no applicable product signal for devops"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "dba",
+        "negative_evidence": [
+          "no applicable product signal for dba"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "sre",
+        "negative_evidence": [
+          "no applicable product signal for sre"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "project-management",
+        "negative_evidence": [
+          "no applicable product signal for project-management"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "frontend",
+        "negative_evidence": [
+          "no applicable product signal for frontend"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "backend",
+        "negative_evidence": [
+          "no applicable product signal for backend"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "tradeoffs",
+        "negative_evidence": [
+          "no applicable product signal for tradeoffs"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "solution-design",
+        "negative_evidence": [
+          "no applicable product signal for solution-design"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "services-selection",
+        "negative_evidence": [
+          "no applicable product signal for services-selection"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "time-to-market",
+        "negative_evidence": [
+          "no applicable product signal for time-to-market"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "architecture",
+        "negative_evidence": [
+          "no applicable product signal for architecture"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "mobile",
+        "negative_evidence": [
+          "no applicable product signal for mobile"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "accessibility",
+        "negative_evidence": [
+          "no applicable product signal for accessibility"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "privacy-compliance",
+        "negative_evidence": [
+          "no applicable product signal for privacy-compliance"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "cost-finops",
+        "negative_evidence": [
+          "no applicable product signal for cost-finops"
+        ],
+        "reason": "no-positive-signal"
+      },
+      {
+        "disposition": "not_applicable",
+        "lens": "i18n",
+        "negative_evidence": [
+          "no applicable product signal for i18n"
+        ],
+        "reason": "no-positive-signal"
+      }
+    ],
+    "lens_input_fingerprints": {
+      "accessibility": "4b516b75223ebc7afddb47731091b1e41b852215903d0e5f7e6630ecdf24a03a",
+      "architecture": "3210f279dd91131346c73b02b4c86e80b8aac1227c9013a9f15be7018d0d0be4",
+      "backend": "3309e8ea23c08055b07b2432705c632ebc1ba95d237c4c2968afe957a7ad321a",
+      "code-quality": "ce3268e8562fd8a5a662ec3c63acd0ba826017cf7e4e1efc822c57b74f6c19af",
+      "cost-finops": "255ec8974e04783629ecb6b92d8415d3d0dc72290c8ee408900a6927129a56b3",
+      "data-safety": "cdcde6bedaa0857bcbf9253ed50500ee29d2e4e50aa25030ce7224afd1d5df25",
+      "dba": "86ee633e34d7719ee2dc1bbdb35d6dd0ccaf0d0755d195c0b045f62760e4c8a7",
+      "design": "9dd75544a4f64cd85ad2ab23e94ba79bae5ea61c9501ef7bb7e263a12b628bc7",
+      "devops": "e83178c6172a7477fb9bc19424de1ed8e724aaaccc6141347630695943bcc78e",
+      "frontend": "648b70b107ccbd873e6a040c7e75576f8c7294996a30a2cfaf32cc6ca2994afa",
+      "i18n": "be3ffc13c3710e0cebcdce4aac32d6662878050b66387453bd2c7c2cbb9bc2eb",
+      "integrability": "c9c1561027687fde513e177bd087293a83fe82f4aeff7f1f15181dfbdc82aeb2",
+      "mobile": "9642d717cd71fbfb444ea425b909c34ce7e66a4bca4bb08ebff321ee6f5369aa",
+      "privacy-compliance": "0b0f3816e3091e0e42922d4cc54855344eeafc7917ed76ee9aca906f6c3c2844",
+      "product": "04acc369841f5cc3296e89fbe61a27a4810d2190d6f9d3e408018dc5d5b1fafa",
+      "project-management": "e6aaf01ba2950399272b5f17f724869702090fe56f9e351e8aa1e3857489f264",
+      "qa": "9f2bcace08d562e2f7141cc549c72cb9a7b206fe5079c038bba3c02efb145a3f",
+      "scalability": "127672442186ec47418f676c46d6d06fee89cb5764e9ec53665c928f0278924d",
+      "security": "5ec7ce388e890a80fc896c7bc0d9a2996008591bbe6df15cd8c5d72e36ee75f3",
+      "services-selection": "ca7a17546861563c64d516345a92a55cb54e9447d34d942e790dfe4ce5c10bc2",
+      "solution-design": "97ebffb42f91a338a4de18f0b93ca7047e26ff0f5fbef900ba4d259489fc0b4c",
+      "sre": "d2dd80cadfa873a27bb63d212d4100db8e2d645646a075e9f2a7ca8256c8e912",
+      "tech-writer": "d327059afc051afebf15a02f0a9e27ee52e6c29e350270adeec604046dff6829",
+      "testability": "e1f63ab80b416551636d04daef40099966d22504908c596a95d297ee04c1f9b3",
+      "time-to-market": "3c24601f7f50449adfa794ecdd43fa9a7175b43ae4297afe1ba0faf361b24a4e",
+      "tradeoffs": "88a3c5ec8c8d13aa27d1ac6d4060d90f0ebc011754dbecc18fa20fe5b79ba033"
+    },
+    "policy_version": "focused-routing/v1",
+    "route_fingerprint": "427b4c006655540babea7cb346f2713be88da3a0de893f1611c42ff0bea4a94e",
+    "schema": "taskplane.lens-route-policy/v1",
+    "selected": [
+      "product",
+      "security"
+    ],
+    "stage": "product",
+    "status": "ready",
+    "target": "goal-674eebe4cce3c021"
+  },
+  "execution_evidence": {
+    "product": "Current engine-bound Product owner authored this specification.",
+    "security": "Selected execute_light in the engine route; no separately bound lens brief/contract/result supplied, so independent execution is not claimed."
+  },
+  "limitation": "Disposition selection is not a completed independent review. Mechanical PM gate judges sufficiency; no route, dispatch authority or approval has been invented."
+}

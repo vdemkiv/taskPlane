@@ -430,17 +430,6 @@ def test_native_disabled_legacy_flows_keep_evidence_actions_and_gate(
         assert fallback["presentation"]["user_declined"] is False
 
 
-def test_documented_legacy_flows_keep_evidence_and_human_gates() -> None:
-    guidance = (ROOT / "docs" / "host-native-ux.md").read_text(
-        encoding="utf-8")
-    for flow in ("design", "build", "review", "status", "approval",
-                 "artifact"):
-        assert f"`{flow}`" in guidance
-    assert "canonical evidence" in guidance
-    assert "human gate" in guidance
-    assert "unavailable, not declined" in guidance
-
-
 class TestStatelessReviewContractBootstrap:
     """Host packages are optional projections, never contract authority."""
 
@@ -502,10 +491,3 @@ def test_hooks_skills_and_agents_share_projection_not_authority_semantics() -> N
         "taskplane.host-surface-snapshot/v1"
     assert hook_contract["runtimeReceiptRequired"] is True
     assert hook_contract["nativeUiIsAuthority"] is False
-
-    skill = (ROOT / "skills" / "taskplane" / "SKILL.md").read_text(
-        encoding="utf-8")
-    assert "Host-native projection contract" in skill
-    for role in ("tp-orchestrator.md", "tp-executor.md", "tp-evaluator.md"):
-        text = (ROOT / "agents" / role).read_text(encoding="utf-8")
-        assert "canonical host-surface identity" in text

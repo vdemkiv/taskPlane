@@ -29,6 +29,11 @@ Nothing here writes to the reviewed source, and nothing here is a gate on
 its own: it produces the record that tp.py's screener and the sign-off gate
 check. Enforcement stays where enforcement lives.
 """
+
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 import hashlib
 import json
 import os
@@ -232,6 +237,9 @@ def fingerprint(rec: dict) -> str:
         encoded = json.dumps(rec.get(k), sort_keys=True,
                              separators=(",", ":"))
         h.update(f"{k}={encoded}\n".encode("utf-8"))
+    if "diff_policy" in rec:
+        h.update(json.dumps(rec["diff_policy"], sort_keys=True,
+                            separators=(",", ":")).encode("utf-8"))
     return h.hexdigest()[:16]
 
 
@@ -249,6 +257,8 @@ def review_cache_identity(rec: dict, graph: dict) -> dict:
         "shallow": row.get("shallow"),
         "graph_revision": graph_revision,
     }
+    if "diff_policy" in row:
+        material["diff_policy"] = row["diff_policy"]
     material["fingerprint"] = hashlib.sha256(json.dumps(
         material, sort_keys=True, separators=(",", ":")).encode(
             "utf-8")).hexdigest()
@@ -554,11 +564,8 @@ def record_path(ws: str) -> str:
 
 
 def save(ws: str, rec: dict) -> dict:
-    p = record_path(ws)
     try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(rec, f, indent=2, sort_keys=True)
+        _shared_primitives.atomic_json(record_path(ws), rec, trailing_newline=False)
     except OSError:
         pass
     return rec

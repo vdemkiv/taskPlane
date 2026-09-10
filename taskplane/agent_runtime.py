@@ -13,9 +13,9 @@ import hashlib
 from typing import Callable, Final, Mapping, Protocol, Sequence, TypeVar
 
 if __package__:
-    from . import delivery_ports, producer_observation, review_evidence, stage_entities
+    from . import delivery_ports, producer_observation, review_evidence, stage_values as stage_entities
 else:  # Existing tp.py direct-script entry loads its loop adapter flat.
-    from taskplane import delivery_ports, producer_observation, review_evidence, stage_entities
+    from taskplane import delivery_ports, producer_observation, review_evidence, stage_values as stage_entities
 
 
 _BINDINGS: Final[tuple[str, ...]] = (

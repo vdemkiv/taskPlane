@@ -1,6 +1,9 @@
 """Acceptance tests for the exact-owned, all-outcome cleanup protocol."""
 from __future__ import annotations
 
+import sys
+from taskplane import host_native
+
 import copy
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -479,6 +482,7 @@ def test_cleanup_runs_on_every_terminal_outcome(
             "engine_bindings": {"governed_commands": {"path": "engine"}},
             "executable_binding": {"path": "/usr/bin/python3"},
             "runtime_environment": {},
+            "runtime_argv": [sys.executable],
             "fingerprint": "a" * 64,
         }
         checkpoint_spec = {"focused_proof": {"argv": ["python3", "proof"]},
@@ -985,7 +989,7 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
             delivery_publisher=views.refresh_views, **kwargs))
 
     dashboard_source = {
-        "mode": "legacy", "status": "ready", "run_id": "cleanup-loop",
+        "mode": "v4", "status": "ready", "run_id": "cleanup-loop",
         "revision": "loop-revision", "target": "owned-cleanup",
         "state": {"goal": "cleanup", "step": "execute", "tasks": [],
                   "current_task": 0},
@@ -1045,14 +1049,14 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
     canonical_snapshot = host_native.HostSurfaceSnapshot.from_dict(
         publisher_result["snapshot_publication"]["snapshot"])
     durable_snapshot = host_native.HostSurfaceSnapshot.from_dict(
-        storage.load_dashboard_publication(str(positive_workspace))["current"])
+        host_native.load_dashboard_publication(str(positive_workspace))["current"])
     assert canonical_snapshot.to_dict() == durable_snapshot.to_dict()
     assert publisher_result["durable_publication"]["snapshot"] == \
         durable_snapshot.to_dict()
     canonical_event = host_native.HostSurfaceEvent.from_dict(
         publisher_result["snapshot_publication"]["event"])
     durable_events = json.loads((
-        Path(storage.dashboard_snapshot_store_path(str(positive_workspace)))
+        Path(host_native.dashboard_snapshot_store_path(str(positive_workspace)))
         .parent / "events.json").read_text(encoding="utf-8"))["events"]
     assert canonical_event.to_dict() in durable_events
     assert attestation["snapshot_fingerprint"] == \

@@ -10,6 +10,7 @@ machine-generated negative evidence.
 import os
 import sys
 import unittest
+from taskplane.tests.lens_fixture import tree_files
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lens_signals as ls  # noqa: E402
@@ -19,16 +20,6 @@ FIXROOT = os.path.join(HERE, "fixtures", "detectors")
 CAT = ls.load_catalog()
 CATALOG_IDS = sorted(l["id"] for l in CAT["lenses"])
 EMPTY_GRAPH = {"hub_dependents": 0, "boundary_contracts": [], "modules": []}
-
-
-def tree_files(root):
-    out = []
-    for dirpath, dirs, names in os.walk(root):
-        dirs.sort()
-        for n in sorted(names):
-            out.append(os.path.relpath(os.path.join(dirpath, n),
-                                       root).replace(os.sep, "/"))
-    return out
 
 
 def ctx_for(root):

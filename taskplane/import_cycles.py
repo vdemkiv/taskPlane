@@ -349,6 +349,13 @@ def check_inventory(policy: Mapping, current: Mapping) -> dict:
     violations = []
     for row in current["sccs"]:
         members = set(row["members"])
+        protected = members.intersection({f"taskplane.{name}" for name in (
+            "stage_handoff", "stage_entities", "phase_harness", "run_store",
+            "run_context", "review_evidence", "dispatch_telemetry")})
+        if protected:
+            violations.append(_violation(
+                "phase-boundary-cycle", row, baseline=None,
+                affected_modules=protected, affected_edges=row["internal_edges"]))
         candidate_indexes = [
             index for index, baseline in enumerate(baseline_rows)
             if members.issubset(set(baseline["members"]))
@@ -438,8 +445,11 @@ def _parser() -> argparse.ArgumentParser:
         description="check the current taskplane import-cycle inventory")
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--policy", type=Path, default=POLICY_RELATIVE)
-    parser.add_argument("--check", action="store_true",
-                        help="compare the checked-out tree with the policy")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="compare the checked-out tree with the policy")
+    mode.add_argument("--report-only", action="store_true",
+                      help="report policy violations without failing on deferred cycle debt")
     return parser
 
 
@@ -459,7 +469,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(canonical_json(result), end="")
     if result["status"] != "pass":
         print(format_failures(result), file=sys.stderr)
-        return 1
+        return 0 if args.report_only else 1
     return 0
 
 

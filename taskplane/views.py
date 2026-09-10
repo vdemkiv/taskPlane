@@ -385,7 +385,10 @@ def _preserve_managed_dashboard_artifacts(
     locator = _runtime_storage.load_workspace_locator(ws)
     root = ""
     if isinstance(locator, Mapping):
-        root = str((locator.get("paths") or {}).get("artifacts") or "")
+        import loop as _loop
+        # Worker artifact directories are isolated, but retained dashboard
+        # publications belong to the existing canonical run-artifact owner.
+        root = _loop._run_artifact_root(ws, _loop.load(ws))
     else:
         import loop as _loop
         try:

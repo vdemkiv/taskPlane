@@ -7,6 +7,27 @@ Every cleanup revalidates all resources first and refuses the whole action if
 even one target is ambiguous or no longer has its activated identity.
 """
 from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING or __package__:
+    from .primitives import canonical_bytes, content_fingerprint, manifest_record
+else:
+    from primitives import canonical_bytes, content_fingerprint, manifest_record
+if TYPE_CHECKING or __package__:
+    from . import host_native
+else:
+    import host_native
+
+from functools import partial
+if TYPE_CHECKING or __package__:
+    from .primitives import atomic_json
+else:
+    from primitives import atomic_json
+_atomic_json = partial(atomic_json, indent=None, strict_directory_sync=True)
+if TYPE_CHECKING or __package__:
+    from .primitives import lock_file as _lock_file, unlock_file as _unlock_file
+else:
+    from primitives import lock_file as _lock_file, unlock_file as _unlock_file
 
 import copy
 import hashlib
@@ -25,14 +46,6 @@ from typing import (
     cast,
 )
 
-_file_lock: Any
-_windows_lock: Any
-try:
-    _file_lock = import_module("fcntl")
-    _windows_lock = None
-except ImportError:  # pragma: no cover - exercised by windows-latest
-    _file_lock = None
-    _windows_lock = import_module("msvcrt")
 
 
 JsonDict: TypeAlias = dict[str, Any]
@@ -99,8 +112,7 @@ def configure_publication_publisher(publisher: Publisher | None) -> None:
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True, allow_nan=False).encode("utf-8")
+    return canonical_bytes(value, ensure_ascii=True)
 
 
 def _digest(value: object) -> str:
@@ -108,9 +120,7 @@ def _digest(value: object) -> str:
 
 
 def _dashboard_digest(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False, allow_nan=False).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return content_fingerprint(value)
 
 
 def file_sha256(path: str | os.PathLike[str]) -> str:
@@ -142,44 +152,10 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as target:
-            json.dump(value, target, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True, allow_nan=False)
-            target.write("\n")
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
 
 
-def _lock_file(handle: BinaryIO) -> None:
-    if _file_lock is not None:
-        _file_lock.flock(handle.fileno(), _file_lock.LOCK_EX)
-        return
-    handle.seek(0, os.SEEK_END)
-    if handle.tell() == 0:
-        handle.write(b"\0")
-        handle.flush()
-    handle.seek(0)
-    _windows_lock.locking(handle.fileno(), _windows_lock.LK_LOCK, 1)
 
 
-def _unlock_file(handle: BinaryIO) -> None:
-    if _file_lock is not None:
-        _file_lock.flock(handle.fileno(), _file_lock.LOCK_UN)
-        return
-    handle.seek(0)
-    _windows_lock.locking(handle.fileno(), _windows_lock.LK_UNLCK, 1)
 
 
 @contextmanager
@@ -205,7 +181,7 @@ def _save_manifest(path: Path, manifest: JsonDict, *,
             f"observed {current['revision']}")
     value = copy.deepcopy(manifest)
     value["revision"] = expected_revision + 1
-    value["manifest_digest"] = _manifest_digest(value)
+    value = manifest_record(value, fingerprint_field="manifest_digest", ensure_ascii=True)
     _atomic_json(path, value)
     return value
 
@@ -494,8 +470,7 @@ def create_manifest(path: str | os.PathLike[str], *, repository_id: str,
     with _manifest_lock(manifest_path):
         if os.path.lexists(manifest_path):
             raise OwnedCleanupError("owned resource manifest already exists")
-        value = copy.deepcopy(manifest)
-        value["manifest_digest"] = _manifest_digest(value)
+        value = manifest_record(manifest, fingerprint_field="manifest_digest", ensure_ascii=True)
         _atomic_json(manifest_path, value)
         return value
 
@@ -867,14 +842,14 @@ def _load_durable_publication(workspace: str,
             runtime_storage = import_module("taskplane.storage")
         except ImportError:
             runtime_storage = import_module("storage")
-        durable = runtime_storage.load_dashboard_publication(workspace)
+        durable = host_native.load_dashboard_publication(workspace)
         durable_value = durable.get("current") if isinstance(
             durable, Mapping) else None
         if not isinstance(durable_value, Mapping):
             raise OwnedCleanupError(
                 "durable dashboard snapshot is unavailable")
         durable_snapshot = HostSurfaceSnapshot.from_dict(durable_value)
-        event_path = Path(runtime_storage.dashboard_snapshot_store_path(
+        event_path = Path(host_native.dashboard_snapshot_store_path(
             workspace)).parent / "events.json"
         event_store = json.loads(event_path.read_text(encoding="utf-8"))
         event_values = event_store.get("events") if isinstance(

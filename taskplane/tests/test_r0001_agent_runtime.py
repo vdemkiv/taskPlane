@@ -19,7 +19,17 @@ from taskplane.tests.test_stage_entities import _authority, _stage
 def _setup(tmp_path: Path, *, local_read: bool = False,
            foreign_stage: bool = False) -> tuple[runtime.AgentRuntime, runtime.Dispatch, list[str]]:
     root = Path(__file__).resolve().parents[2]
-    rows = json.loads(settings.DEFAULT_SETTINGS_PATH.read_text())["phase_definitions"]
+    # This is a generic runtime unit fixture, with an explicitly registered
+    # stage-only contract. Production seven-phase contracts are exercised by
+    # test_stage_loop_integration, never replaced by this fixture.
+    rows = json.loads((root / "agents/spec-phase-definitions.json").read_text(encoding="utf-8"))
+    inventory = {"taskplane.stage_entities.validate_stage": "taskplane.stage/v1"}
+    for row in rows:
+        row["consumes"] = [{"artifact_class": "stage", "artifact_schema_version": "taskplane.stage/v1", "knowledge_scope": [], "knowledge_fingerprint_required": True, "required": True}]
+        row["produces"] = [{"artifact_class": "stage", "artifact_schema_version": "taskplane.stage/v1", "cardinality": "one", "required": True}]
+        row["domain_validator_refs"] = list(inventory)
+        row["validator_inventory_fingerprint"] = review_evidence.content_fingerprint(inventory)
+    rows = [stage_entities.create_contract({key: value for key, value in row.items() if key != "fingerprint"}) for row in rows]
     capabilities = [f"root:{tmp_path / 'input'}"] if local_read else []
     if local_read:
         rows[3]["capability_requirements"] = capabilities

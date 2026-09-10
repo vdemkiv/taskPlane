@@ -8,6 +8,11 @@ state.
 """
 from __future__ import annotations
 
+if __package__:
+    from .primitives import atomic_json as _atomic_json
+else:
+    from primitives import atomic_json as _atomic_json
+
 import argparse
 import hashlib
 import json
@@ -636,15 +641,6 @@ def _saved_startup_limits(preview: Mapping[str, object]) -> dict[str, int] | Non
         return None
 
 
-def _atomic_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(6)}")
-    try:
-        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n",
-                             encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 class PreviewRuntime:

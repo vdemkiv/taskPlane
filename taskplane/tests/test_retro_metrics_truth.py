@@ -236,6 +236,10 @@ def test_severed_usage_refuses_sealing_and_retro_reports_unknown(tmp_path):
         "status": "unavailable", "total_tokens": None,
         "uncached_input_tokens": None, "effective_tokens": None,
         "attempts": attribution,
+        "coverage": {"status": "partial", "observed_attempts": 0,
+                     "expected_attempts": 1, "percent": 0,
+                     "missing_attempts": [attribution[0]["attempt_fingerprint"]],
+                     "root_share_percent": None},
         "reason": "provider usage missing for one evaluator attempt",
     }
     retro._write_report(
@@ -250,7 +254,7 @@ def test_severed_usage_refuses_sealing_and_retro_reports_unknown(tmp_path):
     assert "observed total tokens: 0" not in rendered
 
 
-def test_partial_measured_attempts_survive_an_unavailable_wave():
+def test_partial_measured_attempts_survive_an_unavailable_wave(tmp_path):
     ledger, _clock = _closed_ledger()
     missing = _dispatch("missing", "thread-missing", 11)
     dispatch_telemetry.bind_dispatch(ledger, missing)
@@ -268,6 +272,20 @@ def test_partial_measured_attempts_survive_an_unavailable_wave():
         "measured", "measured", "unavailable"]
     assert projection["attempts"][0]["total_tokens"] == 130
     assert projection["attempts"][-1]["total_tokens"] is None
+    evidence = wave_metrics.produce_terminal_evidence(
+        dispatch_ledger=ledger, clock=_clock, candidate_fingerprint=CANDIDATE,
+        evaluator_summary=retro.evaluator_summary([]), settings_digest="c" * 64)
+    receipt = wave_metrics.seal_terminal_evidence(evidence)
+    sealed = wave_metrics.consumer_projection(receipt, consumer="retro")
+    assert sealed["token_usage"]["status"] == "partial"
+    assert sealed["token_usage"]["total_tokens"] == 185
+    assert sealed["token_usage"]["coverage"]["observed_attempts"] == 2
+    assert sealed["token_usage"]["coverage"]["expected_attempts"] == 3
+    assert sealed["token_usage"]["attempts"][-1]["total_tokens"] is None
+    assert not sealed["signoff"]["ready"]
+    retro._write_report(str(tmp_path), {"goal": "partial run"},
+                        _report(sealed, retro.evaluator_summary([])), [])
+    assert "partial usage (2/3 attempts measured)" in (tmp_path / ".taskplane/retro.md").read_text().splitlines()[0]
 
 
 def test_cancellation_interruption_handoff_and_retry_remain_attributable():

@@ -64,7 +64,7 @@ class _Ws(unittest.TestCase):
         return subprocess.run(
             [sys.executable, TP, "screen-render"], input=json.dumps(ev),
             capture_output=True, text=True, encoding="utf-8",
-            errors="replace", env=dict(os.environ))
+            errors="replace", env=dict(os.environ), cwd=self.ws)
 
 
 class TheObserverNeverDenies(_Ws):
@@ -78,7 +78,7 @@ class TheObserverNeverDenies(_Ws):
     def test_malformed_hook_input_is_allowed(self):
         r = subprocess.run([sys.executable, TP, "screen-render"],
                            input="{not json", capture_output=True, text=True,
-                           encoding="utf-8", env=dict(os.environ))
+                           encoding="utf-8", env=dict(os.environ), cwd=self.ws)
         self.assertEqual(r.returncode, 0)
 
     def test_an_unwritable_ledger_still_allows_the_render(self):
@@ -99,7 +99,7 @@ class TheObserverNeverDenies(_Ws):
               "tool_input": {"loading_messages": ["a"], "n": 3}}
         r = subprocess.run([sys.executable, TP, "screen-render"],
                            input=json.dumps(ev), capture_output=True,
-                           text=True, encoding="utf-8", env=dict(os.environ))
+                           text=True, encoding="utf-8", env=dict(os.environ), cwd=self.ws)
         self.assertEqual(r.returncode, 0)
 
 
@@ -129,7 +129,7 @@ class TheRenderIsRecordedAsAFact(_Ws):
               "tool_input": {"title": "t", "some_future_name": "X" * 50}}
         subprocess.run([sys.executable, TP, "screen-render"],
                        input=json.dumps(ev), capture_output=True, text=True,
-                       encoding="utf-8", env=dict(os.environ))
+                       encoding="utf-8", env=dict(os.environ), cwd=self.ws)
         row = [r for r in obligations.read(self.ws)
                if r.get("event") == "observed"][0]
         self.assertEqual(row["fingerprint"],

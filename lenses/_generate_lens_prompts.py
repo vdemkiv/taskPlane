@@ -14,18 +14,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Hand-authored review guides. examine: the specific things this lens checks
 # in a diff. blocker/major: severity anchors so verdicts are consistent.
 _GROUNDING = (
-   "GROUND IN THE CURRENT STATE FIRST (R-0004): read the as-built inventory "
-   "(`context/current-state.md` in the knowledge store, injected into briefs "
-   "as `knowledge.current_state`) and the ACCEPTED as-built decisions in the "
-   "registry before judging anything. A design is reviewed as a DELTA against "
-   "what exists — never in a vacuum. Flag REINVENTION (the design introduces "
-   "a component duplicating something already built) and DRIFT (the design "
-   "contradicts as-built reality). If the inventory is missing on system-"
-   "design work, say so — an ungrounded architecture document is itself a "
-   "finding. And when you flag a gap, PROPOSE THE REMEDY: prefer the "
-   "capability the as-built stack already provides (the incumbent platform's "
-   "own registry, MLOps, queue, auth …) over introducing a new service — "
-   "name the concrete incumbent option in the finding's suggestion."
+    "Ground judgment in the baseline and accepted decisions selected in the sealed "
+    "phase input. Missing context is a coverage limitation; never search another "
+    "workspace, knowledge store, or prior session for substitute inputs. Prefer "
+    "existing capabilities and the smallest concrete correction."
 )
 
 
@@ -95,37 +87,26 @@ helpers/components/types, not re-implement them. Deep security review is the
 security lens's job (see its methodology); don't duplicate it here.""",
 }
 
-VERDICT = """## Verdict format (all lenses)
+VERDICT = """## Shared result contract
 
-Return findings, then a verdict. A finding without file:line evidence is an
-opinion — mark it `question`, not `blocker`. And a criticism without a
-remedy is pointless: `suggestion` is REQUIRED on every blocker/major/minor —
-a concrete alternative or solution, preferring capabilities the as-built
-stack already provides (see the current-state inventory when present). A
-finding you cannot propose a remedy for is a `question`, not a verdict.
-
-```json
-{"lens": "<id>",
- "findings": [{"severity": "blocker|major|minor|question|praise",
-               "file": "path", "line": 0,
-               "issue": "what is wrong", "why": "the principle",
-               "suggestion": "REQUIRED: the remedy — smallest concrete fix
-                              or alternative, incumbent-stack first"}],
- "verdict": "pass|fail",
- "confidence": "high|medium|low"}
-```
-
-`fail` only when at least one **blocker** stands. Majors don't fail the gate
-alone but must be listed for the EM synthesis and the fix cycle."""
+Use the immutable brief's `taskplane.lens-slot-output/v2` result_schema.
+The shared role `agents/tp-lens.md` defines execution; this lens supplies
+only domain judgment. Copy the lease identities, write only result_path,
+and preserve findings, notes, checked_evidence and references_applied.
+Do not invent a lens-specific format or write Design evidence rows yourself.
+The common collector validates and normalizes results for every phase.
+"""
 
 USAGE = """## How this lens runs
 
-- **Prime (EXECUTE/FIX):** the loop hands the executor this lens's charter +
-  looks-for BEFORE building — build so the review below finds nothing.
-- **Review (EVALUATE/EM):** apply the evaluator prompt to the diff. `inline`
-  mode: the evaluator applies it directly. `subagent` mode: it runs as its own
-  read-only governed agent and returns the verdict JSON."""
-
+One selected execution disposition creates one isolated worker through the
+shared lens dispatcher. Product, Design and Plan select focused lenses.
+Standalone Review uses the same dispatcher. Build, Fix, Evaluate, Engineering
+and Retro consume collected lens evidence and launch no lens workers.
+Use only this attempt's sealed input. Domain examples mentioning tools or
+knowledge stores do not grant access beyond the brief. Missing evidence is
+reported as a limitation. The collector owns release and downstream handoff.
+"""
 
 def build(lz):
     g = GUIDES[lz["id"]]
@@ -189,16 +170,23 @@ def build(lz):
 # catalog lens that has NEITHER a guide here NOR a hand-authored prompt file.
 HAND_AUTHORED = {"solution-design"}
 
-cat = json.load(open(os.path.join(HERE, "catalog.json")))
-missing = [lz["id"] for lz in cat["lenses"]
-           if lz["id"] not in GUIDES and lz["id"] not in HAND_AUTHORED]
-assert not missing, f"no review guide for: {missing}"
-for lid in HAND_AUTHORED:
-    assert os.path.isfile(os.path.join(HERE, lid + ".md")), \
-        f"hand-authored lens prompt missing: lenses/{lid}.md"
-generated = [lz for lz in cat["lenses"] if lz["id"] not in HAND_AUTHORED]
-for lz in generated:
-    with open(os.path.join(HERE, lz["id"] + ".md"), "w") as f:
-        f.write(build(lz))
-print(f"wrote {len(generated)} lens prompts "
-      f"({len(HAND_AUTHORED)} hand-authored, left alone)")
+def main():
+    cat = json.load(open(os.path.join(HERE, "catalog.json")))
+    missing = [lz["id"] for lz in cat["lenses"]
+               if lz["id"] not in GUIDES and lz["id"] not in HAND_AUTHORED]
+    assert not missing, f"no review guide for: {missing}"
+    for lz in cat["lenses"]:
+        path = os.path.join(HERE, lz["id"] + ".md")
+        if lz["id"] in HAND_AUTHORED:
+            with open(path) as stream:
+                content = stream.read().split("## How this lens runs")[0].rstrip()
+            content += "\n\n" + USAGE + "\n\n" + VERDICT + "\n"
+        else:
+            content = build(lz)
+        with open(path, "w") as stream:
+            stream.write(content.rstrip() + "\n")
+    print(f"wrote {len(cat['lenses'])} prompts with one shared protocol")
+
+
+if __name__ == "__main__":
+    main()

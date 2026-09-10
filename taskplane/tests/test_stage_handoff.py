@@ -137,25 +137,13 @@ def test_explicit_nonconsumable_reuse_survives_shared_store_and_read(
         "producer_outcome": outcome,
         "authority_fingerprint": "a" * 64,
     }
-    reference = review_evidence.store_stage_handoff(store, manifest)
+    reference = stage_handoff.store_manifest(store, manifest)
     with pytest.raises(stage_handoff.HandoffValidationError,
                        match="cannot be consumed by default"):
-        review_evidence.read_stage_handoff(
+        stage_handoff.read_manifest(
             store, reference, expected_authority_revision=7,
             expected_authority_fingerprint="a" * 64)
-    assert review_evidence.read_stage_handoff(
+    assert stage_handoff.read_manifest(
         store, reference, expected_authority_revision=7,
         expected_authority_fingerprint="a" * 64,
         allow_nonconsumable_reuse=True) == manifest
-
-
-def test_new_module_constants_have_pinned_quality_annotations() -> None:
-    expected = {
-        "SCHEMA", "MAX_MANIFEST_BYTES", "MAX_ARTIFACT_REFERENCES",
-        "TERMINAL_OUTCOMES", "REQUIRED_EXCLUSIONS", "_IDENTIFIER",
-        "_REPOSITORY_ID", "_FINGERPRINT", "_COMMIT", "_CONTRACT",
-        "_MANIFEST_FIELDS", "_AUTHORITY_FIELDS",
-        "_AUTHORITY_RECORD_FIELDS", "_NONCONSUMABLE_REUSE_FIELDS",
-    }
-
-    assert expected <= set(stage_handoff.__annotations__)

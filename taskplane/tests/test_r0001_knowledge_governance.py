@@ -1,6 +1,7 @@
 """T06: actual proposal -> owner -> authenticated receipt, simulated local faults."""
 import copy
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import json
 
 import pytest
@@ -15,7 +16,6 @@ KEY = stage_handoff.SigningKey("knowledge-owner", b"k" * 32, 1, 10000)
 
 
 def setup_owner(tmp_path, monkeypatch):
-    monkeypatch.setattr(run_store.tp, "kb_root", lambda workspace: str(tmp_path / "knowledge"))
     owner = run_store.RunStore(home=str(tmp_path / "home"))
     return owner
 
@@ -189,7 +189,7 @@ def test_knowledge_tombstone_preserves_lineage(tmp_path, monkeypatch, case):
     assert len(after["lineage"]) == 2
     assert value["proposal_fingerprint"] not in after["content"]
     assert apply(owner, value) == receipt
-    durable = (tmp_path / "knowledge" / "governed-updates.json").read_text()
+    durable = Path(owner._knowledge_path("workspace")).read_text()
     assert value["content"] not in durable
     assert value["proposal_fingerprint"] in durable
     assert "content_fingerprint" in durable

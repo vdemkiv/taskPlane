@@ -330,7 +330,7 @@ class TestOnboardingProjection:
         caps = report["host_capabilities"]
         assert set(("install", "trust", "managed_policy", "loaded_session",
                     "effective_path")).issubset(caps)
-        assert caps["effective_path"]["value"] == "bridge_effective"
+        assert caps["effective_path"]["value"] == "blocked"
 
     def test_installer_does_not_mutate_managed_or_workspace_settings_when_denied(self):
         ws = _repo()

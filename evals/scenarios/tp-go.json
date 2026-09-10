@@ -6,7 +6,7 @@
     "skills/tp-go/SKILL.md",
     "skills/tp-go/flow.json"
   ],
-  "inputs_fingerprint": "7b62b957f8818e99e870dbcd20bf2f0534d143a494560debbb097af805263ce7",
+  "inputs_fingerprint": "f3fda54b230a7b66db024150360dbc333db1d185d2c536b72dc8174992023c33",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp lens dispatch",
@@ -17,7 +17,7 @@
   "steps": [
     {
       "id": "U1-CONTRACT",
-      "claim": "the run was governed before it changed anything — the contract was active before the first write, not declared after the fact",
+      "claim": "the run was governed before it changed anything \u2014 the contract was active before the first write, not declared after the fact",
       "record": "trace",
       "check": "before",
       "select": {
@@ -31,7 +31,7 @@
     },
     {
       "id": "U2-DOR",
-      "claim": "readiness was established before the work started — a DoR that passed, ahead of the first write",
+      "claim": "readiness was established before the work started \u2014 a DoR that passed, ahead of the first write",
       "record": "trace",
       "check": "before",
       "select": {
@@ -83,7 +83,7 @@
     },
     {
       "id": "U4-SHARED",
-      "claim": "nothing expensive was derived twice — the diff, the blast radius and the graph scan were each computed once and shared",
+      "claim": "nothing expensive was derived twice \u2014 the diff, the blast radius and the graph scan were each computed once and shared",
       "record": "derivations",
       "check": "repeats",
       "select": {

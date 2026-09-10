@@ -633,99 +633,12 @@ def test_production_validation_blocks_direct_and_descendant_explicit_pushes(
         assert refs == ""
 
 
-@pytest.mark.parametrize("host", ["codex", "claude"])
-def test_review_action_and_execution_receipts_are_host_neutral(
-        host, tmp_path, monkeypatch):
-    run_id = "run-cross-host"
-    action_id = review._review_execution_action_id(
-        run_id, "review-execution-mode")
-    prompt = review._review_action_prompt(run_id, action_id, "dynamic")
-    execution_action = "dynamic-action"
-    action_ref, process_ref = _write_host_transcript(
-        tmp_path, monkeypatch, host, prompt=prompt,
-        run_id=run_id, execution_action=execution_action)
-
-    action = review._host_review_action_receipt(
-        run_id=run_id, action_id=action_id, response="dynamic",
-        receipt_ref=action_ref)
-    execution = review._host_review_execution_receipt(
-        run_id=run_id, action_id=execution_action,
-        kind="dynamic_validation", after_receipt_id=action.receipt_id,
-        receipt_ref=process_ref)
-
-    assert action.source == f"{host}-session:user-message"
-    assert execution.source == f"{host}-session:tool-result"
-    assert execution.kind == "dynamic_validation"
-    assert execution.result_sha256
 
 
-@pytest.mark.parametrize("host", ["codex", "claude"])
-def test_execution_receipt_requires_exact_action_and_success(
-        host, tmp_path, monkeypatch):
-    run_id = "run-bound"
-    consent_action = review._review_execution_action_id(
-        run_id, "review-execution-mode")
-    prompt = review._review_action_prompt(run_id, consent_action, "dynamic")
-    action_ref, process_ref = _write_host_transcript(
-        tmp_path, monkeypatch, host, prompt=prompt,
-        run_id=run_id, execution_action="expected-action", exit_code=1)
-    action = review._host_review_action_receipt(
-        run_id=run_id, action_id=consent_action, response="dynamic",
-        receipt_ref=action_ref)
-    with pytest.raises(review.ReviewKernelError, match="process/result"):
-        review._host_review_execution_receipt(
-            run_id=run_id, action_id="expected-action",
-            kind="dynamic_validation", after_receipt_id=action.receipt_id,
-            receipt_ref=process_ref)
 
 
-@pytest.mark.parametrize("host", ["codex", "claude"])
-def test_execution_binding_is_structured_not_a_substring(
-        host, tmp_path, monkeypatch):
-    run_id, action_id = "run-bound", "expected-action"
-    consent = review._review_execution_action_id(run_id,
-                                                  "review-execution-mode")
-    prompt = review._review_action_prompt(run_id, consent, "dynamic")
-    action_ref, process_ref = _write_host_transcript(
-        tmp_path, monkeypatch, host, prompt=prompt,
-        command=("TASKPLANE_REVIEW_ACTION_ID=prefix-" + action_id +
-                 "-suffix npm test"), run_id=run_id)
-    action = review._host_review_action_receipt(
-        run_id=run_id, action_id=consent, response="dynamic",
-        receipt_ref=action_ref)
-    with pytest.raises(review.ReviewKernelError, match="process/result"):
-        review._host_review_execution_receipt(
-            run_id=run_id, action_id=action_id, kind="dynamic_validation",
-            after_receipt_id=action.receipt_id, receipt_ref=process_ref)
 
 
-@pytest.mark.parametrize("host", ["codex", "claude"])
-def test_exit_status_must_be_authoritative_not_nested_in_output_text(
-        host, tmp_path, monkeypatch):
-    run_id, action_id = "run-bound", "expected-action"
-    consent = review._review_execution_action_id(run_id,
-                                                  "review-execution-mode")
-    prompt = review._review_action_prompt(run_id, consent, "dynamic")
-    action_ref, process_ref = _write_host_transcript(
-        tmp_path, monkeypatch, host, prompt=prompt,
-        run_id=run_id, execution_action=action_id)
-    # Move the status into a non-authoritative display/output branch.
-    resolved = review._host_review_transcripts(action_ref)
-    assert len(resolved) == 1 and resolved[0][0] == host
-    path = __import__("pathlib").Path(resolved[0][1])
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    result = rows[-1]["payload"]["output"] if host == "codex" else \
-        rows[-1]["message"]["content"][0]["content"]
-    result.pop("structuredContent")
-    result["output"] = {"exit_code": 0, "text": "passed"}
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
-    action = review._host_review_action_receipt(
-        run_id=run_id, action_id=consent, response="dynamic",
-        receipt_ref=action_ref)
-    with pytest.raises(review.ReviewKernelError, match="process/result"):
-        review._host_review_execution_receipt(
-            run_id=run_id, action_id=action_id, kind="dynamic_validation",
-            after_receipt_id=action.receipt_id, receipt_ref=process_ref)
 
 
 def test_top_level_exit_status_is_not_authoritative():
@@ -737,28 +650,6 @@ def test_generic_completion_is_not_authoritative_process_status():
         "structuredContent": {"status": "completed"}}) is None
 
 
-def test_caller_selected_host_root_cannot_mint_authority(
-        tmp_path, monkeypatch):
-    canonical = tmp_path / "canonical"
-    forged = tmp_path / "forged"
-    thread_id = "chosen-thread"
-    path = forged / "sessions" / "x" / f"rollout-{thread_id}.jsonl"
-    path.parent.mkdir(parents=True)
-    action_id = "action"
-    path.write_text(json.dumps({
-        "type": "response_item", "payload": {
-            "type": "message", "id": "fake", "role": "user",
-            "content": [{"type": "input_text", "text":
-                         review._review_action_prompt("run", action_id,
-                                                      "dynamic")}],
-        }}) + "\n", encoding="utf-8")
-    monkeypatch.setattr(review, "_canonical_host_root",
-                        lambda host: str(canonical))
-    monkeypatch.setenv("CODEX_HOME", str(forged))
-    monkeypatch.setenv("CODEX_THREAD_ID", thread_id)
-    with pytest.raises(review.ReviewKernelError, match="host-observed"):
-        review._host_review_action_receipt(
-            run_id="run", action_id=action_id, response="dynamic")
 
 
 def test_stale_publication_reservation_recovers_only_dead_owner(tmp_path):

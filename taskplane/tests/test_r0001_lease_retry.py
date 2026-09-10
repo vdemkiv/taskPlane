@@ -11,7 +11,15 @@ import loop
 
 
 def _owner(tmp_path, monkeypatch):
-    monkeypatch.setattr(loop, "_state_dir", lambda ws: str(tmp_path / "loop-state"))
+    import subprocess
+    from taskplane import run_store, storage
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    identity = storage.resolve_repository_identity(str(tmp_path))
+    store = run_store.RunStore()
+    store.create(identity, run_id="run-1", checkout=str(tmp_path),
+        host={"kind": "simulated", "session_id": "lease-test"}, target={"kind": "workspace"})
+    storage.write_workspace_locator(str(tmp_path), identity=identity,
+        layout=storage.resolve_layout(identity, home=store.home, run_id="run-1"), run_id="run-1")
     loop.save(str(tmp_path), {"run_id": "run-1", "step": "execute"})
     runtime, dispatch, calls = _setup(tmp_path)
     authority = {"valid": True}

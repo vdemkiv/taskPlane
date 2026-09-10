@@ -104,70 +104,8 @@ class TestLensBriefsCarryModel(unittest.TestCase):
                          "standard")
         self.assertEqual(lens_router._lens_tier("anything", "sweep"), "cheap")
 
-    def test_dispatch_briefs_surface_resolved_model(self):
-        routing = {"lenses": [
-            {"id": "security", "name": "Security", "tier": "deep"},
-            {"id": "code-quality", "name": "Code quality", "tier": "deep"},
-            {"id": "product", "name": "Product", "tier": "sweep"},
-        ], "context": {"changed_files": 3}}
-        d = lens_router.dispatch_briefs(routing, base="HEAD")
-        by_id = {b["id"]: b for b in d["deep"]}
-        # every deep brief carries a tier + resolved model for the driver
-        for b in d["deep"]:
-            self.assertIn("model_tier", b)
-            self.assertIn("model", b)
-        self.assertEqual(by_id["security"]["model_tier"], "deep")
-        self.assertEqual(by_id["code-quality"]["model_tier"], "standard")
-        # the quick sweep resolves through the current host's cheap tier
-        self.assertEqual(d["sweep"]["model_tier"], "cheap")
-        self.assertEqual(d["sweep"]["model"], tp.model_for_tier("cheap"))
 
 
-class TestLoopPayloadCarriesModel(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-
-    def _git_ws(self):
-        ws = os.path.join(self.tmp, "ws")
-        os.makedirs(os.path.join(ws, "plan"))
-        os.makedirs(os.path.join(ws, "src"))
-        open(os.path.join(ws, "src", "a.py"), "w", encoding="utf-8").write("x=1\n")
-        for a in (["init", "-q"], ["config", "user.email", "e@e"],
-                  ["config", "user.name", "t"], ["add", "-A"],
-                  ["commit", "-qm", "init"]):
-            subprocess.run(["git", *a], cwd=ws, capture_output=True)
-        return ws
-
-    def test_plan_step_payload_has_model_fields(self):
-        ws = self._git_ws()
-        loop.init(ws, "add a feature")     # free-text -> pm
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.gate(ws, "pass")              # pm -> plan
-        out = loop.next_action(ws)
-        self.assertEqual(out["step"], "plan")
-        self.assertIn("model_tier", out)
-        self.assertIn("model", out)
-        self.assertEqual(out["model_tier"], "deep")   # reasoning step
-        self.assertIsNone(out["model"])               # inherit by default
-
-    def test_execute_step_honors_a_cheap_task(self):
-        ws = self._git_ws()
-        json.dump({"tasks": [{"id": "t1", "scope": ["src/**"], "tests": "true",
-                              "criteria": ["done"], "model": "cheap"}]},
-                  open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-        loop.init(ws, "simple mechanical change")
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True); open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loop.gate(ws, "pass")              # pm -> plan
-        from tests.fixtures.briefs.stage_fixture import prepare_plan
-        prepare_plan(ws, runtime=loop, usage="measured")
-        loop.gate(ws, "pass")              # plan -> plan_approval
-        loop.approve(ws)                   # -> execute
-        authority = open_delivery_root(ws)
-        out = loop.next_action(
-            ws, root_observation_authority=authority)
-        self.assertEqual(out["step"], "execute")
-        self.assertEqual(out["model_tier"], "cheap")
-        self.assertEqual(out["model"], tp.model_for_tier("cheap"))
 
 
 if __name__ == "__main__":

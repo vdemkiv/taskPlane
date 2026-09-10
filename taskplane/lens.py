@@ -399,10 +399,10 @@ def route(changed_files, task_type: str | None = None,
         _record_breadth(workspace, requested=breadth, effective="routed",
                         engine_ran=True, stage=stage, routing=routed)
         return routed
-    legacy = _route_legacy(files, task_type, artifact_type, cat,
+    fallback = route_fallback(files, task_type, artifact_type, cat,
                            only, skip, breadth, hub_dependents)
     try:
-        legacy = _attach_language_context(legacy, files, task_type)
+        fallback = _attach_language_context(fallback, files, task_type)
     except (OSError, ValueError) as exc:
         import sys
         print(f"taskplane: language reference unavailable ({exc}) — "
@@ -423,10 +423,10 @@ def route(changed_files, task_type: str | None = None,
                         reason="mapper-unavailable")
         return refused
     _record_breadth(workspace, requested=breadth, effective=breadth,
-                    engine_ran=False, stage=stage, routing=legacy,
+                    engine_ran=False, stage=stage, routing=fallback,
                     reason=_engine_off_reason(cat, breadth, stage,
                                               use_signals))
-    return legacy
+    return fallback
 
 
 # ------------------------------------------------- recorded routing breadth
@@ -511,10 +511,9 @@ def _record_breadth(workspace, *, requested, effective, engine_ran, stage,
         pass
 
 
-def _route_legacy(changed_files, task_type, artifact_type, cat,
+def route_fallback(changed_files, task_type, artifact_type, cat,
                   only, skip, breadth, hub_dependents) -> dict:
-    """Today's glob/task-type/baseline/hub routing — the byte-identical
-    legacy path (existing tests pin it)."""
+    """Catalog routing when no phase-specific signal route is selected."""
     code_ext = cat.get("code_extensions", [])
     deep_n = cat.get("deep_threshold_files", 8)
     files = list(changed_files or [])
@@ -1208,354 +1207,25 @@ def lens_brief(lens_id: str, catalog: dict | None = None) -> dict | None:
             "globs": l.get("globs", [])}
 
 
-# Appended to EVERY dispatched agent prompt. try/finally semantics for a
-# prompt-driven agent: release the contract in ALL outcomes — success, error,
-# or budget-block. A lens agent that died without clearing once locked an
-# entire session. There is deliberately NO self-service escape from a
-# budget-blocked state (the wall is intentional); the escalation path is the
-# human, and the orphan auto-release (dead PID / idle TTL) is the backstop.
-CLEAR_ALWAYS = (
-    "FINALLY — ALWAYS, in every outcome (done, error, or blocked): release "
-    "your contract as your LAST action, with your slot still exported: "
-    '`TASKPLANE_TASK=$TASKPLANE_TASK python3 '
-    '"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py" '
-    'clear`. Treat this as '
-    "the finally-block of your whole task — a leaked contract locks the "
-    "workspace for everyone after you. If the clear itself is blocked "
-    "(budget exhausted), STOP and report the leaked contract in your final "
-    "message so the dispatcher/human can release it (`tp.py clear "
-    "--workspace <ws>` from an ungoverned context); never try to work "
-    "around the block.")
+def slot_metadata(lens_id: str, tier: str, routing: dict, *, stage: str | None = None) -> dict:
+    """Resolve one lens's instructions from this engine's pinned plugin only."""
+    from pathlib import Path
+    entry = lens_brief(lens_id)
+    if entry is None:
+        raise ValueError("unknown lens: " + lens_id)
+    root = Path(__file__).resolve().parent.parent
+    prompt = (root / "lenses" / (lens_id + ".md")).read_text(encoding="utf-8")
+    role = (root / "agents" / "tp-lens.md").read_text(encoding="utf-8")
+    source = next(row for row in routing["lenses"] if row["id"] == lens_id)
+    settings = tp._canonical_operational_settings(environment_overrides=True)
+    return {**tp.dispatch_fields("lens", "tp-lens", lens_id,
+                _lens_tier(lens_id, "deep") if tier == "deep" else "cheap",
+                settings_context=settings, lens_stage=stage),
+        "agent": "tp-lens", "methodology": {**entry, "content": prompt,
+            "content_sha256": hashlib.sha256(prompt.encode()).hexdigest()},
+        "role_instructions": role,
+        "language_references": list(source.get("language_references") or [])}
 
-
-def _slot_instr(slot: str) -> str:
-    """Per-task contract-slot activation (v2.3.1). WITHOUT this, every parallel
-    lens agent's `tp.py new` writes the single legacy active_contract.json and
-    the agents overwrite each other's contracts — the exact multi-writer defect
-    the per-task-slot protocol exists to close, which shipped un-wired in
-    v2.3.0. Each agent exports a UNIQUE slot so its contract lands in
-    active/<slot>.json and the union stays honest."""
-    return (
-        f"FIRST — before you activate any contract — export your unique "
-        f"per-task contract slot so parallel lens agents cannot overwrite each "
-        f"other's governance: `export TASKPLANE_TASK={slot}`. Keep it set for "
-        f"every `tp.py` call you make (new / screen / clear).\n")
-
-
-def _lens_prompt(entry: dict, base: str) -> str:
-    """The task prompt handed to a governed read-only lens-agent."""
-    checks = "; ".join(entry.get("checks") or []) or "(use your judgment)"
-    return (
-        f"Apply the {entry['name'].upper()} lens to the diff against `{base}`.\n"
-        f"LOOK FOR: {entry.get('looks_for','')}.\n"
-        f"CHECKS: {checks}.\n"
-        f"You are READ-ONLY toward code — inspect the diff and the files it "
-        f"touches, run non-mutating checks, but change NOTHING. Write your "
-        f"findings ONLY to `.em-review/lens-{entry['id']}/findings.json` as "
-        f'{{"lens":"{entry["id"]}","findings":[{{"severity":"high|med|low",'
-        f'"class":"regression|pre-existing|observation",'
-        f'"file":"path","line":N,"title":"...","scenario":"concrete failure",'
-        f'"fix":"direction"}}]}} — an empty list means the lens is clean. '
-        f"CLASS each finding honestly: `regression` = this diff broke it, "
-        f"`pre-existing` = defect predates the diff, `observation` = "
-        f"improvement idea, not a defect. "
-        f"Stay strictly in your lens; another agent owns the others.\n"
-        + CLEAR_ALWAYS)
-
-
-# Per-brief action ceilings (v2.11.0). A flat ceiling truncated a verification
-# agent mid-research on karpenter#9464: it was fetching and reading external
-# sources to check the lenses' load-bearing claims, hit the ceiling, and
-# returned partial findings naming the questions it could not close. It
-# degraded honestly — the ceiling was simply the wrong size for the shape of
-# work. A DEEP lens owns one subject at full depth and reads widely; the
-# SWEEP runs each lens's top checks and is meant to be quick. One number for
-# both sized the deep agent by the cheap one's needs.
-#
-# This raises no CONTRACT scope: a lens agent still writes only to
-# `.em-review/lens-<id>/**` and still cannot touch reviewed source. An
-# explicit `max_actions` overrides every tier, so callers that pin a number
-# (the parity fixtures) keep getting exactly that number.
-def actions_for(tier: str, settings_context, override=None) -> int:
-    if override is not None:
-        return int(override)
-    key = ("lens_deep_max_actions" if tier == "deep"
-           else "lens_sweep_max_actions")
-    return int(settings_context.limits.budgets[key])
-
-
-def dispatch_briefs(routing: dict, base: str = "HEAD",
-                    max_actions: int | None = None,
-                    impact_context: str | None = None,
-                    runnability: dict | None = None,
-                    context_paths: dict | None = None,
-                    sweep_concerns=None,
-                    already_promoted=()) -> dict:
-    """Turn a routing into READY-TO-DISPATCH lens-agent briefs — one governed
-    read-only agent per DEEP lens (fanned out in parallel = much faster than
-    one reviewer running them in sequence), the SWEEP lenses batched into a
-    single quick agent. Each brief carries its own read-only contract spec so
-    the harness/guardrails are preserved: a lens-agent can read the diff but
-    never modify code, and it's budget-capped.
-    """
-    settings_context = tp._canonical_operational_settings(legacy_environment=True)
-    # v2 routings carry per-lens verdicts: "deep" fans out one governed agent
-    # each, "light" batches into the single sweep-style brief, and "n/a"
-    # lenses get NO brief — they do not run. The full disposition set
-    # (all catalog lenses, n/a included with negative evidence) still rides
-    # on the decision object below: briefs are for work, the decision is
-    # for coverage honesty. Legacy routings ("deep"/"sweep" tiers only) are
-    # partitioned exactly as before.
-    # B9 (v2.10.0): whether the build/tests can run here is a property of the
-    # CHECKOUT, probed once by the dispatcher. Six agents rediscovering it —
-    # which is exactly what happened on karpenter#9464 — is six times the
-    # tokens for one environment fact. Stated, never enforced.
-    # v2.13.0: ONE copy of the diff and the blast radius, on disk, cited by
-    # every brief — instead of N embedded copies at output weight. Four lens
-    # agents cost ~754k effective tokens on the measured review, "each
-    # carrying its own copy of the diff and the blast-radius brief".
-    review_policy = copy.deepcopy(
-        (routing.get("context") or {}).get("review_depth_policy"))
-    if isinstance(review_policy, dict) and \
-            review_policy.get("depth") == "quick-only":
-        # Defense in depth: dispatch owns the final model-facing payload, so
-        # it reapplies the requirement ceiling even when a caller hands it a
-        # pre-policy route containing explicit/forced deep dispositions.
-        import review_progression
-        routing = review_progression.apply_depth_policy(
-            routing, review_policy)
-    ctx_note = ""
-    if context_paths:
-        try:
-            import review as _rv
-            ctx_note = _rv.context_note(context_paths)
-        except Exception:
-            ctx_note = ""
-    run_note = ""
-    if runnability:
-        try:
-            import runnability as _run
-            run_note = _run.brief_note(runnability)
-        except Exception:
-            run_note = ""
-    deep = [x for x in routing["lenses"]
-            if x.get("tier") not in ("sweep", "light", "n/a")]
-    sweep = [x for x in routing["lenses"]
-             if x.get("tier") in ("sweep", "light")]
-    progressive = (routing.get("context") or {}).get("review_progression")
-    if progressive is not None:
-        ordered_sweep = list(progressive.get("sweep_lenses") or [])
-        allowed_sweep = set(ordered_sweep)
-        sweep = [x for x in sweep if x.get("id") in allowed_sweep]
-        sweep.sort(key=lambda x: ordered_sweep.index(x.get("id")))
-    concern_outcomes = None
-    if sweep_concerns is not None:
-        # This is the production boundary between the bounded light sweep and
-        # its adaptive deep follow-up.  Keep resolution in review_progression
-        # (normalization/charter/idempotence) while this dispatcher owns the
-        # actual brief creation.  A concern may promote only a lens that was
-        # in this routing's light sweep; every other apparent promotion is
-        # retained as an explicit out-of-charter rejection.
-        import review_progression
-        concern_outcomes = review_progression.resolve_sweep_concerns(
-            sweep_concerns, already_promoted=already_promoted,
-            review_policy=review_policy,
-        )
-        sweep_by_id = {str(row.get("id")): row for row in sweep}
-        accepted = []
-        for promotion in concern_outcomes["promotions"]:
-            lens_id = promotion["lens"]
-            row = sweep_by_id.get(lens_id)
-            if row is None:
-                concern_outcomes["rejections"].append({
-                    "concern_id": promotion["concern_id"],
-                    "lens": lens_id,
-                    "severity": promotion["severity"],
-                    "reason": "out-of-charter",
-                    "fingerprint": promotion["fingerprint"],
-                })
-                continue
-            promoted = dict(row)
-            promoted["tier"] = "deep"
-            promoted["verdict"] = "deep"
-            promoted["evidence"] = list(promoted.get("evidence") or []) + [
-                "adaptive promotion from bounded sweep: "
-                + promotion["evidence_ref"]
-            ]
-            promoted["promotion"] = dict(promotion)
-            deep.append(promoted)
-            accepted.append(promotion)
-        concern_outcomes["promotions"] = accepted
-        promoted_ids = {row["lens"] for row in accepted}
-        sweep = [row for row in sweep if row.get("id") not in promoted_ids]
-        deep.sort(key=lambda row: str(row.get("id") or ""))
-    briefs = []
-    for x in deep:
-        lid = x["id"]
-        mtier = _lens_tier(lid, "deep")
-        brief = {**tp.dispatch_fields("lens", "tp-lens", lid, mtier,
-                                      settings_context=settings_context),
-            "id": lid, "name": x["name"], "tier": "deep", "agent": "tp-lens",
-            "task_slot": f"lens-{lid}",
-            "output": f".em-review/lens-{lid}/findings.json",
-            "contract": {"read_only": True,
-                         "task_slot": f"lens-{lid}",
-                         "write_allow": [f".em-review/lens-{lid}/**"],
-                         "max_actions": actions_for(
-                             "deep", settings_context, max_actions)},
-            "prompt": _slot_instr(f"lens-{lid}") + _lens_prompt(x, base)
-                + _language_note(x.get("language_references")) + (
-                "\nBLAST RADIUS (from the dependency graph - factor "
-                "these dependents into your verdict):\n"
-                + impact_context + "\n" if impact_context else "")
-                + ctx_note + run_note,
-            "looks_for": x.get("looks_for", ""), "checks": x.get("checks", []),
-        }
-        if x.get("language_references"):
-            brief["language_references"] = list(x["language_references"])
-        if "verdict" in x:   # contract:lens-brief — ADDITIVE v2 fields only
-            brief["verdict"] = x["verdict"]
-            brief["score"] = x.get("score")
-            brief["evidence"] = x.get("evidence", [])
-        if "component_attribution" in x:
-            # R-0003, contract:lens-brief ADDITIVE key: present ONLY on the
-            # component path — undecomposed dispatch stays byte-identical.
-            brief["component_attribution"] = list(x["component_attribution"])
-        briefs.append(brief)
-    sweep_brief = None
-    if sweep:
-        names = ", ".join(s["name"] for s in sweep)
-        sweep_refs = []
-        seen_refs = set()
-        for row in sweep:
-            for ref in row.get("language_references") or []:
-                key = json.dumps(ref, sort_keys=True, separators=(",", ":"))
-                if key not in seen_refs:
-                    sweep_refs.append(ref)
-                    seen_refs.add(key)
-        sweep_brief = {**tp.dispatch_fields("lens", "tp-lens", "sweep", "cheap",
-                                            settings_context=settings_context),
-            "ids": [s["id"] for s in sweep], "agent": "tp-lens",
-            **({"tier": "light", "depth": "quick"}
-               if review_policy and
-               review_policy.get("depth") == "quick-only" else {}),
-            "task_slot": "lens-sweep",
-            "output": ".em-review/lens-sweep/findings.json",
-            "contract": {"read_only": True,
-                         "task_slot": "lens-sweep",
-                         "write_allow": [".em-review/lens-sweep/**"],
-                         "max_actions": actions_for(
-                             "sweep", settings_context, max_actions)},
-            "dispatch_set": {"schema": "taskplane.dispatch-set/v1",
-                             "id": "automatic-review-sweep",
-                             "concurrent": True,
-                             "member_count": len(sweep)},
-            "wait_policy": {"schema": "taskplane.wait-policy/v1",
-                            "outstanding_set": "automatic-review-sweep",
-                            "outstanding_count": len(sweep), "mode": "event",
-                            "timeout_seconds": settings_context.limits.timeouts[
-                                "lens_wait_seconds"],
-                            "minimum_timeout_seconds":
-                                settings_context.limits.timeouts[
-                                    "lens_minimum_wait_seconds"],
-                            "reissue_after": ["completion", "attention"],
-                            "scheduled_polling": False},
-            "prompt": _slot_instr("lens-sweep") + (
-                f"Quick SWEEP of these lenses against the diff vs `{base}`: "
-                f"{names}. Run each lens's top checks only — flag or clear in "
-                f"one line each. READ-ONLY: write findings (each with a "
-                f"`lens` field and a `class` field — regression|pre-existing|"
-                f"observation) to `.em-review/lens-sweep/findings.json`, "
-                f"change no code.\n" + _language_note(sweep_refs)
-                + ctx_note + run_note + CLEAR_ALWAYS),
-        }
-        if sweep_refs:
-            sweep_brief["language_references"] = sweep_refs
-    # Full routing-decision object (v2 only): EVERY lens's disposition —
-    # n/a lenses run no agent but their verdict + negative evidence must
-    # reach the renderer/coverage map (coverage honesty).
-    decision = None
-    if any("verdict" in x for x in routing["lenses"]):
-        decision = {}
-        for x in routing["lenses"]:
-            d = {"verdict": x.get("verdict", x.get("tier")),
-                 "score": x.get("score")}
-            if x.get("tier") == "n/a":
-                d["negative_evidence"] = list(
-                    x.get("negative_evidence") or x.get("reasons") or [])
-            else:
-                d["evidence"] = list(
-                    x.get("evidence") or x.get("reasons") or [])
-            if "component_attribution" in x:
-                # R-0003: rides into findings meta via meta.routing_decision
-                # (ADDITIVE — only the component path sets it).
-                d["component_attribution"] = list(x["component_attribution"])
-            decision[x["id"]] = d
-        if concern_outcomes is not None:
-            for promotion in concern_outcomes["promotions"]:
-                entry = decision[promotion["lens"]]
-                entry["initial_verdict"] = entry["verdict"]
-                entry["verdict"] = "deep"
-                entry["promotion"] = dict(promotion)
-                entry["evidence"] = list(entry.get("evidence") or []) + [
-                    "adaptive promotion from bounded sweep: "
-                    + promotion["evidence_ref"]
-                ]
-    if not briefs and sweep_brief is None:
-        # A no-op diff routed no lenses at all — don't tell the caller to
-        # dispatch agents that don't exist. Signal "nothing to review".
-        out = {
-            "base": base,
-            "changed_files": routing["context"].get("changed_files", 0), "settings_digest": settings_context.digest,
-            "deep": [], "sweep": None,
-            "nothing_to_review": True,
-            "instruction": (
-                "No lenses routed for this diff — there is nothing to review. "
-                "Dispatch no agents; report a clean/no-op review to the human."),
-        }
-        if isinstance(review_policy, dict):
-            out["review_depth_policy"] = copy.deepcopy(review_policy)
-        if decision is not None:
-            out["routing_decision"] = decision
-        if runnability:
-            out["runnability"] = runnability
-        return out
-    out = {
-        "base": base,
-        "changed_files": routing["context"].get("changed_files", 0), "settings_digest": settings_context.digest,
-        "deep": briefs, "sweep": sweep_brief,
-        "nothing_to_review": False,
-        "instruction": (
-            "Dispatch ONE tp-lens agent per DEEP brief IN PARALLEL (single "
-            "message, multiple Task calls) plus one for the SWEEP — each "
-            "activates its read-only contract, applies exactly its lens to "
-            "the diff, and writes its own findings.json. None can modify "
-            "code (read-only harness). When they return, merge every lens's "
-            "findings into one findings dashboard (`tp findings`) for the "
-            "human review gate."),
-    }
-    if isinstance(review_policy, dict):
-        out["review_depth_policy"] = copy.deepcopy(review_policy)
-    if review_policy and review_policy.get("depth") == "quick-only":
-        out["instruction"] = (
-            "Dispatch the single QUICK sweep under its governed read-only "
-            "contract. A complete quick output is sufficient collection "
-            "evidence; dispatch no deep lens. Any substantive regression "
-            "returns the same task for correction, then rerun this quick "
-            "sweep against the stable corrected target."
-        )
-    if decision is not None:
-        out["routing_decision"] = decision
-    if concern_outcomes is not None:
-        out["review_progression"] = concern_outcomes
-    if runnability:
-        out["runnability"] = runnability
-        out["instruction"] += (
-            " Build/test runnability was probed ONCE and is stated in every "
-            "brief — carry `runnability.summary` into the findings "
-            "`meta.tests` so the headline says it, and do not let any agent "
-            "re-probe it.")
-    return out
 
 
 def render(routing: dict) -> str:

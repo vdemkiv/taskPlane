@@ -7,6 +7,18 @@ CLI and Evaluate-Loop roots.
 """
 from __future__ import annotations
 
+if __package__:
+    from .primitives import content_fingerprint
+else:
+    from primitives import content_fingerprint
+
+from functools import partial
+if __package__:
+    from .primitives import atomic_json
+else:
+    from primitives import atomic_json
+_atomic_json = partial(atomic_json, indent=None)
+
 import hashlib
 import json
 import os
@@ -114,18 +126,6 @@ class GovernedCommandUnavailable(GovernedCommandError):
         self.reason_code = reason_code
 
 
-def _atomic_json(path: Path, value: Mapping[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="") as target:
-            json.dump(dict(value), target, sort_keys=True, separators=(",", ":"))
-            target.write("\n")
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _runtime_root(workspace: str) -> Path:
@@ -246,9 +246,7 @@ def _read_control(root: Path, handle: str) -> dict:
 
 
 def _canonical_digest(value: object) -> str:
-    return hashlib.sha256(json.dumps(
-        value, sort_keys=True, separators=(",", ":"), default=str
-    ).encode("utf-8")).hexdigest()
+    return content_fingerprint(value, ensure_ascii=True, default=str)
 
 
 def _sealed_runtime_evidence(root: Path, handle: str) -> dict:
@@ -366,7 +364,8 @@ def _checkpoint_environment() -> dict[str, str]:
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONHASHSEED": "0",
         "PYTHONNOUSERSITE": "1",
-        "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+        "PYTHONPATH": os.pathsep.join(str(path) for path in (
+            Path(__file__).resolve().parent.parent, Path(__file__).resolve().parent)),
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "TZ": "UTC",
     }
@@ -471,27 +470,6 @@ def _checkpoint_selection_fingerprint(
     return _canonical_digest(material)
 
 
-def _checkpoint_plan_state_paths(workspace: str) -> tuple[Path, Path]:
-    """Return the canonical and pre-migration loop-state paths without
-    importing the loop composition root.
-
-    The location rule mirrors loop.state_dir: repo-store mode is the explicit
-    single-writer exception, otherwise per-user external state wins once it
-    exists and the unmigrated in-repository knowledge path remains readable.
-    """
-    filename = "loop.json"
-    if contract_engine.store_env() == "repo":
-        state_root = Path(contract_engine.kb_root(workspace)) / "state"
-    else:
-        external = Path(contract_engine.external_store_root(workspace)) / \
-            "knowledge" / "state"
-        unmigrated = Path(workspace) / "knowledge" / "state"
-        state_root = (external if (external / filename).exists() or
-                      not (unmigrated / filename).exists() else unmigrated)
-    return (state_root / filename,
-            Path(contract_engine.tp_dir(workspace)) / filename)
-
-
 def _checkpoint_plan_authority(
         workspace: str, run_id: str, task_id: str, *,
         state_path: str | None = None) -> tuple[dict, dict]:
@@ -501,27 +479,35 @@ def _checkpoint_plan_authority(
     from taskplane import checkpoint as checkpoint_engine
     import pytest
 
+    from taskplane import run_store, storage
     if state_path is None:
-        current_state_path, legacy_state_path = \
-            _checkpoint_plan_state_paths(workspace)
-        selected_state_path = current_state_path
-        if not selected_state_path.is_file():
-            selected_state_path = legacy_state_path
+        locator = storage.load_workspace_locator(workspace)
+        if not locator or locator.get("run_id") != run_id:
+            raise GovernedCommandError("semantic checkpoint requires its bound run locator")
+        if locator.get("task_id") not in {None, task_id}:
+            raise GovernedCommandError("semantic checkpoint cannot use a sibling task")
+        store = run_store.RunStore(home=locator["home"])
+        selected_state_path = Path(store._manifest_path(run_id))
+        manifest = store.load(run_id)
     else:
+        # A sandbox can recheck the exact path already sealed by its boundary.
+        # It cannot discover a different state owner from its checkout.
         selected_state_path = Path(state_path)
-    try:
-        state = json.loads(selected_state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise GovernedCommandError(
-            "semantic checkpoint current Plan state is unavailable") from exc
-    if not isinstance(state, Mapping):
-        raise GovernedCommandError(
-            "semantic checkpoint requires current governed loop state")
-    expected_run_id = str(
-        state.get("run_id") or state.get("requirement_id") or "loop")
-    if run_id != expected_run_id:
-        raise GovernedCommandError(
-            "semantic checkpoint run identity does not match current Plan")
+        try:
+            manifest = json.loads(selected_state_path.read_text(encoding="utf-8"))
+            run_store._validate_stage_index(manifest)
+        except (OSError, ValueError) as exc:
+            raise GovernedCommandError("semantic checkpoint bound run is unavailable") from exc
+    state = manifest.get("workflow")
+    if manifest.get("schema") != "taskplane.run/v4" or manifest.get("run_id") != run_id or \
+            not isinstance(state, dict) or state.get("run_id") != run_id:
+        raise GovernedCommandError("semantic checkpoint run identity does not match current Plan")
+    if state.get("parallel"):
+        selected = next((row for row in state.get("tasks") or [] if row.get("id") == task_id), None)
+        if selected is None:
+            raise GovernedCommandError("semantic checkpoint task is absent from current Plan")
+        state = {**state, "step": selected.get("phase_step", "execute"),
+            "current_task": state["tasks"].index(selected)}
     tasks = state.get("tasks")
     task = _checkpoint_selected_task(state, task_id)
     declaration = task.get("checkpoint")
@@ -561,7 +547,7 @@ def _checkpoint_plan_authority(
     # checkpoint plugin during interpreter startup.  Pytest still collects
     # the exact sandbox selector, while the plugin bytes come from the bound
     # engine PYTHONPATH below.
-    runtime_argv = [str(executable), "-P", "-m", "pytest",
+    runtime_argv = [str(Path(sys.executable).absolute()), "-P", "-m", "pytest",
                     *authorized_argv[1:]]
     environment = _checkpoint_environment()
     active_contract = contract_engine.load_active(workspace)
@@ -628,6 +614,8 @@ def _assert_checkpoint_authority_current(
         raise GovernedCommandUnavailable(
             "checkpoint_plan_changed",
             "semantic checkpoint Plan authority changed before launch")
+    if str(Path(authority["runtime_argv"][0]).resolve(strict=True)) != authority["executable_binding"]["path"]:
+        raise GovernedCommandUnavailable("checkpoint_boundary_changed", "runtime interpreter target changed")
     _recheck_regular_file_binding(
         authority["executable_binding"], label="runtime executable")
     _recheck_regular_file_binding(
@@ -1107,12 +1095,54 @@ def _raw_command_policy_denial(
     return None
 
 
+
+def _evidence_command_boundary(workspace, contract, argv, identity, assignment_binding):
+    """Admit only a sealed evidence assignment through the isolated runner."""
+    from taskplane import review_evidence, stage_artifacts
+    reference = contract.get("evidence_input")
+    if not isinstance(reference, dict) or not isinstance(assignment_binding, Mapping):
+        raise GovernedCommandError("read-only execution requires its sealed evidence input")
+    value = review_evidence.ArtifactStore(workspace).read(reference)
+    assignment = stage_artifacts._validate_assignment(value.get("assignment"))
+    if value.get("run_id") != identity["run_id"] or assignment["binding"] != assignment_binding or \
+            assignment_binding["task_id"] != identity["task_id"]:
+        raise GovernedCommandError("read-only evidence command belongs to another task")
+    commands = [command["argv"] for row in assignment.get("language_obligations", [])
+        for command in row["required_commands"]]
+    tests = assignment.get("test_obligations", {})
+    selectors = {row["selector"] for row in tests.get("tests", [])}
+    for row in tests.get("producer_consumer_edges", []):
+        selectors.update((row["selector"], row["severed_edge"]["selector"]))
+    commands.extend(["python3", "-m", "pytest", "-q", selector] for selector in sorted(selectors))
+    if argv not in commands or contract["worker_lifecycle"]["task"] != identity["task_id"]:
+        raise GovernedCommandError("command is outside the exact evidence assignment")
+    source_sha = _git_output(workspace, "rev-parse", "HEAD")
+    if source_sha != assignment_binding["candidate_sha"] or _git_output(workspace, "rev-parse", "HEAD^{tree}") != assignment_binding["source_tree"]:
+        raise GovernedCommandError("evidence command candidate changed")
+    environment = _checkpoint_environment()
+    environment["PYTHONPATH"] = ""
+    environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.defpath
+    executable = str(Path(shutil.which(argv[0], path=environment["PATH"]) or argv[0]).resolve())
+    git = str(Path(shutil.which("git", path=environment["PATH"]) or "git").resolve())
+    paths = assignment.get("implementation_files") or [selector.split("::", 1)[0] for selector in selectors]
+    return {"source_sha": source_sha, "runtime_environment": environment,
+        "git_binding": _regular_file_binding(git, label="Git executable"),
+        "executable_binding": _regular_file_binding(executable, label="evidence executable"),
+        "proof_binding": _regular_file_binding(Path(workspace) / sorted(paths)[0], label="evidence source"),
+        "assignment_digest": assignment["assignment_digest"]}
+
 def _governed_launch_authority(
         workspace: str, cwd: str, argv: list[str], identity: Mapping,
         *, assignment_binding: Mapping | None = None,
         expected: Mapping | None = None) -> dict:
     """Screen direct argv against one exact active contract at each boundary."""
-    contract = contract_engine.load_active(workspace)
+    slot = (expected or {}).get("evidence_contract_slot")
+    if slot:
+        contract = contract_engine.load_json(contract_engine.active_contract_path(workspace, slot), default=None)
+        if contract is None:
+            contract = contract_engine.released_worker_contract(workspace, slot)
+    else:
+        contract = contract_engine.load_active(workspace)
     if not isinstance(contract, dict):
         raise GovernedCommandError(
             "governed command launch requires an exact active contract or "
@@ -1133,17 +1163,27 @@ def _governed_launch_authority(
     if opaque and opaque[0] == "interpreter":
         raise GovernedCommandError(
             "governed command launch rejects opaque interpreter or script argv")
-    allowed, reason = contract_engine.screen_tool(
-        contract, "exec_command", {"cmd": command}, workspace)
-    if not allowed:
-        raise GovernedCommandError(
-            f"governed command launch is outside its active contract: {reason}")
+    evidence_boundary = None
+    if contract.get("read_only") and contract.get("evidence_input"):
+        if Path(cwd).resolve() != Path(workspace).resolve():
+            raise GovernedCommandError("evidence command requires the exact task workspace")
+        evidence_boundary = _evidence_command_boundary(workspace, contract, argv, identity, assignment_binding)
+    else:
+        allowed, reason = contract_engine.screen_tool(contract, "exec_command", {"cmd": command}, workspace)
+        if not allowed:
+            raise GovernedCommandError(f"governed command launch is outside its active contract: {reason}")
+    contract_material = contract
+    if evidence_boundary is not None:
+        contract_material = {key: contract.get(key) for key in
+            ("task_slot", "task_id", "read_only", "coding", "write_allow", "allowed_tools", "evidence_input")}
     proof = {
         "schema": "taskplane.governed-command-launch-authority/v1",
         "workspace": str(Path(workspace).resolve()),
         "cwd": str(Path(cwd).resolve()),
         "identity": dict(identity),
-        "contract_fingerprint": _canonical_digest(contract),
+        "contract_fingerprint": _canonical_digest(contract_material),
+        **({"evidence_boundary": evidence_boundary, "evidence_contract_slot": contract["task_slot"]}
+           if evidence_boundary is not None else {}),
         "command_fingerprint": _canonical_digest(argv),
         **({"assignment_binding_fingerprint":
             _canonical_digest(dict(assignment_binding))}
@@ -1857,7 +1897,7 @@ def execute(workspace: str, action: str, request: object) -> dict:
                     authority["executable_binding"],
                     label="runtime executable")
                 process = subprocess.Popen(
-                    [str(authority["executable_binding"]["path"]),
+                    [str(authority["runtime_argv"][0]),
                      str(Path(__file__).resolve()), "_worker", str(handoff)],
                     cwd=sandbox, stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -2571,10 +2611,21 @@ def _worker(path: str) -> int:
                 if isinstance(handoff.get("assignment_binding"), Mapping)
                 else None),
             expected=dict(handoff["authority"]))
-        process = subprocess.Popen(
-            list(handoff["argv"]), cwd=str(handoff["cwd"]),
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT)
+        boundary = handoff["authority"].get("evidence_boundary")
+        sandbox = None
+        if boundary is not None:
+            _recheck_regular_file_binding(boundary["executable_binding"], label="evidence executable")
+            sandbox = _prepare_checkpoint_sandbox(str(handoff["workspace"]), boundary)
+        try:
+            process = subprocess.Popen(
+                list(handoff["argv"]), cwd=sandbox or str(handoff["cwd"]),
+                env=dict(boundary["runtime_environment"]) if boundary else None,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except BaseException:
+            if sandbox is not None:
+                shutil.rmtree(Path(sandbox).parent, ignore_errors=True)
+            raise
+
 
         def drain() -> None:
             assert process.stdout is not None
@@ -2599,6 +2650,8 @@ def _worker(path: str) -> int:
             process.kill()
             returncode = process.wait()
         reader.join(timeout=1)
+        if sandbox is not None:
+            shutil.rmtree(Path(sandbox).parent, ignore_errors=True)
         if captured:
             runtime.append_output(handle, captured.decode("utf-8", errors="replace"))
         if runtime.snapshot(handle)["state"] in TERMINAL_STATES:

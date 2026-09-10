@@ -6,6 +6,11 @@ and authority-change policy.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import copy
 import hashlib
 import json
@@ -54,8 +59,7 @@ class ReviewSessionError(ValueError):
 
 
 def _canonical_digest(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
-                         ensure_ascii=False).encode("utf-8")
+    encoded = _json_primitives.canonical_bytes(value, ensure_ascii=False)
     return hashlib.sha256(encoded).hexdigest()
 
 

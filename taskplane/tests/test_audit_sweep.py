@@ -273,24 +273,6 @@ class TestGateIntegration(AuditBase):
         self.assertEqual(
             [r for r in self._rows(ws) if r.get("owner") == "router"], [])
 
-    def test_legacy_meta_without_routing_decision_is_untouched(self):
-        # legacy string coverage: no diff is computable, nothing is filed,
-        # and the coverage validation still accepts the legacy shape.
-        ws = tempfile.mkdtemp()
-        d = os.path.join(ws, ".em-review")
-        os.makedirs(d)
-        coverage = {e["id"]: "sweep" for e in lens.load_catalog()["lenses"]}
-        with open(os.path.join(d, "findings.json"), "w", encoding="utf-8") as f:
-            json.dump({"meta": {"lens_coverage": coverage,
-                                "impact": {"touched": []},
-                                "tests": "ok",
-                                "gate": {"verdict": "recommend-pass"}},
-                       "findings": [{"lens": "i18n", "severity": "low",
-                                     "title": "note"}]}, f)
-        with open(os.path.join(d, "report.md"), "w", encoding="utf-8") as f:
-            f.write("ok\n")
-        errs = loop._engineering_review_errors(ws, None)
-        self.assertEqual(errs, [])
 
     def test_v2_coverage_shape_passes_the_tier_validation(self):
         ws = em_review_ws(findings_rows=[])

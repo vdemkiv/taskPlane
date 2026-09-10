@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -65,6 +66,66 @@ def test_pending_worker_slot_never_governs_orchestrator(tmp_path):
     assert tp.load_active(str(tmp_path)) is None
 
 
+def test_native_dispatch_authenticates_role_without_readable_prompt(
+        tmp_path, monkeypatch, capsys):
+    name = "tp_step_product_pm_deadbeef"
+    contract = _active_worker(tmp_path, name=name)
+    tp.record_expected_dispatch(str(tmp_path), "step", "tp-product", "deep",
+                                None, task_name=name, reasoning_effort="high")
+    event = {"cwd": str(tmp_path), "tool_name": "spawn_agent", "tool_input": {
+        "task_name": name, "model": None, "reasoning_effort": "high",
+        "fork_turns": "none", "message": "host-protected-prompt"}}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    monkeypatch.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
+    assert cli.cmd_screen_dispatch(types.SimpleNamespace()) == 0
+    assert "deny" not in capsys.readouterr().out
+    assert tp.peek_expectation(str(tmp_path), name) is None
+    current = tp.load_json(tp.active_contract_path(str(tmp_path), contract["task_slot"]))
+    assert current["worker_lifecycle"]["status"] == "pending"
+    assert current["worker_lifecycle"]["owner"] is None
+
+
+@pytest.mark.parametrize("damage", ["missing", "foreign-name", "foreign-role",
+                                   "wrong-signature", "already-started"])
+def test_native_role_requires_exact_pending_signed_worker(tmp_path, damage):
+    name = "tp_step_product_pm_deadbeef"
+    expected = {"task_name": name, "agent": "tp-product",
+                "role_marker": "taskplane-role:tp-product"}
+    if damage != "missing":
+        contract = _active_worker(tmp_path, name=name)
+        if damage == "foreign-name":
+            expected["task_name"] = "tp_step_product_pm_foreign"
+        elif damage == "foreign-role":
+            expected["role_marker"] = "taskplane-role:tp-executor"
+        elif damage == "already-started":
+            tp.bind_worker_contract_event(str(tmp_path), _event(tmp_path), now=11)
+        elif damage == "wrong-signature":
+            contract["worker_lifecycle"]["release_action"]["signature"] = "0" * 64
+            tp.atomic_write_json(tp.active_contract_path(str(tmp_path),
+                                                         contract["task_slot"]), contract)
+    if damage == "wrong-signature":
+        with pytest.raises(tp.StateError, match="signature is invalid"):
+            tp.native_worker_role_matches(str(tmp_path), expected, name)
+    else:
+        assert tp.native_worker_role_matches(str(tmp_path), expected, name) is False
+
+
+def test_plaintext_contradictory_role_is_not_replaced_by_contract(
+        tmp_path, monkeypatch, capsys):
+    name = "tp_step_product_pm_deadbeef"
+    _active_worker(tmp_path, name=name)
+    tp.record_expected_dispatch(str(tmp_path), "step", "tp-product", "deep",
+                                None, task_name=name, reasoning_effort="high")
+    event = {"cwd": str(tmp_path), "tool_name": "spawn_agent", "tool_input": {
+        "task_name": name, "model": None, "reasoning_effort": "high",
+        "fork_turns": "none", "message": "taskplane-role:tp-executor"}}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    monkeypatch.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
+    cli.cmd_screen_dispatch(types.SimpleNamespace())
+    assert "deny" in capsys.readouterr().out
+    assert tp.peek_expectation(str(tmp_path), name) is not None
+
+
 def test_control_plane_reads_exact_worker_snapshot_without_root_binding(
         tmp_path):
     target = _active_worker(
@@ -83,64 +144,6 @@ def test_control_plane_reads_exact_worker_snapshot_without_root_binding(
     assert tp.load_active(str(tmp_path)) is None
 
 
-@pytest.mark.parametrize("stage", ["execute", "fix"])
-@pytest.mark.parametrize("damage", ["none", "stale", "foreign", "missing-snapshot"])
-def test_gate_uses_original_submission_snapshot_after_worker_stop(tmp_path, monkeypatch, stage, damage):
-    from taskplane import loop
-    tmp_path = tmp_path / "checkout"
-    tmp_path.mkdir()
-    workspace = str(tmp_path)
-    for args in (["init", "-q"], ["config", "user.email", "test@example.test"],
-                 ["config", "user.name", "Test"]):
-        subprocess.run(["git", *args], cwd=workspace, check=True)
-    source = tmp_path / "src" / "candidate.txt"
-    source.parent.mkdir()
-    source.write_text("original\n")
-    (tmp_path / ".gitignore").write_text(".taskplane/\n")
-    subprocess.run(["git", "add", "src/candidate.txt", ".gitignore"], cwd=workspace, check=True)
-    subprocess.run(["git", "commit", "-qm", "original baseline"], cwd=workspace, check=True)
-    baseline = tp.git_head(workspace)
-    loop.init(workspace, "snapshot continuity", spec_path="src/candidate.txt")
-    state = loop.load(workspace)
-    task = {"id": "t1", "status": "running", "scope": ["src/**"],
-        "tests": "python3 -c 'print(1)'", "test_contract": {}}
-    state.update(step=stage, tasks=[task], current_task=0, submission_required=True)
-    loop.save(workspace, state)
-    name = "tp_step_executor_t1_deadbeef"
-    contract = _active_worker(tmp_path, stage=stage, task="t1", name=name, snapshot=baseline, scope=task["scope"])
-    start = _event(tmp_path, name=name)
-    tp.bind_worker_contract_event(workspace, start, now=11)
-    source.write_text("completed work\n")
-    subprocess.run(["git", "add", "src/candidate.txt"], cwd=workspace, check=True)
-    subprocess.run(["git", "commit", "-qm", "worker implementation"], cwd=workspace, check=True)
-    assert tp.git_head(workspace) != baseline
-    monkeypatch.setattr(loop.runtime_eval, "guide_loop", lambda *a, **k: {"status": "on_path"})
-    submitted = loop.submit(workspace, "pass")
-    assert submitted.get("submitted"), submitted
-    assert submitted["submission"]["snapshot"] == baseline
-    assert loop._submission_staleness(workspace, submitted["submission"]) is None, (
-        submitted["submission"]["changed_files"], tp.changed_files(workspace, baseline))
-    stopped = tp.terminalize_worker_contract(workspace,
-        {**start, "hook_event_name": "SubagentStop", "outcome": "success"},
-        outcome="success", submission_status="valid", now=12)
-    assert stopped["released"]
-    assert not Path(tp.active_contract_path(workspace, contract["task_slot"])).exists()
-    assert loop._worker_stage_snapshot(workspace, stage, task) is None
-    state = loop.load(workspace)
-    if damage == "stale":
-        source.write_text("changed after submission\n")
-    elif damage == "foreign":
-        state["_submission"]["task_authority"]["task"] = "foreign"
-    elif damage == "missing-snapshot":
-        state["_submission"].pop("snapshot")
-    loop.save(workspace, state)
-    result = loop.gate(workspace, "pass")
-    if damage == "none":
-        assert "error" not in result, (result.get("error"), result.get("dod"))
-        assert result.get("step") == "evaluate", result
-    else:
-        assert "error" in result, result
-        assert loop.load(workspace)["step"] == stage
 
 
 @pytest.mark.parametrize(
@@ -239,29 +242,6 @@ def test_session_start_sweeps_only_loop_proven_completed_worker(tmp_path):
         tp.active_contract_path(str(tmp_path), active["task_slot"]))
 
 
-def test_session_start_quarantines_completed_legacy_pm_contract_d5810972(
-        tmp_path):
-    legacy = tp.build_contract(
-        "PM: legacy lifecycle", read_only=True,
-        write_allow=["specs/**", "docs/**"])
-    legacy["task_id"] = "task_d5810972"
-    tp.activate(str(tmp_path), legacy, snapshot="legacy-head")
-
-    current = tp.sweep_completed_worker_contracts(
-        str(tmp_path), loop_state={"step": "pm", "tasks": None}, now=20)
-    assert current == []
-    assert os.path.exists(tp.active_contract_path(str(tmp_path), None))
-
-    released = tp.sweep_completed_worker_contracts(
-        str(tmp_path), loop_state={"step": "plan", "tasks": None}, now=21)
-
-    assert released[0]["legacy"] is True
-    assert not os.path.exists(tp.active_contract_path(str(tmp_path), None))
-    assert not os.path.exists(tmp_path / ".taskplane" / "snapshot")
-    archived = json.loads(
-        (tmp_path / ".taskplane" / "quarantine" / "contracts" /
-         "task_d5810972-legacy-21.json").read_text(encoding="utf-8"))
-    assert archived["legacy_worker_recovery"]["stage"] == "pm"
 
 
 def test_native_session_start_context_invokes_completed_worker_sweep(

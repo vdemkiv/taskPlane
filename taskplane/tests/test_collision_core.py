@@ -119,28 +119,6 @@ def test_ledger_counts_each_disposition_and_deduplicates_identity():
     assert len(ledger["events"]) == 3
 
 
-def test_run_store_atomically_records_interference(tmp_path):
-    workspace = tmp_path / "repo"
-    workspace.mkdir()
-    (workspace / ".git").mkdir()
-    identity = storage.resolve_repository_identity(str(workspace))
-    store = RunStore(home=str(tmp_path / "home"))
-    manifest = store.create(
-        identity, run_id="run-1", checkout=str(workspace),
-        host={"name": "claude"}, target={"kind": "workspace"})
-    decision = collision.classify(
-        "agent", "orchestrator-supaconductor:worker", governed=True,
-        run_id="run-1", step="execute")
-    ledger = collision.record(None, decision, observed_at=1)
-
-    recorded = store.record_foreign_interference(
-        "run-1", expected_revision=manifest["revision"],
-        interference=ledger)
-    assert recorded["foreign_interference"] == ledger
-    with pytest.raises(RevisionConflict):
-        store.record_foreign_interference(
-            "run-1", expected_revision=manifest["revision"],
-            interference=ledger)
 
 
 def test_workspace_ledger_is_durable_and_bounded(tmp_path):

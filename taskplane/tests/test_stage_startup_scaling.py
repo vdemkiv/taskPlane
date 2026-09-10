@@ -300,25 +300,18 @@ def test_runtime_projection_uses_verified_startup_bytes_without_mutation(
     dispatch = fixture.dispatch()
     before = copy.deepcopy(dispatch)
     original_startup_bytes = taskplane_lite.stage_startup_bytes
-    original_canonical = taskplane_lite.canonical_json_bytes
-    calls = {"stage_startup_bytes": 0, "canonical_json_bytes": 0}
+    calls = {"stage_startup_bytes": 0}
 
     def counted_startup_bytes(value: dict[str, object]) -> bytes:
         calls["stage_startup_bytes"] += 1
         return original_startup_bytes(value)
 
-    def counted_canonical(value: object) -> bytes:
-        calls["canonical_json_bytes"] += 1
-        return original_canonical(value)
-
     monkeypatch.setattr(
         taskplane_lite, "stage_startup_bytes", counted_startup_bytes)
-    monkeypatch.setattr(
-        taskplane_lite, "canonical_json_bytes", counted_canonical)
 
     projection = runtime_eval.stage_startup_projection(dispatch)
 
-    assert calls == {"stage_startup_bytes": 1, "canonical_json_bytes": 2}
+    assert calls == {"stage_startup_bytes": 1}
     assert dispatch == before
     assert dispatch["telemetry"] == before["telemetry"]
     assert projection["startup_sha256"] == dispatch["startup_sha256"]

@@ -102,55 +102,6 @@ def test_h13_standalone_review_has_finite_default_token_ceiling(
     assert written["value"] == producer
 
 
-def test_h28_review_scans_only_selected_session_with_byte_cap(
-        tmp_path, monkeypatch) -> None:
-    codex_root = tmp_path / "codex"
-    action_id = "action-1"
-    run_id = "run-1"
-    receipt_id = "approval-1"
-    session_id = "01a0483d-ba00-7000-8000-000000000001"
-    codex_root.mkdir()
-    (codex_root / "session_index.jsonl").write_text(json.dumps({
-        "id": session_id, "updated_at": "2026-08-28T12:00:00Z",
-    }) + "\n", encoding="utf-8")
-    prompt = review._review_action_prompt(run_id, action_id, "dynamic")
-    selected = _codex_rollout_path(codex_root, session_id)
-    selected.parent.mkdir(parents=True)
-    selected.write_text(json.dumps({
-        "type": "response_item", "payload": {
-            "type": "message", "id": receipt_id, "role": "user",
-            "content": [{"type": "input_text", "text": prompt}],
-        },
-    }) + "\n", encoding="utf-8")
-    unrelated = selected.parent / "rollout-newer-unrelated.jsonl"
-    unrelated.write_text("not-json\n", encoding="utf-8")
-    now = time.time_ns()
-    os.utime(selected, ns=(now - 10, now - 10))
-    os.utime(unrelated, ns=(now, now))
-    monkeypatch.setattr(
-        review, "_canonical_host_root",
-        lambda host: str(codex_root if host == "codex" else
-                         tmp_path / "absent"))
-
-    original = review._host_review_records
-    reads = []
-
-    def counted(path: str) -> list[dict]:
-        reads.append(path)
-        return original(path)
-
-    monkeypatch.setattr(review, "_host_review_records", counted)
-    receipt = review._host_review_action_receipt(
-        run_id=run_id, action_id=action_id, response="dynamic",
-        receipt_ref=f"codex:{session_id}:{receipt_id}")
-    assert receipt.receipt_id == receipt_id
-    assert reads == [str(selected)]
-
-    monkeypatch.setattr(review, "MAX_HOST_TRANSCRIPT_BYTES", 256)
-    bounded = selected.parent / "rollout-bounded-session.jsonl"
-    row = json.dumps({"tail": True}).encode() + b"\n"
-    bounded.write_bytes((b"old\n" * 300) + row)
-    assert review._host_review_records(str(bounded))[-1] == {"tail": True}
 
 
 def test_h28_exact_session_lookup_never_walks_unmatched_history(

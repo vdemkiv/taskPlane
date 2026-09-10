@@ -1,6 +1,7 @@
 """Contracts and lifecycle replay are isolated to one exact Git worktree."""
 
 import json
+import pytest
 import os
 import subprocess
 import sys
@@ -70,10 +71,9 @@ def test_contract_and_lifecycle_claims_bind_exact_worktree(tmp_path, monkeypatch
     assert sibling["execute"] is True
     assert sibling["claim_id"] != first["claim_id"]
 
-    # A task slot inherited by the host process belongs to A. It must not
-    # turn an otherwise ungoverned sibling worktree into a corrupt/blocked
-    # lifecycle. A remains governed throughout.
-    assert tp.load_active(str(worktree_b)) is None
+    # An explicit worker slot never gains ungoverned execution in a sibling.
+    with pytest.raises(tp.StateError, match="unknown TASKPLANE_TASK"):
+        tp.load_active(str(worktree_b))
     assert tp.load_active(str(worktree_a))["task_id"] == contract["task_id"]
     assert cli._governed_root(str(worktree_b)) == str(worktree_b)
     assert cli._governed_root(str(worktree_a / "src")) == str(worktree_a)
@@ -85,11 +85,12 @@ def test_sibling_lifecycle_does_not_clear_or_weaken_owner(tmp_path, monkeypatch)
     contract = tp.build_contract("owner", scope=["tracked.txt"])
     tp.activate(str(worktree_a), contract, snapshot=tp.git_head(str(worktree_a)))
 
-    # A sibling Stop-like lookup is advisory because no contract is active in
-    # that exact worktree. It neither consumes nor removes A's slot.
-    assert cli._submission_stop_check(
+    # A foreign Stop is refused and cannot consume or remove A's slot.
+    refused = cli._submission_stop_check(
         {"cwd": str(worktree_b), "hook_event_name": "SubagentStop",
-         "session_id": "s", "agent_id": "child"}) is None
+         "session_id": "s", "agent_id": "child"})
+    assert refused["block"] is True
+    assert refused["valid"] is False
     active = tp.load_active(str(worktree_a))
     assert active is not None
     assert active["task_id"] == contract["task_id"]

@@ -43,7 +43,20 @@ def _strict(monkeypatch, tmp_path, *, live: bool):
                    cwd=workspace, check=True)
     monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("CLAUDE_SESSION_ID", "claude-session")
+    monkeypatch.setenv("TASKPLANE_SESSION_ID", "claude-session")
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    from taskplane import storage, run_store, requirements
+    store = run_store.RunStore()
+    identity = storage.resolve_repository_identity(workspace)
+    store.create(identity, run_id="enforcement-run", checkout=workspace,
+        host={"kind": "claude", "session_id": "claude-session"},
+        target={"kind": "workspace", "revision": lite.git_head(workspace)})
+    storage.write_workspace_locator(workspace, identity=identity,
+        layout=storage.resolve_layout(identity, home=store.home, run_id="enforcement-run"),
+        run_id="enforcement-run")
+    requirements.record_requirement(workspace, "Enforced delivery",
+        functional=["preserve exact host enforcement evidence"],
+        acceptance=["unproven hooks require explicit advisory acknowledgement"])
     monkeypatch.setattr(
         cli, "_host_capability_snapshot",
         lambda ws, install_context=None: _snapshot(ws, live=live))
@@ -90,7 +103,7 @@ def test_advisory_requires_by_and_is_persisted_on_loop_and_dashboard(
         monkeypatch, tmp_path, capsys):
     workspace = _strict(monkeypatch, tmp_path, live=False)
     args = ["loop", "--workspace", workspace, "init", "goal",
-            "--advisory"]
+            "--req", "R-0001", "--advisory"]
 
     assert cli.main(args) == 1
     assert loop.load(workspace) is None
@@ -114,7 +127,8 @@ def test_advisory_requires_by_and_is_persisted_on_loop_and_dashboard(
 def test_mid_run_loss_blocks_gate_until_explicit_advisory(
         monkeypatch, tmp_path, capsys):
     workspace = _strict(monkeypatch, tmp_path, live=True)
-    loop.init(workspace, "goal")
+    initialized = loop.init(workspace, "goal", requirement_id="R-0001", by="Dana")
+    assert "error" not in initialized, initialized
     live, refusal = cli._enforcement_check(workspace)
     assert refusal is None
     loop.record_enforcement(workspace, live)

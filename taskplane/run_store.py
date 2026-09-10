@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from collections.abc import Callable, Mapping
 import copy
 from datetime import datetime, timezone
@@ -16,7 +17,14 @@ import time
 import uuid
 
 import storage
-import taskplane_lite as tp
+if __package__:
+    from .primitives import atomic_json, canonical_bytes as _canonical_json_bytes
+else:
+    from primitives import atomic_json, canonical_bytes as _canonical_json_bytes
+if __package__:
+    from .primitives import file_lock, StateError
+else:
+    from primitives import file_lock, StateError
 try:
     from . import run_artifacts, stage_handoff
 except ImportError:  # pragma: no cover - direct-module compatibility
@@ -26,6 +34,10 @@ except ImportError:  # pragma: no cover - direct-module compatibility
 
 class RunStoreError(RuntimeError):
     pass
+
+
+class UnsupportedRunSchemaError(RunStoreError):
+    """The manifest is outside the current run format."""
 
 
 class RunStoreBusy(RunStoreError):
@@ -74,7 +86,7 @@ def ensure_stage_compatibility() -> None:
     _stage_entities_module()
 
 
-_RUN_SCHEMAS = frozenset({"taskplane.run/v3", "taskplane.run/v4"})
+RUN_SCHEMA = "taskplane.run/v4"
 _STAGE_INDEX_KEYS = frozenset({
     "stage_heads", "lineage", "stage_operations",
     "active_stage_projection", "stage_journal_outbox",
@@ -104,18 +116,12 @@ _STAGE_RECEIPT_FIELDS = frozenset({
     "stage_ids", "committed_revision", "result", "result_fingerprint",
 })
 _EMPTY_STAGE_ID_OPERATIONS = frozenset({
-    "migrate_singleton",
     "rebuild_active_stage_projection",
 })
 _STAGE_JOURNAL_EVENT_FIELDS = frozenset({
     "event", "operation", "operation_id", "request_fingerprint",
     "revision", "stage_ids", "at",
 })
-
-
-def _canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False).encode("utf-8")
 
 
 def _nonempty_text(value: object, label: str) -> str:
@@ -364,26 +370,9 @@ def _validate_lineage_bindings(lineage: list[dict],
         fingerprints.add(fingerprint)
 
 
-def _promote_stage_index(current: dict) -> dict:
-    promoted = copy.deepcopy(current)
-    schema = promoted.get("schema")
-    if schema not in _RUN_SCHEMAS:
-        raise RunStoreError("run manifest schema is unsupported")
-    if schema == "taskplane.run/v3":
-        if set(promoted) & _STAGE_INDEX_KEYS:
-            raise StageStateError(
-                "v3 run manifest cannot preseed stage indexes")
-        promoted["schema"] = "taskplane.run/v4"
-        promoted["stage_heads"] = {}
-        promoted["lineage"] = []
-        promoted["stage_operations"] = {}
-        promoted["stage_journal_outbox"] = {}
-        promoted["active_stage_projection"] = \
-            _canonical_active_projection(promoted["stage_heads"])
-    elif schema == "taskplane.run/v4":
-        # v4 existed before journal delivery became a persisted projection.
-        promoted.setdefault("stage_journal_outbox", {})
-    return promoted
+def _current_stage_index(current: dict) -> dict:
+    _validate_stage_index(current)
+    return copy.deepcopy(current)
 
 
 def _validate_stage_journal_outbox(value: object, *,
@@ -422,8 +411,8 @@ def _validate_stage_journal_outbox(value: object, *,
 
 
 def _validate_stage_index(manifest: dict) -> None:
-    if manifest.get("schema") != "taskplane.run/v4":
-        raise StageStateError("stage operations require taskplane.run/v4")
+    if manifest.get("schema") != RUN_SCHEMA:
+        raise UnsupportedRunSchemaError(f"unsupported_run_schema: expected {RUN_SCHEMA}")
     manifest_revision = manifest.get("revision")
     if isinstance(manifest_revision, bool) or \
             not isinstance(manifest_revision, int) or manifest_revision < 1:
@@ -559,30 +548,26 @@ def _validate_operation_receipt(value: object, *, operation_id: str,
     return copy.deepcopy(value)
 
 
+_TRANSACTIONS: ContextVar[dict] = ContextVar("taskplane_run_transactions", default={})
+
+
 def _atomic_write_json(path: str, value: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = f"{path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
-    try:
-        with open(temporary, "w", encoding="utf-8", newline="") as handle:
-            json.dump(value, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        try:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-        except OSError:
-            pass
+    pending = _TRANSACTIONS.get().get(os.path.abspath(path))
+    if pending is not None:
+        pending["manifest"] = copy.deepcopy(value)
+    else:
+        atomic_json(path, value)
 
 
 @contextmanager
 def _lock(path: str):
+    if os.path.abspath(path) in _TRANSACTIONS.get():
+        yield
+        return
     try:
-        with tp.file_lock(path, timeout=10.0):
+        with file_lock(path, timeout=10.0):
             yield
-    except tp.StateError as exc:
+    except StateError as exc:
         raise RunStoreBusy(f"run manifest lock is unavailable: {exc}") \
             from None
 
@@ -606,7 +591,9 @@ class RunStore:
 
     def _knowledge_path(self, workspace: str) -> str:
         # Use the incumbent knowledge-root resolution, including migration.
-        return os.path.join(tp.kb_root(workspace), "governed-updates.json")
+        identity = storage.resolve_repository_identity(workspace)
+        layout = storage.resolve_layout(identity, home=self.home, run_id="knowledge")
+        return os.path.join(layout.knowledge_root, "governed-updates.json")
 
     def _load_knowledge(self, path: str) -> dict:
         try:
@@ -774,6 +761,10 @@ class RunStore:
                             "journal.jsonl")
 
     def _append_journal(self, run_id: str, event: dict) -> None:
+        pending = _TRANSACTIONS.get().get(self._manifest_path(run_id))
+        if pending is not None:
+            pending["events"].append(copy.deepcopy(event))
+            return
         path = self._journal_path(run_id)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8", newline="") as handle:
@@ -834,8 +825,11 @@ class RunStore:
         return rows
 
     def _journal_contains_stage_event(self, run_id: str,
-                                      event: dict) -> bool:
-        rows = self._read_journal_rows_locked(run_id)
+                                      event: dict, rows: list[dict] | None = None) -> bool:
+        rows = self._read_journal_rows_locked(run_id) if rows is None else list(rows)
+        pending = _TRANSACTIONS.get().get(self._manifest_path(run_id))
+        if pending is not None:
+            rows += pending["events"]
         identity = (event["operation_id"], event["request_fingerprint"])
         matches = [row for row in rows if (
             row.get("event") == "stage_operation_committed" and
@@ -848,45 +842,50 @@ class RunStore:
 
     def _relay_stage_journal_outbox_locked(
             self, run_id: str, manifest: dict,
-            operation_id: str) -> dict:
+            operation_id: str, journal_rows: list[dict] | None = None) -> dict:
         """Deliver and acknowledge one receipt-bound journal event."""
         outbox = manifest.get("stage_journal_outbox") or {}
         entry = outbox.get(operation_id)
         if entry is None or entry.get("delivered") is True:
             return manifest
         event = copy.deepcopy(entry["event"])
-        if not self._journal_contains_stage_event(run_id, event):
+        if not self._journal_contains_stage_event(run_id, event, journal_rows):
             self._append_journal(run_id, event)
-        delivered = copy.deepcopy(manifest)
-        delivered["stage_journal_outbox"][operation_id]["delivered"] = True
-        _validate_stage_index(delivered)
-        _atomic_write_json(self._manifest_path(run_id), delivered)
-        return delivered
+            if journal_rows is not None:
+                journal_rows.append(event)
+        # The journal is derived. Its event identity is the delivery marker;
+        # acknowledging delivery must not publish a second aggregate head.
+        entry["delivered"] = True
+        return manifest
 
     def _relay_all_stage_journal_outbox_locked(
             self, run_id: str, manifest: dict) -> dict:
         """Sweep every committed undelivered event under the run lock."""
-        if manifest.get("schema") != "taskplane.run/v4":
-            return manifest
         _validate_stage_index(manifest)
-        relayed = manifest
+        relayed = copy.deepcopy(manifest)
+        journal_rows = self._read_journal_rows_locked(run_id)
         for operation_id in sorted(
                 (manifest.get("stage_journal_outbox") or {}).keys()):
             relayed = self._relay_stage_journal_outbox_locked(
-                run_id, relayed, operation_id)
+                run_id, relayed, operation_id, journal_rows)
         return relayed
 
     def _load_manifest(self, run_id: str) -> dict:
         path = self._manifest_path(run_id)
+        pending = _TRANSACTIONS.get().get(path)
+        if pending is not None:
+            return copy.deepcopy(pending["manifest"])
         try:
             with open(path, encoding="utf-8") as handle:
                 value = json.load(handle)
         except (OSError, ValueError) as exc:
             raise RunStoreError(f"run manifest is unavailable: {run_id}") \
                 from exc
-        if not isinstance(value, dict) or value.get("schema") not in \
-                _RUN_SCHEMAS:
+        if not isinstance(value, dict):
             raise RunStoreError(f"run manifest is invalid: {run_id}")
+        if value.get("schema") != RUN_SCHEMA:
+            raise UnsupportedRunSchemaError(
+                f"unsupported_run_schema: run {run_id} requires {RUN_SCHEMA}")
         if "run_artifacts" in value:
             try:
                 run_artifacts.validate_manifest_locator_reference(
@@ -908,7 +907,7 @@ class RunStore:
             repository = identity.to_dict()
             repository["checkout"] = os.path.realpath(checkout)
             manifest = {
-                "schema": "taskplane.run/v3",
+                "schema": RUN_SCHEMA,
                 "run_id": str(run_id),
                 "revision": 1,
                 "status": "preflight",
@@ -926,6 +925,9 @@ class RunStore:
                     "artifacts": layout.artifact_root,
                 },
                 "run_artifacts": run_artifacts.manifest_locator_reference(),
+                "stage_heads": {}, "lineage": [], "stage_operations": {},
+                "stage_journal_outbox": {},
+                "active_stage_projection": _canonical_active_projection({}),
             }
             _atomic_write_json(path, manifest)
             _atomic_write_json(layout.repository_record, {
@@ -938,6 +940,15 @@ class RunStore:
                 "status": "preflight", "at": int(time.time())})
             return manifest
 
+    def inspect(self, run_id: str) -> dict:
+        """Read manifest identity without replaying journals or writing locks."""
+        run_id = _run_id(run_id)
+        value = self._load_manifest(run_id)
+        if value.get("run_id") != run_id:
+            raise RunStoreError(f"run manifest identity is invalid: {run_id}")
+        _validate_stage_index(value)
+        return value
+
     def load(self, run_id: str) -> dict:
         run_id = _run_id(run_id)
         path = self._manifest_path(run_id)
@@ -945,6 +956,52 @@ class RunStore:
             value = self._load_manifest(run_id)
             return self._relay_all_stage_journal_outbox_locked(
                 run_id, value)
+
+    @contextmanager
+    def transaction(self, run_id: str):
+        """Publish one head for an entire workflow transition, or none on error.
+
+        Existing lifecycle operations retain their CAS and receipt checks.
+        Nested operations share the private draft under the same run lock;
+        immutable objects remain unreferenced if the transition aborts.
+        """
+        path = self._manifest_path(run_id)
+        if path in _TRANSACTIONS.get():
+            yield
+            return
+        with _lock(path):
+            original = self._load_manifest(run_id)
+            pending = {"manifest": copy.deepcopy(original), "events": []}
+            token = _TRANSACTIONS.set({**_TRANSACTIONS.get(), path: pending})
+            try:
+                yield
+            except BaseException:
+                raise
+            else:
+                _validate_stage_index(pending["manifest"])
+            finally:
+                _TRANSACTIONS.reset(token)
+            if pending["manifest"] != original:
+                # Keep journal events in the durable outbox until delivery.
+                # A process crash after this write is replayed by load().
+                for entry in pending["manifest"].get("stage_journal_outbox", {}).values():
+                    if entry["event"] in pending["events"]:
+                        entry["delivered"] = False
+                _atomic_write_json(path, pending["manifest"])
+            for event in pending["events"]:
+                self._append_journal(run_id, event)
+
+    def save_workflow(self, run_id: str, workflow: dict) -> dict:
+        """Replace workflow metadata in the aggregate; removed keys stay removed."""
+        with self.transaction(run_id):
+            current = self._load_manifest(run_id)
+            if current.get("workflow") == workflow:
+                return current
+            updated = self.commit(run_id, expected_revision=current["revision"],
+                                  changes={"workflow": None})
+            updated["workflow"] = copy.deepcopy(workflow)
+            _atomic_write_json(self._manifest_path(run_id), updated)
+            return updated
 
     def commit(self, run_id: str, *, expected_revision: int,
                changes: dict) -> dict:
@@ -965,12 +1022,10 @@ class RunStore:
                 raise RevisionConflict(
                     f"run {run_id} revision is {actual}, expected "
                     f"{expected_revision}")
-            if current.get("schema") == "taskplane.run/v4":
-                _validate_stage_index(current)
+            _validate_stage_index(current)
             updated = _merge(current, changes)
             updated["revision"] = actual + 1
-            if updated.get("schema") == "taskplane.run/v4":
-                _validate_stage_index(updated)
+            _validate_stage_index(updated)
             _atomic_write_json(path, updated)
             self._append_journal(run_id, {
                 "event": "run_committed", "revision": updated["revision"],
@@ -1017,9 +1072,9 @@ class RunStore:
                     raise OperationConflict(
                         f"operation id {operation_id} was reused with "
                         "a different request fingerprint")
-                promoted = _promote_stage_index(current)
+                checked = _current_stage_index(current)
                 self._relay_stage_journal_outbox_locked(
-                    run_id, promoted, operation_id)
+                    run_id, checked, operation_id)
                 return checked_previous
 
             actual = int(current.get("revision") or 0)
@@ -1031,14 +1086,10 @@ class RunStore:
                 raise StageStateError(
                     "stage operation requires authority revalidation")
 
-            promoted = _promote_stage_index(current)
-            # A corrupt v4 cache blocks normal lifecycle dispatch.  The
-            # dedicated repair method is the sole recovery path.
-            if current.get("schema") == "taskplane.run/v4":
-                _validate_stage_index(promoted)
+            checked = _current_stage_index(current)
             if validate_authority is not None:
-                validate_authority(copy.deepcopy(promoted))
-            result = mutate(copy.deepcopy(promoted))
+                validate_authority(copy.deepcopy(checked))
+            result = mutate(copy.deepcopy(checked))
             if not isinstance(result, dict) or set(result) != {
                     "changes", "receipt"}:
                 raise StageStateError(
@@ -1057,7 +1108,7 @@ class RunStore:
                     "stage operation must replace fields: " +
                     ", ".join(sorted(missing_changes)))
 
-            updated = copy.deepcopy(promoted)
+            updated = copy.deepcopy(checked)
             for key, value in changes.items():
                 if key in {"stage_heads", "lineage",
                            "active_stage_projection"}:
@@ -1068,7 +1119,7 @@ class RunStore:
                 else:
                     updated[key] = copy.deepcopy(value)
 
-            old_lineage = _validate_lineage(promoted.get("lineage"))
+            old_lineage = _validate_lineage(checked.get("lineage"))
             new_lineage = _validate_lineage(updated.get("lineage"))
             if new_lineage[:len(old_lineage)] != old_lineage:
                 raise StageStateError("stage lineage is immutable and append-only")
@@ -1078,7 +1129,7 @@ class RunStore:
                 result.get("receipt"), operation_id=operation_id,
                 request_fingerprint=request_fingerprint,
                 committed_revision=updated["revision"])
-            old_heads = promoted["stage_heads"]
+            old_heads = checked["stage_heads"]
             new_heads = updated["stage_heads"]
             removed_heads = set(old_heads) - set(new_heads)
             if removed_heads:
@@ -1106,7 +1157,7 @@ class RunStore:
                         resumed["summary"]["state"] != "active" or \
                         new_lineage != old_lineage or \
                         updated["active_stage_projection"] != \
-                        promoted["active_stage_projection"]:
+                        checked["active_stage_projection"]:
                     raise StageStateError(
                         "resume may only claim an active stage attempt")
             elif receipt["stage_ids"] != changed_heads:
@@ -1122,10 +1173,10 @@ class RunStore:
                     raise StageStateError(
                         "stage aggregate revision must advance exactly once")
             updated["stage_operations"] = copy.deepcopy(
-                promoted.get("stage_operations") or {})
+                checked.get("stage_operations") or {})
             updated["stage_operations"][operation_id] = receipt
             updated["stage_journal_outbox"] = copy.deepcopy(
-                promoted.get("stage_journal_outbox") or {})
+                checked.get("stage_journal_outbox") or {})
             updated["stage_journal_outbox"][operation_id] = {
                 "event": {
                     "event": "stage_operation_committed",
@@ -1155,8 +1206,8 @@ class RunStore:
             current = self._load_manifest(run_id)
             if current.get("run_id") != run_id:
                 raise StageStateError("run manifest identity mismatch")
-            promoted = _promote_stage_index(current)
-            heads = promoted.get("stage_heads")
+            checked = copy.deepcopy(current)
+            heads = checked.get("stage_heads")
             expected = _canonical_active_projection(
                 heads, foreground_stage_id)
             # This operation exists specifically to recover a missing,
@@ -1165,7 +1216,7 @@ class RunStore:
             # revision/replay decisions; validating ``current`` here makes
             # the repair path impossible to enter. Do not persist this
             # candidate until the revision check and receipt are complete.
-            repairable = copy.deepcopy(promoted)
+            repairable = copy.deepcopy(checked)
             repairable["active_stage_projection"] = expected
             _validate_stage_index(repairable)
             repair_id = (_operation_id(operation_id, "operation id")
@@ -1176,7 +1227,7 @@ class RunStore:
                 "run_id": run_id,
                 "projection": expected,
             })).hexdigest()
-            operations = promoted.get("stage_operations")
+            operations = checked.get("stage_operations")
             if not isinstance(operations, dict):
                 raise StageStateError("stage_operations must be an object")
             previous = operations.get(repair_id)
@@ -1187,11 +1238,11 @@ class RunStore:
                 if checked_previous.get("request_fingerprint") != request:
                     raise OperationConflict(
                         f"operation id {repair_id} was reused with different input")
-                if promoted.get("active_stage_projection") != expected:
+                if checked.get("active_stage_projection") != expected:
                     raise StageStateError(
                         "committed projection repair result is not present")
                 relayed = self._relay_all_stage_journal_outbox_locked(
-                    run_id, promoted)
+                    run_id, checked)
                 return copy.deepcopy(relayed)
 
             actual = int(current.get("revision") or 0)
@@ -1199,8 +1250,7 @@ class RunStore:
                 raise RevisionConflict(
                     f"run {run_id} revision is {actual}, expected "
                     f"{expected_revision}")
-            if current.get("schema") == "taskplane.run/v4" and \
-                    current.get("active_stage_projection") == expected:
+            if current.get("active_stage_projection") == expected:
                 _validate_stage_index(current)
                 relayed = self._relay_all_stage_journal_outbox_locked(
                     run_id, current)
@@ -1217,7 +1267,7 @@ class RunStore:
             updated["stage_operations"] = copy.deepcopy(operations)
             updated["stage_operations"][repair_id] = receipt
             updated["stage_journal_outbox"] = copy.deepcopy(
-                promoted.get("stage_journal_outbox") or {})
+                checked.get("stage_journal_outbox") or {})
             updated["stage_journal_outbox"][repair_id] = {
                 "event": {
                     "event": "stage_operation_committed",
@@ -1386,68 +1436,9 @@ class RunStore:
             attempt_id=(_stage_id(attempt_id, "attempt id")
                         if attempt_id is not None else None))
 
-    def record_enforcement_decision(
-            self, run_id: str, *, expected_revision: int,
-            decision: dict) -> dict:
-        """Atomically retain the canonical enforcement decision for a run."""
-        import enforcement
 
-        checked = enforcement.validate_decision(decision)
-        if checked.get("run_id") not in (None, str(run_id)):
-            raise RunStoreError("enforcement decision belongs to another run")
-        current = self.load(run_id)
-        if int(current.get("revision") or 0) != int(expected_revision):
-            raise RevisionConflict(
-                f"run {run_id} revision is {current.get('revision')}, "
-                f"expected {expected_revision}")
-        history = list((current.get("enforcement") or {}).get("history") or [])
-        if not history or history[-1].get("evidence_id") != \
-                checked.get("evidence_id"):
-            history.append(copy.deepcopy(checked))
-        # Bound the projection while preserving the complete journaled writes.
-        history = history[-64:]
-        return self.commit(
-            run_id, expected_revision=expected_revision,
-            changes={"enforcement": {
-                "schema": "taskplane.run-enforcement/v1",
-                "current": checked,
-                "history": history,
-            }})
 
-    def record_foreign_interference(
-            self, run_id: str, *, expected_revision: int,
-            interference: dict) -> dict:
-        """Atomically persist the bounded foreign-interference authority."""
-        import collision
 
-        checked = collision.validate_ledger(interference)
-        if checked.get("run_id") not in (None, str(run_id)):
-            raise RunStoreError("foreign interference belongs to another run")
-        return self.commit(
-            run_id, expected_revision=expected_revision,
-            changes={"foreign_interference": checked})
-
-    def record_task_merge(self, run_id: str, *, expected_revision: int,
-                          receipt: dict) -> dict:
-        import worktree_cleanup
-        checked = worktree_cleanup.validate_merge_receipt(receipt)
-        if checked.get("run_id") != str(run_id):
-            raise RunStoreError("task merge receipt belongs to another run")
-        return self.commit(
-            run_id, expected_revision=expected_revision,
-            changes={"task_merges": {
-                str(checked["task_id"]): checked}})
-
-    def record_worktree_cleanup(self, run_id: str, *, expected_revision: int,
-                                cleanup: dict) -> dict:
-        import worktree_cleanup
-        checked = worktree_cleanup.validate_cleanup_record(cleanup)
-        if checked.get("run_id") != str(run_id):
-            raise RunStoreError("worktree cleanup belongs to another run")
-        return self.commit(
-            run_id, expected_revision=expected_revision,
-            changes={"worktree_cleanups": {
-                str(checked["task_id"]): checked}})
 
     def register_checkout(self, identity: storage.RepositoryIdentity, *,
                           checkout: str, source: str) -> dict:

@@ -186,16 +186,15 @@ line names the discount. Pinned by
 `taskplane/tests/test_lens_signals.py` (discount named in evidence, real
 product-file support keeps full weight, n/a semantics untouched).
 
-## The review wave and the stage waves — one workflow run, mandatory fallback
+## Stage workflows and standalone review dispatch
 
-Reviews and the governed loop stages can each dispatch as **one journaled
-Claude Dynamic Workflow run** (resumable: a killed run re-uses completed
-agents' cached results). Four workflow files ship, all on the same
-pattern — deterministic, schema-pinned receipts, transport-only:
+Governed loop stages can dispatch as **one journaled Claude Dynamic Workflow
+run**. Three stage workflow files ship as deterministic transports for canonical
+receipts. Standalone reviews dispatch canonical leased slots directly:
 
 | Stage | Workflow file | Emitting CLI |
 | --- | --- | --- |
-| engineering review | `workflows/review-wave.js` | `tp lens dispatch --emit auto\|workflow\|task` |
+| standalone review | canonical leased slots | `tp lens dispatch --emit auto\|task` |
 | execute wave | `workflows/execute-wave.js` | `tp loop wave --emit auto\|workflow\|task` |
 | evaluate | `workflows/evaluate-wave.js` | `tp loop next --emit auto\|workflow\|task` |
 | fix | `workflows/fix-wave.js` | `tp loop next --emit auto\|workflow\|task` |

@@ -1,6 +1,5 @@
 """Canonical dashboard-state pipeline regressions for R-0001."""
 from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -14,7 +13,7 @@ from taskplane import views
 from taskplane import wave_metrics
 
 
-def _legacy_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _selected_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     state = {
@@ -25,7 +24,7 @@ def _legacy_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "current_task": 0,
     }
     monkeypatch.setattr(loop_status, "_select_dashboard_source", lambda _ws: {
-        "mode": "legacy", "status": "ready", "run_id": "legacy-run",
+        "mode": "v4", "status": "ready", "run_id": "selected-run",
         "revision": "revision-7", "target": "dashboard", "state": state,
         "evidence": ["loop-state:revision-7"],
     })
@@ -34,7 +33,7 @@ def _legacy_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_generated_at_sequence_revision_and_fingerprint_survive_restart(
         tmp_path, monkeypatch):
-    workspace = _legacy_source(tmp_path, monkeypatch)
+    workspace = _selected_source(tmp_path, monkeypatch)
     first = loop_status.refresh_dashboard_snapshot(
         str(workspace), event_type="gate", outcome="pass",
         committed_at="2026-08-18T10:00:00Z")
@@ -52,7 +51,7 @@ def test_generated_at_sequence_revision_and_fingerprint_survive_restart(
 
 def test_same_sequence_different_fingerprint_is_rejected_as_contradictory(
         tmp_path, monkeypatch):
-    workspace = _legacy_source(tmp_path, monkeypatch)
+    workspace = _selected_source(tmp_path, monkeypatch)
     first = loop_status.refresh_dashboard_snapshot(
         str(workspace), event_type="gate", outcome="pass", committed_at=1)
     original = host_native.HostSurfaceSnapshot.from_dict(first["snapshot"])
@@ -63,12 +62,12 @@ def test_same_sequence_different_fingerprint_is_rejected_as_contradictory(
         state="failed", values=dict(original.values),
         evidence=original.evidence, safe_actions=())
     with pytest.raises(host_native.ContradictorySnapshotError):
-        storage.commit_dashboard_snapshot(str(workspace), contradictory)
+        host_native.commit_dashboard_snapshot(str(workspace), contradictory)
 
 
 def test_refresh_builds_one_snapshot_and_all_surfaces_share_fingerprint(
         tmp_path, monkeypatch):
-    workspace = _legacy_source(tmp_path, monkeypatch)
+    workspace = _selected_source(tmp_path, monkeypatch)
     reads = 0
     selected = loop_status._select_dashboard_source
 
@@ -96,7 +95,7 @@ def test_v4_snapshot_never_falls_back_to_unbound_legacy_state(
     monkeypatch.setattr(loop_status, "_load_v4_manifest",
                         lambda _ws, _locator: (_ for _ in ()).throw(
                             ValueError("corrupt v4")))
-    monkeypatch.setattr(loop_status, "_load_legacy_state",
+    monkeypatch.setattr(loop_status, "_load_workflow_state",
                         lambda _ws: (_ for _ in ()).throw(
                             AssertionError("legacy fallback used")))
     publication = loop_status.refresh_dashboard_snapshot(
@@ -252,12 +251,14 @@ def test_wave_metrics_receipt_fingerprint_reaches_dashboard_without_recount(
     state = {
         "goal": "project sealed metrics", "step": "signoff",
         "baseline": "candidate-revision", "tasks": [],
+        "signoff_evidence": {"schema":"taskplane.signoff-evidence/v1",
+            "integration_revision":"candidate-revision", "dod":{"passed":True, "errors":[]}},
         "wave_metrics_receipt": sealed,
         # A stale caller-supplied recount must never replace the sealed receipt.
         "wave_metrics_projection": {"suite_files": 999999},
     }
     source = {
-        "mode": "legacy", "status": "ready", "run_id": "metrics-run",
+        "mode": "v4", "status": "ready", "run_id": "metrics-run",
         "revision": "candidate-revision", "target": "signoff",
         "state": state, "evidence": ["receipt:" + sealed["fingerprint"]],
     }

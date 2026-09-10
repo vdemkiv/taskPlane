@@ -8,6 +8,11 @@ honouring a projected human-scope-review stop before they dispatch.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import hashlib
 import json
 import math
@@ -97,15 +102,7 @@ class BriefProjectionError(delivery_policy.DeliveryPolicyError):
 
 def _canonical_bytes(value: Any) -> bytes:
     try:
-        return (
-            json.dumps(
-                value,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-            )
-            + "\n"
-        ).encode("utf-8")
+        return _json_primitives.canonical_bytes(value, ensure_ascii=False) + b"\n"
     except (TypeError, ValueError) as exc:
         raise BriefProjectionError(
             "loop next projection must be canonical-JSON serializable"

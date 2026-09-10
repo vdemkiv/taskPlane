@@ -1,3 +1,4 @@
+from taskplane.tests.phase_fixture import save_component_workflow
 """The A/B `selection` step: native human gate between evaluate and em for
 variant builds — variants never merge, one gets picked (or hybridized)."""
 import json
@@ -6,12 +7,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import loop  # noqa: E402
 import requirements  # noqa: E402
 from tests.root_session_fixture import open_delivery_root  # noqa: E402
-from tests.fixtures.briefs.stage_fixture import prepare_plan  # noqa: E402
 
 
 def _git(ws, *args):
@@ -41,28 +42,15 @@ AB_PLAN = {"mode": "ab-selection", "tasks": [
 
 
 def _to_plan_approved(ws, plan=AB_PLAN, parallel=True):
-    acceptance = [
-        str(criterion)
-        for task in plan["tasks"]
-        for criterion in task.get("criteria") or []
-    ]
-    requirement = requirements.record_requirement(
-        ws, "select one validated implementation variant",
-        acceptance=acceptance)
-    loop.init(
-        ws, "ab goal", requirement_id=requirement["id"], parallel=parallel)
-    state = loop.load(ws)
-    state["step"] = "plan"
-    loop.save(ws, state)
-    os.makedirs(os.path.join(ws, "plan"), exist_ok=True)
-    plan = {"requirement": requirement["id"],
-            "delivery_mode": "build", "automatic_lenses": [],
-            "plan_authority": "human:test-fixture", **plan}
-    json.dump(plan, open(os.path.join(ws, "plan", "tasks.json"), "w", encoding="utf-8"))
-    prepare_plan(ws, runtime=loop, usage="measured")
-    loop.gate(ws, "pass")            # plan → plan_approval (+ ab detection)
-    loop.approve(ws)                 # → execute
-    return loop.load(ws)
+    # Component state for selection policy. Current phase transitions are
+    # exercised by test_stage_loop_integration, not replayed in every case.
+    state = {"goal": "ab selection policy", "step": "execute",
+             "baseline": loop.tp.git_head(ws), "parallel": parallel,
+             "current_task": 0, "checkpoints": ["plan", "em"],
+             "tasks": json.loads(json.dumps(plan["tasks"])),
+             "ab": plan.get("mode") == "ab-selection"}
+    save_component_workflow(ws, state)
+    return state
 
 
 class TestSelectionStep(unittest.TestCase):
@@ -81,35 +69,30 @@ class TestSelectionStep(unittest.TestCase):
         self.assertIn("selection", loop.HUMAN_STEPS)
 
     def test_wave_does_not_serialize_variants(self):
-        _to_plan_approved(self.ws)
-        authority = open_delivery_root(self.ws)
-        w = loop.wave(
-            self.ws, root_observation_authority=authority)
-        ready = [e["task"]["id"] for e in w["wave"]]
-        self.assertEqual(sorted(ready),
+        state = _to_plan_approved(self.ws)
+        ready, held, _ = loop.select_ready_tasks(state["tasks"], passed=set(),
+            repository_files=set(), allow_isolated_variants=True)
+        self.assertEqual([row["id"] for row in ready],
                          ["feat-variant-a", "feat-variant-b"])
-        self.assertEqual(w["held"], [])
-        self.assertTrue(all(e["merge_on_pass"] is False for e in w["wave"]))
+        self.assertEqual(held, [])
 
     def test_same_scope_non_variants_still_serialize(self):
-        plan = {"tasks": [
-            {"id": "t1", "scope": ["src/**"], "new_modules": ["src"],
-             "tests": "true", "criteria": ["task one passes review"]},
-            {"id": "t2", "scope": ["src/**"], "new_modules": ["src"],
-             "tests": "true", "criteria": ["task two passes review"]}]}
-        _to_plan_approved(self.ws, plan=plan)
-        authority = open_delivery_root(self.ws)
-        w = loop.wave(
-            self.ws, root_observation_authority=authority)
-        self.assertEqual(len(w["wave"]), 1)
-        self.assertEqual(len(w["held"]), 1)
+        tasks = [{"id": "t1", "scope": ["src/**"]},
+                 {"id": "t2", "scope": ["src/**"]}]
+        ready, held, _ = loop.select_ready_tasks(tasks, passed=set(),
+            repository_files=set(), allow_isolated_variants=True)
+        self.assertEqual([row["id"] for row in ready], ["t1"])
+        self.assertEqual([row["task"] for row in held], ["t2"])
 
     def _to_selection(self):
         state = _to_plan_approved(self.ws)
         for t in state["tasks"]:
             t["status"] = "passed"
         state["step"] = "selection"
-        loop.save(self.ws, state)
+        save_component_workflow(self.ws, state)
+        transition = mock.patch.object(loop, "_stage_loop_transition", return_value=None)
+        transition.start()
+        self.addCleanup(transition.stop)
 
     def test_select_winner(self):
         self._to_selection()
@@ -139,7 +122,7 @@ class TestSelectionStep(unittest.TestCase):
 
     def test_plain_approve_rejected_at_selection(self):
         self._to_selection()
-        r = loop.approve(self.ws)
+        r = loop.approve(self.ws, by="human:simulated")
         self.assertIn("error", r)
         self.assertIn("loop select", r["error"])
 

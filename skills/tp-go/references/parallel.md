@@ -39,9 +39,8 @@ finding about the plan.
 
 A non-build worker may finish `closed` or `discarded` without spawning Build.
 Its artifacts stay addressable for audit, but no later worker consumes them
-without a new explicit handoff and current authority. During rollback,
-migrated v4 stage history remains readable and immutable; never reverse-
-collapse it, reopen a terminal stage, or weaken the cleanup proof.
+without a new explicit handoff and current authority. Stage history remains
+immutable; never reopen a terminal stage or weaken the cleanup proof.
 
 ## Show the wave
 

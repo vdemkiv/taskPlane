@@ -106,54 +106,6 @@ def _verdict_template(out: dict) -> dict:
     }
 
 
-def _canonical_kernel_obligations(ws: str, expected_stage: str, *,
-                                  run_id: str) -> dict:
-    """Read the live kernel's terminal graph/routing decision by reference."""
-    import review
-    import review_evidence
-
-    if not run_id:
-        raise RuntimeError("canonical ReviewKernel run id is not bound")
-    kernel = review._load_state(ws, run_id)
-    status = str(kernel.get("status") or "")
-    stage = str(kernel.get("stage") or "")
-    manifest = kernel.get("manifest") or {}
-    citation = {
-        "schema": "taskplane.review-kernel-citation/v1",
-        "run_id": kernel.get("run_id"), "status": status, "stage": stage,
-        "target_fingerprint": (kernel.get("target") or {}).get(
-            "fingerprint") or manifest.get("target_fingerprint"),
-        "graph_quality": manifest.get("graph_quality"),
-        "routing_decision": manifest.get("routing_decision"),
-    }
-    if stage != expected_stage:
-        raise RuntimeError(
-            f"live review kernel stage is {stage!r}, expected {expected_stage!r}")
-    if status not in {"ready", "prepared", "committed", "complete"}:
-        return {"citation": citation, "lenses": [], "not_applicable": [],
-                "error": (f"live review kernel is {status}; graph quality "
-                          "must be repaired before lens evaluation")}
-    decision_ref = kernel.get("routing_decision")
-    if not isinstance(decision_ref, dict):
-        raise RuntimeError("live review kernel has no routing decision")
-    payload = review_evidence.ArtifactStore(ws).read(decision_ref)
-    dispositions = payload.get("dispositions")
-    if not isinstance(dispositions, dict) or len(dispositions) != 26:
-        raise RuntimeError("live review kernel routing decision is incomplete")
-    lenses, not_applicable = [], []
-    for lens_id, row in sorted(dispositions.items()):
-        verdict = (row or {}).get("verdict")
-        if verdict == "n/a":
-            not_applicable.append(lens_id)
-        elif verdict in {"deep", "light", "sweep"}:
-            lenses.append({"lens": lens_id,
-                           "mode": "subagent" if verdict == "deep" else "inline",
-                           "verdict": "", "blockers": None})
-        else:
-            raise RuntimeError(
-                f"live review kernel has invalid disposition for {lens_id}")
-    return {"citation": citation, "lenses": lenses,
-            "not_applicable": not_applicable, "error": None}
 
 
 def evidence(ws: str, task_id: "str | None" = None,

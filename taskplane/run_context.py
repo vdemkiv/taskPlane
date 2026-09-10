@@ -5,6 +5,11 @@ for existing settings consumers and serializes controller decisions. Host
 sessions, environment flags and hooks cannot create or replace those values.
 """
 from __future__ import annotations
+import hashlib
+if __package__:
+    from .primitives import canonical_bytes
+else:
+    from primitives import canonical_bytes  # type: ignore[no-redef]
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, nullcontext
@@ -26,14 +31,7 @@ class RunContextError(ValueError):
 
 
 def selected(state: Mapping[str, Any] | None) -> bool:
-    return bool(state and (state.get("_stage_run_binding") or
-                          state.get("_stage_native_root_authority")))
-
-
-def legacy(state: Mapping[str, Any] | None) -> bool:
-    """Historical review timing opts into compatibility, never stage selection."""
-    return bool(state and not selected(state) and (state.get("review_timing_override")
-                or state.get("legacy_build_continuation")))
+    return bool(state and state.get("_stage_native_root_authority"))
 
 
 def current_settings() -> tuple[dict[str, Any], str] | None:
@@ -43,29 +41,22 @@ def current_settings() -> tuple[dict[str, Any], str] | None:
 
 def resource_limits_advisory(workspace: str) -> bool:
     """Read a run-owned decision; environment flags cannot disable limits."""
-    from taskplane import loop, loop_recovery, phase_harness
-    state = loop._load_raw(workspace)
-    if state is not None and legacy(state):
-        return loop_recovery.legacy_continuation(state, workspace) is not None
-    if state is None or not selected(state):
+    from taskplane import storage, run_store, phase_records
+    locator = storage.load_workspace_locator(workspace)
+    if not locator or not locator.get("run_id"):
         return False
-    run_id = state["run_id"]
-    return phase_harness.resource_policy(loop._stage_store(workspace, run_id).load(run_id), run_id) is not None
+    run_id = locator["run_id"]
+    manifest = run_store.RunStore(home=locator["home"]).inspect(run_id)
+    return phase_records.resource_policy(manifest, run_id) is not None
 
 
 @contextmanager
 def bind(workspace: str, state: Mapping[str, Any] | None) -> Iterator[None]:
     """Read exact saved settings; no package-default reconstruction or writes."""
-    is_legacy = legacy(state)
-    if not selected(state) and not is_legacy:
+    if not selected(state):
         yield
         return
     assert state is not None
-    if is_legacy:
-        from taskplane import loop_recovery
-        if loop_recovery.legacy_continuation(state, workspace) is None:
-            raise RunContextError("legacy Build requires explicit loop continue-build; no Plan or pass is inferred")
-    from taskplane import settings
     snapshot, digest = state.get("settings_snapshot"), state.get("settings_digest")
     authority = state.get("run_artifact_binding")
     if isinstance(authority, Mapping) and authority.get("settings_digest") != digest:
@@ -74,8 +65,9 @@ def bind(workspace: str, state: Mapping[str, Any] | None) -> Iterator[None]:
         raise RunContextError(
             "run settings snapshot is missing; restore the original configuration with "
             "loop restore-settings --from <original-settings.json>; no new session is required")
-    checked = settings.from_snapshot(snapshot, expected_digest=str(digest or ""), allow_legacy=is_legacy)
-    encoded = json.dumps(checked.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+    encoded = canonical_bytes(dict(snapshot), ensure_ascii=True)
+    if snapshot.get("schema") != "taskplane.operational-settings/v2" or hashlib.sha256(encoded).hexdigest() != digest:
+        raise RunContextError("run settings snapshot is incomplete or its digest changed")
     run_id = str(state.get("run_id") or "")
     if not run_id:
         raise RunContextError("run context has no durable run identity")
@@ -101,9 +93,9 @@ def operation(function: Callable[..., dict[str, Any]]) -> Callable[..., dict[str
         runtime = sys.modules[function.__module__]
         try:
             state = runtime._load_raw(workspace)
-            if not selected(state) and not legacy(state):
+            if not selected(state):
                 return function(workspace, *args, **kwargs)
-            if function.__name__ == "next_action":
+            if function.__name__ == "next_action" and kwargs.get("_worker_task_id") is None:
                 observed = runtime.read_pending_action(workspace)
                 if observed is not None:
                     return dict(observed)
@@ -118,29 +110,27 @@ def operation(function: Callable[..., dict[str, Any]]) -> Callable[..., dict[str
                 finally:
                     _CONTROLLER_LOCK.reset(token)
         except (RunContextError, ValueError, OSError) as exc:
-            return {"error": "run context refused: " + str(exc), "dispatch_allowed": False}
+            result = {"error": "run context refused: " + str(exc), "dispatch_allowed": False}
+            return runtime.project_next_action_for_host(workspace, result) if function.__name__ == "next_action" else result
     return invoke
 
 
 def restore_settings(runtime: Any, workspace: str, source: str) -> dict[str, Any]:
-    """Forward-migrate a digest-only run by restoring its EXACT configuration.
+    """Repair missing saved input with the EXACT original configuration.
 
     This grants no execution, changes no policy, and cannot rewrite an
     existing snapshot. No session identity or approval renewal is needed.
     """
-    from taskplane import settings
     if runtime.tp.task_slot() is not None:
         return {"error": "settings restoration is orchestrator-only"}
     state = runtime._load_raw(workspace)
     if not selected(state):
         return {"error": "settings restoration requires an existing stage-native run"}
-    if refusal := runtime._stage_bound_run_refusal(workspace, state):
-        return dict(refusal)
     try:
         authority = state.get("run_artifact_binding")
         if isinstance(authority, Mapping) and authority.get("settings_digest") != state.get("settings_digest"):
             raise RunContextError("run settings digest differs from its original artifact binding")
-        supplied = settings.load_settings(source, environment={})
+        supplied = runtime.operational_settings.load_settings(source, environment={})
         if supplied.digest != state.get("settings_digest"):
             raise RunContextError("supplied settings do not match the run's original digest")
         with runtime.mutate(workspace) as current:

@@ -182,8 +182,10 @@ EM artifact was 1,553,457 bytes across 79 files. Delivery's default 400,000-byte
 diff call therefore failed before creating a ReviewKernel identity, and the
 catch-and-continue handler hid that cause behind a missing evaluator identity.
 The delivery caller now passes the authorized finite 2,000,000-byte artifact
-limit. Standalone review retains its 400,000-byte default, scoped views retain
-their 16 KiB bound, and no diff is truncated or inlined. Kernel failures now
+limit. Standalone and delivery now share the canonical diff bound. Scoped views
+keep large evidence behind verified references; their 16 KiB inline-content
+target never caps the complete file inventory or rejects a large repository.
+No diff is truncated. Kernel failures now
 return their original reason before recording a null identity or preparing
 evidence children. Tests cover both measured artifact sizes and 2,000,001-byte
 refusal, plus the actual public-next error propagation path.

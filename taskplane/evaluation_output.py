@@ -6,6 +6,13 @@ fallback admit the same canonical value and fail closed in the same way.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+from taskplane.stage_artifacts import (OutputValidationError, _schema_object as _object,
+    evaluator_output_schema, _type_ok, _validate)
+
 import hashlib
 import json
 import os
@@ -74,71 +81,14 @@ class OutputContractError(ValueError):
     """The dispatch contract itself is unsafe or contradictory."""
 
 
-class OutputValidationError(ValueError):
-    """Model output cannot enter a governed record or gate."""
-
-    def __init__(self, code: str, detail: str):
-        super().__init__(detail)
-        self.code = code
 
 
 def canonical_bytes(value) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=False, allow_nan=False) + "\n").encode(
-                           "utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=False) + b"\n"
 
 
-def _object(properties: dict, required: list[str]) -> dict:
-    return {"type": "object", "required": required,
-            "additionalProperties": False, "properties": properties}
 
 
-def evaluator_output_schema() -> dict:
-    string = {"type": "string"}
-    evaluation = _object({
-        "status": {"enum": ["complete", "unavailable"]},
-        "reason_code": {"enum": [
-            "none", "host_unavailable", "agent_timeout",
-            "transport_unavailable", "producer_receipt_unavailable",
-            "orchestration_unavailable",
-        ]},
-        "detail": string,
-    }, ["status", "reason_code", "detail"])
-    criterion = _object({
-        "criterion": string,
-        "status": {"enum": ["met", "not-met", "cannot-verify"]},
-        "evidence": string,
-    }, ["criterion", "status", "evidence"])
-    disposition = _object({
-        "node": string, "status": string, "evidence": string,
-    }, ["node", "status", "evidence"])
-    graph = _object({
-        "dispositions": {"type": "array", "items": disposition},
-        "requirements_checked": {"type": "array", "items": string},
-        "contracts_checked": {"type": "array", "items": string},
-    }, ["dispositions", "requirements_checked", "contracts_checked"])
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": EVALUATOR_OUTPUT_SCHEMA_ID,
-        **_object({
-            "schema": {"const": EVALUATOR_OUTPUT_SCHEMA_ID},
-            "task": string, "requirement": {"type": "string"},
-            "verdict": {"enum": ["pass", "fail"]},
-            # Optional for byte compatibility with completed v1 records. It
-            # is mandatory at the loop boundary for ``unavailable``.
-            "evaluation": evaluation,
-            "criteria": {"type": "array", "items": criterion},
-            "graph": graph,
-            # Historical records stay readable through read_evaluator_value;
-            # a current pass must carry durable child evidence at admission.
-            "child_evidence": {"type": "object"},
-            "failures": {
-                "type": "array",
-                "items": failure_routing.failure_record_schema(),
-            },
-        }, ["schema", "task", "requirement", "verdict", "criteria",
-            "graph", "failures"]),
-    }
 
 
 def validate_evaluator_value(
@@ -224,69 +174,14 @@ def attach_child_evidence(
     return attached
 
 
-def _validate_legacy_failure(value: dict) -> dict:
-    fields = {"what", "repro", "where"}
-    if not isinstance(value, dict) or set(value) != fields:
-        raise OutputValidationError(
-            "legacy_failure_shape",
-            "legacy failure must contain exactly what, repro, and where",
-        )
-    for field in sorted(fields):
-        text = value.get(field)
-        if not isinstance(text, str) or not text.strip():
-            raise OutputValidationError(
-                "legacy_failure_shape",
-                f"legacy failure {field} must be a non-empty string",
-            )
-    return deepcopy(value)
-
-
 def read_evaluator_value(value: dict) -> dict:
-    """Read current or v1-compatible output without granting correction.
-
-    This is a display/audit compatibility boundary.  Callers seeking fix or
-    recovery authority must use :func:`validate_evaluator_value` and then the
-    failure router.
-    """
-    if not isinstance(value, dict):
-        raise OutputValidationError(
-            "type_mismatch", "evaluator output must be a mapping")
-    failures = value.get("failures")
-    if not isinstance(failures, list):
-        raise OutputValidationError(
-            "type_mismatch", "evaluator failures must be a list")
-
-    # Validate the common envelope using the live contract while validating
-    # failure rows below against their explicit current-or-legacy boundary.
-    envelope = deepcopy(value)
-    envelope["failures"] = []
-    _validate(envelope, evaluator_output_schema())
-
-    current: list[dict] = []
-    legacy: list[dict] = []
-    for failure in failures:
-        try:
-            current.append(failure_routing.validate_failure_record(failure))
-        except failure_routing.FailureRoutingError:
-            legacy.append(_validate_legacy_failure(failure))
-
-    routing = None
-    correction_authority = False
-    if value.get("verdict") == "fail" and current and not legacy:
-        try:
-            routing = failure_routing.route_failure_records(current)
-        except failure_routing.FailureRoutingError as exc:
-            raise OutputValidationError(
-                "failure_admission", str(exc)) from None
-        correction_authority = bool(routing["admitted"])
-    return {
-        "schema": EVALUATOR_READ_SCHEMA_ID,
-        "value": deepcopy(value),
-        "failure_records": current,
-        "legacy_failures": legacy,
-        "routing": routing,
-        "correction_authority": correction_authority,
-    }
+    """Read only the current evaluator contract and its classified failures."""
+    checked = validate_evaluator_value(value, expected_lenses=[])
+    failures = checked["failures"]
+    routing = failure_routing.route_failure_records(failures) if failures else None
+    return {"schema": EVALUATOR_READ_SCHEMA_ID, "value": checked,
+            "failure_records": failures, "routing": routing,
+            "correction_authority": bool(routing and routing["admitted"])}
 
 
 def lens_slot_output_schema(references: list[dict] | None = None) -> dict:
@@ -489,51 +384,8 @@ def retry_disposition(*, attempt: int, max_attempts: int) -> str:
     return "retry" if int(attempt) < int(max_attempts) else "retry_exhausted"
 
 
-def _type_ok(value, expected: str) -> bool:
-    if expected == "object":
-        return isinstance(value, dict)
-    if expected == "array":
-        return isinstance(value, list)
-    if expected == "string":
-        return isinstance(value, str)
-    if expected == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if expected == "boolean":
-        return isinstance(value, bool)
-    return False
 
 
-def _validate(value, schema: dict, path: str = "$") -> None:
-    if "const" in schema and value != schema["const"]:
-        raise OutputValidationError("const_mismatch", f"{path} has wrong value")
-    if "enum" in schema and value not in schema["enum"]:
-        raise OutputValidationError("enum_mismatch", f"{path} is not allowed")
-    expected = schema.get("type")
-    if expected and not _type_ok(value, expected):
-        raise OutputValidationError("type_mismatch", f"{path} has wrong type")
-    if expected == "object":
-        properties = schema.get("properties") or {}
-        for field in schema.get("required") or []:
-            if field not in value:
-                raise OutputValidationError(
-                    "missing_field", f"{path} is missing {field}")
-        if schema.get("additionalProperties") is False:
-            extra = set(value) - set(properties)
-            if extra:
-                raise OutputValidationError(
-                    "extra_field", f"{path} contains {sorted(extra)[0]}")
-        for field, child in properties.items():
-            if field in value:
-                _validate(value[field], child, f"{path}.{field}")
-    elif expected == "array":
-        child = schema.get("items")
-        if isinstance(child, dict):
-            for index, item in enumerate(value):
-                _validate(item, child, f"{path}[{index}]")
-    if "minimum" in schema and value < schema["minimum"]:
-        raise OutputValidationError("minimum", f"{path} is below minimum")
 
 
 def _decode(raw: bytes):

@@ -92,6 +92,7 @@ def test_telemetry_receipt_precedes_seal(tmp_path, monkeypatch, unavailable):
         assert receipt["token_counts_when_available"] == dict(input_tokens=100,
             cached_input_tokens=60, uncached_input_tokens=40, output_tokens=20,
             reasoning_tokens=5, total_tokens=130)
+        assert receipt["token_counts_when_available"]["total_tokens"] > 0
         assert receipt["usage_source"] == "e" * 64
         assert receipt["cache_semantics"] == "input-includes-cache-read;total-includes-cache-write;reasoning-in-output"
     portable = json.dumps(receipt)

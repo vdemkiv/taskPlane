@@ -143,10 +143,9 @@ all gates are taskplane's; the agent only supplies the per-step reasoning.
 existing `tp.py new/ready/dod/clear` per step. Simpler to build, weaker
 guarantee. This is decision #1 below.)
 
-## Stage-native lifecycle and legacy-track compatibility
+## Stage lifecycle
 
-R-0004 makes the singleton loop record a compatibility input rather than the
-authority for migrated runs. Each Product, Design, Plan, Build, Evaluate,
+Each Product, Design, Plan, Build, Evaluate,
 Engineering, Retro, or extension stage has a stable `taskplane.stage/v1`
 aggregate, its own execution root, immutable indexed revisions, explicit
 lineage, and at most one terminal outcome. The run manifest commits stage
@@ -161,65 +160,13 @@ tool transcripts, leases, process state, worktrees, and unselected artifacts
 do not become successor context. Terminal history is not reopened to continue
 work; continuation creates a successor stage.
 
-### Conservative migration transaction
+### Current run authority
 
-Migration of an existing `loop.json`/track collection is deliberately
-one-way, non-destructive, and idempotent:
-
-#### Accepted decision `D-LOOP-STAGE-MIGRATION`
-
-- **Status / owner:** ACCEPTED; the taskplane loop engine owns the authority
-  conversion and its receipt.
-- **Selected authority model:** retain the byte-exact legacy source, then make
-  one atomic, receipt-verified, one-way switch to the stage manifest. Before
-  that commit the legacy singleton is authoritative; after it the verified
-  stage-manifest revision is authoritative. There is no dual-authority window.
-
-| Alternative | What it buys | What it spends / disposition |
-| --- | --- | --- |
-| **A. Retained-source, receipt-verified one-way conversion (selected)** | One authority at every instant, deterministic replay, and complete audit/rollback evidence | Gives up automatic reverse migration; recovery restores retained evidence or creates a successor revision rather than rewriting history |
-| **B. Bidirectional dual-write with reverse migration** | Older and newer clients can both mutate their native representations | Rejected: partial writes create split-brain authority and a reverse projection cannot faithfully classify ambiguous legacy state |
-| **C. In-place singleton schema upgrade** | Smallest apparent storage change | Rejected: destroys byte-exact source evidence and makes crash recovery depend on heuristically completing a partial conversion |
-
-**Revisit trigger:** reconsider reverse export or dual-write only when at least
-two supported production consumers require reverse export *and* a conformance
-suite proves a lossless round trip for every stable stage/manifest revision,
-including every `taskplane.legacy-unknown/v1` sentinel, under an authority-epoch
-protocol that prevents split brain. Both conditions are required. Until then,
-the one-way receipt boundary remains authoritative; convenience or a single
-legacy client is not a revisit trigger.
-
-- First retain the exact bytes of the live singleton, registry, archived track
-  records, and their governed requirement/task/decision/evidence/commit/review
-  and audit references as content-addressed migration evidence. Parsed JSON is
-  not a substitute for byte-exact retention.
-- Create deterministic stage objects only where legacy identity, lifecycle,
-  and evidence are unambiguous. Ambiguity is represented by an immutable
-  `taskplane.legacy-unknown/v1` sentinel with a source fingerprint, retained
-  references, and explicit `unknown_reason`; it is never guessed as `pending`,
-  `done`, `closed`, or `discarded` and is not default successor input.
-- Commit the stage index, lineage, projection, source fingerprints,
-  conservation report, and migration receipt in one run-manifest revision.
-  The conservation report must account for every discovered source and record
-  exactly once. A partial or mismatched projection fails without switching
-  authority.
-- Replaying the same operation and source returns the prior receipt. Reusing
-  its operation id for different bytes or parameters is rejected. Before the
-  atomic commit, the old singleton remains authoritative; after it, recovery
-  verifies the receipt rather than repeating or heuristically completing the
-  conversion.
-
-The legacy `track.py` path has an explicit authority boundary. With no
-verified migration receipt, existing behavior does not change: switching a
-track moves the live `loop.json`, closing an active track archives it, and the
-common loop lock prevents interleaved engine mutations. Only after the receipt
-verifies its source and result fingerprints and its conservation report does
-the adapter read the v4 foreground projection. In that mode it may render
-legacy-shaped status, but it is read-only: it cannot move/restore singleton
-files as stage authority, overwrite a head, reopen or reclassify a terminal
-stage, or choose an ambiguous foreground. New writes use stage lifecycle
-commands. The retained singleton bytes and unknown sentinels remain immutable
-and available for audit and rollback; no lossy reverse migration exists.
+The current stage aggregate is the sole runtime. Initialization and readers
+require its schema; there is no migration, feature switch, or singleton fallback.
+Every phase reads its selected immutable handoff and commits through RunStore.
+An unsupported active binding must be explicitly detached before a new run is
+initialized. Detaching it does not import its state into the new run.
 
 ## The inputs *you* provide
 
@@ -260,7 +207,6 @@ Each was settled as the **Recommendation** noted below and is what shipped.
 | `D-LOOP-FAIL-POLICY` | ACCEPTED | auto-fix at most two cycles by default, then escalate | loop cycle policy |
 | `D-LOOP-INPUT-FORMAT` | ACCEPTED | accept free text through PM or an existing specification | loop initialization |
 | `D-LOOP-TASK-GRANULARITY` | ACCEPTED | the planner proposes task boundaries and the human may edit the plan before authorization | Plan gate |
-| `D-LOOP-STAGE-MIGRATION` | ACCEPTED | byte-retaining, receipt-verified, one-way authority conversion | stage manifest migration transaction above |
 
 ### Decision record: `D-LOOP-ENGINE-OWNERSHIP/v1`
 
@@ -387,8 +333,7 @@ trigger.
   pairwise-disjoint from the rest of the wave (overlapping scopes serialize
   into later waves — two agents never share writable files).
 - The driver dispatches ONE governed subagent per wave entry using the exact
-  `worktree` path emitted by the engine (external managed checkout; legacy
-  workspaces use `.tp-work/<id>`), then
+  `worktree` path emitted by the engine (external managed checkout), then
   `loop claim <id> --agent-workspace <worktree>` activates *that task's
   contract in that worktree* — the PreToolUse hook enforces each agent
   individually. The harness is per agent, not per fleet.

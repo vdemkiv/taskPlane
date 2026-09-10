@@ -1,6 +1,19 @@
 """Host-observed producer receipts for evaluator and EM submissions."""
 
 from __future__ import annotations
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
+
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+if __package__:
+    from . import storage as runtime_storage
+else:
+    import storage as runtime_storage
 
 import hashlib
 import hmac
@@ -19,12 +32,12 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar
 if TYPE_CHECKING or __package__:
     from .delivery_ports import (
         Clock, DeliveryPortError, EvidenceStore, HostActionCapabilitySource,
-        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock,
+        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock, normalize_worker_terminal_outcome,
     )
 else:
     from delivery_ports import (
         Clock, DeliveryPortError, EvidenceStore, HostActionCapabilitySource,
-        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock,
+        ProducerEventSource, content_fingerprint, LocatorEvidenceStore, SystemClock, normalize_worker_terminal_outcome,
     )
 
 
@@ -391,11 +404,10 @@ class AttemptNonceSource:
         Only the composition root reads engine-selected output bytes. Portable
         receipts contain references and the nonce digest, never the secret.
         """
-        from taskplane import taskplane_lite as host_policy
         kind = {"SubagentStart": "start", "SubagentStop": "terminal"}.get(event.get("hook_event_name"))
         if kind is None:
             raise ProducerObservationError("phase lifecycle hook required")
-        identity = host_policy.hook_event_identity(workspace, "subagent-" + ("stop" if kind == "terminal" else "start"), dict(event))
+        identity = hook_event_identity(workspace, "subagent-" + ("stop" if kind == "terminal" else "start"), dict(event))
         claim = hashlib.sha256(identity.encode()).hexdigest() if identity else None
         if not claim or event.get("_taskplane_hook_claim_id") != claim:
             raise ProducerObservationError("phase hook claim mismatch")
@@ -440,7 +452,7 @@ class AttemptNonceSource:
                 "sequence": 1 if kind == "start" else 2, "claim": claim, "owner": owner,
                 "turn_id": turn, "observed_at": now, "outputs": outputs or [], "tokens": tokens,
                 "lease_terminal": released,
-                "outcome": None if kind == "start" else host_policy.normalize_worker_terminal_outcome(
+                "outcome": None if kind == "start" else normalize_worker_terminal_outcome(
                     event.get("outcome") or event.get("status") or event.get("stop_reason") or "unknown")}
             value["signature"] = self._sign(value)
             self.store._write_atomic(path, _canonical_bytes(value))
@@ -571,8 +583,7 @@ def _production_store(evidence_root: str, workspace: str,
 
 
 def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"),
-                       ensure_ascii=False) + "\n").encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=False) + b"\n"
 
 
 def _atomic_write_observation_intent(path: Path,
@@ -946,8 +957,7 @@ def record_codex_subagent_stop(
             any(ch not in "0123456789abcdef" for ch in hook_claim_id):
         raise ProducerObservationError("stable hook claim identity is required")
     try:
-        from taskplane import taskplane_lite as host_policy
-        hook_identity = host_policy.hook_event_identity(
+        hook_identity = hook_event_identity(
             workspace, "subagent-stop", dict(event))
     except Exception as exc:
         raise ProducerObservationError(
@@ -1013,7 +1023,7 @@ def consume_matching_observation(
     stage: str, producer: str, output_path: str, output_bytes: bytes,
     output_schema_id: str, output_contract_fingerprint: str,
     source_sha: str, producer_dispatch: Mapping[str, Any],
-    clock: Clock | None = None,
+    clock: Clock | None = None, reconcile: bool = False,
 ) -> dict[str, Any]:
     """Locate, validate, and durably consume exactly one fresh receipt."""
     store = _production_store(evidence_root, workspace, run_id)
@@ -1075,6 +1085,13 @@ def consume_matching_observation(
     try:
         descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
+        if reconcile:
+            validate_consumed_matching_observation(receipt, workspace=workspace,
+                evidence_root=evidence_root, run_id=run_id, task_id=task_id, stage=stage,
+                producer=producer, output_path=output_path, output_bytes=output_bytes,
+                output_schema_id=output_schema_id, output_contract_fingerprint=output_contract_fingerprint,
+                source_sha=source_sha, producer_dispatch=producer_dispatch, clock=clock)
+            return receipt
         raise ProducerObservationError("producer observation replay") from exc
     try:
         view = memoryview(marker_bytes)
@@ -1382,3 +1399,55 @@ def observe_submission(
             evidence_receipt_fingerprint=
                 _evidence_receipt_fingerprint(committed))
     return receipt
+
+
+def _bounded_hook_identity(value, limit: int = 160) -> str:
+    return _shared_primitives.bounded_text(value, limit)
+
+
+def hook_event_identity(workspace: str, action: str, event: dict) -> str:
+    """Canonical stable hook identity, excluding prompts and tool arguments.
+
+    Native and bridge entry points intentionally produce the same value.  A
+    tool event needs a host call/event id; lifecycle events may use their
+    bounded session + turn/child identity.  Returning ``""`` means the host
+    supplied too little authority to deduplicate safely.
+    """
+    if not isinstance(event, dict):
+        return ""
+    action = _bounded_hook_identity(action, 64).strip().lower()
+    event_name = _bounded_hook_identity(
+        event.get("hook_event_name") or event.get("event_name") or action,
+        64).strip()
+    session = _bounded_hook_identity(
+        event.get("session_id") or event.get("thread_id")
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID"), 160).strip()
+    stable_id = _bounded_hook_identity(
+        event.get("hook_event_id") or event.get("event_id")
+        or event.get("tool_use_id") or event.get("call_id"), 160).strip()
+    turn = _bounded_hook_identity(event.get("turn_id"), 160).strip()
+    child = _bounded_hook_identity(
+        event.get("agent_id") or event.get("child_id"), 160).strip()
+    lower = event_name.lower().replace("_", "-")
+    if not stable_id:
+        if lower in {"sessionstart", "session-start", "stop", "sessionend",
+                     "session-end"}:
+            stable_id = turn or session
+        elif lower in {"subagentstart", "subagent-start", "subagentstop",
+                       "subagent-stop"}:
+            stable_id = "|".join(part for part in (turn, child) if part)
+    if not action or not event_name or not session or not stable_id:
+        return ""
+    payload = {
+        "action": action,
+        "event": event_name,
+        "session": session,
+        "event_identity": stable_id,
+        "slot": _bounded_hook_identity(
+            event.get("task_slot") or os.environ.get("TASKPLANE_TASK"),
+            64).strip(),
+        "workspace": hashlib.sha256(os.path.normcase(
+            runtime_storage.resolved_worktree(workspace)).encode("utf-8")).hexdigest(),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))

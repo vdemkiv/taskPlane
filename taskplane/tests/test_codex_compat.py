@@ -313,6 +313,7 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
                 tempfile.TemporaryDirectory(prefix="tp-runner-") as ws:
             marker = os.path.join(ws, "called.json")
             versions = ("2.18.9", "2.18.10+codex.20260903225012",
+                        "2.18.10+codex.20260903000000",
                         "9.99.99+other.untrusted")
             for version in versions:
                 root = os.path.join(family, version)
@@ -352,8 +353,8 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tp-plugin-family-") as family, \
                 tempfile.TemporaryDirectory(prefix="tp-runner-") as ws:
             marker = os.path.join(ws, "called")
-            for version in ("2.18.10+codex.20260903225012",
-                            "2.18.10+codex.20260904000000"):
+            for version in ("2.18.10+codex.manual-a",
+                            "2.18.10+codex.manual-b"):
                 root = os.path.join(family, version)
                 os.makedirs(os.path.join(root, ".codex-plugin"))
                 os.makedirs(os.path.join(root, "taskplane"))
@@ -375,7 +376,7 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
                 capture_output=True, encoding="utf-8", errors="replace")
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("ambiguous newest installed engines", result.stderr)
+            self.assertIn("no unique valid installed engine", result.stderr)
             self.assertFalse(os.path.exists(marker))
             self.assertIsNone(cli._resolve_taskplane_engine(family))
 
@@ -856,10 +857,6 @@ class TestSkillPortability(unittest.TestCase):
                 offenders.append(os.path.relpath(f, root))
         self.assertEqual(offenders, [])
 
-    def test_generated_lens_cleanup_is_host_portable(self):
-        import lens
-        self.assertIn("${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}",
-                      lens.CLEAR_ALWAYS)
 
     def test_codex_subagent_hooks_are_bundled(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(
@@ -909,10 +906,14 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
         state directly keeps unrelated repository architecture authority
         from turning an emitter test into a planner integration journey.
         """
-        ws = stage_fixture.build_repo(tempfile.mkdtemp())
-        state = loopmod.init(
-            ws, stage_fixture.GOAL, spec_path="s", checkpoints=["plan"],
-            parallel=True)
+        from pathlib import Path
+        import pytest
+        from taskplane.tests.phase_fixture import _supporting_pristine_phase_run
+        patch = pytest.MonkeyPatch()
+        self.addCleanup(patch.undo)
+        ws, _store, _run_id, _requirement = _supporting_pristine_phase_run(
+            Path(tempfile.mkdtemp()), patch, parallel=True)
+        state = loopmod.load(ws)
         state.update({
             "step": "execute",
             "tasks": [dict(task, status="pending", fix_cycles=0)
@@ -920,8 +921,6 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
             "current_task": 0,
         })
         loopmod.save(ws, state)
-        from tests.root_session_fixture import open_delivery_root
-        open_delivery_root(ws)
         return ws
 
     def _lens_ws(self):
@@ -956,9 +955,11 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
     def test_stage_emit_workflow_refuses_on_codex(self):
         ws = self._stage_ws()
         os.environ["CODEX_HOME"] = "/x"
+        before = loopmod.load(ws)
         rc, out, err = self._cli("loop", "--workspace", ws, "wave",
                                  "--emit", "workflow")
         self._assert_refusal(rc, out, err)
+        self.assertEqual(loopmod.load(ws), before)
         self.assertIn("codex host", err)     # the detector's own reason
         evs = self._traces(ws, "stage_dispatch_path")
         self.assertTrue(evs)
@@ -967,89 +968,27 @@ class TestEmitWorkflowRefusal(unittest.TestCase):
     def test_stage_emit_workflow_refuses_on_kill_switch(self):
         ws = self._stage_ws()
         os.environ["TASKPLANE_WORKFLOWS"] = "0"
+        before = loopmod.load(ws)
         rc, out, err = self._cli("loop", "--workspace", ws, "wave",
                                  "--emit", "workflow")
         self._assert_refusal(rc, out, err)
+        self.assertEqual(loopmod.load(ws), before)
         self.assertIn("TASKPLANE_WORKFLOWS=0", err)
         evs = self._traces(ws, "stage_dispatch_path")
         self._assert_minimized_refusal(evs[-1], err)
 
     # ---- lens dispatch surface (review_dispatch_path)
 
-    def test_lens_emit_workflow_refuses_on_codex(self):
-        ws = self._lens_ws()
-        os.environ["CODEX_HOME"] = "/x"
-        rc, out, err = self._cli("lens", "dispatch", "--workspace", ws,
-                                 "--emit", "workflow")
-        self._assert_refusal(rc, out, err)
-        evs = self._traces(ws, "review_dispatch_path")
-        self.assertTrue(evs)
-        self._assert_minimized_refusal(evs[-1], err)
 
-    def test_lens_emit_workflow_refuses_on_kill_switch(self):
-        ws = self._lens_ws()
-        os.environ["TASKPLANE_WORKFLOWS"] = "off"
-        rc, out, err = self._cli("lens", "dispatch", "--workspace", ws,
-                                 "--emit", "workflow")
-        self._assert_refusal(rc, out, err)
-        evs = self._traces(ws, "review_dispatch_path")
-        self._assert_minimized_refusal(evs[-1], err)
 
-    def test_lens_refusal_records_no_expected_dispatches(self):
-        """Fail closed BEFORE side effects: a refused dispatch must leave
-        no verify-dispatch expectations behind."""
-        ws = self._lens_ws()
-        os.environ["CODEX_HOME"] = "/x"
-        self._cli("lens", "dispatch", "--workspace", ws,
-                  "--emit", "workflow")
-        rep = tp.dispatch_report(ws)
-        self.assertFalse(rep["expected"])    # zero expectations recorded
 
-    def test_lens_task_path_unchanged_on_codex(self):
-        ws = self._lens_ws()
-        os.environ["CODEX_HOME"] = "/x"
-        rc_a, out_a, _ = self._cli("lens", "dispatch", "--workspace", ws)
-        rc_t, out_t, _ = self._cli("lens", "dispatch", "--workspace", ws,
-                                   "--emit", "task")
-        self.assertEqual((rc_a, rc_t), (0, 0))
-        self.assertEqual(out_a, out_t)
-        self.assertNotIn("dispatch_path", json.loads(out_a))
 
     # ---- the decision's boundary
 
-    def test_undetected_default_keeps_the_explicit_override(self):
-        """The refusal is scoped to DEFINITIVE unavailability. On the
-        conservative default (runtime merely undetected) the explicit
-        override still emits — the human may know the host better than
-        the detector, and the dispatch-parity pins prove the payload is
-        byte-identical either way. This boundary is what keeps the
-        refusal strict-or-stricter without breaking the parity suite."""
-        ws = self._lens_ws()          # SCRUB_VARS cleared in setUp
-        avail = cli.workflow_available(ws)
-        self.assertFalse(avail["available"])
-        self.assertFalse(avail.get("definitive"))
-        rc, out, err = self._cli("lens", "dispatch", "--workspace", ws,
-                                 "--emit", "workflow")
-        self.assertEqual(rc, 0)
-        payload = json.loads(out)
-        self.assertEqual(payload["dispatch_path"], "workflow")
-        self.assertIn("forced", payload["reason"])
 
 
-class TestWindowsSlotActivationFallback(unittest.TestCase):
-    """C1 (R-0009): what actually governs a shell that cannot run the
-    POSIX `export` line.
-
-    A cmd.exe agent that skips the activation line does NOT escape
-    governance and does NOT inherit a sibling's contract — it lands in the
-    slot-less fallback, where every active per-task contract is combined
-    into the MOST-RESTRICTIVE UNION (taskplane_lite._union_contract /
-    load_active): an action passes only if EVERY member approves it, the
-    budget ceiling is the minimum, and read_only is contagious. The
-    failure mode is therefore over-blocking (the agent cannot do its own
-    task's in-scope work), never under-blocking — which is why the C1 line
-    is a usability fix, not a hole being closed. Pinned explicitly so the
-    Windows path's behavior is documented, not assumed."""
+class TestExplicitSlotActivation(unittest.TestCase):
+    """Platform activation selects one contract without combining siblings."""
 
     def setUp(self):
         self.ws = _repo()
@@ -1075,63 +1014,10 @@ class TestWindowsSlotActivationFallback(unittest.TestCase):
         b = self._activate("t2", scope=["docs/**"], max_actions=4)
         return a, b
 
-    # ---- the fallback a Windows shell lands in
-
-    def test_slotless_process_is_governed_by_the_union(self):
-        self._wave()
-        os.environ.pop("TASKPLANE_TASK", None)     # the cmd.exe agent
-        u = tp.load_active(self.ws)
-        self.assertIsNotNone(u, "an un-exported slot must never leave the "
-                                "process UNgoverned")
-        self.assertTrue(u["task_id"].startswith("union-"))
-        self.assertEqual(len(u["_union"]), 2)
-        self.assertEqual(u["budget"]["max_actions"], 4)   # min ceiling
-
-    def test_union_blocks_each_members_own_in_scope_work(self):
-        """The concrete failure mode: t1's OWN in-scope write is refused,
-        because t2's contract does not allow it (and vice versa)."""
+    def test_root_does_not_inherit_sibling_contracts(self):
         self._wave()
         os.environ.pop("TASKPLANE_TASK", None)
-        u = tp.load_active(self.ws)
-        for path in ("src/a.py", "docs/a.md"):
-            ok, reason = tp.screen_tool(u, "Write", {"file_path": path},
-                                        self.ws)
-            self.assertFalse(ok, f"{path} must be blocked by the union")
-            self.assertIn("union", reason)
-
-    def test_refusal_names_the_slot_remedy(self):
-        """The refusal is self-describing — it names the very fix the C1
-        line automates, so an agent that hit the fallback can get out."""
-        self._wave()
-        os.environ.pop("TASKPLANE_TASK", None)
-        _, reason = tp.screen_tool(tp.load_active(self.ws), "Write",
-                                   {"file_path": "src/a.py"}, self.ws)
-        self.assertIn("set TASKPLANE_TASK", reason)
-        self.assertIn("single task's contract", reason)
-
-    def test_union_never_allows_what_a_member_denies(self):
-        """No-loosening, both directions: the union is a strict AND over
-        its members — it can only ever be stricter than any one of them."""
-        a, b = self._wave()
-        os.environ.pop("TASKPLANE_TASK", None)
-        u = tp.load_active(self.ws)
-        for path in ("src/a.py", "docs/a.md", "other/x.txt"):
-            inp = {"file_path": path}
-            union_ok, _ = tp.screen_tool(u, "Write", inp, self.ws)
-            members_ok = all(tp.screen_tool(m, "Write", inp, self.ws)[0]
-                             for m in (a, b))
-            if union_ok:
-                self.assertTrue(members_ok,
-                                f"{path}: union LOOSER than a member")
-
-    def test_read_only_member_makes_the_whole_union_read_only(self):
-        self._activate("t1", scope=["src/**"])
-        self._activate("lens-security", read_only=True,
-                       write_allow=[".em-review/**"])
-        os.environ.pop("TASKPLANE_TASK", None)
-        self.assertTrue(tp.load_active(self.ws).get("read_only"))
-
-    # ---- and what the C1 line buys
+        self.assertIsNone(tp.load_active(self.ws))
 
     def test_windows_set_form_activates_the_per_task_contract(self):
         """`set TASKPLANE_TASK=t1` in cmd.exe sets exactly the variable the

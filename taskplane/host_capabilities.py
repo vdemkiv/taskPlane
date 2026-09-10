@@ -7,12 +7,17 @@ kept explicit so callers can fall back or fail closed without guessing.
 """
 
 from __future__ import annotations
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 
 import hashlib
 import json
 import os
-import tempfile
+import re
 import time
+from taskplane import settings as _host_settings, delivery_ports as _host_delivery_ports
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -30,13 +35,7 @@ ROOT_SESSION_CAPABILITY_SCHEMA = \
 
 
 def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:
-    raw = str(value or "").encode("utf-8", errors="replace")[:limit]
-    while raw:
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            raw = raw[:-1]
-    return ""
+    return _shared_primitives.bounded_text(value, limit)
 
 
 def _immutable_value(value: Any) -> Any:
@@ -380,14 +379,8 @@ def record_runtime_hook_receipt(
             os.path.normcase(os.path.realpath(cwd))) if cwd else None,
         "event_name": _bounded(event.get("hook_event_name"), 64),
     }
-    # One global latest file erased another live task's receipt. Keep each
-    # session (and each bridge workspace) independently addressable, while
-    # retaining the legacy latest projection for older readers.
-    targets = dict.fromkeys((
-        _receipt_path(home, path_name, receipt["session_fingerprint"],
-                      receipt["workspace_fingerprint"]),
-        _receipt_path(home, path_name),
-    ))
+    targets = (_receipt_path(home, path_name, receipt["session_fingerprint"],
+                             receipt["workspace_fingerprint"]),)
     for target in targets:
         directory = os.path.dirname(target)
         os.makedirs(directory, exist_ok=True)
@@ -402,21 +395,7 @@ def record_runtime_hook_receipt(
                 continue
         except (OSError, ValueError, json.JSONDecodeError):
             pass
-        temporary = ""
-        try:
-            with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", newline="", delete=False,
-                    dir=directory, prefix=f".{path_name}-receipt-",
-                    suffix=".tmp") as handle:
-                temporary = handle.name
-                json.dump(receipt, handle, sort_keys=True, separators=(",", ":"))
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, target)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        _shared_primitives.atomic_json(target, receipt, indent=None, sort_keys=True, trailing_newline=True)
     return receipt
 
 
@@ -434,14 +413,8 @@ def runtime_hook_observations(
         try:
             target = _receipt_path(home, hook_path, expected_session,
                                    expected_workspace)
-            try:
-                with open(target, encoding="utf-8") as f:
-                    row = json.load(f)
-            except FileNotFoundError:
-                # Existing v1 receipts remain readable only after all the
-                # same session/workspace/freshness checks below.
-                with open(_receipt_path(home, hook_path), encoding="utf-8") as f:
-                    row = json.load(f)
+            with open(target, encoding="utf-8") as f:
+                row = json.load(f)
             if not isinstance(row, dict) or row.get("schema") != \
                     RUNTIME_RECEIPT_SCHEMA or row.get("hook_path") != hook_path:
                 continue
@@ -964,3 +937,156 @@ def resolve_dispatch_route(
             else "exact route planned; host receipt is still required"
             if resolution == "exact" else "session model and effort inherited"),
     }
+
+
+def valid_plugin_root(
+        root: str, family: str
+) -> tuple[tuple[int, int, int], str, str] | None:
+    """Validate one contained taskplane installation candidate."""
+    family_real = os.path.realpath(family)
+    root_real = os.path.realpath(root)
+    try:
+        if os.path.commonpath((family_real, root_real)) != family_real:
+            return None
+    except ValueError:
+        return None
+    manifest = os.path.join(root_real, os.path.join(".codex-plugin", "plugin.json"))
+    engine = os.path.realpath(os.path.join(root_real, "taskplane", "tp.py"))
+    try:
+        if os.path.commonpath((family_real, engine)) != family_real:
+            return None
+        with open(manifest, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    match = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+codex\.[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$").fullmatch(str(version or ""))
+    if (not isinstance(data, dict) or not match
+            or data.get("name") != "taskplane"
+            or not os.path.isfile(engine)):
+        return None
+    # Installed cache children are named by version. The family itself is
+    # also accepted so a source checkout remains a valid development runner.
+    if (root_real != family_real
+            and os.path.basename(root_real) != str(version)):
+        return None
+    return tuple(int(part) for part in match.groups()[:3]), str(version), engine
+
+
+def resolve_plugin_engine(family: str | None) -> str | None:
+    """Resolve only one installation family; order timestamped local builds."""
+    if not isinstance(family, str) or not family:
+        return None
+    family_real = os.path.realpath(os.path.expanduser(family))
+    try:
+        roots = [family_real] + [os.path.join(family_real, name)
+                               for name in os.listdir(family_real)]
+    except OSError:
+        return None
+    candidates = [row for root in roots
+                  if (row := valid_plugin_root(root, family_real))]
+    if not candidates:
+        return None
+    latest = max(row[0] for row in candidates)
+    candidates = [row for row in candidates if row[0] == latest]
+    if len(candidates) > 1:
+        # Only the cachebuster helper's UTC timestamps define an order.
+        # Arbitrary build labels and duplicate roots remain ambiguous.
+        timestamps = [re.fullmatch(r"\d+\.\d+\.\d+\+codex\.(\d{14})", row[1])
+                      for row in candidates]
+        if not all(timestamps):
+            return None
+        newest = max(match.group(1) for match in timestamps if match)
+        candidates = [row for row, match in zip(candidates, timestamps)
+                      if match and match.group(1) == newest]
+    return candidates[0][2] if len(candidates) == 1 else None
+
+
+MODEL_TIERS = ("cheap", "standard", "deep")
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+STEP_DEFAULT_TIER = {"pm": "deep", "design": "deep", "plan": "deep", "em": "deep",
+                     "execute": "standard", "fix": "standard", "evaluate": "standard"}
+
+def _default_tier_models() -> dict:
+    """Compatibility tier projection of the canonical stage settings."""
+    settings = _host_settings.load_settings(environment=os.environ)
+    return {"cheap": settings.stages["evaluate"].model,
+            "standard": settings.stages["build"].model,
+            "deep": settings.stages["design"].model}
+
+
+def reasoning_for_tier(tier: str | None) -> str | None:
+    """Resolve a capability tier to Codex's native reasoning effort.
+
+    Unlike model ids, reasoning effort is provider-neutral metadata: every
+    emitted brief carries it, while only Codex's native subagent dispatch
+    consumes it. Invalid overrides fall back to the tier default instead of
+    injecting an unsupported value into a host tool call.
+    """
+    t = (tier or "standard").strip().lower()
+    settings = _host_settings.load_settings(environment=os.environ)
+    stage = {"cheap": "evaluate", "standard": "build", "deep": "design"}.get(
+        t, "build")
+    return settings.stages[stage].reasoning
+
+
+def dispatch_fields(kind: str, agent: str, ref: str,
+                    model_tier: str, *, capability_snapshot=None,
+                    enforcement_mode: str | None = None,
+                    observed_route: dict | None = None,
+                    settings_context=None, lens_stage: str | None = None) -> dict:
+    """Resolve one settings snapshot, then delegate pure brief assembly."""
+    settings = settings_context or _host_settings.load_settings(environment=os.environ)
+    stage = {
+        "tp-product": "product", "tp-designer": "design",
+        "tp-planner": "plan", "tp-executor": "build",
+        "tp-evaluator": "evaluate", "tp-fixer": "fix",
+        "tp-engineering": "engineering", "tp-retro": "retro",
+        "tp-design": "design", "tp-plan": "plan", "tp-build": "build",
+        "tp-evaluate": "evaluate",
+    }.get(agent)
+    selected = stage or {
+        "cheap": "evaluate", "standard": "build", "deep": "design",
+    }.get((model_tier or "standard").strip().lower(), "build")
+    if lens_stage is not None:
+        if agent != "tp-lens" or lens_stage not in _host_settings.ROUTED_LENS_STAGES:
+            raise ValueError("explicit lens stage must be Product, Design or Plan")
+        selected = lens_stage
+    # Runs sealed before Retro had a separate setting keep their original
+    # Build-tier projection; no current defaults enter a historical snapshot.
+    if selected == "retro" and selected not in settings.stages:
+        selected = "build"
+    route = None
+    if capability_snapshot is not None:
+        route = resolve_dispatch_route(
+            capability_snapshot, tier=model_tier,
+            requested_model=settings.stages[selected].model,
+            requested_effort=settings.stages[selected].reasoning,
+            mode=enforcement_mode or os.environ.get(
+                "TASKPLANE_ENFORCE_DISPATCH", "default"),
+            observed=observed_route)
+    return _host_delivery_ports.dispatch_envelope(
+        kind, agent, ref, model_tier,
+        role_instructions=os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "agents", agent + ".md")).replace("\\", "/"),
+        requested_model=settings.stages[selected].model,
+        requested_effort=settings.stages[selected].reasoning,
+        settings_digest=settings.digest, route=route)
+
+
+def model_for_tier(tier: str | None) -> str | None:
+    """Resolve an abstract capability tier to a concrete model id for the Agent
+    tool's `model` param, or None meaning "inherit the session model". The
+    one-release alias is resolved inside the canonical loader. An unknown tier
+    degrades to inherit (None) rather than raising."""
+    t = (tier or "standard").strip().lower()
+    return _default_tier_models().get(t)
+
+
+def step_tier(step: str, task: dict | None = None) -> str:
+    """The effective tier for a loop step: an explicit, valid per-task `model`
+    tier wins; otherwise the step default (see STEP_DEFAULT_TIER). An invalid
+    task tier is ignored (falls back to the step default)."""
+    if task and task.get("model") in MODEL_TIERS:
+        return task["model"]
+    return STEP_DEFAULT_TIER.get(step, "standard")

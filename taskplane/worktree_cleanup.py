@@ -1,6 +1,11 @@
 """Proof-carrying, fail-closed cleanup of Taskplane task worktrees."""
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import copy
 import hashlib
 import json
@@ -24,8 +29,7 @@ class CleanupError(RuntimeError):
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=True).encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=True)
 
 
 def _fingerprint(value: object) -> str:
@@ -114,7 +118,7 @@ def record_merge_receipt(primary_checkout: str, *, task_id: str,
         raise CleanupError("registered worktree repository identity changed")
     payload = {
         "schema": MERGE_SCHEMA, "run_id": str(
-            run_id or registration.get("run_id") or "legacy"),
+            run_id or registration["run_id"]),
         "task_id": str(task_id),
         "repository": {"repo_id": identity.repo_id,
                        "repository_key": identity.key},

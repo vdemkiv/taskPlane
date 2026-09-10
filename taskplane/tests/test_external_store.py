@@ -4,6 +4,8 @@ one folder per project, so artifacts never get committed/pushed with code.
 The headline invariant: after init + recording a decision, `git status` in
 the repo is clean — zero taskplane files to accidentally commit.
 """
+
+from taskplane.tests.phase_fixture import save_component_workflow
 import json
 import os
 import subprocess
@@ -42,16 +44,10 @@ def _status(ws):
 
 class TestKey(unittest.TestCase):
     def test_key_is_readable_slug_and_collision_free(self):
-        # The readable path slug is still the key's prefix. Asserted
-        # host-agnostically: the key derives from the CANONICAL absolute
-        # path, and on Windows that legitimately carries a drive letter
-        # ("C-Users-x-..."), so pinning the leading "-" pinned POSIX rather
-        # than the property — that every path segment survives, readably, in
-        # order.
         k = tl.project_key(os.path.join(os.sep, "Users", "x", "Documents",
                                         "app"))
-        self.assertIn("Users-x-Documents-app-", k)
-        self.assertRegex(k, r"-[0-9a-f]{8}$")
+        self.assertTrue(k.startswith("app-"))
+        self.assertRegex(k, r"-[0-9a-f]{10}$")
         # ...but paths that differ only by punctuation get DISTINCT keys
         # (v0.9.6 collapsed these to one shared store).
         keys = {tl.project_key(p) for p in
@@ -112,7 +108,7 @@ class TestExternalWrites(unittest.TestCase):
         kb.record_decision(self.ws, "a decision", decision="d")
         req.record_requirement(self.ws, "a requirement")
         dg.scan(self.ws)
-        loop.save(self.ws, {"goal": "g", "step": "plan", "tasks": None,
+        save_component_workflow(self.ws, {"goal": "g", "step": "plan", "tasks": None,
                             "current_task": 0, "max_fix_cycles": 2,
                             "checkpoints": []})
         # .gitignore may be modified by init; that's the only allowed change
@@ -129,7 +125,7 @@ class TestExternalWrites(unittest.TestCase):
         self.assertTrue(dg._path(self.ws).startswith(self.home))
         self.assertFalse(os.path.exists(os.path.join(self.ws, "knowledge",
                                                      "graph.json")))
-        loop.save(self.ws, {"goal": "g", "step": "plan", "tasks": None,
+        save_component_workflow(self.ws, {"goal": "g", "step": "plan", "tasks": None,
                             "current_task": 0, "max_fix_cycles": 2,
                             "checkpoints": []})
         self.assertTrue(loop._state_dir(self.ws).startswith(self.home))
@@ -143,68 +139,6 @@ class TestExternalWrites(unittest.TestCase):
         self.assertTrue(os.path.exists(tl.store_meta_path(self.ws)))
 
 
-class TestMigration(unittest.TestCase):
-    def setUp(self):
-        self.home = tempfile.mkdtemp(prefix="tp-home-")
-        self._prev_home = os.environ.get("TASKPLANE_HOME")
-        os.environ["TASKPLANE_HOME"] = self.home
-        self.ws = _repo()
-        # a legacy in-repo, git-tracked knowledge/ (the pre-store world)
-        d = os.path.join(self.ws, "knowledge", "decisions")
-        os.makedirs(d)
-        open(os.path.join(self.ws, "knowledge", "index.json"), "w", encoding="utf-8").write(
-            '{"decisions": [{"id": "0001", "title": "old", "status": '
-            '"accepted", "date": "2026-01-01", "tags": [], "file": '
-            '"decisions/0001-old.md"}], "flows": []}')
-        open(os.path.join(d, "0001-old.md"), "w", encoding="utf-8").write("# old decision\n")
-        _git(self.ws, "add", "-A"); _git(self.ws, "commit", "-qm", "legacy kb")
-
-    def tearDown(self):
-        if self._prev_home is None:
-            os.environ.pop("TASKPLANE_HOME", None)
-        else:
-            os.environ["TASKPLANE_HOME"] = self._prev_home
-
-    def test_legacy_read_before_migration(self):
-        # before migration, kb_root points at the in-repo dir so reads work
-        self.assertEqual(tl.kb_root(self.ws),
-                         os.path.join(self.ws, "knowledge"))
-        self.assertEqual(len(kb.list_decisions(self.ws)), 1)
-
-    def test_migrate_moves_untracks_and_ignores(self):
-        r = subprocess.run([sys.executable, _TP_PY, "kb", "migrate"],
-                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        # data moved out of the repo, into the store
-        self.assertFalse(os.path.isdir(os.path.join(self.ws, "knowledge")))
-        self.assertTrue(os.path.exists(os.path.join(
-            tl.store_root(self.ws), "knowledge", "index.json")))
-        # decisions still readable post-move
-        self.assertEqual(len(kb.list_decisions(self.ws)), 1)
-        # knowledge/ untracked + gitignored
-        tracked = subprocess.run(["git", "ls-files"], cwd=self.ws,
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
-        self.assertNotIn("knowledge/", tracked)
-        # v2.11.0: ignored via .git/info/exclude, NOT .gitignore — a governed
-        # command must not dirty the working tree of a repo under review
-        # (karpenter#9464: the appended .gitignore joined `git diff <base>`,
-        # so routing reported 5 changed files for a 4-file PR).
-        with open(os.path.join(self.ws, ".git", "info", "exclude"),
-                  encoding="utf-8") as f:
-            self.assertIn("knowledge/", f.read())
-        self.assertFalse(os.path.exists(os.path.join(self.ws, ".gitignore")),
-                         "tp must not create a .gitignore in the repo")
-        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=self.ws,
-                               capture_output=True, text=True,
-                               encoding="utf-8", errors="replace").stdout
-        self.assertNotIn(".gitignore", dirty)
-
-    def test_where_reports_paths(self):
-        r = subprocess.run([sys.executable, _TP_PY, "kb", "where"],
-                           cwd=self.ws, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        info = json.loads(r.stdout)
-        self.assertTrue(info["legacy_in_repo_present"])
-        self.assertFalse(info["migrated"])
 
 
 if __name__ == "__main__":

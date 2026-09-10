@@ -44,8 +44,8 @@ Status never starts an implementation child, reopens a terminal stage, or
 invokes cleanup. Stage terminalization and status rendering do not change
 R-0003 enforcement, ReviewKernel evidence/provenance, collision isolation,
 orchestrator-only gates, final sign-off, or exact-worktree cleanup eligibility.
-When stage-native execution is disabled or the run is unmigrated, preserve the
-existing v3/legacy read behavior and do not synthesize stage lifecycle facts.
+Status reads only the current run aggregate selected by this workspace.
+An unsupported manifest is a refusal; no alternate runtime supplies status.
 
 When status concerns a managed repository/run, use `$TP repository status
 --run-id <id>` and the manifest's checkout/run/artifact paths rather than

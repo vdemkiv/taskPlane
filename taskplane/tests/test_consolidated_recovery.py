@@ -192,7 +192,6 @@ def _repository_preflight(tmp_path, acquirer):
 
 
 def test_repository_acquisition_uses_bounded_automatic_recovery(monkeypatch):
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
     acquirer = _SequenceAcquirer([
         repository.RepositoryAcquisitionError("network", "temporary one"),
         repository.RepositoryAcquisitionError("network", "temporary two"),
@@ -206,32 +205,6 @@ def test_repository_acquisition_uses_bounded_automatic_recovery(monkeypatch):
     assert acquirer.calls == 3
 
 
-def test_preflight_production_path_automatically_recovers_repository(
-        tmp_path, monkeypatch):
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
-    acquired = repository.AcquisitionResult(
-        checkout=str(checkout), base_ref="origin/main", base="b" * 40,
-        head="a" * 40, merge_base="c" * 40,
-        changed_files=("a.py",), metadata={})
-    acquirer = _SequenceAcquirer([
-        repository.RepositoryAcquisitionError("network", "temporary one"),
-        repository.RepositoryAcquisitionError("network", "temporary two"),
-        acquired,
-    ])
-    engine = preflight.RepositoryPreflight(
-        home=str(tmp_path / "home"),
-        tools_provider=lambda: {
-            "git": {"present": True},
-            "gh": {"present": True, "authenticated": True},
-        }, acquirer=acquirer)
-    result = engine.prepare(
-        "https://github.com/example/project.git",
-        workspace=str(tmp_path), host={"kind": "codex"}, run_id="recover")
-    assert result["status"] == "ready"
-    assert acquirer.calls == 3
 
 
 def test_repository_preparation_local_fixture_pins_and_verifies_head(
@@ -264,7 +237,6 @@ def test_repository_preparation_local_fixture_pins_and_verifies_head(
 
 def test_repository_preparation_remote_fixture_preserves_pinned_target(
         tmp_path, monkeypatch):
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
     acquired = _acquired(tmp_path / "remote-checkout")
     acquirer = _SequenceAcquirer([acquired])
     result = _repository_preflight(tmp_path, acquirer).prepare(
@@ -283,7 +255,6 @@ def test_repository_preparation_remote_fixture_preserves_pinned_target(
 
 def test_repository_preparation_cached_fixture_avoids_remote_reacquisition(
         tmp_path, monkeypatch):
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
     acquired = _acquired(tmp_path / "cached-checkout")
     acquirer = _SequenceAcquirer([acquired])
     engine = _repository_preflight(tmp_path, acquirer)
@@ -302,7 +273,6 @@ def test_repository_preparation_cached_fixture_avoids_remote_reacquisition(
 @pytest.mark.parametrize("fixture", ["stale", "moved"])
 def test_repository_preparation_reacquires_stale_or_moved_checkout(
         tmp_path, monkeypatch, fixture):
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
     old = _acquired(tmp_path / "old-checkout")
     replacement = _acquired(tmp_path / f"{fixture}-checkout", head="d")
     acquirer = _SequenceAcquirer([old, replacement])
@@ -340,7 +310,6 @@ def test_command_runtime_persists_recovery_and_detects_repeated_failure(tmp_path
 
 def test_command_adapter_uses_recovery_policy_before_requesting_input(
         tmp_path, monkeypatch):
-    monkeypatch.setenv("TASKPLANE_CONSOLIDATED_FLOW", "1")
     runtime = CommandRuntime(str(tmp_path), workspace="workspace",
                              authorization="actor")
 

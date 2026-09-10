@@ -191,25 +191,6 @@ def test_operation_id_reuse_with_different_request_is_rejected_first(
     assert store.load(RUN_ID) == committed
 
 
-def test_ambiguous_singleton_migration_can_commit_receipt_without_stage_head(
-        tmp_path: Path) -> None:
-    store, initial = _store(tmp_path)
-
-    receipt = store.commit_stage_operation(
-        RUN_ID,
-        expected_revision=initial["revision"],
-        operation_id="migrate-ambiguous",
-        request_fingerprint="9" * 64,
-        mutate=_mutation(
-            operation="migrate_singleton", marker="legacy-unknown"),
-        validate_authority=lambda _current: None,
-    )
-
-    committed = store.load(RUN_ID)
-    assert receipt["operation"] == "migrate_singleton"
-    assert receipt["stage_ids"] == []
-    assert committed["stage_heads"] == {}
-    assert committed["stage_operations"]["migrate-ambiguous"] == receipt
 
 
 def test_unrelated_operation_cannot_commit_receipt_without_stage_head(
@@ -350,26 +331,26 @@ def test_generic_commit_cannot_seed_or_overwrite_stage_authority(
     store.commit_stage_operation(
         RUN_ID,
         expected_revision=initial["revision"],
-        operation_id="promote-v4",
+        operation_id="start-stage",
         request_fingerprint="7" * 64,
         mutate=_mutation(),
         validate_authority=lambda _current: None,
     )
-    promoted = store.load(RUN_ID)
+    committed = store.load(RUN_ID)
 
     for changes in (
             {"stage_heads": {}},
             {"lineage": []},
             {"stage_operations": {}},
             {"active_stage_projection": {}},
-            {"schema": "taskplane.run/v3"}):
+            {"schema": "invalid"}):
         with pytest.raises(run_store.RunStoreError):
             store.commit(
                 RUN_ID,
-                expected_revision=promoted["revision"],
+                expected_revision=committed["revision"],
                 changes=changes,
             )
-        assert store.load(RUN_ID) == promoted
+        assert store.load(RUN_ID) == committed
 
 
 def test_corrupt_stored_receipt_is_rejected_before_replay(
@@ -845,4 +826,43 @@ def test_execution_root_rename_substitution_fails_before_start_commit(
     assert len(swapped_paths) == 1
     assert manifest_path.read_bytes() == before_bytes
     assert store.load(RUN_ID)["revision"] == initial["revision"]
-    assert "stage_heads" not in store.load(RUN_ID)
+    assert store.load(RUN_ID)["stage_heads"] == {}
+
+
+@pytest.mark.parametrize("abort", [False, True])
+def test_workflow_and_stage_operation_publish_one_head_or_rollback(tmp_path, monkeypatch, abort):
+    store, original = _store(tmp_path)
+    path = store._manifest_path(RUN_ID)
+    original_bytes = Path(path).read_bytes()
+    journal = Path(store._journal_path(RUN_ID)).read_bytes()
+    writes = []
+    write = run_store.atomic_json
+    def observed(destination, value, **kwargs):
+        if str(destination) == path:
+            writes.append(copy.deepcopy(value))
+        return write(destination, value, **kwargs)
+    monkeypatch.setattr(run_store, "atomic_json", observed)
+    def transition():
+        with store.transaction(RUN_ID):
+            receipt = store.commit_stage_operation(RUN_ID, expected_revision=original["revision"],
+                operation_id="one-workflow-transition", request_fingerprint="e" * 64,
+                mutate=_mutation(), validate_authority=lambda current: _validate_exact_authority(original, current))
+            store.save_workflow(RUN_ID, {"run_id": RUN_ID, "step": "design"})
+            assert Path(path).read_bytes() == original_bytes
+            assert Path(store._journal_path(RUN_ID)).read_bytes() == journal
+            if abort:
+                raise ValueError("interrupted transition")
+            return receipt
+    if abort:
+        with pytest.raises(ValueError, match="interrupted transition"):
+            transition()
+        assert writes == []
+        assert store.inspect(RUN_ID) == original
+        assert Path(store._journal_path(RUN_ID)).read_bytes() == journal
+    else:
+        receipt = transition()
+        assert len(writes) == 1
+        current = store.load(RUN_ID)
+        assert current["workflow"]["step"] == "design"
+        assert current["stage_operations"]["one-workflow-transition"] == receipt
+        assert len(writes) == 1, "derived journal delivery rewrote the aggregate"

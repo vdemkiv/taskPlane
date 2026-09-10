@@ -7,6 +7,11 @@ staleness; it is never, by itself, a request for more human authority.
 """
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives
+
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -65,8 +70,7 @@ _REASON_BY_FIELD = {
 
 
 def _canonical_bytes(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False).encode("utf-8")
+    return _json_primitives.canonical_bytes(value, ensure_ascii=False)
 
 
 def _fingerprint(value: object) -> str:

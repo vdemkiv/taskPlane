@@ -92,7 +92,14 @@ STAGE_RUNTIME_FILES = (
     "taskplane/tp.py",
     "taskplane/stage_entities.py",
     "taskplane/stage_handoff.py",
-    "taskplane/stage_migration.py",
+    "taskplane/phase_records.py",
+    "taskplane/phase_harness.py",
+    "taskplane/stage_values.py",
+    "taskplane/stage_artifacts.py",
+    "taskplane/stage_loop.py",
+    "taskplane/dispatch.py",
+    "taskplane/gates.py",
+    "taskplane/primitives.py",
     "taskplane/loop_status.py",
     "taskplane/dashboard.py",
     "taskplane/runtime_eval.py",
@@ -1024,33 +1031,19 @@ def _workspace_only_hooks(value: dict) -> dict:
 
 
 def load_hook_manifest() -> dict:
-    """Derive the installed OpenAI hook manifest from host authorities."""
-    manifests: dict[str, dict] = {}
-    for host, path in (
-            ("claude", ROOT / "hooks" / "hooks.json"),
-            ("codex", ROOT / ".codex" / "hooks.json")):
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise PackageError(f"cannot read {host} hook manifest: {exc}") from exc
-        manifests[host] = validate_hook_manifest(value)
-    claude_hooks = manifests["claude"]["hooks"]
-    codex_hooks = manifests["codex"]["hooks"]
-    require("SessionStart" in claude_hooks and "SessionStart" in codex_hooks,
-            "hook manifests must declare SessionStart")
-    installed = json.loads(json.dumps(manifests["claude"]))
-    installed["hooks"]["SessionStart"] = codex_hooks["SessionStart"]
-    # These commands run from the installed plugin manifest, even though the
-    # Codex-owned SessionStart declaration supplies the host-specific action
-    # and host name.  Preserve that native authority identity so a genuinely
-    # loaded plugin can issue the first session receipt before a fresh task
-    # has a governed workspace locator.  The repo-local copy remains bridge.
+    """Build Codex hooks from the shipped source, never checkout enablement."""
+    path = ROOT / "hooks" / "hooks.json"
+    try:
+        installed = validate_hook_manifest(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PackageError(f"cannot read shipped hook manifest: {exc}") from exc
+    require("SessionStart" in installed["hooks"],
+            "shipped hook manifest must declare SessionStart")
     for row in installed["hooks"]["SessionStart"]:
         for hook in row.get("hooks") or []:
             for field in ("command", "commandWindows"):
                 hook[field] = str(hook.get(field) or "").replace(
-                    "TASKPLANE_HOOK_PATH=bridge",
-                    "TASKPLANE_HOOK_PATH=native")
+                    "--host claude", "--host codex")
     return validate_hook_manifest(_workspace_only_hooks(installed))
 
 

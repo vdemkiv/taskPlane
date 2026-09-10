@@ -1,6 +1,10 @@
 """Closed delivery-mode and zero-lens execution receipt contracts."""
 
 from __future__ import annotations
+if __package__:
+    from . import primitives as _shared_primitives
+else:
+    import primitives as _shared_primitives
 
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -46,9 +50,7 @@ def _fingerprint(value: Any, field: str, *, optional: bool = False) -> str | Non
     if optional and value is None:
         return None
     text = _required_text(value, field)
-    if len(text) != 64 or any(
-        character not in "0123456789abcdef" for character in text
-    ):
+    if not _shared_primitives.is_sha256(text):
         raise DeliveryPolicyError(f"{field} must be a lowercase SHA-256 fingerprint")
     return text
 

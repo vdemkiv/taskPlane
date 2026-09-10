@@ -49,39 +49,6 @@ def test_completed_child_uses_only_exact_provider_lifecycle_metadata(native_chil
         assert "must not be returned" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("damage", [None, "wrong-path", "traversal", "symlink-escape", "stale", "wrong-task"])
-def test_real_evaluator_submission_absolute_path_survives_stop(onboarded, monkeypatch, damage):
-    import loop
-    workspace, _ = onboarded
-    ws = str(workspace)
-    (workspace / ".eval").mkdir()
-    verdict = workspace / ".eval/verdict.json"
-    verdict.write_text('{"verdict":"fail"}')
-    snapshot = cli.tp.git_head(ws)
-    state = {"step":"evaluate", "current_task":0, "tasks":[{"id":"T19"}],
-        "submission_required":True, "baseline":snapshot}
-    loop.save(ws, state)
-    contract = cli.tp.bind_submission_contract(cli.tp.build_contract("Evaluate", read_only=True),
-        ws, task="T19", stage="evaluate", slot="classifier", locator={"type":"loop_submission"},
-        validation_rule="loop-submission/v1")
-    monkeypatch.setattr(loop, "_worker_stage_snapshot", lambda *a:snapshot)
-    submitted = loop.submit(ws, "fail", note="independent failure classification")
-    assert submitted.get("submitted"), submitted
-    state = loop._load_raw(ws)
-    assert state["_submission"]["evidence_paths"] == [str(verdict)]
-    assert not contract.get("phase_runtime")
-    if damage == "wrong-path": state["_submission"]["evidence_paths"] = [str(workspace / "unrelated.json")]
-    if damage == "traversal": state["_submission"]["evidence_paths"] = [str(workspace / ".eval/../.eval/verdict.json")]
-    if damage == "symlink-escape":
-        outside = workspace.parent / "foreign.json"
-        outside.write_text(verdict.read_text())
-        verdict.unlink()
-        verdict.symlink_to(outside)
-    if damage == "stale": verdict.write_text('{"verdict":"changed"}')
-    if damage == "wrong-task": state["_submission"]["task"] = "OTHER"
-    result = cli.tp.stop_submission_decision(ws, contract, observed_slot="classifier", loop_state=state)
-    assert result["valid"] is (damage is None), result
-    if damage == "stale": assert result["status"] == "stale"
 
 
 def test_early_producer_load_error_cannot_disappear(tmp_path, monkeypatch, capsys):
@@ -210,6 +177,12 @@ def _fresh_process(workspace, *arguments, event=None, hook_path=None, home=None,
     if home is not None:
         environment["TASKPLANE_HOME"] = str(home)
     environment["TASKPLANE_ENFORCE_SCREEN"] = "strict"
+    if arguments[:2] == ("loop", "init"):
+        from taskplane import requirements
+        record = requirements.record_requirement(str(workspace), arguments[2],
+            functional=["retain exact run scope across sessions"],
+            acceptance=["fresh sessions consume only the selected run"])
+        arguments = (*arguments, "--req", record["id"], "--by", "human:simulated")
     result = subprocess.run([
         sys.executable, str(workspace / ".taskplane/codex-hook.py"),
         *arguments,
@@ -271,7 +244,7 @@ def test_fresh_session_reads_original_run_and_emits_valid_context(onboarded):
     assert not initialized.get("error"), initialized
     import loop
     saved = loop.load(str(workspace))
-    state_path = Path(loop.state_dir(str(workspace))) / "loop.json"
+    state_path = Path(storage.load_workspace_locator(str(workspace))["home"]) / "runs" / loop.load(str(workspace))["run_id"] / "manifest.json"
     state_bytes = state_path.read_bytes()
     event = {"hook_event_name": "SessionStart", "session_id": "fresh-session",
              "turn_id": "resume-1", "source": "resume", "cwd": str(workspace)}
@@ -395,16 +368,17 @@ def test_resume_cannot_retarget_existing_state(onboarded, tmp_path):
 
 
 def test_stateless_phase_bootstrap_retains_authority_and_pending_operation(tmp_path, monkeypatch):
-    from taskplane.tests.test_r0001_j1_native import _supporting_pristine_phase_run
+    from taskplane.tests.phase_fixture import _supporting_pristine_phase_run
     from taskplane import loop
     ws, store, run_id, _ = _supporting_pristine_phase_run(tmp_path, monkeypatch)
     original = loop.load(ws)
     authority = original["_stage_native_root_authority"]
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "replacement-root-session")
-    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE")
+
     first = loop.next_action(ws)
     assert "error" not in first, first
-    assert first.get("phase_runtime"), first
+    first_phase = loop._phase_bridge_pending(ws, loop.load(ws))["phase_runtime"]
+    assert first_phase, first
     after = store.load(run_id)
     assert loop.load(ws)["_stage_native_root_authority"] == authority
     scope = loop.resume(ws)
@@ -413,12 +387,8 @@ def test_stateless_phase_bootstrap_retains_authority_and_pending_operation(tmp_p
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "another-root-session")
     second = loop.next_action(ws)
     assert "error" not in second, second
-    assert second["phase_runtime"]["status"] == "pending"
-    assert second["phase_runtime"]["operation_id"] == first["phase_runtime"]["operation_id"]
-    assert store.load(run_id) == after
-    monkeypatch.setenv("TASKPLANE_STAGE_NATIVE", "disabled")
-    blocked = loop.next_action(ws)
-    assert "disabled" in blocked["error"]
+    assert loop._phase_bridge_pending(ws, loop.load(ws))["phase_runtime"]["status"] == "pending"
+    assert loop._phase_bridge_pending(ws, loop.load(ws))["phase_runtime"]["operation_id"] == first_phase["operation_id"]
     assert store.load(run_id) == after
 
 
@@ -432,7 +402,7 @@ def test_read_only_resume_preserves_exact_saved_task_scopes(onboarded):
     state["tasks"] = [{"id": "T1", "scope": ["taskplane/storage.py"], "status": "running"},
                       {"id": "T2", "scope": ["taskplane/tp.py"], "status": "pending"}]
     loop.save(str(workspace), state)
-    path = Path(loop.state_dir(str(workspace))) / "loop.json"
+    path = Path(storage.load_workspace_locator(str(workspace))["home"]) / "runs" / loop.load(str(workspace))["run_id"] / "manifest.json"
     before = path.read_bytes()
     recovered = json.loads(_fresh_process(workspace, "loop", "resume", session=None))
     assert recovered["tasks"] == state["tasks"]
@@ -451,13 +421,13 @@ def test_initialization_does_not_waive_dispatch_enforcement(onboarded, monkeypat
     monkeypatch.setattr(cli, "_graph_quality_refusal", lambda *args: None)
     called = []
     monkeypatch.setattr(loop, "next_action", lambda *args, **kwargs: called.append(True))
-    before = Path(loop.state_dir(str(workspace)), "loop.json").read_bytes()
+    before = (Path(storage.load_workspace_locator(str(workspace))["home"]) / "runs" / loop.load(str(workspace))["run_id"] / "manifest.json").read_bytes()
     result = cli.cmd_loop(Namespace(workspace=str(workspace), loop_action="next",
                                     advisory=False, by=None))
     assert result != 0
     assert json.loads(capsys.readouterr().out)["error"]
     assert not called
-    assert Path(loop.state_dir(str(workspace)), "loop.json").read_bytes() == before
+    assert (Path(storage.load_workspace_locator(str(workspace))["home"]) / "runs" / loop.load(str(workspace))["run_id"] / "manifest.json").read_bytes() == before
 
 
 def test_locator_repair_remains_reachable_but_home_conflicts_refuse(onboarded, tmp_path):
@@ -491,18 +461,19 @@ def test_discovery_is_available_without_resolving_run_storage(monkeypatch, comma
 
 def test_expired_phase_returns_recovery_not_an_infinite_wait(tmp_path, monkeypatch):
     from datetime import datetime
-    from taskplane.tests.test_r0001_j1_native import _supporting_pristine_phase_run
+    from taskplane.tests.phase_fixture import _supporting_pristine_phase_run
     from taskplane import loop, review_evidence
     ws, store, run_id, _ = _supporting_pristine_phase_run(tmp_path, monkeypatch)
     prepared = loop.next_action(ws)
-    reference = prepared["phase_runtime"]["reference"]
+    prepared_phase = loop._phase_bridge_pending(ws, loop.load(ws))["phase_runtime"]
+    reference = prepared_phase["reference"]
     material = review_evidence.ArtifactStore(ws).read(reference)
     before = store.load(run_id)
     deadline = datetime.fromisoformat(material["bindings"]["deadline"]).timestamp()
     monkeypatch.setattr(loop.time, "time", lambda: deadline + 1)
     pending = loop._phase_bridge_pending(ws, loop._load_raw(ws))
     assert pending["phase_runtime"]["status"] == "recovery_required"
-    assert pending["phase_runtime"]["operation_id"] == prepared["phase_runtime"]["operation_id"]
+    assert pending["phase_runtime"]["operation_id"] == prepared_phase["operation_id"]
     assert pending["phase_runtime"]["reference"] == reference
     assert pending["dispatch_allowed"] is False
     assert "wait_policy" not in pending and "task_name" not in pending
@@ -512,11 +483,11 @@ def test_expired_phase_returns_recovery_not_an_infinite_wait(tmp_path, monkeypat
 
 @pytest.mark.parametrize("case", ["worker", "changed-authority"])
 def test_resumed_root_still_rejects_invalid_authority(tmp_path, monkeypatch, case):
-    from taskplane.tests.test_r0001_j1_native import _supporting_pristine_phase_run
+    from taskplane.tests.phase_fixture import _supporting_pristine_phase_run
     from taskplane import loop
     ws, store, run_id, _ = _supporting_pristine_phase_run(tmp_path, monkeypatch)
     monkeypatch.setenv("TASKPLANE_SESSION_ID", "replacement-session")
-    monkeypatch.delenv("TASKPLANE_STAGE_NATIVE")
+
     state = loop.load(ws)
     if case == "worker":
         monkeypatch.setattr(loop.tp, "task_slot", lambda: "worker-slot")
@@ -525,5 +496,6 @@ def test_resumed_root_still_rejects_invalid_authority(tmp_path, monkeypatch, cas
         loop.save(ws, state)
     before = store.load(run_id)
     result = loop.next_action(ws)
-    assert result.get("error"), result
+    assert result["obligations"].get("error"), result
+    assert result["stage_runtime_dispatch"] is None
     assert store.load(run_id) == before

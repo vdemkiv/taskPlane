@@ -7,6 +7,11 @@ metadata-only evidence before attempting a correction.
 
 from __future__ import annotations
 
+if __package__:
+    from . import primitives as _json_primitives
+else:
+    import primitives as _json_primitives  # type: ignore[no-redef]
+
 import ast
 import copy
 import hashlib
@@ -201,9 +206,7 @@ def inspect_boundary_test(
 
 
 def _fingerprint(value: Any) -> str:
-    payload = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    payload = _json_primitives.canonical_bytes(value, ensure_ascii=True)
     return hashlib.sha256(payload).hexdigest()
 
 

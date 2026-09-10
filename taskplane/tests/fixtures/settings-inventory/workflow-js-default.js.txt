@@ -1,3 +1,0 @@
-export default function escaped({ args, agent }) {
-  return agent(args.prompt, { maxAttempts: args.max_attempts || 2 });
-}

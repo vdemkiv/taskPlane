@@ -414,31 +414,6 @@ def test_status_and_user_summary_share_the_same_bounded_v4_contract(
     assert human["action_required"] is True
 
 
-def test_legacy_status_remains_compatible_and_stage_view_is_only_additive(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    workspace = _git_workspace(tmp_path / "legacy-checkout")
-    loop.save(str(workspace), _loop_state(step="execute"))
-    monkeypatch.setattr(storage, "load_workspace_locator", lambda _ws: None)
-
-    view = loop_status.bounded_stage_view(str(workspace))
-    machine = loop_status.status(str(workspace))
-    human = loop_status.user_summary(
-        str(workspace), host="codex", now=1_800_000_000)
-
-    assert view["status"] == "legacy"
-    assert view["available"] is False
-    assert view["current_stage"] is None
-    assert view["history"] == []
-    assert view["lineage"] == []
-    assert machine["step"] == "execute"
-    assert machine["tasks"] == [{
-        "id": "t05", "status": "passed", "fix_cycles": 0,
-    }]
-    assert machine["current_task"] == 0
-    assert "stage_view" not in machine
-    assert human["state"] == "execute"
-    assert human["progress"] == {"settled": 1, "total": 1}
-    assert "stage_view" not in human
 
 
 def test_corrupt_v4_is_visible_and_fails_closed_without_opening_objects(
@@ -594,6 +569,7 @@ def test_retro_invalid_stage_projection_fails_closed_before_side_effects(
     monkeypatch.setattr(retro.tp, "trace", forbidden("receipt writes"))
     monkeypatch.setattr(retro, "_write_report", forbidden("report writes"))
 
+    before = Path(store._manifest_path(RUN_ID)).read_bytes()
     first = retro.run(
         str(workspace),
         load_state=loop.load,
@@ -613,12 +589,16 @@ def test_retro_invalid_stage_projection_fails_closed_before_side_effects(
     assert first["step"] == "retro"
     assert first["stage_projection"]["status"] == projection_status
     assert first["stage_projection"]["available"] is False
-    assert first["retro_id"]
-    state = loop.load(str(workspace))
-    assert state["step"] == "retro"
-    assert state["retro"]["status"] == "prepared"
-    assert state["retro"]["id"] == first["retro_id"]
-    assert "report" not in state["retro"]
+    if projection_status == "corrupt":
+        assert Path(store._manifest_path(RUN_ID)).read_bytes() == before
+        assert "retro_id" not in first
+    else:
+        assert first["retro_id"]
+        state = loop.load(str(workspace))
+        assert state["step"] == "retro"
+        assert state["retro"]["status"] == "prepared"
+        assert state["retro"]["id"] == first["retro_id"]
+        assert "report" not in state["retro"]
     assert kb.list_decisions(str(workspace)) == []
     assert not (Path(workspace) / ".taskplane" / "retro.md").exists()
     trace_path = Path(workspace) / ".taskplane" / "trace.jsonl"

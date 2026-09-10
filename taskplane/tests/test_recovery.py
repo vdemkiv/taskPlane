@@ -237,39 +237,6 @@ class TestOrphanAutoRelease(unittest.TestCase):
                               now=time.time() + 10 * 24 * 3600)[0])
 
 
-class TestEngineReleasesOnGate(unittest.TestCase):
-    """The loop engine is the mechanical try/finally for loop-driven roles:
-    `loop gate` clears the step contract on PASS and on FAIL."""
-
-    def _loop_ws(self):
-        ws = tempfile.mkdtemp()
-        open(os.path.join(ws, "a.py"), "w", encoding="utf-8").write("x=1\n")
-        subprocess.run(["git", "init", "-q"], cwd=ws)
-        subprocess.run(["git", "add", "-A"], cwd=ws)
-        subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
-                        "commit", "-qm", "i"], cwd=ws)
-        return ws
-
-    def test_gate_clears_contract_on_pass_keeps_on_governed_retry(self):
-        # v2.2.1 (H4): a rejected pm gate stays AT pm under its contract —
-        # same governed-retry semantics as design/plan rejects. Only an
-        # advancing gate releases the step contract.
-        import loop as loopmod
-        ws = self._loop_ws()
-        loopmod.init(ws, "goal", checkpoints=[])
-        os.makedirs(os.path.join(ws, 'specs'), exist_ok=True)
-        open(os.path.join(ws, 'specs', 'spec.md'), 'w', encoding="utf-8").write('# spec\n')
-        loopmod.next_action(ws)                  # activates step contract
-        self.assertIsNotNone(tpl.worker_contract_for_stage(
-            ws, stage="pm", task="pm"))
-        out = loopmod.gate(ws, "fail")
-        self.assertIn("error", out)              # stays at pm, governed
-        self.assertEqual(loopmod.load(ws)["step"], "pm")
-        self.assertIsNotNone(tpl.worker_contract_for_stage(
-            ws, stage="pm", task="pm"))  # retry stays governed
-        loopmod.gate(ws, "pass")
-        self.assertIsNone(tpl.worker_contract_for_stage(
-            ws, stage="pm", task="pm"))   # advancing gate releases
 
 
 class TestBareRootRefusal(unittest.TestCase):

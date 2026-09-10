@@ -1,4 +1,5 @@
 from __future__ import annotations
+from taskplane import review
 
 import copy
 import json
@@ -279,10 +280,10 @@ def test_exact_execution_binding_rejects_every_identity_change(tmp_path):
         "slot_id": "deep.security", "lease_fingerprint": "lease-security",
         "producer": "lens-slot",
     }
-    binding = review_evidence.create_execution_binding(
+    binding = review.create_execution_binding(
         root, target=target, **expected)
 
-    assert review_evidence.verify_execution_binding(
+    assert review.verify_execution_binding(
         root, binding, target=target, **expected) is True
     mutations = [
         ("target", {**target, "head": "head-2"}),
@@ -299,7 +300,7 @@ def test_exact_execution_binding_rejects_every_identity_change(tmp_path):
             args[field] = value
         with pytest.raises(review_evidence.ProvenanceError,
                            match="execution binding"):
-            review_evidence.verify_execution_binding(
+            review.verify_execution_binding(
                 root, binding, target=actual_target, **args)
 
     for field in ("engine_fingerprint", "worktree_fingerprint"):
@@ -307,7 +308,7 @@ def test_exact_execution_binding_rejects_every_identity_change(tmp_path):
         mutated_binding[field] = "foreign-" + field
         with pytest.raises(review_evidence.ProvenanceError,
                            match="execution binding"):
-            review_evidence.verify_execution_binding(
+            review.verify_execution_binding(
                 root, mutated_binding, target=target, **expected)
 
     sibling = tmp_path.parent / (tmp_path.name + "-sibling")
@@ -315,7 +316,7 @@ def test_exact_execution_binding_rejects_every_identity_change(tmp_path):
     subprocess.run(["git", "init", "-q", str(sibling)], check=True)
     with pytest.raises(review_evidence.ProvenanceError,
                        match="execution binding"):
-        review_evidence.verify_execution_binding(
+        review.verify_execution_binding(
             str(sibling), binding, target=target, **expected)
 
 
@@ -435,7 +436,7 @@ def test_real_collector_consumes_repair_and_exact_execution_binding():
         store = review_evidence.ArtifactStore(fixture.ws)
         for slot in state["slots"]:
             lease = store.read(slot["lease"])
-            assert review_evidence.verify_execution_binding(
+            assert review.verify_execution_binding(
                 fixture.ws, lease["execution_binding"],
                 target=state["target"], run_id=state["run_id"],
                 lens_ids=lease["lens_ids"], slot_id=lease["slot_id"],

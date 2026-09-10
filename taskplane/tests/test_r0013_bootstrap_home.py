@@ -30,6 +30,9 @@ def _write_locator(checkout: Path, home: Path, run_id: str) -> None:
         identity, run_id=run_id, home=str(home))
     storage.write_workspace_locator(
         str(checkout), identity=identity, layout=layout, run_id=run_id)
+    from taskplane.run_store import RunStore
+    RunStore(home=str(home)).create(identity, run_id=run_id, checkout=str(checkout),
+        host={"kind": "simulated"}, target={"kind": "workspace"})
 
 
 def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_home(
@@ -92,7 +95,9 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
 
     receipts = {}
     for hook_path in ("native", "bridge"):
-        receipt_path = dedicated_home / "host-receipts" / f"{hook_path}.json"
+        receipt_path = Path(host_capabilities._receipt_path(str(dedicated_home), hook_path,
+            host_capabilities._fingerprint_text("fresh-codex-task"),
+            host_capabilities._fingerprint_text(os.path.normcase(os.path.realpath(checkout)))))
         assert receipt_path.is_file()
         receipts[hook_path] = receipt_path.read_bytes()
         receipt = json.loads(receipts[hook_path])
@@ -127,8 +132,9 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
         encoding="utf-8", errors="replace")
     assert rejected.returncode != 0
     assert {
-        hook_path: (dedicated_home / "host-receipts" /
-                    f"{hook_path}.json").read_bytes()
+        hook_path: Path(host_capabilities._receipt_path(str(dedicated_home), hook_path,
+            host_capabilities._fingerprint_text("fresh-codex-task"),
+            host_capabilities._fingerprint_text(os.path.normcase(os.path.realpath(checkout))))).read_bytes()
         for hook_path in ("native", "bridge")
     } == receipts
     assert not (default_user_home / ".taskplane" / "host-receipts").exists()
@@ -180,19 +186,15 @@ def test_native_session_bootstrap_uses_only_canonical_default_without_locator(
     monkeypatch.setenv("HOME", str(user_home))
     canonical = user_home / ".taskplane"
 
-    environment = {"HOME": str(user_home)}
-    assert storage.bind_hook_taskplane_home(
-        str(checkout), environment, hook_path="native") == str(canonical)
-    assert environment["TASKPLANE_HOME"] == str(canonical)
-
-    with pytest.raises(storage.StorageIdentityError,
-                       match="requires a governed workspace locator"):
-        storage.bind_hook_taskplane_home(
-            str(checkout), {"HOME": str(user_home)}, hook_path="bridge")
-    with pytest.raises(storage.StorageIdentityError,
-                       match="does not match"):
-        storage.bind_hook_taskplane_home(
-            str(checkout), {
-                "HOME": str(user_home),
-                "TASKPLANE_HOME": str(tmp_path / "unbound-custom-home"),
-            }, hook_path="native")
+    for hook_path in ("native", "bridge"):
+        environment = {"HOME": str(user_home)}
+        assert storage.bind_hook_taskplane_home(
+            str(checkout), environment, hook_path=hook_path) == str(canonical)
+        assert environment["TASKPLANE_HOME"] == str(canonical)
+        assert storage.load_workspace_locator(str(checkout)) is None
+        with pytest.raises(storage.StorageIdentityError, match="does not match"):
+            storage.bind_hook_taskplane_home(
+                str(checkout), {
+                    "HOME": str(user_home),
+                    "TASKPLANE_HOME": str(tmp_path / "unbound-custom-home"),
+                }, hook_path=hook_path)

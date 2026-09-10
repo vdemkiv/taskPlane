@@ -1,7 +1,7 @@
 
 # /tp-setup — make a repo governable
 
-`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
+Resolve `$TP` using the launcher rules in `../SKILL.md`; never use an empty plugin-root fallback.
 
 0. **Cold start.** `$TP onboard --json` reports readiness — a folder to work
    in, a git repo with a snapshot, and taskplane initialized. `$TP onboard`
@@ -10,7 +10,9 @@
    provide a local path/URL/PR and run `$TP repository prepare <target>`;
    ask and resume any returned user action in the same conversation),
    `init_git` (offer to init + commit),
-   `tp_init` (step 1), or `ready`. Don't proceed to a governed run until
+   `recover_run_binding` (repair only the declared locator),
+   `repair_phase_configuration` (use a validated build), `tp_init` (step 2),
+   a named host-readiness action, or `ready`. Don't proceed to a governed run until
    `ready` — the gates need a real folder and a commit to diff against.
 
    Repository preflight owns mirrors/worktrees under the external taskplane
@@ -41,16 +43,12 @@
    their answers) — the product doc feeds the product lens AND its Direction /
    north star line feeds the north-star review, tech-stack feeds engineering
    lenses, workflow sets gate conventions.
-4. **Model tiers (cost routing).** `$TP onboard --json` includes
-   `model_tiers` and `reasoning_tiers` — the resolved tier→model and native
-   Codex tier→effort maps. Explain the defaults to the
-   user: on Claude only `cheap` is pinned (`haiku`); on Codex it inherits so
-   no Claude model id is dispatched. `standard`/`deep` inherit until
-   `TASKPLANE_MODEL_STANDARD` / `TASKPLANE_MODEL_DEEP` are set. Offer to set
-   them now if they want cost-differentiated routing, and mention
-   `TASKPLANE_ENFORCE_DISPATCH=warn` + `tp loop verify-dispatch` for making
-   the routing verified rather than assumed (discipline/model-tiers.md).
-   Defaults are fine — skip if unsure.
+4. **Phase settings.** Read the phase settings and digest from `$TP onboard
+   --json`. The canonical operational settings file owns each phase's model,
+   reasoning, lens policy and limits, including Retro. Models inherit and
+   reasoning defaults to high. The single phase registry owns role and skill
+   links; mismatches block readiness. Existing runs consume their exact sealed
+   snapshot rather than today's defaults or environment.
 5. Register the first track: `$TP track new <name> "<goal>"`. More
    workstreams later: `track new` / `track switch` / `track close` — the
    KB, graph, and requirements are shared across tracks by design.

@@ -96,8 +96,8 @@ def test_advisory_requires_actor_and_is_attributable():
 
 
 @pytest.mark.parametrize(
-    ("age", "expected"), ((299.0, True), (300.0, True), (301.0, False)))
-def test_unknown_current_session_bounds_foreign_receipt(age, expected):
+    ("age", "expected"), ((299.0, False), (300.0, False), (301.0, False)))
+def test_unknown_current_session_never_adopts_foreign_receipt(age, expected):
     home = tempfile.mkdtemp(prefix="tp-enforcement-receipt-")
     hc.record_runtime_hook_receipt(
         home, hook_path="native", observed_at=100.0,
@@ -118,31 +118,3 @@ def test_known_session_requires_exact_session_bound_receipt():
 
     assert hc.runtime_hook_observations(
         home, session_id="known-session", now=101.0) == {}
-
-
-def test_run_store_atomically_records_one_canonical_decision():
-    workspace = _workspace()
-    home = tempfile.mkdtemp(prefix="tp-enforcement-store-")
-    identity = storage.resolve_repository_identity(workspace)
-    store = RunStore(home=home)
-    manifest = store.create(
-        identity, run_id="run-1", checkout=workspace,
-        host={"name": "claude"}, target={"kind": "workspace"})
-    decision = enforcement.enforcement_status(
-        workspace, snapshot=_snapshot(workspace), run_id="run-1",
-        revision="abc123", observed_at="2026-08-20T12:00:00Z")
-
-    recorded = store.record_enforcement_decision(
-        "run-1", expected_revision=manifest["revision"],
-        decision=decision)
-
-    assert recorded["enforcement"]["current"] == decision
-    assert recorded["enforcement"]["history"] == [decision]
-    assert json.loads(open(store._manifest_path("run-1"),
-                           encoding="utf-8").read())["enforcement"][
-                               "current"]["evidence_id"] == \
-        decision["evidence_id"]
-    with pytest.raises(RevisionConflict):
-        store.record_enforcement_decision(
-            "run-1", expected_revision=manifest["revision"],
-            decision=decision)

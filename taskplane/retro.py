@@ -8,7 +8,13 @@ reuse the KB decision and trace receipt instead of duplicating either one.
 
 from __future__ import annotations
 
+if __package__:
+    from .primitives import content_fingerprint
+else:
+    from primitives import content_fingerprint
+
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -40,10 +46,7 @@ _TERMINAL_OUTCOMES = frozenset({
 
 
 def _content_fingerprint(value: object) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"),
-        ensure_ascii=False, allow_nan=False).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return content_fingerprint(value)
 
 
 def performance_projection(state: dict) -> dict:
@@ -135,7 +138,10 @@ def _phase_telemetry(store, *, telemetry_inputs, telemetry_ref,
             sealed["run"] != evidence["run"] or \
             sealed["evaluator_summary"] != evidence["evaluator_summary"] or \
             evidence["source"]["ledger_fingerprint"] != delivery_ports.content_fingerprint(telemetry_inputs.ledger) or \
-            sealed["run"]["candidate_fingerprint"] != telemetry["candidate_fingerprint"]:
+            sealed["run"]["run_fingerprint"] != delivery_ports.content_fingerprint({
+                "run_id": telemetry_inputs.ledger["run_id"],
+                "candidate_fingerprint": sealed["run"]["candidate_fingerprint"],
+                "ledger_fingerprint": evidence["source"]["ledger_fingerprint"]}):
         raise ValueError("Retro terminal telemetry binding mismatch")
     projection = wave_metrics.consumer_projection(sealed, consumer="retro")
     if projection["signoff"]["ready"] is not True:
@@ -389,37 +395,29 @@ def _authoritative_execution_state(
             "native-dispatch-and-loop-trace")
 
 
-def _events_for_run(
-        ws: str, state: dict, *, active_only: bool = False) \
-        -> tuple[list, float | None]:
+def _events_for_run(ws: str, state: dict) -> tuple[list, float | None]:
+    """Read only this run's trace within its recorded lifetime."""
+    start = state.get("started_at")
+    end = state.get("completed_at") or time.time()
     events = []
-    paths = ([os.path.join(tp.tp_dir(ws), "trace.jsonl")]
-             if active_only else tp.trace_paths(ws))
-    for trace_path in paths:
-        try:
-            trace_file = open(trace_path, encoding="utf-8")
-        except FileNotFoundError:
-            continue
-        with trace_file as f:
-            for line in f:
-                if not line.strip():
-                    continue
+    path = os.path.join(tp.tp_dir(ws), "trace.jsonl")
+    try:
+        with open(path, encoding="utf-8") as trace:
+            for line in trace:
                 try:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(row, dict):
+                if not isinstance(row, dict) or not isinstance(row.get("ts"), (int, float)):
+                    continue
+                if start is None and row.get("event") == "loop_init" and row.get("goal") == state.get("goal"):
+                    start = row["ts"]
+                    events = []
+                if start is not None and start <= row["ts"] <= end and row.get("run_id", state.get("run_id")) == state.get("run_id"):
                     events.append(row)
-    starts = [row.get("ts") for row in events
-              if row.get("event") == "loop_init"
-              and row.get("goal") == state.get("goal")
-              and isinstance(row.get("ts"), (int, float))]
-    trace_from = max(starts) if starts else None
-    if trace_from is not None:
-        events = [row for row in events
-                  if isinstance(row.get("ts"), (int, float))
-                  and row.get("ts") >= trace_from]
-    return events, trace_from
+    except FileNotFoundError:
+        pass
+    return events, start
 
 
 def _findings(ws: str, normalize_severity) -> tuple[list, dict, dict]:
@@ -448,16 +446,10 @@ def _existing_decision(ws: str, retro_id: str) -> dict | None:
     return None
 
 
-def _trace_seen(ws: str, retro_id: str, *, include_archives: bool = True) \
-        -> bool:
-    if include_archives:
-        paths = tp.trace_paths(ws)
-    else:
-        # Stage-native Retro never mines predecessor trace history.  The
-        # active control-plane tail is sufficient to deduplicate and verify
-        # the receipt written by this resumable operation.
-        active = os.path.join(tp.tp_dir(ws), "trace.jsonl")
-        paths = [active] if os.path.exists(active) else []
+def _trace_seen(ws: str, retro_id: str) -> bool:
+    """Find this run's receipt in its active trace only."""
+    active = os.path.join(tp.tp_dir(ws), "trace.jsonl")
+    paths = [active] if os.path.exists(active) else []
     for path in paths:
         with contextlib.suppress(OSError):
             with open(path, encoding="utf-8") as f:
@@ -471,21 +463,10 @@ def _trace_seen(ws: str, retro_id: str, *, include_archives: bool = True) \
     return False
 
 
-def _bounded_stage_projection(ws: str) -> tuple[dict, dict] | None:
-    """Return the v4 report projection, or ``None`` for an exact v3 run.
-
-    ``bounded_stage_view`` owns discovery and validation.  In particular,
-    ambiguous and corrupt v4 state are data, not permission to fall back to
-    the singleton trace archive.  The defensive slices keep this report
-    bounded even if a future producer accidentally relaxes its own limit.
-    """
-    resolver = getattr(loop_status, "bounded_stage_view", None)
-    if not callable(resolver):
-        # Additive rollout compatibility: an older loop_status module means
-        # this process has no stage-native reader and remains legacy-only.
-        return None
+def _bounded_stage_projection(ws: str) -> tuple[dict, dict]:
+    """Read the selected v4 run; unavailable lineage never permits fallback."""
     try:
-        raw = resolver(ws, limit=_STAGE_VIEW_LIMIT)
+        raw = loop_status.bounded_stage_view(ws, limit=_STAGE_VIEW_LIMIT)
     except Exception as exc:
         raw = {
             "schema": "taskplane.bounded-stage-view/v1",
@@ -497,8 +478,6 @@ def _bounded_stage_projection(ws: str) -> tuple[dict, dict] | None:
                        "lineage": _STAGE_VIEW_LIMIT},
             "error": (f"{exc.__class__.__name__}: {exc}")[:512],
         }
-    if raw.get("status") == "legacy":
-        return None
 
     view = dict(raw)
     for key in ("predecessor_stages", "child_stage_ids", "history",
@@ -533,6 +512,15 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
              f"- hook denials: {report['hook_denials']}",
              f"- parallel waves: {report['parallel_waves']}",
              f"- findings: {report['findings']['total']}"]
+    timing = report.get("timing") or {}
+    outcomes = report.get("outcomes") or {}
+    lines.extend([
+        f"- elapsed seconds: {timing.get('elapsed_seconds', 'unavailable')}",
+        f"- delivered: {len(outcomes.get('delivered') or [])}; not delivered: {len(outcomes.get('not_delivered') or [])}",
+        f"- resolves: {report.get('resolves', 0)}; replans: {report.get('replans', 0)}; render failures: {report.get('render_failures', 0)}",
+    ])
+    if report.get("harness_failures"):
+        lines[0] += " — evaluation unsupported or unavailable"
     performance = report.get("execution_metrics") or {}
     chain = performance.get("longest_serial_chain") or {}
     lines.extend([
@@ -548,6 +536,10 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
         wave_signoff = wave.get("signoff") or {}
         token_usage = wave.get("token_usage") or {}
         token_status = str(token_usage.get("status") or "unavailable")
+        coverage = token_usage.get("coverage") or {}
+        if coverage.get("status") == "partial":
+            lines[0] += (f" — partial usage ({coverage.get('observed_attempts', 0)}/"
+                         f"{coverage.get('expected_attempts', 0)} attempts measured)")
         lines.extend([
             "", "## Sealed wave metrics", "",
             f"- receipt: {wave.get('receipt_fingerprint')}",
@@ -557,6 +549,12 @@ def _write_report(ws: str, state: dict, report: dict, routing: list) -> None:
             "- source digests: " + json.dumps(
                 wave.get("source_digests") or {}, sort_keys=True),
             f"- token usage status: {token_status}",
+            "- measured attempt coverage: " + (
+                f"{coverage['percent']}%" if coverage.get("percent") is not None
+                else "unavailable"),
+            "- root share of measured tokens: " + (
+                f"{coverage['root_share_percent']}%"
+                if coverage.get("root_share_percent") is not None else "unavailable"),
             "- observed total tokens: " + (
                 str(token_usage.get("total_tokens"))
                 if token_usage.get("total_tokens") is not None else
@@ -648,7 +646,12 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
     resumes under the same id and deduplicates every observable artifact.
     """
     with tp.file_lock(loop_path + ".retro"):
-        state = load_state(ws)
+        try:
+            state = load_state(ws)
+        except (RuntimeError, OSError, ValueError) as exc:
+            return {"error": "retro run state refused; no report was written",
+                    "detail": f"{exc.__class__.__name__}: {exc}", "step": "retro",
+                    "stage_projection": {"status": "corrupt", "available": False}}
         if state is None:
             return {"error": "no active loop"}
         sealed = state.get("retro") or {}
@@ -679,37 +682,30 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                 }
             state = load_state(ws)
 
-        stage_projection = _bounded_stage_projection(ws)
-        stage_native = stage_projection is not None
-        if stage_native:
-            stage_view, stage_metrics = stage_projection
-            stage_status = stage_metrics["status"]
-            if (not stage_metrics["available"]
-                    or stage_status in {"corrupt", "ambiguous"}):
-                detail = str(
-                    stage_view.get("error")
-                    or "bounded stage lineage is unavailable"
-                )[:512]
-                return {
-                    "error": ("retro requires an available bounded stage "
-                              "projection — loop remains open"),
-                    "detail": detail,
-                    "stage_projection": {
-                        "schema": "taskplane.retro-stage-projection-error/v1",
-                        "status": stage_status,
-                        "available": False,
-                        "run_id": stage_view.get("run_id"),
-                        "revision": stage_view.get("revision"),
-                        "error": detail,
-                    },
-                    "step": "retro",
-                    "retro_id": retro_id,
-                }
-            events, trace_from = _events_for_run(
-                ws, state, active_only=True)
-        else:
-            stage_view, stage_metrics = None, None
-            events, trace_from = _events_for_run(ws, state)
+        stage_view, stage_metrics = _bounded_stage_projection(ws)
+        stage_status = stage_metrics["status"]
+        if (not stage_metrics["available"]
+                or stage_status in {"corrupt", "ambiguous"}):
+            detail = str(
+                stage_view.get("error")
+                or "bounded stage lineage is unavailable"
+            )[:512]
+            return {
+                "error": ("retro requires an available bounded stage "
+                          "projection — loop remains open"),
+                "detail": detail,
+                "stage_projection": {
+                    "schema": "taskplane.retro-stage-projection-error/v1",
+                    "status": stage_status,
+                    "available": False,
+                    "run_id": stage_view.get("run_id"),
+                    "revision": stage_view.get("revision"),
+                    "error": detail,
+                },
+                "step": "retro",
+                "retro_id": retro_id,
+            }
+        events, trace_from = _events_for_run(ws, state)
         denies = [row for row in events if row.get("event") == "hook_deny"]
         gates = [row for row in events
                  if row.get("event") == "refinement_gate"]
@@ -794,10 +790,10 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                 f"{severity_counts['high']} high finding(s) reached final "
                 "review — use their lens ownership to move detection earlier.")
         metrics_projection = sealed_wave_metrics_projection(state)
-        if metrics_projection.get("token_usage", {}).get("status") != \
-                "available":
+        usage_status = metrics_projection.get("token_usage", {}).get("status")
+        if usage_status != "available":
             lessons.append(
-                "terminal token usage is unavailable — the run cannot claim "
+                f"terminal token usage is {usage_status or 'unavailable'} — the run cannot claim "
                 "complete measurement or a clean telemetry outcome.")
         if not lessons:
             lessons.append("clean run — no scope friction, forecasts held.")
@@ -848,6 +844,7 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             "execution_metrics": execution_metrics,
             "execution_metric_source": execution_metric_source,
             "evaluator_summary": evaluator_summary(tasks),
+            **delivery_summary(ws, state, events),
         }
         if state.get("root_hygiene_receipt") is not None:
             try:
@@ -859,14 +856,13 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                         "step": "retro", "retro_id": retro_id}
         if metrics_projection is not None:
             report["wave_metrics"] = metrics_projection
-        if stage_native:
-            report["stage_view"] = stage_view
-            report["stage_metrics"] = stage_metrics
-            report["trace_scope"] = {
-                "source": "active-run-trace",
-                "from_ts": trace_from,
-                "events": len(events),
-            }
+        report["stage_view"] = stage_view
+        report["stage_metrics"] = stage_metrics
+        report["trace_scope"] = {
+            "source": "active-run-trace",
+            "from_ts": trace_from,
+            "events": len(events),
+        }
         scope = sorted({glob for task in tasks for glob in task.get("scope", [])})
         decision = _existing_decision(ws, retro_id)
         if decision is None:
@@ -881,12 +877,12 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
                        "graph": graph_true_up["content_fingerprint"]})
         report["decision_id"] = decision.get("id")
 
-        if not _trace_seen(ws, retro_id, include_archives=not stage_native):
+        if not _trace_seen(ws, retro_id):
             tp.trace(ws, "loop_retro", retro_id=retro_id,
                      lessons=len(lessons), denials=len(denies),
                      routes=len(routing), findings=len(finding_rows),
                      graph_fingerprint=graph_true_up["content_fingerprint"])
-        if not _trace_seen(ws, retro_id, include_archives=not stage_native):
+        if not _trace_seen(ws, retro_id):
             return {"error": "retro trace receipt was not recorded — loop "
                     "remains open", "step": "retro", "retro_id": retro_id}
 
@@ -911,3 +907,49 @@ def run(ws: str, *, load_state, mutate_state, loop_path: str,
             }
             locked["step"] = "failed" if prior_step == "failed" else "done"
         return report
+
+
+def delivery_summary(ws: str, state: dict, events: list) -> dict:
+    """Summarize current run outcomes and real stage timestamps, never zeros."""
+    from taskplane.run_store import RunStore
+    from taskplane import phase_records
+    locator = runtime_storage.load_workspace_locator(ws)
+    stages = []
+    observed_times = {}
+    if locator:
+        store = RunStore(home=locator["home"])
+        manifest = store.inspect(locator["run_id"])
+        for record in phase_records.phase_records(manifest).values():
+            timing = record["result"].get("timing") if record["operation"] == "phase_collect" else None
+            if isinstance(timing, dict):
+                previous = observed_times.get(timing["stage_id"])
+                if previous is None or previous["completed_at"] < timing["completed_at"]:
+                    observed_times[timing["stage_id"]] = timing
+        for stage_id, head in manifest.get("stage_heads", {}).items():
+            stage = store.read_stage_object(locator["run_id"], head["object"])
+            started = stage.get("created_at")
+            completed = (stage.get("terminal") or {}).get("terminalized_at")
+            if stage_id in observed_times:
+                observed = observed_times[stage_id]
+                started = datetime.fromtimestamp(observed["started_at"], timezone.utc).isoformat()
+                completed = datetime.fromtimestamp(observed["completed_at"], timezone.utc).isoformat()
+            duration = None
+            if started and completed:
+                duration = max(0, (datetime.fromisoformat(completed.replace("Z", "+00:00")) -
+                                   datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds())
+            stages.append({"stage_id": stage_id, "phase": stage["stage_kind"],
+                "started_at": started, "completed_at": completed, "duration_seconds": duration})
+    tasks = state.get("tasks") or []
+    start = state.get("started_at")
+    end = state.get("completed_at") or max((row["completed_at"] for row in observed_times.values()), default=time.time())
+    counts = {name: sum(row.get("event") == name for row in events)
+              for name in ("loop_resolve", "loop_replan", "render_failed", "preview_failed")}
+    return {"timing": {"started_at": start, "completed_at": end,
+                "elapsed_seconds": max(0, end - start) if isinstance(start, (int, float)) else None,
+                "stages": stages},
+            "outcomes": {"delivered": [task["id"] for task in tasks if task.get("status") == "passed"],
+                "not_delivered": [task["id"] for task in tasks if task.get("status") != "passed"]},
+            "harness_failures": [task["id"] for task in tasks if (task.get("evaluation") or {}).get("status")
+                in {"unavailable", "unsupported", "deferred"}],
+            "resolves": counts["loop_resolve"], "replans": counts["loop_replan"],
+            "render_failures": counts["render_failed"] + counts["preview_failed"]}

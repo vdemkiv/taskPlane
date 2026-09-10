@@ -9,6 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import review
 import review_evidence as evidence  # noqa: E402
 import dashboard  # noqa: E402
 import views  # noqa: E402
@@ -27,9 +28,11 @@ class ProvenanceCase(unittest.TestCase):
             change={"type": "code"})
 
     def lease(self, slot, lens, revision=None):
+        revision = revision or evidence.next_revision(self.store)
         view = evidence.create_scoped_view(
-            self.store, self.envelope, slot_id=slot, lens_ids=[lens])
-        return evidence.create_slot_lease(
+            self.store, self.envelope, slot_id=slot, lens_ids=[lens],
+            canonical_revision=revision, routing_fingerprint="route-fixture", producer="lens-slot")
+        return review._create_verified_v3_lease(
             self.store, self.envelope, view, slot_id=slot,
             lens_ids=[lens], canonical_revision=revision)
 
@@ -98,11 +101,12 @@ class TestSlotAuthorship(ProvenanceCase):
             change={"type": "code"})
         foreign_view = evidence.create_scoped_view(
             self.store, other, slot_id="deep.architecture",
-            lens_ids=["architecture"])
+            lens_ids=["architecture"], canonical_revision=1,
+            routing_fingerprint="route-fixture", producer="lens-slot")
         with self.assertRaisesRegex(evidence.ProvenanceError, "envelope"):
-            evidence.create_slot_lease(
+            review._create_verified_v3_lease(
                 self.store, self.envelope, foreign_view,
-                slot_id="deep.architecture", lens_ids=["architecture"])
+                slot_id="deep.architecture", lens_ids=["architecture"], canonical_revision=1)
 
 
 class TestCanonicalRevision(ProvenanceCase):

@@ -22,12 +22,7 @@ from taskplane import (
     wave_metrics,
 )
 from taskplane import taskplane_lite as tp
-from taskplane.tests.test_r0002_cross_host_journey import (
-    _artifact_store,
-    _plan,
-    _repository,
-    _worker,
-)
+
 
 
 OUTCOMES = (
@@ -368,9 +363,9 @@ def test_root_hygiene_retention_is_bounded_private_and_independent_of_cleanup(
     }
     root_receipt = wave_metrics.finalize_root_hygiene_canary(
         root_input, candidate_sha="a" * 40, worker_tokens=300_000)
-    retained = run_artifacts.publish_root_hygiene(
+    retained = wave_metrics.publish_root_hygiene(
         artifact_root, root_receipt)
-    assert run_artifacts.publish_root_hygiene(
+    assert wave_metrics.publish_root_hygiene(
         artifact_root, root_receipt) == retained
     before_activity = run_artifacts.load_manifest(artifact_root)["classes"][
         "agent-activity"]["entries"]
@@ -378,7 +373,7 @@ def test_root_hygiene_retention_is_bounded_private_and_independent_of_cleanup(
     assert retained["bytes"] < 16 * 1024
     assert "session_id" not in json.dumps(root_receipt)
     for worker_tokens in range(300_001, 300_008):
-        run_artifacts.publish_root_hygiene(
+        wave_metrics.publish_root_hygiene(
             artifact_root, wave_metrics.finalize_root_hygiene_canary(
                 root_input, candidate_sha="a" * 40,
                 worker_tokens=worker_tokens))
@@ -414,12 +409,12 @@ def test_root_hygiene_retention_refuses_ninth_owned_row(
         },
     }
     for worker_tokens in range(300_000, 300_008):
-        run_artifacts.publish_root_hygiene(
+        wave_metrics.publish_root_hygiene(
             artifact_root, wave_metrics.finalize_root_hygiene_canary(
                 root_input, candidate_sha="a" * 40,
                 worker_tokens=worker_tokens))
     with pytest.raises(run_artifacts.RunArtifactError, match="row bound"):
-        run_artifacts.publish_root_hygiene(
+        wave_metrics.publish_root_hygiene(
             artifact_root, wave_metrics.finalize_root_hygiene_canary(
                 root_input, candidate_sha="a" * 40,
                 worker_tokens=400_000))
@@ -452,19 +447,19 @@ def test_root_hygiene_retention_refuses_every_independent_boundary(
 
     monkeypatch.setattr(run_artifacts, "_MAX_ROOT_HYGIENE_ENTRY_BYTES", 1)
     with pytest.raises(run_artifacts.RunArtifactError, match="byte bound"):
-        run_artifacts.publish_root_hygiene(
+        wave_metrics.publish_root_hygiene(
             artifact_root("row-bound"), receipt())
     monkeypatch.setattr(
         run_artifacts, "_MAX_ROOT_HYGIENE_ENTRY_BYTES", 16 * 1024)
 
     with pytest.raises(
             run_artifacts.RunArtifactError, match="another candidate"):
-        run_artifacts.publish_root_hygiene(
+        wave_metrics.publish_root_hygiene(
             artifact_root("candidate-binding"), receipt("e" * 40))
 
     monkeypatch.setattr(run_artifacts, "_MAX_ROOT_HYGIENE_BYTES", 1)
     with pytest.raises(run_artifacts.RunArtifactError, match="group byte bound"):
-        run_artifacts.publish_root_hygiene(
+        wave_metrics.publish_root_hygiene(
             artifact_root("group-bound"), receipt())
     monkeypatch.setattr(
         run_artifacts, "_MAX_ROOT_HYGIENE_BYTES", 256 * 1024)
@@ -489,7 +484,7 @@ def test_root_hygiene_retention_refuses_every_independent_boundary(
         })
 
     tampered_root = artifact_root("tampered")
-    retained = run_artifacts.publish_root_hygiene(
+    retained = wave_metrics.publish_root_hygiene(
         tampered_root, receipt())
     (tampered_root / retained["locator"]).write_text(
         "{}", encoding="utf-8")
@@ -497,164 +492,7 @@ def test_root_hygiene_retention_refuses_every_independent_boundary(
         run_artifacts.verify_manifest(tampered_root)
 
 
-def test_activity_log_is_bound_append_only_and_complete_for_every_worker_outcome(
-    tmp_path: Path,
-) -> None:
-    workspace = _repository(tmp_path, "activity-repository")
-    run_id = "run-activity"
-    workers = [
-        _worker(
-            outcome,
-            run_id=run_id,
-            stage_id="design-stage-r0002",
-            candidate=CANDIDATE,
-            settings=SETTINGS,
-        )
-        for outcome, _raw, _event in WORKER_OUTCOMES
-    ]
-    plan = _plan(
-        workers,
-        run_id=run_id,
-        stage_id="design-stage-r0002",
-        candidate=CANDIDATE,
-        settings=SETTINGS,
-    )
-    artifact_root, binding = _artifact_store(workspace, plan)
-    validation = run_artifacts.publish_artifact(
-        artifact_root,
-        "validation",
-        {"schema": "taskplane.public-validation/v1", "status": "passed"},
-    )
-    authority = tp.register_design_lens_dispatch_plan(
-        str(workspace),
-        plan,
-        artifact_root=str(artifact_root),
-        artifact_binding=binding,
-        now=10,
-    )
 
-    expected_by_lens: dict[str, list[str]] = {}
-    for index, (expected_outcome, raw_outcome, semantic_event) in enumerate(
-        WORKER_OUTCOMES,
-        start=1,
-    ):
-        worker = workers[index - 1]
-        expectation = tp.peek_expectation(
-            str(workspace), worker["task_name"], strict=True
-        )
-        assert expectation is not None
-        tp.record_design_dispatch_assignment_activity(
-            str(workspace), expectation
-        )
-        assert tp.commit_dispatch_verification(
-            str(workspace),
-            worker["task_name"],
-            worker["model"],
-            expectation,
-            True,
-            worker["reasoning_effort"],
-            strict=True,
-        )
-
-        contract = tp.build_contract(
-            f"DESIGN LENS: {worker['lens']}",
-            read_only=True,
-            write_allow=[worker["output"]],
-            tools=["Read", "Write"],
-        )
-        contract["task_id"] = worker["task_slot"]
-        contract = tp.prepare_worker_contract(
-            str(workspace),
-            contract,
-            stage="design-lens",
-            task=worker["lens"],
-            task_name=worker["task_name"],
-            role_marker=worker["role_marker"],
-            now=20 + index,
-        )
-        contract = tp.attach_design_lens_host_authority(
-            contract,
-            authority["workers"][worker["lens"]],
-            artifact_root=str(artifact_root),
-            artifact_binding=binding,
-        )
-        tp.activate(
-            str(workspace),
-            contract,
-            snapshot=tp.git_head(str(workspace)),
-            task_slot_override=worker["task_slot"],
-        )
-        event = {
-            "cwd": str(workspace),
-            "session_id": "session-r0002",
-            "agent_id": f"agent-{index}",
-            "agent_type": worker["task_name"],
-            "task_name": worker["task_name"],
-            "turn_id": f"turn-{index}",
-        }
-        bound = tp.bind_worker_contract_event(
-            str(workspace), event, now=30 + index
-        )
-        tp.record_design_worker_start_activity(
-            str(workspace), bound, event, now=30 + index
-        )
-        tp.record_design_worker_activity(
-            str(workspace),
-            {**event, "message": "current candidate needs attention"},
-            event_type="attention",
-        )
-        tp.terminalize_worker_contract(
-            str(workspace),
-            {
-                **event,
-                "outcome": raw_outcome,
-                "usage_reference": {
-                    "status": "measured",
-                    "total_tokens": index * 10,
-                },
-                "evidence_references": [validation],
-            },
-            outcome=raw_outcome,
-            submission_status=("valid" if expected_outcome == "success"
-                               else "not-required"),
-            now=40 + index,
-        )
-        expected = [
-            "assignment",
-            "worker-identity",
-            "start",
-            "progress",
-            "attention",
-        ]
-        if semantic_event is not None:
-            expected.append(semantic_event)
-        expected.extend(["usage-reference", "evidence-reference", "terminal"])
-        expected_by_lens[worker["lens"]] = expected
-
-    manifest = run_artifacts.load_manifest(artifact_root)
-    entries = manifest["classes"]["agent-activity"]["entries"]
-    observed_by_lens = {
-        lens: [entry["metadata"]["event_type"] for entry in entries
-               if entry["metadata"]["lens"] == lens]
-        for lens in expected_by_lens
-    }
-    assert observed_by_lens == expected_by_lens
-    assert [entry["sequence"] for entry in entries] == list(
-        range(1, len(entries) + 1)
-    )
-    assert all(entry["binding"] == binding for entry in entries)
-    terminals = [entry["metadata"] for entry in entries
-                 if entry["metadata"]["event_type"] == "terminal"]
-    assert [row["details"]["outcome"] for row in terminals] == [
-        outcome for outcome, _raw, _event in WORKER_OUTCOMES
-    ]
-    assert all(row["usage_reference"] is not None for row in terminals)
-    assert all(row["evidence_references"] == [validation]
-               for row in terminals)
-    verification = run_artifacts.verify_manifest(
-        artifact_root, expected_binding=binding
-    )
-    assert verification["class_counts"]["agent-activity"] == len(entries)
 
 
 @pytest.mark.parametrize(
