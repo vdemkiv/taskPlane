@@ -31,6 +31,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "taskplane"))
 
 import obligations                                            # noqa: E402
+import taskplane_lite as tp                                    # noqa: E402
 from taskplane.authority import DECISION_SCHEMA               # noqa: E402
 from taskplane.settings import SettingsError                  # noqa: E402
 TP = os.path.join(ROOT, "taskplane", "tp.py")
@@ -277,10 +278,15 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
 
 class TheStopHookReportsWhatWasNeverShown(_Ws):
 
-    def run_verify(self):
+    def setUp(self):
+        super().setUp()
+        self.contract = tp.build_contract("review", read_only=True)
+        tp.activate(self.ws, self.contract, snapshot=None)
+
+    def run_verify(self, event=None):
         return subprocess.run(
             [sys.executable, TP, "session-verify", "--workspace", self.ws],
-            input="{}", capture_output=True, text=True, encoding="utf-8",
+            input=json.dumps(event or {}), capture_output=True, text=True, encoding="utf-8",
             errors="replace", env=dict(os.environ))
 
     def test_it_is_silent_and_zero_when_nothing_is_owed(self):
@@ -299,6 +305,32 @@ class TheStopHookReportsWhatWasNeverShown(_Ws):
         oid = self.owe()
         obligations.acknowledge(self.ws, oid, evidence="shown")
         self.assertEqual(self.run_verify().returncode, 0)
+
+    def test_stop_reentry_does_not_retry_or_approve_completion(self):
+        oid = self.owe()
+        self.assertEqual(self.run_verify().returncode, 2)
+        self.assertEqual(self.run_verify({"stop_hook_active": True}).returncode, 0)
+        self.assertEqual(self.run_verify().returncode, 0)
+        self.assertEqual([row["id"] for row in obligations.blocking(self.ws)], [oid])
+        self.assertIsNotNone(obligations.blocked_reason(self.ws, "tp dod"))
+
+    def test_cleared_or_different_contract_does_not_reanimate_old_demands(self):
+        obligations.issue(self.ws, "render_dashboard", detail="old review",
+                          session="old-task", binding=True)
+        self.assertEqual(self.run_verify().returncode, 0)
+        self.owe()
+        tp.clear(self.ws)
+        self.assertEqual(self.run_verify().returncode, 0)
+        self.assertTrue(obligations.blocking(self.ws))  # history preserved
+
+    def test_unwritable_reminder_state_cannot_create_a_retry_loop(self):
+        self.owe()
+        # A directory at the marker path prevents writing on every platform.
+        os.mkdir(os.path.join(tp.tp_dir(self.ws), "session_verify_stall.json"))
+        result = self.run_verify()
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("retries stopped", result.stderr)
+        self.assertIsNotNone(obligations.blocked_reason(self.ws, "tp dod"))
 
 
 class TheHooksAreWired(unittest.TestCase):

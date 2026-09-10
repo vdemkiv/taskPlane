@@ -766,10 +766,13 @@ def onboarding_projection(snapshot: HostCapabilitySnapshot) -> dict[str, Any]:
             row.status == "supported" for row in loaded):
         action = "check_hook_identity"
         reason = ("hooks loaded, but no valid host event claim is recorded; "
-                  "check hook execution and rerun onboarding in this task")
+                  "review and enable hooks in host settings, then rerun "
+                  "onboarding in this task")
     elif path == "transitioning":
         action = "start_new_session"
-        reason = "hooks are configured but have not executed in this session"
+        reason = ("hooks are configured but have not executed in this session; "
+                  "review and enable them in host settings before retrying "
+                  "or starting a new session for initial loading")
     elif path == "blocked":
         action = "install_or_enable_hooks"
         reason = "no policy-permitted loaded hook path is proved"

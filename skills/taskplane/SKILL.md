@@ -97,8 +97,12 @@ or ask them to open a new Codex task merely because checkout, authentication,
 or storage authorization needs recovery. The same host session continues after
 the approved action.
 On Codex, if `next_action` is `install_codex_hooks`, run
-`$TP onboard --install-codex-hooks --json` within the repository. Ask the user
-to start a new Codex task only for the host's one-time initial hook load; an
+`$TP onboard --install-codex-hooks --json` within the repository. If hooks
+have not executed, first direct the user to review, trust, and enable TaskPlane
+hooks in Codex settings. Installation is not trust approval; changed hooks can
+require review again, and an earlier receipt does not prove they remain enabled.
+Ask the user to start a new Codex task only if the host still needs its initial
+hook load; an
 existing loaded hook and stable launcher govern managed checkouts and follow
 later plugin versions without a restart.
 For an existing run, first use `$TP loop resume` to read its durable goal,

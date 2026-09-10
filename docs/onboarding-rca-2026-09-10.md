@@ -75,3 +75,41 @@ marketplace package has been updated or that the paused engineering review ran.
 The repair adds no state migration, cache purge, alternate guard, or automatic
 restart loop. A real-host installation check remains necessary after publishing
 the corrected package.
+
+## Hook trust, stale review, and repeated Stop incident
+
+Codex showed nine TaskPlane hooks requiring trust review with their switches
+off. Installing the plugin did not authorize those hooks. Once enabled, the
+retained read-only contract `task_1281e8b0` correctly refused shell work, but
+it belonged to the earlier, unfinished EM review rather than this authorized
+repair. The existing human-approved `clear` command released that exact root
+contract; the review history remains unapproved. No other checkout was scanned
+or cleared.
+
+The dashboard had already been delivered, but `ack` printed success while its
+write failed. Reproduction against this repository's external project store
+confirmed `Operation not permitted` creating the ledger lock directory: hooks
+could write outside the host sandbox while the agent command could not. The
+shared best-effort telemetry writer swallowed that failure. Explicit ack and
+file-delivery writes now require persistence and report the exact failing store.
+A missing delivered file can no longer fall back to the expected fingerprint
+and fabricate a zero-byte render. Relative delivery paths resolve against the
+selected workspace. After authorizing the exact ledger write through the host,
+a fresh status read confirmed one acknowledgment and zero binding obligations.
+
+The Stop hook previously returned a blocking response on every invocation,
+even when its stall detector knew no progress was possible. Artifact reminders
+now respect Stop re-entry and stop retrying an unchanged obligation set,
+including when reminder state cannot be saved. They ignore cleared contracts
+and demands explicitly assigned to another task. Submission and completion
+evidence gates are unchanged; ending a reminder does not approve a review.
+
+Onboarding now directs the user to review, trust, and enable hooks before
+suggesting initial session reload. Past execution receipts do not prove the
+current trust or toggle state. This patch does not toggle host trust settings
+or manufacture a native hook receipt. Hooks remain disabled during the repair.
+
+CI also found that the facade scenario still recorded the previous flow
+fingerprint after onboarding was inserted. The scenario retains its existing
+human-gate and delivery expectations and now fingerprints the current source
+through the canonical extractor; no functional CI gate was relaxed.

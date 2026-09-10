@@ -135,10 +135,20 @@ this capability. Records remain isolated by host session and, for repository
 hooks, by checkout.
 
 The dashboard and plain-text headline use the same setup actions. A missing or
-unrecognized action stays incomplete. A new session is suggested only when hooks
-are configured but no load has been observed; loaded hooks without claim evidence
-require checking the connection in the current task. Neither case shows a Start
-action or claims that setup is complete.
+unrecognized action stays incomplete. When execution is missing, review, trust,
+and enable TaskPlane hooks in Codex settings before retrying onboarding. Newly
+installed or changed hooks can require another trust review. A receipt records
+past execution, not the current position of Codex's hook toggles. Only if trusted,
+enabled hooks still need initial loading should a new task be suggested.
+Neither a missing load nor a missing event claim shows a Start action.
+
+If a human ends an obsolete review, `tp clear --approved-by <human> --workspace
+<checkout>` releases its contract without approving that review. This recovery
+command remains reachable through the hook. Artifact acknowledgments report
+storage failures with the exact ledger path; authorize that store through the
+host and retry, then check `tp ack --status`. Stop reminders do not retry an
+unchanged obligation indefinitely. Submission and completion evidence gates
+remain enforced, and clearing a contract preserves the review's history.
 
 ## Host setup at a glance
 

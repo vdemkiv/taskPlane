@@ -184,7 +184,7 @@ class RenderByReference(_WS):
             f.write("<html>engine bytes</html>")
         oid = obligations.issue(self.ws, "render_dashboard", detail="d",
                                 step="review", artifact=".em-review/findings.html")
-        rc, out, _ = _run("ack", oid, "--delivered", art,
+        rc, out, _ = _run("ack", oid, "--delivered", ".em-review/findings.html",
                           "--workspace", self.ws)
         self.assertEqual(rc, 0)
         st = obligations.status(self.ws)
@@ -192,6 +192,41 @@ class RenderByReference(_WS):
         self.assertGreaterEqual(st["observed"], 1)
         self.assertTrue([o for o in st["corroborated"] if o["id"] == oid],
                         "a delivered file must corroborate, not merely claim")
+        observation = next(row for row in obligations.read(self.ws)
+                           if row.get("tool") == "delivered_file")
+        self.assertEqual(observation["bytes"], os.path.getsize(art))
+
+    def test_missing_delivered_file_does_not_record_a_render_or_ack(self):
+        import obligations
+        self._write("graph.html", "<html>engine bytes</html>")
+        oid = obligations.issue(self.ws, "render_graph", detail="graph",
+                                artifact="graph.html", binding=True)
+        rc, out, err = _run("ack", oid, "--delivered", "missing.html",
+                            "--workspace", self.ws)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("acknowledged", out)
+        self.assertIn("missing.html", err)
+        self.assertEqual(obligations.status(self.ws)["observed"], 0)
+        self.assertTrue(obligations.blocking(self.ws))
+
+    def test_ack_storage_failure_is_reported_and_retry_persists(self):
+        import obligations
+        oid = obligations.issue(self.ws, "render_graph", detail="graph",
+                                binding=True)
+        ledger = obligations.ledger_path(self.ws)
+        for error in (PermissionError("denied"), tp.StateError(ledger, "lock unavailable")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                    obligations._shared_primitives, "file_lock", side_effect=error):
+                rc, out, err = _run("ack", oid, "--workspace", self.ws)
+            self.assertEqual(rc, 1)
+            self.assertNotIn("acknowledged", out)
+            self.assertIn("was not saved", err)
+            self.assertIn(ledger, err)
+            self.assertTrue(obligations.blocking(self.ws))
+        rc, out, err = _run("ack", oid, "--workspace", self.ws)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("acknowledged", out)
+        self.assertFalse(obligations.blocking(self.ws))
 
     def test_an_obligation_fingerprints_the_artifact_in_ITS_workspace(self):
         """Found by the test above. `issue()` hashed a relative artifact

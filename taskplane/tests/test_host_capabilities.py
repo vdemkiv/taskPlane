@@ -275,7 +275,7 @@ class TestOnboardingProjection:
         assert "revalidates authority and live enforcement before dispatch" \
             in continued["effective_path"]["reason"]
 
-    def test_fresh_install_still_requires_new_session_for_live_enforcement(
+    def test_fresh_install_prompts_hook_trust_before_initial_session_reload(
             self):
         ws = _repo()
         _bridge(ws)
@@ -290,6 +290,7 @@ class TestOnboardingProjection:
 
         assert unchanged["ready"] is False
         assert unchanged["next_action"] == "start_new_session"
+        assert "review and enable" in unchanged["effective_path"]["reason"]
 
     def test_loaded_native_hook_governs_a_different_managed_checkout(self):
         checkout = _repo()

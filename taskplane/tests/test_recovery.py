@@ -18,6 +18,7 @@ These tests pin every path — including that the wall itself still stands.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -96,6 +97,20 @@ class TestTheWallHolds(unittest.TestCase):
                    f"--workspace {ws}")
         self.assertIsNone(_screen(ws, "Bash", {"command": command})[
             "decision"])
+
+    def test_human_can_end_a_read_only_review_without_disabling_hooks(self):
+        ws, _ = _governed_ws()
+        self.addCleanup(shutil.rmtree, ws, True)
+        contract = tpl.build_contract("obsolete review", read_only=True)
+        tpl.activate(ws, contract, snapshot=None)
+        self.assertEqual(_screen(ws, "Bash", {"command": "git status"})[
+            "decision"], "block")
+        command = f"python3 {TP} clear --approved-by user --workspace {ws}"
+        self.assertIsNone(_screen(ws, "Bash", {"command": command})["decision"])
+        result = subprocess.run([sys.executable, TP, "clear", "--approved-by", "user",
+                                 "--workspace", ws], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(tpl.load_active(ws))
 
     def test_within_budget_agent_can_release_normally(self):
         """A within-budget Codex action continues with no approval payload."""
