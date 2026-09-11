@@ -2959,6 +2959,72 @@ def _strict_review_graph_quality(
     return quality, reference, bounded_expander
 
 
+def _delivery_diff_patch(ws: str, diff_ws: str, *, base: str, files: list,
+                         scope: list, review) -> tuple[str, dict | None]:
+    """Retry one measured capture under the existing human run-only policy."""
+    state = load(ws)
+    policy = None
+    if run_context.selected(state):
+        run_id = str(state["run_id"])
+        policy = phase_harness.resource_policy(_stage_store(ws, run_id).load(run_id), run_id)
+        if policy is not None and policy["actor"] != state["_stage_native_root_authority"].get("actor"):
+            raise review.ReviewKernelError("diff resource policy actor differs from run authority")
+
+    def identity():
+        current = load(ws)
+        if (not current or current.get("run_id") != state["run_id"]
+                or current.get("_stage_native_root_authority") != state["_stage_native_root_authority"]):
+            raise review.ReviewKernelError("diff capture run or authority changed")
+        current_policy = phase_harness.resource_policy(
+            _stage_store(ws, str(current["run_id"])).load(str(current["run_id"])),
+            str(current["run_id"]))
+        resolved = tp._run(["git", "rev-parse", "--verify", base + "^{commit}"], cwd=diff_ws)
+        if resolved.returncode or not resolved.stdout.strip():
+            raise review.ReviewKernelError("diff comparison base cannot be resolved")
+        return {"run_id": current["run_id"],
+            "authority": current.get("_stage_native_root_authority"),
+            "policy": current_policy, "base": resolved.stdout.strip(),
+            "head": tp.git_head(diff_ws), "scope": list(scope), "files": list(files),
+            "source_fingerprint": tp.workspace_fingerprint(diff_ws, base)}
+
+    pinned = identity() if policy is not None else None
+    limit = review.DEFAULT_MAX_DIFF_BYTES
+    rc, patch = review.canonical_diff_patch(diff_ws, base, paths=files, max_bytes=limit)
+    capacity = None
+    if rc == review.CANONICAL_DIFF_TOO_LARGE and pinned is not None:
+        if identity() != pinned or pinned["policy"] != policy:
+            raise review.ReviewKernelError("diff capture source, scope or policy changed")
+        try:
+            measured = json.loads(patch)
+            required = measured["bytes"]
+            valid = (measured["reason_code"] == "canonical_diff_too_large"
+                     and measured["max_diff_bytes"] == limit
+                     and type(required) is int and required > limit)
+        except (ValueError, KeyError, TypeError):
+            valid = False
+        if not valid:
+            raise review.ReviewKernelError("diff capture size measurement is invalid")
+        # This admission only increases capture capacity. The existing raw-diff
+        # custody owner still enforces its independent serialized-byte cap.
+        if required > REVIEW_RAW_DIFF_MAX_BYTES:
+            raise review.ReviewKernelError("measured diff exceeds independent custody capacity")
+        rc, patch = review.canonical_diff_patch(diff_ws, base, paths=files, max_bytes=required)
+        if identity() != pinned:
+            raise review.ReviewKernelError("diff capture source, scope or policy changed")
+        if not rc and len(patch.encode("utf-8")) != required:
+            raise review.ReviewKernelError("diff capture differs from measured size")
+        capacity = {"bytes": required, "previous_max_diff_bytes": limit,
+            "max_diff_bytes": required, "capacity_increase_bytes": required - limit,
+            "additional_cost": "unknown", "run_id": pinned["run_id"],
+            "resource_policy_fingerprint": policy["fingerprint"],
+            "source_fingerprint": pinned["source_fingerprint"],
+            "base": pinned["base"], "head": pinned["head"], "scope": pinned["scope"]}
+    if rc:
+        raise review.ReviewKernelError(
+            patch if rc == review.CANONICAL_DIFF_TOO_LARGE else "canonical diff derivation failed")
+    return patch, capacity
+
+
 def _review_kernel(
     ws: str,
     diff_ws: str,
@@ -2991,17 +3057,9 @@ def _review_kernel(
             or runtime_kernel.match_any(f, task.get("scope") or [])
         )
     ]
-    diff_byte_limit = review.DEFAULT_MAX_DIFF_BYTES
-    diff_rc, patch = review.canonical_diff_patch(
-        diff_ws, base, paths=files, max_bytes=diff_byte_limit
+    patch, diff_capacity = _delivery_diff_patch(
+        ws, diff_ws, base=base, files=files, scope=(task or {}).get("scope") or [], review=review
     )
-    if diff_rc:
-        reason = (
-            patch
-            if diff_rc == review.CANONICAL_DIFF_TOO_LARGE
-            else "canonical diff derivation failed"
-        )
-        raise review.ReviewKernelError(reason)
     if files and not patch:
         raise review.ReviewKernelError("canonical governed diff is empty for changed task files")
     head = tp.git_head(diff_ws) or ""
@@ -3065,6 +3123,7 @@ def _review_kernel(
             "files": files,
             "changed_symbols": changed_symbols,
             "artifact": review._portable_ref(diff_ref),
+            **({"capacity": diff_capacity} if diff_capacity is not None else {}),
         },
         requirement=requirement or {},
         test_evidence=test_evidence or {},
@@ -3083,6 +3142,8 @@ def _review_kernel(
         expanded_route_provider_receipt=expanded_route_provider_receipt,
         **delivery_mode_argument,
     )
+    if diff_capacity is not None:
+        manifest = {**manifest, "diff_capacity": diff_capacity}
     state = review._load_state(diff_ws, manifest.get("run_id"))
     if quality_ref is not None and state.get("quality") != quality_ref:
         # A route is immutable. A mismatch is terminal evidence, never a

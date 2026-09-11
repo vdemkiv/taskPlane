@@ -153,7 +153,9 @@ def test_existing_budget_approval(project, capsys):
     assert "+25 actions" in capsys.readouterr().out
 
 
-def test_run_only_advisory_exception(project, monkeypatch):
+@pytest.mark.parametrize("capture_case", ["advisory", "strict", "invalid-policy",
+    "source-changed", "policy-changed", "scope-changed", "head-changed", "retry-failed"])
+def test_run_only_advisory_exception(project, monkeypatch, capture_case):
     from taskplane import run_context
     # The view consumes the incumbent run-scoped policy owner, never a setup setting.
     observed = []
@@ -170,6 +172,81 @@ def test_run_only_advisory_exception(project, monkeypatch):
     assert observed == [str(project), str(project / "new-run")]
     with pytest.raises(ValueError):
         cli._read_onboarding_setup_value(submission(project, resource_policy="advisory"), str(project))
+
+    # Real git capture and policy validation; only the run-store boundary is
+    # simulated. Oversize capture must never turn into a truncated review.
+    from types import SimpleNamespace
+    import copy
+    from taskplane import loop, review, review_evidence
+    base = loop.tp.git_head(str(project))
+    (project / "README.md").write_text("Changed project\n" * 60)
+    state = {"run_id": "run-test", "_stage_native_root_authority": {"actor": "human:fixture"}}
+    decision = {"schema": "taskplane.resource-policy/v1", "run_id": "run-test",
+        "mode": "advisory", "actor": "human:fixture", "authority_fingerprint": "f" * 64,
+        "decided_at": 100}
+    fingerprint = review_evidence.content_fingerprint(decision)
+    manifest = {"revision": 2, "phase_records": {"run-resource-limits": {
+        "schema": "taskplane.phase-operation-receipt/v1", "operation_id": "run-resource-limits",
+        "operation": "resource_policy", "request_fingerprint": fingerprint,
+        "result": decision, "result_fingerprint": fingerprint, "committed_revision": 2}}}
+    if capture_case == "strict":
+        manifest["phase_records"] = {}
+    elif capture_case == "invalid-policy":
+        decision["actor"] = "agent:unapproved"
+    before_manifest = copy.deepcopy(manifest)
+    monkeypatch.setattr(loop, "load", lambda ws: copy.deepcopy(state))
+    monkeypatch.setattr(loop, "_stage_store", lambda *args: SimpleNamespace(
+        load=lambda run: copy.deepcopy(manifest)))
+    monkeypatch.setattr(review, "DEFAULT_MAX_DIFF_BYTES", 120)
+    original_capture = review.canonical_diff_patch
+    expected_rc, expected_patch = original_capture(str(project), base, paths=["README.md"])
+    assert expected_rc == 0
+    calls = []
+    files = ["README.md"]
+    scope = ["README.md"]
+    def capture(workspace, comparison, *, paths, max_bytes):
+        calls.append(max_bytes)
+        result = original_capture(workspace, comparison, paths=paths, max_bytes=max_bytes)
+        if len(calls) == 1:
+            if capture_case == "source-changed":
+                (project / "README.md").write_text("changed during measurement")
+            elif capture_case == "policy-changed":
+                manifest["phase_records"] = {}
+            elif capture_case == "scope-changed":
+                scope.append("other.py")
+            elif capture_case == "head-changed":
+                subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                    "commit", "--allow-empty", "-qm", "moved"], cwd=project, check=True)
+        if len(calls) == 2 and capture_case == "retry-failed":
+            return review.CANONICAL_DIFF_TOO_LARGE, "still too large"
+        return result
+    monkeypatch.setattr(review, "canonical_diff_patch", capture)
+    if capture_case != "advisory":
+        with pytest.raises((ValueError, review.ReviewKernelError)):
+            loop._delivery_diff_patch(str(project), str(project), base=base,
+                files=files, scope=scope, review=review)
+        assert len(calls) == (2 if capture_case == "retry-failed" else
+                              0 if capture_case == "invalid-policy" else 1)
+        return
+    patch, capacity = loop._delivery_diff_patch(str(project), str(project), base=base,
+        files=files, scope=scope, review=review)
+    measured = len(expected_patch.encode("utf-8"))
+    assert patch == expected_patch and calls == [120, measured]
+    assert capacity["bytes"] == measured
+    assert capacity["previous_max_diff_bytes"] == 120
+    assert capacity["max_diff_bytes"] == measured
+    assert capacity["capacity_increase_bytes"] == measured - 120
+    assert capacity["additional_cost"] == "unknown"
+    assert capacity["resource_policy_fingerprint"] == fingerprint
+    assert manifest == before_manifest
+    # The independent custody boundary still rejects an oversized artifact.
+    store = review_evidence.ArtifactStore(str(project))
+    monkeypatch.setattr(loop, "REVIEW_RAW_DIFF_MAX_BYTES", 100)
+    reference = loop.store_retained_review_diff(str(project), store=store,
+        payload=loop._retained_review_diff_payload(base=base, files=files, patch=patch,
+            run_id="run-test", review_id="capture-test"))
+    with pytest.raises((ValueError, OSError)):
+        store.read(reference)
 
 
 def test_delivery_provenance(project):

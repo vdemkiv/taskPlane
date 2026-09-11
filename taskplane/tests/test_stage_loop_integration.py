@@ -910,8 +910,34 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
     assert _emit_host_hook(ws, build, "SubagentStop", monkeypatch) == 0
     assert phase_pending(ws)["status"] == "collected"
     assert _cli(ws, "gate", "pass")["step"] == "evaluate"
+    # A simulated human decision uses the real run receipt owner. The actual
+    # delivery kernel must carry measured capacity into action and evidence.
+    from taskplane import review_evidence
+    current = store.load(run_id)
+    decision = {"schema": "taskplane.resource-policy/v1", "run_id": run_id,
+        "mode": "advisory", "actor": loop.load(ws)["_stage_native_root_authority"]["actor"],
+        "authority_fingerprint": "f" * 64, "decided_at": 100}
+    phase_records.commit_phase_record(store, run_id, expected_revision=current["revision"],
+        operation_id="run-resource-limits", operation="resource_policy",
+        request_fingerprint=review_evidence.content_fingerprint(decision), result=decision,
+        validate_authority=lambda manifest: None)
+    review = loop._review_runtime_modules()[2]
+    monkeypatch.setattr(review, "DEFAULT_MAX_DIFF_BYTES", 1)
+    captures = []
+    actual_kernel = loop._review_kernel
+    def observed_kernel(*args, **kwargs):
+        manifest, routing = actual_kernel(*args, **kwargs)
+        captures.append(manifest)
+        return manifest, routing
+    monkeypatch.setattr(loop, "_review_kernel", observed_kernel)
     evaluate = loop.next_action(ws, root_observation_authority=authority)
     assert evaluate["obligations"].get("dispatch_allowed") is True, evaluate
+    assert captures and captures[0]["diff_capacity"]["previous_max_diff_bytes"] == 1
+    assert captures[0]["diff_capacity"]["additional_cost"] == "unknown"
+    review_state = review._load_state(ws, captures[0]["run_id"])
+    envelope = review_evidence._load_complete_envelope(
+        review_evidence.ArtifactStore(ws), review_state["envelope"])
+    assert envelope["diff"]["capacity"] == captures[0]["diff_capacity"]
     assert loop._phase_bridge_context(ws, loop.load(ws))["stage"]["stage_kind"] == "evaluate"
 
     verdict = _complete_evaluation(ws, monkeypatch, evaluate, run_id, requirement, "T1")
