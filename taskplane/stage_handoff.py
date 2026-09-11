@@ -8,6 +8,7 @@ successor can use the manifest.
 from __future__ import annotations
 import copy
 import sys
+
 if __package__:
     from . import stage_values as _dispatch_stage_values
 else:
@@ -388,9 +389,15 @@ def validate_manifest(
     if isinstance(manifest, Mapping) and manifest.get("schema") == "taskplane.stage-handoff/v2":
         checked = validate_v2_manifest(store, manifest)
         authority = checked["authorization"]["authority_record"]
-        if expected_authority_revision is not None and authority["revision"] != expected_authority_revision:
+        if (
+            expected_authority_revision is not None
+            and authority["revision"] != expected_authority_revision
+        ):
             raise StaleAuthorityError("v2 handoff authority revision is stale")
-        if expected_authority_fingerprint is not None and authority["fingerprint"] != expected_authority_fingerprint:
+        if (
+            expected_authority_fingerprint is not None
+            and authority["fingerprint"] != expected_authority_fingerprint
+        ):
             raise StaleAuthorityError("v2 handoff authority fingerprint is stale")
         if checked["producer"]["outcome"] != "done":
             raise HandoffValidationError("current phase packages require a done producer")
@@ -629,15 +636,23 @@ def validate_v2_manifest(
 
 
 def create_v2_manifest(
-    store: review_evidence.ArtifactStore, *, phase_result: Mapping[str, object],
+    store: review_evidence.ArtifactStore,
+    *,
+    phase_result: Mapping[str, object],
     produced_artifacts: Iterable[dict[str, object]],
     inherited_artifacts: Iterable[dict[str, object]],
-    producer_stage_id: str, producer_outcome: str,
-    requirement: Mapping[str, object], design: Mapping[str, object] | None,
-    target: Mapping[str, object] | None, commit: Mapping[str, object] | None,
-    contracts: Mapping[str, object], deliverables: Iterable[str],
-    evidence_references: Iterable[dict[str, object]], exclusions: Iterable[str],
-    authorization: Mapping[str, object], allow_nonconsumable_reuse: bool = False,
+    producer_stage_id: str,
+    producer_outcome: str,
+    requirement: Mapping[str, object],
+    design: Mapping[str, object] | None,
+    target: Mapping[str, object] | None,
+    commit: Mapping[str, object] | None,
+    contracts: Mapping[str, object],
+    deliverables: Iterable[str],
+    evidence_references: Iterable[dict[str, object]],
+    exclusions: Iterable[str],
+    authorization: Mapping[str, object],
+    allow_nonconsumable_reuse: bool = False,
     knowledge_apply_receipts: Iterable[dict[str, object]] = (),
     unresolved_issues: Iterable[str] = (),
 ) -> JsonObject:
@@ -653,17 +668,31 @@ def create_v2_manifest(
         if not isinstance(reference, dict):
             raise HandoffValidationError("artifact reference must be an object")
         selected.append(reference)
-    base = create_manifest(store, selected_artifacts=selected,
-        producer_stage_id=producer_stage_id, producer_outcome=producer_outcome,
-        requirement=requirement, design=design, target=target, commit=commit,
-        contracts=contracts, deliverables=deliverables,
-        evidence_references=evidence_references, exclusions=exclusions,
-        authorization=authorization, allow_nonconsumable_reuse=allow_nonconsumable_reuse)
-    body = {**base, "schema": "taskplane.stage-handoff/v2",
-            "phase_result": dict(phase_result), "produced_artifacts": produced,
-            "inherited_artifacts": inherited,
-            "knowledge_apply_receipts": list(knowledge_apply_receipts),
-            "unresolved_issues": list(unresolved_issues)}
+    base = create_manifest(
+        store,
+        selected_artifacts=selected,
+        producer_stage_id=producer_stage_id,
+        producer_outcome=producer_outcome,
+        requirement=requirement,
+        design=design,
+        target=target,
+        commit=commit,
+        contracts=contracts,
+        deliverables=deliverables,
+        evidence_references=evidence_references,
+        exclusions=exclusions,
+        authorization=authorization,
+        allow_nonconsumable_reuse=allow_nonconsumable_reuse,
+    )
+    body = {
+        **base,
+        "schema": "taskplane.stage-handoff/v2",
+        "phase_result": dict(phase_result),
+        "produced_artifacts": produced,
+        "inherited_artifacts": inherited,
+        "knowledge_apply_receipts": list(knowledge_apply_receipts),
+        "unresolved_issues": list(unresolved_issues),
+    }
     body["fingerprint"] = manifest_fingerprint(body)
     validated = validate_v2_manifest(store, body)
     _validate_complete_v2_outputs(store, validated)
@@ -678,7 +707,9 @@ def _validate_complete_v2_outputs(
     if not isinstance(result, Mapping):
         raise HandoffValidationError("phase result must be an object")
     authorization = _closed(manifest["authorization"], _AUTHORITY_FIELDS, "authorization")
-    authority = _closed(authorization["authority_record"], _AUTHORITY_RECORD_FIELDS, "authority record")
+    authority = _closed(
+        authorization["authority_record"], _AUTHORITY_RECORD_FIELDS, "authority record"
+    )
     if result["authority_fingerprint"] != authority["fingerprint"]:
         raise HandoffValidationError("phase result authority differs from handoff")
     target = manifest["target"]
@@ -686,10 +717,17 @@ def _validate_complete_v2_outputs(
         raise HandoffValidationError("phase result candidate differs from handoff")
     produced = _v2_artifact_rows(manifest["produced_artifacts"])
     inherited = _v2_artifact_rows(manifest["inherited_artifacts"])
-    actual = _portable_references(store, (_v2_reference(row) for row in produced), "produced artifacts")
-    collected = _validate_portable_references(store, sorted(
-        _v2_collected_references(result["collected_output_references"]),
-        key=lambda row: (str(row["kind"]), str(row["fingerprint"]))), "collected outputs")
+    actual = _portable_references(
+        store, (_v2_reference(row) for row in produced), "produced artifacts"
+    )
+    collected = _validate_portable_references(
+        store,
+        sorted(
+            _v2_collected_references(result["collected_output_references"]),
+            key=lambda row: (str(row["kind"]), str(row["fingerprint"])),
+        ),
+        "collected outputs",
+    )
     if actual != collected:
         raise HandoffValidationError("complete package differs from collected outputs")
     raw_declarations = result["produced_artifact_schema_versions"]
@@ -697,7 +735,9 @@ def _validate_complete_v2_outputs(
         raise HandoffValidationError("output declarations must be a list")
     declarations = []
     for raw in raw_declarations:
-        declaration = _closed(raw, frozenset({"artifact_class", "artifact_schema_version"}), "output declaration")
+        declaration = _closed(
+            raw, frozenset({"artifact_class", "artifact_schema_version"}), "output declaration"
+        )
         declarations.append((declaration["artifact_class"], declaration["artifact_schema_version"]))
     classes = set()
     for group, rows in (("produced_artifacts", produced), ("inherited_artifacts", inherited)):
@@ -716,12 +756,17 @@ def _validate_complete_v2_outputs(
                 raise HandoffValidationError(str(exc)) from exc
 
 
-
 def _v2_artifact_rows(value: object) -> list[Mapping[str, object]]:
     if not isinstance(value, list):
         raise HandoffValidationError("schema artifacts must be a list")
-    return [_closed(row, frozenset({"artifact_class", "artifact_schema_version", "reference"}),
-                    "schema artifact") for row in value]
+    return [
+        _closed(
+            row,
+            frozenset({"artifact_class", "artifact_schema_version", "reference"}),
+            "schema artifact",
+        )
+        for row in value
+    ]
 
 
 def _v2_reference(row: Mapping[str, object]) -> dict[str, object]:
@@ -747,14 +792,22 @@ def store_v2_manifest(
 
 
 def read_v2_manifest(
-    store: review_evidence.ArtifactStore, reference: Mapping[str, object], *,
-    expected_authority_revision: int, expected_authority_fingerprint: str,
+    store: review_evidence.ArtifactStore,
+    reference: Mapping[str, object],
+    *,
+    expected_authority_revision: int,
+    expected_authority_fingerprint: str,
 ) -> JsonObject:
     """Consume current v2 bytes under separately supplied authority; no downgrade."""
     value = validate_v2_manifest(store, store.read(dict(reference)))
     authorization = _closed(value["authorization"], _AUTHORITY_FIELDS, "authorization")
-    authority = _closed(authorization["authority_record"], _AUTHORITY_RECORD_FIELDS, "authority record")
-    if authority["revision"] != expected_authority_revision or authority["fingerprint"] != expected_authority_fingerprint:
+    authority = _closed(
+        authorization["authority_record"], _AUTHORITY_RECORD_FIELDS, "authority record"
+    )
+    if (
+        authority["revision"] != expected_authority_revision
+        or authority["fingerprint"] != expected_authority_fingerprint
+    ):
         raise StaleAuthorityError("v2 handoff authority is stale")
     producer = _closed(value["producer"], frozenset({"stage_id", "outcome"}), "producer")
     if producer["outcome"] != "done":
@@ -789,13 +842,15 @@ def prepare_knowledge_proposal(
         raise HandoffValidationError("unsupported knowledge proposal")
     if row["scope"] != expected_scope or len(expected_scope) != 2:
         raise HandoffValidationError("knowledge scope mismatch")
-    if (not expected_scope[0].startswith("repository:")
-            or expected_scope[1] != "phase:" + str(row["phase_id"])):
+    if not expected_scope[0].startswith("repository:") or expected_scope[1] != "phase:" + str(
+        row["phase_id"]
+    ):
         raise HandoffValidationError("knowledge repository/phase scope is invalid")
-    _identifier(expected_scope[0][len("repository:"):], "knowledge repository")
+    _identifier(expected_scope[0][len("repository:") :], "knowledge repository")
     reference = row["finding_or_observation_reference"]
     if not isinstance(reference, str) or not re.fullmatch(
-            r"artifact://(?:finding|observation)/[0-9a-f]{64}", reference):
+        r"artifact://(?:finding|observation)/[0-9a-f]{64}", reference
+    ):
         raise HandoffValidationError("knowledge observation provenance is invalid")
     content = row["content"]
     if not isinstance(content, str):
@@ -822,8 +877,11 @@ def prepare_knowledge_proposal(
 
 
 def consume_knowledge_receipt(
-    receipt: Mapping[str, object], *, proposal: Mapping[str, object],
-    trusted_keys: Mapping[str, SigningKey], expected_freshness: Mapping[str, object],
+    receipt: Mapping[str, object],
+    *,
+    proposal: Mapping[str, object],
+    trusted_keys: Mapping[str, SigningKey],
+    expected_freshness: Mapping[str, object],
     now: int,
 ) -> JsonObject:
     """Consume the owner's actual authenticated receipt bound to one proposal."""
@@ -836,19 +894,27 @@ def consume_knowledge_receipt(
     source = entities.validate_contract(proposal)
     if source["schema"] != entities.KNOWLEDGE_UPDATE_SCHEMA:
         raise HandoffValidationError("unsupported knowledge proposal")
-    verified = verify_contract(receipt, trusted_keys=trusted_keys,
+    verified = verify_contract(
+        receipt,
+        trusted_keys=trusted_keys,
         expected_schema=entities.KNOWLEDGE_APPLY_SCHEMA,
-        expected_freshness=expected_freshness, now=now)
+        expected_freshness=expected_freshness,
+        now=now,
+    )
     result = verified["payload"]
     if not isinstance(result, dict):
         raise HandoffValidationError("knowledge receipt is invalid")
     for receipt_field, proposal_field in (
         ("proposal_fingerprint", "proposal_fingerprint"),
-        ("operation_id", "operation_id"), ("base_fingerprint", "base_knowledge_fingerprint"),
+        ("operation_id", "operation_id"),
+        ("base_fingerprint", "base_knowledge_fingerprint"),
     ):
         if result[receipt_field] != source[proposal_field]:
             raise HandoffValidationError("knowledge receipt proposal binding mismatch")
-    if result["outcome"] == "applied" and result["base_fingerprint"] != result["current_fingerprint"]:
+    if (
+        result["outcome"] == "applied"
+        and result["base_fingerprint"] != result["current_fingerprint"]
+    ):
         raise HandoffValidationError("knowledge receipt violates compare-and-swap")
     return result
 
@@ -986,9 +1052,11 @@ def sign_contract(
         import stage_values as flat_entities
 
         entities = flat_entities
-    payload = (validate_manifest(value, store=store)
-               if value.get("schema") in {SCHEMA, entities.HANDOFF_V2_SCHEMA}
-               else entities.validate_contract(value, store=store))
+    payload = (
+        validate_manifest(value, store=store)
+        if value.get("schema") in {SCHEMA, entities.HANDOFF_V2_SCHEMA}
+        else entities.validate_contract(value, store=store)
+    )
     result = {
         "schema": SIGNATURE_SCHEMA,
         "algorithm": SIGNATURE_ALGORITHM,
@@ -1044,10 +1112,12 @@ def verify_contract(
 
         entities = flat_entities
     raw_payload = row["payload"]
-    payload = (validate_manifest(raw_payload, store=store)
-               if isinstance(raw_payload, Mapping) and raw_payload.get("schema")
-               in {SCHEMA, entities.HANDOFF_V2_SCHEMA}
-               else entities.validate_contract(raw_payload, store=store))
+    payload = (
+        validate_manifest(raw_payload, store=store)
+        if isinstance(raw_payload, Mapping)
+        and raw_payload.get("schema") in {SCHEMA, entities.HANDOFF_V2_SCHEMA}
+        else entities.validate_contract(raw_payload, store=store)
+    )
     if payload["schema"] != expected_schema:
         raise HandoffValidationError("signature payload schema mismatch")
     signature = row["signature"]
@@ -1095,15 +1165,21 @@ class PhasePackage:
     candidate_fingerprint: str
 
     def manifest(self) -> dict:
-        value = read_v2_manifest(self.store, self.reference,
+        value = read_v2_manifest(
+            self.store,
+            self.reference,
             expected_authority_revision=self.authority_revision,
-            expected_authority_fingerprint=self.authority_fingerprint)
+            expected_authority_fingerprint=self.authority_fingerprint,
+        )
         result = value["phase_result"]
         _phase_result_definition(self.registry, result)
         definition = self.registry.admit(self.phase_id, ()).to_dict()
         if result["phase_id"] not in definition["predecessors"]:
             raise ValueError("package producer is not a declared predecessor")
-        if result["run_id"] != self.run_id or result["candidate_fingerprint"] != self.candidate_fingerprint:
+        if (
+            result["run_id"] != self.run_id
+            or result["candidate_fingerprint"] != self.candidate_fingerprint
+        ):
             raise ValueError("package run or candidate differs from current input")
         return value
 
@@ -1118,17 +1194,25 @@ class PhasePackage:
         declarations = self.registry.admit(self.phase_id, ()).to_dict()["consumes"]
         selected = []
         for declaration in declarations:
-            matches = [row for row in rows if row["artifact_class"] == declaration["artifact_class"]]
+            matches = [
+                row for row in rows if row["artifact_class"] == declaration["artifact_class"]
+            ]
             if len(matches) > 1 or (declaration["required"] and not matches):
                 raise ValueError("package lacks an unambiguous required artifact")
             for row in matches:
                 if row["artifact_schema_version"] != declaration["artifact_schema_version"]:
                     raise ValueError("package consumed schema differs from definition")
-                selected.append(agent_runtime.Artifact(row["artifact_class"], row["artifact_schema_version"], row["reference"]))
+                selected.append(
+                    agent_runtime.Artifact(
+                        row["artifact_class"], row["artifact_schema_version"], row["reference"]
+                    )
+                )
         return tuple(selected)
 
     def read(self, artifact_class: str) -> dict:
-        matches = [artifact for artifact in self.artifacts if artifact.artifact_class == artifact_class]
+        matches = [
+            artifact for artifact in self.artifacts if artifact.artifact_class == artifact_class
+        ]
         if len(matches) != 1:
             raise ValueError("package artifact is missing or ambiguous: " + artifact_class)
         return stage_artifacts.read(self.store, dict(matches[0].reference), artifact_class)
@@ -1142,46 +1226,84 @@ def _phase_result_definition(registry: object, result: Mapping[str, object]) -> 
 
     stage_entities.validate_contract(result)
     definition = registry.admit(str(result["phase_id"]), ()).to_dict()
-    expected = {"definition_set_fingerprint": registry.definition_set_fingerprint,
+    expected = {
+        "definition_set_fingerprint": registry.definition_set_fingerprint,
         "phase_definition_fingerprint": definition["fingerprint"],
         "skill_content_fingerprint": definition["skill_content_fingerprint"],
         "validator_identities": definition["domain_validator_refs"],
         "validator_inventory_fingerprint": definition["validator_inventory_fingerprint"],
         "capability_set_fingerprint": registry.capability_set_fingerprint,
-        "budget": definition["budget"]}
-    for relation, field in (("consumes", "consumed_artifact_schema_versions"), ("produces", "produced_artifact_schema_versions")):
-        expected[field] = [{key: row[key] for key in ("artifact_class", "artifact_schema_version")}
-                           for row in definition[relation]]
-    if result["status"] != "accepted" or any(result[key] != value for key, value in expected.items()):
+        "budget": definition["budget"],
+    }
+    for relation, field in (
+        ("consumes", "consumed_artifact_schema_versions"),
+        ("produces", "produced_artifact_schema_versions"),
+    ):
+        expected[field] = [
+            {key: row[key] for key in ("artifact_class", "artifact_schema_version")}
+            for row in definition[relation]
+        ]
+    if result["status"] != "accepted" or any(
+        result[key] != value for key, value in expected.items()
+    ):
         raise ValueError("phase result differs from the current definition")
     return definition
 
 
-def consume_phase_handoff(store: object, reference: Mapping[str, object], *,
-        registry: object, phase_id: str, expected_authority_revision: int,
-        expected_authority_fingerprint: str, expected_run_id: str,
-        expected_candidate_fingerprint: str) -> PhasePackage:
+def consume_phase_handoff(
+    store: object,
+    reference: Mapping[str, object],
+    *,
+    registry: object,
+    phase_id: str,
+    expected_authority_revision: int,
+    expected_authority_fingerprint: str,
+    expected_run_id: str,
+    expected_candidate_fingerprint: str,
+) -> PhasePackage:
     """Explicit package route; no active lifecycle selector is changed here."""
     from taskplane import phase_amendment
-    amended = phase_amendment.package(store, dict(reference), registry=registry, phase_id=phase_id,
+
+    amended = phase_amendment.package(
+        store,
+        dict(reference),
+        registry=registry,
+        phase_id=phase_id,
         expected_authority_revision=expected_authority_revision,
         expected_authority_fingerprint=expected_authority_fingerprint,
-        expected_run_id=expected_run_id, expected_candidate_fingerprint=expected_candidate_fingerprint)
+        expected_run_id=expected_run_id,
+        expected_candidate_fingerprint=expected_candidate_fingerprint,
+    )
     if amended is not None:
         return amended
-    package = PhasePackage(store, registry, copy.deepcopy(dict(reference)), phase_id,
-        expected_authority_revision, expected_authority_fingerprint,
-        expected_run_id, expected_candidate_fingerprint)
+    package = PhasePackage(
+        store,
+        registry,
+        copy.deepcopy(dict(reference)),
+        phase_id,
+        expected_authority_revision,
+        expected_authority_fingerprint,
+        expected_run_id,
+        expected_candidate_fingerprint,
+    )
     package.artifacts  # Validate the whole package before exposing any output.
     return package
 
 
-def produce_phase_handoff(store: object, *, registry: object,
-        phase_result: Mapping[str, object], dispatch: object,
-        predecessor: Mapping[str, object] | None,
-        authorization: Mapping[str, object], producer_stage_id: str,
-        requirement: Mapping[str, object], design: Mapping[str, object] | None,
-        knowledge_apply_receipts: Iterable[dict] = (), unresolved_issues: Iterable[str] = ()) -> dict:
+def produce_phase_handoff(
+    store: object,
+    *,
+    registry: object,
+    phase_result: Mapping[str, object],
+    dispatch: object,
+    predecessor: Mapping[str, object] | None,
+    authorization: Mapping[str, object],
+    producer_stage_id: str,
+    requirement: Mapping[str, object],
+    design: Mapping[str, object] | None,
+    knowledge_apply_receipts: Iterable[dict] = (),
+    unresolved_issues: Iterable[str] = (),
+) -> dict:
     """Compose collected outputs and all inherited bytes using the sole writer.
 
     The active phase runtime uses this exact output boundary. Collection
@@ -1198,94 +1320,205 @@ def produce_phase_handoff(store: object, *, registry: object,
     inherited = []
     inputs = ()
     if predecessor is not None:
-        package = consume_phase_handoff(store, predecessor, registry=registry,
-            phase_id=str(phase_result["phase_id"]), expected_authority_revision=authority["revision"],
-            expected_authority_fingerprint=authority["fingerprint"], expected_run_id=str(phase_result["run_id"]),
-            expected_candidate_fingerprint=str(phase_result["candidate_fingerprint"]))
+        package = consume_phase_handoff(
+            store,
+            predecessor,
+            registry=registry,
+            phase_id=str(phase_result["phase_id"]),
+            expected_authority_revision=authority["revision"],
+            expected_authority_fingerprint=authority["fingerprint"],
+            expected_run_id=str(phase_result["run_id"]),
+            expected_candidate_fingerprint=str(phase_result["candidate_fingerprint"]),
+        )
         previous = package.manifest()
         inputs = package.artifacts
         inherited = previous["produced_artifacts"] + previous["inherited_artifacts"]
     elif not definition["entry"]:
         raise ValueError("non-entry package requires its actual predecessor")
-    if (dispatch.package != inputs or
-            any(phase_result.get(key) != value for key, value in dispatch.bindings.items()) or
-            phase_result["sealed_package_fingerprint"] != agent_runtime.package_fingerprint(
-                inputs, dispatch.knowledge, dispatch.envelope)):
+    if (
+        dispatch.package != inputs
+        or any(phase_result.get(key) != value for key, value in dispatch.bindings.items())
+        or phase_result["sealed_package_fingerprint"]
+        != agent_runtime.package_fingerprint(inputs, dispatch.knowledge, dispatch.envelope)
+    ):
         raise ValueError("runtime output differs from its actual input package")
     produced = []
     for reference in phase_result["collected_output_references"]:
         portable = review_evidence.portable_artifact_reference(store, reference)
         payload = store.read(portable)
-        matches = [row for row in definition["produces"]
-                   if row["artifact_class"] == portable["kind"] and row["artifact_schema_version"] == payload.get("schema")]
+        matches = [
+            row
+            for row in definition["produces"]
+            if row["artifact_class"] == portable["kind"]
+            and row["artifact_schema_version"] == payload.get("schema")
+        ]
         if len(matches) != 1:
             raise ValueError("collected output has no unambiguous declaration")
-        produced.append({"artifact_class": matches[0]["artifact_class"],
-            "artifact_schema_version": matches[0]["artifact_schema_version"], "reference": portable})
+        produced.append(
+            {
+                "artifact_class": matches[0]["artifact_class"],
+                "artifact_schema_version": matches[0]["artifact_schema_version"],
+                "reference": portable,
+            }
+        )
     for declaration in definition["produces"]:
         count = sum(row["artifact_class"] == declaration["artifact_class"] for row in produced)
-        if (declaration["required"] and not count) or (count > 1 and declaration["cardinality"] != "many"):
+        if (declaration["required"] and not count) or (
+            count > 1 and declaration["cardinality"] != "many"
+        ):
             raise ValueError("complete package lacks a declared output")
-    overlapping = {row["artifact_class"] for row in inherited} & {row["artifact_class"] for row in produced}
+    overlapping = {row["artifact_class"] for row in inherited} & {
+        row["artifact_class"] for row in produced
+    }
     for artifact_class in overlapping:
-        consumed = [row for row in definition["consumes"] if row["artifact_class"] == artifact_class]
-        declared = [row for row in definition["produces"] if row["artifact_class"] == artifact_class]
+        consumed = [
+            row for row in definition["consumes"] if row["artifact_class"] == artifact_class
+        ]
+        declared = [
+            row for row in definition["produces"] if row["artifact_class"] == artifact_class
+        ]
         old = [row for row in inherited if row["artifact_class"] == artifact_class]
         fresh = [row for row in produced if row["artifact_class"] == artifact_class]
-        if len(consumed) != 1 or len(declared) != 1 or len(old) != 1 or len(fresh) != 1 or \
-                declared[0]["cardinality"] != "one" or len({row["artifact_schema_version"]
-                    for row in (consumed[0], declared[0], old[0], fresh[0])}) != 1:
+        if (
+            len(consumed) != 1
+            or len(declared) != 1
+            or len(old) != 1
+            or len(fresh) != 1
+            or declared[0]["cardinality"] != "one"
+            or len(
+                {
+                    row["artifact_schema_version"]
+                    for row in (consumed[0], declared[0], old[0], fresh[0])
+                }
+            )
+            != 1
+        ):
             raise ValueError("package replacement is not an unambiguous declared transformation")
     # Selection is not retention: the current collected transformation is the
     # successor's sole input of this class. The exact predecessor handoff below
     # remains immutable evidence, retaining all prior references and bytes.
     inherited = [row for row in inherited if row["artifact_class"] not in overlapping]
     evidence = store.put("phase-result", dict(phase_result))
-    value = create_v2_manifest(store, phase_result=phase_result,
-        produced_artifacts=produced, inherited_artifacts=inherited,
-        knowledge_apply_receipts=knowledge_apply_receipts, unresolved_issues=unresolved_issues,
-        producer_stage_id=producer_stage_id, producer_outcome="done", requirement=requirement, design=design,
-        target=None, commit=None, contracts={"provided": [], "consumed": [], "changed": []},
+    value = create_v2_manifest(
+        store,
+        phase_result=phase_result,
+        produced_artifacts=produced,
+        inherited_artifacts=inherited,
+        knowledge_apply_receipts=knowledge_apply_receipts,
+        unresolved_issues=unresolved_issues,
+        producer_stage_id=producer_stage_id,
+        producer_outcome="done",
+        requirement=requirement,
+        design=design,
+        target=None,
+        commit=None,
+        contracts={"provided": [], "consumed": [], "changed": []},
         deliverables=[row["artifact_class"] for row in produced],
         evidence_references=[evidence] + ([] if predecessor is None else [dict(predecessor)]),
-        exclusions=sorted(REQUIRED_EXCLUSIONS), authorization=authorization)
+        exclusions=sorted(REQUIRED_EXCLUSIONS),
+        authorization=authorization,
+    )
     return store_v2_manifest(store, value)
 
 
 STAGE_DISPATCH_SCHEMA = "taskplane.stage-dispatch/v1"
 STAGE_STARTUP_SCHEMA = "taskplane.stage-startup/v1"
 STAGE_RECEIPT_SCHEMA = "taskplane.stage-operation-receipt/v1"
-STAGE_AUTHORITY_REFERENCE_SCHEMA = \
-    "taskplane.stage-authority-reference/v1"
+STAGE_AUTHORITY_REFERENCE_SCHEMA = "taskplane.stage-authority-reference/v1"
 STAGE_HANDOFF_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v1"
 STAGE_HANDOFF_V2_DISPATCH_SCHEMA = "taskplane.stage-handoff-dispatch/v2"
 MAX_STAGE_STARTUP_BYTES = 128 * 1024
 MAX_STAGE_RECEIPT_BYTES = 2 * 1024 * 1024
 _STAGE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _STAGE_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
-_STAGE_RECEIPT_FIELDS = frozenset({
-    "schema", "operation_id", "request_fingerprint", "operation",
-    "stage_ids", "committed_revision", "result", "result_fingerprint",
-})
-_STAGE_HANDOFF_FIELDS = frozenset({
-    "schema", "producer", "requirement", "design", "target", "commit",
-    "contracts", "deliverables", "evidence_references",
-    "selected_artifacts", "exclusions", "authorization", "fingerprint",
-})
-_STAGE_DISPATCH_RECEIPTS = frozenset({
-    "start_stage", "terminalize_and_start", "split_stage", "resume_stage",
-})
-_STAGE_RUNTIME_FORBIDDEN_KEYS = frozenset({
-    "activecontract", "agent", "agents", "approval", "approvals", "argv",
-    "command", "commands", "conversation", "conversations", "credential",
-    "credentials", "cwd", "environment", "env", "event", "events",
-    "eventlog", "eventlogs", "hostpath", "lease", "leases", "log", "logs",
-    "meter", "meters", "path", "process", "prompt", "prompts",
-    "relativepath", "absolutepath", "root", "runtime", "runtimeenvironment",
-    "runtimestate", "secret", "secrets", "tool", "tools",
-    "tooltranscript", "tooltranscripts", "trace", "traces", "transcript",
-    "transcripts", "workspace",
-})
+_STAGE_RECEIPT_FIELDS = frozenset(
+    {
+        "schema",
+        "operation_id",
+        "request_fingerprint",
+        "operation",
+        "stage_ids",
+        "committed_revision",
+        "result",
+        "result_fingerprint",
+    }
+)
+_STAGE_HANDOFF_FIELDS = frozenset(
+    {
+        "schema",
+        "producer",
+        "requirement",
+        "design",
+        "target",
+        "commit",
+        "contracts",
+        "deliverables",
+        "evidence_references",
+        "selected_artifacts",
+        "exclusions",
+        "authorization",
+        "fingerprint",
+    }
+)
+_STAGE_DISPATCH_RECEIPTS = frozenset(
+    {
+        "start_stage",
+        "terminalize_and_start",
+        "split_stage",
+        "resume_stage",
+    }
+)
+_STAGE_RUNTIME_FORBIDDEN_KEYS = frozenset(
+    {
+        "activecontract",
+        "agent",
+        "agents",
+        "approval",
+        "approvals",
+        "argv",
+        "command",
+        "commands",
+        "conversation",
+        "conversations",
+        "credential",
+        "credentials",
+        "cwd",
+        "environment",
+        "env",
+        "event",
+        "events",
+        "eventlog",
+        "eventlogs",
+        "hostpath",
+        "lease",
+        "leases",
+        "log",
+        "logs",
+        "meter",
+        "meters",
+        "path",
+        "process",
+        "prompt",
+        "prompts",
+        "relativepath",
+        "absolutepath",
+        "root",
+        "runtime",
+        "runtimeenvironment",
+        "runtimestate",
+        "secret",
+        "secrets",
+        "tool",
+        "tools",
+        "tooltranscript",
+        "tooltranscripts",
+        "trace",
+        "traces",
+        "transcript",
+        "transcripts",
+        "workspace",
+    }
+)
 
 
 class StageDispatchError(ValueError):
@@ -1304,8 +1537,7 @@ def _json_detach(value, label: str):
 
 
 def _stage_identifier(value, label: str) -> str:
-    if not isinstance(value, str) or value.strip() != value or \
-            not _STAGE_ID_RE.fullmatch(value):
+    if not isinstance(value, str) or value.strip() != value or not _STAGE_ID_RE.fullmatch(value):
         raise StageDispatchError(f"{label} is invalid")
     return value
 
@@ -1324,8 +1556,7 @@ def _reject_runtime_context(value, label: str) -> None:
                 raise StageDispatchError(f"{label} has a non-string field")
             normalized = re.sub(r"[-_. ]", "", key).lower()
             if normalized in _STAGE_RUNTIME_FORBIDDEN_KEYS:
-                raise StageDispatchError(
-                    f"{label} contains forbidden runtime field {key!r}")
+                raise StageDispatchError(f"{label} contains forbidden runtime field {key!r}")
             _reject_runtime_context(child, label)
     elif isinstance(value, list):
         for child in value:
@@ -1334,8 +1565,9 @@ def _reject_runtime_context(value, label: str) -> None:
         raise StageDispatchError(f"{label} contains an absolute filesystem path")
 
 
-def verify_stage_receipt(receipt: dict, *, expected_operation: str | None = None,
-                         expected_stage_id: str | None = None) -> dict:
+def verify_stage_receipt(
+    receipt: dict, *, expected_operation: str | None = None, expected_stage_id: str | None = None
+) -> dict:
     """Verify and detach one persisted v4 operation receipt.
 
     The RunStore is authoritative for durability.  This boundary rechecks its
@@ -1353,47 +1585,39 @@ def verify_stage_receipt(receipt: dict, *, expected_operation: str | None = None
     if receipt.get("schema") != STAGE_RECEIPT_SCHEMA:
         raise StageDispatchError("stage receipt schema is invalid")
     _stage_identifier(receipt.get("operation_id"), "stage receipt operation id")
-    _stage_fingerprint(
-        receipt.get("request_fingerprint"), "stage receipt request fingerprint")
-    operation = _stage_identifier(
-        receipt.get("operation"), "stage receipt operation")
+    _stage_fingerprint(receipt.get("request_fingerprint"), "stage receipt request fingerprint")
+    operation = _stage_identifier(receipt.get("operation"), "stage receipt operation")
     if expected_operation is not None and operation != expected_operation:
         raise StageDispatchError(
-            f"stage receipt operation is {operation}, expected "
-            f"{expected_operation}")
+            f"stage receipt operation is {operation}, expected {expected_operation}"
+        )
     stage_ids = receipt.get("stage_ids")
     if not isinstance(stage_ids, list) or any(
-            not isinstance(stage_id, str) for stage_id in stage_ids):
+        not isinstance(stage_id, str) for stage_id in stage_ids
+    ):
         raise StageDispatchError("stage receipt stage ids are invalid")
-    checked_ids = [_stage_identifier(value, "stage receipt stage id")
-                   for value in stage_ids]
+    checked_ids = [_stage_identifier(value, "stage receipt stage id") for value in stage_ids]
     if checked_ids != sorted(set(checked_ids)):
-        raise StageDispatchError(
-            "stage receipt stage ids must be sorted and unique")
+        raise StageDispatchError("stage receipt stage ids must be sorted and unique")
     if not checked_ids and operation != "rebuild_active_stage_projection":
         raise StageDispatchError("stage receipt stage ids are empty")
     if expected_stage_id is not None:
         expected = _stage_identifier(expected_stage_id, "expected stage id")
         if expected not in checked_ids:
-            raise StageDispatchError(
-                "stage receipt does not bind the expected stage")
+            raise StageDispatchError("stage receipt does not bind the expected stage")
     revision = receipt.get("committed_revision")
-    if isinstance(revision, bool) or not isinstance(revision, int) or \
-            revision < 1:
-        raise StageDispatchError(
-            "stage receipt committed revision is invalid")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise StageDispatchError("stage receipt committed revision is invalid")
     if "result" in receipt:
         try:
             result_bytes = canonical_json_bytes(receipt["result"])
         except (TypeError, ValueError, UnicodeError) as exc:
-            raise StageDispatchError(
-                "stage receipt result must be canonical JSON") from exc
+            raise StageDispatchError("stage receipt result must be canonical JSON") from exc
         if len(result_bytes) > MAX_STAGE_RECEIPT_BYTES:
             raise StageDispatchError("stage receipt result exceeds its bound")
         expected_result = hashlib.sha256(result_bytes).hexdigest()
         if receipt.get("result_fingerprint") != expected_result:
-            raise StageDispatchError(
-                "stage receipt result fingerprint mismatch")
+            raise StageDispatchError("stage receipt result fingerprint mismatch")
     checked = _json_detach(receipt, "stage receipt")
     if len(canonical_json_bytes(checked)) > MAX_STAGE_RECEIPT_BYTES:
         raise StageDispatchError("stage receipt exceeds its bound")
@@ -1417,8 +1641,7 @@ def _expected_dispatch_head(stage: dict, stage_entities) -> dict:
     }
 
 
-def _verify_dispatch_result(stage: dict, receipt: dict,
-                            stage_entities) -> None:
+def _verify_dispatch_result(stage: dict, receipt: dict, stage_entities) -> None:
     """Bind a dispatch to the operation's exact committed active head."""
     result = receipt.get("result")
     if not isinstance(result, dict):
@@ -1435,15 +1658,12 @@ def _verify_dispatch_result(stage: dict, receipt: dict,
         head = result.get("successor_head")
     else:
         child_heads = result.get("child_heads")
-        head = (child_heads.get(stage_id)
-                if isinstance(child_heads, dict) else None)
+        head = child_heads.get(stage_id) if isinstance(child_heads, dict) else None
     if head != _expected_dispatch_head(stage, stage_entities):
-        raise StageDispatchError(
-            "stage dispatch receipt committed head does not match stage")
+        raise StageDispatchError("stage dispatch receipt committed head does not match stage")
 
 
-def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
-                                   selected_artifacts: list) -> dict:
+def _verified_handoff_for_dispatch(stage: dict, handoff: dict, selected_artifacts: list) -> dict:
     entities, stage_handoff = _stage_modules()
     is_v2 = isinstance(handoff, dict) and handoff.get("schema") == entities.HANDOFF_V2_SCHEMA
     fields = _STAGE_HANDOFF_FIELDS | (entities._HANDOFF_V2_ADDITIONS if is_v2 else frozenset())
@@ -1466,10 +1686,12 @@ def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
                     selected.add(identity)
                     if group == "produced_artifacts":
                         produced.append(reference)
-            if selected != {(ref["kind"], ref["fingerprint"]) for ref in selected_artifacts} or \
-                    sorted(produced, key=lambda ref: (ref["kind"], ref["fingerprint"])) != sorted(
-                        handoff["phase_result"]["collected_output_references"],
-                        key=lambda ref: (ref["kind"], ref["fingerprint"])):
+            if selected != {
+                (ref["kind"], ref["fingerprint"]) for ref in selected_artifacts
+            } or sorted(produced, key=lambda ref: (ref["kind"], ref["fingerprint"])) != sorted(
+                handoff["phase_result"]["collected_output_references"],
+                key=lambda ref: (ref["kind"], ref["fingerprint"]),
+            ):
                 raise ValueError("v2 package differs from its collected outputs")
             for receipt in handoff["knowledge_apply_receipts"]:
                 entities.validate_contract(receipt)
@@ -1477,87 +1699,90 @@ def _verified_handoff_for_dispatch(stage: dict, handoff: dict,
         except ValueError as exc:
             raise StageDispatchError("verified v2 handoff is invalid") from exc
         result = handoff["phase_result"]
-        if result["status"] != "accepted" or handoff["producer"]["outcome"] != "done" or \
-                result["run_id"] != stage["run_id"] or \
-                result["authority_fingerprint"] != stage["authority"]["authority_fingerprint"]:
+        if (
+            result["status"] != "accepted"
+            or handoff["producer"]["outcome"] != "done"
+            or result["run_id"] != stage["run_id"]
+            or result["authority_fingerprint"] != stage["authority"]["authority_fingerprint"]
+        ):
             raise StageDispatchError("verified v2 result binding is invalid")
     try:
         expected = stage_handoff.manifest_fingerprint(handoff)
     except (TypeError, ValueError) as exc:
-        raise StageDispatchError("verified handoff is not canonical JSON") \
-            from exc
+        raise StageDispatchError("verified handoff is not canonical JSON") from exc
     if handoff.get("fingerprint") != expected:
         raise StageDispatchError("verified handoff fingerprint mismatch")
     handoff_bytes = canonical_json_bytes(handoff)
     if len(handoff_bytes) > 64 * 1024:
         raise StageDispatchError("verified handoff exceeds its bound")
     producer = handoff.get("producer")
-    if not isinstance(producer, dict) or set(producer) != {
-            "stage_id", "outcome"} or \
-            producer.get("outcome") not in {"done", "closed", "discarded"}:
+    if (
+        not isinstance(producer, dict)
+        or set(producer) != {"stage_id", "outcome"}
+        or producer.get("outcome") not in {"done", "closed", "discarded"}
+    ):
         raise StageDispatchError("verified handoff producer is invalid")
     _stage_identifier(producer.get("stage_id"), "handoff producer stage id")
     predecessors = stage.get("predecessor_stage_ids") or []
     if predecessors and producer.get("stage_id") not in predecessors:
-        raise StageDispatchError(
-            "verified handoff producer is not a stage predecessor")
-    if handoff.get("requirement") != stage.get("requirement") or \
-            handoff.get("design") != stage.get("design"):
-        raise StageDispatchError(
-            "verified handoff revision does not match stage")
+        raise StageDispatchError("verified handoff producer is not a stage predecessor")
+    if handoff.get("requirement") != stage.get("requirement") or handoff.get("design") != stage.get(
+        "design"
+    ):
+        raise StageDispatchError("verified handoff revision does not match stage")
     exclusions = handoff.get("exclusions")
-    if not isinstance(exclusions, list) or exclusions != sorted(set(exclusions)) \
-            or not stage_handoff.REQUIRED_EXCLUSIONS.issubset(exclusions):
+    if (
+        not isinstance(exclusions, list)
+        or exclusions != sorted(set(exclusions))
+        or not stage_handoff.REQUIRED_EXCLUSIONS.issubset(exclusions)
+    ):
         raise StageDispatchError("verified handoff exclusions are invalid")
     evidence = handoff.get("evidence_references")
     if not isinstance(evidence, list) or not evidence:
-        raise StageDispatchError(
-            "verified handoff evidence references are incomplete")
+        raise StageDispatchError("verified handoff evidence references are incomplete")
     authorization = handoff.get("authorization")
-    authority_record = (authorization.get("authority_record")
-                        if isinstance(authorization, dict) else None)
-    revision = (authority_record.get("revision")
-                if isinstance(authority_record, dict) else None)
+    authority_record = (
+        authorization.get("authority_record") if isinstance(authorization, dict) else None
+    )
+    revision = authority_record.get("revision") if isinstance(authority_record, dict) else None
     authority = stage.get("authority")
-    if not isinstance(authorization, dict) or \
-            not isinstance(authority_record, dict) or \
-            not isinstance(authority, dict) or \
-            authority_record.get("schema") != \
-            "taskplane.authority-record-reference/v1" or \
-            authority_record.get("authority_schema") != \
-            "taskplane.consolidated-authorization/v1" or \
-            isinstance(revision, bool) or not isinstance(revision, int) or \
-            revision < 0 or not _STAGE_FINGERPRINT_RE.fullmatch(
-                str(authority_record.get("fingerprint") or "")):
-        raise StageDispatchError(
-            "verified handoff authority record is invalid")
-    if authorization.get("actor") != authority.get("actor") or \
-            authorization.get("session_id") != authority.get("session_id") or \
-            revision != authority.get("authority_revision") or \
-            authority_record.get("fingerprint") != \
-            authority.get("authority_fingerprint"):
-        raise StageDispatchError(
-            "verified handoff authorization does not match stage authority")
+    if (
+        not isinstance(authorization, dict)
+        or not isinstance(authority_record, dict)
+        or not isinstance(authority, dict)
+        or authority_record.get("schema") != "taskplane.authority-record-reference/v1"
+        or authority_record.get("authority_schema") != "taskplane.consolidated-authorization/v1"
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 0
+        or not _STAGE_FINGERPRINT_RE.fullmatch(str(authority_record.get("fingerprint") or ""))
+    ):
+        raise StageDispatchError("verified handoff authority record is invalid")
+    if (
+        authorization.get("actor") != authority.get("actor")
+        or authorization.get("session_id") != authority.get("session_id")
+        or revision != authority.get("authority_revision")
+        or authority_record.get("fingerprint") != authority.get("authority_fingerprint")
+    ):
+        raise StageDispatchError("verified handoff authorization does not match stage authority")
     input_reference = stage.get("input_manifest_ref")
-    if not isinstance(input_reference, dict) or \
-            input_reference.get("fingerprint") != expected or \
-            input_reference.get("bytes") != len(handoff_bytes):
-        raise StageDispatchError(
-            "stage input does not bind the verified handoff")
+    if (
+        not isinstance(input_reference, dict)
+        or input_reference.get("fingerprint") != expected
+        or input_reference.get("bytes") != len(handoff_bytes)
+    ):
+        raise StageDispatchError("stage input does not bind the verified handoff")
     if not isinstance(selected_artifacts, list):
         raise StageDispatchError("selected artifacts must be a list")
     detached = _json_detach(selected_artifacts, "selected artifacts")
-    if detached != stage.get("selected_artifacts") or \
-            detached != handoff.get("selected_artifacts"):
-        raise StageDispatchError(
-            "selected artifacts do not match stage and handoff")
+    if detached != stage.get("selected_artifacts") or detached != handoff.get("selected_artifacts"):
+        raise StageDispatchError("selected artifacts do not match stage and handoff")
     _reject_runtime_context(handoff, "verified handoff")
     _reject_runtime_context(detached, "selected artifacts")
     return _json_detach(handoff, "verified handoff")
 
 
-def _dispatch_claim(stage: dict, receipt: dict,
-                    attempt_id: str | None) -> tuple[dict, str | None]:
+def _dispatch_claim(stage: dict, receipt: dict, attempt_id: str | None) -> tuple[dict, str | None]:
     run_id = str(stage["run_id"])
     stage_id = str(stage["stage_id"])
     execution_root_id = str(stage["execution_root_id"])
@@ -1570,14 +1795,14 @@ def _dispatch_claim(stage: dict, receipt: dict,
         recorded_attempt = result.get("attempt_id")
         if not isinstance(claim, dict):
             raise StageDispatchError("resume receipt has no attempt claim")
-        attempt = _stage_identifier(
-            recorded_attempt, "resume receipt attempt id")
-        if attempt_id is not None and \
-                _stage_identifier(attempt_id, "stage attempt id") != attempt:
+        attempt = _stage_identifier(recorded_attempt, "resume receipt attempt id")
+        if attempt_id is not None and _stage_identifier(attempt_id, "stage attempt id") != attempt:
             raise StageDispatchError("resume receipt attempt id mismatch")
-        if result.get("stage_id") != stage_id or \
-                result.get("execution_root_id") != execution_root_id or \
-                result.get("stage_fingerprint") != stage.get("fingerprint"):
+        if (
+            result.get("stage_id") != stage_id
+            or result.get("execution_root_id") != execution_root_id
+            or result.get("stage_fingerprint") != stage.get("fingerprint")
+        ):
             raise StageDispatchError("resume receipt does not match stage")
         expected_claim = {
             "schema": "taskplane.stage-execution-attempt-claim/v1",
@@ -1590,8 +1815,7 @@ def _dispatch_claim(stage: dict, receipt: dict,
             raise StageDispatchError("resume receipt attempt claim is invalid")
         return expected_claim, attempt
     if attempt_id is not None:
-        raise StageDispatchError(
-            "only a verified resume receipt may select an attempt")
+        raise StageDispatchError("only a verified resume receipt may select an attempt")
     return {
         "schema": "taskplane.stage-execution-root-claim/v1",
         "run_id": run_id,
@@ -1603,21 +1827,25 @@ def _dispatch_claim(stage: dict, receipt: dict,
 def _declared_stage_scope(value) -> dict | None:
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) != {
-            "scope_paths", "out_of_scope_paths"}:
-        raise StageDispatchError(
-            "declared scope needs scope_paths and out_of_scope_paths")
+    if not isinstance(value, dict) or set(value) != {"scope_paths", "out_of_scope_paths"}:
+        raise StageDispatchError("declared scope needs scope_paths and out_of_scope_paths")
     checked: dict[str, list[str]] = {}
     for field in ("scope_paths", "out_of_scope_paths"):
         rows = value.get(field)
-        if not isinstance(rows, list) or len(rows) > 64 or any(
-                not isinstance(row, str) or not row.strip() or
-                row.strip() != row or len(row.encode("utf-8")) > 512
-                for row in rows):
+        if (
+            not isinstance(rows, list)
+            or len(rows) > 64
+            or any(
+                not isinstance(row, str)
+                or not row.strip()
+                or row.strip() != row
+                or len(row.encode("utf-8")) > 512
+                for row in rows
+            )
+        ):
             raise StageDispatchError(f"declared {field} is invalid")
         if rows != sorted(set(rows)):
-            raise StageDispatchError(
-                f"declared {field} must be sorted and unique")
+            raise StageDispatchError(f"declared {field} must be sorted and unique")
         checked[field] = list(rows)
     _reject_runtime_context(checked, "declared scope")
     return checked
@@ -1639,66 +1867,71 @@ def _stage_authority_reference(authority: dict) -> dict:
 
 
 def _verify_stage_authority_reference(value) -> dict:
-    if not isinstance(value, dict) or set(value) != {"schema", "fingerprint"} \
-            or value.get("schema") != STAGE_AUTHORITY_REFERENCE_SCHEMA:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "fingerprint"}
+        or value.get("schema") != STAGE_AUTHORITY_REFERENCE_SCHEMA
+    ):
         raise StageDispatchError("stage authority reference is invalid")
-    _stage_fingerprint(
-        value.get("fingerprint"), "stage authority reference fingerprint")
+    _stage_fingerprint(value.get("fingerprint"), "stage authority reference fingerprint")
     # The complete startup serialization below is the closed JSON boundary.
     # Avoid serializing this already closed two-field projection a second
     # time during read-side verification.
     return dict(value)
 
 
-def _dispatch_handoff_projection(handoff: dict,
-                                 authority_reference: dict) -> dict:
+def _dispatch_handoff_projection(handoff: dict, authority_reference: dict) -> dict:
     """Make a content-addressed handoff projection safe for a stage worker."""
     projected = _json_detach(handoff, "verified handoff")
     source_fingerprint = projected.pop("fingerprint")
-    projected["schema"] = (STAGE_HANDOFF_V2_DISPATCH_SCHEMA
+    projected["schema"] = (
+        STAGE_HANDOFF_V2_DISPATCH_SCHEMA
         if handoff["schema"] == "taskplane.stage-handoff/v2"
-        else STAGE_HANDOFF_DISPATCH_SCHEMA)
+        else STAGE_HANDOFF_DISPATCH_SCHEMA
+    )
     projected["source_fingerprint"] = source_fingerprint
-    projected["authorization"] = _json_detach(
-        authority_reference, "stage authority reference")
-    projected["fingerprint"] = hashlib.sha256(
-        canonical_json_bytes(projected)).hexdigest()
+    projected["authorization"] = _json_detach(authority_reference, "stage authority reference")
+    projected["fingerprint"] = hashlib.sha256(canonical_json_bytes(projected)).hexdigest()
     return projected
 
 
-def _verify_dispatch_handoff_projection(value, authority_reference: dict) \
-        -> dict:
+def _verify_dispatch_handoff_projection(value, authority_reference: dict) -> dict:
     fields = _STAGE_HANDOFF_FIELDS | {"source_fingerprint"}
     is_v2 = isinstance(value, dict) and value.get("schema") == STAGE_HANDOFF_V2_DISPATCH_SCHEMA
     if is_v2:
         entities, _ = _stage_modules()
         fields |= entities._HANDOFF_V2_ADDITIONS
-    if not isinstance(value, dict) or set(value) != fields or \
-            value.get("schema") not in {STAGE_HANDOFF_DISPATCH_SCHEMA, STAGE_HANDOFF_V2_DISPATCH_SCHEMA}:
+    if (
+        not isinstance(value, dict)
+        or set(value) != fields
+        or value.get("schema")
+        not in {STAGE_HANDOFF_DISPATCH_SCHEMA, STAGE_HANDOFF_V2_DISPATCH_SCHEMA}
+    ):
         raise StageDispatchError("stage dispatch handoff projection is invalid")
-    _stage_fingerprint(
-        value.get("source_fingerprint"), "source handoff fingerprint")
-    supplied = _stage_fingerprint(
-        value.get("fingerprint"), "stage dispatch handoff fingerprint")
+    _stage_fingerprint(value.get("source_fingerprint"), "source handoff fingerprint")
+    supplied = _stage_fingerprint(value.get("fingerprint"), "stage dispatch handoff fingerprint")
     payload = dict(value)
     payload.pop("fingerprint")
     expected = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     if supplied != expected:
-        raise StageDispatchError(
-            "stage dispatch handoff projection fingerprint mismatch")
+        raise StageDispatchError("stage dispatch handoff projection fingerprint mismatch")
     if value.get("authorization") != authority_reference:
-        raise StageDispatchError(
-            "stage dispatch handoff authority reference mismatch")
+        raise StageDispatchError("stage dispatch handoff authority reference mismatch")
     # ``payload`` was just canonicalized to verify its fingerprint and the
     # complete startup is canonicalized once more below.  A third detach
     # serialization adds startup cost without strengthening the boundary.
     return dict(value)
 
 
-def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
-                           selected_artifacts: list, *,
-                           attempt_id: str | None = None,
-                           declared_scope: dict | None = None) -> dict:
+def stage_runtime_dispatch(
+    stage: dict,
+    receipt: dict,
+    handoff: dict,
+    selected_artifacts: list,
+    *,
+    attempt_id: str | None = None,
+    declared_scope: dict | None = None,
+) -> dict:
     """Build the sole bounded context admitted to a native stage worker.
 
     No workspace path or predecessor execution state is accepted as input.
@@ -1712,30 +1945,23 @@ def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
     if checked_stage.get("state") != "active":
         raise StageDispatchError("only an active stage can be dispatched")
     checked_receipt = verify_stage_receipt(
-        receipt, expected_stage_id=str(checked_stage["stage_id"]))
+        receipt, expected_stage_id=str(checked_stage["stage_id"])
+    )
     if checked_receipt["operation"] not in _STAGE_DISPATCH_RECEIPTS:
-        raise StageDispatchError(
-            "receipt operation does not create or resume stage execution")
-    _verify_dispatch_result(
-        checked_stage, checked_receipt, stage_entities)
-    checked_handoff = _verified_handoff_for_dispatch(
-        checked_stage, handoff, selected_artifacts)
-    claim, attempt = _dispatch_claim(
-        checked_stage, checked_receipt, attempt_id)
+        raise StageDispatchError("receipt operation does not create or resume stage execution")
+    _verify_dispatch_result(checked_stage, checked_receipt, stage_entities)
+    checked_handoff = _verified_handoff_for_dispatch(checked_stage, handoff, selected_artifacts)
+    claim, attempt = _dispatch_claim(checked_stage, checked_receipt, attempt_id)
     scope = _declared_stage_scope(declared_scope)
-    authority_reference = _stage_authority_reference(
-        checked_stage["authority"])
-    dispatch_handoff = _dispatch_handoff_projection(
-        checked_handoff, authority_reference)
+    authority_reference = _stage_authority_reference(checked_stage["authority"])
+    dispatch_handoff = _dispatch_handoff_projection(checked_handoff, authority_reference)
     startup = {
         "schema": STAGE_STARTUP_SCHEMA,
         "stage_id": checked_stage["stage_id"],
         "authority": authority_reference,
-        "input_manifest_bytes":
-            checked_stage["input_manifest_ref"]["bytes"],
+        "input_manifest_bytes": checked_stage["input_manifest_ref"]["bytes"],
         "input_handoff": dispatch_handoff,
-        "selected_artifacts": _json_detach(
-            selected_artifacts, "selected artifacts"),
+        "selected_artifacts": _json_detach(selected_artifacts, "selected artifacts"),
         "budget": checked_stage["budget"],
         "execution_claim": claim,
         "attempt_id": attempt,
@@ -1746,10 +1972,10 @@ def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
     startup = _json_detach(startup, "stage startup")
     serialized = canonical_json_bytes(startup)
     if len(serialized) > MAX_STAGE_STARTUP_BYTES:
-        raise StageDispatchError(
-            f"stage startup exceeds {MAX_STAGE_STARTUP_BYTES} bytes")
-    selected_bytes = sum(int(reference.get("bytes") or 0)
-                         for reference in startup["selected_artifacts"])
+        raise StageDispatchError(f"stage startup exceeds {MAX_STAGE_STARTUP_BYTES} bytes")
+    selected_bytes = sum(
+        int(reference.get("bytes") or 0) for reference in startup["selected_artifacts"]
+    )
     telemetry = {
         # Preserve the size of the verified repository-resident input
         # manifest.  The agent-facing handoff is a privacy projection and is
@@ -1770,10 +1996,15 @@ def stage_runtime_dispatch(stage: dict, receipt: dict, handoff: dict,
     }
 
 
-def stage_dispatch_payload(stage: dict, verified_handoff: dict,
-                           selected_artifacts: list, claim: dict, *,
-                           attempt_id: str | None = None,
-                           declared_scope: dict | None = None) -> dict:
+def stage_dispatch_payload(
+    stage: dict,
+    verified_handoff: dict,
+    selected_artifacts: list,
+    claim: dict,
+    *,
+    attempt_id: str | None = None,
+    declared_scope: dict | None = None,
+) -> dict:
     """Preflight bounded startup against one proposed path-free claim.
 
     This compatibility seam exists only so the loop can prove serialization
@@ -1785,8 +2016,7 @@ def stage_dispatch_payload(stage: dict, verified_handoff: dict,
     operation = "resume_stage" if attempt_id is not None else "start_stage"
     stage_entities, _ = _stage_modules()
     checked_stage = stage_entities.validate_stage(stage)
-    result = {"head": _expected_dispatch_head(
-        checked_stage, stage_entities)}
+    result = {"head": _expected_dispatch_head(checked_stage, stage_entities)}
     if operation == "resume_stage":
         result = {
             "stage_id": stage.get("stage_id"),
@@ -1798,19 +2028,28 @@ def stage_dispatch_payload(stage: dict, verified_handoff: dict,
     receipt = {
         "schema": STAGE_RECEIPT_SCHEMA,
         "operation_id": "bounded-startup-preflight",
-        "request_fingerprint": hashlib.sha256(canonical_json_bytes({
-            "stage": stage.get("fingerprint"), "claim": claim,
-        })).hexdigest(),
+        "request_fingerprint": hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "stage": stage.get("fingerprint"),
+                    "claim": claim,
+                }
+            )
+        ).hexdigest(),
         "operation": operation,
         "stage_ids": [stage.get("stage_id")],
         "committed_revision": 1,
     }
     receipt["result"] = result
-    receipt["result_fingerprint"] = hashlib.sha256(
-        canonical_json_bytes(result)).hexdigest()
+    receipt["result_fingerprint"] = hashlib.sha256(canonical_json_bytes(result)).hexdigest()
     dispatch = stage_runtime_dispatch(
-        stage, receipt, verified_handoff, selected_artifacts,
-        attempt_id=attempt_id, declared_scope=declared_scope)
+        stage,
+        receipt,
+        verified_handoff,
+        selected_artifacts,
+        attempt_id=attempt_id,
+        declared_scope=declared_scope,
+    )
     if claim != dispatch["startup"]["execution_claim"]:
         raise StageDispatchError("stage execution claim is invalid")
     return dispatch
@@ -1818,54 +2057,64 @@ def stage_dispatch_payload(stage: dict, verified_handoff: dict,
 
 def stage_startup_bytes(dispatch: dict) -> bytes:
     """Return and re-verify the byte-identical bounded startup serialization."""
-    if not isinstance(dispatch, dict) or set(dispatch) != {
-            "schema", "startup", "startup_sha256", "telemetry"} or \
-            dispatch.get("schema") != STAGE_DISPATCH_SCHEMA:
+    if (
+        not isinstance(dispatch, dict)
+        or set(dispatch) != {"schema", "startup", "startup_sha256", "telemetry"}
+        or dispatch.get("schema") != STAGE_DISPATCH_SCHEMA
+    ):
         raise StageDispatchError("stage dispatch envelope is invalid")
     startup = dispatch.get("startup")
-    if not isinstance(startup, dict) or \
-            startup.get("schema") != STAGE_STARTUP_SCHEMA:
+    if not isinstance(startup, dict) or startup.get("schema") != STAGE_STARTUP_SCHEMA:
         raise StageDispatchError("stage startup payload is invalid")
     required = {
-        "schema", "stage_id", "authority", "input_manifest_bytes",
+        "schema",
+        "stage_id",
+        "authority",
+        "input_manifest_bytes",
         "input_handoff",
-        "selected_artifacts", "budget", "execution_claim", "attempt_id",
+        "selected_artifacts",
+        "budget",
+        "execution_claim",
+        "attempt_id",
     }
     fields = frozenset(startup)
     if not required <= fields or fields - required - {"declared_scope", "phase_input"}:
         raise StageDispatchError("stage startup fields are invalid")
     if "phase_input" in startup:
         _stage_modules()[0]._portable_reference(startup["phase_input"], "phase input")
-    authority_reference = _verify_stage_authority_reference(
-        startup.get("authority"))
+    authority_reference = _verify_stage_authority_reference(startup.get("authority"))
     projected_handoff = _verify_dispatch_handoff_projection(
-        startup.get("input_handoff"), authority_reference)
+        startup.get("input_handoff"), authority_reference
+    )
     _reject_runtime_context(startup, "stage startup")
     serialized = canonical_json_bytes(startup)
     if len(serialized) > MAX_STAGE_STARTUP_BYTES:
         raise StageDispatchError("stage startup exceeds its bound")
-    if dispatch.get("startup_sha256") != \
-            hashlib.sha256(serialized).hexdigest():
+    if dispatch.get("startup_sha256") != hashlib.sha256(serialized).hexdigest():
         raise StageDispatchError("stage startup fingerprint mismatch")
     selected = startup.get("selected_artifacts")
     if not isinstance(selected, list):
         raise StageDispatchError("stage startup selected artifacts are invalid")
     if projected_handoff.get("selected_artifacts") != selected:
-        raise StageDispatchError(
-            "stage startup handoff selected artifacts mismatch")
+        raise StageDispatchError("stage startup handoff selected artifacts mismatch")
     expected_telemetry = {
         "manifest_bytes": startup.get("input_manifest_bytes"),
         "startup_bytes": len(serialized),
         "startup_tokens": (len(serialized) + 3) // 4,
         "selected_ref_count": len(selected) + int("phase_input" in startup),
-        "selected_ref_bytes": sum(int(row.get("bytes") or 0)
-                                  for row in selected + ([startup["phase_input"]] if "phase_input" in startup else [])
-                                  if isinstance(row, dict)),
+        "selected_ref_bytes": sum(
+            int(row.get("bytes") or 0)
+            for row in selected + ([startup["phase_input"]] if "phase_input" in startup else [])
+            if isinstance(row, dict)
+        ),
         "predecessor_root_opens": 0,
     }
     input_manifest_bytes = startup.get("input_manifest_bytes")
-    if isinstance(input_manifest_bytes, bool) or not isinstance(
-            input_manifest_bytes, int) or input_manifest_bytes < 0:
+    if (
+        isinstance(input_manifest_bytes, bool)
+        or not isinstance(input_manifest_bytes, int)
+        or input_manifest_bytes < 0
+    ):
         raise StageDispatchError("stage startup telemetry mismatch")
     if dispatch.get("telemetry") != expected_telemetry:
         raise StageDispatchError("stage startup telemetry mismatch")
@@ -1877,11 +2126,16 @@ def attach_phase_input(dispatch: dict, reference: dict) -> dict:
     stage_startup_bytes(dispatch)
     result = _json_detach(dispatch, "stage dispatch")
     result["startup"]["phase_input"] = _stage_modules()[0]._portable_reference(
-        reference, "phase input")
+        reference, "phase input"
+    )
     raw = canonical_json_bytes(result["startup"])
     result["startup_sha256"] = hashlib.sha256(raw).hexdigest()
     references = result["startup"]["selected_artifacts"] + [result["startup"]["phase_input"]]
-    result["telemetry"].update(startup_bytes=len(raw), startup_tokens=(len(raw) + 3) // 4,
-        selected_ref_count=len(references), selected_ref_bytes=sum(row["bytes"] for row in references))
+    result["telemetry"].update(
+        startup_bytes=len(raw),
+        startup_tokens=(len(raw) + 3) // 4,
+        selected_ref_count=len(references),
+        selected_ref_bytes=sum(row["bytes"] for row in references),
+    )
     stage_startup_bytes(result)
     return result

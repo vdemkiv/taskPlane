@@ -65,7 +65,9 @@ SNAPSHOT_SCHEMA = "taskplane.host-surface-snapshot/v1"
 EVENT_SCHEMA = "taskplane.host-surface-event/v1"
 ROOT_SESSION_START_SCHEMA = "taskplane.host-root-session-start/v1"
 REVISION_ID_KEYS = (
-    "target_fingerprint", "context_fingerprint", "findings_fingerprint",
+    "target_fingerprint",
+    "context_fingerprint",
+    "findings_fingerprint",
     "canonical_revision",
 )
 
@@ -80,15 +82,16 @@ class RootSessionReceiptError(ValueError):
 
 def _root_receipt_authority(value: bytes) -> bytes:
     if not isinstance(value, bytes) or len(value) < 16:
-        raise RootSessionReceiptError(
-            "root-session authority must contain at least 16 bytes")
+        raise RootSessionReceiptError("root-session authority must contain at least 16 bytes")
     return value
 
 
 def _root_receipt_fingerprint(value: Mapping[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-        allow_nan=False).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _root_receipt_authenticator(fingerprint: str, authority: bytes) -> str:
@@ -100,10 +103,18 @@ def _root_receipt_authenticator(fingerprint: str, authority: bytes) -> str:
 
 
 def start_root_session(
-        capability: Mapping[str, Any], seed: Mapping[str, Any], *,
-        run_id: str, wave_id: str, candidate_sha: str,
-        settings_digest: str, session_pseudonym: str, started_at: str,
-        issuer_sequence: int, authority: bytes) -> dict[str, Any]:
+    capability: Mapping[str, Any],
+    seed: Mapping[str, Any],
+    *,
+    run_id: str,
+    wave_id: str,
+    candidate_sha: str,
+    settings_digest: str,
+    session_pseudonym: str,
+    started_at: str,
+    issuer_sequence: int,
+    authority: bytes,
+) -> dict[str, Any]:
     """Seal the host-created fresh root against the prepared seed.
 
     This is the private host boundary.  Taskplane core may verify the result,
@@ -113,16 +124,18 @@ def start_root_session(
         checked_seed = root_seed_runtime.validate_root_seed(seed)
     except Exception as exc:
         raise RootSessionReceiptError(str(exc)) from exc
-    if not isinstance(capability, Mapping) or capability.get("schema") != \
-            "taskplane.host-root-session-capability/v1" or \
-            capability.get("status") != "supported" or \
-            capability.get("fresh_start") is not True or \
-            capability.get("cumulative_meter") is not True or \
-            capability.get("one_observation_one_turn") is not True:
-        raise RootSessionReceiptError(
-            "host root-session capability is unsupported")
+    if (
+        not isinstance(capability, Mapping)
+        or capability.get("schema") != "taskplane.host-root-session-capability/v1"
+        or capability.get("status") != "supported"
+        or capability.get("fresh_start") is not True
+        or capability.get("cumulative_meter") is not True
+        or capability.get("one_observation_one_turn") is not True
+    ):
+        raise RootSessionReceiptError("host root-session capability is unsupported")
     binding = {
-        "run_id": str(run_id), "wave_id": str(wave_id),
+        "run_id": str(run_id),
+        "wave_id": str(wave_id),
         "candidate_sha": str(candidate_sha),
         "settings_fingerprint": str(settings_digest),
         "seed_fingerprint": str(checked_seed["seed_fingerprint"]),
@@ -134,25 +147,24 @@ def start_root_session(
         "settings_fingerprint": checked_seed["settings_fingerprint"],
         "seed_fingerprint": checked_seed["seed_fingerprint"],
     }
-    if binding != expected or capability.get("settings_digest") != \
-            settings_digest:
+    if binding != expected or capability.get("settings_digest") != settings_digest:
         raise RootSessionReceiptError(
-            "host root-session start binding does not match the prepared seed")
-    if not isinstance(issuer_sequence, int) or isinstance(
-            issuer_sequence, bool) or issuer_sequence < 1:
-        raise RootSessionReceiptError(
-            "host root-session issuer sequence must be positive")
+            "host root-session start binding does not match the prepared seed"
+        )
+    if (
+        not isinstance(issuer_sequence, int)
+        or isinstance(issuer_sequence, bool)
+        or issuer_sequence < 1
+    ):
+        raise RootSessionReceiptError("host root-session issuer sequence must be positive")
     if not re.fullmatch(r"[0-9a-f]{64}", str(session_pseudonym or "")):
-        raise RootSessionReceiptError(
-            "host root-session pseudonym must be purpose scoped")
+        raise RootSessionReceiptError("host root-session pseudonym must be purpose scoped")
     try:
         parsed = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
     except (TypeError, ValueError) as exc:
-        raise RootSessionReceiptError(
-            "host root-session start time is invalid") from exc
+        raise RootSessionReceiptError("host root-session start time is invalid") from exc
     if parsed.tzinfo is None:
-        raise RootSessionReceiptError(
-            "host root-session start time must include a timezone")
+        raise RootSessionReceiptError("host root-session start time must include a timezone")
     material = {
         "schema": ROOT_SESSION_START_SCHEMA,
         "status": "fresh",
@@ -169,54 +181,81 @@ def start_root_session(
     }
     fingerprint = _root_receipt_fingerprint(material)
     return {
-        **material, "fingerprint": fingerprint,
-        "authenticator": _root_receipt_authenticator(
-            fingerprint, authority),
+        **material,
+        "fingerprint": fingerprint,
+        "authenticator": _root_receipt_authenticator(fingerprint, authority),
     }
 
 
 def validate_root_session_start(
-        value: Mapping[str, Any], *, authority: bytes,
-        seed: Mapping[str, Any]) -> dict[str, Any]:
+    value: Mapping[str, Any], *, authority: bytes, seed: Mapping[str, Any]
+) -> dict[str, Any]:
     """Verify one exact host-created fresh-root receipt."""
     required = {
-        "schema", "status", "host", "host_version",
-        "capability_fingerprint", "run_id", "wave_id", "candidate_sha",
-        "settings_fingerprint", "seed_fingerprint", "session_role",
-        "session_pseudonym", "resumed", "issuer_sequence", "started_at",
-        "operation_id", "fingerprint", "authenticator",
+        "schema",
+        "status",
+        "host",
+        "host_version",
+        "capability_fingerprint",
+        "run_id",
+        "wave_id",
+        "candidate_sha",
+        "settings_fingerprint",
+        "seed_fingerprint",
+        "session_role",
+        "session_pseudonym",
+        "resumed",
+        "issuer_sequence",
+        "started_at",
+        "operation_id",
+        "fingerprint",
+        "authenticator",
     }
-    if not isinstance(value, Mapping) or set(value) != required or \
-            value.get("schema") != ROOT_SESSION_START_SCHEMA:
-        raise RootSessionReceiptError(
-            "host root-session start receipt is invalid")
-    material = {key: copy.deepcopy(item) for key, item in value.items()
-                if key not in {"fingerprint", "authenticator"}}
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != required
+        or value.get("schema") != ROOT_SESSION_START_SCHEMA
+    ):
+        raise RootSessionReceiptError("host root-session start receipt is invalid")
+    material = {
+        key: copy.deepcopy(item)
+        for key, item in value.items()
+        if key not in {"fingerprint", "authenticator"}
+    }
     fingerprint = _root_receipt_fingerprint(material)
     if value.get("fingerprint") != fingerprint or not hmac.compare_digest(
-            str(value.get("authenticator") or ""),
-            _root_receipt_authenticator(fingerprint, authority)):
-        raise RootSessionReceiptError(
-            "host root-session start receipt is unauthentic")
+        str(value.get("authenticator") or ""), _root_receipt_authenticator(fingerprint, authority)
+    ):
+        raise RootSessionReceiptError("host root-session start receipt is unauthentic")
     rebuilt = start_root_session(
-        {"schema": "taskplane.host-root-session-capability/v1",
-         "status": "supported", "host": value["host"],
-         "host_version": value["host_version"],
-         "settings_digest": value["settings_fingerprint"],
-         "fresh_start": True, "cumulative_meter": True,
-         "one_observation_one_turn": True,
-         "fingerprint": value["capability_fingerprint"]},
-        seed, run_id=str(value["run_id"]), wave_id=str(value["wave_id"]),
+        {
+            "schema": "taskplane.host-root-session-capability/v1",
+            "status": "supported",
+            "host": value["host"],
+            "host_version": value["host_version"],
+            "settings_digest": value["settings_fingerprint"],
+            "fresh_start": True,
+            "cumulative_meter": True,
+            "one_observation_one_turn": True,
+            "fingerprint": value["capability_fingerprint"],
+        },
+        seed,
+        run_id=str(value["run_id"]),
+        wave_id=str(value["wave_id"]),
         candidate_sha=str(value["candidate_sha"]),
         settings_digest=str(value["settings_fingerprint"]),
         session_pseudonym=str(value["session_pseudonym"]),
         started_at=str(value["started_at"]),
-        issuer_sequence=int(value["issuer_sequence"]), authority=authority)
-    if rebuilt != dict(value) or value.get("status") != "fresh" or \
-            value.get("session_role") != "root" or \
-            value.get("resumed") is not False:
-        raise RootSessionReceiptError(
-            "host root-session start receipt is stale or resumed")
+        issuer_sequence=int(value["issuer_sequence"]),
+        authority=authority,
+    )
+    if (
+        rebuilt != dict(value)
+        or value.get("status") != "fresh"
+        or value.get("session_role") != "root"
+        or value.get("resumed") is not False
+    ):
+        raise RootSessionReceiptError("host root-session start receipt is stale or resumed")
     return dict(value)
 
 
@@ -231,8 +270,9 @@ def process_start_identity(pid: int) -> str:
         library = ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"
         libproc = ctypes.CDLL(library, use_errno=True)
         buffer = ctypes.create_string_buffer(256)
-        size = int(libproc.proc_pidinfo(
-            int(pid), 3, 0, ctypes.byref(buffer), ctypes.sizeof(buffer)))
+        size = int(
+            libproc.proc_pidinfo(int(pid), 3, 0, ctypes.byref(buffer), ctypes.sizeof(buffer))
+        )
         if size >= 136:
             return "darwin-start:" + buffer.raw[120:136].hex()
     raise OSError("process start identity is unavailable")
@@ -240,8 +280,7 @@ def process_start_identity(pid: int) -> str:
 
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return MappingProxyType({str(key): _freeze(item)
-                                 for key, item in value.items()})
+        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
     if isinstance(value, (str, int, float, bool)) or value is None:
@@ -294,11 +333,11 @@ class HostSurfaceSnapshot:
         evidence: Sequence[str] = (),
         safe_actions: Sequence[str] = (),
     ) -> "HostSurfaceSnapshot":
-        if not all(str(item).strip() for item in
-                   (workflow_id, run_id, target, revision, stage, state)):
+        if not all(
+            str(item).strip() for item in (workflow_id, run_id, target, revision, stage, state)
+        ):
             raise ValueError("canonical snapshot identity fields are required")
-        if (isinstance(sequence, bool) or not isinstance(sequence, int)
-                or sequence < 0):
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
             raise ValueError("sequence must be a non-negative integer")
         frozen_values = _freeze(values)
         frozen_evidence = tuple(str(item) for item in evidence)
@@ -336,14 +375,21 @@ class HostSurfaceSnapshot:
         if value.get("schema") != SNAPSHOT_SCHEMA:
             raise ValueError("unsupported host-surface snapshot schema")
         expected_fields = {
-            "schema", "workflow_id", "run_id", "target", "revision",
-            "sequence", "stage", "state", "values", "evidence",
-            "safe_actions", "fingerprint",
+            "schema",
+            "workflow_id",
+            "run_id",
+            "target",
+            "revision",
+            "sequence",
+            "stage",
+            "state",
+            "values",
+            "evidence",
+            "safe_actions",
+            "fingerprint",
         }
         if set(value) != expected_fields:
-            raise ValueError(
-                "host-surface snapshot fields are incomplete or unknown"
-            )
+            raise ValueError("host-surface snapshot fields are incomplete or unknown")
         fingerprint = value.get("fingerprint")
         if not isinstance(fingerprint, str):
             raise ValueError("host-surface snapshot fingerprint is required")
@@ -392,12 +438,12 @@ class HostSurfaceSnapshot:
         """Pair canonical truth with a negotiated, non-authoritative view."""
         presentation = selection.to_dict()
         presentation["kind"] = (
-            selection.selected_surface if selection.selected_surface == "native"
+            selection.selected_surface
+            if selection.selected_surface == "native"
             else selection.fallback
         )
         presentation["reason"] = (
-            "available" if selection.selected_surface == "native"
-            else "unavailable"
+            "available" if selection.selected_surface == "native" else "unavailable"
         )
         # Unavailable host functionality must never be reported as a choice.
         presentation["user_declined"] = False
@@ -419,9 +465,7 @@ class HostSurfaceEvent:
     schema: str = EVENT_SCHEMA
 
     @classmethod
-    def from_snapshot(
-        cls, snapshot: HostSurfaceSnapshot, *, event_type: str
-    ) -> "HostSurfaceEvent":
+    def from_snapshot(cls, snapshot: HostSurfaceSnapshot, *, event_type: str) -> "HostSurfaceEvent":
         if not str(event_type).strip():
             raise ValueError("event_type is required")
         payload = {
@@ -449,13 +493,17 @@ class HostSurfaceEvent:
         if value.get("schema") != EVENT_SCHEMA:
             raise ValueError("unsupported host-surface event schema")
         expected_fields = {
-            "schema", "workflow_id", "run_id", "revision", "sequence",
-            "event_type", "snapshot_fingerprint", "fingerprint",
+            "schema",
+            "workflow_id",
+            "run_id",
+            "revision",
+            "sequence",
+            "event_type",
+            "snapshot_fingerprint",
+            "fingerprint",
         }
         if set(value) != expected_fields:
-            raise ValueError(
-                "host-surface event fields are incomplete or unknown"
-            )
+            raise ValueError("host-surface event fields are incomplete or unknown")
         fingerprint = value.get("fingerprint")
         if not isinstance(fingerprint, str):
             raise ValueError("host-surface event fingerprint is required")
@@ -464,12 +512,18 @@ class HostSurfaceEvent:
             raise ValueError("host-surface event fingerprint mismatch")
         try:
             sequence = value["sequence"]
-            if (isinstance(sequence, bool) or not isinstance(sequence, int)
-                    or sequence < 0):
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
                 raise ValueError("sequence must be a non-negative integer")
-            if not all(str(value[key]).strip() for key in (
-                    "workflow_id", "run_id", "revision", "event_type",
-                    "snapshot_fingerprint")):
+            if not all(
+                str(value[key]).strip()
+                for key in (
+                    "workflow_id",
+                    "run_id",
+                    "revision",
+                    "event_type",
+                    "snapshot_fingerprint",
+                )
+            ):
                 raise ValueError("canonical event fields are required")
             return cls(
                 workflow_id=value["workflow_id"],
@@ -521,22 +575,26 @@ def ordered_snapshots(
         elif candidate_identity != identity:
             raise ValueError("host-surface snapshot identity changed")
         previous = by_sequence.get(authenticated.sequence)
-        if (previous is not None
-                and previous.fingerprint != authenticated.fingerprint):
-            raise ContradictorySnapshotError(
-                "contradictory snapshots share one sequence"
-            )
+        if previous is not None and previous.fingerprint != authenticated.fingerprint:
+            raise ContradictorySnapshotError("contradictory snapshots share one sequence")
         by_sequence.setdefault(authenticated.sequence, authenticated)
     return tuple(by_sequence[key] for key in sorted(by_sequence))
+
 
 LARGE_DASHBOARD_INLINE_BYTES = 64 * 1024
 _CANONICAL_START = "<!-- taskplane-canonical-json:start -->"
 _CANONICAL_END = "<!-- taskplane-canonical-json:end -->"
 _DASHBOARD_GRAPH_KEYS = (
-    "design_graph", "plan_task_dag", "plan_waves", "module_impact",
+    "design_graph",
+    "plan_task_dag",
+    "plan_waves",
+    "module_impact",
 )
 _DASHBOARD_HEAD_IDENTITY_KEYS = (
-    "workflow_id", "run_id", "target", "revision",
+    "workflow_id",
+    "run_id",
+    "target",
+    "revision",
 )
 _NO_EXPECTED_HEAD = object()
 
@@ -546,8 +604,8 @@ def canonical_dashboard_bytes(model: Mapping[str, Any]) -> bytes:
     if not isinstance(model, Mapping):
         raise TypeError("dashboard model must be a mapping")
     return json.dumps(
-        dict(model), sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")
+        dict(model), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
 
 
 def _write_delivery_artifact(path: str, payload: bytes) -> None:
@@ -570,8 +628,12 @@ def _write_delivery_artifact(path: str, payload: bytes) -> None:
 
 
 def _artifact_ref(path: str, payload: bytes) -> dict[str, Any]:
-    return {"status": "available", "path": path, "bytes": len(payload),
-            "sha256": hashlib.sha256(payload).hexdigest()}
+    return {
+        "status": "available",
+        "path": path,
+        "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def _fingerprint_value(value: Mapping[str, Any]) -> str:
@@ -591,7 +653,9 @@ class _HtmlShape(HTMLParser):
             self.doctypes += 1
 
     def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]],
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
     ) -> None:
         if tag in self.tags:
             self.tags[tag] += 1
@@ -605,20 +669,15 @@ def _html_shape(document: str) -> _HtmlShape:
 
 def _disable_unverified_actions(fragment: str) -> str:
     """Make mutation/approval controls inert before any script executes."""
-    action = re.compile(
-        r"<button\b(?=[^>]*\bdata-dashboard-action(?:\s|=|>))[^>]*>",
-        re.IGNORECASE)
+    action = re.compile(r"<button\b(?=[^>]*\bdata-dashboard-action(?:\s|=|>))[^>]*>", re.IGNORECASE)
 
     def closed(match: re.Match[str]) -> str:
         tag = match.group(0)
-        inspection = re.search(
-            r"\bdata-action-kind\s*=\s*(['\"])inspection\1", tag,
-            re.IGNORECASE)
-        named = re.search(
-            r"\bdata-dashboard-action\s*=\s*(['\"])([^'\"]+)\1", tag,
-            re.IGNORECASE)
-        if inspection or (named and named.group(2).casefold() in {
-                "inspect", "view", "details", "export"}):
+        inspection = re.search(r"\bdata-action-kind\s*=\s*(['\"])inspection\1", tag, re.IGNORECASE)
+        named = re.search(r"\bdata-dashboard-action\s*=\s*(['\"])([^'\"]+)\1", tag, re.IGNORECASE)
+        if inspection or (
+            named and named.group(2).casefold() in {"inspect", "view", "details", "export"}
+        ):
             return tag
         if re.search(r"\bdisabled(?:\s|=|>)", tag, re.IGNORECASE):
             return tag
@@ -628,35 +687,35 @@ def _disable_unverified_actions(fragment: str) -> str:
 
 
 def _dashboard_freshness_controller(
-        rendered_head: Mapping[str, Any], *, actions_enabled: bool,
-        current_head_hrefs: Sequence[str] = ("../../current.json",),
+    rendered_head: Mapping[str, Any],
+    *,
+    actions_enabled: bool,
+    current_head_hrefs: Sequence[str] = ("../../current.json",),
 ) -> str:
-    encoded_head = base64.b64encode(canonical_dashboard_bytes(
-        rendered_head)).decode("ascii")
+    encoded_head = base64.b64encode(canonical_dashboard_bytes(rendered_head)).decode("ascii")
     hrefs = [str(value) for value in current_head_hrefs]
     if not hrefs or any(
-            not re.fullmatch(r"[A-Za-z0-9._/-]+", value)
-            or value.startswith("/") or "//" in value
-            for value in hrefs):
+        not re.fullmatch(r"[A-Za-z0-9._/-]+", value) or value.startswith("/") or "//" in value
+        for value in hrefs
+    ):
         raise ValueError("dashboard current-head routes are invalid")
-    encoded_hrefs = base64.b64encode(canonical_dashboard_bytes(
-        {"routes": hrefs})).decode("ascii")
+    encoded_hrefs = base64.b64encode(canonical_dashboard_bytes({"routes": hrefs})).decode("ascii")
     initial = "fresh" if actions_enabled else "unverified"
     # The old document never enables itself from a newer head.  It navigates
     # to the content-addressed generation, whose own controller must then
     # prove an exact head match.  file:// never attempts network fetch.
     return (
-        '<script>(function(){'
+        "<script>(function(){"
         'var root=document.body,rendered=JSON.parse(atob("' + encoded_head + '")),'
         'headRoutes=JSON.parse(atob("' + encoded_hrefs + '")).routes;'
-        'var wasStale=false;'
-        'function mutations(){return Array.from(document.querySelectorAll('
+        "var wasStale=false;"
+        "function mutations(){return Array.from(document.querySelectorAll("
         '"[data-dashboard-action]"))'
-        '.filter(function(item){var kind=(item.getAttribute('
+        ".filter(function(item){var kind=(item.getAttribute("
         '"data-action-kind")||item.getAttribute("data-dashboard-action")||"")'
         '.toLowerCase();return !["inspect","view","details","export",'
         '"inspection"].includes(kind);});}'
-        'function state(name,reason,enabled){root.dataset.dashboardFreshness=name;'
+        "function state(name,reason,enabled){root.dataset.dashboardFreshness=name;"
         'root.dataset.dashboardFreshnessReason=reason||"";var notice='
         'document.getElementById("tp-dashboard-freshness-status");if(notice){'
         'notice.dataset.status=name;notice.textContent="Dashboard "+name+": "+'
@@ -666,25 +725,32 @@ def _dashboard_freshness_controller(
         'function sameIdentity(head){return ["workflow_id","run_id","target",'
         '"revision"].every(function(key){return String(head[key]||"")==='
         'String(rendered[key]||"");});}'
-        'function apply(head){if(!head||!sameIdentity(head)){wasStale=true;'
+        "function apply(head){if(!head||!sameIdentity(head)){wasStale=true;"
         'state("stale","dashboard head identity is missing or changed",false);'
-        'return false;}var next=Number(head.sequence),here=Number(rendered.sequence);'
+        "return false;}var next=Number(head.sequence),here=Number(rendered.sequence);"
         'if(next>here){wasStale=true;state("stale",'
         '"durable dashboard head is newer than this page",false);'
         'if(head.html_href&&window.location&&typeof window.location.replace==="function")'
-        '{window.location.replace(head.html_href);}return false;}'
-        'if(next!==here||head.snapshot_fingerprint!==rendered.snapshot_fingerprint)'
+        "{window.location.replace(head.html_href);}return false;}"
+        "if(next!==here||head.snapshot_fingerprint!==rendered.snapshot_fingerprint)"
         '{wasStale=true;state("stale","dashboard head is contradictory",false);'
         'return false;}if(wasStale){state("stale",'
         '"a stale document requires a newer rendered snapshot",false);return false;}'
         'state("fresh","exact durable head verified",true);return true;}'
-        'window.taskplaneDashboardApplyHead=apply;'
-        'state("' + initial + '","' +
-        ('embedded host acknowledgement verified' if actions_enabled else
-         'dashboard head has not been verified') + '",' +
-        ("true" if actions_enabled else "false") + ');'
+        "window.taskplaneDashboardApplyHead=apply;"
+        'state("'
+        + initial
+        + '","'
+        + (
+            "embedded host acknowledgement verified"
+            if actions_enabled
+            else "dashboard head has not been verified"
+        )
+        + '",'
+        + ("true" if actions_enabled else "false")
+        + ");"
         'var bridge=window.openai&&typeof window.openai.getDashboardHead==="function";'
-        'if(bridge){Promise.resolve(window.openai.getDashboardHead()).then(apply,'
+        "if(bridge){Promise.resolve(window.openai.getDashboardHead()).then(apply,"
         'function(){state("unverified","trusted head bridge failed",false);});}'
         'else if(window.location&&window.location.protocol!=="file:"&&'
         'typeof window.fetch==="function"){(function load(index){'
@@ -694,24 +760,27 @@ def _dashboard_freshness_controller(
         'credentials:"same-origin"}).then(function(response){'
         'if(!response.ok)throw new Error("head unavailable");return response.json()'
         '.then(function(head){if(head.html_href&&typeof URL==="function")'
-        '{head.html_href=new URL(head.html_href,response.url).href;}return head;});})'
-        '.then(apply,function(){load(index+1);});})(0);}'
+        "{head.html_href=new URL(head.html_href,response.url).href;}return head;});})"
+        ".then(apply,function(){load(index+1);});})(0);}"
         'else{state("unverified",window.location&&window.location.protocol==="file:"?'
         '"file dashboard has no trusted head bridge; network refresh is not attempted":'
         '"dashboard head transport is unavailable",false);}'
-        '})();</script>')
+        "})();</script>"
+    )
 
 
-def _embedded_html(body: str, canonical: bytes, *,
-                   rendered_head: Mapping[str, Any],
-                   actions_enabled: bool,
-                   stylesheet: str | None = None,
-                   current_head_hrefs: Sequence[str] = (
-                       "../../current.json",)) -> bytes:
+def _embedded_html(
+    body: str,
+    canonical: bytes,
+    *,
+    rendered_head: Mapping[str, Any],
+    actions_enabled: bool,
+    stylesheet: str | None = None,
+    current_head_hrefs: Sequence[str] = ("../../current.json",),
+) -> bytes:
     fragment_shape = _html_shape(body)
     if fragment_shape.doctypes or any(fragment_shape.tags.values()):
-        raise ValueError(
-            "HTML renderer must return a fragment, not a document boundary")
+        raise ValueError("HTML renderer must return a fragment, not a document boundary")
     if not actions_enabled:
         body = _disable_unverified_actions(body)
     css = str(stylesheet or "")
@@ -722,30 +791,35 @@ def _embedded_html(body: str, canonical: bytes, *,
     document = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Taskplane dashboard</title>' + style + '</head><body '
+        "<title>Taskplane dashboard</title>" + style + "</head><body "
         'data-dashboard-delivery-root="true" data-dashboard-freshness="'
-        + ("fresh" if actions_enabled else "unverified") + '">'
+        + ("fresh" if actions_enabled else "unverified")
+        + '">'
         + '<div id="tp-dashboard-freshness-status" role="status" '
-          'aria-live="polite" data-status="'
-        + ("fresh" if actions_enabled else "unverified") + '">Dashboard '
-        + ("fresh: embedded host acknowledgement verified" if actions_enabled
-           else "unverified: dashboard head has not been verified") + '</div>'
+        'aria-live="polite" data-status="'
+        + ("fresh" if actions_enabled else "unverified")
+        + '">Dashboard '
+        + (
+            "fresh: embedded host acknowledgement verified"
+            if actions_enabled
+            else "unverified: dashboard head has not been verified"
+        )
+        + "</div>"
         + body
         + '<script type="application/x-taskplane-json-base64" '
-          f'data-taskplane-canonical="true">{encoded}</script>'
+        f'data-taskplane-canonical="true">{encoded}</script>'
         + _dashboard_freshness_controller(
-            rendered_head, actions_enabled=actions_enabled,
-            current_head_hrefs=current_head_hrefs)
-        + '</body></html>')
+            rendered_head, actions_enabled=actions_enabled, current_head_hrefs=current_head_hrefs
+        )
+        + "</body></html>"
+    )
     shape = _html_shape(document)
-    if shape.doctypes != 1 or shape.tags != {
-            "html": 1, "head": 1, "body": 1}:
+    if shape.doctypes != 1 or shape.tags != {"html": 1, "head": 1, "body": 1}:
         raise ValueError("dashboard delivery must contain exactly one document")
     return document.encode("utf-8")
 
 
-def _normalize_delivery_head(
-        value: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_delivery_head(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("dashboard head must be a mapping")
     try:
@@ -754,76 +828,97 @@ def _normalize_delivery_head(
         raise ValueError("dashboard head sequence is required") from exc
     if sequence < 0:
         raise ValueError("dashboard head sequence is invalid")
-    head = {key: str(value.get(key) or "")
-            for key in _DASHBOARD_HEAD_IDENTITY_KEYS}
+    head = {key: str(value.get(key) or "") for key in _DASHBOARD_HEAD_IDENTITY_KEYS}
     if not all(head.values()):
         raise ValueError("dashboard head identity is incomplete")
-    fingerprint = str(value.get("snapshot_fingerprint") or
-                      value.get("fingerprint") or "")
+    fingerprint = str(value.get("snapshot_fingerprint") or value.get("fingerprint") or "")
     if not fingerprint:
         raise ValueError("dashboard head fingerprint is required")
-    return {**head, "sequence": sequence,
-            "snapshot_fingerprint": fingerprint}
+    return {**head, "sequence": sequence, "snapshot_fingerprint": fingerprint}
 
 
 def dashboard_freshness_state(
-        rendered_head: Mapping[str, Any],
-        current_head: Mapping[str, Any] | None, *,
-        page_url: str, bridge_available: bool, fetch_available: bool,
-        previously_stale: bool = False,
-        previous_rendered_sequence: int | None = None) -> dict[str, Any]:
+    rendered_head: Mapping[str, Any],
+    current_head: Mapping[str, Any] | None,
+    *,
+    page_url: str,
+    bridge_available: bool,
+    fetch_available: bool,
+    previously_stale: bool = False,
+    previous_rendered_sequence: int | None = None,
+) -> dict[str, Any]:
     """Return the fail-closed action state for one open dashboard page."""
     rendered = _normalize_delivery_head(rendered_head)
     base = {"rendered_sequence": rendered["sequence"]}
     is_file = str(page_url).casefold().startswith("file:")
     if is_file and not bridge_available:
         return {
-            "status": "unverified", "actions_enabled": False,
-            "reason": "file dashboard has no trusted head bridge; network "
-                      "refresh is not attempted", **base,
+            "status": "unverified",
+            "actions_enabled": False,
+            "reason": "file dashboard has no trusted head bridge; network refresh is not attempted",
+            **base,
         }
     if not bridge_available and not fetch_available:
         return {
-            "status": "unverified", "actions_enabled": False,
-            "reason": "dashboard head transport is unavailable", **base,
+            "status": "unverified",
+            "actions_enabled": False,
+            "reason": "dashboard head transport is unavailable",
+            **base,
         }
     if current_head is None:
         return {
-            "status": "unverified", "actions_enabled": False,
-            "reason": "durable dashboard head is unavailable", **base,
+            "status": "unverified",
+            "actions_enabled": False,
+            "reason": "durable dashboard head is unavailable",
+            **base,
         }
     try:
         current = _normalize_delivery_head(current_head)
     except ValueError as exc:
-        return {"status": "unverified", "actions_enabled": False,
-                "reason": str(exc), **base}
+        return {"status": "unverified", "actions_enabled": False, "reason": str(exc), **base}
     result_base = {**base, "current_sequence": current["sequence"]}
-    if any(rendered[key] != current[key]
-           for key in _DASHBOARD_HEAD_IDENTITY_KEYS):
-        return {"status": "stale", "actions_enabled": False,
-                "reason": "dashboard head identity changed", **result_base}
+    if any(rendered[key] != current[key] for key in _DASHBOARD_HEAD_IDENTITY_KEYS):
+        return {
+            "status": "stale",
+            "actions_enabled": False,
+            "reason": "dashboard head identity changed",
+            **result_base,
+        }
     if current["sequence"] > rendered["sequence"]:
-        return {"status": "stale", "actions_enabled": False,
-                "reason": "durable dashboard head is newer than this page",
-                **result_base}
-    if (current["sequence"] != rendered["sequence"] or
-            current["snapshot_fingerprint"] !=
-            rendered["snapshot_fingerprint"]):
-        return {"status": "stale", "actions_enabled": False,
-                "reason": "dashboard head is stale or contradictory",
-                **result_base}
-    if previously_stale and (previous_rendered_sequence is None or
-                             rendered["sequence"] <=
-                             previous_rendered_sequence):
-        return {"status": "stale", "actions_enabled": False,
-                "reason": "a stale page requires a newer rendered snapshot",
-                **result_base}
-    return {"status": "fresh", "actions_enabled": True,
-            "reason": "exact durable head verified", **result_base}
+        return {
+            "status": "stale",
+            "actions_enabled": False,
+            "reason": "durable dashboard head is newer than this page",
+            **result_base,
+        }
+    if (
+        current["sequence"] != rendered["sequence"]
+        or current["snapshot_fingerprint"] != rendered["snapshot_fingerprint"]
+    ):
+        return {
+            "status": "stale",
+            "actions_enabled": False,
+            "reason": "dashboard head is stale or contradictory",
+            **result_base,
+        }
+    if previously_stale and (
+        previous_rendered_sequence is None or rendered["sequence"] <= previous_rendered_sequence
+    ):
+        return {
+            "status": "stale",
+            "actions_enabled": False,
+            "reason": "a stale page requires a newer rendered snapshot",
+            **result_base,
+        }
+    return {
+        "status": "fresh",
+        "actions_enabled": True,
+        "reason": "exact durable head verified",
+        **result_base,
+    }
 
 
-def dashboard_publication_receipt_fingerprint(
-        receipt: Mapping[str, Any]) -> str:
+def dashboard_publication_receipt_fingerprint(receipt: Mapping[str, Any]) -> str:
     """Authenticate a receipt after removing only its self fingerprint."""
     payload = dict(receipt)
     payload.pop("fingerprint", None)
@@ -831,18 +926,18 @@ def dashboard_publication_receipt_fingerprint(
 
 
 def _lowercase_digest(value: object, length: int) -> bool:
-    return isinstance(value, str) and len(value) == length and all(
-        character in "0123456789abcdef" for character in value)
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
-def _snapshot_receipt(
-        model: Mapping[str, Any], canonical_sha256: str) -> dict[str, Any]:
+def _snapshot_receipt(model: Mapping[str, Any], canonical_sha256: str) -> dict[str, Any]:
     identity_value = model.get("identity")
-    identity: Mapping[str, Any] = (
-        identity_value if isinstance(identity_value, Mapping) else {})
+    identity: Mapping[str, Any] = identity_value if isinstance(identity_value, Mapping) else {}
     values_value = model.get("values")
-    values: Mapping[str, Any] = (
-        values_value if isinstance(values_value, Mapping) else model)
+    values: Mapping[str, Any] = values_value if isinstance(values_value, Mapping) else model
     sequence = model.get("sequence", identity.get("sequence", 0))
     if isinstance(sequence, bool) or not isinstance(sequence, int):
         sequence = 0
@@ -868,91 +963,122 @@ def _candidate_receipt(snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_dashboard_publication_receipt(
-        receipt: Mapping[str, Any], *, current_head: Mapping[str, Any],
-        expected_source_sha: str) -> dict[str, Any]:
+    receipt: Mapping[str, Any], *, current_head: Mapping[str, Any], expected_source_sha: str
+) -> dict[str, Any]:
     """Return release evidence only for the exact durable dashboard head."""
     receipt_fields = {
-        "schema", "snapshot", "candidate", "graphs", "dom_freshness",
-        "host_acknowledgement", "generation", "bindings", "fingerprint",
+        "schema",
+        "snapshot",
+        "candidate",
+        "graphs",
+        "dom_freshness",
+        "host_acknowledgement",
+        "generation",
+        "bindings",
+        "fingerprint",
     }
-    if not isinstance(receipt, Mapping) or set(receipt) != receipt_fields or \
-            receipt.get("schema") != \
-            "taskplane.dashboard-publication-receipt/v1" or \
-            receipt.get("fingerprint") != \
-            dashboard_publication_receipt_fingerprint(receipt):
+    if (
+        not isinstance(receipt, Mapping)
+        or set(receipt) != receipt_fields
+        or receipt.get("schema") != "taskplane.dashboard-publication-receipt/v1"
+        or receipt.get("fingerprint") != dashboard_publication_receipt_fingerprint(receipt)
+    ):
         raise ValueError("dashboard publication receipt is invalid")
     if not _lowercase_digest(expected_source_sha, 40):
         raise ValueError("dashboard expected source SHA is invalid")
     snapshot = receipt.get("snapshot")
-    if not isinstance(snapshot, Mapping) or set(snapshot) != {
-            "fingerprint", "sequence", "revision", "generated_at",
-            "canonical_sha256", "candidate_sha"} or \
-            not _lowercase_digest(snapshot.get("fingerprint"), 64) or \
-            not _lowercase_digest(snapshot.get("canonical_sha256"), 64) or \
-            snapshot.get("candidate_sha") != expected_source_sha:
+    if (
+        not isinstance(snapshot, Mapping)
+        or set(snapshot)
+        != {
+            "fingerprint",
+            "sequence",
+            "revision",
+            "generated_at",
+            "canonical_sha256",
+            "candidate_sha",
+        }
+        or not _lowercase_digest(snapshot.get("fingerprint"), 64)
+        or not _lowercase_digest(snapshot.get("canonical_sha256"), 64)
+        or snapshot.get("candidate_sha") != expected_source_sha
+    ):
         raise ValueError("dashboard snapshot names another candidate")
     candidate = receipt.get("candidate")
-    if not isinstance(candidate, Mapping) or set(candidate) != {
-            "source_sha", "snapshot_fingerprint", "canonical_sha256",
-            "fingerprint"} or \
-            candidate.get("source_sha") != expected_source_sha or \
-            candidate.get("snapshot_fingerprint") != snapshot["fingerprint"] or \
-            candidate.get("canonical_sha256") != snapshot["canonical_sha256"] or \
-            candidate.get("fingerprint") != _fingerprint_value({
-                key: candidate[key] for key in candidate
-                if key != "fingerprint"}):
+    if (
+        not isinstance(candidate, Mapping)
+        or set(candidate)
+        != {"source_sha", "snapshot_fingerprint", "canonical_sha256", "fingerprint"}
+        or candidate.get("source_sha") != expected_source_sha
+        or candidate.get("snapshot_fingerprint") != snapshot["fingerprint"]
+        or candidate.get("canonical_sha256") != snapshot["canonical_sha256"]
+        or candidate.get("fingerprint")
+        != _fingerprint_value({key: candidate[key] for key in candidate if key != "fingerprint"})
+    ):
         raise ValueError("dashboard candidate identity is invalid")
     graphs = receipt.get("graphs")
     if not isinstance(graphs, Mapping) or any(
-            not _lowercase_digest(value, 64) for value in graphs.values()):
+        not _lowercase_digest(value, 64) for value in graphs.values()
+    ):
         raise ValueError("dashboard graph bindings are invalid")
     dom = receipt.get("dom_freshness")
-    if not isinstance(dom, Mapping) or set(dom) != {
-            "status", "html_document_count", "canonical_sha256",
-            "actions_enabled", "fingerprint"} or \
-            dom.get("status") != "verified" or \
-            dom.get("html_document_count") != 1 or \
-            dom.get("canonical_sha256") != snapshot["canonical_sha256"] or \
-            dom.get("fingerprint") != _fingerprint_value({
-                key: dom[key] for key in dom if key != "fingerprint"}):
+    if (
+        not isinstance(dom, Mapping)
+        or set(dom)
+        != {"status", "html_document_count", "canonical_sha256", "actions_enabled", "fingerprint"}
+        or dom.get("status") != "verified"
+        or dom.get("html_document_count") != 1
+        or dom.get("canonical_sha256") != snapshot["canonical_sha256"]
+        or dom.get("fingerprint")
+        != _fingerprint_value({key: dom[key] for key in dom if key != "fingerprint"})
+    ):
         raise ValueError("dashboard DOM freshness is invalid")
     generation = receipt.get("generation")
     host = receipt.get("host_acknowledgement")
-    if not isinstance(generation, Mapping) or set(generation) != {
-            "id", "artifacts", "complete"} or \
-            generation.get("complete") is not True or \
-            not isinstance(generation.get("artifacts"), Mapping) or \
-            generation.get("id") != _fingerprint_value({
+    if (
+        not isinstance(generation, Mapping)
+        or set(generation) != {"id", "artifacts", "complete"}
+        or generation.get("complete") is not True
+        or not isinstance(generation.get("artifacts"), Mapping)
+        or generation.get("id")
+        != _fingerprint_value(
+            {
                 "artifacts": generation["artifacts"],
                 "host_acknowledgement": (
-                    host.get("fingerprint") if isinstance(host, Mapping)
-                    else None),
-            }):
+                    host.get("fingerprint") if isinstance(host, Mapping) else None
+                ),
+            }
+        )
+    ):
         raise ValueError("dashboard generation identity is invalid")
     bindings = receipt.get("bindings")
     if bindings != {
-            "snapshot": snapshot["fingerprint"],
-            "candidate": candidate["fingerprint"],
-            "graphs": dict(graphs),
-            "dom_freshness": dom["fingerprint"],
-            "host_acknowledgement": (
-                host.get("fingerprint") if isinstance(host, Mapping)
-                else None)}:
+        "snapshot": snapshot["fingerprint"],
+        "candidate": candidate["fingerprint"],
+        "graphs": dict(graphs),
+        "dom_freshness": dom["fingerprint"],
+        "host_acknowledgement": (host.get("fingerprint") if isinstance(host, Mapping) else None),
+    }:
         raise ValueError("dashboard receipt bindings are severed")
     head_fields = {
-        "schema", *_DASHBOARD_HEAD_IDENTITY_KEYS, "sequence",
-        "snapshot_fingerprint", "candidate_sha", "generation_id",
-        "receipt_fingerprint", "html_href",
+        "schema",
+        *_DASHBOARD_HEAD_IDENTITY_KEYS,
+        "sequence",
+        "snapshot_fingerprint",
+        "candidate_sha",
+        "generation_id",
+        "receipt_fingerprint",
+        "html_href",
     }
-    if not isinstance(current_head, Mapping) or set(current_head) != \
-            head_fields or current_head.get("schema") != \
-            "taskplane.dashboard-current/v1" or \
-            current_head.get("sequence") != snapshot["sequence"] or \
-            current_head.get("snapshot_fingerprint") != \
-            snapshot["fingerprint"] or \
-            current_head.get("candidate_sha") != expected_source_sha or \
-            current_head.get("generation_id") != generation["id"] or \
-            current_head.get("receipt_fingerprint") != receipt["fingerprint"]:
+    if (
+        not isinstance(current_head, Mapping)
+        or set(current_head) != head_fields
+        or current_head.get("schema") != "taskplane.dashboard-current/v1"
+        or current_head.get("sequence") != snapshot["sequence"]
+        or current_head.get("snapshot_fingerprint") != snapshot["fingerprint"]
+        or current_head.get("candidate_sha") != expected_source_sha
+        or current_head.get("generation_id") != generation["id"]
+        or current_head.get("receipt_fingerprint") != receipt["fingerprint"]
+    ):
         raise ValueError("dashboard durable head is stale or contradictory")
     return {
         "digest": receipt["fingerprint"],
@@ -963,21 +1089,18 @@ def validate_dashboard_publication_receipt(
 
 
 def _rendered_head(
-        model: Mapping[str, Any],
-        snapshot: Mapping[str, Any],
+    model: Mapping[str, Any],
+    snapshot: Mapping[str, Any],
 ) -> dict[str, Any]:
     identity_value = model.get("identity")
-    identity: Mapping[str, Any] = (
-        identity_value if isinstance(identity_value, Mapping) else {})
+    identity: Mapping[str, Any] = identity_value if isinstance(identity_value, Mapping) else {}
     return {
-        "workflow_id": str(model.get("workflow_id") or
-                           identity.get("workflow_id") or "dashboard"),
-        "run_id": str(model.get("run_id") or identity.get("run_id") or
-                      "standalone"),
-        "target": str(model.get("target") or identity.get("target") or
-                      "dashboard"),
-        "revision": str(model.get("revision") or identity.get("revision") or
-                        snapshot["canonical_sha256"]),
+        "workflow_id": str(model.get("workflow_id") or identity.get("workflow_id") or "dashboard"),
+        "run_id": str(model.get("run_id") or identity.get("run_id") or "standalone"),
+        "target": str(model.get("target") or identity.get("target") or "dashboard"),
+        "revision": str(
+            model.get("revision") or identity.get("revision") or snapshot["canonical_sha256"]
+        ),
         "sequence": snapshot["sequence"],
         "snapshot_fingerprint": snapshot["fingerprint"],
     }
@@ -985,15 +1108,17 @@ def _rendered_head(
 
 def _graph_fingerprints(model: Mapping[str, Any]) -> dict[str, Any]:
     source_value = model.get("values")
-    source: Mapping[str, Any] = (
-        source_value if isinstance(source_value, Mapping) else model)
-    return {key: _fingerprint_value(source[key]) for key in
-            _DASHBOARD_GRAPH_KEYS if isinstance(source.get(key), Mapping)}
+    source: Mapping[str, Any] = source_value if isinstance(source_value, Mapping) else model
+    return {
+        key: _fingerprint_value(source[key])
+        for key in _DASHBOARD_GRAPH_KEYS
+        if isinstance(source.get(key), Mapping)
+    }
 
 
 def _host_acknowledgement_receipt(
-        acknowledgement: Mapping[str, Any] | None,
-        rendered_head: Mapping[str, Any],
+    acknowledgement: Mapping[str, Any] | None,
+    rendered_head: Mapping[str, Any],
 ) -> dict[str, Any]:
     if acknowledgement is None:
         limitation = {
@@ -1013,14 +1138,12 @@ def _host_acknowledgement_receipt(
         reasons.append("host acknowledgement schema mismatch")
     if not isinstance(supplied, str) or supplied != computed:
         reasons.append("host acknowledgement fingerprint mismatch")
-    if value.get("snapshot_fingerprint") != \
-            rendered_head["snapshot_fingerprint"]:
+    if value.get("snapshot_fingerprint") != rendered_head["snapshot_fingerprint"]:
         reasons.append("host acknowledgement names another snapshot")
     if value.get("sequence") != rendered_head["sequence"]:
         reasons.append("host acknowledgement names another sequence")
     identity_value = value.get("identity")
-    identity: Mapping[str, Any] = (
-        identity_value if isinstance(identity_value, Mapping) else {})
+    identity: Mapping[str, Any] = identity_value if isinstance(identity_value, Mapping) else {}
     for key in _DASHBOARD_HEAD_IDENTITY_KEYS:
         if key not in identity:
             reasons.append(f"host acknowledgement {key} is missing")
@@ -1057,8 +1180,7 @@ def _load_current_head(path: str) -> dict[str, Any] | None:
         raise ValueError("dashboard current pointer must not be a symlink")
     with open(path, encoding="utf-8") as stream:
         value = json.load(stream)
-    if not isinstance(value, dict) or value.get("schema") != \
-            "taskplane.dashboard-current/v1":
+    if not isinstance(value, dict) or value.get("schema") != "taskplane.dashboard-current/v1":
         raise ValueError("dashboard current pointer is invalid")
     return value
 
@@ -1070,12 +1192,14 @@ def dashboard_current_head(root: str) -> dict[str, Any] | None:
     caller passes it back as ``expected_head`` and the commit rechecks it
     while holding the current-pointer lock.
     """
-    return _load_current_head(os.path.join(os.path.abspath(root),
-                                           "current.json"))
+    return _load_current_head(os.path.join(os.path.abspath(root), "current.json"))
 
 
 def _commit_current_head(
-        root: str, head: Mapping[str, Any], *, expected_head: object,
+    root: str,
+    head: Mapping[str, Any],
+    *,
+    expected_head: object,
 ) -> dict[str, Any]:
     path = os.path.join(root, "current.json")
     lock_path = os.path.join(root, ".current.lock")
@@ -1090,28 +1214,26 @@ def _commit_current_head(
             os.fsync(stream.fileno())
         current = _load_current_head(path)
         if expected_head is not _NO_EXPECTED_HEAD:
-            observed = None if current is None else current.get(
-                "receipt_fingerprint")
+            observed = None if current is None else current.get("receipt_fingerprint")
             if observed != expected_head:
                 raise ValueError("dashboard current-pointer expected head changed")
         if current is not None:
-            same_identity = all(current.get(key) == head.get(key)
-                                for key in _DASHBOARD_HEAD_IDENTITY_KEYS)
+            same_identity = all(
+                current.get(key) == head.get(key) for key in _DASHBOARD_HEAD_IDENTITY_KEYS
+            )
             # Dashboard snapshot sequence is the publication epoch.  It is
             # monotonic across runs, so a delayed prior-run writer can never
             # replace the current run merely by changing identity fields.
             if current.get("sequence", -1) > head["sequence"]:
                 raise ValueError("dashboard current pointer refuses stale sequence")
-            if (current.get("sequence") == head["sequence"]
-                    and current.get("snapshot_fingerprint") !=
-                    head["snapshot_fingerprint"]):
-                raise ValueError(
-                    "dashboard current pointer refuses contradictory snapshot")
-            if current.get("receipt_fingerprint") == head[
-                    "receipt_fingerprint"]:
+            if (
+                current.get("sequence") == head["sequence"]
+                and current.get("snapshot_fingerprint") != head["snapshot_fingerprint"]
+            ):
+                raise ValueError("dashboard current pointer refuses contradictory snapshot")
+            if current.get("receipt_fingerprint") == head["receipt_fingerprint"]:
                 return current
-        _write_delivery_artifact(
-            path, canonical_dashboard_bytes(dict(head)))
+        _write_delivery_artifact(path, canonical_dashboard_bytes(dict(head)))
         _fsync_directory(root)
         return dict(head)
     finally:
@@ -1119,16 +1241,18 @@ def _commit_current_head(
             os.unlink(lock_path)
 
 
-def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
-                      inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
-                      inline_renderer: Callable[[str], object] | None = None,
-                      html_renderer: Callable[[str], object] | None = None,
-                      html_stylesheet: str | None = None,
-                      host_acknowledgement: Mapping[str, Any] | None = None,
-                      expected_head: object = _NO_EXPECTED_HEAD,
-                      current_head_hrefs: Sequence[str] = (
-                          "../../current.json",),
-                      ) -> dict[str, Any]:
+def deliver_dashboard(
+    output_dir: str,
+    model: Mapping[str, Any],
+    *,
+    inline_threshold: int = LARGE_DASHBOARD_INLINE_BYTES,
+    inline_renderer: Callable[[str], object] | None = None,
+    html_renderer: Callable[[str], object] | None = None,
+    html_stylesheet: str | None = None,
+    host_acknowledgement: Mapping[str, Any] | None = None,
+    expected_head: object = _NO_EXPECTED_HEAD,
+    current_head_hrefs: Sequence[str] = ("../../current.json",),
+) -> dict[str, Any]:
     """Publish one canonical snapshot through disjoint delivery projections.
 
     Canonical bytes are encoded once. JSON, complete Markdown, optional HTML,
@@ -1136,8 +1260,11 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
     content-addressed generation before the expected-head current-pointer CAS.
     Presentation failure cannot change the canonical delivery outcome.
     """
-    if isinstance(inline_threshold, bool) or not isinstance(inline_threshold, int) \
-            or inline_threshold < 1:
+    if (
+        isinstance(inline_threshold, bool)
+        or not isinstance(inline_threshold, int)
+        or inline_threshold < 1
+    ):
         raise ValueError("inline_threshold must be a positive byte count")
     canonical = canonical_dashboard_bytes(model)
     canonical_text = canonical.decode("utf-8")
@@ -1149,23 +1276,27 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
         "# Taskplane dashboard\n\n"
         "Canonical complete dashboard evidence (JSON):\n\n"
         f"{_CANONICAL_START}\n```json\n{canonical_text}\n```\n"
-        f"{_CANONICAL_END}\n").encode("utf-8")
+        f"{_CANONICAL_END}\n"
+    ).encode("utf-8")
     inline = None
     mode = "complete-markdown"
     if len(canonical) <= inline_threshold:
         if not callable(inline_renderer):
             raise ValueError("dashboard inline renderer is required")
         content = inline_renderer(canonical_text)
-        inline = {"format": "html", "content": content, "complete": True,
-                  "semantic_bytes": len(canonical)}
+        inline = {
+            "format": "html",
+            "content": content,
+            "complete": True,
+            "semantic_bytes": len(canonical),
+        }
         mode = "inline"
 
     canonical_sha256 = hashlib.sha256(canonical).hexdigest()
     snapshot_receipt = _snapshot_receipt(model, canonical_sha256)
     candidate_receipt = _candidate_receipt(snapshot_receipt)
     rendered_head = _rendered_head(model, snapshot_receipt)
-    host_receipt = _host_acknowledgement_receipt(
-        host_acknowledgement, rendered_head)
+    host_receipt = _host_acknowledgement_receipt(host_acknowledgement, rendered_head)
     actions_enabled = host_receipt["status"] == "acknowledged"
     html_payload = None
     html_error = None
@@ -1176,25 +1307,30 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
         try:
             body = str(html_renderer(canonical_text))
             html_payload = _embedded_html(
-                body, canonical, rendered_head=rendered_head,
+                body,
+                canonical,
+                rendered_head=rendered_head,
                 actions_enabled=actions_enabled,
                 stylesheet=html_stylesheet,
-                current_head_hrefs=current_head_hrefs)
+                current_head_hrefs=current_head_hrefs,
+            )
         except Exception as exc:
             html_error = f"{exc.__class__.__name__}: {exc}"
-            structural_error = isinstance(exc, ValueError) and \
-                ("document" in str(exc) or "fragment" in str(exc))
+            structural_error = isinstance(exc, ValueError) and (
+                "document" in str(exc) or "fragment" in str(exc)
+            )
 
     artifact_hashes = {
         "json": hashlib.sha256(canonical).hexdigest(),
         "markdown": hashlib.sha256(markdown).hexdigest(),
-        "html": hashlib.sha256(html_payload).hexdigest()
-        if html_payload is not None else None,
+        "html": hashlib.sha256(html_payload).hexdigest() if html_payload is not None else None,
     }
-    generation_id = _fingerprint_value({
-        "artifacts": artifact_hashes,
-        "host_acknowledgement": host_receipt["fingerprint"],
-    })
+    generation_id = _fingerprint_value(
+        {
+            "artifacts": artifact_hashes,
+            "host_acknowledgement": host_receipt["fingerprint"],
+        }
+    )
     generation_root = os.path.join(root, "generations", generation_id)
     os.makedirs(generation_root, exist_ok=True)
     json_path = os.path.join(generation_root, "dashboard.json")
@@ -1202,15 +1338,15 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
     html_path = os.path.join(generation_root, "dashboard.html")
     _write_delivery_artifact(json_path, canonical)
     _write_delivery_artifact(markdown_path, markdown)
-    artifacts = {"json": _artifact_ref(json_path, canonical),
-                 "markdown": _artifact_ref(markdown_path, markdown)}
+    artifacts = {
+        "json": _artifact_ref(json_path, canonical),
+        "markdown": _artifact_ref(markdown_path, markdown),
+    }
     if html_payload is not None:
         _write_delivery_artifact(html_path, html_payload)
         artifacts["html"] = _artifact_ref(html_path, html_payload)
     else:
-        artifacts["html"] = {
-            "status": "unavailable", "path": html_path,
-            "reason": str(html_error)}
+        artifacts["html"] = {"status": "unavailable", "path": html_path, "reason": str(html_error)}
 
     dom_freshness = {
         "status": "verified" if html_payload is not None else "unavailable",
@@ -1228,7 +1364,8 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
         "dom_freshness": dom_freshness,
         "host_acknowledgement": host_receipt,
         "generation": {
-            "id": generation_id, "artifacts": artifact_hashes,
+            "id": generation_id,
+            "artifacts": artifact_hashes,
             "complete": not structural_error,
         },
         "bindings": {
@@ -1249,40 +1386,45 @@ def deliver_dashboard(output_dir: str, model: Mapping[str, Any], *,
     current_head = None
     status = "rejected" if structural_error else "published"
     if not structural_error:
-        current_head = _commit_current_head(root, {
-            "schema": "taskplane.dashboard-current/v1",
-            **{key: rendered_head[key]
-               for key in _DASHBOARD_HEAD_IDENTITY_KEYS},
-            "sequence": rendered_head["sequence"],
-            "snapshot_fingerprint": rendered_head["snapshot_fingerprint"],
-            "candidate_sha": candidate_receipt["source_sha"],
-            "generation_id": generation_id,
-            "receipt_fingerprint": receipt["fingerprint"],
-            "html_href": (
-                f"generations/{generation_id}/dashboard.html"
-                if html_payload is not None else None),
-        }, expected_head=expected_head)
+        current_head = _commit_current_head(
+            root,
+            {
+                "schema": "taskplane.dashboard-current/v1",
+                **{key: rendered_head[key] for key in _DASHBOARD_HEAD_IDENTITY_KEYS},
+                "sequence": rendered_head["sequence"],
+                "snapshot_fingerprint": rendered_head["snapshot_fingerprint"],
+                "candidate_sha": candidate_receipt["source_sha"],
+                "generation_id": generation_id,
+                "receipt_fingerprint": receipt["fingerprint"],
+                "html_href": (
+                    f"generations/{generation_id}/dashboard.html"
+                    if html_payload is not None
+                    else None
+                ),
+            },
+            expected_head=expected_head,
+        )
 
     gate_source = model.get("gate")
     values_source = model.get("values")
-    if not isinstance(gate_source, Mapping) and isinstance(
-            values_source, Mapping):
+    if not isinstance(gate_source, Mapping) and isinstance(values_source, Mapping):
         gate_source = values_source.get("gate")
     return {
-        "schema": "taskplane.dashboard-delivery/v1", "status": status,
-        "mode": mode, "semantic_bytes": len(canonical),
+        "schema": "taskplane.dashboard-delivery/v1",
+        "status": status,
+        "mode": mode,
+        "semantic_bytes": len(canonical),
         "semantic_sha256": canonical_sha256,
-        "gate": dict(gate_source or {}), "inline": inline,
+        "gate": dict(gate_source or {}),
+        "inline": inline,
         "artifacts": artifacts,
         "publication_receipt": receipt,
-        "publication_receipt_artifact": _artifact_ref(
-            receipt_path, receipt_bytes),
+        "publication_receipt_artifact": _artifact_ref(receipt_path, receipt_bytes),
         "current_head": current_head,
     }
 
 
-def decode_dashboard_artifact(
-        kind: str, payload: bytes) -> dict[str, Any]:
+def decode_dashboard_artifact(kind: str, payload: bytes) -> dict[str, Any]:
     """Decode a delivery surface for semantic-equivalence verification."""
     text = payload.decode("utf-8")
     if kind == "json":
@@ -1293,7 +1435,7 @@ def decode_dashboard_artifact(
         fenced = text[start:end].strip()
         if not fenced.startswith("```json\n") or not fenced.endswith("\n```"):
             raise ValueError("invalid complete Markdown dashboard artifact")
-        value = json.loads(fenced[len("```json\n"):-len("\n```")])
+        value = json.loads(fenced[len("```json\n") : -len("\n```")])
     elif kind in {"html", "inline"}:
         marker = 'data-taskplane-canonical="true">'
         start = text.index(marker) + len(marker)
@@ -1304,6 +1446,8 @@ def decode_dashboard_artifact(
     if not isinstance(value, dict):
         raise ValueError("dashboard artifact must decode to an object")
     return value
+
+
 DASHBOARD_PUBLICATION_SCHEMA = "taskplane.dashboard-publication/v1"
 _DASHBOARD_SURFACES = ("native", "json", "markdown", "html")
 
@@ -1314,17 +1458,22 @@ def _canonical_fingerprint(value: object) -> str:
 
 
 def _corrupt_dashboard_source(
-        *, mode: str, run_id: str, revision: object, target: str,
-        error: Exception, error_formatter: Callable[[Exception], str],
+    *,
+    mode: str,
+    run_id: str,
+    revision: object,
+    target: str,
+    error: Exception,
+    error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
     """Return one bounded corrupt source without reprocessing rejected input."""
+
     def safe_text(value: object, fallback: str) -> str:
         try:
             text = value if isinstance(value, str) else str(value)
         except Exception:
             return fallback
-        text = text.encode(
-            "utf-8", errors="backslashreplace").decode("utf-8")
+        text = text.encode("utf-8", errors="backslashreplace").decode("utf-8")
         return text or fallback
 
     try:
@@ -1332,27 +1481,27 @@ def _corrupt_dashboard_source(
     except Exception as formatter_error:
         formatted = (
             f"{error.__class__.__name__}: dashboard source error; "
-            f"formatter failed: {formatter_error.__class__.__name__}")
+            f"formatter failed: {formatter_error.__class__.__name__}"
+        )
     if not isinstance(formatted, str):
         try:
             formatted = json.dumps(
-                formatted, sort_keys=True, separators=(",", ":"),
-                ensure_ascii=True, allow_nan=False)
+                formatted, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+            )
         except (TypeError, ValueError):
-            formatted = (
-                f"{error.__class__.__name__}: error evidence is not "
-                "JSON serializable")
-    error_text = safe_text(
-        formatted, f"{error.__class__.__name__}: dashboard source error")
+            formatted = f"{error.__class__.__name__}: error evidence is not JSON serializable"
+    error_text = safe_text(formatted, f"{error.__class__.__name__}: dashboard source error")
     source = {
-        "mode": safe_text(mode, "managed"), "status": "corrupt",
+        "mode": safe_text(mode, "managed"),
+        "status": "corrupt",
         "run_id": safe_text(run_id, "unknown-managed"),
         "revision": safe_text(revision or "unknown", "unknown"),
-        "target": safe_text(target, "run"), "state": None,
+        "target": safe_text(target, "run"),
+        "state": None,
     }
-    return {**source,
-        "source_fingerprint": _canonical_fingerprint({
-            **source, "error": error_text}),
+    return {
+        **source,
+        "source_fingerprint": _canonical_fingerprint({**source, "error": error_text}),
         "evidence": [error_text],
     }
 
@@ -1361,20 +1510,19 @@ def _generated_at(value: float | str | None) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     timestamp = time.time() if value is None else float(value)
-    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace(
-        "+00:00", "Z")
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _v4_dashboard_source(
-        manifest: dict[str, Any], run_id: str, *,
-        manifest_validator: Callable[..., Any],
-        error_formatter: Callable[[Exception], str],
+    manifest: dict[str, Any],
+    run_id: str,
+    *,
+    manifest_validator: Callable[..., Any],
+    error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
     try:
-        if manifest.get("schema") != "taskplane.run/v4" or \
-                manifest.get("run_id") != run_id:
-            raise ValueError(
-                "run manifest identity/schema is not taskplane.run/v4")
+        if manifest.get("schema") != "taskplane.run/v4" or manifest.get("run_id") != run_id:
+            raise ValueError("run manifest identity/schema is not taskplane.run/v4")
         manifest_validator(manifest)
         projection = manifest["active_stage_projection"]
         active_ids = list(projection["active_stage_ids"])
@@ -1384,123 +1532,203 @@ def _v4_dashboard_source(
             raise ValueError("dashboard workflow belongs to another run")
         if foreground is None and len(active_ids) > 1 and not workflow.get("parallel"):
             return {
-                "mode": "v4", "status": "ambiguous", "run_id": run_id,
+                "mode": "v4",
+                "status": "ambiguous",
+                "run_id": run_id,
                 "revision": str(manifest.get("revision") or "unknown"),
-                "target": "active-stage", "state": None,
+                "target": "active-stage",
+                "state": None,
                 "source_fingerprint": _canonical_fingerprint(manifest),
                 "evidence": [
-                    "active stage projection has several active stages and "
-                    "no foreground stage"],
+                    "active stage projection has several active stages and no foreground stage"
+                ],
             }
         stage_id = foreground or (active_ids[0] if len(active_ids) == 1 else None)
         heads = manifest["stage_heads"]
-        summary = copy.deepcopy(heads[stage_id]["summary"]) \
-            if stage_id is not None else None
+        summary = copy.deepcopy(heads[stage_id]["summary"]) if stage_id is not None else None
         # This projection comes from the same verified aggregate revision as
         # its stage heads. Do not reload a mutable workflow or another run.
-        fields = ("run_id", "goal", "step", "requirement_id", "tasks", "current_task", "baseline",
-            "authority_receipt", "design_required",
-            "parallel", "settings_digest", "design_fingerprint", "design_graph_fingerprint",
-            "design_decomposition_receipt", "design_control_plane_binding", "delivery_mode_receipt",
-            "plan_fingerprint", "graph_dor", "graph_dod", "wave_metrics_receipt",
-            "wave_metrics_unavailable", "run_artifact_binding", "root_hygiene_receipt",
-            "_stage_native_root_authority", "signoff_evidence", "phase_amendment")
+        fields = (
+            "run_id",
+            "goal",
+            "step",
+            "requirement_id",
+            "tasks",
+            "current_task",
+            "baseline",
+            "authority_receipt",
+            "design_required",
+            "parallel",
+            "settings_digest",
+            "design_fingerprint",
+            "design_graph_fingerprint",
+            "design_decomposition_receipt",
+            "design_control_plane_binding",
+            "delivery_mode_receipt",
+            "plan_fingerprint",
+            "graph_dor",
+            "graph_dod",
+            "wave_metrics_receipt",
+            "wave_metrics_unavailable",
+            "run_artifact_binding",
+            "root_hygiene_receipt",
+            "_stage_native_root_authority",
+            "signoff_evidence",
+            "phase_amendment",
+        )
         state = {key: copy.deepcopy(workflow[key]) for key in fields if key in workflow}
-        state.update({
-            "step": (workflow.get("step") or (summary or {}).get("stage_kind") or
-                     ("done" if not active_ids else "unknown")),
-            "stage_view": {
-                "schema": "taskplane.bounded-stage-view/v1",
-                "mode": "v4", "status": "v4", "available": True,
-                "run_id": run_id, "revision": manifest.get("revision"),
-                "current_stage": summary,
-                "active_stage_ids": active_ids,
-            },
-        })
+        state.update(
+            {
+                "step": (
+                    workflow.get("step")
+                    or (summary or {}).get("stage_kind")
+                    or ("done" if not active_ids else "unknown")
+                ),
+                "stage_view": {
+                    "schema": "taskplane.bounded-stage-view/v1",
+                    "mode": "v4",
+                    "status": "v4",
+                    "available": True,
+                    "run_id": run_id,
+                    "revision": manifest.get("revision"),
+                    "current_stage": summary,
+                    "active_stage_ids": active_ids,
+                },
+            }
+        )
         return {
-            "mode": "v4", "status": "ready", "run_id": run_id,
+            "mode": "v4",
+            "status": "ready",
+            "run_id": run_id,
             "revision": str(manifest.get("revision") or "unknown"),
-            "target": str(stage_id or "run"), "state": state,
+            "target": str(stage_id or "run"),
+            "state": state,
             "source_fingerprint": _canonical_fingerprint(manifest),
-            "evidence": [
-                "run-manifest:" + _canonical_fingerprint(manifest)],
+            "evidence": ["run-manifest:" + _canonical_fingerprint(manifest)],
         }
     except Exception as exc:
         return _corrupt_dashboard_source(
-            mode="v4", run_id=run_id, revision=manifest.get("revision"),
-            target="active-stage", error=exc,
-            error_formatter=error_formatter)
+            mode="v4",
+            run_id=run_id,
+            revision=manifest.get("revision"),
+            target="active-stage",
+            error=exc,
+            error_formatter=error_formatter,
+        )
 
 
 def select_dashboard_source(
-        ws: str, *, locator_loader: Callable[..., Any],
-        manifest_loader: Callable[..., Any],
-        manifest_validator: Callable[..., Any],
-        error_formatter: Callable[[Exception], str],
+    ws: str,
+    *,
+    locator_loader: Callable[..., Any],
+    manifest_loader: Callable[..., Any],
+    manifest_validator: Callable[..., Any],
+    error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
     """Read the aggregate selected by the explicit workspace locator."""
     try:
         locator = locator_loader(ws)
     except Exception as exc:
         return _corrupt_dashboard_source(
-            mode="managed", run_id="unknown-managed", revision="unknown",
-            target="run", error=exc, error_formatter=error_formatter)
+            mode="managed",
+            run_id="unknown-managed",
+            revision="unknown",
+            target="run",
+            error=exc,
+            error_formatter=error_formatter,
+        )
     if locator is None:
         return {"mode": "none", "status": "no_active", "state": None, "evidence": []}
-    if not isinstance(locator, dict) or not isinstance(
-            locator.get("run_id"), str) or not locator["run_id"]:
+    if (
+        not isinstance(locator, dict)
+        or not isinstance(locator.get("run_id"), str)
+        or not locator["run_id"]
+    ):
         error = ValueError("workspace locator has no valid run identity")
         return _corrupt_dashboard_source(
-            mode="managed", run_id="unknown-managed", revision="unknown",
-            target="run", error=error, error_formatter=error_formatter)
+            mode="managed",
+            run_id="unknown-managed",
+            revision="unknown",
+            target="run",
+            error=error,
+            error_formatter=error_formatter,
+        )
 
     run_id = locator["run_id"]
     try:
         manifest = manifest_loader(ws, locator)
     except Exception as exc:
         return _corrupt_dashboard_source(
-            mode="managed", run_id=run_id, revision="unknown", target="run",
-            error=exc, error_formatter=error_formatter)
+            mode="managed",
+            run_id=run_id,
+            revision="unknown",
+            target="run",
+            error=exc,
+            error_formatter=error_formatter,
+        )
     if not isinstance(manifest, dict):
         error = ValueError("run manifest is not an object")
         return _corrupt_dashboard_source(
-            mode="managed", run_id=run_id, revision="unknown", target="run",
-            error=error, error_formatter=error_formatter)
+            mode="managed",
+            run_id=run_id,
+            revision="unknown",
+            target="run",
+            error=error,
+            error_formatter=error_formatter,
+        )
     schema = manifest.get("schema")
     if schema == "taskplane.run/v4":
         return _v4_dashboard_source(
-            manifest, run_id, manifest_validator=manifest_validator,
-            error_formatter=error_formatter)
+            manifest, run_id, manifest_validator=manifest_validator, error_formatter=error_formatter
+        )
     error = ValueError("unsupported_run_schema: archive the old run and start a new v4 run")
     return _corrupt_dashboard_source(
-        mode="managed", run_id=run_id, revision=manifest.get("revision"),
-        target="run", error=error, error_formatter=error_formatter)
+        mode="managed",
+        run_id=run_id,
+        revision=manifest.get("revision"),
+        target="run",
+        error=error,
+        error_formatter=error_formatter,
+    )
 
 
-def _bounded_loop_values(
-        state: dict[str, Any] | None) -> dict[str, Any]:
+def _bounded_loop_values(state: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(state, dict):
         return {}
     tasks = [
-        {key: row.get(key) for key in
-         ("id", "status", "fix_cycles", "variant") if row.get(key) is not None}
-        for row in (state.get("tasks") or []) if isinstance(row, dict)
+        {
+            key: row.get(key)
+            for key in ("id", "status", "fix_cycles", "variant")
+            if row.get(key) is not None
+        }
+        for row in (state.get("tasks") or [])
+        if isinstance(row, dict)
     ]
     return {
-        "goal": state.get("goal"), "step": state.get("step"),
+        "goal": state.get("goal"),
+        "step": state.get("step"),
         "requirement_id": state.get("requirement_id"),
-        "current_task": state.get("current_task"), "tasks": tasks,
-        **({"stage_view": copy.deepcopy(state["stage_view"])}
-           if isinstance(state.get("stage_view"), dict) else {}),
-        **({"phase_amendment": copy.deepcopy(state["phase_amendment"])}
-           if isinstance(state.get("phase_amendment"), dict) else {}),
+        "current_task": state.get("current_task"),
+        "tasks": tasks,
+        **(
+            {"stage_view": copy.deepcopy(state["stage_view"])}
+            if isinstance(state.get("stage_view"), dict)
+            else {}
+        ),
+        **(
+            {"phase_amendment": copy.deepcopy(state["phase_amendment"])}
+            if isinstance(state.get("phase_amendment"), dict)
+            else {}
+        ),
     }
 
 
 def _phase_graph_values(
-        ws: str, state: dict[str, Any] | None, *,
-        projector: Callable[..., Any],
-        error_formatter: Callable[[Exception], str],
+    ws: str,
+    state: dict[str, Any] | None,
+    *,
+    projector: Callable[..., Any],
+    error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
     """Consume the projection slice when present; never invent graph truth."""
     if state is None:
@@ -1508,39 +1736,49 @@ def _phase_graph_values(
     try:
         project = projector
         if not callable(project):
-            return {"phase_graph_error":
-                    "phase graph projector is not configured"}
+            return {"phase_graph_error": "phase graph projector is not configured"}
         values = project(ws, state=state, require_bound=True)
-        return {key: copy.deepcopy(values[key]) for key in (
-            "design_graph", "plan_task_dag", "plan_waves", "module_impact")
-            if key in values}
+        return {
+            key: copy.deepcopy(values[key])
+            for key in ("design_graph", "plan_task_dag", "plan_waves", "module_impact")
+            if key in values
+        }
     except Exception as exc:
         return {"phase_graph_error": error_formatter(exc)}
 
 
 def _wave_metrics_values(
-        state: dict[str, Any] | None, *,
-        metrics_projector: Callable[..., Any],
-        error_formatter: Callable[[Exception], str],
+    state: dict[str, Any] | None,
+    *,
+    metrics_projector: Callable[..., Any],
+    error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
     """Project the sealed receipt already present in the one selected state."""
     if not isinstance(state, dict) or state.get("wave_metrics_receipt") is None:
         reason = "sealed terminal wave metrics receipt is unavailable"
-        unavailable = ((state or {}).get("wave_metrics_unavailable")
-                       if isinstance(state, dict) else None)
+        unavailable = (
+            (state or {}).get("wave_metrics_unavailable") if isinstance(state, dict) else None
+        )
         if isinstance(unavailable, dict) and unavailable.get("reason"):
             reason = str(unavailable["reason"])
-        return {"wave_metrics": wave_metrics.unavailable_consumer_projection(
-            consumer="dashboard", reason=reason)}
+        return {
+            "wave_metrics": wave_metrics.unavailable_consumer_projection(
+                consumer="dashboard", reason=reason
+            )
+        }
     try:
-        return {"wave_metrics": metrics_projector(
-            state["wave_metrics_receipt"], consumer="dashboard")}
+        return {
+            "wave_metrics": metrics_projector(state["wave_metrics_receipt"], consumer="dashboard")
+        }
     except Exception as exc:
-        return {"wave_metrics": {
-            "schema": "taskplane.wave-metrics-projection/v1",
-            "consumer": "dashboard", "status": "unavailable",
-            "error": error_formatter(exc),
-        }}
+        return {
+            "wave_metrics": {
+                "schema": "taskplane.wave-metrics-projection/v1",
+                "consumer": "dashboard",
+                "status": "unavailable",
+                "error": error_formatter(exc),
+            }
+        }
 
 
 def _authority_receipt_binding(state: Mapping[str, Any] | None) -> str | None:
@@ -1558,14 +1796,12 @@ def _authority_receipt_binding(state: Mapping[str, Any] | None) -> str | None:
     return None
 
 
-def _dashboard_candidate_values(
-        state: Mapping[str, Any] | None) -> dict[str, Any]:
+def _dashboard_candidate_values(state: Mapping[str, Any] | None) -> dict[str, Any]:
     """Project the current run baseline without inferred historical candidates."""
     if not isinstance(state, Mapping):
         return {}
     baseline = state.get("baseline")
-    if not isinstance(baseline, str) or not re.fullmatch(
-            r"[0-9a-f]{40}", baseline):
+    if not isinstance(baseline, str) or not re.fullmatch(r"[0-9a-f]{40}", baseline):
         return {}
     values: dict[str, Any] = {
         "candidate_sha": baseline,
@@ -1575,8 +1811,10 @@ def _dashboard_candidate_values(
 
 
 def _next_dashboard_sequence(
-        ws: str, source: dict[str, Any], *,
-        publication_loader: Callable[..., Any],
+    ws: str,
+    source: dict[str, Any],
+    *,
+    publication_loader: Callable[..., Any],
 ) -> int:
     prior = publication_loader(ws)
     if prior is None:
@@ -1588,81 +1826,97 @@ def _next_dashboard_sequence(
 
 
 def _publication(
-        snapshot: HostSurfaceSnapshot | None,
-        event: HostSurfaceEvent | None, *, source_mode: str,
-        replayed: bool, status: str,
+    snapshot: HostSurfaceSnapshot | None,
+    event: HostSurfaceEvent | None,
+    *,
+    source_mode: str,
+    replayed: bool,
+    status: str,
 ) -> dict[str, Any]:
     fingerprint = snapshot.fingerprint if snapshot is not None else None
     return {
-        "schema": DASHBOARD_PUBLICATION_SCHEMA, "status": status,
+        "schema": DASHBOARD_PUBLICATION_SCHEMA,
+        "status": status,
         "snapshot": snapshot.to_dict() if snapshot is not None else None,
         "event": event.to_dict() if event is not None else None,
-        "replayed": bool(replayed), "source_mode": source_mode,
-        "surfaces": ({name: fingerprint for name in _DASHBOARD_SURFACES}
-                     if fingerprint is not None else {}),
+        "replayed": bool(replayed),
+        "source_mode": source_mode,
+        "surfaces": (
+            {name: fingerprint for name in _DASHBOARD_SURFACES} if fingerprint is not None else {}
+        ),
     }
 
 
 def refresh_dashboard_snapshot(
-        ws: str, *, event_type: str, outcome: str | None = None,
-        committed_at: float | str | None = None, replay: bool = False,
-        settings_digest: str, source_loader: Callable[..., Any],
-        graph_projector: Callable[..., Any],
-        metrics_projector: Callable[..., Any],
-        publication_loader: Callable[..., Any],
-        snapshot_committer: Callable[..., Any],
-        event_committer: Callable[..., Any],
-        error_formatter: Callable[[Exception], str],
+    ws: str,
+    *,
+    event_type: str,
+    outcome: str | None = None,
+    committed_at: float | str | None = None,
+    replay: bool = False,
+    settings_digest: str,
+    source_loader: Callable[..., Any],
+    graph_projector: Callable[..., Any],
+    metrics_projector: Callable[..., Any],
+    publication_loader: Callable[..., Any],
+    snapshot_committer: Callable[..., Any],
+    event_committer: Callable[..., Any],
+    error_formatter: Callable[[Exception], str],
 ) -> dict[str, Any]:
     """Freeze or idempotently replay the sole canonical dashboard snapshot."""
     if not str(event_type or "").strip():
         raise ValueError("dashboard event_type is required")
     source = source_loader(ws)
     if source["status"] == "no_active":
-        return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-                "status": "no_active", "snapshot": None, "event": None,
-                "replayed": False, "source_mode": "none", "surfaces": {}}
-    source_fingerprint = str(source.get("source_fingerprint") or
-                             _canonical_fingerprint(source))
+        return {
+            "schema": DASHBOARD_PUBLICATION_SCHEMA,
+            "status": "no_active",
+            "snapshot": None,
+            "event": None,
+            "replayed": False,
+            "source_mode": "none",
+            "surfaces": {},
+        }
+    source_fingerprint = str(source.get("source_fingerprint") or _canonical_fingerprint(source))
     source["source_fingerprint"] = source_fingerprint
     prior = publication_loader(ws)
     if replay and prior is not None:
         current = HostSurfaceSnapshot.from_dict(prior["current"])
-        if current.values.get("source_fingerprint") == source.get(
-                "source_fingerprint") and current.values.get(
-                    "settings_digest") == settings_digest:
-            event = HostSurfaceEvent.from_snapshot(
-                current, event_type=str(event_type))
+        if (
+            current.values.get("source_fingerprint") == source.get("source_fingerprint")
+            and current.values.get("settings_digest") == settings_digest
+        ):
+            event = HostSurfaceEvent.from_snapshot(current, event_type=str(event_type))
             event_committer(ws, event)
             return _publication(
-                current, event, source_mode=str(source["mode"]),
-                replayed=True, status=str(source["status"]))
+                current,
+                event,
+                source_mode=str(source["mode"]),
+                replayed=True,
+                status=str(source["status"]),
+            )
     evidence = tuple(str(item) for item in source.get("evidence") or [])
     healthy = source.get("status") == "ready"
-    state = source.get("state") if isinstance(source.get("state"), dict) \
-        else None
+    state = source.get("state") if isinstance(source.get("state"), dict) else None
     stage = str((state or {}).get("step") or source.get("status") or "unknown")
     metrics_values = _wave_metrics_values(
-        state, metrics_projector=metrics_projector,
-        error_formatter=error_formatter)
+        state, metrics_projector=metrics_projector, error_formatter=error_formatter
+    )
     phase_values = _phase_graph_values(
-        ws, state, projector=graph_projector,
-        error_formatter=error_formatter)
-    publication_epoch = _next_dashboard_sequence(
-        ws, source, publication_loader=publication_loader)
+        ws, state, projector=graph_projector, error_formatter=error_formatter
+    )
+    publication_epoch = _next_dashboard_sequence(ws, source, publication_loader=publication_loader)
     graph_components = {
-        key: phase_values[key] for key in _DASHBOARD_GRAPH_KEYS
+        key: phase_values[key]
+        for key in _DASHBOARD_GRAPH_KEYS
         if isinstance(phase_values.get(key), Mapping)
     }
-    graph_receipt = (_canonical_fingerprint(graph_components)
-                     if graph_components else None)
-    root_hygiene_receipt = state.get("root_hygiene_receipt") \
-        if state is not None else None
+    graph_receipt = _canonical_fingerprint(graph_components) if graph_components else None
+    root_hygiene_receipt = state.get("root_hygiene_receipt") if state is not None else None
     provenance = {
         "schema": "taskplane.dashboard-provenance/v1",
         "run_id": str(source["run_id"]),
-        "requirement_id": str((state or {}).get("requirement_id") or
-                              "unavailable"),
+        "requirement_id": str((state or {}).get("requirement_id") or "unavailable"),
         "stage": stage,
         "revision": str(source.get("revision") or source_fingerprint),
         "settings_digest": settings_digest,
@@ -1677,15 +1931,18 @@ def refresh_dashboard_snapshot(
         "source_mode": source["mode"],
         "source_status": source["status"],
         "source_fingerprint": source_fingerprint,
-        "event_type": str(event_type), "outcome": outcome,
+        "event_type": str(event_type),
+        "outcome": outcome,
         **candidate_value,
         "loop": _bounded_loop_values(state),
         **phase_values,
         "provenance": provenance,
         **metrics_values,
-        **({"root_hygiene_receipt": copy.deepcopy(root_hygiene_receipt)}
-           if isinstance(root_hygiene_receipt, Mapping)
-           else {}),
+        **(
+            {"root_hygiene_receipt": copy.deepcopy(root_hygiene_receipt)}
+            if isinstance(root_hygiene_receipt, Mapping)
+            else {}
+        ),
     }
     safe_actions: tuple[str, ...] = ()
     if healthy and stage in {"design_approval", "plan_approval"}:
@@ -1696,41 +1953,66 @@ def refresh_dashboard_snapshot(
         safe_actions = ("retry", "skip", "defer", "abort")
     revision = str(source.get("revision") or source_fingerprint)
     snapshot = HostSurfaceSnapshot.create(
-        workflow_id="taskplane-loop", run_id=str(source["run_id"]),
-        target=str(source["target"]), revision=revision,
-        sequence=publication_epoch, stage=stage,
-        state=stage if healthy else str(source["status"]), values=values,
-        evidence=evidence, safe_actions=safe_actions)
+        workflow_id="taskplane-loop",
+        run_id=str(source["run_id"]),
+        target=str(source["target"]),
+        revision=revision,
+        sequence=publication_epoch,
+        stage=stage,
+        state=stage if healthy else str(source["status"]),
+        values=values,
+        evidence=evidence,
+        safe_actions=safe_actions,
+    )
     committed = snapshot_committer(ws, snapshot)
     frozen = HostSurfaceSnapshot.from_dict(committed["current"])
-    event = HostSurfaceEvent.from_snapshot(
-        frozen, event_type=str(event_type))
+    event = HostSurfaceEvent.from_snapshot(frozen, event_type=str(event_type))
     event_committer(ws, event)
     return _publication(
-        frozen, event, source_mode=str(source["mode"]),
+        frozen,
+        event,
+        source_mode=str(source["mode"]),
         replayed=bool(committed.get("replayed")),
-        status=str(source["status"]))
+        status=str(source["status"]),
+    )
+
+
 HOST_DASHBOARD_COMPONENTS = (
-    "provenance", "workflow", "dor", "dependency_impact", "design_graph",
-    "plan_task_dag", "plan_waves", "module_impact", "agents", "lenses",
-    "criteria", "findings", "validation", "artifacts", "wave_metrics",
-    "gate", "loop",
+    "provenance",
+    "workflow",
+    "dor",
+    "dependency_impact",
+    "design_graph",
+    "plan_task_dag",
+    "plan_waves",
+    "module_impact",
+    "agents",
+    "lenses",
+    "criteria",
+    "findings",
+    "validation",
+    "artifacts",
+    "wave_metrics",
+    "gate",
+    "loop",
 )
 
 
 def _dashboard_plain(value: Any) -> Any:
     """Return JSON-shaped presentation data without mutating canonical data."""
     if isinstance(value, dict) or hasattr(value, "items"):
-        return {str(key): _dashboard_plain(item)
-                for key, item in value.items()}
+        return {str(key): _dashboard_plain(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
         return [_dashboard_plain(item) for item in value]
     return value
 
 
 def carousel_pages(
-        items: Iterable[Any], *, filters: Mapping[str, Any] | None = None,
-        current: int = 1, page_size: int = 8,
+    items: Iterable[Any],
+    *,
+    filters: Mapping[str, Any] | None = None,
+    current: int = 1,
+    page_size: int = 8,
 ) -> dict[str, Any]:
     """Create deterministic, lossless carousel pages of three to eight items.
 
@@ -1739,8 +2021,7 @@ def carousel_pages(
     page so every carousel page stays within the host UI guideline.  Filtering
     is explicit equality matching and therefore serializable and replayable.
     """
-    if isinstance(page_size, bool) or not isinstance(page_size, int) \
-            or not 3 <= page_size <= 8:
+    if isinstance(page_size, bool) or not isinstance(page_size, int) or not 3 <= page_size <= 8:
         raise ValueError("page_size must be between 3 and 8")
     filters = dict(filters or {})
     selected: list[dict[str, Any]] = []
@@ -1748,28 +2029,29 @@ def carousel_pages(
     for raw in items:
         row = _dashboard_plain(raw)
         identity = row.get("id") if isinstance(row, dict) else None
-        if not isinstance(identity, str) or not identity.strip() \
-                or identity in identities:
+        if not isinstance(identity, str) or not identity.strip() or identity in identities:
             raise ValueError("every carousel item requires a stable unique id")
         identities.add(identity)
         if all(row.get(key) == value for key, value in filters.items()):
             selected.append(row)
 
-    chunks = [selected[i:i + page_size]
-              for i in range(0, len(selected), page_size)]
+    chunks = [selected[i : i + page_size] for i in range(0, len(selected), page_size)]
     if len(chunks) > 1 and len(chunks[-1]) < 3:
         needed = 3 - len(chunks[-1])
         chunks[-1][0:0] = chunks[-2][-needed:]
         del chunks[-2][-needed:]
     total_pages = len(chunks)
     active = min(max(int(current or 1), 1), max(total_pages, 1))
-    pages = [{
-        "id": f"page-{index}",
-        "position": index,
-        "total_pages": total_pages,
-        "items": chunk,
-        "item_ids": [item["id"] for item in chunk],
-    } for index, chunk in enumerate(chunks, 1)]
+    pages = [
+        {
+            "id": f"page-{index}",
+            "position": index,
+            "total_pages": total_pages,
+            "items": chunk,
+            "item_ids": [item["id"] for item in chunk],
+        }
+        for index, chunk in enumerate(chunks, 1)
+    ]
     return {
         "schema": "taskplane.host-carousel/v1",
         "total_items": len(selected),
@@ -1785,8 +2067,11 @@ def carousel_pages(
 
 
 def native_dashboard_projection(
-        snapshot: HostSurfaceSnapshot, *, host: str,
-        filters: Mapping[str, Any] | None = None, current: int = 1,
+    snapshot: HostSurfaceSnapshot,
+    *,
+    host: str,
+    filters: Mapping[str, Any] | None = None,
+    current: int = 1,
 ) -> dict[str, Any]:
     """Project one canonical snapshot into an accessible host-native model.
 
@@ -1803,15 +2088,16 @@ def native_dashboard_projection(
         value = _dashboard_plain(values.get(name, {}))
         row = {"id": name, "order": order, "value": value}
         if isinstance(value, dict) and isinstance(value.get("items"), list):
-            row["collection"] = carousel_pages(
-                value["items"], filters=filters, current=current)
+            row["collection"] = carousel_pages(value["items"], filters=filters, current=current)
         components.append(row)
 
     actions = list(canonical["safe_actions"])
     return {
         "schema": "taskplane.host-native-dashboard/v1",
-        "identity": {key: canonical[key] for key in (
-            "workflow_id", "run_id", "target", "revision", "sequence")},
+        "identity": {
+            key: canonical[key]
+            for key in ("workflow_id", "run_id", "target", "revision", "sequence")
+        },
         "stage": canonical["stage"],
         "state": canonical["state"],
         "fingerprint": canonical["fingerprint"],
@@ -1847,10 +2133,15 @@ def native_dashboard_projection(
             },
         },
     }
+
+
 def canonical_revision_identity(value: Any) -> dict[str, Any]:
     """Validate and normalize the tuple shared by every review projection."""
-    source = value.get("identity") if isinstance(value, dict) \
-        and isinstance(value.get("identity"), dict) else value
+    source = (
+        value.get("identity")
+        if isinstance(value, dict) and isinstance(value.get("identity"), dict)
+        else value
+    )
     source = source if isinstance(source, dict) else {}
     if any(source.get(key) in (None, "") for key in REVISION_ID_KEYS):
         raise ValueError("complete canonical revision identity is required")
@@ -1869,12 +2160,17 @@ def canonical_revision_identity(value: Any) -> dict[str, Any]:
 
 
 def canonical_report_projection(
-        report: str, identity: dict[str, Any],
+    report: str,
+    identity: dict[str, Any],
 ) -> dict[str, Any]:
     """A report projection that cannot drop or rename canonical identity."""
-    return {"schema": "taskplane.review-projection/v1", "kind": "report",
-            "identity": canonical_revision_identity(identity),
-            "body": str(report or "")}
+    return {
+        "schema": "taskplane.review-projection/v1",
+        "kind": "report",
+        "identity": canonical_revision_identity(identity),
+        "body": str(report or ""),
+    }
+
 
 def _dashboard_escape(value: object) -> str:
     return html.escape(str(value), quote=True)
@@ -1882,9 +2178,11 @@ def _dashboard_escape(value: object) -> str:
 
 def render_wave_metrics_projection(projection: Mapping[str, Any] | None) -> str:
     """Render only the supplied sealed dashboard projection; perform no reads."""
-    if not isinstance(projection, Mapping) or projection.get("schema") != \
-            "taskplane.wave-metrics-projection/v1" or \
-            projection.get("consumer") != "dashboard":
+    if (
+        not isinstance(projection, Mapping)
+        or projection.get("schema") != "taskplane.wave-metrics-projection/v1"
+        or projection.get("consumer") != "dashboard"
+    ):
         return ""
     receipt = str(projection.get("receipt_fingerprint") or "")
     metrics = projection.get("metrics")
@@ -1896,19 +2194,21 @@ def render_wave_metrics_projection(projection: Mapping[str, Any] | None) -> str:
             continue
         rows.append(
             f'<li data-wave-metric="{_dashboard_escape(name)}"><code>{_dashboard_escape(name)}</code> · '
-            f'actual {_dashboard_escape(metric.get("actual"))} {_dashboard_escape(metric.get("unit"))} · '
-            f'baseline {_dashboard_escape(metric.get("baseline"))} · target '
-            f'{_dashboard_escape(metric.get("target"))}</li>')
+            f"actual {_dashboard_escape(metric.get('actual'))} {_dashboard_escape(metric.get('unit'))} · "
+            f"baseline {_dashboard_escape(metric.get('baseline'))} · target "
+            f"{_dashboard_escape(metric.get('target'))}</li>"
+        )
     signoff_value = projection.get("signoff")
-    signoff: Mapping[str, Any] = (
-        signoff_value if isinstance(signoff_value, Mapping) else {})
+    signoff: Mapping[str, Any] = signoff_value if isinstance(signoff_value, Mapping) else {}
     return (
         '<section class="tp-sec" id="tp-wave-metrics" '
         f'data-wave-metrics-receipt="{_dashboard_escape(receipt)}">'
         '<p class="tp-kicker">sealed delivery-wave metrics</p>'
         f'<p class="tp-lede">receipt <code>{_dashboard_escape(receipt)}</code> · sign-off '
-        f'{"ready" if signoff.get("ready") is True else "blocked"}</p><ol>'
-        + "".join(rows) + "</ol></section>")
+        f"{'ready' if signoff.get('ready') is True else 'blocked'}</p><ol>"
+        + "".join(rows)
+        + "</ol></section>"
+    )
 
 
 DASHBOARD_PUBLICATION_SCHEMA = "taskplane.dashboard-publication-store/v1"
@@ -1930,10 +2230,13 @@ def load_dashboard_publication(workspace: str) -> dict[str, Any] | None:
         return None
     except (OSError, ValueError) as exc:
         raise runtime_storage.StorageIdentityError(
-            f"dashboard publication is unreadable: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema") != \
-            DASHBOARD_PUBLICATION_SCHEMA or set(value) != {
-                "schema", "current", "history"}:
+            f"dashboard publication is unreadable: {exc}"
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != DASHBOARD_PUBLICATION_SCHEMA
+        or set(value) != {"schema", "current", "history"}
+    ):
         raise runtime_storage.StorageIdentityError("dashboard publication schema is invalid")
     history = value.get("history")
     if not isinstance(history, list) or not history:
@@ -1942,23 +2245,31 @@ def load_dashboard_publication(workspace: str) -> dict[str, Any] | None:
         checked = [HostSurfaceSnapshot.from_dict(row) for row in history]
     except (TypeError, ValueError) as exc:
         raise runtime_storage.StorageIdentityError(
-            f"dashboard publication snapshot is invalid: {exc}") from exc
+            f"dashboard publication snapshot is invalid: {exc}"
+        ) from exc
     identities: dict[tuple[str, str, str, str, int], str] = {}
     for snapshot in checked:
-        key = (snapshot.workflow_id, snapshot.run_id, snapshot.target,
-               snapshot.revision, snapshot.sequence)
+        key = (
+            snapshot.workflow_id,
+            snapshot.run_id,
+            snapshot.target,
+            snapshot.revision,
+            snapshot.sequence,
+        )
         prior = identities.get(key)
         if prior is not None and prior != snapshot.fingerprint:
-            raise ContradictorySnapshotError(
-                "contradictory snapshots share one sequence")
+            raise ContradictorySnapshotError("contradictory snapshots share one sequence")
         identities[key] = snapshot.fingerprint
     current = HostSurfaceSnapshot.from_dict(value["current"])
     if current.to_dict() != checked[-1].to_dict():
         raise runtime_storage.StorageIdentityError(
-            "dashboard publication current head does not match history")
-    return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-            "current": current.to_dict(),
-            "history": [snapshot.to_dict() for snapshot in checked]}
+            "dashboard publication current head does not match history"
+        )
+    return {
+        "schema": DASHBOARD_PUBLICATION_SCHEMA,
+        "current": current.to_dict(),
+        "history": [snapshot.to_dict() for snapshot in checked],
+    }
 
 
 def commit_dashboard_snapshot(workspace: str, snapshot: HostSurfaceSnapshot) -> dict[str, Any]:
@@ -1970,38 +2281,51 @@ def commit_dashboard_snapshot(workspace: str, snapshot: HostSurfaceSnapshot) -> 
     try:
         authenticated = HostSurfaceSnapshot.from_dict(snapshot.to_dict())
     except (AttributeError, TypeError, ValueError) as exc:
-        raise runtime_storage.StorageIdentityError(
-            f"dashboard snapshot is invalid: {exc}") from exc
+        raise runtime_storage.StorageIdentityError(f"dashboard snapshot is invalid: {exc}") from exc
     path = dashboard_snapshot_store_path(workspace)
     with runtime_storage._storage_file_lock(path + ".lock"):
         prior = load_dashboard_publication(workspace)
         history = list((prior or {}).get("history") or [])
         if history:
             previous = HostSurfaceSnapshot.from_dict(history[-1])
-            stable = (authenticated.workflow_id, authenticated.run_id,
-                      authenticated.target, authenticated.revision)
-            previous_stable = (previous.workflow_id, previous.run_id,
-                               previous.target, previous.revision)
-            if stable == previous_stable and \
-                    authenticated.sequence == previous.sequence:
+            stable = (
+                authenticated.workflow_id,
+                authenticated.run_id,
+                authenticated.target,
+                authenticated.revision,
+            )
+            previous_stable = (
+                previous.workflow_id,
+                previous.run_id,
+                previous.target,
+                previous.revision,
+            )
+            if stable == previous_stable and authenticated.sequence == previous.sequence:
                 if authenticated.fingerprint != previous.fingerprint:
-                    raise ContradictorySnapshotError(
-                        "contradictory snapshots share one sequence")
-                return {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-                        "current": previous.to_dict(), "history": history,
-                        "replayed": True}
-            if (authenticated.workflow_id, authenticated.run_id,
-                    authenticated.target) == (
-                    previous.workflow_id, previous.run_id, previous.target) \
-                    and authenticated.sequence <= previous.sequence:
+                    raise ContradictorySnapshotError("contradictory snapshots share one sequence")
+                return {
+                    "schema": DASHBOARD_PUBLICATION_SCHEMA,
+                    "current": previous.to_dict(),
+                    "history": history,
+                    "replayed": True,
+                }
+            if (authenticated.workflow_id, authenticated.run_id, authenticated.target) == (
+                previous.workflow_id,
+                previous.run_id,
+                previous.target,
+            ) and authenticated.sequence <= previous.sequence:
                 raise runtime_storage.StorageIdentityError(
-                    "dashboard snapshot sequence is not monotonic")
+                    "dashboard snapshot sequence is not monotonic"
+                )
         history.append(authenticated.to_dict())
         # Publication history is bounded presentation evidence, not the event
         # journal. The authoritative workflow journal retains the full run.
         history = history[-256:]
-        stored = {"schema": DASHBOARD_PUBLICATION_SCHEMA,
-                  "current": authenticated.to_dict(), "history": history}
+        stored = {
+            "schema": DASHBOARD_PUBLICATION_SCHEMA,
+            "current": authenticated.to_dict(),
+            "history": history,
+        }
         _atomic_json(path, stored)
         return {**stored, "replayed": False}
 
@@ -2011,8 +2335,7 @@ def commit_dashboard_event(workspace: str, event: HostSurfaceEvent) -> dict[str,
     try:
         checked = HostSurfaceEvent.from_dict(event.to_dict())
     except (AttributeError, TypeError, ValueError) as exc:
-        raise runtime_storage.StorageIdentityError(f"dashboard event is invalid: {exc}") \
-            from exc
+        raise runtime_storage.StorageIdentityError(f"dashboard event is invalid: {exc}") from exc
     root = os.path.dirname(dashboard_snapshot_store_path(workspace))
     path = os.path.join(root, "events.json")
     with runtime_storage._storage_file_lock(path + ".lock"):
@@ -2020,21 +2343,24 @@ def commit_dashboard_event(workspace: str, event: HostSurfaceEvent) -> dict[str,
             with open(path, encoding="utf-8") as handle:
                 stored = json.load(handle)
         except FileNotFoundError:
-            stored = {"schema": "taskplane.dashboard-events/v1",
-                      "events": []}
+            stored = {"schema": "taskplane.dashboard-events/v1", "events": []}
         except (OSError, ValueError) as exc:
             raise runtime_storage.StorageIdentityError(
-                f"dashboard event history is unreadable: {exc}") from exc
-        if not isinstance(stored, dict) or stored.get("schema") != \
-                "taskplane.dashboard-events/v1" or \
-                not isinstance(stored.get("events"), list):
+                f"dashboard event history is unreadable: {exc}"
+            ) from exc
+        if (
+            not isinstance(stored, dict)
+            or stored.get("schema") != "taskplane.dashboard-events/v1"
+            or not isinstance(stored.get("events"), list)
+        ):
             raise runtime_storage.StorageIdentityError("dashboard event history is invalid")
-        events = [HostSurfaceEvent.from_dict(row)
-                  for row in stored["events"]]
+        events = [HostSurfaceEvent.from_dict(row) for row in stored["events"]]
         if any(row.fingerprint == checked.fingerprint for row in events):
             return {"event": checked.to_dict(), "replayed": True}
         events.append(checked)
-        value = {"schema": "taskplane.dashboard-events/v1",
-                 "events": [row.to_dict() for row in events[-512:]]}
+        value = {
+            "schema": "taskplane.dashboard-events/v1",
+            "events": [row.to_dict() for row in events[-512:]],
+        }
         _atomic_json(path, value)
         return {"event": checked.to_dict(), "replayed": False}

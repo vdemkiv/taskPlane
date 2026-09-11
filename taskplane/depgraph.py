@@ -43,6 +43,7 @@ import graph_decomposition
 import glob_match
 import graph_primitives
 import storage as runtime_storage
+
 if __package__:
     from . import primitives as tp, storage as project_storage, audit_projection
 else:
@@ -451,8 +452,9 @@ def _restore_managed_cache(ws: str, *, decompose: bool) -> dict | None:
 
 def _source_only_cache_graph(graph: dict) -> bool:
     return not graph.get("recorded") and all(
-        row.get("source") == "scanner" and not row.get("recorded")
-        and not row.get("declared") for row in graph.get("edges", []))
+        row.get("source") == "scanner" and not row.get("recorded") and not row.get("declared")
+        for row in graph.get("edges", [])
+    )
 
 
 def _write_managed_cache(ws: str, graph: dict, *, decompose: bool) -> None:
@@ -975,9 +977,7 @@ def scan(ws: str, decompose: bool = False, *, strict: bool = False) -> dict:
 
 
 def _canonical_fingerprint(value: object) -> str:
-    return hashlib.sha256(
-        _json_primitives.canonical_bytes(value, ensure_ascii=False)
-    ).hexdigest()
+    return hashlib.sha256(_json_primitives.canonical_bytes(value, ensure_ascii=False)).hexdigest()
 
 
 DESIGN_TRACEABILITY_PRODUCER = "taskplane/depgraph.py"
@@ -1417,7 +1417,8 @@ def _scan_volatile_stripped(g: dict) -> str:
     if "source_coverage" in meta:
         try:
             coverage = require_complete_source_coverage(
-                meta["source_coverage"], source_tree=meta.get("source_tree"))
+                meta["source_coverage"], source_tree=meta.get("source_tree")
+            )
         except ValueError:
             pass  # Corrupt/partial proof is not a reusable complete scan.
         else:
@@ -3322,7 +3323,9 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
             )
             return prev
         save(ws, g)
-    audit_projection.trace(ws, "graph_scan", modules=len(modules), edges=len(g["edges"]), files=len(file_entries))
+    audit_projection.trace(
+        ws, "graph_scan", modules=len(modules), edges=len(g["edges"]), files=len(file_entries)
+    )
     return g
 
 
@@ -3700,8 +3703,9 @@ def completion(ws: str, changed_files, planned_modules=None, policy: dict | None
     """Graph Definition of Done read model for one realized change."""
     graph = load(ws)
     files = list(changed_files or [])
-    actual = sorted({module_of(f, declared_module_ids(graph)) for f in files
-                     if not _unscanned_root_artifact(f)})
+    actual = sorted(
+        {module_of(f, declared_module_ids(graph)) for f in files if not _unscanned_root_artifact(f)}
+    )
     planned = sorted(set(planned_modules or []))
     imp = impact(ws, files, policy=policy)
     contract_files = sorted(
@@ -3890,8 +3894,11 @@ def impact(ws: str, changed_files, max_depth: int = 3, policy: dict | None = Non
     # their blast radius.
     _ids = declared_module_ids(g)
     touched = sorted(
-        {f if f in g["modules"] else module_of(f, _ids) for f in (changed_files or [])
-         if f in g["modules"] or not _unscanned_root_artifact(f)}
+        {
+            f if f in g["modules"] else module_of(f, _ids)
+            for f in (changed_files or [])
+            if f in g["modules"] or not _unscanned_root_artifact(f)
+        }
     )
     seen = {m: 0 for m in touched}
     # frontier state carries the number of explicit contract/resource and
@@ -4371,7 +4378,10 @@ def to_html(
     # let the remainder execute as markup. Escape `<` (and U+2028/9) so the
     # embedded JSON can never break out of the script element.
     safe_data = (
-        json.dumps(data).replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+        json.dumps(data)
+        .replace("<", "\\u003c")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
     )
     html = (
         _HTML.replace("__TITLE__", _esc(title or os.path.basename(ws)))

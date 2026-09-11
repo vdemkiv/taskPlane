@@ -35,8 +35,7 @@ def _enforce_supported_python(version_info=None) -> None:
     if tuple(version[:2]) >= _MINIMUM_PYTHON:
         return
     found = ".".join(str(part) for part in tuple(version[:3]))
-    print("taskplane requires Python 3.10 or newer; found Python " + found,
-          file=sys.stderr)
+    print("taskplane requires Python 3.10 or newer; found Python " + found, file=sys.stderr)
     raise SystemExit(2)
 
 
@@ -74,6 +73,7 @@ import storage as runtime_storage  # noqa: E402
 import run_store as repository_run_store  # noqa: E402
 import governed_commands as governed_command_engine  # noqa: E402
 import loop_status as loop_status_runtime  # noqa: E402
+
 if __package__:
     from .delivery_ports import DeliveryPortError  # noqa: E402
 else:  # pragma: no cover - direct CLI execution
@@ -83,6 +83,7 @@ else:  # pragma: no cover - direct CLI execution
 def _publish_worker_dashboard_refresh(workspace: str, **kwargs):
     """Composition-root adapter for the enforcement kernel's refresh intent."""
     import loop_status
+
     return loop_status.refresh_dashboard_snapshot(workspace, **kwargs)
 
 
@@ -91,24 +92,27 @@ tp.configure_dashboard_refresh_publisher(_publish_worker_dashboard_refresh)
 
 def _project_dashboard_phase_graph(workspace: str, **kwargs):
     import dashboard
+
     return dashboard.phase_graph_projection(workspace, **kwargs)
 
 
-loop_status_runtime.configure_phase_graph_projector(
-    _project_dashboard_phase_graph)
+loop_status_runtime.configure_phase_graph_projector(_project_dashboard_phase_graph)
 
 
 def _publish_cleanup_dashboard(workspace: str, **kwargs):
     """Compose cleanup publication without coupling cleanup to renderers."""
     import loop_status
     import views
+
     return governed_command_engine.owned_cleanup.publish_canonical_dashboard(
-        workspace, snapshot_publisher=loop_status.refresh_dashboard_snapshot,
-        delivery_publisher=views.refresh_views, **kwargs)
+        workspace,
+        snapshot_publisher=loop_status.refresh_dashboard_snapshot,
+        delivery_publisher=views.refresh_views,
+        **kwargs,
+    )
 
 
-governed_command_engine.owned_cleanup.configure_publication_publisher(
-    _publish_cleanup_dashboard)
+governed_command_engine.owned_cleanup.configure_publication_publisher(_publish_cleanup_dashboard)
 
 
 # Closed user-layer refusal protocol. Only errors whose failure is an
@@ -125,8 +129,7 @@ PUBLIC_ENGINE_ERROR_REGISTRY = {
     },
     runtime_storage.StorageIdentityError: {
         "headline": "workspace identity check failed",
-        "recovery": ("{program} repository prepare {workspace} "
-                     "--workspace {workspace}"),
+        "recovery": ("{program} repository prepare {workspace} --workspace {workspace}"),
         "action_label": "recovery",
         "exit_code": 1,
         "debug_cause": "reraise",
@@ -151,6 +154,7 @@ _EFFECTIVE_SETTINGS = None
 def _set_effective_settings_snapshot(settings):
     """Install the immutable snapshot consumed by one public transition."""
     from taskplane.settings import OperationalSettings
+
     if not isinstance(settings, OperationalSettings):
         raise TypeError("effective settings snapshot must be typed")
     global _EFFECTIVE_SETTINGS
@@ -162,11 +166,14 @@ def _effective_settings_snapshot():
     """Return the active snapshot, loading it once for direct API callers."""
     global _EFFECTIVE_SETTINGS
     from taskplane import run_context
+
     if run_context.current_settings() is not None:
         from taskplane.settings import load_settings
+
         return load_settings()
     if _EFFECTIVE_SETTINGS is None:
         from taskplane.settings import load_settings
+
         _EFFECTIVE_SETTINGS = load_settings(environment=os.environ)
     return _EFFECTIVE_SETTINGS
 
@@ -181,11 +188,9 @@ def require_host_private_capability(handle: str, capability_source) -> str:
     """Reject product-visible paths where a host-private handle is required."""
     value = str(handle or "").strip()
     if not value.startswith("host-private:") or os.path.exists(value):
-        raise DeliveryPortError(
-            "host-private capability must come from the live host channel")
+        raise DeliveryPortError("host-private capability must come from the live host channel")
     if not callable(getattr(capability_source, "consume", None)):
-        raise DeliveryPortError(
-            "host-private capability source is unavailable")
+        raise DeliveryPortError("host-private capability source is unavailable")
     return value
 
 
@@ -210,7 +215,7 @@ def north_star(ws: str) -> str | None:
             val = line.split(":", 1)[1] if ":" in line else ""
             val = val.strip().lstrip("*").strip().rstrip("*").strip()
             if val.startswith("(") and val.endswith(")"):
-                return None          # unfilled scaffold placeholder
+                return None  # unfilled scaffold placeholder
             return val or None
     return None
 
@@ -257,8 +262,9 @@ def _bare_root(ws: str) -> bool:
     bare = {os.path.normcase(os.path.normpath(b)) for b in bare}
     if os.path.normcase(os.path.normpath(ws)) not in bare:
         return False
-    inside_git = tp._run(["git", "rev-parse", "--is-inside-work-tree"],
-                         cwd=ws).stdout.strip() == "true"
+    inside_git = (
+        tp._run(["git", "rev-parse", "--is-inside-work-tree"], cwd=ws).stdout.strip() == "true"
+    )
     return not (inside_git and _is_commit_sha(tp.git_head(ws)))
 
 
@@ -351,12 +357,14 @@ _CODEX_HOOK_MARKER = ".taskplane/codex-hook.py"
 _PLUGIN_MANIFEST = os.path.join(".codex-plugin", "plugin.json")
 _PLUGIN_SEMVER_RE = re.compile(
     r"^(\d+)\.(\d+)\.(\d+)(?:\+codex\."
-    r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
+    r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 
 
 def _project_hook_duplicates(ws: str, *, remove: bool = False) -> int:
     """Recognize only the old generated project-launcher command entries."""
     import shlex
+
     path = os.path.join(ws, _CODEX_HOOK_CONFIG)
     if not os.path.lexists(path):
         return 0
@@ -368,8 +376,16 @@ def _project_hook_duplicates(ws: str, *, remove: bool = False) -> int:
         raise ValueError("project hooks configuration is invalid")
     count = 0
     generated = _codex_hook_rows()
-    commands = {"screen", "context", "subagent-start", "subagent-stop",
-                "screen-dispatch", "screen-skill", "screen-render", "session-verify"}
+    commands = {
+        "screen",
+        "context",
+        "subagent-start",
+        "subagent-stop",
+        "screen-dispatch",
+        "screen-skill",
+        "screen-render",
+        "session-verify",
+    }
     for event, groups in value.get("hooks", {}).items():
         if not isinstance(groups, list):
             raise ValueError("project hook groups must be a list")
@@ -386,20 +402,31 @@ def _project_hook_duplicates(ws: str, *, remove: bool = False) -> int:
                     argv = shlex.split(command) if isinstance(command, str) else []
                 except ValueError:
                     argv = []
-                owned = (isinstance(hook, dict) and hook.get("type") == "command"
+                owned = (
+                    isinstance(hook, dict)
+                    and hook.get("type") == "command"
                     and "commandWindows" not in hook
-                    and len(argv) == 3 and argv[0] in {"python", "python3"}
-                    and argv[1] in {_CODEX_HOOK_RUNNER, "./" + _CODEX_HOOK_RUNNER,
-                                   os.path.join(ws, _CODEX_HOOK_RUNNER)}
-                    and argv[2] in commands)
+                    and len(argv) == 3
+                    and argv[0] in {"python", "python3"}
+                    and argv[1]
+                    in {
+                        _CODEX_HOOK_RUNNER,
+                        "./" + _CODEX_HOOK_RUNNER,
+                        os.path.join(ws, _CODEX_HOOK_RUNNER),
+                    }
+                    and argv[2] in commands
+                )
                 if isinstance(hook, dict) and hook.get("type") == "command":
                     # Match the full generated platform pair. A foreign
                     # alternative command must never disappear with it.
                     owned = owned or any(
-                        all(hook.get(key) == template.get(key)
-                            for key in ("command", "commandWindows"))
+                        all(
+                            hook.get(key) == template.get(key)
+                            for key in ("command", "commandWindows")
+                        )
                         for row in generated.get(event, [])
-                        for template in row.get("hooks", []))
+                        for template in row.get("hooks", [])
+                    )
                 if owned:
                     count += 1
                 if not (owned and remove):
@@ -421,16 +448,23 @@ def _codex_hooks_report(ws: str) -> dict:
     entry point into that plugin, including from linked checkouts.
     """
     config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
-    manifest = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "hooks", "hooks.json")
+    manifest = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks", "hooks.json"
+    )
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
     if not os.path.isfile(runner_path):
         # Match the hook commands' explicit Git-family fallback. Never search
         # other checkouts or installed versions for workspace authority.
         try:
-            common = tp._run([
-                "git", "rev-parse", "--path-format=absolute", "--git-common-dir",
-            ], cwd=ws)
+            common = tp._run(
+                [
+                    "git",
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-common-dir",
+                ],
+                cwd=ws,
+            )
         except OSError:
             common = None
         if common is not None and common.returncode == 0:
@@ -454,16 +488,26 @@ def _codex_hooks_report(ws: str) -> dict:
         "ok": installed and runner and not duplicates,
         "duplicate_project_hooks": duplicates,
         "installed": installed,
-        "status": "ready" if installed and runner and not duplicates else "stale" if installed else "missing",
-        "registration": "plugin", "manifest": manifest,
-        "project_hooks_required": False, "launcher_ready": runner,
-        "config": config_path, "runner": runner_path,
+        "status": "ready"
+        if installed and runner and not duplicates
+        else "stale"
+        if installed
+        else "missing",
+        "registration": "plugin",
+        "manifest": manifest,
+        "project_hooks_required": False,
+        "launcher_ready": runner,
+        "config": config_path,
+        "runner": runner_path,
         "resolved_engine": installed_engine,
-        "hint": ("Run onboard --install-launcher to prepare the project entry point."
-                 if installed and (not runner or duplicates) else
-                 "Enable the installed TaskPlane plugin in Codex; readiness "
-                 "requires a host-observed native hook receipt." if installed
-                 else "Install the TaskPlane plugin with its native hooks."),
+        "hint": (
+            "Run onboard --install-launcher to prepare the project entry point."
+            if installed and (not runner or duplicates)
+            else "Enable the installed TaskPlane plugin in Codex; readiness "
+            "requires a host-observed native hook receipt."
+            if installed
+            else "Install the TaskPlane plugin with its native hooks."
+        ),
     }
 
 
@@ -476,6 +520,7 @@ def _existing_loop_step(ws: str) -> str | None:
     """
     try:
         import loop as loop_runtime
+
         state = loop_runtime._load_raw(ws)
     except Exception:
         return None
@@ -502,7 +547,8 @@ def _prefer_existing_loop_resume(ws: str, projection: dict) -> dict:
     effective = dict(updated.get("effective_path") or {})
     effective["reason"] = (
         "recover the saved run with loop resume in this task; loop next "
-        "revalidates authority and live enforcement before dispatch")
+        "revalidates authority and live enforcement before dispatch"
+    )
     updated["effective_path"] = effective
     updated["next_action"] = "resume_run"
     updated["continuation"] = {
@@ -515,31 +561,47 @@ def _prefer_existing_loop_resume(ws: str, projection: dict) -> dict:
     return updated
 
 
-def _host_capability_snapshot(ws: str, install_context: str | None = None, *,
-                              session_id: str | None = None, host: str | None = None):
+def _host_capability_snapshot(
+    ws: str,
+    install_context: str | None = None,
+    *,
+    session_id: str | None = None,
+    host: str | None = None,
+):
     """Use verified hook context when supplied; CLI defaults stay ambient."""
     context = install_context or _install_context()
     plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     native_manifest = os.path.join(plugin_root, "hooks", "hooks.json")
     if host is None:
-        host = ("codex" if (os.environ.get("CODEX_HOME")
-                            or os.environ.get("CODEX_THREAD_ID")) else "claude")
-    version = (os.environ.get("CODEX_VERSION") if host == "codex" else
-               os.environ.get("CLAUDE_CODE_VERSION"))
+        host = (
+            "codex"
+            if (os.environ.get("CODEX_HOME") or os.environ.get("CODEX_THREAD_ID"))
+            else "claude"
+        )
+    version = (
+        os.environ.get("CODEX_VERSION")
+        if host == "codex"
+        else os.environ.get("CLAUDE_CODE_VERSION")
+    )
     if session_id is None:
-        session_id = (os.environ.get("CODEX_THREAD_ID")
-                      or os.environ.get("CLAUDE_SESSION_ID"))
+        session_id = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
     observations = host_caps.runtime_hook_observations(
-        tp.store_home(ws), session_id=session_id, workspace=ws)
+        tp.store_home(ws), session_id=session_id, workspace=ws
+    )
     # Explicit adapter-owned environment receipts take precedence over the
     # short-lived runtime receipt when both exist.
     observations.update(host_caps.observations_from_environment(os.environ))
     return host_caps.probe_snapshot(
-        ws, host=host, host_version=version, session_id=session_id,
-        install_context=context, native_installed=os.path.isfile(
-        native_manifest), bridge_configured=False,
+        ws,
+        host=host,
+        host_version=version,
+        session_id=session_id,
+        install_context=context,
+        native_installed=os.path.isfile(native_manifest),
+        bridge_configured=False,
         observations=observations,
-        now=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
+        now=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+    )
 
 
 def _screen_enforcement_mode(host: str) -> str:
@@ -549,19 +611,20 @@ def _screen_enforcement_mode(host: str) -> str:
         mode = str(raw).strip().lower()
         if mode not in enforcement_kernel.MODES:
             raise enforcement_kernel.EnforcementError(
-                "TASKPLANE_ENFORCE_SCREEN must be strict, warn, or off")
+                "TASKPLANE_ENFORCE_SCREEN must be strict, warn, or off"
+            )
         return mode
     declared_claude = host == "claude" and bool(
         os.environ.get("CLAUDE_SESSION_ID")
         or os.environ.get("CLAUDE_CODE_VERSION")
         or str(os.environ.get("TASKPLANE_HOST") or "").lower()
-        in {"claude", "claude-code", "cowork", "chat"})
+        in {"claude", "claude-code", "cowork", "chat"}
+    )
     return "strict" if declared_claude else "warn"
 
 
 def _saved_enforcement(value) -> dict | None:
-    if isinstance(value, dict) and value.get("schema") == \
-            "taskplane.run-enforcement/v1":
+    if isinstance(value, dict) and value.get("schema") == "taskplane.run-enforcement/v1":
         value = value.get("current")
     try:
         checked = enforcement_kernel.validate_decision(value)
@@ -571,23 +634,35 @@ def _saved_enforcement(value) -> dict | None:
 
 
 def _enforcement_check(
-        ws: str, *, saved=None, advisory: bool = False,
-        actor: str | None = None, run_id: str | None = None,
-        revision: str | int | None = None,
-        prospective_activation: bool = False,
-        require_live: bool = True) -> tuple[dict, dict | None]:
+    ws: str,
+    *,
+    saved=None,
+    advisory: bool = False,
+    actor: str | None = None,
+    run_id: str | None = None,
+    revision: str | int | None = None,
+    prospective_activation: bool = False,
+    require_live: bool = True,
+) -> tuple[dict, dict | None]:
     """Compute one decision and, in strict mode, one machine refusal."""
     prior = _saved_enforcement(saved)
-    workspace_fp = hashlib.sha256(os.path.normcase(os.path.realpath(
-        os.path.abspath(ws))).encode("utf-8")).hexdigest()
-    if (prior and prior.get("status") == "advisory"
-            and prior.get("workspace_fingerprint") == workspace_fp):
+    workspace_fp = hashlib.sha256(
+        os.path.normcase(os.path.realpath(os.path.abspath(ws))).encode("utf-8")
+    ).hexdigest()
+    if (
+        prior
+        and prior.get("status") == "advisory"
+        and prior.get("workspace_fingerprint") == workspace_fp
+    ):
         return prior, None
     snapshot = _host_capability_snapshot(ws)
     mode = _screen_enforcement_mode(snapshot.host)
-    if (os.environ.get("TASKPLANE_ENFORCE_SCREEN") is None and prior
-            and prior.get("workspace_fingerprint") == workspace_fp
-            and (run_id is None or prior.get("run_id") == run_id)):
+    if (
+        os.environ.get("TASKPLANE_ENFORCE_SCREEN") is None
+        and prior
+        and prior.get("workspace_fingerprint") == workspace_fp
+        and (run_id is None or prior.get("run_id") == run_id)
+    ):
         # Policy belongs to the durable run, not the process that resumes it.
         # Reprobe liveness below; retained policy is not retained live proof.
         mode = prior["mode"]
@@ -598,17 +673,22 @@ def _enforcement_check(
     # the not-yet-existent contract's liveness is necessarily ungoverned.
     prospective_slot = tp.task_slot() if prospective_activation else None
     missing_prospective_slot = bool(
-        prospective_slot is not None and not os.path.exists(
-            tp.active_contract_path(ws, prospective_slot)))
-    liveness = tp.screen_liveness(
-        ws, contract={}) if missing_prospective_slot else tp.screen_liveness(ws)
+        prospective_slot is not None
+        and not os.path.exists(tp.active_contract_path(ws, prospective_slot))
+    )
+    liveness = (
+        tp.screen_liveness(ws, contract={}) if missing_prospective_slot else tp.screen_liveness(ws)
+    )
     decision = enforcement_kernel.enforcement_status(
-        ws, snapshot=snapshot, liveness=liveness,
-        run_id=run_id, revision=(revision if revision is not None
-                                 else tp.git_head(ws)), mode=mode,
-        observed_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
-    if (not advisory and prior and
-            prior.get("evidence_id") == decision.get("evidence_id")):
+        ws,
+        snapshot=snapshot,
+        liveness=liveness,
+        run_id=run_id,
+        revision=(revision if revision is not None else tp.git_head(ws)),
+        mode=mode,
+        observed_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+    )
+    if not advisory and prior and prior.get("evidence_id") == decision.get("evidence_id"):
         # The evidence id deliberately excludes observation time: two checks
         # with the same structural receipt, meter, revision, and policy are
         # one canonical decision.  Keep its original observation record so
@@ -617,22 +697,27 @@ def _enforcement_check(
         decision = prior
     if advisory:
         try:
-            decision = enforcement_kernel.acknowledge_advisory(
-                decision, actor=str(actor or ""))
+            decision = enforcement_kernel.acknowledge_advisory(decision, actor=str(actor or ""))
         except enforcement_kernel.EnforcementError as exc:
             return decision, {
                 "schema": "taskplane.enforcement-refusal/v1",
-                "error": str(exc), "enforcement": decision,
+                "error": str(exc),
+                "enforcement": decision,
                 "recovery": ["repeat with --advisory --by <human>"],
             }
     if require_live and mode == "strict" and decision["status"] == "unproven":
-        recovery = (["run /reload-plugins, then retry this exact command",
-                     "or repeat with --advisory --by <human>"]
-                    if snapshot.host == "claude" and
-                    (os.environ.get("CLAUDE_CODE_VERSION") or
-                     os.environ.get("CLAUDE_SESSION_ID")) else
-                    ["start a new host conversation and retry",
-                     "or repeat with --advisory --by <human>"])
+        recovery = (
+            [
+                "run /reload-plugins, then retry this exact command",
+                "or repeat with --advisory --by <human>",
+            ]
+            if snapshot.host == "claude"
+            and (os.environ.get("CLAUDE_CODE_VERSION") or os.environ.get("CLAUDE_SESSION_ID"))
+            else [
+                "start a new host conversation and retry",
+                "or repeat with --advisory --by <human>",
+            ]
+        )
         return decision, {
             "schema": "taskplane.enforcement-refusal/v1",
             "error": "governed action refused: screen enforcement is unproven",
@@ -642,12 +727,9 @@ def _enforcement_check(
     return decision, None
 
 
-
-
 def _codex_runner_family(runner_body: str) -> str | None:
     """Read the stable plugin-family literal from a generated runner."""
-    match = re.search(r"^PLUGIN_FAMILY = (.+)$",
-                      str(runner_body or ""), re.MULTILINE)
+    match = re.search(r"^PLUGIN_FAMILY = (.+)$", str(runner_body or ""), re.MULTILINE)
     if not match:
         return None
     try:
@@ -677,7 +759,9 @@ def _plugin_family_for_engine(engine: str) -> str:
 def _codex_runner_body(family: str) -> str:
     """Embed the same standalone resolver used by onboarding."""
     import inspect
-    return ("# Generated locally by taskplane onboarding; .taskplane is ignored.\n"
+
+    return (
+        "# Generated locally by taskplane onboarding; .taskplane is ignored.\n"
         "from __future__ import annotations\n"
         "import json, os, re, runpy, sys\n"
         + inspect.getsource(_valid_plugin_root)
@@ -687,7 +771,8 @@ def _codex_runner_body(family: str) -> str:
         + "if ENGINE is None:\n"
         + "    raise SystemExit('taskplane Codex hook bridge found no unique valid installed engine')\n"
         + "sys.argv = [ENGINE, *sys.argv[1:]]\n"
-        + "runpy.run_path(ENGINE, run_name='__main__')\n")
+        + "runpy.run_path(ENGINE, run_name='__main__')\n"
+    )
 
 
 def _codex_hook_action(command: str) -> str:
@@ -701,7 +786,9 @@ def _codex_hook_action(command: str) -> str:
         return "context"
     match = re.search(
         r'(?:tp\.py|["\']?(?:\$TASKPLANE_LAUNCHER|'
-        r'!TASKPLANE_LAUNCHER!)["\']?)\s+([a-z][a-z0-9-]*)', value)
+        r'!TASKPLANE_LAUNCHER!)["\']?)\s+([a-z][a-z0-9-]*)',
+        value,
+    )
     if not match:
         raise RuntimeError("bundled hook command has no taskplane action")
     return match.group(1)
@@ -709,8 +796,9 @@ def _codex_hook_action(command: str) -> str:
 
 def _codex_hook_rows() -> dict:
     """Translate bundled host-neutral hooks to a repo-local Codex runner."""
-    source_path = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "hooks", "hooks.json")
+    source_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks", "hooks.json"
+    )
     source = tp.load_json(source_path, what="bundled hook configuration")
     generated = json.loads(json.dumps(source.get("hooks") or {}))
     for rows in generated.values():
@@ -718,25 +806,24 @@ def _codex_hook_rows() -> dict:
             for hook in row.get("hooks") or []:
                 command = str(hook.get("command") or "")
                 is_host_native_check = (
-                    "host_native_runtime.py" in command
-                    or "host-native-check" in command)
+                    "host_native_runtime.py" in command or "host-native-check" in command
+                )
                 _codex_hook_action(command)
                 # Keep the bundled missing-runner fallback. A Codex-managed
                 # worktree contains the tracked hook configuration but not
                 # the ignored local bridge, and the originating worktree may
                 # be removed while its task is still open.
                 hook["command"] = command.replace(
-                    "TASKPLANE_HOOK_PATH=native",
-                    "TASKPLANE_HOOK_PATH=bridge")
-                hook["commandWindows"] = str(
-                    hook.get("commandWindows") or "").replace(
-                        "TASKPLANE_HOOK_PATH=native",
-                        "TASKPLANE_HOOK_PATH=bridge")
+                    "TASKPLANE_HOOK_PATH=native", "TASKPLANE_HOOK_PATH=bridge"
+                )
+                hook["commandWindows"] = str(hook.get("commandWindows") or "").replace(
+                    "TASKPLANE_HOOK_PATH=native", "TASKPLANE_HOOK_PATH=bridge"
+                )
                 if is_host_native_check:
-                    hook["command"] = hook["command"].replace(
-                        "--host claude", "--host codex")
+                    hook["command"] = hook["command"].replace("--host claude", "--host codex")
                     hook["commandWindows"] = hook["commandWindows"].replace(
-                        "--host claude", "--host codex")
+                        "--host claude", "--host codex"
+                    )
     return generated
 
 
@@ -753,14 +840,15 @@ def _install_codex_hooks(ws: str) -> dict:
     observations = host_caps.observations_from_environment(os.environ)
     policy = observations.get("managed_policy_permission")
     install_context = _install_context()
-    if ((policy and policy.status in ("unsupported", "contradictory"))
-            or (install_context == "org-managed" and policy is None)):
+    if (policy and policy.status in ("unsupported", "contradictory")) or (
+        install_context == "org-managed" and policy is None
+    ):
         return {
             "ok": False,
             "status": "blocked",
             "reason": "organization hook policy requires administrator action",
             "hint": "Ask an administrator to allow taskPlane hooks; managed "
-                    "settings were not changed.",
+            "settings were not changed.",
         }
 
     # Validate the project path independently of any accepted external run
@@ -772,6 +860,7 @@ def _install_codex_hooks(ws: str) -> dict:
     family = _plugin_family_for_engine(os.path.abspath(__file__))
     body = _codex_runner_body(family)
     import tempfile
+
     # mkstemp creates a unique file exclusively; an existing temporary-file
     # symlink can never redirect the write. Replace the final directory entry.
     descriptor, tmp = tempfile.mkstemp(prefix=".codex-hook-", suffix=".tmp", dir=launcher_home)
@@ -793,6 +882,7 @@ def _install_codex_hooks(ws: str) -> dict:
 def _tool_report() -> dict:
     try:
         import target as _tgt
+
         rep = _tgt.tools()
         rep["install_hint"] = _tgt.install_hint()
         rep["ok"] = bool(rep["git"]["present"] and rep["gh"]["present"])
@@ -812,21 +902,26 @@ _SETUP_SCHEMA = "taskplane.onboarding-setup/v1"
 
 def _onboarding_settings(ws: str) -> dict:
     from taskplane import settings
+
     _, digest = settings.read_project_settings(ws)
-    effective = settings.load_settings(workspace=ws, environment=os.environ,
-                                       use_run_snapshot=False)
-    return {"source": str(settings.project_settings_path(ws)), "digest": digest,
-            "effective_digest": effective.digest,
-            "stages": {name: {"model": row.model or "inherit",
-                              "reasoning": row.reasoning or "inherit"}
-                       for name, row in effective.stages.items()},
-            "reasoning_choices": sorted(settings.REASONING),
-            "environment_overrides": effective.receipt.get("environment"),
-            "applies_to": "new runs"}
+    effective = settings.load_settings(workspace=ws, environment=os.environ, use_run_snapshot=False)
+    return {
+        "source": str(settings.project_settings_path(ws)),
+        "digest": digest,
+        "effective_digest": effective.digest,
+        "stages": {
+            name: {"model": row.model or "inherit", "reasoning": row.reasoning or "inherit"}
+            for name, row in effective.stages.items()
+        },
+        "reasoning_choices": sorted(settings.REASONING),
+        "environment_overrides": effective.receipt.get("environment"),
+        "applies_to": "new runs",
+    }
 
 
 def _save_onboarding_settings(ws: str, value: dict) -> dict:
     from taskplane import settings
+
     path = settings.project_settings_path(ws)
     path.parent.mkdir(parents=True, exist_ok=True)
     tp._ensure_self_ignored(str(path.parent))
@@ -846,10 +941,13 @@ def _save_onboarding_settings(ws: str, value: dict) -> dict:
 def _onboarding_configuration(ws: str) -> dict:
     """Inspectable locations and bounded editable context from their owner."""
     import hashlib
+
     result = {"hook_registration": "plugin", "context": {}}
     try:
-        result.update(execution_home=runtime_storage.taskplane_home(workspace=ws),
-                      project_execution_home=runtime_storage.project_taskplane_home(ws))
+        result.update(
+            execution_home=runtime_storage.taskplane_home(workspace=ws),
+            project_execution_home=runtime_storage.project_taskplane_home(ws),
+        )
         result.update(knowledge_home=tp.kb_root(ws), knowledge_plan=tp.get_mode(ws)["plan"])
         for key, (name, label) in _SETUP_CONTEXT_FILES.items():
             path = os.path.join(result["knowledge_home"], "context", name)
@@ -863,7 +961,9 @@ def _onboarding_configuration(ws: str) -> dict:
                 raw, text = None, ""
             editable = (raw is None or len(raw) <= 48000) and len(text) <= 12000
             result["context"][key] = {
-                "label": label, "path": path, "text": text if editable else "",
+                "label": label,
+                "path": path,
+                "text": text if editable else "",
                 "editable": editable,
                 "digest": hashlib.sha256(raw).hexdigest() if raw is not None else None,
             }
@@ -885,37 +985,62 @@ def _read_onboarding_setup(source: str, ws: str) -> dict:
 
 
 def _read_onboarding_setup_value(value: object, ws: str) -> dict:
-    fields = {"schema", "workspace", "execution_storage", "knowledge_plan",
-              "install_launcher", "initialize", "context", "settings"}
-    if not isinstance(value, dict) or set(value) - fields or \
-            value.get("schema") != _SETUP_SCHEMA:
+    fields = {
+        "schema",
+        "workspace",
+        "execution_storage",
+        "knowledge_plan",
+        "install_launcher",
+        "initialize",
+        "context",
+        "settings",
+    }
+    if not isinstance(value, dict) or set(value) - fields or value.get("schema") != _SETUP_SCHEMA:
         raise ValueError("unsupported setup submission fields or schema")
-    if not isinstance(value.get("workspace"), str) or \
-            os.path.realpath(value["workspace"]) != os.path.realpath(ws):
+    if not isinstance(value.get("workspace"), str) or os.path.realpath(
+        value["workspace"]
+    ) != os.path.realpath(ws):
         raise ValueError("setup submission belongs to a different workspace")
     if value.get("execution_storage", "keep-existing") not in {"project", "keep-existing"}:
         raise ValueError("unsupported execution storage choice")
     if value.get("knowledge_plan", "keep-existing") not in {
-            "keep-existing", "personal", "team", "enterprise"}:
+        "keep-existing",
+        "personal",
+        "team",
+        "enterprise",
+    }:
         raise ValueError("unsupported knowledge plan")
     for name in ("install_launcher", "initialize"):
         if name in value and type(value[name]) is not bool:
             raise ValueError(name + " must be a boolean")
     if "settings" in value:
         row = value["settings"]
-        if not isinstance(row, dict) or set(row) != {"stages", "expected_digest"} or not isinstance(row["expected_digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", row["expected_digest"]):
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"stages", "expected_digest"}
+            or not isinstance(row["expected_digest"], str)
+            or not re.fullmatch(r"[a-f0-9]{64}", row["expected_digest"])
+        ):
             raise ValueError("invalid settings submission")
         from taskplane import settings
+
         settings.validate_project_stages(row["stages"])
     context = value.get("context", {})
     if not isinstance(context, dict) or set(context) - set(_SETUP_CONTEXT_FILES):
         raise ValueError("unsupported project context field")
     for name, row in context.items():
-        if not isinstance(row, dict) or set(row) != {"text", "expected_digest"} \
-                or not isinstance(row["text"], str) or len(row["text"]) > 12000 \
-                or "\x00" in row["text"] or not (row["expected_digest"] is None or
-                    isinstance(row["expected_digest"], str) and
-                    re.fullmatch(r"[a-f0-9]{64}", row["expected_digest"])):
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"text", "expected_digest"}
+            or not isinstance(row["text"], str)
+            or len(row["text"]) > 12000
+            or "\x00" in row["text"]
+            or not (
+                row["expected_digest"] is None
+                or isinstance(row["expected_digest"], str)
+                and re.fullmatch(r"[a-f0-9]{64}", row["expected_digest"])
+            )
+        ):
             raise ValueError("invalid project context field: " + name)
     return value
 
@@ -923,6 +1048,7 @@ def _read_onboarding_setup_value(value: object, ws: str) -> dict:
 def _apply_onboarding_setup(ws: str, value: dict) -> dict:
     """Apply explicit setup values without initializing or approving a run."""
     import hashlib
+
     # Validate every submitted field before applying any setup effect.
     checked = _read_onboarding_setup_value(value, ws)
     value = checked
@@ -933,7 +1059,9 @@ def _apply_onboarding_setup(ws: str, value: dict) -> dict:
     plan = value.get("knowledge_plan", "keep-existing")
     initialized = os.path.isdir(os.path.join(tp.kb_root(ws), "context"))
     if plan != "keep-existing" and plan != config.get("knowledge_plan") and initialized:
-        raise ValueError("knowledge is already initialized; preserve its store and use share plan explicitly")
+        raise ValueError(
+            "knowledge is already initialized; preserve its store and use share plan explicitly"
+        )
     pending = []
     for key, row in value.get("context", {}).items():
         current = config["context"].get(key)
@@ -944,8 +1072,12 @@ def _apply_onboarding_setup(ws: str, value: dict) -> dict:
             raise ValueError("project context must not be a symbolic link")
         if current["text"] != row["text"]:
             pending.append((key, row["text"]))
-    receipt = {"schema": "taskplane.onboarding-setup-result/v1", "status": "applied",
-               "context_saved": [], "run_preserved": True}
+    receipt = {
+        "schema": "taskplane.onboarding-setup-result/v1",
+        "status": "applied",
+        "context_saved": [],
+        "run_preserved": True,
+    }
     if value.get("settings"):
         receipt["settings_saved"] = _save_onboarding_settings(ws, value["settings"])
     if value.get("install_launcher"):
@@ -956,8 +1088,9 @@ def _apply_onboarding_setup(ws: str, value: dict) -> dict:
             return receipt
     if value.get("initialize"):
         with contextlib.redirect_stdout(io.StringIO()):
-            cmd_init(argparse.Namespace(workspace=ws,
-                plan=None if plan == "keep-existing" else plan))
+            cmd_init(
+                argparse.Namespace(workspace=ws, plan=None if plan == "keep-existing" else plan)
+            )
     elif plan != "keep-existing" and plan != config.get("knowledge_plan"):
         tp.set_mode(ws, plan=plan)
     # Resolve again after an explicitly selected initial knowledge plan.
@@ -967,8 +1100,9 @@ def _apply_onboarding_setup(ws: str, value: dict) -> dict:
         if os.path.realpath(path) != os.path.abspath(path):
             raise ValueError("project context must not traverse symbolic links")
         tp.atomic_write_bytes(path, body.encode("utf-8"))
-        receipt["context_saved"].append({"field": key, "path": path,
-            "digest": hashlib.sha256(body.encode("utf-8")).hexdigest()})
+        receipt["context_saved"].append(
+            {"field": key, "path": path, "digest": hashlib.sha256(body.encode("utf-8")).hexdigest()}
+        )
     return receipt
 
 
@@ -978,14 +1112,17 @@ def _onboard_report(ws: str) -> dict:
     snapshot (gates fail closed without one), and taskplane initialized.
     Returns a checklist + the single next action, so the onboarding UI can
     walk a brand-new user in from a zero state (no folder, no repo)."""
-    inside_git = tp._run(["git", "rev-parse", "--is-inside-work-tree"],
-                         cwd=ws).stdout.strip() == "true"
+    inside_git = (
+        tp._run(["git", "rev-parse", "--is-inside-work-tree"], cwd=ws).stdout.strip() == "true"
+    )
     head = tp.git_head(ws)
     has_commit = _is_commit_sha(head)
     try:
-        entries = [e for e in os.listdir(ws)
-                   if e not in (".git", ".taskplane", "knowledge", "plan",
-                                ".gitignore", ".DS_Store")]
+        entries = [
+            e
+            for e in os.listdir(ws)
+            if e not in (".git", ".taskplane", "knowledge", "plan", ".gitignore", ".DS_Store")
+        ]
     except OSError:
         entries = []
     has_files = bool(entries)
@@ -1000,146 +1137,209 @@ def _onboard_report(ws: str) -> dict:
     # otherwise ignored marker such as .gitignore (or the commit is empty).
     looks_like_project = (has_files or (inside_git and has_commit)) and not bare_root
     import preflight
+
     run_readiness = preflight.workspace_readiness(ws)
     try:
         has_context = os.path.isdir(os.path.join(tp.kb_root(ws), "context"))
     except runtime_storage.StorageIdentityError:
         has_context = False
 
-    is_codex = bool(os.environ.get("CODEX_HOME")
-                    or os.environ.get("CODEX_THREAD_ID"))
+    is_codex = bool(os.environ.get("CODEX_HOME") or os.environ.get("CODEX_THREAD_ID"))
     host = "codex" if is_codex else "claude"
     workspace_hint = (
         "Open this repository as the working folder in Codex (CLI: `cd` to "
         "the repo before starting `codex`; desktop: open/create a local "
         "environment for the repo), then start a new task."
-        if is_codex else
-        "Connect a folder (Cowork: attach a folder; Claude Code: open your "
+        if is_codex
+        else "Connect a folder (Cowork: attach a folder; Claude Code: open your "
         "project) — or use this one if it's where you want to work."
     )
     checks = [
-        {"id": "workspace", "label": "A folder to work in",
-         "ok": looks_like_project,
-         "detail": ws if looks_like_project else
-         f"{ws} — looks empty or scratch",
-         "hint": workspace_hint},
-        {"id": "git", "label": "A git repo with a snapshot",
-         "ok": inside_git and has_commit,
-         "detail": (head[:12] if has_commit else
-                    "git repo, no commit yet" if inside_git else "not a repo"),
-         "hint": "Gates need a commit to diff against. `git init` here (I can "
-                 "do it), or point me at a repo URL to clone."},
-        {"id": "init", "label": "taskplane initialized",
-         "ok": has_context,
-         "detail": "context docs present" if has_context else
-         "not initialized",
-         "hint": "`tp init` scaffolds context docs, the KB, and the graph — "
-                 "I run it for you once a folder + repo are in place."},
+        {
+            "id": "workspace",
+            "label": "A folder to work in",
+            "ok": looks_like_project,
+            "detail": ws if looks_like_project else f"{ws} — looks empty or scratch",
+            "hint": workspace_hint,
+        },
+        {
+            "id": "git",
+            "label": "A git repo with a snapshot",
+            "ok": inside_git and has_commit,
+            "detail": (
+                head[:12]
+                if has_commit
+                else "git repo, no commit yet"
+                if inside_git
+                else "not a repo"
+            ),
+            "hint": "Gates need a commit to diff against. `git init` here (I can "
+            "do it), or point me at a repo URL to clone.",
+        },
+        {
+            "id": "init",
+            "label": "taskplane initialized",
+            "ok": has_context,
+            "detail": "context docs present" if has_context else "not initialized",
+            "hint": "`tp init` scaffolds context docs, the KB, and the graph — "
+            "I run it for you once a folder + repo are in place.",
+        },
     ]
-    recovery_command = ["python3", ".taskplane/codex-hook.py", "repository",
-                        "prepare", os.path.realpath(ws)]
+    recovery_command = [
+        "python3",
+        ".taskplane/codex-hook.py",
+        "repository",
+        "prepare",
+        os.path.realpath(ws),
+    ]
     retired_run = run_readiness["status"] == "unsupported_run_schema"
     if retired_run:
-        recovery_command = ["python3", ".taskplane/codex-hook.py", "loop", "archive",
-                            "--workspace", os.path.realpath(ws), "--by", "human:owner"]
-    checks.append({
-        "id": "run_binding", "label": "Declared run manifest",
-        "ok": run_readiness["ready"], "detail": run_readiness["status"],
-        "hint": ("Archive the retained run with human authorization before starting current delivery."
-                 if retired_run else "Use repository prepare to recover the declared run binding; "
-                 "preserve existing knowledge and artifacts.")})
+        recovery_command = [
+            "python3",
+            ".taskplane/codex-hook.py",
+            "loop",
+            "archive",
+            "--workspace",
+            os.path.realpath(ws),
+            "--by",
+            "human:owner",
+        ]
+    checks.append(
+        {
+            "id": "run_binding",
+            "label": "Declared run manifest",
+            "ok": run_readiness["ready"],
+            "detail": run_readiness["status"],
+            "hint": (
+                "Archive the retained run with human authorization before starting current delivery."
+                if retired_run
+                else "Use repository prepare to recover the declared run binding; "
+                "preserve existing knowledge and artifacts."
+            ),
+        }
+    )
     from taskplane import loop as phase_runtime
+
     effective = _effective_settings_snapshot()
-    phase_configuration = {"source": "agents/spec-phase-definitions.json",
-                           "settings_digest": effective.digest}
+    phase_configuration = {
+        "source": "agents/spec-phase-definitions.json",
+        "settings_digest": effective.digest,
+    }
     try:
-        registry, _ = phase_runtime._phase_bridge_registry({
-            "definition_source": phase_configuration["source"]})
-        phase_configuration.update(status="ready",
+        registry, _ = phase_runtime._phase_bridge_registry(
+            {"definition_source": phase_configuration["source"]}
+        )
+        phase_configuration.update(
+            status="ready",
             definition_set_fingerprint=registry.definition_set_fingerprint,
-            phases=[phase.id for phase in registry.phases])
+            phases=[phase.id for phase in registry.phases],
+        )
     except (OSError, ValueError) as exc:
         phase_configuration.update(status="invalid", error=str(exc))
     phase_ready = phase_configuration["status"] == "ready"
-    checks.append({"id": "phase_configuration", "label": "Phase configuration",
-        "ok": phase_ready, "detail": phase_configuration.get("error") or
-        " → ".join(phase_configuration["phases"]),
-        "hint": "Use one validated plugin build whose phase definitions match its skills; preserve the current run."})
+    checks.append(
+        {
+            "id": "phase_configuration",
+            "label": "Phase configuration",
+            "ok": phase_ready,
+            "detail": phase_configuration.get("error") or " → ".join(phase_configuration["phases"]),
+            "hint": "Use one validated plugin build whose phase definitions match its skills; preserve the current run.",
+        }
+    )
     codex_hooks = _codex_hooks_report(ws) if is_codex else None
     host_capabilities = None
     if codex_hooks is not None:
         snapshot = _host_capability_snapshot(ws)
         host_capabilities = host_caps.onboarding_projection(snapshot)
-        host_capabilities = _prefer_existing_loop_resume(
-            ws, host_capabilities)
-        native_effective = (host_capabilities["effective_path"]["value"]
-                            == "native_effective")
+        host_capabilities = _prefer_existing_loop_resume(ws, host_capabilities)
+        native_effective = host_capabilities["effective_path"]["value"] == "native_effective"
         resumable = host_capabilities.get("next_action") == "resume_run"
         if native_effective:
             checks[0]["hint"] = (
                 "The loaded native Taskplane hook governs this checkout; "
-                "continue in the current Codex task.")
-        checks.extend((
-            {
-                "id": "hook_install", "label": "Plugin hooks installed",
-                "ok": (host_capabilities["install"]["status"] == "supported"
-                       and codex_hooks["installed"]),
-                "detail": (host_capabilities["install"]["status"] if
-                           codex_hooks["ok"] else codex_hooks["status"]),
-                "hint": codex_hooks.get("hint") or (
-                    "Run onboarding's hook setup before governed work."),
-            },
-            {
-                "id": "workspace_launcher", "label": "Project launcher",
-                "ok": codex_hooks["launcher_ready"],
-                "detail": codex_hooks["runner"],
-                "hint": "Run onboard --install-launcher; project hook registrations remain unnecessary.",
-            },
-            {
-                "id": "repository_trust", "label": "Repository trust",
-                "ok": (native_effective or
-                       host_capabilities["trust"]["status"] == "supported"),
-                "detail": ("not required for native hooks" if
-                           native_effective else
-                           host_capabilities["trust"]["status"]),
-                "hint": "Review the plugin permission in Codex; project hook "
-                        "registrations are not required.",
-            },
-            {
-                "id": "managed_policy", "label": "Managed hook policy",
-                "ok": (host_capabilities["managed_policy"]["status"]
-                       == "supported"),
-                "detail": host_capabilities["managed_policy"]["status"],
-                "hint": "An organization-managed restriction requires "
-                        "administrator action; taskPlane will not change it.",
-            },
-            {
-                "id": "loaded_session", "label": "Hooks loaded this session",
-                "ok": (host_capabilities["loaded_session"]["status"]
-                       == "supported"),
-                "detail": host_capabilities["loaded_session"]["status"],
-                "hint": ("This Codex task already has an observed hook "
-                         "receipt; no restart is required." if
-                         host_capabilities["loaded_session"]["status"] ==
-                         "supported" else
-                         "Read the existing run with loop resume; dispatch "
-                         "will check live enforcement separately." if
-                         resumable else
-                         "Start one new Codex task only after the initial "
-                         "hook installation or a host policy change."),
-            },
-            {
-                "id": "effective_hook_path", "label": "Effective hook path",
-                "ok": host_capabilities["ready"] and native_effective,
-                "detail": host_capabilities["effective_path"]["value"],
-                "hint": host_capabilities["effective_path"]["reason"],
-            },
-        ))
-    base_ready = (looks_like_project and inside_git and has_commit and has_context
-                  and run_readiness["ready"] and phase_ready)
-    ready = base_ready and (host_capabilities is None
-                            or (bool(host_capabilities["ready"]) and native_effective
-                                and bool(codex_hooks["ok"])))
+                "continue in the current Codex task."
+            )
+        checks.extend(
+            (
+                {
+                    "id": "hook_install",
+                    "label": "Plugin hooks installed",
+                    "ok": (
+                        host_capabilities["install"]["status"] == "supported"
+                        and codex_hooks["installed"]
+                    ),
+                    "detail": (
+                        host_capabilities["install"]["status"]
+                        if codex_hooks["ok"]
+                        else codex_hooks["status"]
+                    ),
+                    "hint": codex_hooks.get("hint")
+                    or ("Run onboarding's hook setup before governed work."),
+                },
+                {
+                    "id": "workspace_launcher",
+                    "label": "Project launcher",
+                    "ok": codex_hooks["launcher_ready"],
+                    "detail": codex_hooks["runner"],
+                    "hint": "Run onboard --install-launcher; project hook registrations remain unnecessary.",
+                },
+                {
+                    "id": "repository_trust",
+                    "label": "Repository trust",
+                    "ok": (native_effective or host_capabilities["trust"]["status"] == "supported"),
+                    "detail": (
+                        "not required for native hooks"
+                        if native_effective
+                        else host_capabilities["trust"]["status"]
+                    ),
+                    "hint": "Review the plugin permission in Codex; project hook "
+                    "registrations are not required.",
+                },
+                {
+                    "id": "managed_policy",
+                    "label": "Managed hook policy",
+                    "ok": (host_capabilities["managed_policy"]["status"] == "supported"),
+                    "detail": host_capabilities["managed_policy"]["status"],
+                    "hint": "An organization-managed restriction requires "
+                    "administrator action; taskPlane will not change it.",
+                },
+                {
+                    "id": "loaded_session",
+                    "label": "Hooks loaded this session",
+                    "ok": (host_capabilities["loaded_session"]["status"] == "supported"),
+                    "detail": host_capabilities["loaded_session"]["status"],
+                    "hint": (
+                        "This Codex task already has an observed hook "
+                        "receipt; no restart is required."
+                        if host_capabilities["loaded_session"]["status"] == "supported"
+                        else "Read the existing run with loop resume; dispatch "
+                        "will check live enforcement separately."
+                        if resumable
+                        else "Start one new Codex task only after the initial "
+                        "hook installation or a host policy change."
+                    ),
+                },
+                {
+                    "id": "effective_hook_path",
+                    "label": "Effective hook path",
+                    "ok": host_capabilities["ready"] and native_effective,
+                    "detail": host_capabilities["effective_path"]["value"],
+                    "hint": host_capabilities["effective_path"]["reason"],
+                },
+            )
+        )
+    base_ready = (
+        looks_like_project
+        and inside_git
+        and has_commit
+        and has_context
+        and run_readiness["ready"]
+        and phase_ready
+    )
+    ready = base_ready and (
+        host_capabilities is None
+        or (bool(host_capabilities["ready"]) and native_effective and bool(codex_hooks["ok"]))
+    )
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
@@ -1152,14 +1352,19 @@ def _onboard_report(ws: str) -> dict:
         nxt = "repair_phase_configuration"
     elif not has_context:
         nxt = "tp_init"
-    elif (codex_hooks is not None and not codex_hooks["ok"]
-          and host_capabilities["next_action"] not in {
-              "contact_administrator", "review_repository_trust"}):
+    elif (
+        codex_hooks is not None
+        and not codex_hooks["ok"]
+        and host_capabilities["next_action"]
+        not in {"contact_administrator", "review_repository_trust"}
+    ):
         nxt = "install_codex_hooks" if codex_hooks["installed"] else "install_or_enable_hooks"
-    elif host_capabilities is not None and (
-            not host_capabilities["ready"] or not native_effective):
-        nxt = (host_capabilities["next_action"] if not host_capabilities["ready"]
-               else "install_or_enable_hooks")
+    elif host_capabilities is not None and (not host_capabilities["ready"] or not native_effective):
+        nxt = (
+            host_capabilities["next_action"]
+            if not host_capabilities["ready"]
+            else "install_or_enable_hooks"
+        )
     else:
         nxt = "ready"
     # Readiness is not input selection. Historical snapshots enter a new
@@ -1168,51 +1373,56 @@ def _onboard_report(ws: str) -> dict:
     _ictx = _install_context()
     # Onboarding is one of the explicit discovery boundaries. Status below
     # reads this durable result and never scans the tree independently.
-    foreign_state = (collision_kernel.discover_state_roots(ws)
-                     if run_readiness["ready"] else [])
+    foreign_state = collision_kernel.discover_state_roots(ws) if run_readiness["ready"] else []
     if foreign_state:
         collision_kernel.persist(ws, roots=foreign_state)
-    return {"workspace": ws, "host": host, "artifacts": artifacts,
-            "configuration": _onboarding_configuration(ws),
-            "codex_hooks": codex_hooks,
-            "host_capabilities": host_capabilities,
-            # R-0005 install truth: the account-type install/update paths,
-            # matched to the detected context (org-managed / personal) or
-            # the honest by-account-type triage when undetectable — never
-            # a step an org member cannot run.
-            "install": {"context": _ictx,
-                        "paths": _install_paths_lines(_ictx)},
-            # v2.12.0: git and gh are dependencies, not conveniences.
-            # taskplane is a git-shaped product — contracts snapshot HEAD,
-            # routing diffs against a base, the graph scans a tree, a review
-            # is pinned to a commit — and reviewing a REMOTE pull request
-            # additionally needs the PR's title, body, linked issues and
-            # discussion, none of which are in the git objects. In the field
-            # `gh` was absent and that context arrived over unauthenticated
-            # web reads that nothing recorded. Surfacing it at onboarding is
-            # where a missing tool costs one command instead of a review.
-            "tools": _tool_report(),
-            "looks_like_project": looks_like_project,
-            "is_git": inside_git, "has_commit": has_commit,
-            "has_context": has_context, "ready": ready,
-            "checks": checks, "next_action": nxt,
-            "run_readiness": run_readiness,
-            "phase_configuration": phase_configuration,
-            "settings": _onboarding_settings(ws),
-            "recovery": ({"command_argv": recovery_command,
-                          "preserve_existing_state": True}
-                         if not run_readiness["ready"] else None),
-            # Resolved model routing, visible at cold start: with defaults
-            # Claude pins only `cheap`; Codex inherits all tiers so another
-            # provider's model id is never dispatched. Overrides remain
-            # available through TASKPLANE_MODEL_<TIER> (discipline/
-            # model-tiers.md). Surfacing it here is what makes the routing
-            # discoverable instead of a silent no-op.
-            "model_tiers": {t: (tp.model_for_tier(t) or "inherit")
-                            for t in tp.MODEL_TIERS},
-            "reasoning_tiers": {t: tp.reasoning_for_tier(t)
-                                for t in tp.MODEL_TIERS},
-            "foreign_state": foreign_state}
+    return {
+        "workspace": ws,
+        "host": host,
+        "artifacts": artifacts,
+        "configuration": _onboarding_configuration(ws),
+        "codex_hooks": codex_hooks,
+        "host_capabilities": host_capabilities,
+        # R-0005 install truth: the account-type install/update paths,
+        # matched to the detected context (org-managed / personal) or
+        # the honest by-account-type triage when undetectable — never
+        # a step an org member cannot run.
+        "install": {"context": _ictx, "paths": _install_paths_lines(_ictx)},
+        # v2.12.0: git and gh are dependencies, not conveniences.
+        # taskplane is a git-shaped product — contracts snapshot HEAD,
+        # routing diffs against a base, the graph scans a tree, a review
+        # is pinned to a commit — and reviewing a REMOTE pull request
+        # additionally needs the PR's title, body, linked issues and
+        # discussion, none of which are in the git objects. In the field
+        # `gh` was absent and that context arrived over unauthenticated
+        # web reads that nothing recorded. Surfacing it at onboarding is
+        # where a missing tool costs one command instead of a review.
+        "tools": _tool_report(),
+        "looks_like_project": looks_like_project,
+        "is_git": inside_git,
+        "has_commit": has_commit,
+        "has_context": has_context,
+        "ready": ready,
+        "checks": checks,
+        "next_action": nxt,
+        "run_readiness": run_readiness,
+        "phase_configuration": phase_configuration,
+        "settings": _onboarding_settings(ws),
+        "recovery": (
+            {"command_argv": recovery_command, "preserve_existing_state": True}
+            if not run_readiness["ready"]
+            else None
+        ),
+        # Resolved model routing, visible at cold start: with defaults
+        # Claude pins only `cheap`; Codex inherits all tiers so another
+        # provider's model id is never dispatched. Overrides remain
+        # available through TASKPLANE_MODEL_<TIER> (discipline/
+        # model-tiers.md). Surfacing it here is what makes the routing
+        # discoverable instead of a silent no-op.
+        "model_tiers": {t: (tp.model_for_tier(t) or "inherit") for t in tp.MODEL_TIERS},
+        "reasoning_tiers": {t: tp.reasoning_for_tier(t) for t in tp.MODEL_TIERS},
+        "foreign_state": foreign_state,
+    }
 
 
 # --------------------------------------------------------------- new
@@ -1226,8 +1436,7 @@ DEFAULT_STANDALONE_REVIEW_MAX_TOKENS = 25_000_000
 
 def _standalone_review_budget(max_tokens: int | None) -> dict:
     """The finite, host-observed budget attached to every review start."""
-    ceiling = (DEFAULT_STANDALONE_REVIEW_MAX_TOKENS
-               if max_tokens is None else int(max_tokens))
+    ceiling = DEFAULT_STANDALONE_REVIEW_MAX_TOKENS if max_tokens is None else int(max_tokens)
     if ceiling <= 0:
         raise ValueError("standalone review token ceiling must be positive")
     return {
@@ -1245,24 +1454,28 @@ def _apply_contract_token_ceiling(contract: dict, max_tokens: int) -> None:
         raise ValueError("contract token ceiling must be positive")
     budget = contract["budget"]
     budget["max_tokens"] = ceiling
-    budget["target_tokens"] = max(1, min(
-        int(budget.get("target_tokens") or ceiling), ceiling - 1))
+    budget["target_tokens"] = max(1, min(int(budget.get("target_tokens") or ceiling), ceiling - 1))
 
 
 def cmd_new(a) -> int:
     ws = _workspace(a.workspace)
     if _bare_root(ws):
-        print("taskplane: REFUSING to activate a contract here — "
-              f"{ws} is the session home / filesystem root, not a project. "
-              "A contract scoped here would govern the entire session, and a "
-              "leaked one is exactly how a session gets locked. cd into (or "
-              "--workspace) a real project checkout, or `git init && git "
-              "commit` first if this really is your project folder.",
-              file=sys.stderr)
+        print(
+            "taskplane: REFUSING to activate a contract here — "
+            f"{ws} is the session home / filesystem root, not a project. "
+            "A contract scoped here would govern the entire session, and a "
+            "leaked one is exactly how a session gets locked. cd into (or "
+            "--workspace) a real project checkout, or `git init && git "
+            "commit` first if this really is your project folder.",
+            file=sys.stderr,
+        )
         return 1
     enforcement, refusal = _enforcement_check(
-        ws, advisory=bool(getattr(a, "advisory", False)),
-        actor=getattr(a, "by", None), prospective_activation=True)
+        ws,
+        advisory=bool(getattr(a, "advisory", False)),
+        actor=getattr(a, "by", None),
+        prospective_activation=True,
+    )
     if refusal:
         print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
         return 1
@@ -1270,44 +1483,40 @@ def cmd_new(a) -> int:
     # EXACT shape the loop engine builds — one contract schema, not two.
     # (The old local CONTRACT_TEMPLATE diverged and crashed cmd_status/
     # cmd_budget on any loop-created contract.)
-    scope = ([s.strip() for s in a.scope.split(",") if s.strip()]
-             if a.scope else [])
-    tools = ([t.strip() for t in a.tools.split(",") if t.strip()]
-             if a.tools else [])
+    scope = [s.strip() for s in a.scope.split(",") if s.strip()] if a.scope else []
+    tools = [t.strip() for t in a.tools.split(",") if t.strip()] if a.tools else []
     deny_extra = [d.strip() for d in a.deny] if a.deny else []
     c = tp.build_contract(
         " ".join(a.goal),
         scope=scope,
         read_only=bool(getattr(a, "read_only", False)),
-        write_allow=(list(a.write_allow)
-                     if getattr(a, "write_allow", None) else None),
+        write_allow=(list(a.write_allow) if getattr(a, "write_allow", None) else None),
         tools=tools,
         test_command=a.tests or None,
         deny_extra=deny_extra,
-        max_actions=(int(a.max_actions)
-                     if getattr(a, "max_actions", None) is not None
-                     else None),
+        max_actions=(int(a.max_actions) if getattr(a, "max_actions", None) is not None else None),
     )
     allowed_foreign = list(getattr(a, "allow_foreign_state", None) or [])
     if allowed_foreign:
         if not str(getattr(a, "by", None) or "").strip():
-            print("taskplane: --allow-foreign-state requires --by ACTOR",
-                  file=sys.stderr)
+            print("taskplane: --allow-foreign-state requires --by ACTOR", file=sys.stderr)
             return 1
         c["foreign_state_override"] = {
             "schema": "taskplane.foreign-state-override/v1",
-            "roots": allowed_foreign, "actor": str(a.by),
+            "roots": allowed_foreign,
+            "actor": str(a.by),
         }
     c["enforcement"] = enforcement
     # cooperative dollar advisory (kept on the shared shape as an optional
     # key). `is not None`, NOT truthiness: `--budget 0` means a ZERO ceiling
     # (maximally strict — any spend is over), never the $3 default.
     if a.budget is not None and a.budget < 0:
-        print("taskplane: --budget must be >= 0 (0 means no cooperative "
-              "spend allowed).", file=sys.stderr)
+        print(
+            "taskplane: --budget must be >= 0 (0 means no cooperative spend allowed).",
+            file=sys.stderr,
+        )
         return 1
-    c["budget"]["max_cost_usd"] = float(a.budget) if a.budget is not None \
-        else DEFAULT_MAX_COST_USD
+    c["budget"]["max_cost_usd"] = float(a.budget) if a.budget is not None else DEFAULT_MAX_COST_USD
     if getattr(a, "max_tokens", None) is not None:
         _apply_contract_token_ceiling(c, int(a.max_tokens))
 
@@ -1319,27 +1528,30 @@ def cmd_new(a) -> int:
     _tgt_rec = None
     if getattr(a, "target", None) or getattr(a, "base", None):
         import target as _tgt
+
         spec = getattr(a, "target", None)
         parsed = _tgt.parse(spec) if spec else None
         if parsed and parsed["kind"] == "pr" and getattr(a, "fetch", False):
             _tgt_rec = _tgt.acquire(ws, spec, base=getattr(a, "base", None))
         else:
-            _tgt_rec = _tgt.pin(ws, base=getattr(a, "base", None),
-                                target=parsed)
+            _tgt_rec = _tgt.pin(ws, base=getattr(a, "base", None), target=parsed)
         if not _tgt_rec.get("ok"):
             print(f"taskplane: {_tgt_rec.get('reason')}", file=sys.stderr)
             return 1
         _tgt.save(ws, _tgt_rec)
-        c["target"] = {k: _tgt_rec.get(k) for k in
-                       ("origin", "head", "base", "base_ref", "branch",
-                        "fingerprint", "target")}
+        c["target"] = {
+            k: _tgt_rec.get(k)
+            for k in ("origin", "head", "base", "base_ref", "branch", "fingerprint", "target")
+        }
 
     snapshot = tp.git_head(ws)
     tp.activate(ws, c, snapshot=snapshot)
     if _tgt_rec:
-        print(f"  target    : {(_tgt_rec.get('head') or '')[:12]} vs "
-              f"{(_tgt_rec.get('base') or '(no base)')[:12]} — "
-              f"fingerprint {_tgt_rec['fingerprint']}")
+        print(
+            f"  target    : {(_tgt_rec.get('head') or '')[:12]} vs "
+            f"{(_tgt_rec.get('base') or '(no base)')[:12]} — "
+            f"fingerprint {_tgt_rec['fingerprint']}"
+        )
 
     projection = tp.contract_projection(c)
     mode = "READ-ONLY review" if projection["read_only"] else "build"
@@ -1352,17 +1564,23 @@ def cmd_new(a) -> int:
     snap_disp = snapshot[:12] if snapshot else "NONE (git commit first)"
     print(f"  snapshot  : {snap_disp}")
     if not snapshot:
-        print("  ! not a git repo / no commit: run `git init && git add -A "
-              "&& git commit -m init` for the DoD scope-diff to work.",
-              file=sys.stderr)
+        print(
+            "  ! not a git repo / no commit: run `git init && git add -A "
+            "&& git commit -m init` for the DoD scope-diff to work.",
+            file=sys.stderr,
+        )
     owed = _seed_owed(ws, getattr(a, "owes", None), c.get("task_id", ""))
-    print("\nThe PreToolUse hook now blocks out-of-scope writes, denied "
-          "commands, and disallowed tools.")
+    print(
+        "\nThe PreToolUse hook now blocks out-of-scope writes, denied "
+        "commands, and disallowed tools."
+    )
     if owed:
-        print(f"  owes      : {', '.join(owed)} — recorded now, before the "
-              "work starts, so a skip is a fact rather than an absence. "
-              "`tp dod` and `tp loop submit` stay blocked until each is "
-              "shown and acknowledged (`tp ack --status`).")
+        print(
+            f"  owes      : {', '.join(owed)} — recorded now, before the "
+            "work starts, so a skip is a fact rather than an absence. "
+            "`tp dod` and `tp loop submit` stay blocked until each is "
+            "shown and acknowledged (`tp ack --status`)."
+        )
     # Report the Definition-of-Ready verdict at activation time.
     ready, blockers, warnings = tp.dor_check(c, ws, snapshot)
     _print_dor(ready, blockers, warnings)
@@ -1371,8 +1589,7 @@ def cmd_new(a) -> int:
 
 
 def _print_dor(ready, blockers, warnings) -> None:
-    print("\ntaskplane DoR (ready to start?): "
-          + ("READY ✅" if ready else "NOT READY ❌"))
+    print("\ntaskplane DoR (ready to start?): " + ("READY ✅" if ready else "NOT READY ❌"))
     for b in blockers:
         print("  ✗ " + b)
     for w in warnings:
@@ -1413,9 +1630,12 @@ def _print_dor(ready, blockers, warnings) -> None:
 # hook that does not need the model's cooperation.
 RUN_OWES = {
     "review": (
-        ("render_dashboard", "the engine-authored review dashboard, rendered "
-                             "after dispatch and after collection; it embeds "
-                             "the exact dependency/blast-radius graph"),
+        (
+            "render_dashboard",
+            "the engine-authored review dashboard, rendered "
+            "after dispatch and after collection; it embeds "
+            "the exact dependency/blast-radius graph",
+        ),
     ),
 }
 
@@ -1438,9 +1658,9 @@ def _seed_owed(ws, run_type, task_id):
         return []
     seeded = []
     for kind, detail in RUN_OWES.get(run, ()):  # unknown run type owes nothing
-        oid = obligations.issue(ws, kind, detail=detail, step=run,
-                                key=f"{run}:{kind}", session=task_id,
-                                binding=True)
+        oid = obligations.issue(
+            ws, kind, detail=detail, step=run, key=f"{run}:{kind}", session=task_id, binding=True
+        )
         if oid:
             seeded.append(f"{kind} ({oid})")
     return seeded
@@ -1458,43 +1678,49 @@ def cmd_session_verify(a) -> int:
         event = event if isinstance(event, dict) else {}
     except Exception:
         event = {}
-    submission = _submission_stop_check(
-        event, workspace=getattr(a, "workspace", None))
+    submission = _submission_stop_check(event, workspace=getattr(a, "workspace", None))
     if submission and submission.get("block"):
         _emit_submission_stop_block("Stop", submission)
         return 2
     try:
         import obligations
+
         ws = _workspace(getattr(a, "workspace", None))
         contract = tp.load_active_for_event(ws, event)
         if not contract:
             return 0
-        owed = [row for row in obligations.blocking(ws)
-                if not row.get("session")
-                or row["session"] == contract.get("task_id")]
+        owed = [
+            row
+            for row in obligations.blocking(ws)
+            if not row.get("session") or row["session"] == contract.get("task_id")
+        ]
     except Exception:
         return 0
     if not owed or event.get("stop_hook_active") is True:
         return 0
-    print("taskplane: this run owes artifacts that were never shown:",
-          file=sys.stderr)
+    print("taskplane: this run owes artifacts that were never shown:", file=sys.stderr)
     for o in owed:
-        print(f"  {o['id']}  {o.get('kind')}  {o.get('detail') or ''}",
-              file=sys.stderr)
-    print("Render each one, then `tp ack <id>` (ack is unmetered — it can "
-          "always be run).", file=sys.stderr)
+        print(f"  {o['id']}  {o.get('kind')}  {o.get('detail') or ''}", file=sys.stderr)
+    print(
+        "Render each one, then `tp ack <id>` (ack is unmetered — it can always be run).",
+        file=sys.stderr,
+    )
     # Stop is a reminder, not a retry engine. Keep the actual completion
     # gate closed without generating an unbounded chain of agent turns.
     try:
         stalled, detail = _session_verify_stall(ws, owed)
     except Exception:
-        stalled, detail = True, ("could not save the reminder state; automatic "
-                                 "retries stopped. Check runtime-store access. "
-                                 "Completion remains blocked.")
+        stalled, detail = (
+            True,
+            (
+                "could not save the reminder state; automatic "
+                "retries stopped. Check runtime-store access. "
+                "Completion remains blocked."
+            ),
+        )
     if stalled:
         print("", file=sys.stderr)
-        print(f"taskplane: NO PROGRESS since the last check — {detail}",
-              file=sys.stderr)
+        print(f"taskplane: NO PROGRESS since the last check — {detail}", file=sys.stderr)
         return 0
     return 2
 
@@ -1504,6 +1730,7 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
     before with exactly this set of open obligations and the same action
     count, i.e. repeating the instruction cannot help."""
     import hashlib
+
     used = None
     contract = None
     try:
@@ -1513,9 +1740,12 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
     except Exception:
         contract, used = contract, None
     key = hashlib.sha1(
-        (str((contract or {}).get("task_id", "")) + "|"
-         + "|".join(sorted(f"{o['id']}:{o.get('fingerprint', '')}"
-                           for o in owed))).encode()
+        (
+            str((contract or {}).get("task_id", ""))
+            + "|"
+            + "|".join(sorted(f"{o['id']}:{o.get('fingerprint', '')}" for o in owed))
+        ).encode(),
+        usedforsecurity=False,
     ).hexdigest()[:16]
     path = os.path.join(tp.tp_dir(ws), "session_verify_stall.json")
     prior = tp.load_json(path, default={}, what="stall marker") or {}
@@ -1525,8 +1755,10 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"key": key, "count": count}, f)
     except OSError as exc:
-        return True, (f"cannot save the reminder state: {exc}. Automatic retries "
-                      "stopped; completion remains blocked.")
+        return True, (
+            f"cannot save the reminder state: {exc}. Automatic retries "
+            "stopped; completion remains blocked."
+        )
     if count < 2:
         return False, ""
     max_a = ((contract or {}).get("budget") or {}).get("max_actions")
@@ -1538,14 +1770,16 @@ def _session_verify_stall(ws: str, owed: list) -> tuple:
             f"reserved closing actions. If more WORK is genuinely needed, a "
             f"human can approve in chat, then run: `tp.py budget --grant N "
             f"--approved-by <human> --workspace {ws}`. No new task or "
-            f"outside-workspace workaround is required.")
+            f"outside-workspace workaround is required."
+        )
     return True, (
         f"the same {len(owed)} obligation(s) have been open across "
         f"{count} checks. Automatic retries stopped; completion remains "
         "blocked. Check `tp ack --status` and any storage-permission error "
         "from `tp ack <id>`. If the human ended this task, use "
         "`tp clear --approved-by <human> --workspace <path>`; clearing "
-        "does not approve the review or mark its artifacts delivered.")
+        "does not approve the review or mark its artifacts delivered."
+    )
 
 
 def cmd_screen_render(a) -> int:
@@ -1553,9 +1787,10 @@ def cmd_screen_render(a) -> int:
     try:
         event = json.load(sys.stdin)
     except Exception:
-        return 0                       # malformed input is not the model's
+        return 0  # malformed input is not the model's
     try:
         import obligations
+
         ti = event.get("tool_input") or {}
         # The payload key differs by tool and may change; take the longest
         # string argument rather than pinning one name, so a renamed field
@@ -1573,8 +1808,10 @@ def cmd_screen_render(a) -> int:
             ws,
             tool=event.get("tool_name") or "",
             fingerprint=obligations.content_fingerprint(body) if body else None,
-            title=title, bytes_len=len(body.encode("utf-8")) if body else 0,
-            session=event.get("session_id"))
+            title=title,
+            bytes_len=len(body.encode("utf-8")) if body else 0,
+            session=event.get("session_id"),
+        )
     except Exception:
         pass
     return 0
@@ -1586,73 +1823,111 @@ def _collision_authority(ws: str) -> dict:
     state = None
     try:
         import loop as loop_engine
+
         state = loop_engine._load_raw(ws)
     except Exception:
         state = None
     review_state = None
     try:
         import review as review_engine
+
         review_state = review_engine._load_state(ws)
     except Exception:
         review_state = None
-    loop_active = isinstance(state, dict) and state.get("step") not in {
-        None, "done", "failed"}
-    review_active = isinstance(review_state, dict) and \
-        review_state.get("status") not in {
-            None, "complete", "failed", "cancelled", "unavailable"}
+    loop_active = isinstance(state, dict) and state.get("step") not in {None, "done", "failed"}
+    review_active = isinstance(review_state, dict) and review_state.get("status") not in {
+        None,
+        "complete",
+        "failed",
+        "cancelled",
+        "unavailable",
+    }
     governed = bool(contract or loop_active or review_active)
-    step = ((state or {}).get("step") or (review_state or {}).get("stage")
-            or (contract or {}).get("stage") or "contract")
-    run_id = ((review_state or {}).get("run_id")
-              or (state or {}).get("run_id")
-              or (state or {}).get("requirement_id")
-              or (contract or {}).get("task_id"))
-    enforcement = (((state or {}).get("enforcement") or {}).get("current")
-                   or (contract or {}).get("enforcement") or {})
-    return {"governed": governed, "run_id": run_id, "step": step,
-            "advisory": enforcement.get("status") == "advisory"}
+    step = (
+        (state or {}).get("step")
+        or (review_state or {}).get("stage")
+        or (contract or {}).get("stage")
+        or "contract"
+    )
+    run_id = (
+        (review_state or {}).get("run_id")
+        or (state or {}).get("run_id")
+        or (state or {}).get("requirement_id")
+        or (contract or {}).get("task_id")
+    )
+    enforcement = (
+        ((state or {}).get("enforcement") or {}).get("current")
+        or (contract or {}).get("enforcement")
+        or {}
+    )
+    return {
+        "governed": governed,
+        "run_id": run_id,
+        "step": step,
+        "advisory": enforcement.get("status") == "advisory",
+    }
 
 
 def _collision_allowlist() -> list[str]:
     raw = os.environ.get("TASKPLANE_SKILL_ALLOW") or ""
-    return [item.strip() for item in raw.split(",")
-            if item.strip()]
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _classify_collision(ws: str, kind: str, identity: str,
-                        *, brief_owned: bool = False) -> dict:
+def _classify_collision(ws: str, kind: str, identity: str, *, brief_owned: bool = False) -> dict:
     authority = _collision_authority(ws)
     if brief_owned and authority["governed"]:
         return collision_kernel.classify(
-            kind, "tp_" + identity, governed=True,
-            run_id=authority["run_id"], step=authority["step"])
-    collision_mode = (os.environ.get("TASKPLANE_COLLISION_SCREEN")
-                      or "on").strip().lower()
-    strict = collision_mode == "strict" or \
-        (os.environ.get("TASKPLANE_SKILL_STRICT") or "").strip().lower() \
-        in {"1", "true", "yes", "strict"}
+            kind,
+            "tp_" + identity,
+            governed=True,
+            run_id=authority["run_id"],
+            step=authority["step"],
+        )
+    collision_mode = (os.environ.get("TASKPLANE_COLLISION_SCREEN") or "on").strip().lower()
+    strict = collision_mode == "strict" or (
+        os.environ.get("TASKPLANE_SKILL_STRICT") or ""
+    ).strip().lower() in {"1", "true", "yes", "strict"}
     decision = collision_kernel.classify(
-        kind, identity, governed=authority["governed"],
-        run_id=authority["run_id"], step=authority["step"], strict=strict,
-        advisory=(authority["advisory"] or collision_mode in {
-            "0", "false", "no", "off", "disabled"}),
-        allow=_collision_allowlist())
+        kind,
+        identity,
+        governed=authority["governed"],
+        run_id=authority["run_id"],
+        step=authority["step"],
+        strict=strict,
+        advisory=(
+            authority["advisory"] or collision_mode in {"0", "false", "no", "off", "disabled"}
+        ),
+        allow=_collision_allowlist(),
+    )
     if decision.get("record"):
-        collision_kernel.persist(ws, decision=decision,
-                                 run_id=authority["run_id"])
-        tp.trace(ws, "foreign_interference", kind=kind, identity=identity,
-                 action=decision["action"], step=authority["step"],
-                 run_id=authority["run_id"],
-                 registry_version=decision["registry_version"],
-                 registry_fingerprint=decision["registry_fingerprint"])
+        collision_kernel.persist(ws, decision=decision, run_id=authority["run_id"])
+        tp.trace(
+            ws,
+            "foreign_interference",
+            kind=kind,
+            identity=identity,
+            action=decision["action"],
+            step=authority["step"],
+            run_id=authority["run_id"],
+            registry_version=decision["registry_version"],
+            registry_fingerprint=decision["registry_fingerprint"],
+        )
     return decision
 
 
 def _emit_collision(decision: dict) -> None:
     if decision.get("action") == "deny":
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny",
-            "permissionDecisionReason": decision["reason"]}}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": decision["reason"],
+                    }
+                }
+            )
+        )
     elif decision.get("action") in {"advise", "observed"}:
         print(json.dumps({"systemMessage": decision["reason"]}))
 
@@ -1665,11 +1940,21 @@ def cmd_screen_skill(a) -> int:
         ws = _workspace()
         authority = _collision_authority(ws)
         if authority["governed"] and not authority["advisory"]:
-            reason = ("taskplane skill isolation could not parse hook input "
-                      f"({type(exc).__name__}); governed verification fails closed")
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": reason}}))
+            reason = (
+                "taskplane skill isolation could not parse hook input "
+                f"({type(exc).__name__}); governed verification fails closed"
+            )
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    }
+                )
+            )
         return 0
     ti = event.get("tool_input") if isinstance(event, dict) else {}
     ti = ti if isinstance(ti, dict) else {}
@@ -1690,26 +1975,34 @@ def cmd_screen_dispatch(a) -> int:
         event = json.load(sys.stdin)
     except Exception as exc:
         authority = _collision_authority(_workspace())
-        if ((authority["governed"] and not authority["advisory"])
-                or mode == "strict"):
-            reason = ("taskplane dispatch check: malformed hook input "
-                      f"({type(exc).__name__}); strict verification cannot "
-                      "prove this dispatch, so it is denied.")
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": reason}}))
+        if (authority["governed"] and not authority["advisory"]) or mode == "strict":
+            reason = (
+                "taskplane dispatch check: malformed hook input "
+                f"({type(exc).__name__}); strict verification cannot "
+                "prove this dispatch, so it is denied."
+            )
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    }
+                )
+            )
         return 0
     foreign_message = None
     try:
         ti = event.get("tool_input") or {}
-        agent = (ti.get("task_name") or ti.get("subagent_type")
-                 or ti.get("agent_type") or "")
+        agent = ti.get("task_name") or ti.get("subagent_type") or ti.get("agent_type") or ""
         ws = _workspace(event.get("cwd"))
         expectation = tp.peek_expectation(ws, agent, strict=False)
-        brief_owned = bool(expectation and agent in {
-            expectation.get("task_name"), expectation.get("agent")})
-        collision = _classify_collision(
-            ws, "agent", str(agent), brief_owned=brief_owned)
+        brief_owned = bool(
+            expectation and agent in {expectation.get("task_name"), expectation.get("agent")}
+        )
+        collision = _classify_collision(ws, "agent", str(agent), brief_owned=brief_owned)
         if collision.get("action") == "deny":
             _emit_collision(collision)
             return 0
@@ -1717,22 +2010,30 @@ def cmd_screen_dispatch(a) -> int:
             foreign_message = collision["reason"]
     except Exception as exc:
         try:
-            authority = _collision_authority(
-                _workspace(event.get("cwd")))
+            authority = _collision_authority(_workspace(event.get("cwd")))
         except Exception:
             authority = {"governed": True, "advisory": False}
         if authority["governed"] and not authority["advisory"]:
-            reason = ("taskplane dispatch isolation errored "
-                      f"({type(exc).__name__}); governed verification fails closed")
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": reason}}))
+            reason = (
+                "taskplane dispatch isolation errored "
+                f"({type(exc).__name__}); governed verification fails closed"
+            )
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    }
+                )
+            )
             return 0
     try:
         ti = event.get("tool_input") or {}
         native_codex = bool(ti.get("task_name"))
-        agent = (ti.get("task_name") or ti.get("subagent_type")
-                 or ti.get("agent_type") or "")
+        agent = ti.get("task_name") or ti.get("subagent_type") or ti.get("agent_type") or ""
         model = ti.get("model")
         effort = ti.get("reasoning_effort")
         observed_context = ti.get("fork_turns")
@@ -1748,79 +2049,107 @@ def cmd_screen_dispatch(a) -> int:
             name_ok = exp is None
         expected_model = exp and exp.get("model")
         expected_effort = exp and exp.get("reasoning_effort")
-        unknown_governed = exp is None and native_codex and agent.startswith(
-            "tp_")
-        model_ok = exp is None or (model == expected_model if native_codex
-                                  else expected_model is None or
-                                  model == expected_model)
+        unknown_governed = exp is None and native_codex and agent.startswith("tp_")
+        model_ok = exp is None or (
+            model == expected_model
+            if native_codex
+            else expected_model is None or model == expected_model
+        )
         effort_ok = exp is None or not native_codex or effort == expected_effort
-        expected_context = tp._canonical_operational_settings().workflow.\
-            worker_inheritance["context"]
-        context_ok = exp is None or not native_codex or \
-            observed_context == expected_context
-        marker = exp and (exp.get("role_marker") or tp.role_marker(
-            exp.get("agent", "")))
+        expected_context = tp._canonical_operational_settings().workflow.worker_inheritance[
+            "context"
+        ]
+        context_ok = exp is None or not native_codex or observed_context == expected_context
+        marker = exp and (exp.get("role_marker") or tp.role_marker(exp.get("agent", "")))
         marker_present = bool(marker) and any(
-            line.strip() == marker for line in message.splitlines())
+            line.strip() == marker for line in message.splitlines()
+        )
         bound_role = False
-        if native_codex and exp is not None and not marker_present and \
-                "taskplane-role:" not in message:
+        if (
+            native_codex
+            and exp is not None
+            and not marker_present
+            and "taskplane-role:" not in message
+        ):
             # Codex may protect prompt contents in tool events. Authenticate
             # the role against the exact signed pending worker, never an
             # opaque prompt prefix or an assumed role from a task name.
             bound_role = tp.native_worker_role_matches(ws, exp, str(agent))
         role_ok = exp is None or (
-            (marker_present or bound_role) if native_codex else
-            not ti.get("role") or ti.get("role") == exp.get("agent"))
-        ok = name_ok and not unknown_governed and model_ok and effort_ok \
-            and context_ok and role_ok
-        tp.trace(ws, "native_dispatch_checks", name_ok=name_ok,
-                 known_brief=not unknown_governed, model_ok=model_ok,
-                 effort_ok=effort_ok, context_ok=context_ok, role_ok=role_ok,
-                 message_present=bool(message),
-                 role_basis=("prepared-worker-contract" if bound_role else
-                             "prompt-marker" if marker_present else "unavailable"))
+            (marker_present or bound_role)
+            if native_codex
+            else not ti.get("role") or ti.get("role") == exp.get("agent")
+        )
+        ok = name_ok and not unknown_governed and model_ok and effort_ok and context_ok and role_ok
+        tp.trace(
+            ws,
+            "native_dispatch_checks",
+            name_ok=name_ok,
+            known_brief=not unknown_governed,
+            model_ok=model_ok,
+            effort_ok=effort_ok,
+            context_ok=context_ok,
+            role_ok=role_ok,
+            message_present=bool(message),
+            role_basis=(
+                "prepared-worker-contract"
+                if bound_role
+                else "prompt-marker"
+                if marker_present
+                else "unavailable"
+            ),
+        )
         if ok and exp is not None and exp.get("intent_id"):
             try:
                 import spend as _spend
                 import loop as _loop_runtime
+
                 transcript = _spend.event_transcript(event)
                 if not transcript:
-                    raise ValueError(
-                        "host transcript path is unavailable")
-                projection = _bounded_transcript_projection(
-                    ws, transcript, "codex")
+                    raise ValueError("host transcript path is unavailable")
+                projection = _bounded_transcript_projection(ws, transcript, "codex")
                 native_snapshot = projection.get("native_session")
-                if projection.get("status") != "available" or not isinstance(
-                        native_snapshot, dict) or int(
-                            (projection.get("usage") or {}).get(
-                                "total_tokens") or 0) <= 0:
+                if (
+                    projection.get("status") != "available"
+                    or not isinstance(native_snapshot, dict)
+                    or int((projection.get("usage") or {}).get("total_tokens") or 0) <= 0
+                ):
                     raise ValueError(
-                        str(projection.get("reason") or
-                            "native counter is null or zero"))
+                        str(projection.get("reason") or "native counter is null or zero")
+                    )
                 _loop_runtime.record_native_orchestrator_snapshot(
-                    ws, snapshot=native_snapshot,
-                    observation_authority=_transcript_projection_authority(ws))
+                    ws,
+                    snapshot=native_snapshot,
+                    observation_authority=_transcript_projection_authority(ws),
+                )
             except Exception as meter_error:
                 reason = (
                     "taskplane native dispatch preflight failed closed: "
                     "a non-zero native orchestrator counter is required "
                     f"before dispatch ({type(meter_error).__name__}: "
-                    f"{meter_error}).")
-                print(json.dumps({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason}}))
+                    f"{meter_error})."
+                )
+                print(
+                    json.dumps(
+                        {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": reason,
+                            }
+                        }
+                    )
+                )
                 return 0
         if ok and exp is not None and exp.get("intent_id"):
             try:
                 import loop as _loop_runtime
+
                 observation = _loop_runtime.record_native_dispatch_observation(
-                    ws, expected=exp, native_task_name=str(agent))
-                if not isinstance(observation, dict) or \
-                        observation.get("status") == "unavailable":
-                    raise RuntimeError(
-                        "native dispatch observation was not committed")
+                    ws, expected=exp, native_task_name=str(agent)
+                )
+                if not isinstance(observation, dict) or observation.get("status") == "unavailable":
+                    raise RuntimeError("native dispatch observation was not committed")
             except Exception as telemetry_error:
                 reason = (
                     "taskplane native dispatch telemetry failed closed "
@@ -1828,25 +2157,33 @@ def cmd_screen_dispatch(a) -> int:
                     f"({type(telemetry_error).__name__}: "
                     f"{telemetry_error}); the dispatch is denied before "
                     "the native task starts and its expectation remains "
-                    "pending for a safe retry.")
+                    "pending for a safe retry."
+                )
                 try:
                     tp.trace(
-                        ws, "native_dispatch_telemetry_unavailable",
+                        ws,
+                        "native_dispatch_telemetry_unavailable",
                         task=exp.get("ref"),
-                        error=f"{type(telemetry_error).__name__}: "
-                              f"{telemetry_error}")
+                        error=f"{type(telemetry_error).__name__}: {telemetry_error}",
+                    )
                 except Exception:
                     # Trace durability is secondary to the hook decision:
                     # a broken audit sink must never turn this denial into
                     # a permitted native start.
                     pass
-                print(json.dumps({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason}}))
+                print(
+                    json.dumps(
+                        {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": reason,
+                            }
+                        }
+                    )
+                )
                 return 0
-        ok = tp.commit_dispatch_verification(
-            ws, agent, model, exp, ok, effort, strict=strict)
+        ok = tp.commit_dispatch_verification(ws, agent, model, exp, ok, effort, strict=strict)
         if ok:
             if foreign_message:
                 print(json.dumps({"systemMessage": foreign_message}))
@@ -1856,44 +2193,63 @@ def cmd_screen_dispatch(a) -> int:
                 print(json.dumps({"systemMessage": foreign_message}))
             return 0
         if exp is None:
-            reason = (f"taskplane dispatch check: native Codex task_name "
-                      f"{agent!r} claims taskplane ownership but no matching "
-                      "emitted brief exists; use the exact task_name from "
-                      "`tp loop next` or `tp lens dispatch`.")
+            reason = (
+                f"taskplane dispatch check: native Codex task_name "
+                f"{agent!r} claims taskplane ownership but no matching "
+                "emitted brief exists; use the exact task_name from "
+                "`tp loop next` or `tp lens dispatch`."
+            )
         else:
-            reason = (f"taskplane dispatch check: brief "
-                      f"'{exp.get('ref') or exp['agent']}' requires "
-                      f"task_name={exp.get('task_name')}, "
-                      f"role={exp.get('agent')}, model="
-                      f"{expected_model or '<inherit>'}, reasoning_effort="
-                      f"{expected_effort}; observed task_name={agent}, "
-                      f"role_marker={'present' if marker_present else 'missing'}, "
-                      f"model={model or '<inherit>'}, reasoning_effort="
-                      f"{effort or '<unset>'}, fork_turns="
-                      f"{observed_context or '<unset>'} (required "
-                      f"{expected_context}). Re-dispatch with the exact "
-                      "native Codex fields from the brief.")
+            reason = (
+                f"taskplane dispatch check: brief "
+                f"'{exp.get('ref') or exp['agent']}' requires "
+                f"task_name={exp.get('task_name')}, "
+                f"role={exp.get('agent')}, model="
+                f"{expected_model or '<inherit>'}, reasoning_effort="
+                f"{expected_effort}; observed task_name={agent}, "
+                f"role_marker={'present' if marker_present else 'missing'}, "
+                f"model={model or '<inherit>'}, reasoning_effort="
+                f"{effort or '<unset>'}, fork_turns="
+                f"{observed_context or '<unset>'} (required "
+                f"{expected_context}). Re-dispatch with the exact "
+                "native Codex fields from the brief."
+            )
         if mode == "strict":
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason}}))
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    }
+                )
+            )
         else:
-            joined = reason if not foreign_message else \
-                foreign_message + "\n" + reason
+            joined = reason if not foreign_message else foreign_message + "\n" + reason
             print(json.dumps({"systemMessage": joined}))
         return 0
     except Exception as e:
         if mode == "strict":
-            reason = ("taskplane dispatch check errored "
-                      f"({type(e).__name__}); strict verification cannot "
-                      "prove this dispatch, so it is denied.")
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": reason}}))
+            reason = (
+                "taskplane dispatch check errored "
+                f"({type(e).__name__}); strict verification cannot "
+                "prove this dispatch, so it is denied."
+            )
+            print(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        }
+                    }
+                )
+            )
         elif mode == "warn":
-            print(json.dumps({"systemMessage":
-                              f"taskplane dispatch check errored: {e}"}))
+            print(json.dumps({"systemMessage": f"taskplane dispatch check errored: {e}"}))
         return 0
 
 
@@ -1911,47 +2267,68 @@ def _subagent_workspace(event: dict) -> str:
     return _workspace(cwd if isinstance(cwd, str) and cwd else None)
 
 
-def _submission_stop_check(event: dict, *, workspace: str | None = None,
-                           loop_state=None,
-                           contract: dict | None = None) -> dict | None:
+def _submission_stop_check(
+    event: dict, *, workspace: str | None = None, loop_state=None, contract: dict | None = None
+) -> dict | None:
     """Read-only Stop/SubagentStop submission decision for the active slot."""
     ws = _workspace(workspace) if workspace else _subagent_workspace(event)
     try:
         if contract is None:
             contract = tp.load_active_for_event(ws, event)
     except Exception as exc:
-        tp.trace(ws, "submission_stop_checked", status="contract_error",
-                 error=type(exc).__name__)
-        return {"schema": tp.SUBMISSION_STATUS_SCHEMA, "status": "corrupt",
-                "valid": False, "required": True, "block": True,
-                "contract_id": None, "task": None, "stage": None,
-                "slot": tp.task_slot(), "artifact": "active contract",
-                "recovery": "return to the orchestrator or human"}
+        tp.trace(ws, "submission_stop_checked", status="contract_error", error=type(exc).__name__)
+        return {
+            "schema": tp.SUBMISSION_STATUS_SCHEMA,
+            "status": "corrupt",
+            "valid": False,
+            "required": True,
+            "block": True,
+            "contract_id": None,
+            "task": None,
+            "stage": None,
+            "slot": tp.task_slot(),
+            "artifact": "active contract",
+            "recovery": "return to the orchestrator or human",
+        }
     if not isinstance(contract, dict) or not contract:
         return None
     if loop_state is None:
         try:
             import loop as loop_engine
+
             loop_state = loop_engine.load(ws)
         except Exception:
             loop_state = None
     lifecycle = contract.get("worker_lifecycle") or {}
-    observed_slot = (event.get("task_slot")
-                     if isinstance(event.get("task_slot"), str)
-                     else lifecycle.get("slot") or tp.task_slot())
+    observed_slot = (
+        event.get("task_slot")
+        if isinstance(event.get("task_slot"), str)
+        else lifecycle.get("slot") or tp.task_slot()
+    )
     decision = tp.stop_submission_decision(
-        ws, contract, observed_slot=observed_slot, loop_state=loop_state)
-    tp.trace(ws, "submission_stop_checked", status=decision.get("status"),
-             contract_id=decision.get("contract_id"),
-             task=decision.get("task"), stage=decision.get("stage"),
-             task_slot=decision.get("slot"), block=decision.get("block"),
-             artifact=decision.get("artifact"))
+        ws, contract, observed_slot=observed_slot, loop_state=loop_state
+    )
+    tp.trace(
+        ws,
+        "submission_stop_checked",
+        status=decision.get("status"),
+        contract_id=decision.get("contract_id"),
+        task=decision.get("task"),
+        stage=decision.get("stage"),
+        task_slot=decision.get("slot"),
+        block=decision.get("block"),
+        artifact=decision.get("artifact"),
+    )
     if decision.get("block"):
-        tp.trace(ws, "submission_stop_blocked",
-                 status=decision.get("status"),
-                 contract_id=decision.get("contract_id"),
-                 task=decision.get("task"), stage=decision.get("stage"),
-                 task_slot=decision.get("slot"))
+        tp.trace(
+            ws,
+            "submission_stop_blocked",
+            status=decision.get("status"),
+            contract_id=decision.get("contract_id"),
+            task=decision.get("task"),
+            stage=decision.get("stage"),
+            task_slot=decision.get("slot"),
+        )
     return decision
 
 
@@ -1961,12 +2338,21 @@ def _emit_submission_stop_block(event_name: str, status: dict) -> None:
         f"contract={status.get('contract_id')}; task={status.get('task')}; "
         f"stage={status.get('stage')}; slot={status.get('slot')}; "
         f"status={status.get('status')}; missing artifact="
-        f"{status.get('artifact')}. Recovery: {status.get('recovery')}")
-    print(json.dumps({"decision": "block", "reason": reason,
-                      "hookSpecificOutput": {
-                          "hookEventName": event_name,
-                          "permissionDecision": "deny",
-                          "permissionDecisionReason": reason}}))
+        f"{status.get('artifact')}. Recovery: {status.get('recovery')}"
+    )
+    print(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": reason,
+                "hookSpecificOutput": {
+                    "hookEventName": event_name,
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                },
+            }
+        )
+    )
 
 
 def cmd_subagent_start(a) -> int:
@@ -1975,12 +2361,17 @@ def cmd_subagent_start(a) -> int:
     ws = _subagent_workspace(event)
     agent_id = event.get("agent_id")
     agent_type = event.get("agent_type")
-    tp.trace(ws, "subagent_start", agent_id=agent_id,
-             agent_type=agent_type, turn_id=event.get("turn_id"),
-             permission_mode=event.get("permission_mode"),
-             has_task_name=bool(event.get("task_name")),
-             has_agent_path=bool(event.get("agent_path")),
-             has_child_transcript=bool(event.get("agent_transcript_path")))
+    tp.trace(
+        ws,
+        "subagent_start",
+        agent_id=agent_id,
+        agent_type=agent_type,
+        turn_id=event.get("turn_id"),
+        permission_mode=event.get("permission_mode"),
+        has_task_name=bool(event.get("task_name")),
+        has_agent_path=bool(event.get("agent_path")),
+        has_child_transcript=bool(event.get("agent_transcript_path")),
+    )
     binding = None
     try:
         binding = tp.bind_worker_contract_event(ws, event)
@@ -1988,84 +2379,131 @@ def cmd_subagent_start(a) -> int:
         # Unrelated native children have no Taskplane slot to bind.  A child
         # that claims an emitted Taskplane task but cannot bind will still
         # fail closed at its first screened action.
-        tp.trace(ws, "worker_contract_bind_skipped", agent_id=agent_id,
-                 agent_type=agent_type, error=type(exc).__name__)
+        tp.trace(
+            ws,
+            "worker_contract_bind_skipped",
+            agent_id=agent_id,
+            agent_type=agent_type,
+            error=type(exc).__name__,
+        )
     if binding is not None:
         try:
             tp.record_worker_start_activity(ws, binding, event)
             if binding["contract"].get("evidence_input"):
                 from taskplane import loop as evidence_loop
+
                 lifecycle = binding["contract"]["worker_lifecycle"]
                 route, child = evidence_loop.observed_evaluate_evidence_child(
-                    evidence_loop.load(ws), lifecycle["expected_task_name"])
-                if child is None or child["evidence_input"] != binding["contract"]["evidence_input"]:
+                    evidence_loop.load(ws), lifecycle["expected_task_name"]
+                )
+                if (
+                    child is None
+                    or child["evidence_input"] != binding["contract"]["evidence_input"]
+                ):
                     raise ValueError("evidence worker Start has no exact assignment")
-                evidence_loop.record_native_dispatch_observation(ws, expected={
-                    "kind": "step", "agent": child["role"], "ref": lifecycle["task"],
-                    "intent_id": lifecycle["dispatch_intent_id"], "intent_run_id": route["run_id"]},
-                    native_task_name=lifecycle["expected_task_name"])
+                evidence_loop.record_native_dispatch_observation(
+                    ws,
+                    expected={
+                        "kind": "step",
+                        "agent": child["role"],
+                        "ref": lifecycle["task"],
+                        "intent_id": lifecycle["dispatch_intent_id"],
+                        "intent_run_id": route["run_id"],
+                    },
+                    native_task_name=lifecycle["expected_task_name"],
+                )
         except Exception as exc:
             reason = (
                 "taskplane blocked governed worker startup because host-issued "
                 "start authority or durable activity could not be preserved "
-                f"({type(exc).__name__}: {exc}).")
-            print(json.dumps({"decision": "block", "reason": reason,
-                              "hookSpecificOutput": {
-                                  "hookEventName": "SubagentStart",
-                                  "permissionDecision": "deny",
-                                  "permissionDecisionReason": reason}}))
+                f"({type(exc).__name__}: {exc})."
+            )
+            print(
+                json.dumps(
+                    {
+                        "decision": "block",
+                        "reason": reason,
+                        "hookSpecificOutput": {
+                            "hookEventName": "SubagentStart",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        },
+                    }
+                )
+            )
             return 2
     try:
-        contract = ((binding or {}).get("contract")
-                    or tp.load_active_for_event(ws, event))
+        contract = (binding or {}).get("contract") or tp.load_active_for_event(ws, event)
     except Exception as exc:
         contract = None
-        tp.trace(ws, "subagent_context_error", agent_id=agent_id,
-                 error=type(exc).__name__)
+        tp.trace(ws, "subagent_context_error", agent_id=agent_id, error=type(exc).__name__)
     if isinstance(contract, dict) and contract:
         try:
             from taskplane import loop as _phase_loop
+
             _phase_loop.observe_phase_runtime_hook(ws, contract, event)
         except Exception as exc:
-            _emit_submission_stop_block("SubagentStart", {
-                "status": "phase_observation_refused", "contract_id": contract.get("task_id"),
-                "artifact": type(exc).__name__ + ": " + str(exc), "recovery": "reconcile the original phase attempt"})
+            _emit_submission_stop_block(
+                "SubagentStart",
+                {
+                    "status": "phase_observation_refused",
+                    "contract_id": contract.get("task_id"),
+                    "artifact": type(exc).__name__ + ": " + str(exc),
+                    "recovery": "reconcile the original phase attempt",
+                },
+            )
             return 2
         try:
             import review as _review
+
             lifecycle = contract.get("worker_lifecycle") or {}
             assignment = _review.register_slot_producer(
-                ws, event=event, contract=contract,
-                task_slot=lifecycle.get("slot") or tp.task_slot())
+                ws,
+                event=event,
+                contract=contract,
+                task_slot=lifecycle.get("slot") or tp.task_slot(),
+            )
             if assignment:
-                tp.trace(ws, "review_slot_producer_bound",
-                         agent_id=agent_id,
-                         task_slot=assignment["contract_task_slot"],
-                         lease_fingerprint=assignment["lease_fingerprint"])
+                tp.trace(
+                    ws,
+                    "review_slot_producer_bound",
+                    agent_id=agent_id,
+                    task_slot=assignment["contract_task_slot"],
+                    lease_fingerprint=assignment["lease_fingerprint"],
+                )
         except Exception as exc:
             # Lifecycle remains advisory; the authoritative write hook will
             # fail closed because no matching producer assignment exists.
-            tp.trace(ws, "review_slot_producer_bind_failed", agent_id=agent_id,
-                     error=type(exc).__name__)
+            tp.trace(
+                ws, "review_slot_producer_bind_failed", agent_id=agent_id, error=type(exc).__name__
+            )
     if isinstance(contract, dict) and contract:
         coding = contract.get("coding")
         coding = coding if isinstance(coding, dict) else {}
         scopes = coding.get("scope_paths")
         scope_count = len(scopes) if isinstance(scopes, list) else 0
         raw_task_id = str(contract.get("task_id") or "unknown")
-        safe_task_id = re.sub(r"[^A-Za-z0-9_.:/-]+", "_",
-                              raw_task_id).strip("_")[:96] or "unknown"
-        context = ("[taskplane] Governed subagent lifecycle is active. "
-                   "Lifecycle hooks trace activity only; PreToolUse "
-                   "screening and DoD evidence remain authoritative. "
-                   f"Contract={safe_task_id}; "
-                   f"read_only={bool(contract.get('read_only'))}; "
-                   f"scope_entries={scope_count}. Preserve the "
-                   "emitted taskplane role and task slot.")
+        safe_task_id = re.sub(r"[^A-Za-z0-9_.:/-]+", "_", raw_task_id).strip("_")[:96] or "unknown"
+        context = (
+            "[taskplane] Governed subagent lifecycle is active. "
+            "Lifecycle hooks trace activity only; PreToolUse "
+            "screening and DoD evidence remain authoritative. "
+            f"Contract={safe_task_id}; "
+            f"read_only={bool(contract.get('read_only'))}; "
+            f"scope_entries={scope_count}. Preserve the "
+            "emitted taskplane role and task slot."
+        )
         context = context[:560] + ("…" if len(context) > 560 else "")
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "SubagentStart",
-            "additionalContext": context}}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "SubagentStart",
+                        "additionalContext": context,
+                    }
+                }
+            )
+        )
     return 0
 
 
@@ -2077,54 +2515,73 @@ def _collect_delivery_producer_on_stop(ws, lifecycle_contract, event):
     try:
         import loop as _loop_runtime
         import producer_observation as _producer_observation
+
         state = _loop_runtime.load(ws)
         step = (state or {}).get("step")
         task = _loop_runtime._current_task(state or {})
-        required_delivery = required_delivery or (step in {"evaluate", "em"} and
-                             (state or {}).get(
-                                 "delivery_mode_receipt") is not None)
-        delivery = (_loop_runtime._validated_delivery_mode(state or {})
-                    if step in {"evaluate", "em"} else None)
+        required_delivery = required_delivery or (
+            step in {"evaluate", "em"} and (state or {}).get("delivery_mode_receipt") is not None
+        )
+        delivery = (
+            _loop_runtime._validated_delivery_mode(state or {})
+            if step in {"evaluate", "em"}
+            else None
+        )
         existing = (state or {}).get("_submission") or {}
         if required_delivery and (delivery is None or step not in {"evaluate", "em"}):
             raise _producer_observation.ProducerObservationError(
-                "bound producer requires its current delivery observation authority")
+                "bound producer requires its current delivery observation authority"
+            )
         if delivery is not None and step in {"evaluate", "em"}:
-            if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() \
-                    not in {"native", "bridge"}:
+            if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() not in {
+                "native",
+                "bridge",
+            }:
                 raise _producer_observation.ProducerObservationError(
-                    "producer observation requires a claimed host hook")
+                    "producer observation requires a claimed host hook"
+                )
             contract = lifecycle_contract or {}
             binding = contract.get("submission_contract") or {}
-            expected_task = str((task or {}).get("id") or
-                                "engineering-signoff")
-            if binding.get("stage") != step or \
-                    binding.get("task") != expected_task:
+            expected_task = str((task or {}).get("id") or "engineering-signoff")
+            if binding.get("stage") != step or binding.get("task") != expected_task:
                 raise _producer_observation.ProducerObservationError(
-                    "active submission contract does not match producer")
+                    "active submission contract does not match producer"
+                )
             material = _loop_runtime.producer_output_identity(
-                ws, state, task, step, active_contract=contract)
+                ws, state, task, step, active_contract=contract
+            )
             if isinstance(existing.get("producer_observation"), dict):
                 _producer_observation.validate_consumed_matching_observation(
-                    existing["producer_observation"], **material)
+                    existing["producer_observation"], **material
+                )
             else:
                 receipt = _producer_observation.record_codex_subagent_stop(
                     event=event,
-                    hook_claim_id=str(
-                        event.get("_taskplane_hook_claim_id") or ""),
-                    **material)
-                tp.trace(ws, "producer_observation_recorded", step=step,
-                         task=expected_task, run_id=material["run_id"],
-                         fingerprint=receipt["fingerprint"][:12])
+                    hook_claim_id=str(event.get("_taskplane_hook_claim_id") or ""),
+                    **material,
+                )
+                tp.trace(
+                    ws,
+                    "producer_observation_recorded",
+                    step=step,
+                    task=expected_task,
+                    run_id=material["run_id"],
+                    fingerprint=receipt["fingerprint"][:12],
+                )
             _loop_runtime.collect_submission_observation(
-                ws, slot=str(contract.get("task_slot") or ""))
+                ws, slot=str(contract.get("task_slot") or "")
+            )
     except Exception as exc:
-        if ('delivery' in locals() and delivery is not None) or \
-                ('required_delivery' in locals() and required_delivery):
+        if ("delivery" in locals() and delivery is not None) or (
+            "required_delivery" in locals() and required_delivery
+        ):
             producer_error = f"{type(exc).__name__}: {exc}"
-            tp.trace(ws, "producer_observation_failed", step=(state or {}).get(
-                "step") if 'state' in locals() else None,
-                error=type(exc).__name__)
+            tp.trace(
+                ws,
+                "producer_observation_failed",
+                step=(state or {}).get("step") if "state" in locals() else None,
+                error=type(exc).__name__,
+            )
     return producer_error
 
 
@@ -2132,25 +2589,36 @@ def cmd_subagent_stop(a) -> int:
     """Trace completion and observe sealed evaluator/EM output bytes."""
     event = _subagent_event()
     ws = _subagent_workspace(event)
-    tp.trace(ws, "subagent_stop", agent_id=event.get("agent_id"),
-             agent_type=event.get("agent_type"),
-             turn_id=event.get("turn_id"),
-             has_transcript=bool(event.get("agent_transcript_path")),
-             has_message=bool(event.get("last_assistant_message")))
+    tp.trace(
+        ws,
+        "subagent_stop",
+        agent_id=event.get("agent_id"),
+        agent_type=event.get("agent_type"),
+        turn_id=event.get("turn_id"),
+        has_transcript=bool(event.get("agent_transcript_path")),
+        has_message=bool(event.get("last_assistant_message")),
+    )
     try:
         lifecycle_contract = tp.load_active_for_event(ws, event)
     except Exception as exc:
         lifecycle_contract = None
-        tp.trace(ws, "worker_contract_stop_lookup_failed",
-                 agent_id=event.get("agent_id"), error=type(exc).__name__)
+        tp.trace(
+            ws,
+            "worker_contract_stop_lookup_failed",
+            agent_id=event.get("agent_id"),
+            error=type(exc).__name__,
+        )
     if isinstance(lifecycle_contract, dict) and lifecycle_contract.get("phase_runtime") is not None:
         try:
             from taskplane import loop as _phase_loop
+
             if producer_error := _collect_delivery_producer_on_stop(ws, lifecycle_contract, event):
                 raise ValueError(producer_error)
             collected = _phase_loop.observe_phase_runtime_hook(ws, lifecycle_contract, event)
             if not isinstance(collected, dict) or collected.get("status") != "collected":
-                raise ValueError("phase output remains pending: " + str((collected or {}).get("reason_code")))
+                raise ValueError(
+                    "phase output remains pending: " + str((collected or {}).get("reason_code"))
+                )
             if collected.get("worker_released") is True:
                 # The phase owner already consumed this signed Stop, released
                 # the writer and collected telemetry. Do not retire it twice.
@@ -2162,216 +2630,305 @@ def cmd_subagent_stop(a) -> int:
                 print("{}")
                 return 0
         except Exception as exc:
-            _emit_submission_stop_block("SubagentStop", {
-                "status": "phase_observation_refused", "contract_id": lifecycle_contract.get("task_id"),
-                "artifact": type(exc).__name__ + ": " + str(exc), "recovery": "reconcile the original phase attempt"})
+            _emit_submission_stop_block(
+                "SubagentStop",
+                {
+                    "status": "phase_observation_refused",
+                    "contract_id": lifecycle_contract.get("task_id"),
+                    "artifact": type(exc).__name__ + ": " + str(exc),
+                    "recovery": "reconcile the original phase attempt",
+                },
+            )
             return 2
     try:
         import loop as _loop_runtime
+
         state = _loop_runtime.load(ws) or {}
         native_task_name = str(event.get("task_name") or event.get("agent_type") or "")
-        route, evidence_child = _loop_runtime.observed_evaluate_evidence_child(state, native_task_name)
+        route, evidence_child = _loop_runtime.observed_evaluate_evidence_child(
+            state, native_task_name
+        )
         child_result = None
         if isinstance(evidence_child, dict):
             assignment = evidence_child.get("assignment") or {}
-            binding = (assignment.get("binding")
-                       if isinstance(assignment, dict) else {}) or {}
+            binding = (assignment.get("binding") if isinstance(assignment, dict) else {}) or {}
             route_binding = route.get("binding") or {}
-            if (not isinstance(route_binding, dict) or
-                    route_binding != binding):
+            if not isinstance(route_binding, dict) or route_binding != binding:
                 raise ValueError(
-                    "Evaluate evidence child assignment does not match its "
-                    "current route binding")
+                    "Evaluate evidence child assignment does not match its current route binding"
+                )
             intent = evidence_child.get("dispatch_intent") or {}
             task_id = str(binding.get("task_id") or "").strip()
             dispatch_id = str(intent.get("intent_id") or "").strip()
             if not task_id or not dispatch_id:
-                raise ValueError(
-                    "Evaluate evidence child dispatch binding is incomplete")
-            raw_outcome = (event.get("outcome") or event.get("status")
-                           or event.get("stop_reason") or event.get("reason")
-                           or "success")
-            normalized_outcome = tp.normalize_worker_terminal_outcome(
-                raw_outcome)
+                raise ValueError("Evaluate evidence child dispatch binding is incomplete")
+            raw_outcome = (
+                event.get("outcome")
+                or event.get("status")
+                or event.get("stop_reason")
+                or event.get("reason")
+                or "success"
+            )
+            normalized_outcome = tp.normalize_worker_terminal_outcome(raw_outcome)
             child_lifecycle = (lifecycle_contract or {}).get("worker_lifecycle") or {}
-            if (child_lifecycle.get("task") != task_id
-                    or child_lifecycle.get("expected_task_name") != native_task_name
-                    or child_lifecycle.get("dispatch_intent_id") != dispatch_id):
+            if (
+                child_lifecycle.get("task") != task_id
+                or child_lifecycle.get("expected_task_name") != native_task_name
+                or child_lifecycle.get("dispatch_intent_id") != dispatch_id
+            ):
                 raise ValueError("Evaluate child terminal lacks its exact lifecycle owner")
             telemetry = _seal_terminal_dispatch_telemetry(
-                ws, lifecycle_contract, event, outcome=normalized_outcome)
-            telemetry_receipt = (telemetry.get("receipt")
-                                 if isinstance(telemetry, dict) else None)
-            if (not isinstance(telemetry, dict) or
-                    telemetry.get("status") not in {"admitted", "duplicate"} or
-                    not isinstance(telemetry_receipt, dict) or
-                    str(telemetry_receipt.get("task_id") or "") != task_id or
-                    str(telemetry_receipt.get("dispatch_id") or "") !=
-                    dispatch_id or
-                    str(telemetry_receipt.get("thread_id") or "") !=
-                    native_task_name):
+                ws, lifecycle_contract, event, outcome=normalized_outcome
+            )
+            telemetry_receipt = telemetry.get("receipt") if isinstance(telemetry, dict) else None
+            if (
+                not isinstance(telemetry, dict)
+                or telemetry.get("status") not in {"admitted", "duplicate"}
+                or not isinstance(telemetry_receipt, dict)
+                or str(telemetry_receipt.get("task_id") or "") != task_id
+                or str(telemetry_receipt.get("dispatch_id") or "") != dispatch_id
+                or str(telemetry_receipt.get("thread_id") or "") != native_task_name
+            ):
                 raise ValueError(
                     "Evaluate evidence child terminal telemetry did not "
-                    "complete its exact native dispatch binding")
+                    "complete its exact native dispatch binding"
+                )
             terminal_state = _loop_runtime.load(ws) or {}
             telemetry_ledger = terminal_state.get("dispatch_telemetry")
-            root_admission = (telemetry_ledger.get("root_admission")
-                              if isinstance(telemetry_ledger, dict) else None)
-            ledger_receipt = (next((row for row in telemetry_ledger.get(
-                "dispatches") or [] if isinstance(row, dict) and
-                row.get("fingerprint") == telemetry_receipt.get(
-                    "fingerprint")), None)
-                if isinstance(telemetry_ledger, dict) else None)
-            if (not isinstance(telemetry_ledger, dict) or
-                    ledger_receipt != telemetry_receipt or
-                    str(telemetry_ledger.get("run_id") or "") !=
-                    str(route.get("run_id") or "") or
-                    str(telemetry_ledger.get("run_id") or "") !=
-                    str(terminal_state.get("run_id") or "") or
-                    str(telemetry_ledger.get("source_sha") or "") !=
-                    str(terminal_state.get("baseline") or "") or
-                    str(terminal_state.get("design_fingerprint") or "") !=
-                    str(binding.get("design_fingerprint") or "") or
-                    str(terminal_state.get("plan_fingerprint") or "") !=
-                    str(binding.get("plan_fingerprint") or "") or
-                    str(terminal_state.get("settings_digest") or "") !=
-                    str(binding.get("settings_digest") or "") or
-                    not isinstance(root_admission, dict) or
-                    str(root_admission.get("settings_digest") or "") !=
-                    str(binding.get("settings_digest") or "")):
+            root_admission = (
+                telemetry_ledger.get("root_admission")
+                if isinstance(telemetry_ledger, dict)
+                else None
+            )
+            ledger_receipt = (
+                next(
+                    (
+                        row
+                        for row in telemetry_ledger.get("dispatches") or []
+                        if isinstance(row, dict)
+                        and row.get("fingerprint") == telemetry_receipt.get("fingerprint")
+                    ),
+                    None,
+                )
+                if isinstance(telemetry_ledger, dict)
+                else None
+            )
+            if (
+                not isinstance(telemetry_ledger, dict)
+                or ledger_receipt != telemetry_receipt
+                or str(telemetry_ledger.get("run_id") or "") != str(route.get("run_id") or "")
+                or str(telemetry_ledger.get("run_id") or "")
+                != str(terminal_state.get("run_id") or "")
+                or str(telemetry_ledger.get("source_sha") or "")
+                != str(terminal_state.get("baseline") or "")
+                or str(terminal_state.get("design_fingerprint") or "")
+                != str(binding.get("design_fingerprint") or "")
+                or str(terminal_state.get("plan_fingerprint") or "")
+                != str(binding.get("plan_fingerprint") or "")
+                or str(terminal_state.get("settings_digest") or "")
+                != str(binding.get("settings_digest") or "")
+                or not isinstance(root_admission, dict)
+                or str(root_admission.get("settings_digest") or "")
+                != str(binding.get("settings_digest") or "")
+            ):
                 raise ValueError(
                     "Evaluate evidence child terminal telemetry is not "
-                    "bound to its current evidence authority")
-            terminal_event = {**event, "usage_reference": {
-                "schema": "taskplane.native-dispatch-usage-reference/v1",
-                "dispatch_receipt": telemetry_receipt,
-                "native_session": telemetry.get("native_session")}}
+                    "bound to its current evidence authority"
+                )
+            terminal_event = {
+                **event,
+                "usage_reference": {
+                    "schema": "taskplane.native-dispatch-usage-reference/v1",
+                    "dispatch_receipt": telemetry_receipt,
+                    "native_session": telemetry.get("native_session"),
+                },
+            }
             submission_status = "evidence-rejected"
             try:
-                if (normalized_outcome != "success" or
-                        telemetry_receipt.get("events") != [{
-                            "kind": "complete", "sequence": 1}]):
+                if normalized_outcome != "success" or telemetry_receipt.get("events") != [
+                    {"kind": "complete", "sequence": 1}
+                ]:
                     raise ValueError(
                         "Evaluate evidence child artifact requires a successful "
-                        "exact terminal outcome")
-                child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
-                    ws, event)
+                        "exact terminal outcome"
+                    )
+                child_result = _loop_runtime.complete_observed_evaluate_evidence_child(ws, event)
                 if child_result is None:
                     raise ValueError("Evaluate evidence child route changed before collection")
                 submission_status = "evidence-collected"
             finally:
                 # Exact native Stop and persisted usage are already verified.
                 # Rejected output cannot keep that stopped worker's slot live.
-                tp.terminalize_worker_contract(ws, terminal_event,
-                    outcome=normalized_outcome, submission_status=submission_status)
+                tp.terminalize_worker_contract(
+                    ws,
+                    terminal_event,
+                    outcome=normalized_outcome,
+                    submission_status=submission_status,
+                )
     except Exception as exc:
         reason = (
             "taskplane blocked Evaluate evidence-child completion because "
             "its exact substantive JSON result could not be sealed "
-            f"({type(exc).__name__}: {exc}).")
-        print(json.dumps({"decision": "block", "reason": reason,
-                          "hookSpecificOutput": {
-                              "hookEventName": "SubagentStop",
-                              "permissionDecision": "deny",
-                              "permissionDecisionReason": reason}}))
+            f"({type(exc).__name__}: {exc})."
+        )
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": reason,
+                    "hookSpecificOutput": {
+                        "hookEventName": "SubagentStop",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    },
+                }
+            )
+        )
         return 2
     if child_result is not None:
         print("{}")
         return 0
     producer_error = _collect_delivery_producer_on_stop(ws, lifecycle_contract, event)
     submission = _submission_stop_check(event)
-    worker_scoped = isinstance(lifecycle_contract, dict) and \
-        lifecycle_contract.get("worker_scoped") is True
+    worker_scoped = (
+        isinstance(lifecycle_contract, dict) and lifecycle_contract.get("worker_scoped") is True
+    )
     if worker_scoped:
-        raw_outcome = (event.get("outcome") or event.get("status")
-                       or event.get("stop_reason") or event.get("reason")
-                       or "success")
-        if (producer_error or submission and submission.get("block")) and \
-                tp.normalize_worker_terminal_outcome(raw_outcome) == "success":
+        raw_outcome = (
+            event.get("outcome")
+            or event.get("status")
+            or event.get("stop_reason")
+            or event.get("reason")
+            or "success"
+        )
+        if (
+            producer_error or submission and submission.get("block")
+        ) and tp.normalize_worker_terminal_outcome(raw_outcome) == "success":
             raw_outcome = "failure"
         normalized_outcome = tp.normalize_worker_terminal_outcome(raw_outcome)
         submission_status = (
-            "producer_error" if producer_error else
-            str((submission or {}).get("status") or "not_required"))
+            "producer_error"
+            if producer_error
+            else str((submission or {}).get("status") or "not_required")
+        )
         try:
             telemetry = _seal_terminal_dispatch_telemetry(
-                ws, lifecycle_contract, event, outcome=normalized_outcome)
+                ws, lifecycle_contract, event, outcome=normalized_outcome
+            )
             if lifecycle_contract.get("phase_runtime") is not None:
                 from taskplane import loop as _phase_loop
+
                 _phase_loop.collect_phase_runtime_telemetry(ws, lifecycle_contract)
         except Exception as exc:
             reason = (
                 "taskplane blocked lifecycle completion because native "
                 "dispatch telemetry could not be sealed before contract "
-                f"release ({type(exc).__name__}: {exc}).")
-            tp.trace(ws, "worker_dispatch_telemetry_failed",
-                     task_id=_contract_dispatch_task_id(lifecycle_contract),
-                     error=type(exc).__name__)
-            print(json.dumps({"decision": "block", "reason": reason,
-                              "hookSpecificOutput": {
-                                  "hookEventName": "SubagentStop",
-                                  "permissionDecision": "deny",
-                                  "permissionDecisionReason": reason}}))
+                f"release ({type(exc).__name__}: {exc})."
+            )
+            tp.trace(
+                ws,
+                "worker_dispatch_telemetry_failed",
+                task_id=_contract_dispatch_task_id(lifecycle_contract),
+                error=type(exc).__name__,
+            )
+            print(
+                json.dumps(
+                    {
+                        "decision": "block",
+                        "reason": reason,
+                        "hookSpecificOutput": {
+                            "hookEventName": "SubagentStop",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        },
+                    }
+                )
+            )
             return 2
         terminal_event = dict(event)
-        telemetry_receipt = telemetry.get("receipt") \
-            if isinstance(telemetry, dict) else None
+        telemetry_receipt = telemetry.get("receipt") if isinstance(telemetry, dict) else None
         if isinstance(telemetry_receipt, dict):
             terminal_event["usage_reference"] = {
                 "schema": "taskplane.native-dispatch-usage-reference/v1",
                 "dispatch_receipt": telemetry_receipt,
                 "native_session": telemetry.get("native_session"),
             }
-        elif isinstance(telemetry, dict) and telemetry.get("status") == \
-                "unavailable":
+        elif isinstance(telemetry, dict) and telemetry.get("status") == "unavailable":
             terminal_event["usage_reference"] = {
                 "schema": "taskplane.dispatch-usage-unavailable/v1",
                 "status": "unavailable",
-                "reason": str(telemetry.get("reason") or
-                              "provider usage unavailable")[:1024],
+                "reason": str(telemetry.get("reason") or "provider usage unavailable")[:1024],
             }
-            tp.trace(ws, "worker_dispatch_telemetry_unavailable",
-                     task_id=_contract_dispatch_task_id(lifecycle_contract),
-                     reason=terminal_event["usage_reference"]["reason"])
+            tp.trace(
+                ws,
+                "worker_dispatch_telemetry_unavailable",
+                task_id=_contract_dispatch_task_id(lifecycle_contract),
+                reason=terminal_event["usage_reference"]["reason"],
+            )
         try:
             released = tp.terminalize_worker_contract(
-                ws, terminal_event, outcome=raw_outcome,
-                submission_status=submission_status)
+                ws, terminal_event, outcome=raw_outcome, submission_status=submission_status
+            )
         except Exception as exc:
             reason = (
                 "taskplane blocked lifecycle completion because the exact "
                 "worker contract could not be quarantined fail-closed "
-                f"({type(exc).__name__}: {exc}).")
-            print(json.dumps({"decision": "block", "reason": reason,
-                              "hookSpecificOutput": {
-                                  "hookEventName": "SubagentStop",
-                                  "permissionDecision": "deny",
-                                  "permissionDecisionReason": reason}}))
+                f"({type(exc).__name__}: {exc})."
+            )
+            print(
+                json.dumps(
+                    {
+                        "decision": "block",
+                        "reason": reason,
+                        "hookSpecificOutput": {
+                            "hookEventName": "SubagentStop",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": reason,
+                        },
+                    }
+                )
+            )
             return 2
         if producer_error or submission and submission.get("block"):
             detail = producer_error or (
-                "required submission status=" +
-                str((submission or {}).get("status") or "missing"))
-            print(json.dumps({
-                "systemMessage": (
-                    "taskplane quarantined the terminal worker contract "
-                    f"{released['slot']} ({detail}); the loop remains "
-                    "blocked for orchestrator recovery and no contract was "
-                    "left bound to the checkout."),
-            }))
+                "required submission status=" + str((submission or {}).get("status") or "missing")
+            )
+            print(
+                json.dumps(
+                    {
+                        "systemMessage": (
+                            "taskplane quarantined the terminal worker contract "
+                            f"{released['slot']} ({detail}); the loop remains "
+                            "blocked for orchestrator recovery and no contract was "
+                            "left bound to the checkout."
+                        ),
+                    }
+                )
+            )
             return 0
         print("{}")
         return 0
     if producer_error:
-        reason = ("taskplane blocked lifecycle completion: sealed zero-lens "
-                  "producer observation failed closed (" + producer_error +
-                  "). Recovery: preserve the exact result bytes and retry "
-                  "completion through the native Codex lifecycle.")
-        print(json.dumps({"decision": "block", "reason": reason,
-                          "hookSpecificOutput": {
-                              "hookEventName": "SubagentStop",
-                              "permissionDecision": "deny",
-                              "permissionDecisionReason": reason}}))
+        reason = (
+            "taskplane blocked lifecycle completion: sealed zero-lens "
+            "producer observation failed closed ("
+            + producer_error
+            + "). Recovery: preserve the exact result bytes and retry "
+            "completion through the native Codex lifecycle."
+        )
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": reason,
+                    "hookSpecificOutput": {
+                        "hookEventName": "SubagentStop",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    },
+                }
+            )
+        )
         return 2
     if submission and submission.get("block"):
         _emit_submission_stop_block("SubagentStop", submission)
@@ -2384,40 +2941,63 @@ def cmd_decision(a) -> int:
     """Decision registry (R-0002): structured ADRs with lifecycle, links and
     supersede chains — `tp decision new/list/show/accept/supersede`."""
     import kb as _kb
+
     ws = _workspace(a.workspace)
     act = a.decision_action
     if act == "new":
         alts = []
-        for spec in (a.alternative or []):
+        for spec in a.alternative or []:
             parts = [p.strip() for p in spec.split("|")]
-            alts.append({"option": parts[0],
-                         "gained": parts[1] if len(parts) > 1 else "",
-                         "given_up": parts[2] if len(parts) > 2 else ""})
+            alts.append(
+                {
+                    "option": parts[0],
+                    "gained": parts[1] if len(parts) > 1 else "",
+                    "given_up": parts[2] if len(parts) > 2 else "",
+                }
+            )
         alt_md = "\n".join(
-            f"- **{x['option']}** — gained: {x['gained'] or '—'}; "
-            f"given up: {x['given_up'] or '—'}" for x in alts)
+            f"- **{x['option']}** — gained: {x['gained'] or '—'}; given up: {x['given_up'] or '—'}"
+            for x in alts
+        )
         links = {}
         if a.req:
             links["requirement"] = a.req
         if a.modules:
             links["modules"] = [m.strip() for m in a.modules.split(",")]
         rec = _kb.record_decision(
-            ws, a.title, context=a.context or "",
-            decision=a.decision or "", rationale=a.rationale or "",
-            alternatives=alt_md, tags=(a.tags or "").split(",") if a.tags
-            else ["decision"], links=links, status=a.status)
+            ws,
+            a.title,
+            context=a.context or "",
+            decision=a.decision or "",
+            rationale=a.rationale or "",
+            alternatives=alt_md,
+            tags=(a.tags or "").split(",") if a.tags else ["decision"],
+            links=links,
+            status=a.status,
+        )
         if a.supersedes:
             _kb.supersede(ws, a.supersedes, rec["id"])
-        print(json.dumps({"recorded": rec["id"], "status": rec["status"],
-                          "links": links,
-                          "alternatives": len(alts),
-                          "supersedes": a.supersedes}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "recorded": rec["id"],
+                    "status": rec["status"],
+                    "links": links,
+                    "alternatives": len(alts),
+                    "supersedes": a.supersedes,
+                },
+                indent=2,
+            )
+        )
     elif act == "list":
         ds = _kb.list_decisions(ws)
         if a.status_filter:
             ds = [d for d in ds if d["status"] == a.status_filter]
-        print(json.dumps([{"id": d["id"], "title": d["title"],
-                           "status": d["status"]} for d in ds], indent=2))
+        print(
+            json.dumps(
+                [{"id": d["id"], "title": d["title"], "status": d["status"]} for d in ds], indent=2
+            )
+        )
     elif act == "show":
         d = _kb.get_decision(ws, a.id)
         if not d:
@@ -2430,7 +3010,7 @@ def cmd_decision(a) -> int:
                 print(f.read())
     elif act == "accept":
         d = _kb.set_status(ws, a.id, "accepted")
-        if d is None:                       # unknown id — don't exit 0 silently
+        if d is None:  # unknown id — don't exit 0 silently
             print(json.dumps({"error": f"no decision {a.id}"}, indent=2))
             return 1
         print(json.dumps({"id": a.id, "status": d["status"]}, indent=2))
@@ -2460,9 +3040,11 @@ def cmd_worktree_cleanup(a) -> int:
     ws = _workspace(a.workspace)
     state = loopmod.load(ws)
     enforcement, refusal = _enforcement_check(
-        ws, saved=(state or {}).get("enforcement"),
+        ws,
+        saved=(state or {}).get("enforcement"),
         run_id=(state or {}).get("run_id"),
-        revision=((state or {}).get("baseline") or tp.git_head(ws)))
+        revision=((state or {}).get("baseline") or tp.git_head(ws)),
+    )
     if refusal:
         print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
         return 1
@@ -2526,6 +3108,7 @@ def _is_completion_command(command: str) -> bool:
     conclusion", not two that can drift apart."""
     import re as _re
     import obligations as _ob
+
     verb = tp.taskplane_verb(command)
     if not verb:
         return False
@@ -2552,16 +3135,13 @@ def _is_release_command(command: str) -> bool:
         # the kernel still refuses it until a matching signed terminal
         # receipt exists.  Making this narrow retry unmetered cannot let a
         # live worker shed enforcement; a bare/general clear remains walled.
-        return tokens.count("--slot") == 1 and \
-            tokens.count("--signed-action") == 1
+        return tokens.count("--slot") == 1 and tokens.count("--signed-action") == 1
     if verb == "budget":
         return "--grant" in tokens and "--approved-by" in tokens
     if verb == "review":
-        if all(token in tokens for token in (
-                "collect", "--run-id")):
+        if all(token in tokens for token in ("collect", "--run-id")):
             return True
-        return all(token in tokens for token in (
-            "resume", "--run-id", "--action-id", "--by"))
+        return all(token in tokens for token in ("resume", "--run-id", "--action-id", "--by"))
     return False
 
 
@@ -2588,23 +3168,34 @@ def cmd_contracts(a) -> int:
         if not name.endswith(".json"):
             continue
         slot = name[:-5]
-        c = tp.load_json(os.path.join(d, name), default={},
-                         what="active contract") or {}
-        age = _time.time() - float(c.get("activated_at") or 0) \
-            if c.get("activated_at") else None
-        rows.append({"slot": slot, "task_id": c.get("task_id"),
-                     "read_only": bool(c.get("read_only")),
-                     "age_seconds": int(age) if age is not None else None,
-                     "task": str(c.get("task") or "")[:120]})
-    print(json.dumps({
-        "slots": rows, "count": len(rows),
-        "legacy_slot_present": os.path.exists(
-            os.path.join(tp.tp_dir(ws), "active_contract.json")),
-        "note": "worker-scoped slots govern only their bound native child; "
+        c = tp.load_json(os.path.join(d, name), default={}, what="active contract") or {}
+        age = _time.time() - float(c.get("activated_at") or 0) if c.get("activated_at") else None
+        rows.append(
+            {
+                "slot": slot,
+                "task_id": c.get("task_id"),
+                "read_only": bool(c.get("read_only")),
+                "age_seconds": int(age) if age is not None else None,
+                "task": str(c.get("task") or "")[:120],
+            }
+        )
+    print(
+        json.dumps(
+            {
+                "slots": rows,
+                "count": len(rows),
+                "legacy_slot_present": os.path.exists(
+                    os.path.join(tp.tp_dir(ws), "active_contract.json")
+                ),
+                "note": "worker-scoped slots govern only their bound native child; "
                 "a slot-less process unions only legacy/non-worker slots. "
                 "Terminal workers are quarantined automatically; human "
                 "recovery may use approved clear for legacy slots.",
-    }, indent=2, default=str))
+            },
+            indent=2,
+            default=str,
+        )
+    )
     return 0
 
 
@@ -2634,53 +3225,62 @@ def cmd_clear(a) -> int:
         if os.path.exists(legacy):
             tp.safe_remove(legacy)
             freed.append("(legacy)")
-        print(f"taskplane: cleared {len(freed)} contract(s): "
-              + (", ".join(freed) or "none"))
+        print(f"taskplane: cleared {len(freed)} contract(s): " + (", ".join(freed) or "none"))
         if getattr(a, "approved_by", None):
-            tp.trace(ws, "contract_clear_human_approval",
-                     approved_by=a.approved_by, slots=freed)
+            tp.trace(ws, "contract_clear_human_approval", approved_by=a.approved_by, slots=freed)
         return 0
     slot = getattr(a, "slot", None)
-    path = tp.active_contract_path(ws, slot) if slot \
-        else tp.active_contract_path(ws)   # slot-aware: what clear() removes
+    path = (
+        tp.active_contract_path(ws, slot) if slot else tp.active_contract_path(ws)
+    )  # slot-aware: what clear() removes
     if not os.path.exists(path):
         # Truthful: naming the slots that DO exist, because "no active
         # contract to clear" while seven slots governed the workspace is how
         # an operator loses twenty minutes.
         d = os.path.join(tp.tp_dir(ws), "active")
-        others = sorted(n[:-5] for n in os.listdir(d)
-                        if n.endswith(".json")) if os.path.isdir(d) else []
+        others = (
+            sorted(n[:-5] for n in os.listdir(d) if n.endswith(".json")) if os.path.isdir(d) else []
+        )
         if others:
-            print("taskplane: nothing in this slot, but "
-                  f"{len(others)} contract(s) are active: "
-                  + ", ".join(others)
-                  + "\n  release one with `tp clear --slot <slot>`, "
-                    "or all with `tp clear --all`.")
+            print(
+                "taskplane: nothing in this slot, but "
+                f"{len(others)} contract(s) are active: "
+                + ", ".join(others)
+                + "\n  release one with `tp clear --slot <slot>`, "
+                "or all with `tp clear --all`."
+            )
         else:
             print("taskplane: no active contract to clear.")
         return 0
     try:
         c = tp.load_json(path, default={}, what="active contract")
     except tp.StateError:
-        c = {}                            # corrupt slot: still clearable
+        c = {}  # corrupt slot: still clearable
     if not isinstance(c, dict):
         c = {}
     slot = slot or tp.task_slot()
     if getattr(a, "slot", None):
         tp.safe_remove(path)
     else:
-        tp.clear(ws)                      # FUSE-safe removal (safe_remove)
-    remaining = len(tp.list_task_slots(ws)) + int(os.path.exists(
-        os.path.join(tp.tp_dir(ws), "active_contract.json")))
+        tp.clear(ws)  # FUSE-safe removal (safe_remove)
+    remaining = len(tp.list_task_slots(ws)) + int(
+        os.path.exists(os.path.join(tp.tp_dir(ws), "active_contract.json"))
+    )
     disposition = (
         f" — workspace remains governed by {remaining} other "
         f"contract{'s' if remaining != 1 else ''}."
-        if remaining else " — workspace is ungoverned again.")
-    print(f"taskplane: contract {c.get('task_id','')} cleared"
-          + (f" (slot {slot})" if slot else "") + disposition)
+        if remaining
+        else " — workspace is ungoverned again."
+    )
+    print(
+        f"taskplane: contract {c.get('task_id', '')} cleared"
+        + (f" (slot {slot})" if slot else "")
+        + disposition
+    )
     if getattr(a, "approved_by", None):
-        tp.trace(ws, "contract_clear_human_approval",
-                 approved_by=a.approved_by, slots=[slot or "legacy"])
+        tp.trace(
+            ws, "contract_clear_human_approval", approved_by=a.approved_by, slots=[slot or "legacy"]
+        )
     return 0
 
 
@@ -2703,8 +3303,7 @@ def cmd_ready(a) -> int:
     ws = _workspace(a.workspace)
     c = tp.load_active(ws)
     if c is None:
-        print("taskplane: no active contract — run `tp.py new …` first.",
-              file=sys.stderr)
+        print("taskplane: no active contract — run `tp.py new …` first.", file=sys.stderr)
         return 1
     snap_path = os.path.join(tp.tp_dir(ws), "snapshot")
     snapshot = None
@@ -2715,12 +3314,12 @@ def cmd_ready(a) -> int:
     tp.trace(ws, "dor", ready=ready, blockers=blockers, warnings=warnings)
     _print_dor(ready, blockers, warnings)
     if not ready:
-        print("\nFix the ✗ blockers before starting — the task isn't safely "
-              "governable yet.")
+        print("\nFix the ✗ blockers before starting — the task isn't safely governable yet.")
     return 0 if ready else 1
 
 
 # --------------------------------------------------------------- screen
+
 
 class MeterCorrupt(Exception):
     """The meter file exists but is unreadable — the budget count can't be
@@ -2741,18 +3340,18 @@ def _contract_dispatch_intent_id(contract: dict) -> str:
 
 
 def _dispatch_usage_observation_required(
-        ws: str, task_id: str, dispatch_id: str | None = None) -> bool:
+    ws: str, task_id: str, dispatch_id: str | None = None
+) -> bool:
     """Whether the active loop has one exact terminal usage consumer."""
     try:
         import loop as loop_runtime
+
         state = loop_runtime.load(ws) or {}
         ledger = state.get("dispatch_telemetry") or {}
         return any(
-            str(row.get("task_id") or "") == str(task_id) and
-            (not dispatch_id or
-             str(row.get("dispatch_id") or "") == str(dispatch_id)) and
-            (bool(dispatch_id) or
-             not row.get("finalized_receipt_fingerprint"))
+            str(row.get("task_id") or "") == str(task_id)
+            and (not dispatch_id or str(row.get("dispatch_id") or "") == str(dispatch_id))
+            and (bool(dispatch_id) or not row.get("finalized_receipt_fingerprint"))
             for row in ledger.get("bindings") or []
             if isinstance(row, dict)
         )
@@ -2760,22 +3359,18 @@ def _dispatch_usage_observation_required(
         return False
 
 
-def _transcript_projection_checkpoint_path(
-        ws: str, transcript_path: str, provider: str) -> str:
+def _transcript_projection_checkpoint_path(ws: str, transcript_path: str, provider: str) -> str:
     identity = hashlib.sha256(
-        (str(provider) + "\0" + os.path.realpath(transcript_path))
-        .encode("utf-8")).hexdigest()
-    return os.path.join(
-        tp.tp_dir(ws), "transcript-usage", identity + ".json")
+        (str(provider) + "\0" + os.path.realpath(transcript_path)).encode("utf-8")
+    ).hexdigest()
+    return os.path.join(tp.tp_dir(ws), "transcript-usage", identity + ".json")
 
 
 def _transcript_projection_authority(ws: str, *, create: bool = True) -> bytes:
     """Load the private engine authority used across CLI invocations."""
-    path = os.path.join(
-        tp.tp_dir(ws), "transcript-usage", "authority-v1.json")
+    path = os.path.join(tp.tp_dir(ws), "transcript-usage", "authority-v1.json")
     with tp.file_lock(path):
-        authority = tp.load_json(
-            path, default=None, what="transcript checkpoint authority")
+        authority = tp.load_json(path, default=None, what="transcript checkpoint authority")
         if authority is None:
             if not create:
                 raise tp.StateError(path, "original transcript observation authority is missing")
@@ -2790,45 +3385,43 @@ def _transcript_projection_authority(ws: str, *, create: bool = True) -> bytes:
                 os.chmod(path, 0o600)
             except OSError:
                 pass
-        if not isinstance(authority, dict) or set(authority) != {
-                "schema", "key_id", "secret"} or authority.get("schema") != \
-                "taskplane.transcript-checkpoint-authority/v1":
-            raise tp.StateError(
-                path, "transcript checkpoint authority is invalid")
+        if (
+            not isinstance(authority, dict)
+            or set(authority) != {"schema", "key_id", "secret"}
+            or authority.get("schema") != "taskplane.transcript-checkpoint-authority/v1"
+        ):
+            raise tp.StateError(path, "transcript checkpoint authority is invalid")
         try:
-            secret = base64.b64decode(
-                str(authority.get("secret") or ""), validate=True)
+            secret = base64.b64decode(str(authority.get("secret") or ""), validate=True)
         except (TypeError, ValueError) as exc:
-            raise tp.StateError(
-                path, "transcript checkpoint authority is invalid") from exc
-        if len(secret) != 32 or authority.get("key_id") != hashlib.sha256(
-                secret).hexdigest():
-            raise tp.StateError(
-                path, "transcript checkpoint authority is invalid")
+            raise tp.StateError(path, "transcript checkpoint authority is invalid") from exc
+        if len(secret) != 32 or authority.get("key_id") != hashlib.sha256(secret).hexdigest():
+            raise tp.StateError(path, "transcript checkpoint authority is invalid")
         return secret
 
 
-def _bounded_transcript_projection(
-        ws: str, transcript_path: str, provider: str) -> dict:
+def _bounded_transcript_projection(ws: str, transcript_path: str, provider: str) -> dict:
     """Read and persist one shared incremental usage projection."""
     import dispatch_telemetry
 
-    checkpoint_path = _transcript_projection_checkpoint_path(
-        ws, transcript_path, provider)
+    checkpoint_path = _transcript_projection_checkpoint_path(ws, transcript_path, provider)
     checkpoint_authority = _transcript_projection_authority(ws)
     with tp.file_lock(checkpoint_path):
         try:
             checkpoint = tp.load_json(
-                checkpoint_path, default=None,
-                what="transcript usage checkpoint")
+                checkpoint_path, default=None, what="transcript usage checkpoint"
+            )
         except tp.StateError:
             # The checkpoint is only a cache.  Its authority is verified by
             # the projector, so corrupt or caller-edited bytes must trigger a
             # bounded transcript recomputation rather than become truth.
             checkpoint = None
         projection, updated = dispatch_telemetry.project_transcript_usage(
-            transcript_path, provider=provider, checkpoint=checkpoint,
-            checkpoint_authority=checkpoint_authority)
+            transcript_path,
+            provider=provider,
+            checkpoint=checkpoint,
+            checkpoint_authority=checkpoint_authority,
+        )
         if updated is not None:
             tp.atomic_write_json(checkpoint_path, updated, sort_keys=True)
     return projection
@@ -2836,24 +3429,29 @@ def _bounded_transcript_projection(
 
 def _normalized_dispatch_projection(projection: dict) -> dict:
     """Adapt one authenticated transcript projection for the loop ledger."""
-    if not isinstance(projection, dict) or \
-            projection.get("status") != "available" or \
-            not isinstance(projection.get("usage"), dict):
+    if (
+        not isinstance(projection, dict)
+        or projection.get("status") != "available"
+        or not isinstance(projection.get("usage"), dict)
+    ):
         raise ValueError("authenticated provider usage is unavailable")
     usage = dict(projection["usage"])
-    cache_creation = int(usage["total_tokens"]) - int(
-        usage["input_tokens"]) - int(usage["output_tokens"])
+    cache_creation = (
+        int(usage["total_tokens"]) - int(usage["input_tokens"]) - int(usage["output_tokens"])
+    )
     if cache_creation < 0:
         raise ValueError("authenticated provider usage does not reconcile")
-    usage.update({
-        "schema": "taskplane.token-usage/v2",
-        "available": True,
-        "provider": projection["provider"],
-        "reason": None,
-        "cache_creation_tokens": cache_creation,
-        "raw_total_tokens": usage["total_tokens"],
-        "effective_tokens": projection["effective_tokens"],
-    })
+    usage.update(
+        {
+            "schema": "taskplane.token-usage/v2",
+            "available": True,
+            "provider": projection["provider"],
+            "reason": None,
+            "cache_creation_tokens": cache_creation,
+            "raw_total_tokens": usage["total_tokens"],
+            "effective_tokens": projection["effective_tokens"],
+        }
+    )
     return usage
 
 
@@ -2870,60 +3468,76 @@ def _hook_usage_provider(event: dict) -> str:
 
 
 def _seal_terminal_dispatch_telemetry(
-        ws: str, contract: dict, event: dict, *, outcome: str) -> dict:
+    ws: str, contract: dict, event: dict, *, outcome: str
+) -> dict:
     """Observe and finalize the exact native attempt before slot release."""
     import loop as _loop_runtime
     from taskplane import run_context
+
     advisory = run_context.resource_limits_advisory(ws)
 
     task_id = _contract_dispatch_task_id(contract)
     lifecycle = contract.get("worker_lifecycle") or {}
     native_task_name = str(lifecycle.get("expected_task_name") or "").strip()
     dispatch_id = _contract_dispatch_intent_id(contract)
-    if not task_id or not _dispatch_usage_observation_required(
-            ws, task_id, dispatch_id or None):
+    if not task_id or not _dispatch_usage_observation_required(ws, task_id, dispatch_id or None):
         return {"status": "not-bound"}
     import spend as _spend
+
     transcript = _spend.event_transcript(event)
     provider = _hook_usage_provider(event)
     child_metadata = None
-    if provider == "codex" and (contract.get("worker_scoped") or
-            event.get("hook_event_name") == "SubagentStop"):
+    if provider == "codex" and (
+        contract.get("worker_scoped") or event.get("hook_event_name") == "SubagentStop"
+    ):
         import codex_identity
+
         transcript, child_metadata = codex_identity.terminal_transcript(ws, contract, event)
-    usage_required = not advisory and bool((contract.get("budget") or {}).get(
-        "token_usage_required"))
+    usage_required = not advisory and bool(
+        (contract.get("budget") or {}).get("token_usage_required")
+    )
     if not transcript:
         if usage_required:
             raise ValueError(
-                "native terminal counter is required but the host transcript "
-                "path is unavailable")
+                "native terminal counter is required but the host transcript path is unavailable"
+            )
         result = _loop_runtime.finalize_observed_dispatch_usage(
-            ws, task_id=task_id, outcome=outcome,
-            native_task_name=native_task_name, usage_unavailable=True,
+            ws,
+            task_id=task_id,
+            outcome=outcome,
+            native_task_name=native_task_name,
+            usage_unavailable=True,
             unavailable_reason="host transcript path is unavailable",
-            dispatch_id=dispatch_id or None)
-        return {**result, "reason":
-                "host transcript path is unavailable"}
-    projection = _bounded_transcript_projection(
-        ws, transcript, provider)
+            dispatch_id=dispatch_id or None,
+        )
+        return {**result, "reason": "host transcript path is unavailable"}
+    projection = _bounded_transcript_projection(ws, transcript, provider)
     if projection.get("status") != "available":
         if usage_required:
             raise ValueError(
                 "native terminal counter is required but unavailable: "
-                + str(projection.get("reason") or "unknown reason"))
+                + str(projection.get("reason") or "unknown reason")
+            )
         result = _loop_runtime.finalize_observed_dispatch_usage(
-            ws, task_id=task_id, outcome=outcome,
-            native_task_name=native_task_name, usage_unavailable=True,
-            unavailable_reason=str(projection.get("reason") or
-                                   "authenticated provider usage is "
-                                   "unavailable"),
-            dispatch_id=dispatch_id or None)
-        return {**result, "reason": str(projection.get("reason") or
-                                        "authenticated provider usage is "
-                                        "unavailable")}
+            ws,
+            task_id=task_id,
+            outcome=outcome,
+            native_task_name=native_task_name,
+            usage_unavailable=True,
+            unavailable_reason=str(
+                projection.get("reason") or "authenticated provider usage is unavailable"
+            ),
+            dispatch_id=dispatch_id or None,
+        )
+        return {
+            **result,
+            "reason": str(
+                projection.get("reason") or "authenticated provider usage is unavailable"
+            ),
+        }
     terminal_ok, terminal_reason = _spend.status(
-        contract, int((projection.get("usage") or {})["total_tokens"]))
+        contract, int((projection.get("usage") or {})["total_tokens"])
+    )
     if not terminal_ok and not advisory:
         raise ValueError(terminal_reason)
     metered_projection = dict(projection)
@@ -2931,43 +3545,52 @@ def _seal_terminal_dispatch_telemetry(
     native_snapshot = projection.get("native_session")
     if child_metadata is not None:
         owner = lifecycle["owner"]
-        if (not isinstance(native_snapshot, dict)
-                or native_snapshot.get("session_id") != owner["agent_id"]
-                or native_snapshot.get("root_session_id") != owner["session_id"]
-                or native_snapshot.get("parent_session_id") != owner["session_id"]
-                or (native_snapshot.get("source") or {}).get("metadata_record_sha256") != child_metadata):
+        if (
+            not isinstance(native_snapshot, dict)
+            or native_snapshot.get("session_id") != owner["agent_id"]
+            or native_snapshot.get("root_session_id") != owner["session_id"]
+            or native_snapshot.get("parent_session_id") != owner["session_id"]
+            or (native_snapshot.get("source") or {}).get("metadata_record_sha256") != child_metadata
+        ):
             raise ValueError("native terminal counter differs from authenticated child metadata")
     if isinstance(native_snapshot, dict):
         native_record = _loop_runtime.record_native_session_snapshot(
-            ws, task_id=task_id, dispatch_id=dispatch_id,
-            snapshot=native_snapshot)
+            ws, task_id=task_id, dispatch_id=dispatch_id, snapshot=native_snapshot
+        )
         dispatch_usage = dict(native_record["dispatch_usage"])
         metered_projection["usage"] = dispatch_usage
         metered_projection["effective_tokens"] = int(
-            dispatch_usage["uncached_input_tokens"] *
-            _spend.WEIGHTS["input"]
-            + dispatch_usage["cached_input_tokens"] *
-            _spend.WEIGHTS["cache_read"]
-            + dispatch_usage["output_tokens"] *
-            _spend.WEIGHTS["output"])
+            dispatch_usage["uncached_input_tokens"] * _spend.WEIGHTS["input"]
+            + dispatch_usage["cached_input_tokens"] * _spend.WEIGHTS["cache_read"]
+            + dispatch_usage["output_tokens"] * _spend.WEIGHTS["output"]
+        )
     _loop_runtime.record_observed_dispatch_usage(
-        ws, task_id=task_id,
+        ws,
+        task_id=task_id,
         normalized_usage=_normalized_dispatch_projection(metered_projection),
         source_fingerprint=str(projection["source_fingerprint"]),
-        native_task_name=native_task_name, dispatch_id=dispatch_id or None)
+        native_task_name=native_task_name,
+        dispatch_id=dispatch_id or None,
+    )
     result = _loop_runtime.finalize_observed_dispatch_usage(
-        ws, task_id=task_id, outcome=outcome,
-        native_task_name=native_task_name, dispatch_id=dispatch_id or None,
-        phase_runtime=contract.get("phase_runtime") is not None)
+        ws,
+        task_id=task_id,
+        outcome=outcome,
+        native_task_name=native_task_name,
+        dispatch_id=dispatch_id or None,
+        phase_runtime=contract.get("phase_runtime") is not None,
+    )
     if isinstance(native_record, dict):
-        result = {**result, "native_session": {
-            "schema": "taskplane.native-session-reference/v1",
-            "session_id": native_record["session_id"],
-            "snapshot_fingerprint": native_record[
-                "snapshot_fingerprint"],
-            "attributed_usage": native_record["attributed_usage"],
-            "dispatch_usage": native_record["dispatch_usage"],
-        }}
+        result = {
+            **result,
+            "native_session": {
+                "schema": "taskplane.native-session-reference/v1",
+                "session_id": native_record["session_id"],
+                "snapshot_fingerprint": native_record["snapshot_fingerprint"],
+                "attributed_usage": native_record["attributed_usage"],
+                "dispatch_usage": native_record["dispatch_usage"],
+            },
+        }
     return result
 
 
@@ -2990,6 +3613,7 @@ def _meter_load(ws, strict=False) -> dict:
 
 def _meter_bump(ws, task_id, key) -> dict:
     import time
+
     now = time.time()
     path = os.path.join(tp.tp_dir(ws), "meter.json")
     # The meter is control-plane (the enforced max_actions ceiling counts
@@ -3002,7 +3626,7 @@ def _meter_bump(ws, task_id, key) -> dict:
         try:
             m = _meter_load(ws, strict=True)
         except MeterCorrupt:
-            m = {}                  # bumping rebuilds a clean file atomically
+            m = {}  # bumping rebuilds a clean file atomically
         e = m.setdefault(task_id, {"actions": 0, "denies": 0})
         e[key] = e.get(key, 0) + 1
         # last_seen_ts = the owner was alive AT ALL (any screen call, approve
@@ -3050,8 +3674,7 @@ def _governed_root(cwd: str) -> str:
     if start in _GIT_TOP_CACHE:
         top = _GIT_TOP_CACHE[start]
     else:
-        top = tp._run(["git", "rev-parse", "--show-toplevel"],
-                      cwd=start).stdout.strip()
+        top = tp._run(["git", "rev-parse", "--show-toplevel"], cwd=start).stdout.strip()
         # macOS commonly reports the same temp path as /var/... to Python and
         # /private/var/... to git. Compare real paths or the boundary check
         # misses the worktree root and can inherit a parent contract.
@@ -3059,9 +3682,9 @@ def _governed_root(cwd: str) -> str:
         _GIT_TOP_CACHE[start] = top
     cur = start
     while True:
-        if os.path.exists(os.path.join(tp.tp_dir(cur),
-                                       "active_contract.json")) or \
-                tp.list_task_slots(cur):
+        if os.path.exists(
+            os.path.join(tp.tp_dir(cur), "active_contract.json")
+        ) or tp.list_task_slots(cur):
             return cur
         parent = os.path.dirname(cur)
         real_cur = os.path.realpath(cur)
@@ -3072,13 +3695,13 @@ def _governed_root(cwd: str) -> str:
 
 def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
     """Capture the root native counter on its real main-session hook path."""
-    if "turn_id" not in event or event.get("agent_id") or \
-            event.get("agent_type"):
+    if "turn_id" not in event or event.get("agent_id") or event.get("agent_type"):
         return
     stage = "load"
     try:
         import loop as _loop_runtime
         import spend as _spend
+
         if _loop_runtime.load(ws) is None:
             return
         stage = "projection"
@@ -3088,10 +3711,8 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
         projection = _bounded_transcript_projection(ws, transcript, "codex")
         snapshot = projection.get("native_session")
         total = int((projection.get("usage") or {}).get("total_tokens") or 0)
-        if projection.get("status") != "available" or not isinstance(
-                snapshot, dict) or total <= 0:
-            raise ValueError(str(
-                projection.get("reason") or "native counter is null or zero"))
+        if projection.get("status") != "available" or not isinstance(snapshot, dict) or total <= 0:
+            raise ValueError(str(projection.get("reason") or "native counter is null or zero"))
         stage = "load"
         state = _loop_runtime.load(ws) or {}
         root = state.get("root_hygiene")
@@ -3102,58 +3723,76 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
 
             stage = "identity"
             snapshot = _native_meter.validate_snapshot(snapshot)
-            event_sessions = [event[key] for key in
-                ("session_id", "thread_id", "conversation_id") if key in event]
-            if not event_sessions or any(not isinstance(value, str) or not value or
-                    value != snapshot["session_id"] for value in event_sessions):
+            event_sessions = [
+                event[key] for key in ("session_id", "thread_id", "conversation_id") if key in event
+            ]
+            if not event_sessions or any(
+                not isinstance(value, str) or not value or value != snapshot["session_id"]
+                for value in event_sessions
+            ):
                 raise ValueError("root hook event and provider session do not agree")
-            if any(not isinstance(event[key], str) or event[key].strip().lower() != "codex"
-                    for key in ("provider", "host") if event.get(key) not in (None, "")):
+            if any(
+                not isinstance(event[key], str) or event[key].strip().lower() != "codex"
+                for key in ("provider", "host")
+                if event.get(key) not in (None, "")
+            ):
                 raise ValueError("root hook provider conflicts with Codex native projection")
             stage = "authority"
             authority = _transcript_projection_authority(ws)
             if root.get("status") == "prepared":
                 stage = "seed"
                 settings = tp._canonical_operational_settings()
-                seed = _root_seed.load_root_seed(
-                    ws, str(root.get("seed_ref") or ""))
+                seed = _root_seed.load_root_seed(ws, str(root.get("seed_ref") or ""))
                 stage = "capability"
-                host_snapshot = _host_capability_snapshot(ws, session_id=snapshot["session_id"], host="codex")
+                host_snapshot = _host_capability_snapshot(
+                    ws, session_id=snapshot["session_id"], host="codex"
+                )
                 capability = host_caps.root_session_capability(
                     host_snapshot,
                     settings_digest=settings.digest,
-                    native_snapshot=snapshot, turn_id=event.get("turn_id"))
+                    native_snapshot=snapshot,
+                    turn_id=event.get("turn_id"),
+                )
                 stage = "start_seal"
                 start = _host_native.start_root_session(
-                    capability, seed, run_id=str(seed["run_id"]),
+                    capability,
+                    seed,
+                    run_id=str(seed["run_id"]),
                     wave_id=str(seed["wave_id"]),
                     candidate_sha=str(seed["candidate_sha"]),
                     settings_digest=settings.digest,
                     session_pseudonym=hashlib.sha256(
                         authority + str(snapshot.get("session_id") or "").encode()
                     ).hexdigest(),
-                    started_at=_time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                    issuer_sequence=1, authority=authority)
+                    started_at=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    issuer_sequence=1,
+                    authority=authority,
+                )
                 stage = "observation_seal"
-                prior_meter = ((state.get("dispatch_telemetry") or {}).get("root_admission") or {}).get("meter") or {}
+                prior_meter = (
+                    (state.get("dispatch_telemetry") or {}).get("root_admission") or {}
+                ).get("meter") or {}
                 prior_watermark = prior_meter.get("watermark") or {}
                 observation = _native_meter.seal_root_observation(
-                    snapshot, sequence=int(prior_watermark.get("last_sequence") or 0) + 1,
+                    snapshot,
+                    sequence=int(prior_watermark.get("last_sequence") or 0) + 1,
                     session_role="root",
                     status_receipt_fingerprint=start["fingerprint"],
-                    authority=authority)
+                    authority=authority,
+                )
                 stage = "open"
                 _loop_runtime.open_delivery_wave(
-                    ws, host_start_receipt=start,
+                    ws,
+                    host_start_receipt=start,
                     first_observation=observation,
-                    observation_authority=authority)
+                    observation_authority=authority,
+                )
             else:
                 stage = "advance"
                 prior = (root.get("meter") or {}).get("watermark") or {}
                 if not (
-                    snapshot.get("source_identity_fingerprint") ==
-                        prior.get("source_identity_fingerprint")
+                    snapshot.get("source_identity_fingerprint")
+                    == prior.get("source_identity_fingerprint")
                     and snapshot.get("usage") == prior.get("usage")
                 ):
                     stage = "observation_seal"
@@ -3161,17 +3800,17 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                         snapshot,
                         sequence=int(prior.get("last_sequence") or 0) + 1,
                         session_role="root",
-                        status_receipt_fingerprint=str(
-                            root.get("host_start_fingerprint") or ""),
-                        authority=authority)
+                        status_receipt_fingerprint=str(root.get("host_start_fingerprint") or ""),
+                        authority=authority,
+                    )
                     stage = "advance"
                     _loop_runtime.record_delivery_root_observation(
-                        ws, observation=observation,
-                        observation_authority=authority)
+                        ws, observation=observation, observation_authority=authority
+                    )
         stage = "final_snapshot"
         _loop_runtime.record_native_orchestrator_snapshot(
-            ws, snapshot=snapshot,
-            observation_authority=_transcript_projection_authority(ws))
+            ws, snapshot=snapshot, observation_authority=_transcript_projection_authority(ws)
+        )
     except Exception as exc:
         # An ungoverned main action still defers to the host. Dispatch and
         # terminal boundaries perform the fail-closed checks; this path keeps
@@ -3198,8 +3837,15 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                 }.get(str(exc), failure_code)
                 if failure_code == "root_capability_unsupported":
                     missing = capability.get("missing") if isinstance(capability, dict) else None
-                    tags = [code for code in ("root_fresh_start", "root_cumulative_meter", "root_turn_mapping")
-                            if isinstance(missing, list) and code in missing]
+                    tags = [
+                        code
+                        for code in (
+                            "root_fresh_start",
+                            "root_cumulative_meter",
+                            "root_turn_mapping",
+                        )
+                        if isinstance(missing, list) and code in missing
+                    ]
                     if "root_fresh_start" in tags:
                         try:
                             role = _native_meter.derive_session_role(snapshot)
@@ -3211,7 +3857,11 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                             if snapshot.get("resumed") is not False:
                                 tags.append("root_session_resumed")
                             native_session = str(snapshot.get("session_id") or "")
-                            expected_session = hashlib.sha256(native_session.encode("utf-8")).hexdigest() if native_session else None
+                            expected_session = (
+                                hashlib.sha256(native_session.encode("utf-8")).hexdigest()
+                                if native_session
+                                else None
+                            )
                             if host_snapshot.session_fingerprint != expected_session:
                                 tags.append("root_session_binding_mismatch")
                     if host_snapshot.host != "codex":
@@ -3222,9 +3872,14 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                         tags.append("root_session_missing")
                     if not host_snapshot.observed_at:
                         tags.append("root_time_missing")
-            tp.trace(ws, "native_orchestrator_meter_unavailable",
-                     error=type(exc).__name__, stage=stage,
-                     failure_code=failure_code, tags=tags)
+            tp.trace(
+                ws,
+                "native_orchestrator_meter_unavailable",
+                error=type(exc).__name__,
+                stage=stage,
+                failure_code=failure_code,
+                tags=tags,
+            )
         except Exception:
             pass
 
@@ -3251,19 +3906,26 @@ def _screen(a) -> int:
         bootstrap = _visible_review_bootstrap(command, ws)
     except Exception as exc:
         if "review activate-contract" in command:
-            print(json.dumps({
-                "decision": "block",
-                "reason": "taskplane: signed review bootstrap failed "
-                          f"closed ({exc})"}))
+            print(
+                json.dumps(
+                    {
+                        "decision": "block",
+                        "reason": f"taskplane: signed review bootstrap failed closed ({exc})",
+                    }
+                )
+            )
             return 0
         bootstrap = None
     if bootstrap is not None:
         ws = str(bootstrap.pop("workspace", ws))
         contract = _activate_visible_review_bootstrap(ws, **bootstrap)
-        tp.trace(ws, "review_contract_bootstrap_screened",
-                 task_slot=contract["task_slot"],
-                 action_id=contract["bootstrap_action_id"],
-                 lease_fingerprint=contract["bootstrap_lease_fingerprint"])
+        tp.trace(
+            ws,
+            "review_contract_bootstrap_screened",
+            task_slot=contract["task_slot"],
+            action_id=contract["bootstrap_action_id"],
+            lease_fingerprint=contract["bootstrap_lease_fingerprint"],
+        )
         if "turn_id" not in event:
             print(json.dumps({"decision": "approve"}))
         return 0
@@ -3277,15 +3939,16 @@ def _screen(a) -> int:
     _review_candidate = any(
         marker in "/" + str(path).replace("\\", "/")
         for path in _write_paths
-        for marker in ("/kernel-v2/results/", "/lenses/results/"))
+        for marker in ("/kernel-v2/results/", "/lenses/results/")
+    )
     _review_ws = None
     _review_authority = None
     _review_lookup_error = None
     if _review_candidate:
         try:
             import review as _review
-            _review_authority = _review.leased_result_authority(
-                ws, _write_paths)
+
+            _review_authority = _review.leased_result_authority(ws, _write_paths)
         except Exception as exc:
             _review_lookup_error = exc
         if _review_authority:
@@ -3293,14 +3956,20 @@ def _screen(a) -> int:
             ws = _review_ws
 
     if _review_lookup_error is not None:
-        print(json.dumps({
-            "decision": "block",
-            "reason": "taskplane: leased review result lookup failed "
-                      f"closed ({_review_lookup_error})"}))
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": "taskplane: leased review result lookup failed "
+                    f"closed ({_review_lookup_error})",
+                }
+            )
+        )
         return 0
 
-    contract = (_review_authority["contract"] if _review_authority
-                else tp.load_active_for_event(ws, event))
+    contract = (
+        _review_authority["contract"] if _review_authority else tp.load_active_for_event(ws, event)
+    )
     if contract is None:
         # Distinguish "no contract at all" (ungoverned → ABSTAIN) from
         # "contract file present but unreadable/corrupt" (tamper or breakage
@@ -3308,14 +3977,18 @@ def _screen(a) -> int:
         # damaged must not silently become ungoverned.
         cpath = os.path.join(tp.tp_dir(ws), "active_contract.json")
         if os.path.exists(cpath):
-            print(json.dumps({
-                "decision": "block",
-                "reason": "taskplane: the active contract is present but "
-                          "unreadable (corrupt or tampered). Failing closed. "
-                          "Ask the human / the ungoverned main session to "
-                          "run `tp.py clear --workspace <this workspace>` "
-                          "and re-activate a contract.",
-            }))
+            print(
+                json.dumps(
+                    {
+                        "decision": "block",
+                        "reason": "taskplane: the active contract is present but "
+                        "unreadable (corrupt or tampered). Failing closed. "
+                        "Ask the human / the ungoverned main session to "
+                        "run `tp.py clear --workspace <this workspace>` "
+                        "and re-activate a contract.",
+                    }
+                )
+            )
             return 0
         # Ungoverned: ABSTAIN — emit no decision so Claude Code's normal
         # permission flow applies. Forcing {"decision":"approve"} here would
@@ -3327,13 +4000,16 @@ def _screen(a) -> int:
 
     if _legacy_review_activation_command(command):
         members = contract.get("_union") or []
-        suffix = (f" (most-restrictive union of {len(members)} active "
-                  "contracts)" if members else "")
-        print(json.dumps({
-            "decision": "block",
-            "reason": "taskplane: legacy direct taskplane_lite activation "
-                      "is forbidden; use an exact signed review bootstrap" +
-                      suffix}))
+        suffix = f" (most-restrictive union of {len(members)} active contracts)" if members else ""
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": "taskplane: legacy direct taskplane_lite activation "
+                    "is forbidden; use an exact signed review bootstrap" + suffix,
+                }
+            )
+        )
         return 0
 
     # ORPHANED-CONTRACT AUTO-RELEASE — a contract whose owner is gone (dead
@@ -3348,15 +4024,19 @@ def _screen(a) -> int:
             lifecycle = contract.get("worker_lifecycle") or {}
             slot = str(lifecycle.get("slot") or "")
             receipt = tp.record_worker_terminal(
-                ws, slot, event=None, outcome="interrupted",
-                submission_status="orphaned", authority="orphan-recovery")
+                ws,
+                slot,
+                event=None,
+                outcome="interrupted",
+                submission_status="orphaned",
+                authority="orphan-recovery",
+            )
             tp.release_worker_contract(
-                ws, slot, action=lifecycle.get("release_action"),
-                terminal_receipt=receipt)
+                ws, slot, action=lifecycle.get("release_action"), terminal_receipt=receipt
+            )
         else:
             tp.clear(ws)
-        tp.trace(ws, "contract_orphan_released",
-                 task_id=contract.get("task_id"), reason=why)
+        tp.trace(ws, "contract_orphan_released", task_id=contract.get("task_id"), reason=why)
         return 0
 
     tid = contract.get("task_id", "_")
@@ -3370,14 +4050,18 @@ def _screen(a) -> int:
         used = _meter_load(ws, strict=True).get(tid, {}).get("actions", 0)
     except MeterCorrupt:
         tp.trace(ws, "meter_corrupt_block", tool=tool_name)
-        print(json.dumps({
-            "decision": "block",
-            "reason": f"taskplane contract {tid}: the action meter is "
-                      "unreadable (corrupt or tampered) — failing closed so "
-                      "an exhausted budget can't silently reset. Ask the "
-                      "human to `tp.py clear --workspace <ws>` (from outside "
-                      "the workspace) and re-activate.",
-        }))
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": f"taskplane contract {tid}: the action meter is "
+                    "unreadable (corrupt or tampered) — failing closed so "
+                    "an exhausted budget can't silently reset. Ask the "
+                    "human to `tp.py clear --workspace <ws>` (from outside "
+                    "the workspace) and re-activate.",
+                }
+            )
+        )
         return 0
     # INSPECTION MUST NOT COST. A stuck agent should still be able to say why
     # it is stuck. These commands read and print; none of them changes a
@@ -3401,10 +4085,11 @@ def _screen(a) -> int:
         try:
             sys.stdout.flush()
             import derivation as _dv
+
             _dv.record(ws, command, "abstain")
-        except Exception:                            # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
-        return 0                      # abstain: not metered, not denied
+        return 0  # abstain: not metered, not denied
 
     # TOKEN CEILING — one selected, incremental transcript projection feeds
     # both contract enforcement and native telemetry.  It is never parsed
@@ -3416,86 +4101,101 @@ def _screen(a) -> int:
         _budget = contract.get("budget") or {}
         _token_ceiling = _budget.get("max_tokens") is not None
         _telemetry_task_id = _contract_dispatch_task_id(contract)
-        _telemetry_consumer = _dispatch_usage_observation_required(
-            ws, _telemetry_task_id)
+        _telemetry_consumer = _dispatch_usage_observation_required(ws, _telemetry_task_id)
         if _token_ceiling or _telemetry_consumer:
             try:
                 import spend as _spend
+
                 _tpath = _spend.event_transcript(event)
                 _provider = "codex" if "turn_id" in event else "claude"
-                _projection = (_bounded_transcript_projection(
-                    ws, _tpath, _provider) if _tpath else {
+                _projection = (
+                    _bounded_transcript_projection(ws, _tpath, _provider)
+                    if _tpath
+                    else {
                         "status": "unavailable",
                         "reason": "host transcript path is unavailable",
-                    })
+                    }
+                )
                 if _projection.get("status") == "available":
-                    _observed_tokens = int(
-                        (_projection.get("usage") or {})["total_tokens"])
-                    _tok_ok, _tok_why = _spend.status(
-                        contract, _observed_tokens)
+                    _observed_tokens = int((_projection.get("usage") or {})["total_tokens"])
+                    _tok_ok, _tok_why = _spend.status(contract, _observed_tokens)
                     if not _tok_ok:
-                        _token_denial = (
-                            _tok_why, _observed_tokens)
+                        _token_denial = (_tok_why, _observed_tokens)
                 elif bool(_budget.get("token_usage_required")):
                     _token_denial = (
-                        "TOKEN BUDGET telemetry unavailable — " +
-                        str(_projection.get("reason") or
-                            "host token totals are unavailable"), None)
+                        "TOKEN BUDGET telemetry unavailable — "
+                        + str(_projection.get("reason") or "host token totals are unavailable"),
+                        None,
+                    )
             except Exception as exc:
                 if bool(_budget.get("token_usage_required")):
                     _token_denial = (
-                        "TOKEN BUDGET telemetry unavailable — " +
-                        f"{type(exc).__name__}: {exc}", None)
+                        "TOKEN BUDGET telemetry unavailable — " + f"{type(exc).__name__}: {exc}",
+                        None,
+                    )
         # Dispatch telemetry consumes the exact same normalized projection.
         # Its absence never creates a positive budget claim.
-        if _telemetry_consumer and _tpath and isinstance(_projection, dict) \
-                and _projection.get("status") == "available":
+        if (
+            _telemetry_consumer
+            and _tpath
+            and isinstance(_projection, dict)
+            and _projection.get("status") == "available"
+        ):
             try:
                 import loop as _loop_runtime
+
                 _native_task_name = str(
-                    ((contract.get("worker_lifecycle") or {}).get(
-                        "expected_task_name") or "")).strip()
+                    ((contract.get("worker_lifecycle") or {}).get("expected_task_name") or "")
+                ).strip()
                 _loop_runtime.record_observed_dispatch_usage(
-                    ws, task_id=_telemetry_task_id,
-                    normalized_usage=_normalized_dispatch_projection(
-                        _projection),
-                    source_fingerprint=str(
-                        _projection["source_fingerprint"]),
+                    ws,
+                    task_id=_telemetry_task_id,
+                    normalized_usage=_normalized_dispatch_projection(_projection),
+                    source_fingerprint=str(_projection["source_fingerprint"]),
                     native_task_name=_native_task_name,
-                    dispatch_id=(
-                        _contract_dispatch_intent_id(contract) or None))
+                    dispatch_id=(_contract_dispatch_intent_id(contract) or None),
+                )
             except Exception:
                 pass
         from taskplane import run_context
+
         if _token_denial is not None and not run_context.resource_limits_advisory(ws):
             _tok_why, _effective = _token_denial
             # A broken meter must fail closed, but it must not hide a more
             # specific authority boundary.  Preserve the contract's direct
             # tool/command refusal when both checks deny the same action.
-            _contract_allows, _contract_why = tp.screen_tool(
-                contract, tool_name, tool_input, ws)
+            _contract_allows, _contract_why = tp.screen_tool(contract, tool_name, tool_input, ws)
             if not _contract_allows:
                 _tok_why = _contract_why
             _meter_bump(ws, tid, "denies")
-            tp.trace(ws, "token_budget_deny", tool=tool_name,
-                     effective=_effective)
-            print(json.dumps({
-                "decision": "block",
-                "reason": f"taskplane contract {tid}: {_tok_why}"}))
+            tp.trace(ws, "token_budget_deny", tool=tool_name, effective=_effective)
+            print(
+                json.dumps({"decision": "block", "reason": f"taskplane contract {tid}: {_tok_why}"})
+            )
             return 0
 
     ok, reason = tp.budget_status(
-        contract, used, reserve=_CLOSING_RESERVE,
-        closing=_is_closing_command(command))
+        contract, used, reserve=_CLOSING_RESERVE, closing=_is_closing_command(command)
+    )
     from taskplane import run_context
+
     if not ok and not run_context.resource_limits_advisory(ws):
         _meter_bump(ws, tid, "denies")
-        tp.trace(ws, "budget_deny", tool=tool_name, used=used,
-                 max=(contract.get("budget") or {}).get("max_actions"))
-        print(json.dumps({
-            "decision": "block",
-            "reason": f"taskplane contract {tid}: {reason}",
-        }))
+        tp.trace(
+            ws,
+            "budget_deny",
+            tool=tool_name,
+            used=used,
+            max=(contract.get("budget") or {}).get("max_actions"),
+        )
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": f"taskplane contract {tid}: {reason}",
+                }
+            )
+        )
         return 0
 
     # OBLIGATION → PROHIBITION. A hook can deny an action; it cannot compel
@@ -3513,13 +4213,13 @@ def _screen(a) -> int:
     # broken instrument must not become a broken product.
     try:
         import obligations as _ob
+
         _owed = _ob.blocked_reason(ws, command)
     except Exception:
         _owed = None
     if _owed:
         _meter_bump(ws, tid, "denies")
-        tp.trace(ws, "obligation_deny", tool=tool_name,
-                 open=len(_ob.blocking(ws)))
+        tp.trace(ws, "obligation_deny", tool=tool_name, open=len(_ob.blocking(ws)))
         print(json.dumps({"decision": "block", "reason": _owed}))
         return 0
 
@@ -3537,18 +4237,14 @@ def _screen(a) -> int:
     if contract.get("read_only"):
         try:
             import target as _tgt
-            _unbound = (
-                _tgt.binding_problem(ws)
-                if _is_completion_command(command)
-                else None)
+
+            _unbound = _tgt.binding_problem(ws) if _is_completion_command(command) else None
         except Exception:
             _unbound = None
         if _unbound:
             _meter_bump(ws, tid, "denies")
             tp.trace(ws, "target_unbound_deny", tool=tool_name)
-            print(json.dumps({
-                "decision": "block",
-                "reason": "taskplane: " + _unbound}))
+            print(json.dumps({"decision": "block", "reason": "taskplane: " + _unbound}))
             return 0
 
     allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
@@ -3559,26 +4255,37 @@ def _screen(a) -> int:
         # allowed; collect later requires this separate receipt.
         if _review_candidate and not _review_authority:
             _meter_bump(ws, tid, "denies")
-            tp.trace(ws, "slot_provenance_deny", tool=tool_name,
-                     error="UnleasedResultPath")
-            print(json.dumps({
-                "decision": "block",
-                "reason": "taskplane: leased review result lookup failed "
-                          "closed (write is not an active leased result path)"}))
+            tp.trace(ws, "slot_provenance_deny", tool=tool_name, error="UnleasedResultPath")
+            print(
+                json.dumps(
+                    {
+                        "decision": "block",
+                        "reason": "taskplane: leased review result lookup failed "
+                        "closed (write is not an active leased result path)",
+                    }
+                )
+            )
             return 0
         if _review_authority:
             try:
                 _review.record_slot_write_observation(
-                    _review_ws, event=event, contract=contract,
-                    task_slot=_review_authority["task_slot"])
+                    _review_ws,
+                    event=event,
+                    contract=contract,
+                    task_slot=_review_authority["task_slot"],
+                )
             except Exception as exc:
                 _meter_bump(ws, tid, "denies")
-                tp.trace(ws, "slot_provenance_deny", tool=tool_name,
-                         error=type(exc).__name__)
-                print(json.dumps({
-                    "decision": "block",
-                    "reason": "taskplane: leased review result provenance "
-                              f"could not be established ({exc})"}))
+                tp.trace(ws, "slot_provenance_deny", tool=tool_name, error=type(exc).__name__)
+                print(
+                    json.dumps(
+                        {
+                            "decision": "block",
+                            "reason": "taskplane: leased review result provenance "
+                            f"could not be established ({exc})",
+                        }
+                    )
+                )
                 return 0
         _meter_bump(ws, tid, "actions")
         # Codex does not support the legacy PreToolUse
@@ -3606,18 +4313,23 @@ def _screen(a) -> int:
         try:
             sys.stdout.flush()
             import derivation as _dv
+
             _dv.record(ws, command, "approve")
-        except Exception:                            # noqa: BLE001
+        except Exception:  # noqa: BLE001
             pass
         return 0
     _meter_bump(ws, tid, "denies")
     tp.trace(ws, "hook_deny", tool=tool_name, reason=reason)
-    print(json.dumps({
-        "decision": "block",
-        "reason": f"taskplane contract {contract.get('task_id','')}: {reason}. "
-                  "This action is outside the task's contract. Adjust scope "
-                  "with `tp.py` or choose an in-scope path.",
-    }))
+    print(
+        json.dumps(
+            {
+                "decision": "block",
+                "reason": f"taskplane contract {contract.get('task_id', '')}: {reason}. "
+                "This action is outside the task's contract. Adjust scope "
+                "with `tp.py` or choose an in-scope path.",
+            }
+        )
+    )
     return 0
 
 
@@ -3630,20 +4342,26 @@ def cmd_screen(a) -> int:
     try:
         return _screen(a)
     except Exception as exc:  # noqa: BLE001 — the boundary must never leak
-        print(json.dumps({
-            "decision": "block",
-            "reason": f"taskplane screener error ({type(exc).__name__}) — "
-                      "failing closed. This action is blocked until the "
-                      "contract/event can be screened cleanly.",
-        }))
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": f"taskplane screener error ({type(exc).__name__}) — "
+                    "failing closed. This action is blocked until the "
+                    "contract/event can be screened cleanly.",
+                }
+            )
+        )
         return 0
 
 
 # --------------------------------------------------------------- status
 
+
 def _loop_status_snapshot(ws: str) -> dict:
     try:
         import loop as loopmod
+
         snapshot = loopmod.status(ws)
         raw = loopmod._load_raw(ws)
         if isinstance(raw, dict):
@@ -3651,8 +4369,7 @@ def _loop_status_snapshot(ws: str) -> dict:
             snapshot["worktree_cleanups"] = raw.get("worktree_cleanups") or {}
         return snapshot
     except Exception as exc:
-        return {"loop": "unavailable",
-                "error": f"{exc.__class__.__name__}: {exc}"}
+        return {"loop": "unavailable", "error": f"{exc.__class__.__name__}: {exc}"}
 
 
 def cmd_status(a) -> int:
@@ -3669,54 +4386,74 @@ def cmd_status(a) -> int:
                 with open(legacy, encoding="utf-8") as f:
                     json.load(f)
             except (OSError, json.JSONDecodeError) as e:
-                print(json.dumps({
-                    "active_contract": "CORRUPT",
-                    "path": legacy,
-                    "error": str(e),
-                    "enforcement": "the PreToolUse hook BLOCKS all actions "
-                                   "while this file is unreadable — the "
-                                   "workspace is governed-but-broken, not "
-                                   "ungoverned",
-                    "remedy": "inspect/restore the file (git checkout), or "
-                              "`tp.py clear` from an ungoverned context to "
-                              "reset it",
-                }, indent=2))
+                print(
+                    json.dumps(
+                        {
+                            "active_contract": "CORRUPT",
+                            "path": legacy,
+                            "error": str(e),
+                            "enforcement": "the PreToolUse hook BLOCKS all actions "
+                            "while this file is unreadable — the "
+                            "workspace is governed-but-broken, not "
+                            "ungoverned",
+                            "remedy": "inspect/restore the file (git checkout), or "
+                            "`tp.py clear` from an ungoverned context to "
+                            "reset it",
+                        },
+                        indent=2,
+                    )
+                )
                 return 1
         loop_status = _loop_status_snapshot(ws)
-        saved = ((loop_status.get("enforcement") or {}).get("current")
-                 if isinstance(loop_status, dict) else None)
+        saved = (
+            (loop_status.get("enforcement") or {}).get("current")
+            if isinstance(loop_status, dict)
+            else None
+        )
         enforcement, _ = _enforcement_check(ws, saved=saved)
-        print(json.dumps({
-            "active_contract": None,
-            "loop": loop_status,
-            "enforcement": enforcement,
-            "foreign_interference": collision_kernel.load_ledger(ws),
-            "headline": ("no active contract; project loop status is shown "
-                         "below"),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "active_contract": None,
+                    "loop": loop_status,
+                    "enforcement": enforcement,
+                    "foreign_interference": collision_kernel.load_ledger(ws),
+                    "headline": ("no active contract; project loop status is shown below"),
+                },
+                indent=2,
+            )
+        )
         return 0
     projection = tp.contract_projection(c)
     budget = projection["budget"]
-    print(json.dumps({
-        "active_contract": "active",
-        "task_id": c.get("task_id"), "task": c.get("task"),
-        "read_only": bool(c.get("read_only")),
-        "write_allow": c.get("write_allow") or [],
-        "scope_paths": projection["scope_paths"],
-        "out_of_scope_paths": projection["out_of_scope_paths"],
-        "deny": projection["deny"],
-        "allowed_tools": c.get("allowed_tools") or "(any)",
-        "max_actions": budget.get("max_actions"),
-        "budget_ceiling_usd": budget.get("max_cost_usd", "(action-metered; "
-                                          "no dollar ceiling set)"),
-        "budget_note": budget.get("note"),
-        "dod": projection["dod"],
-        "enforcement": (_saved_enforcement(c.get("enforcement"))
-                        or _enforcement_check(ws)[0]),
-        "foreign_state": c.get("foreign_state"),
-        "foreign_interference": collision_kernel.load_ledger(ws),
-        "loop": _loop_status_snapshot(ws),
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "active_contract": "active",
+                "task_id": c.get("task_id"),
+                "task": c.get("task"),
+                "read_only": bool(c.get("read_only")),
+                "write_allow": c.get("write_allow") or [],
+                "scope_paths": projection["scope_paths"],
+                "out_of_scope_paths": projection["out_of_scope_paths"],
+                "deny": projection["deny"],
+                "allowed_tools": c.get("allowed_tools") or "(any)",
+                "max_actions": budget.get("max_actions"),
+                "budget_ceiling_usd": budget.get(
+                    "max_cost_usd", "(action-metered; no dollar ceiling set)"
+                ),
+                "budget_note": budget.get("note"),
+                "dod": projection["dod"],
+                "enforcement": (
+                    _saved_enforcement(c.get("enforcement")) or _enforcement_check(ws)[0]
+                ),
+                "foreign_state": c.get("foreign_state"),
+                "foreign_interference": collision_kernel.load_ledger(ws),
+                "loop": _loop_status_snapshot(ws),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -3733,48 +4470,54 @@ def cmd_budget(a) -> int:
         # --grant` is still screened (and budget-blocked) like any other
         # command; the wall is intentional.
         if a.grant < 1:
-            print("taskplane: --grant must be a positive action count.",
-                  file=sys.stderr)
+            print("taskplane: --grant must be a positive action count.", file=sys.stderr)
             return 1
         updated = tp.grant_budget(ws, a.grant)
         if updated is None:
-            print("taskplane: this contract has no action ceiling to raise.",
-                  file=sys.stderr)
+            print("taskplane: this contract has no action ceiling to raise.", file=sys.stderr)
             return 1
         new_max = updated["budget"]["max_actions"]
-        used = _meter_load(ws).get(updated.get("task_id", "_"), {}) \
-            .get("actions", 0)
-        print(f"taskplane: budget granted — +{a.grant} actions, ceiling now "
-              f"{new_max} ({used} used). Work may continue.")
+        used = _meter_load(ws).get(updated.get("task_id", "_"), {}).get("actions", 0)
+        print(
+            f"taskplane: budget granted — +{a.grant} actions, ceiling now "
+            f"{new_max} ({used} used). Work may continue."
+        )
         if getattr(a, "approved_by", None):
-            tp.trace(ws, "budget_human_approval",
-                     approved_by=a.approved_by, extra_actions=a.grant)
+            tp.trace(ws, "budget_human_approval", approved_by=a.approved_by, extra_actions=a.grant)
         return 0
     if a.spent is None:
-        print("taskplane: pass --spent USD (cooperative estimate) or "
-              "--grant N (raise the action ceiling).", file=sys.stderr)
+        print(
+            "taskplane: pass --spent USD (cooperative estimate) or "
+            "--grant N (raise the action ceiling).",
+            file=sys.stderr,
+        )
         return 1
     ceiling = (c.get("budget") or {}).get("max_cost_usd")
     if ceiling is None:
-        print("taskplane: this contract has no dollar ceiling — it's metered "
-              "by action budget only (see `tp.py status`). The cooperative "
-              "dollar estimate applies only to contracts created with "
-              "`tp.py new --budget`.")
+        print(
+            "taskplane: this contract has no dollar ceiling — it's metered "
+            "by action budget only (see `tp.py status`). The cooperative "
+            "dollar estimate applies only to contracts created with "
+            "`tp.py new --budget`."
+        )
         return 0
     tp.trace(ws, "budget_estimate", spent_usd=a.spent, ceiling_usd=ceiling)
     over = a.spent > ceiling
-    print(f"taskplane: cooperative budget — est ${a.spent:.2f} / "
-          f"${ceiling:.2f} ceiling{'  ⚠ OVER' if over else ''}")
-    print("  (advisory: Cowork does not intercept model spend; treat the "
-          "ceiling as a stop signal)")
+    print(
+        f"taskplane: cooperative budget — est ${a.spent:.2f} / "
+        f"${ceiling:.2f} ceiling{'  ⚠ OVER' if over else ''}"
+    )
+    print("  (advisory: Cowork does not intercept model spend; treat the ceiling as a stop signal)")
     return 2 if over else 0
 
 
 # --------------------------------------------------------------- dod
 
+
 def _graph_quality_refusal(ws: str, surface: str) -> dict | None:
     """One persisted producer record, consumed by every strict CLI gate."""
     import depgraph
+
     graph = depgraph.load(ws)
     errors = depgraph.quality_errors(graph)
     if not errors:
@@ -3795,8 +4538,7 @@ def cmd_dod(a) -> int:
         return 1
     c = tp.load_active(ws)
     if c is None:
-        print("taskplane: no active contract — nothing to validate.",
-              file=sys.stderr)
+        print("taskplane: no active contract — nothing to validate.", file=sys.stderr)
         return 1
     snap_path = os.path.join(tp.tp_dir(ws), "snapshot")
     snapshot = None
@@ -3807,6 +4549,7 @@ def cmd_dod(a) -> int:
     notices: list = []
     errors = tp.dod_check(c, ws, snapshot, notices=notices)
     import kb as kbmod
+
     errors += [f"{p['file']}: {p['problem']}" for p in kbmod.lint(ws)]
     tp.trace(ws, "dod", passed=not errors, errors=errors, notices=notices)
     if errors:
@@ -3818,9 +4561,11 @@ def cmd_dod(a) -> int:
         return 1
     changed = tp.changed_files(ws, snapshot) if snapshot else []
     projection = tp.contract_projection(c)
-    print("taskplane DoD: PASS ✅ (diff in scope"
-          + (", tests pass" if projection["test_command"] else "")
-          + ")")
+    print(
+        "taskplane DoD: PASS ✅ (diff in scope"
+        + (", tests pass" if projection["test_command"] else "")
+        + ")"
+    )
     # D-0008: a PASS that nobody executed must say so at the moment it is
     # read, not only in the trace.
     for n in notices:
@@ -3832,8 +4577,8 @@ def cmd_dod(a) -> int:
 
 # --------------------------------------------------------------- loop
 
-def _loop_evidence_workspaces(loopmod, workspace: str,
-                              task_id: str | None) -> tuple:
+
+def _loop_evidence_workspaces(loopmod, workspace: str, task_id: str | None) -> tuple:
     """Return (authority, evidence, error) for one exact task claim.
 
     Parallel evaluators operate on claimed worktree bytes while loop state
@@ -3846,6 +4591,7 @@ def _loop_evidence_workspaces(loopmod, workspace: str,
     authority = origin if state is not None else None
     if authority is None:
         import storage as runtime_storage
+
         candidates = []
         try:
             locator = runtime_storage.load_workspace_locator(origin)
@@ -3854,12 +4600,12 @@ def _loop_evidence_workspaces(loopmod, workspace: str,
         if locator:
             candidates.append(str(locator.get("primary_checkout") or ""))
         try:
-            listed = tp._run(
-                ["git", "worktree", "list", "--porcelain"], cwd=origin)
+            listed = tp._run(["git", "worktree", "list", "--porcelain"], cwd=origin)
             candidates.extend(
-                line[len("worktree "):]
+                line[len("worktree ") :]
                 for line in listed.stdout.splitlines()
-                if line.startswith("worktree "))
+                if line.startswith("worktree ")
+            )
         except OSError:
             candidates = []
         matches = []
@@ -3879,38 +4625,55 @@ def _loop_evidence_workspaces(loopmod, workspace: str,
                     matches.append((candidate, candidate_state))
                     break
         if len(matches) != 1:
-            return None, None, ({"error": "no active loop"} if not matches
-                                else {"error": "multiple active loops claim "
-                                               "this task worktree"})
+            return (
+                None,
+                None,
+                (
+                    {"error": "no active loop"}
+                    if not matches
+                    else {"error": "multiple active loops claim this task worktree"}
+                ),
+            )
         authority, state = matches[0]
 
-    task = (loopmod._current_task(state) if task_id is None else
-            next((row for row in state.get("tasks") or []
-                  if str(row.get("id")) == str(task_id)), None))
+    task = (
+        loopmod._current_task(state)
+        if task_id is None
+        else next(
+            (row for row in state.get("tasks") or [] if str(row.get("id")) == str(task_id)), None
+        )
+    )
     if task is None:
         return authority, authority, None
     claimed = str(task.get("workspace") or "")
-    evidence_ws = (os.path.realpath(claimed)
-                   if claimed and os.path.isdir(claimed) else authority)
+    evidence_ws = os.path.realpath(claimed) if claimed and os.path.isdir(claimed) else authority
     if origin != authority and origin != evidence_ws:
-        return None, None, {
-            "error": "this worktree is not the claimed workspace for "
-                     f"task {task.get('id')!r}"}
+        return (
+            None,
+            None,
+            {"error": f"this worktree is not the claimed workspace for task {task.get('id')!r}"},
+        )
     return authority, evidence_ws, None
-
 
 
 def cmd_loop(a) -> int:
     """Drive the taskplane-owned Evaluate-Loop state machine."""
     import loop as loopmod
+
     ws = _workspace(a.workspace)
     action = a.loop_action
     if action in {"next", "wave"} and getattr(a, "emit", "auto") == "workflow":
         refusal = _emit_workflow_refusal(workflow_available(ws))
         if refusal is not None:
             stage = (loopmod.load(ws) or {}).get("step", action)
-            tp.trace(ws, "stage_dispatch_path", stage=stage, path="refused",
-                     reason=refusal, emit="workflow")
+            tp.trace(
+                ws,
+                "stage_dispatch_path",
+                stage=stage,
+                path="refused",
+                reason=refusal,
+                emit="workflow",
+            )
             print("taskplane: " + refusal, file=sys.stderr)
             return 1
     if action == "archive":
@@ -3926,28 +4689,44 @@ def cmd_loop(a) -> int:
             return 1 if observed.get("error") or observed.get("obligations", {}).get("error") else 0
     if action == "init" and getattr(a, "advisory", False):
         # Validate an explicit waiver before acquiring any run storage.
-        _, refusal = _enforcement_check(ws, advisory=True,
-            actor=getattr(a, "by", None), require_live=False)
+        _, refusal = _enforcement_check(
+            ws, advisory=True, actor=getattr(a, "by", None), require_live=False
+        )
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
             return 1
-    if (action == "init" and loopmod.load(ws) is None
-            and runtime_storage.load_workspace_locator(ws) is None):
+    if (
+        action == "init"
+        and loopmod.load(ws) is None
+        and runtime_storage.load_workspace_locator(ws) is None
+    ):
         import preflight
+
         # Preserve the existing private store's exact checkout ownership
         # before preflight switches lookup to the repository-keyed locator.
         # The incumbent adoption owner then moves it; no records are copied.
-        if (tp.get_mode(ws)["store"] == "external" and
-                os.path.isfile(os.path.join(tp.external_store_root(ws), "knowledge", "index.json")) and
-                not os.path.lexists(tp.store_meta_path(ws))):
-            index = tp.load_json(os.path.join(tp.external_store_root(ws), "knowledge", "index.json"))
-            if isinstance(index, dict) and any(index.get(key) for key in (
-                    "requirements", "decisions", "flows", "debt")):
+        if (
+            tp.get_mode(ws)["store"] == "external"
+            and os.path.isfile(os.path.join(tp.external_store_root(ws), "knowledge", "index.json"))
+            and not os.path.lexists(tp.store_meta_path(ws))
+        ):
+            index = tp.load_json(
+                os.path.join(tp.external_store_root(ws), "knowledge", "index.json")
+            )
+            if isinstance(index, dict) and any(
+                index.get(key) for key in ("requirements", "decisions", "flows", "debt")
+            ):
                 tp.write_store_meta(ws)
         prepared = preflight.RepositoryPreflight().prepare(
-            ws, workspace=ws, host={"kind": tp.host(),
-                "session_id": (os.environ.get("CODEX_THREAD_ID") or
-                               os.environ.get("CLAUDE_SESSION_ID"))})
+            ws,
+            workspace=ws,
+            host={
+                "kind": tp.host(),
+                "session_id": (
+                    os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+                ),
+            },
+        )
         if prepared.get("status") != "ready":
             print(json.dumps(prepared, sort_keys=True))
             return 2
@@ -3964,33 +4743,42 @@ def cmd_loop(a) -> int:
         current = loopmod.load(ws)
         locator = runtime_storage.load_workspace_locator(ws)
         enforcement, refusal = _enforcement_check(
-            ws, saved=(current or {}).get("enforcement"),
+            ws,
+            saved=(current or {}).get("enforcement"),
             advisory=bool(getattr(a, "advisory", False)),
             actor=getattr(a, "by", None),
             run_id=((current or {}).get("run_id") or (locator or {}).get("run_id")),
             revision=((current or {}).get("baseline") or tp.git_head(ws)),
-            require_live=action != "init")
+            require_live=action != "init",
+        )
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
             return 1
-        if current is not None and action != "init" and \
-                loopmod.loop_status._dashboard_replay_block(ws) is None:
+        if (
+            current is not None
+            and action != "init"
+            and loopmod.loop_status._dashboard_replay_block(ws) is None
+        ):
             # Admission is still checked, but publication replay must observe
             # the exact committed state before another receipt is recorded.
             loopmod.record_enforcement(ws, enforcement)
     if action == "init":
-        checkpoints = (a.checkpoints.split(",") if a.checkpoints is not None
-                       else ["plan", "em"])
-        st = loopmod.init(ws, " ".join(a.goal or []) or (a.spec or "spec"),
-                          spec_path=a.spec, max_fix_cycles=a.max_fix_cycles,
-                          checkpoints=[c for c in checkpoints if c],
-                          requirement_id=a.req, parallel=a.parallel,
-                          design=a.design, design_only=a.design_only,
-                          force=getattr(a, "force", False),
-                          by=getattr(a, "by", None),
-                          enforcement_decision=enforcement,
-                          reuse_approved_design=getattr(
-                              a, "reuse_approved_design", False))
+        checkpoints = a.checkpoints.split(",") if a.checkpoints is not None else ["plan", "em"]
+        st = loopmod.init(
+            ws,
+            " ".join(a.goal or []) or (a.spec or "spec"),
+            spec_path=a.spec,
+            max_fix_cycles=a.max_fix_cycles,
+            checkpoints=[c for c in checkpoints if c],
+            requirement_id=a.req,
+            parallel=a.parallel,
+            design=a.design,
+            design_only=a.design_only,
+            force=getattr(a, "force", False),
+            by=getattr(a, "by", None),
+            enforcement_decision=enforcement,
+            reuse_approved_design=getattr(a, "reuse_approved_design", False),
+        )
         # Only collapse to the success summary when the engine did NOT refuse.
         # Previously any dict with a "step" key (including a refusal that also
         # carries the CURRENT step) was reported as {"initialized": true} with
@@ -4010,24 +4798,26 @@ def cmd_loop(a) -> int:
         out = loopmod.resume(ws)
     elif action == "next":
         import depgraph
+
         try:
             with depgraph.strict_quality():
                 out = loopmod.next_action(
-                    ws, rid=getattr(a, "req", None),
-                    root_observation_authority=
-                        _transcript_projection_authority(ws))
+                    ws,
+                    rid=getattr(a, "req", None),
+                    root_observation_authority=_transcript_projection_authority(ws),
+                )
         except depgraph.GraphQualityDegraded as exc:
             out = {"error": str(exc), "step": "graph-quality"}
     elif action == "submit":
-        out = loopmod.submit(
-            ws, a.outcome, note=a.note or "", task_id=a.task)
+        out = loopmod.submit(ws, a.outcome, note=a.note or "", task_id=a.task)
     elif action == "gate":
         import depgraph
+
         try:
             with depgraph.strict_quality():
                 out = loopmod.gate(
-                    ws, a.outcome, note=a.note or "", task_id=a.task,
-                    rid=getattr(a, "req", None))
+                    ws, a.outcome, note=a.note or "", task_id=a.task, rid=getattr(a, "req", None)
+                )
         except depgraph.GraphQualityDegraded as exc:
             out = {"error": str(exc), "step": "graph-quality"}
         # Tier-routing observability at the gate summary, ON BY DEFAULT: the
@@ -4037,19 +4827,21 @@ def cmd_loop(a) -> int:
         if isinstance(out, dict):
             try:
                 rep = tp.dispatch_report(ws)
-                out.setdefault("dispatch_audit", {
-                    "expected": rep["expected"],
-                    "observed": rep["observed"],
-                    "mismatches": rep["mismatches"],
-                    "unobserved": rep["unobserved"],
-                    "hook_active": rep["hook_active"],
-                    "note": rep["note"]})
+                out.setdefault(
+                    "dispatch_audit",
+                    {
+                        "expected": rep["expected"],
+                        "observed": rep["observed"],
+                        "mismatches": rep["mismatches"],
+                        "unobserved": rep["unobserved"],
+                        "hook_active": rep["hook_active"],
+                        "note": rep["note"],
+                    },
+                )
             except Exception:
-                pass                 # audit must never break the gate
+                pass  # audit must never break the gate
     elif action == "wave":
-        out = loopmod.wave(
-            ws, root_observation_authority=
-                _transcript_projection_authority(ws))
+        out = loopmod.wave(ws, root_observation_authority=_transcript_projection_authority(ws))
     elif action == "claim":
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":
@@ -4058,53 +4850,63 @@ def cmd_loop(a) -> int:
         out = loopmod.select(ws, a.choice, note=a.note or "")
     elif action == "restore-settings":
         from taskplane import run_context
+
         out = run_context.restore_settings(loopmod, ws, a.settings_from)
     elif action == "amend":
         from taskplane import phase_amendment
+
         try:
             if a.preview:
-                out = {**phase_amendment.candidate(loopmod, ws, a.phase, a.req),
-                       "read_only": True}
+                out = {**phase_amendment.candidate(loopmod, ws, a.phase, a.req), "read_only": True}
             else:
                 # Amendments are human recovery decisions. Reuse the saved
                 # resolve lifecycle event, including publication replay, so
                 # existing runs need no lifecycle-settings migration.
                 def resolve(workspace):
                     return phase_amendment.amend(
-                        loopmod, workspace, phase=a.phase, by=a.by, reason=a.reason,
+                        loopmod,
+                        workspace,
+                        phase=a.phase,
+                        by=a.by,
+                        reason=a.reason,
                         requirement_id=a.req,
                         expected_stage_fingerprint=a.expected_stage_fingerprint,
                         requirement_fingerprint=a.requirement_fingerprint,
                         candidate_fingerprint=a.candidate_fingerprint,
-                        worker_stopped=a.worker_stopped)
+                        worker_stopped=a.worker_stopped,
+                    )
+
                 out = loopmod.loop_status.with_dashboard(resolve)(ws)
         except (ValueError, OSError) as exc:
-            out = {"error": "phase amendment refused: " + str(exc),
-                   "dispatch_allowed": False}
+            out = {"error": "phase amendment refused: " + str(exc), "dispatch_allowed": False}
     elif action == "resolve":
         out = loopmod.resolve(
-            ws, a.decision, by=getattr(a, "by", None),
-            run_id=getattr(a, "run_id", None), task_id=getattr(a, "task", None),
+            ws,
+            a.decision,
+            by=getattr(a, "by", None),
+            run_id=getattr(a, "run_id", None),
+            task_id=getattr(a, "task", None),
             reason=getattr(a, "reason", None),
-            accept_producer_receipt_outage=getattr(
-                a, "accept_producer_receipt_outage", False),
+            accept_producer_receipt_outage=getattr(a, "accept_producer_receipt_outage", False),
             outage_fingerprint=getattr(a, "outage_fingerprint", None),
             phase_operation=getattr(a, "phase_operation", None),
             candidate_fingerprint=getattr(a, "candidate_fingerprint", None),
-            worker_stopped=getattr(a, "worker_stopped", False))
+            worker_stopped=getattr(a, "worker_stopped", False),
+        )
     elif action == "replan":
         out = loopmod.replan(ws, by=a.by, reason=a.reason)
     elif action == "evidence":
         state_ws, evidence_ws, error = _loop_evidence_workspaces(
-            loopmod, ws, getattr(a, "task", None))
+            loopmod, ws, getattr(a, "task", None)
+        )
         if error:
             out = error
         else:
             token = loopmod._EVIDENCE_STATE_WORKSPACE.set(state_ws)
             try:
                 out = loopmod.evidence(
-                    evidence_ws, task_id=getattr(a, "task", None),
-                    write=getattr(a, "write", False))
+                    evidence_ws, task_id=getattr(a, "task", None), write=getattr(a, "write", False)
+                )
             finally:
                 loopmod._EVIDENCE_STATE_WORKSPACE.reset(token)
     elif action == "guide":
@@ -4126,15 +4928,12 @@ def cmd_loop(a) -> int:
             if not isinstance(event, dict):
                 out = {"error": "host event must be a JSON object"}
             else:
-                raw_host_event = os.environ.get(
-                    "TASKPLANE_HOST_SESSION_EVENT", "")
+                raw_host_event = os.environ.get("TASKPLANE_HOST_SESSION_EVENT", "")
                 try:
-                    host_event = json.loads(raw_host_event) \
-                        if raw_host_event else None
+                    host_event = json.loads(raw_host_event) if raw_host_event else None
                 except json.JSONDecodeError:
                     host_event = None
-                out = loopmod.handle_host_input(
-                    ws, event, host_event=host_event)
+                out = loopmod.handle_host_input(ws, event, host_event=host_event)
     elif action == "terminal":
         out = loopmod.terminalize_run(ws, a.outcome, by=a.by)
     elif action == "status":
@@ -4149,8 +4948,8 @@ def cmd_loop(a) -> int:
                         "tier_routing",
                         "UNOBSERVED — no dispatches were verified against "
                         "the resolved model tiers; the cheap-tier cost "
-                        "saving is unproven for this run. " + (rep["note"]
-                                                               or ""))
+                        "saving is unproven for this run. " + (rep["note"] or ""),
+                    )
             except Exception:
                 pass
     elif action == "verify-dispatch":
@@ -4158,8 +4957,7 @@ def cmd_loop(a) -> int:
         print(json.dumps(rep, indent=2))
         return 1 if rep["mismatches"] else 0
     elif action == "command":
-        out = loopmod.governed_command(
-            ws, a.command_action, _governed_command_request(a))
+        out = loopmod.governed_command(ws, a.command_action, _governed_command_request(a))
     # R-0004 stage emitter (contract:wave-workflow): `loop wave` and
     # `loop next` are the STAGE dispatch surfaces — when the payload is a
     # stage dispatch (execute wave / evaluate / fix) and the workflow path
@@ -4169,8 +4967,7 @@ def cmd_loop(a) -> int:
     # and the only Codex path — R-0004's core promise).
     if isinstance(out, dict):
         saved_loop = loopmod.load(ws)
-        canonical = enforcement or _saved_enforcement(
-            (saved_loop or {}).get("enforcement"))
+        canonical = enforcement or _saved_enforcement((saved_loop or {}).get("enforcement"))
         if canonical:
             if out.get("schema") == "taskplane.stage-dispatch/v1":
                 out["obligations"].setdefault("enforcement", canonical)
@@ -4194,9 +4991,10 @@ def cmd_loop(a) -> int:
         try:
             out = loopmod.project_next_action_for_host(ws, out)
         except Exception as exc:
-            out = {"error": "loop next projection failed closed: "
-                            f"{exc.__class__.__name__}: {exc}",
-                   "step": out.get("step")}
+            out = {
+                "error": f"loop next projection failed closed: {exc.__class__.__name__}: {exc}",
+                "step": out.get("step"),
+            }
     print(json.dumps(out, indent=2))
     # An engine refusal ({"error": ...}) is a FAILURE: exit nonzero so a
     # scripted driver (`&&` chain, CI wrapper, Tag thread) can never mistake
@@ -4211,8 +5009,12 @@ def _governed_command_request(a) -> dict:
     def duration(value, *, setting: str, label: str) -> float:
         if value is None:
             value = _effective_settings_snapshot().limits.timeouts[setting]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
-                not math.isfinite(float(value)) or float(value) <= 0:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0
+        ):
             raise SettingsError(f"{label} must be finite positive seconds")
         return float(value)
 
@@ -4223,34 +5025,40 @@ def _governed_command_request(a) -> dict:
         if argv[:1] == ["--"]:
             argv = argv[1:]
         deadline_seconds = duration(
-            getattr(a, "deadline_seconds", None), setting="task_seconds",
-            label="governed command deadline")
-        request.update({
-            "argv": argv,
-            "cwd": getattr(a, "cwd", None),
-            "deadline": _time.time() + deadline_seconds,
-            "host": a.host,
-            "run_id": a.run_id,
-            "task_id": a.task_id,
-            "wave_id": getattr(a, "wave_id", None),
-        })
+            getattr(a, "deadline_seconds", None),
+            setting="task_seconds",
+            label="governed command deadline",
+        )
+        request.update(
+            {
+                "argv": argv,
+                "cwd": getattr(a, "cwd", None),
+                "deadline": _time.time() + deadline_seconds,
+                "host": a.host,
+                "run_id": a.run_id,
+                "task_id": a.task_id,
+                "wave_id": getattr(a, "wave_id", None),
+            }
+        )
     else:
         request["handle"] = a.handle
         if action == "wait":
-            request.update({
-                "consumer": a.consumer,
-                "timeout": duration(
-                    a.timeout, setting="wait_seconds",
-                    label="governed command wait"),
-            })
+            request.update(
+                {
+                    "consumer": a.consumer,
+                    "timeout": duration(
+                        a.timeout, setting="wait_seconds", label="governed command wait"
+                    ),
+                }
+            )
     return request
 
 
 def cmd_command(a) -> int:
     """Supported standalone durable command lifecycle surface."""
     out = governed_command_engine.execute(
-        _workspace(a.workspace), a.command_action,
-        _governed_command_request(a))
+        _workspace(a.workspace), a.command_action, _governed_command_request(a)
+    )
     print(json.dumps(out, indent=2))
     return 1 if isinstance(out, dict) and out.get("error") else 0
 
@@ -4258,16 +5066,17 @@ def cmd_command(a) -> int:
 def cmd_root_seed(a) -> int:
     """Prepare the bounded reference-only seed before a host root starts."""
     from taskplane import root_seed
+
     try:
         with open(a.request, encoding="utf-8") as handle:
             body = handle.read(root_seed.MAX_SEED_BYTES + 1)
         if len(body.encode("utf-8")) > root_seed.MAX_SEED_BYTES:
-            raise root_seed.RootSeedError(
-                "root seed request exceeds the 65536-byte bound")
+            raise root_seed.RootSeedError("root seed request exceeds the 65536-byte bound")
         request = json.loads(body)
         if not isinstance(request, dict) or set(request) != {"context", "inputs"}:
             raise root_seed.RootSeedError(
-                "root seed request must contain exactly context and inputs")
+                "root seed request must contain exactly context and inputs"
+            )
         if not isinstance(request["context"], dict):
             raise root_seed.RootSeedError("root seed context must be an object")
         settings_snapshot = _effective_settings_snapshot()
@@ -4276,24 +5085,27 @@ def cmd_root_seed(a) -> int:
             "settings": settings_snapshot,
         }
         receipt = root_seed.prepare_root_seed(
-            _workspace(a.workspace), a.output, context, request["inputs"])
-        persisted_seed = root_seed.load_root_seed(
-            _workspace(a.workspace), a.output)
+            _workspace(a.workspace), a.output, context, request["inputs"]
+        )
+        persisted_seed = root_seed.load_root_seed(_workspace(a.workspace), a.output)
         root_seed.verify_prepare_receipt(
-            persisted_seed, receipt, settings=settings_snapshot,
-            expected_seed_ref=a.output)
-    except (OSError, UnicodeError, json.JSONDecodeError,
-            root_seed.RootSeedError) as exc:
-        print(json.dumps({
-            "schema": root_seed.PREPARE_RECEIPT_SCHEMA,
-            "status": "refused",
-            "error": str(exc),
-        }, sort_keys=True, separators=(",", ":")))
+            persisted_seed, receipt, settings=settings_snapshot, expected_seed_ref=a.output
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, root_seed.RootSeedError) as exc:
+        print(
+            json.dumps(
+                {
+                    "schema": root_seed.PREPARE_RECEIPT_SCHEMA,
+                    "status": "refused",
+                    "error": str(exc),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         return 1
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
     return 0
-
-
 
 
 def cmd_preview(a) -> int:
@@ -4306,58 +5118,68 @@ def cmd_preview(a) -> int:
         request = preview_runtime.load_preview_request(a.request)
         out = preview_runtime.launch_preview_request(request)
     except preview_runtime.PreviewError as exc:
-        out = {"schema": "taskplane.working-preview-launch/v1",
-               "status": "unavailable",
-               "outcome": getattr(exc, "outcome", "unavailable"),
-               "error": str(exc)}
+        out = {
+            "schema": "taskplane.working-preview-launch/v1",
+            "status": "unavailable",
+            "outcome": getattr(exc, "outcome", "unavailable"),
+            "error": str(exc),
+        }
     except Exception as exc:
         # Isolation launchers and host-surface adapters are deliberately
         # external seams.  Their typed and untyped startup failures must both
         # remain data on the supported CLI boundary, never a traceback that
         # makes the preview command appear to have escaped governance.
-        out = {"schema": "taskplane.working-preview-launch/v1",
-               "status": "unavailable", "outcome": "unavailable",
-               "error": (f"preview host startup failed: "
-                         f"{exc.__class__.__name__}: {exc}")[:1024]}
+        out = {
+            "schema": "taskplane.working-preview-launch/v1",
+            "status": "unavailable",
+            "outcome": "unavailable",
+            "error": (f"preview host startup failed: {exc.__class__.__name__}: {exc}")[:1024],
+        }
     print(json.dumps(out, sort_keys=True, separators=(",", ":")))
-    return 0 if out.get("schema") == \
-        "taskplane.working-preview-launch/v1" and \
-        out.get("status") != "unavailable" else 1
+    return (
+        0
+        if out.get("schema") == "taskplane.working-preview-launch/v1"
+        and out.get("status") != "unavailable"
+        else 1
+    )
 
 
 def _add_governed_command_actions(parser, *, fn=None) -> None:
     actions = parser.add_subparsers(dest="command_action", required=True)
     launch = actions.add_parser(
-        "launch", help="launch direct argv through the durable command runtime")
-    launch.add_argument("--authorization", required=True,
-                        help="actor/session identity bound to the handle")
-    launch.add_argument("--run-id", required=True,
-                        help="canonical governed run identity")
-    launch.add_argument("--task-id", required=True,
-                        help="canonical governed task identity")
-    launch.add_argument("--host", choices=["claude", "codex"],
-                        default="codex", help="host adapter contract")
-    launch.add_argument("--cwd", default=None,
-                        help="command directory within the workspace")
-    launch.add_argument("--deadline-seconds", type=float, default=None,
-                        help="optional execution deadline from launch")
-    launch.add_argument("--wave-id", default=None,
-                        help="optional governed command-wave identity")
-    launch.add_argument("--workspace", default=argparse.SUPPRESS,
-                        help=_WS_HELP)
-    launch.add_argument("argv", nargs=argparse.REMAINDER,
-                        help="direct command argv after --")
+        "launch", help="launch direct argv through the durable command runtime"
+    )
+    launch.add_argument(
+        "--authorization", required=True, help="actor/session identity bound to the handle"
+    )
+    launch.add_argument("--run-id", required=True, help="canonical governed run identity")
+    launch.add_argument("--task-id", required=True, help="canonical governed task identity")
+    launch.add_argument(
+        "--host", choices=["claude", "codex"], default="codex", help="host adapter contract"
+    )
+    launch.add_argument("--cwd", default=None, help="command directory within the workspace")
+    launch.add_argument(
+        "--deadline-seconds",
+        type=float,
+        default=None,
+        help="optional execution deadline from launch",
+    )
+    launch.add_argument("--wave-id", default=None, help="optional governed command-wave identity")
+    launch.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    launch.add_argument("argv", nargs=argparse.REMAINDER, help="direct command argv after --")
     for action in ("wait", "reconnect", "show", "cancel"):
         child = actions.add_parser(action, help=f"{action} a durable command")
-        child.add_argument("--authorization", required=True,
-                           help="actor/session identity bound to the handle")
-        child.add_argument("--workspace", default=argparse.SUPPRESS,
-                           help=_WS_HELP)
+        child.add_argument(
+            "--authorization", required=True, help="actor/session identity bound to the handle"
+        )
+        child.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
         if action == "wait":
-            child.add_argument("--consumer", default="model",
-                               help="durable delivery receipt consumer")
-            child.add_argument("--timeout", type=float, default=None,
-                               help="single blocking wait timeout")
+            child.add_argument(
+                "--consumer", default="model", help="durable delivery receipt consumer"
+            )
+            child.add_argument(
+                "--timeout", type=float, default=None, help="single blocking wait timeout"
+            )
         child.add_argument("handle", help="opaque durable command handle")
     if fn is not None:
         parser.set_defaults(fn=fn)
@@ -4401,18 +5223,26 @@ def cmd_stage(a) -> int:
         print(json.dumps(error, indent=2))
         return 1
     import loop as loopmod
+
     if a.stage_action in {"read-input", "prepare-lenses", "collect-lenses"}:
         from taskplane import phase_harness
+
         try:
-            out = (phase_harness.read_input(loopmod, _workspace(a.workspace), request)
-                if a.stage_action == "read-input" else phase_harness.collect_lenses(
-                    loopmod, _workspace(a.workspace), request, prepare=a.stage_action == "prepare-lenses"))
+            out = (
+                phase_harness.read_input(loopmod, _workspace(a.workspace), request)
+                if a.stage_action == "read-input"
+                else phase_harness.collect_lenses(
+                    loopmod,
+                    _workspace(a.workspace),
+                    request,
+                    prepare=a.stage_action == "prepare-lenses",
+                )
+            )
         except (ValueError, OSError, KeyError) as exc:
             out = {"error": "phase input refused: " + str(exc)}
         print(json.dumps(out, sort_keys=True))
         return 1 if out.get("error") else 0
-    out = loopmod.stage_command(
-        _workspace(a.workspace), a.stage_action, request)
+    out = loopmod.stage_command(_workspace(a.workspace), a.stage_action, request)
     if not isinstance(out, dict):
         out = {"error": "stage runtime returned a non-object result"}
     print(json.dumps(out, indent=2))
@@ -4446,28 +5276,35 @@ def workflow_available(ws) -> dict:
     del ws  # detection is host-level, not workspace-level (reserved)
     env = os.environ
     if env.get("CODEX_HOME") or env.get("CODEX_THREAD_ID"):
-        return {"available": False, "definitive": True,
-                "reason": "codex host (CODEX_HOME/CODEX_THREAD_ID): "
-                          "no workflow runtime"}
+        return {
+            "available": False,
+            "definitive": True,
+            "reason": "codex host (CODEX_HOME/CODEX_THREAD_ID): no workflow runtime",
+        }
     toggle = (env.get("TASKPLANE_WORKFLOWS") or "").strip().lower()
     # EM v3: '0'-only matching silently ignored 'false'/'no'/'off' — an
     # operator writing any conventional falsey spelling MUST get the
     # kill-switch (fail toward disabled, the conservative side).
     if toggle in ("0", "false", "no", "off"):
-        return {"available": False, "definitive": True,
-                "reason": "disabled by TASKPLANE_WORKFLOWS="
-                          + (env.get("TASKPLANE_WORKFLOWS") or "0")}
+        return {
+            "available": False,
+            "definitive": True,
+            "reason": "disabled by TASKPLANE_WORKFLOWS=" + (env.get("TASKPLANE_WORKFLOWS") or "0"),
+        }
     if toggle in ("1", "true", "yes", "on"):
-        return {"available": True,
-                "reason": "explicit TASKPLANE_WORKFLOWS opt-in"}
+        return {"available": True, "reason": "explicit TASKPLANE_WORKFLOWS opt-in"}
     marker = (env.get("CLAUDE_CODE_WORKFLOWS") or "").strip().lower()
     if marker and marker not in ("0", "false", "no", "off"):
-        return {"available": True,
-                "reason": "claude workflow runtime marker "
-                          "(CLAUDE_CODE_WORKFLOWS)"}
-    return {"available": False, "definitive": False,
-            "reason": "no workflow runtime detected (conservative default "
-                      "— set TASKPLANE_WORKFLOWS=1 to opt in)"}
+        return {
+            "available": True,
+            "reason": "claude workflow runtime marker (CLAUDE_CODE_WORKFLOWS)",
+        }
+    return {
+        "available": False,
+        "definitive": False,
+        "reason": "no workflow runtime detected (conservative default "
+        "— set TASKPLANE_WORKFLOWS=1 to opt in)",
+    }
 
 
 def _emit_workflow_refusal(avail: dict) -> "str | None":
@@ -4483,10 +5320,13 @@ def _emit_workflow_refusal(avail: dict) -> "str | None":
     either way."""
     if avail["available"] or not avail.get("definitive"):
         return None
-    return ("--emit workflow refused: " + avail["reason"]
-            + ". This host cannot run plugin workflows — use the Task "
-              "path (--emit task, or the default auto): byte-identical "
-              "briefs, the only path on Codex.")
+    return (
+        "--emit workflow refused: "
+        + avail["reason"]
+        + ". This host cannot run plugin workflows — use the Task "
+        "path (--emit task, or the default auto): byte-identical "
+        "briefs, the only path on Codex."
+    )
 
 
 # --------------------------------------------------- stage emitter (R-0004)
@@ -4503,14 +5343,16 @@ def _emit_workflow_refusal(avail: dict) -> "str | None":
 # workflow_available() DIRECTLY: the single detector; nothing here may
 # parse the workflow environment itself.
 
-STAGE_WAVE_NAMES = {"execute": "execute-wave", "evaluate": "evaluate-wave",
-                    "fix": "fix-wave"}
+STAGE_WAVE_NAMES = {"execute": "execute-wave", "evaluate": "evaluate-wave", "fix": "fix-wave"}
 
 
 def _record_parallel_expectations(ws: str, payload: dict) -> None:
     """Register native identities once a parallel wave is actually emitted."""
-    if not isinstance(payload, dict) or payload.get("step") != "execute" \
-            or not payload.get("parallel"):
+    if (
+        not isinstance(payload, dict)
+        or payload.get("step") != "execute"
+        or not payload.get("parallel")
+    ):
         return
     for entry in payload.get("wave") or []:
         if not isinstance(entry, dict) or not isinstance(entry.get("task"), dict):
@@ -4519,15 +5361,20 @@ def _record_parallel_expectations(ws: str, payload: dict) -> None:
         if not task_id:
             continue
         tp.record_expected_dispatch(
-            ws, "step", entry.get("role", "tp-executor"),
-            entry.get("model_tier", "standard"), entry.get("model"),
-            ref=task_id, task_name=entry.get("task_name"),
+            ws,
+            "step",
+            entry.get("role", "tp-executor"),
+            entry.get("model_tier", "standard"),
+            entry.get("model"),
+            ref=task_id,
+            task_name=entry.get("task_name"),
             reasoning_effort=entry.get("reasoning_effort"),
             role_marker_value=entry.get("role_marker"),
-            intent_id=((entry.get("dispatch_intent") or {}).get(
-                "intent_id")),
-            intent_run_id=(((entry.get("dispatch_intent") or {}).get(
-                "identity") or {}).get("run_id")))
+            intent_id=((entry.get("dispatch_intent") or {}).get("intent_id")),
+            intent_run_id=(
+                ((entry.get("dispatch_intent") or {}).get("identity") or {}).get("run_id")
+            ),
+        )
 
 
 def _stage_activation(slot: str) -> str:
@@ -4551,10 +5398,12 @@ def _stage_activation(slot: str) -> str:
     ONE enforced charset (_valid_slot_id), so neither can carry a value
     the screener would refuse. ASCII only: this block is read, and
     retyped, in consoles whose default code page is not UTF-8."""
-    return (f"export TASKPLANE_TASK={slot}\n\n"
-            "Windows (cmd.exe): the POSIX line above will not run there - "
-            "use this equivalent activation for the SAME slot instead:\n"
-            f"set TASKPLANE_TASK={slot}\n")
+    return (
+        f"export TASKPLANE_TASK={slot}\n\n"
+        "Windows (cmd.exe): the POSIX line above will not run there - "
+        "use this equivalent activation for the SAME slot instead:\n"
+        f"set TASKPLANE_TASK={slot}\n"
+    )
 
 
 def _stage_agent_prompt(slot: str, instruction: str, entry: dict) -> str:
@@ -4568,8 +5417,7 @@ def _stage_agent_prompt(slot: str, instruction: str, entry: dict) -> str:
     protocol: workers submit evidence, only the orchestrator gates), and
     the task-path payload entry VERBATIM (json.dumps, indent=2 — the same
     serialization the Task path prints on stdout)."""
-    return (_stage_activation(slot) + f"\n{instruction}\n\n"
-            + json.dumps(entry, indent=2))
+    return _stage_activation(slot) + f"\n{instruction}\n\n" + json.dumps(entry, indent=2)
 
 
 def _valid_slot_id(tid) -> bool:
@@ -4594,16 +5442,19 @@ def _entry_problem(entry, i: int) -> "dict | None":
     task = entry.get("task") if isinstance(entry, dict) else None
     tid = task.get("id") if isinstance(task, dict) else None
     if not tid or not isinstance(tid, str):
-        return {"path": "task",
-                "reason": "malformed wave entry — fail-open to task path: "
-                          f"entry {i} has no task.id"}
+        return {
+            "path": "task",
+            "reason": f"malformed wave entry — fail-open to task path: entry {i} has no task.id",
+        }
     if not _valid_slot_id(tid):
-        return {"path": "refused",
-                "reason": f"invalid task id {tid!r} (entry {i}): a stage "
-                          "brief embeds `export TASKPLANE_TASK=<id>`, so "
-                          "the id must match the enforced slot charset "
-                          + tp._TASK_SLOT_RE.pattern
-                          + " — emission refused, nothing composed"}
+        return {
+            "path": "refused",
+            "reason": f"invalid task id {tid!r} (entry {i}): a stage "
+            "brief embeds `export TASKPLANE_TASK=<id>`, so "
+            "the id must match the enforced slot charset "
+            + tp._TASK_SLOT_RE.pattern
+            + " — emission refused, nothing composed",
+        }
     return None
 
 
@@ -4631,18 +5482,27 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
     if step == "execute" and payload.get("parallel") and "wave" in payload:
         entries = payload.get("wave") or []
         if not entries:
-            return None                      # nothing to dispatch this wave
-        for i, e in enumerate(entries):      # validate ALL before composing
+            return None  # nothing to dispatch this wave
+        for i, e in enumerate(entries):  # validate ALL before composing
             problem = _entry_problem(e, i)
             if problem is not None:
                 return "execute", None, problem
-        briefs = [{"id": e["task"]["id"], "worktree": e.get("worktree"),
-                   "prompt": _stage_agent_prompt(e["task"]["id"],
-                                                 instruction, e)}
-                  for e in entries]
-        return ("execute", {"name": "execute-wave",
-                            "args": {"briefs": briefs,
-                                     "settings_digest": settings_digest}}, None)
+        briefs = [
+            {
+                "id": e["task"]["id"],
+                "worktree": e.get("worktree"),
+                "prompt": _stage_agent_prompt(e["task"]["id"], instruction, e),
+            }
+            for e in entries
+        ]
+        return (
+            "execute",
+            {
+                "name": "execute-wave",
+                "args": {"briefs": briefs, "settings_digest": settings_digest},
+            },
+            None,
+        )
     if step in STAGE_WAVE_NAMES and "task" in payload:
         # same validation on the single-task step shapes (A6/E5): a
         # payload CARRYING a task that is malformed degrades to the Task
@@ -4655,18 +5515,24 @@ def _stage_wave_run(payload) -> "tuple[str, dict | None, dict | None] | None":
         # Dispatch briefs are CROSS-HOST artifacts — the parity goldens
         # compare them byte for byte between Claude and Codex — so a host
         # separator must never reach one.
-        brief = {"id": tid,
-                 "worktree": tp.to_posix(_wt) if _wt else _wt,
-                 "prompt": _stage_agent_prompt(tid, instruction, payload)}
+        brief = {
+            "id": tid,
+            "worktree": tp.to_posix(_wt) if _wt else _wt,
+            "prompt": _stage_agent_prompt(tid, instruction, payload),
+        }
         if step == "evaluate":
-            for field in ("output_contract", "output_schema",
-                          "resume_identity", "max_attempts"):
+            for field in ("output_contract", "output_schema", "resume_identity", "max_attempts"):
                 if field in payload:
                     brief[field] = payload[field]
         key = "verdicts" if step == "fix" else "briefs"
-        return (step, {"name": STAGE_WAVE_NAMES[step],
-                       "args": {key: [brief],
-                                "settings_digest": settings_digest}}, None)
+        return (
+            step,
+            {
+                "name": STAGE_WAVE_NAMES[step],
+                "args": {key: [brief], "settings_digest": settings_digest},
+            },
+            None,
+        )
     return None
 
 
@@ -4719,8 +5585,14 @@ def _emit_stage(ws, payload, emit: str):
     stage, workflow, problem = run
     if problem is not None and problem["path"] != "refused":
         # A6: malformed entry → degrade to the Task path (fail open).
-        tp.trace(ws, "stage_dispatch_path", stage=stage,
-                 path=problem["path"], reason=problem["reason"], emit=emit)
+        tp.trace(
+            ws,
+            "stage_dispatch_path",
+            stage=stage,
+            path=problem["path"],
+            reason=problem["reason"],
+            emit=emit,
+        )
         return None
     avail = workflow_available(ws)
     if emit == "workflow":
@@ -4729,13 +5601,15 @@ def _emit_stage(ws, payload, emit: str):
             # C3: explicit --emit workflow on a definitively workflow-less
             # host (Codex, kill-switch) — refuse with the named remedy
             # instead of force-printing an uninvokable payload.
-            tp.trace(ws, "stage_dispatch_path", stage=stage, path="refused",
-                     reason=refusal, emit=emit)
+            tp.trace(
+                ws, "stage_dispatch_path", stage=stage, path="refused", reason=refusal, emit=emit
+            )
             print("taskplane: " + refusal, file=sys.stderr)
             return _STAGE_REFUSED
         path = "workflow"
         reason = "explicit --emit workflow" + (
-            "" if avail["available"] else f" (forced: {avail['reason']})")
+            "" if avail["available"] else f" (forced: {avail['reason']})"
+        )
     elif emit == "task":
         path, reason = "task", "explicit --emit task"
     else:
@@ -4746,17 +5620,28 @@ def _emit_stage(ws, payload, emit: str):
         # on the Task rail degrade instead — the id is never interpolated
         # there, and the mandatory fallback must stay reachable.
         if path == "workflow":
-            tp.trace(ws, "stage_dispatch_path", stage=stage, path="refused",
-                     reason=problem["reason"], emit=emit)
+            tp.trace(
+                ws,
+                "stage_dispatch_path",
+                stage=stage,
+                path="refused",
+                reason=problem["reason"],
+                emit=emit,
+            )
             print("taskplane: " + problem["reason"], file=sys.stderr)
             return _STAGE_REFUSED
-        tp.trace(ws, "stage_dispatch_path", stage=stage, path="task",
-                 reason=problem["reason"] + " — Task path unaffected (no "
-                 "shell line is composed there); fix the id in "
-                 "plan/tasks.json before the next plan gate", emit=emit)
+        tp.trace(
+            ws,
+            "stage_dispatch_path",
+            stage=stage,
+            path="task",
+            reason=problem["reason"] + " — Task path unaffected (no "
+            "shell line is composed there); fix the id in "
+            "plan/tasks.json before the next plan gate",
+            emit=emit,
+        )
         return None
-    tp.trace(ws, "stage_dispatch_path", stage=stage, path=path,
-             reason=reason, emit=emit)
+    tp.trace(ws, "stage_dispatch_path", stage=stage, path=path, reason=reason, emit=emit)
     if path != "workflow":
         return None
     out = dict(payload)
@@ -4774,6 +5659,7 @@ def _lane_landed(ws: str, lid: str) -> bool:
     is done. A findings.json that is unreadable counts as NOT landed — a
     corrupt lane must be re-run, never silently accepted as complete."""
     import storage as runtime_storage
+
     p = runtime_storage.lane_findings_path(ws, lid)
     if not os.path.isfile(p):
         return False
@@ -4782,8 +5668,6 @@ def _lane_landed(ws: str, lid: str) -> bool:
             return isinstance(json.load(f).get("findings"), list)
     except (OSError, ValueError, AttributeError):
         return False
-
-
 
 
 _REVIEW_FINDINGS_SCHEMA = {
@@ -4797,13 +5681,11 @@ _REVIEW_FINDINGS_SCHEMA = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["severity", "class", "file", "line", "title",
-                             "scenario", "fix"],
+                "required": ["severity", "class", "file", "line", "title", "scenario", "fix"],
                 "properties": {
                     "lens": {"type": "string"},
                     "severity": {"enum": ["high", "med", "low"]},
-                    "class": {"enum": ["regression", "pre-existing",
-                                         "observation"]},
+                    "class": {"enum": ["regression", "pre-existing", "observation"]},
                     "file": {"type": "string"},
                     "line": {"type": "integer", "minimum": 1},
                     "title": {"type": "string"},
@@ -4817,8 +5699,6 @@ _REVIEW_FINDINGS_SCHEMA = {
 }
 
 
-
-
 def cmd_lens(a) -> int:
     """Route / list / show / dispatch lenses."""
     ws = _workspace(a.workspace)
@@ -4827,6 +5707,7 @@ def cmd_lens(a) -> int:
     if action == "collect":
         import review
         import review_evidence
+
         request, error = _stage_command_request(a.request)
         try:
             out = error or review.collect_lens_plan(review_evidence.ArtifactStore(ws), request)
@@ -4845,6 +5726,7 @@ def cmd_lens(a) -> int:
     if action == "dispatch":
         try:
             import loop as loopmod
+
             active_loop = loopmod.load(ws)
         except Exception as exc:
             print(
@@ -4855,8 +5737,7 @@ def cmd_lens(a) -> int:
                 file=sys.stderr,
             )
             return 1
-        if isinstance(active_loop, dict) and active_loop.get("step") not in \
-                loopmod.TERMINAL_STEPS:
+        if isinstance(active_loop, dict) and active_loop.get("step") not in loopmod.TERMINAL_STEPS:
             print(
                 "taskplane: standalone lens dispatch refused while a "
                 "governed delivery run is active at step="
@@ -4915,19 +5796,30 @@ def cmd_lens(a) -> int:
     stage = None if getattr(a, "breadth_all", False) else "review"
     breadth = "all" if getattr(a, "breadth_all", False) else "routed"
     if getattr(a, "artifact_type", None):
-        routing = lensmod.route([], artifact_type=a.artifact_type,
-                                only=(a.only.split(",") if a.only else None),
-                                skip=(a.skip.split(",") if a.skip else None),
-                                breadth=breadth, stage=stage, workspace=ws)
+        routing = lensmod.route(
+            [],
+            artifact_type=a.artifact_type,
+            only=(a.only.split(",") if a.only else None),
+            skip=(a.skip.split(",") if a.skip else None),
+            breadth=breadth,
+            stage=stage,
+            workspace=ws,
+        )
     else:
-        routing = lensmod.route_git_diff(ws, base=a.base, task_type=a.task_type,
-                                         only=(a.only.split(",") if a.only else None),
-                                         skip=(a.skip.split(",") if a.skip else None),
-                                         breadth=breadth, stage=stage)
+        routing = lensmod.route_git_diff(
+            ws,
+            base=a.base,
+            task_type=a.task_type,
+            only=(a.only.split(",") if a.only else None),
+            skip=(a.skip.split(",") if a.skip else None),
+            breadth=breadth,
+            stage=stage,
+        )
 
     if action == "dispatch":
         import review
         import review_evidence
+
         # Standalone CLI is a thin adapter to the same phase/kernel protocol.
         code, patch = review.canonical_diff_patch(ws, a.base)
         if code:
@@ -4937,19 +5829,49 @@ def cmd_lens(a) -> int:
             if row.get("tier") not in {"n/a", "sweep", "light"}:
                 row["tier"] = row["verdict"] = "sweep"
         store = review_evidence.ArtifactStore(ws)
-        target = {"head": tp.git_head(ws), "base": a.base,
-            "fingerprint": review_evidence.content_fingerprint({"base": a.base, "patch": patch})}
-        envelope = review_evidence.create_envelope(store, target=target,
+        target = {
+            "head": tp.git_head(ws),
+            "base": a.base,
+            "fingerprint": review_evidence.content_fingerprint({"base": a.base, "patch": patch}),
+        }
+        envelope = review_evidence.create_envelope(
+            store,
+            target=target,
             diff={"files": routing.get("context", {}).get("files", []), "patch": patch},
-            impact={}, graph_quality={}, runnability={}, requirement={}, acceptance=[], contracts=[])
-        plan = review.prepare_lens_plan(store, envelope, routing, phase="review",
-            binding={"candidate_fingerprint": target["fingerprint"]})
-        bound = loopmod._bind_stateless_review_contract_actions(ws,
-            {"status": "ready", "run_id": plan["fingerprint"][:32],
-             "slots": store.read(plan)["dispatch"]}, task_id="standalone-review")
-        print(json.dumps({"plan": plan, "dispatch": bound["slots"],
-            "wait_invocation": bound.get("wait_invocation"),
-            "collect": "tp lens collect --request <file containing this exact plan reference>"}, indent=2))
+            impact={},
+            graph_quality={},
+            runnability={},
+            requirement={},
+            acceptance=[],
+            contracts=[],
+        )
+        plan = review.prepare_lens_plan(
+            store,
+            envelope,
+            routing,
+            phase="review",
+            binding={"candidate_fingerprint": target["fingerprint"]},
+        )
+        bound = loopmod._bind_stateless_review_contract_actions(
+            ws,
+            {
+                "status": "ready",
+                "run_id": plan["fingerprint"][:32],
+                "slots": store.read(plan)["dispatch"],
+            },
+            task_id="standalone-review",
+        )
+        print(
+            json.dumps(
+                {
+                    "plan": plan,
+                    "dispatch": bound["slots"],
+                    "wait_invocation": bound.get("wait_invocation"),
+                    "collect": "tp lens collect --request <file containing this exact plan reference>",
+                },
+                indent=2,
+            )
+        )
         return 0
 
     if a.json:
@@ -4968,152 +5890,198 @@ def cmd_yield(a) -> int:
     than by taste.
     """
     import yield_meter
+
     ws = _workspace(a.workspace)
     if a.yield_action == "mark":
         res = yield_meter.record_disposition(
-            ws, a.finding, a.verdict, by=getattr(a, "by", None) or None,
-            note=getattr(a, "note", "") or "")
-        print(json.dumps(res, indent=2) if a.json
-              else (res.get("error") or
-                    f"{res['verdict']}: {res['recorded']}"))
+            ws,
+            a.finding,
+            a.verdict,
+            by=getattr(a, "by", None) or None,
+            note=getattr(a, "note", "") or "",
+        )
+        print(
+            json.dumps(res, indent=2)
+            if a.json
+            else (res.get("error") or f"{res['verdict']}: {res['recorded']}")
+        )
         return 1 if res.get("error") else 0
     rep = yield_meter.report(ws)
-    print(json.dumps(rep, indent=2, sort_keys=True) if a.json
-          else yield_meter.render(rep))
+    print(json.dumps(rep, indent=2, sort_keys=True) if a.json else yield_meter.render(rep))
     return 0
 
 
 def cmd_kb(a) -> int:
     """Record / retrieve / list knowledge-base decisions."""
     import kb as kbmod
+
     ws = _workspace(a.workspace)
     if a.kb_action == "record":
         e = kbmod.record_decision(
-            ws, a.title, context=a.context or "", decision=a.decision or "",
+            ws,
+            a.title,
+            context=a.context or "",
+            decision=a.decision or "",
             rationale=a.rationale or "",
             tags=(a.tags.split(",") if a.tags else None),
-            context_files=(a.files.split(",") if a.files else None))
+            context_files=(a.files.split(",") if a.files else None),
+        )
         print(json.dumps({"recorded": e["id"], "file": e["file"]}, indent=2))
     elif a.kb_action == "retrieve":
-        ds = kbmod.retrieve(ws, files=(a.files.split(",") if a.files else None),
-                            tags=(a.tags.split(",") if a.tags else None),
-                            limit=a.limit)
+        ds = kbmod.retrieve(
+            ws,
+            files=(a.files.split(",") if a.files else None),
+            tags=(a.tags.split(",") if a.tags else None),
+            limit=a.limit,
+        )
         print(kbmod.render_context(ds) or "no relevant decisions.")
     elif a.kb_action == "lint":
         problems = kbmod.lint(ws)
         if problems:
-            print("kb lint: FAIL — prompt data / oversized fields in the "
-                  "committed store:")
+            print("kb lint: FAIL — prompt data / oversized fields in the committed store:")
             for p in problems:
                 print(f"  ✗ {p['file']}: {p['problem']}")
             return 1
         print("kb lint: clean — committed store is decision data only.")
     elif a.kb_action == "list":
         for d in kbmod.list_decisions(ws):
-            print(f"[{d['id']}] {d['status']:<10} {d['title']}  "
-                  f"tags={','.join(d['tags']) or '—'}")
+            print(f"[{d['id']}] {d['status']:<10} {d['title']}  tags={','.join(d['tags']) or '—'}")
     elif a.kb_action == "where":
         store = tp.store_root(ws)
-        print(json.dumps({"store": store, "knowledge": tp.kb_root(ws),
-                          "meta": tp.store_meta_path(ws)}, indent=2))
+        print(
+            json.dumps(
+                {"store": store, "knowledge": tp.kb_root(ws), "meta": tp.store_meta_path(ws)},
+                indent=2,
+            )
+        )
     return 0
 
 
 def cmd_req(a) -> int:
     """Requirements — record, score refinement, suggest mode, track debt."""
     import requirements as req
+
     ws = _workspace(a.workspace)
     if a.req_action == "new":
         try:
             nfr = dict(kv.split("=", 1) for kv in (a.nfr or []))
         except ValueError:
             bad = [kv for kv in (a.nfr or []) if "=" not in kv]
-            print(f"taskplane: --nfr expects LENS=STATEMENT; missing '=' in "
-                  f"{bad}", file=sys.stderr)
+            print(f"taskplane: --nfr expects LENS=STATEMENT; missing '=' in {bad}", file=sys.stderr)
             return 1
         contracts = []
-        for raw in (getattr(a, "contract", None) or []):
+        for raw in getattr(a, "contract", None) or []:
             if ":" not in raw:
-                print("taskplane: --contract expects "
-                      "provides|consumes|changes:CONTRACT", file=sys.stderr)
+                print(
+                    "taskplane: --contract expects provides|consumes|changes:CONTRACT",
+                    file=sys.stderr,
+                )
                 return 1
             relation, cid = raw.split(":", 1)
             relation = relation.strip().lower()
             cid = cid.strip()
             if relation not in ("provides", "consumes", "changes") or not cid:
-                print("taskplane: --contract expects "
-                      "provides|consumes|changes:CONTRACT", file=sys.stderr)
+                print(
+                    "taskplane: --contract expects provides|consumes|changes:CONTRACT",
+                    file=sys.stderr,
+                )
                 return 1
-            node = cid if cid.startswith(("contract:", "resource:")) \
-                else "contract:" + cid
+            node = cid if cid.startswith(("contract:", "resource:")) else "contract:" + cid
             contracts.append({"relation": relation, "id": node})
         deps = list(a.depends or [])
         if a.changed_from:
             deps.append(a.changed_from)
         e = req.record_requirement(
-            ws, a.title,
+            ws,
+            a.title,
             functional=(a.functional or None),
             nfr=nfr,
             acceptance=(a.acceptance or None),
             open_questions=(a.open or None),
             tags=(a.tags.split(",") if a.tags else None),
             context_files=(a.files.split(",") if a.files else None),
-            changed_from=a.changed_from, depends_on=deps,
-            contracts=contracts)
+            changed_from=a.changed_from,
+            depends_on=deps,
+            contracts=contracts,
+        )
         # Product dependencies land in the graph immediately — a change
         # request also gets a depends edge to its origin requirement.
         if deps or contracts:
             import depgraph as dg
+
             for d in deps:
                 dg.link_requirement_dep(ws, e["id"], d)
             for contract in contracts:
-                dg.record_edge(ws, dg.req_node(e["id"]), contract["id"],
-                               kind=contract["relation"], confidence="high")
-        print(json.dumps({"recorded": e["id"], "status": e["status"],
-                          "depends": deps or None,
-                          "contracts": contracts or None,
-                          "file": req.requirement_file(ws, e),
-                          "store_file": e["file"],
-                          "next": f"tp req amend {e['id']} <fields>"},
-                         indent=2))
+                dg.record_edge(
+                    ws,
+                    dg.req_node(e["id"]),
+                    contract["id"],
+                    kind=contract["relation"],
+                    confidence="high",
+                )
+        print(
+            json.dumps(
+                {
+                    "recorded": e["id"],
+                    "status": e["status"],
+                    "depends": deps or None,
+                    "contracts": contracts or None,
+                    "file": req.requirement_file(ws, e),
+                    "store_file": e["file"],
+                    "next": f"tp req amend {e['id']} <fields>",
+                },
+                indent=2,
+            )
+        )
     elif a.req_action == "amend":
         try:
-            nfr = (dict(kv.split("=", 1) for kv in (a.nfr or []))
-                   if a.nfr is not None else None)
+            nfr = dict(kv.split("=", 1) for kv in (a.nfr or [])) if a.nfr is not None else None
         except ValueError:
             print("taskplane: --nfr expects LENS=STATEMENT", file=sys.stderr)
             return 1
         try:
             e = req.amend_requirement(
-                ws, a.id,
+                ws,
+                a.id,
                 functional=a.functional,
                 nfr=nfr,
                 acceptance=a.acceptance,
                 open_questions=a.open,
                 clear_open=bool(a.clear_open),
-                context_files=(a.files.split(",")
-                               if a.files is not None else None))
+                context_files=(a.files.split(",") if a.files is not None else None),
+            )
         except req.ProductSignoffError as exc:
             print(f"taskplane: {exc}", file=sys.stderr)
             return 1
-        print(json.dumps({"amended": e["id"], "status": e["status"],
-                          "file": req.requirement_file(ws, e),
-                          "store_file": e["file"]}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "amended": e["id"],
+                    "status": e["status"],
+                    "file": req.requirement_file(ws, e),
+                    "store_file": e["file"],
+                },
+                indent=2,
+            )
+        )
     elif a.req_action == "score":
         r = req.get_requirement(ws, a.id)
         if r is None:
             print(f"taskplane: no requirement {a.id}", file=sys.stderr)
             return 1
         files = a.files.split(",") if a.files else None
-        g = req.gate(r, threshold=a.threshold, high_cost=a.high_cost,
-                     changed_files=files, task_type=a.task_type)
+        g = req.gate(
+            r,
+            threshold=a.threshold,
+            high_cost=a.high_cost,
+            changed_files=files,
+            task_type=a.task_type,
+        )
         print(json.dumps(g, indent=2))
         return 1 if g["blocking"] else 0
     elif a.req_action == "signoff":
         try:
-            result = req.product_signoff(
-                ws, a.id, decision=a.decision, by=a.by,
-                note=a.note or "")
+            result = req.product_signoff(ws, a.id, decision=a.decision, by=a.by, note=a.note or "")
         except req.ProductSignoffError as exc:
             print(f"taskplane: {exc}", file=sys.stderr)
             return 1
@@ -5122,20 +6090,22 @@ def cmd_req(a) -> int:
         m = req.suggest_mode(a.refinement, a.size)
         print(json.dumps(m, indent=2))
     elif a.req_action == "debt":
-        e = req.record_debt(ws, a.title, requirement_id=a.req,
-                            reason=a.reason or "", follow_up=a.follow_up or "",
-                            tags=(a.tags.split(",") if a.tags else None),
-                            context_files=(a.files.split(",") if a.files
-                                           else None))
+        e = req.record_debt(
+            ws,
+            a.title,
+            requirement_id=a.req,
+            reason=a.reason or "",
+            follow_up=a.follow_up or "",
+            tags=(a.tags.split(",") if a.tags else None),
+            context_files=(a.files.split(",") if a.files else None),
+        )
         print(json.dumps({"recorded": e["id"], "file": e["file"]}, indent=2))
     elif a.req_action == "list":
         for r in req.list_requirements(ws):
-            oq = f" ({len(r['open_questions'])} open Q)" if r.get(
-                "open_questions") else ""
+            oq = f" ({len(r['open_questions'])} open Q)" if r.get("open_questions") else ""
             print(f"[{r['id']}] {r['status']:<10} {r['title']}{oq}")
         for d in req.list_debt(ws):
-            print(f"[{d['id']}] debt/open   {d['title']} "
-                  f"→ {d.get('requirement_id') or '—'}")
+            print(f"[{d['id']}] debt/open   {d['title']} → {d.get('requirement_id') or '—'}")
     return 0
 
 
@@ -5220,7 +6190,7 @@ def _ensure_excluded(ws, entries, header) -> list:
                     f.write("\n# " + header + "\n" + "\n".join(missing) + "\n")
                 return missing
             except OSError:
-                pass          # unwritable .git — fall through to .gitignore
+                pass  # unwritable .git — fall through to .gitignore
         else:
             return missing
     return _ensure_gitignored(ws, entries, header)
@@ -5241,8 +6211,6 @@ def _ensure_gitignored(ws, entries, header) -> list:
     return missing
 
 
-
-
 def cmd_share(a) -> int:
     """v1.5.0 — plan-aware knowledge sharing.
 
@@ -5252,32 +6220,39 @@ def cmd_share(a) -> int:
     share push [--ids 0001,0002]     publish private decisions to the
                                      shared repo store — like a git push"""
     import kb as kbmod
+
     ws = _workspace(a.workspace)
     act = a.share_cmd
     if act == "status":
         mode = tp.get_mode(ws)
         unpublished = unpub_flows = 0
         try:
-            with open(os.path.join(tp.external_store_root(ws),
-                                   "knowledge", "index.json"), encoding="utf-8") as f:
+            with open(
+                os.path.join(tp.external_store_root(ws), "knowledge", "index.json"),
+                encoding="utf-8",
+            ) as f:
                 pidx = json.load(f)
-            unpublished = sum(1 for d in pidx.get("decisions", [])
-                              if not d.get("published_as"))
-            unpub_flows = sum(1 for d in pidx.get("flows", [])
-                              if not d.get("published_as"))
+            unpublished = sum(1 for d in pidx.get("decisions", []) if not d.get("published_as"))
+            unpub_flows = sum(1 for d in pidx.get("flows", []) if not d.get("published_as"))
         except (OSError, ValueError):
             pass
-        print(json.dumps({**mode, "store_path": tp.store_root(ws),
-                          "private_decisions_unpublished": unpublished,
-                          "private_flows_unpublished": unpub_flows,
-                          "not_covered_by_push": "requirements + context "
-                          "docs (stay private)",
-                          "change": {"plan": "tp share plan "
-                                     "personal|team|enterprise",
-                                     "privacy": "tp share set "
-                                     "private|shared",
-                                     "publish": "tp share push "
-                                     "[--ids 0001,0002]"}}, indent=2))
+        print(
+            json.dumps(
+                {
+                    **mode,
+                    "store_path": tp.store_root(ws),
+                    "private_decisions_unpublished": unpublished,
+                    "private_flows_unpublished": unpub_flows,
+                    "not_covered_by_push": "requirements + context docs (stay private)",
+                    "change": {
+                        "plan": "tp share plan personal|team|enterprise",
+                        "privacy": "tp share set private|shared",
+                        "publish": "tp share push [--ids 0001,0002]",
+                    },
+                },
+                indent=2,
+            )
+        )
     elif act == "plan":
         mode = tp.set_mode(ws, plan=a.value)
         out = {**mode, "store_path": tp.store_root(ws)}
@@ -5285,59 +6260,77 @@ def cmd_share(a) -> int:
             # Plan says personal but a committed shared config keeps the store
             # in-repo — so decisions still land in the team store. Make the
             # mismatch explicit rather than silently surprising. (v1.5.2)
-            out["notice"] = ("plan is personal, but this repo has a committed "
-                             "shared store (.taskplane-kb/config.json) so "
-                             "knowledge still goes to the team. To work "
-                             "privately here, run `tp share set private`.")
+            out["notice"] = (
+                "plan is personal, but this repo has a committed "
+                "shared store (.taskplane-kb/config.json) so "
+                "knowledge still goes to the team. To work "
+                "privately here, run `tp share set private`."
+            )
         print(json.dumps(out, indent=2))
     elif act == "set":
-        want_private = (a.value == "private")
+        want_private = a.value == "private"
         if want_private and tp.store_env() == "repo":
             # v1.5.1 (B2): inside Claude Tag the env mandates the repo
             # store and the private store cannot survive the ephemeral
             # sandbox — a silent "private" flag that still writes to the
             # committed store is the worst outcome. Refuse loudly.
-            print(json.dumps({"error": "private mode is unavailable here: "
-                              "TASKPLANE_STORE=repo forces the shared "
-                              "in-repo store (Claude Tag sandbox — the "
-                              "private store would not survive it). Work "
-                              "privately from Claude Code/Cowork instead."}))
+            print(
+                json.dumps(
+                    {
+                        "error": "private mode is unavailable here: "
+                        "TASKPLANE_STORE=repo forces the shared "
+                        "in-repo store (Claude Tag sandbox — the "
+                        "private store would not survive it). Work "
+                        "privately from Claude Code/Cowork instead."
+                    }
+                )
+            )
             return 1
         mode = tp.set_mode(ws, private=want_private)
         if not want_private and mode["store"] != "repo":
             # v1.5.1: "set shared" with no shared store configured was a
             # silent no-op — the user asked to share, nothing changed.
-            print(json.dumps({**mode, "store_path": tp.store_root(ws),
-                              "error": "no shared store is configured — "
-                              "sharing needs a team/enterprise plan. Run "
-                              "`tp share plan team|enterprise` first."},
-                             indent=2))
+            print(
+                json.dumps(
+                    {
+                        **mode,
+                        "store_path": tp.store_root(ws),
+                        "error": "no shared store is configured — "
+                        "sharing needs a team/enterprise plan. Run "
+                        "`tp share plan team|enterprise` first.",
+                    },
+                    indent=2,
+                )
+            )
             return 1
-        print(json.dumps({**mode, "store_path": tp.store_root(ws)},
-                         indent=2))
+        print(json.dumps({**mode, "store_path": tp.store_root(ws)}, indent=2))
     elif act == "push":
         # Guard: publishing only makes sense to a team store. On a personal
         # plan with no committed shared config, push would silently create a
         # .taskplane-kb no teammate will ever see — same failure `set shared`
         # now rejects. (v1.5.2)
         mode = tp.get_mode(ws)
-        shared_cfg = os.path.exists(os.path.join(
-            tp.repo_store_root(ws), "config.json"))
+        shared_cfg = os.path.exists(os.path.join(tp.repo_store_root(ws), "config.json"))
         if mode["plan"] not in ("team", "enterprise") and not shared_cfg:
-            print(json.dumps({"error": "nothing to publish to — sharing "
-                              "needs a team/enterprise plan. Run `tp share "
-                              "plan team|enterprise` first.",
-                              "plan": mode["plan"]}, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "error": "nothing to publish to — sharing "
+                        "needs a team/enterprise plan. Run `tp share "
+                        "plan team|enterprise` first.",
+                        "plan": mode["plan"],
+                    },
+                    indent=2,
+                )
+            )
             return 1
-        ids = [x.strip() for x in (a.ids or "").split(",")
-               if x.strip()] or None
+        ids = [x.strip() for x in (a.ids or "").split(",") if x.strip()] or None
         out = kbmod.publish(ws, ids=ids)
         print(json.dumps(out, indent=2))
         if out.get("error") or out.get("unknown_ids"):
             return 1
     else:
-        print(json.dumps({"error": "share needs a subcommand: status | "
-                          "plan | set | push"}))
+        print(json.dumps({"error": "share needs a subcommand: status | plan | set | push"}))
         return 1
     return 0
 
@@ -5346,6 +6339,7 @@ def cmd_init(a) -> int:
     """Scaffold a project for governed work: context docs, KB dirs, graph.
     Knowledge is created only in the explicitly selected project store."""
     import depgraph as dg
+
     ws = _workspace(a.workspace)
     # v1.5.1 (B3): the plan decides WHERE the store lives — record it
     # BEFORE anything resolves store paths, or context docs land in the
@@ -5357,10 +6351,12 @@ def cmd_init(a) -> int:
     ctx = os.path.join(tp.kb_root(ws), "context")
     os.makedirs(ctx, exist_ok=True)
     wrote = []
-    for name, body in (("product.md", PRODUCT_MD),
-                       ("tech-stack.md", TECH_MD),
-                       ("workflow.md", WORKFLOW_MD),
-                       ("current-state.md", CURRENT_STATE_MD)):
+    for name, body in (
+        ("product.md", PRODUCT_MD),
+        ("tech-stack.md", TECH_MD),
+        ("workflow.md", WORKFLOW_MD),
+        ("current-state.md", CURRENT_STATE_MD),
+    ):
         p = os.path.join(ctx, name)
         if not os.path.exists(p):
             with open(p, "w", encoding="utf-8") as f:
@@ -5368,55 +6364,64 @@ def cmd_init(a) -> int:
             wrote.append(f"context/{name}")
     # Runtime paths that stay LOCAL to the checkout — never committed.
     missing = _ensure_excluded(
-        ws, [".taskplane/", ".eval/", ".em-review/", ".security-review/",
-             ".tp-work/"],
-        "taskplane runtime (local-only — see docs/state-spec.md)")
+        ws,
+        [".taskplane/", ".eval/", ".em-review/", ".security-review/", ".tp-work/"],
+        "taskplane runtime (local-only — see docs/state-spec.md)",
+    )
     g = dg.scan(ws)
     head = tp.git_head(ws)
     if head and not _is_commit_sha(head):
-        head = None    # empty repo: rev-parse echoes "HEAD"
+        head = None  # empty repo: rev-parse echoes "HEAD"
     mode = tp.get_mode(ws)
-    tp.trace(ws, "project_init", context_docs=wrote,
-             graph_modules=len(g["modules"]), store=store)
-    print(json.dumps({
-        "knowledge_store": store,
-        "mode": mode,
-        "plan_question": None if (mode["source"] != "default") else
-            "ASK THE HUMAN: keep taskplane knowledge private/local, or "
-            "share it with the team in the repository? Set private/local "
-            "with `tp share plan personal`; set shared with `tp share plan "
-            "team|enterprise`. Private keeps knowledge in the selected "
-            "ignored store (.taskplane/ by default); shared uses .taskplane-kb/. "
-            "On a team plan, `tp share set private` works privately and "
-            "`tp share push` publishes selected decisions later.",
-        "context_docs_created": wrote or "(already present)",
-        "graph": {"modules": len(g["modules"]), "edges": len(g["edges"])},
-        "gitignored_runtime": missing or "(already present)",
-        "committed_state": (
-            "PRIVATE — the knowledge base stays in the selected ignored store "
-            "(.taskplane/ by default)" if mode["store"] == "external"
-            else "SHARED — the knowledge base lives in-repo (.taskplane-kb/) "
-                 "and is committed with the code (team/enterprise plan)"),
-        "git": head[:12] if head else
-               (os.path.isdir(os.path.join(ws, ".git")) and
-                "REPO HAS NO COMMITS — `git add -A && git commit` "
-                "(gates need a snapshot)" or
-                "NOT A REPO — `git init && git add -A && git commit` "
-                "(gates need a snapshot)"),
-        "next": "fill the context docs in the store, then state a goal via "
+    tp.trace(ws, "project_init", context_docs=wrote, graph_modules=len(g["modules"]), store=store)
+    print(
+        json.dumps(
+            {
+                "knowledge_store": store,
+                "mode": mode,
+                "plan_question": None
+                if (mode["source"] != "default")
+                else "ASK THE HUMAN: keep taskplane knowledge private/local, or "
+                "share it with the team in the repository? Set private/local "
+                "with `tp share plan personal`; set shared with `tp share plan "
+                "team|enterprise`. Private keeps knowledge in the selected "
+                "ignored store (.taskplane/ by default); shared uses .taskplane-kb/. "
+                "On a team plan, `tp share set private` works privately and "
+                "`tp share push` publishes selected decisions later.",
+                "context_docs_created": wrote or "(already present)",
+                "graph": {"modules": len(g["modules"]), "edges": len(g["edges"])},
+                "gitignored_runtime": missing or "(already present)",
+                "committed_state": (
+                    "PRIVATE — the knowledge base stays in the selected ignored store "
+                    "(.taskplane/ by default)"
+                    if mode["store"] == "external"
+                    else "SHARED — the knowledge base lives in-repo (.taskplane-kb/) "
+                    "and is committed with the code (team/enterprise plan)"
+                ),
+                "git": head[:12]
+                if head
+                else (
+                    os.path.isdir(os.path.join(ws, ".git"))
+                    and "REPO HAS NO COMMITS — `git add -A && git commit` (gates need a snapshot)"
+                    or "NOT A REPO — `git init && git add -A && git commit` (gates need a snapshot)"
+                ),
+                "next": "fill the context docs in the store, then state a goal via "
                 "the tp-go skill (or `tp.py req new` + `tp.py loop init`)",
-    }, indent=2))
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
 def cmd_track(a) -> int:
     """Multiple workstreams over one engine; shared KB/graph across tracks."""
     import track as tr
+
     ws = _workspace(a.workspace)
     out = None
     if a.track_action == "new":
-        out = tr.new(ws, a.name, " ".join(a.goal or []) or a.name,
-                     requirement_id=a.req)
+        out = tr.new(ws, a.name, " ".join(a.goal or []) or a.name, requirement_id=a.req)
     elif a.track_action == "list":
         out = tr.list_(ws)
     elif a.track_action == "switch":
@@ -5438,8 +6443,7 @@ def cmd_host_native_check(a) -> int:
     """
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     script = os.path.join(root, "hooks", "host_native_runtime.py")
-    namespace = runpy.run_path(
-        script, run_name="taskplane_host_native_runtime")
+    namespace = runpy.run_path(script, run_name="taskplane_host_native_runtime")
     entrypoint = namespace.get("_main")
     if not callable(entrypoint):
         raise RuntimeError("host-native runtime has no entrypoint")
@@ -5453,18 +6457,23 @@ def cmd_context(a) -> int:
     import loop as loopmod
     import requirements as reqmod
     import track as tr
+
     ws = _workspace(a.workspace)
-    print('[taskplane] On the first TaskPlane request in this session, and '
-          'after installation or update, run onboard and present its setup '
-          'dashboard before routing any intent (including review, status, '
-          'and help). Existing repository context is not completed onboarding. '
-          'Keep the requested goal and continue it when setup is ready. '
-          'Internal stage workers consume their sealed startup without '
-          'repeating this user-entry setup.')
+    print(
+        "[taskplane] On the first TaskPlane request in this session, and "
+        "after installation or update, run onboard and present its setup "
+        "dashboard before routing any intent (including review, status, "
+        "and help). Existing repository context is not completed onboarding. "
+        "Keep the requested goal and continue it when setup is ready. "
+        "Internal stage workers consume their sealed startup without "
+        "repeating this user-entry setup."
+    )
     lifecycle_released = []
     terminal_recovery = None
-    if ((os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
-            "native", "bridge"} and not getattr(a, "context_replay", False)):
+    if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
+        "native",
+        "bridge",
+    } and not getattr(a, "context_replay", False):
         # A new/resumed host session is a safe recovery point only for slots
         # the durable loop already proves completed.  Live/current workers
         # remain untouched; terminal or stage-advanced slots are moved to the
@@ -5476,15 +6485,16 @@ def cmd_context(a) -> int:
             event = {}
         try:
             lifecycle_released = tp.sweep_completed_worker_contracts(
-                ws, loop_state=loopmod.load(ws))
+                ws, loop_state=loopmod.load(ws)
+            )
         except Exception as exc:
-            tp.trace(ws, "worker_contract_session_sweep_failed",
-                     error=f"{type(exc).__name__}: {exc}")
+            tp.trace(
+                ws, "worker_contract_session_sweep_failed", error=f"{type(exc).__name__}: {exc}"
+            )
         # SessionStart is a replay point, never a source of terminal truth.
         # With no exact persisted whole-run intent this is a strict no-op.
         terminal_recovery = loopmod.replay_terminal_intent(ws)
-    if not os.path.isdir(tp.kb_root(ws)) and \
-            not os.path.isdir(tp.tp_dir(ws)):
+    if not os.path.isdir(tp.kb_root(ws)) and not os.path.isdir(tp.tp_dir(ws)):
         # An installed plugin must expose its on-ramp. Using the same report
         # as tp-go also recognizes linked worktrees (.git is a file) and
         # keeps the prompt specific to the single missing prerequisite.
@@ -5495,33 +6505,37 @@ def cmd_context(a) -> int:
             "tp_init": "this repo needs taskplane initialization",
         }
         missing = prompts.get(report["next_action"], "setup is incomplete")
-        print(f"[taskplane] installed; {missing} — say \"set up taskplane\" "
-              "to continue, or \"taskplane help\" for the tour.")
+        print(
+            f'[taskplane] installed; {missing} — say "set up taskplane" '
+            'to continue, or "taskplane help" for the tour.'
+        )
         return 0
     st = loopmod.status(ws)
     g = dg.load(ws)
-    reqs_open = [r for r in reqmod.list_requirements(ws)
-                 if r["status"] not in ("done",)]
+    reqs_open = [r for r in reqmod.list_requirements(ws) if r["status"] not in ("done",)]
     debt = reqmod.list_debt(ws)
     trk = tr.list_(ws)
     lines = ["[taskplane] governed workspace:"]
     if lifecycle_released:
-        lines.append("  lifecycle: quarantined "
-                     f"{len(lifecycle_released)} completed worker "
-                     "contract(s)")
+        lines.append(
+            f"  lifecycle: quarantined {len(lifecycle_released)} completed worker contract(s)"
+        )
     if terminal_recovery is not None:
         lines.append(
-            "  terminal recovery: " +
-            ("blocked — " + str(terminal_recovery.get("error"))
-             if terminal_recovery.get("error") else
-             "replayed exact persisted " + str(
-                 terminal_recovery.get("outcome")) + " intent"))
+            "  terminal recovery: "
+            + (
+                "blocked — " + str(terminal_recovery.get("error"))
+                if terminal_recovery.get("error")
+                else "replayed exact persisted " + str(terminal_recovery.get("outcome")) + " intent"
+            )
+        )
     if trk["active"]:
-        lines.append(f"  track: {trk['active']} "
-                     f"({len(trk['tracks'])} total)")
+        lines.append(f"  track: {trk['active']} ({len(trk['tracks'])} total)")
     if st.get("loop") != "none":
-        lines.append(f"  loop: step={st['step']} goal={json.dumps(st['goal'][:4096])} "
-                     f"tasks={len(st.get('tasks') or [])}")
+        lines.append(
+            f"  loop: step={st['step']} goal={json.dumps(st['goal'][:4096])} "
+            f"tasks={len(st.get('tasks') or [])}"
+        )
         # Restore a bounded pointer to the durable scope. A resumed root
         # must ask the engine for its current dispatch, not reconstruct an
         # approved plan or authority from its predecessor's conversation.
@@ -5532,31 +6546,44 @@ def cmd_context(a) -> int:
             lines.append(f"  requirement: {saved['requirement_id']}")
         if saved.get("spec_path"):
             lines.append(f"  specification: {json.dumps(saved['spec_path'])}")
-        lines.append("  Read saved scope with the workspace launcher: loop resume. "
-                     "Then loop next revalidates authority and pending work; "
-                     "session context grants no new approval.")
+        lines.append(
+            "  Read saved scope with the workspace launcher: loop resume. "
+            "Then loop next revalidates authority and pending work; "
+            "session context grants no new approval."
+        )
     if reqs_open:
-        lines.append(f"  requirements open: {len(reqs_open)} "
-                     f"(latest {reqs_open[-1]['id']} {reqs_open[-1]['title'][:40]})")
+        lines.append(
+            f"  requirements open: {len(reqs_open)} "
+            f"(latest {reqs_open[-1]['id']} {reqs_open[-1]['title'][:40]})"
+        )
     if debt:
         lines.append(f"  tracked debt: {len(debt)} open item(s)")
     if g["modules"]:
-        lines.append(f"  dep graph: {len(g['modules'])} components / "
-                     f"{len(g['edges'])} edges (tp.py graph impact for "
-                     "blast radius)")
+        lines.append(
+            f"  dep graph: {len(g['modules'])} components / "
+            f"{len(g['edges'])} edges (tp.py graph impact for "
+            "blast radius)"
+        )
     ds = kbmod.list_decisions(ws)
     if ds:
-        lines.append(f"  KB: {len(ds)} decision(s) — recall before "
-                     "re-deriving anything")
+        lines.append(f"  KB: {len(ds)} decision(s) — recall before re-deriving anything")
     if len(lines) > 1:
         print("\n".join(lines))
     return 0
 
 
-_HOOK_COMMANDS = frozenset({
-    "screen", "screen-skill", "screen-dispatch", "screen-render", "context",
-    "subagent-start", "subagent-stop", "session-verify",
-})
+_HOOK_COMMANDS = frozenset(
+    {
+        "screen",
+        "screen-skill",
+        "screen-dispatch",
+        "screen-render",
+        "context",
+        "subagent-start",
+        "subagent-stop",
+        "session-verify",
+    }
+)
 
 
 def _hook_response_class(command: str, output: str, returncode: int) -> str:
@@ -5581,8 +6608,7 @@ def _hook_response_class(command: str, output: str, returncode: int) -> str:
         return "advisory"
     hook_output = payload.get("hookSpecificOutput")
     hook_output = hook_output if isinstance(hook_output, dict) else {}
-    if payload.get("decision") == "block" or \
-            hook_output.get("permissionDecision") == "deny":
+    if payload.get("decision") == "block" or hook_output.get("permissionDecision") == "deny":
         return "block"
     if "additionalContext" in hook_output:
         return "context"
@@ -5596,20 +6622,27 @@ def _hook_response_class(command: str, output: str, returncode: int) -> str:
 def _replay_hook_response(command: str, response_class: str) -> int:
     """Replay protocol semantics without replaying a hook's side effects."""
     if response_class in {"block", "error"}:
-        reason = ("taskplane already processed this lifecycle event; the "
-                  "first blocking decision remains authoritative.")
+        reason = (
+            "taskplane already processed this lifecycle event; the "
+            "first blocking decision remains authoritative."
+        )
         event_name = {
             "subagent-stop": "SubagentStop",
             "session-verify": "Stop",
         }.get(command, "PreToolUse")
-        print(json.dumps({
-            "decision": "block", "reason": reason,
-            "hookSpecificOutput": {
-                "hookEventName": event_name,
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            },
-        }))
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": reason,
+                    "hookSpecificOutput": {
+                        "hookEventName": event_name,
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    },
+                }
+            )
+        )
         return 2 if command in {"subagent-stop", "session-verify"} else 0
     if response_class == "allow":
         if command == "screen":
@@ -5618,20 +6651,33 @@ def _replay_hook_response(command: str, response_class: str) -> int:
             print("{}")
         return 0
     if response_class == "context":
-        event_name = ("SubagentStart" if command == "subagent-start"
-                      else "SessionStart")
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": event_name,
-            "additionalContext": ("[taskplane] This lifecycle event was "
-                                  "already processed by the other installed "
-                                  "hook path."),
-        }}))
+        event_name = "SubagentStart" if command == "subagent-start" else "SessionStart"
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": event_name,
+                        "additionalContext": (
+                            "[taskplane] This lifecycle event was "
+                            "already processed by the other installed "
+                            "hook path."
+                        ),
+                    }
+                }
+            )
+        )
         return 0
     if response_class == "advisory":
-        print(json.dumps({
-            "systemMessage": ("taskplane already processed this lifecycle "
-                              "event through the other installed hook path.")
-        }))
+        print(
+            json.dumps(
+                {
+                    "systemMessage": (
+                        "taskplane already processed this lifecycle "
+                        "event through the other installed hook path."
+                    )
+                }
+            )
+        )
     return 0
 
 
@@ -5639,11 +6685,13 @@ def _invoke_run_command(a, workspace: str) -> int:
     # Scope discovery and exact historical configuration restoration stay
     # reachable even when the saved configuration is absent or corrupt.
     if a.cmd in {"context", "summary", "status", "contracts"} or (
-            a.cmd == "loop" and getattr(a, "loop_action", None) in {
-                "archive", "resume", "status", "restore-settings"}):
+        a.cmd == "loop"
+        and getattr(a, "loop_action", None) in {"archive", "resume", "status", "restore-settings"}
+    ):
         return a.fn(a)
     from taskplane import run_context, run_store, settings
     import loop as loopmod
+
     if a.cmd == "loop" and getattr(a, "loop_action", None) == "next":
         observed = loopmod.read_pending_action(workspace)
         if observed is not None:
@@ -5654,18 +6702,30 @@ def _invoke_run_command(a, workspace: str) -> int:
     try:
         state = None
         if a.cmd not in {"repository", "onboard"} and not (
-                a.cmd == "loop" and getattr(a, "loop_action", None) == "init"):
+            a.cmd == "loop" and getattr(a, "loop_action", None) == "init"
+        ):
             state = loopmod._load_raw(workspace)
         with run_context.bind(workspace, state):
-            _set_effective_settings_snapshot(settings.load_settings(environment=os.environ, workspace=workspace))
+            _set_effective_settings_snapshot(
+                settings.load_settings(environment=os.environ, workspace=workspace)
+            )
             return a.fn(a)
-    except (run_context.RunContextError, run_store.RunStoreError,
-            settings.SettingsError, ValueError) as exc:
-        code = ("unsupported_run_schema" if isinstance(exc, run_store.UnsupportedRunSchemaError)
-                else "invalid_run_settings" if isinstance(exc, (run_context.RunContextError, settings.SettingsError))
-                else "invalid_run")
-        print(json.dumps({"error": str(exc), "code": code,
-                          "dispatch_allowed": False}, sort_keys=True))
+    except (
+        run_context.RunContextError,
+        run_store.RunStoreError,
+        settings.SettingsError,
+        ValueError,
+    ) as exc:
+        code = (
+            "unsupported_run_schema"
+            if isinstance(exc, run_store.UnsupportedRunSchemaError)
+            else "invalid_run_settings"
+            if isinstance(exc, (run_context.RunContextError, settings.SettingsError))
+            else "invalid_run"
+        )
+        print(
+            json.dumps({"error": str(exc), "code": code, "dispatch_allowed": False}, sort_keys=True)
+        )
         print(f"taskplane: {code}: {exc}", file=sys.stderr)
         return 1
 
@@ -5673,14 +6733,17 @@ def _invoke_run_command(a, workspace: str) -> int:
 def _run_hook_command(a) -> int:
     """Claim native/bridge hook events once, execute once, replay by class."""
     # Schema/help discovery is independent of workspace or run storage.
-    if a.cmd in {"help", "version"} or (a.cmd == "target" and
-            getattr(a, "target_action", None) == "tools"):
+    if a.cmd in {"help", "version"} or (
+        a.cmd == "target" and getattr(a, "target_action", None) == "tools"
+    ):
         from taskplane.settings import load_settings
+
         _set_effective_settings_snapshot(load_settings(environment=os.environ))
         return a.fn(a)
     hook_path = (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower()
-    if a.cmd not in _HOOK_COMMANDS or (a.cmd in {"context", "host-native-check"}
-            and hook_path not in {"native", "bridge"}):
+    if a.cmd not in _HOOK_COMMANDS or (
+        a.cmd in {"context", "host-native-check"} and hook_path not in {"native", "bridge"}
+    ):
         workspace = _workspace(getattr(a, "workspace", None))
         if a.cmd == "onboard":
             try:
@@ -5691,12 +6754,14 @@ def _run_hook_command(a) -> int:
                     selection = "project"
                 if selection == "project":
                     a.storage_selection = runtime_storage.select_project_execution_storage(
-                        workspace, environment=os.environ)
+                        workspace, environment=os.environ
+                    )
             except (OSError, ValueError, TypeError, runtime_storage.StorageIdentityError) as exc:
                 a.setup_error = str(exc)
                 return cmd_onboard(a)
-        if a.cmd == "onboard" or (a.cmd == "repository" and
-                getattr(a, "repository_action", None) == "prepare"):
+        if a.cmd == "onboard" or (
+            a.cmd == "repository" and getattr(a, "repository_action", None) == "prepare"
+        ):
             try:
                 runtime_storage.load_workspace_locator(workspace)
             except runtime_storage.StorageIdentityError:
@@ -5718,12 +6783,13 @@ def _run_hook_command(a) -> int:
         event = {}
     if a.cmd in {"subagent-start", "subagent-stop"}:
         import codex_identity
+
         event = codex_identity.normalize_lifecycle(event)
         raw = json.dumps(event, separators=(",", ":"))
     event_cwd = event.get("cwd")
     workspace = _workspace(
-        event_cwd if isinstance(event_cwd, str) and event_cwd
-        else getattr(a, "workspace", None))
+        event_cwd if isinstance(event_cwd, str) and event_cwd else getattr(a, "workspace", None)
+    )
     a.workspace = workspace
     if hook_path not in {"native", "bridge"}:
         # Direct hook invocations still belong to the event's checkout.
@@ -5736,17 +6802,20 @@ def _run_hook_command(a) -> int:
         finally:
             sys.stdin = original_stdin
     receipt_home = runtime_storage.bind_hook_taskplane_home(
-        workspace, os.environ, hook_path=hook_path)
-    claim = tp.claim_hook_event(
-        workspace, a.cmd, event, hook_path=hook_path)
+        workspace, os.environ, hook_path=hook_path
+    )
+    claim = tp.claim_hook_event(workspace, a.cmd, event, hook_path=hook_path)
     if claim.get("claim_id"):
         host_caps.record_runtime_hook_receipt(
-            receipt_home, hook_path=hook_path, event=event, claim=claim)
-    context_replay = (not claim.get("execute") and a.cmd == "context"
-                      and claim.get("response_class") in {"context", "empty"})
+            receipt_home, hook_path=hook_path, event=event, claim=claim
+        )
+    context_replay = (
+        not claim.get("execute")
+        and a.cmd == "context"
+        and claim.get("response_class") in {"context", "empty"}
+    )
     if not claim.get("execute") and not context_replay:
-        return _replay_hook_response(
-            a.cmd, str(claim.get("response_class") or "block"))
+        return _replay_hook_response(a.cmd, str(claim.get("response_class") or "block"))
     a.context_replay = context_replay
 
     if a.cmd in {"subagent-start", "subagent-stop"}:
@@ -5775,13 +6844,20 @@ def _run_hook_command(a) -> int:
         except (ValueError, TypeError):
             payload = None
         if not isinstance(payload, dict):
-            output = json.dumps({"hookSpecificOutput": {
-                "hookEventName": "SessionStart", "additionalContext": output.strip(),
-            }}) + "\n"
+            output = (
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "SessionStart",
+                            "additionalContext": output.strip(),
+                        }
+                    }
+                )
+                + "\n"
+            )
     response_class = _hook_response_class(a.cmd, output, int(returncode or 0))
     if not context_replay:
-        tp.complete_hook_event(
-            workspace, claim, response_class=response_class)
+        tp.complete_hook_event(workspace, claim, response_class=response_class)
     sys.stdout.write(output)
     return int(returncode or 0)
 
@@ -5789,6 +6865,7 @@ def _run_hook_command(a) -> int:
 def cmd_summary(a) -> int:
     """User control-plane view: outcome, progress, and decisions only."""
     import loop as loopmod
+
     ws = _workspace(a.workspace)
     summary = loopmod.user_summary(ws)
     if getattr(a, "json", False):
@@ -5800,8 +6877,7 @@ def cmd_summary(a) -> int:
         # The ACTION REQUIRED line below carries the decision sentence ONCE;
         # printing it inside the headline too diluted the four-line surface
         # whose whole job is to say the one thing needed.
-        headline = (headline.replace(decision, "").strip(" —–-–:.")
-                    or "Decision required")
+        headline = headline.replace(decision, "").strip(" —–-–:.") or "Decision required"
     print("taskplane: " + headline)
     if summary.get("next") and summary.get("state") in ("not_started", "done"):
         print("  next: " + summary["next"])
@@ -5813,8 +6889,7 @@ def cmd_summary(a) -> int:
         print("  no action required — agents are working under the harness")
     graph = summary.get("graph") or {}
     if graph.get("modules"):
-        print(f"  dependency graph: {graph['modules']} nodes / "
-              f"{graph['edges']} edges")
+        print(f"  dependency graph: {graph['modules']} nodes / {graph['edges']} edges")
     if summary.get("assurance"):
         print("  assurance: " + summary["assurance"])
     return 0
@@ -5843,10 +6918,9 @@ def _contracts_elsewhere(ws: str, limit: int = 4) -> list:
         if owner == here or not os.path.isdir(owner):
             continue
         active = os.path.join(owner, ".taskplane", "active")
-        has = (os.path.isfile(os.path.join(owner, ".taskplane",
-                                           "active_contract.json"))
-               or (os.path.isdir(active)
-                   and any(n.endswith(".json") for n in os.listdir(active))))
+        has = os.path.isfile(os.path.join(owner, ".taskplane", "active_contract.json")) or (
+            os.path.isdir(active) and any(n.endswith(".json") for n in os.listdir(active))
+        )
         if has:
             out.append(owner)
         if len(out) >= limit:
@@ -5872,38 +6946,62 @@ def cmd_ack(a) -> int:
     a success.
     """
     import obligations
+
     ws = _workspace(a.workspace)
     if getattr(a, "status", False):
         st = obligations.status(ws)
-        print(json.dumps({
-            "issued": st["issued"], "acknowledged": st["acknowledged"],
-            "open": [{"id": o["id"], "kind": o["kind"], "step": o.get("step"),
-                      "detail": o.get("detail")} for o in st["open"]],
-            "mismatched": [{"id": o["id"], "kind": o["kind"],
+        print(
+            json.dumps(
+                {
+                    "issued": st["issued"],
+                    "acknowledged": st["acknowledged"],
+                    "open": [
+                        {
+                            "id": o["id"],
+                            "kind": o["kind"],
+                            "step": o.get("step"),
+                            "detail": o.get("detail"),
+                        }
+                        for o in st["open"]
+                    ],
+                    "mismatched": [
+                        {
+                            "id": o["id"],
+                            "kind": o["kind"],
                             "expected_fingerprint": o.get("fingerprint"),
-                            "cited": o.get("cited")}
-                           for o in st["mismatched"]],
-            "observed": st["observed"],
-            "corroborated": [o["id"] for o in st["corroborated"]],
-            "claimed_only": [{"id": o["id"], "kind": o["kind"]}
-                             for o in st["claimed_only"]],
-            "substituted": [{"tool": r.get("tool"), "title": r.get("title"),
-                             "fingerprint": r.get("fingerprint"),
-                             "bytes": r.get("bytes")}
-                            for r in st["substituted"]],
-            "unparseable": st["unparseable"],
-            "note": "issued = the engine's demand; acknowledged = the "
+                            "cited": o.get("cited"),
+                        }
+                        for o in st["mismatched"]
+                    ],
+                    "observed": st["observed"],
+                    "corroborated": [o["id"] for o in st["corroborated"]],
+                    "claimed_only": [
+                        {"id": o["id"], "kind": o["kind"]} for o in st["claimed_only"]
+                    ],
+                    "substituted": [
+                        {
+                            "tool": r.get("tool"),
+                            "title": r.get("title"),
+                            "fingerprint": r.get("fingerprint"),
+                            "bytes": r.get("bytes"),
+                        }
+                        for r in st["substituted"]
+                    ],
+                    "unparseable": st["unparseable"],
+                    "note": "issued = the engine's demand; acknowledged = the "
                     "assistant's CLAIM; observed = the render tool actually "
                     "running, seen at the PreToolUse hook. `substituted` is a "
                     "render whose bytes are not the artifact the engine "
                     "built; `claimed_only` is an ack with no observation "
                     "behind it. An observation is a fact about a tool call, "
                     "never proof that a human looked.",
-        }, indent=2))
+                },
+                indent=2,
+            )
+        )
         return 0
     if not getattr(a, "id", None):
-        print("taskplane: ack needs an obligation id (or --status)",
-              file=sys.stderr)
+        print("taskplane: ack needs an obligation id (or --status)", file=sys.stderr)
         return 1
     # AN ACK MUST NAME AN OBLIGATION THIS WORKSPACE ISSUED (v2.11.0).
     #
@@ -5915,18 +7013,20 @@ def cmd_ack(a) -> int:
     # then reported `issued: 0`, which reads as "nothing owed" rather than
     # "you are in the wrong workspace". A governance command that succeeds
     # at nothing and says OK is worse than one that fails.
-    issued = {row.get("id"): row for row in obligations.read(ws)
-              if row.get("event") == "issued"}
+    issued = {row.get("id"): row for row in obligations.read(ws) if row.get("event") == "issued"}
     if a.id not in issued:
-        msg = (f"taskplane: no obligation '{a.id}' was issued in this "
-               f"workspace ({ws}) — refusing to acknowledge it.")
+        msg = (
+            f"taskplane: no obligation '{a.id}' was issued in this "
+            f"workspace ({ws}) — refusing to acknowledge it."
+        )
         if not issued:
-            msg += (" This workspace has no obligation ledger at all, which "
-                    "usually means the working directory is not the one the "
-                    "run was started in.")
+            msg += (
+                " This workspace has no obligation ledger at all, which "
+                "usually means the working directory is not the one the "
+                "run was started in."
+            )
         else:
-            msg += (" Obligations issued here: "
-                    + ", ".join(sorted(issued)) + ".")
+            msg += " Obligations issued here: " + ", ".join(sorted(issued)) + "."
         msg += " Re-run with `--workspace <the run's checkout>`."
         print(msg, file=sys.stderr)
         return 1
@@ -5935,25 +7035,34 @@ def cmd_ack(a) -> int:
         art = issued[a.id].get("artifact")
         if art:
             fp = obligations.artifact_fingerprint(
-                os.path.join(ws, art) if not os.path.isabs(art) else art)
+                os.path.join(ws, art) if not os.path.isabs(art) else art
+            )
     delivered = getattr(a, "delivered", None)
     try:
         if delivered:
             import hashlib
+
             path = delivered if os.path.isabs(delivered) else os.path.join(ws, delivered)
             with open(path, "rb") as stream:
                 body = stream.read()
             fp = hashlib.sha256(body).hexdigest()[:16]
-            obligations.observe(ws, tool="delivered_file", fingerprint=fp,
-                                title=os.path.basename(path), bytes_len=len(body),
-                                strict=True)
-        obligations.acknowledge(ws, a.id, evidence=getattr(a, "evidence", "") or "",
-                               fingerprint=fp)
+            obligations.observe(
+                ws,
+                tool="delivered_file",
+                fingerprint=fp,
+                title=os.path.basename(path),
+                bytes_len=len(body),
+                strict=True,
+            )
+        obligations.acknowledge(ws, a.id, evidence=getattr(a, "evidence", "") or "", fingerprint=fp)
     except (OSError, tp.StateError) as exc:
-        print(f"taskplane: acknowledgment {a.id} was not saved: {exc}. "
-              f"Ledger: {obligations.ledger_path(ws)}. Check artifact access "
-              "and authorize writes to this exact store through the host, "
-              "then retry and verify with `tp ack --status`.", file=sys.stderr)
+        print(
+            f"taskplane: acknowledgment {a.id} was not saved: {exc}. "
+            f"Ledger: {obligations.ledger_path(ws)}. Check artifact access "
+            "and authorize writes to this exact store through the host, "
+            "then retry and verify with `tp ack --status`.",
+            file=sys.stderr,
+        )
         return 1
     print(f"acknowledged {a.id}" + (f" ({fp})" if fp else ""))
     return 0
@@ -5964,24 +7073,30 @@ def cmd_dashboard(a) -> int:
     for mcp__visualize__show_widget (the driver pipes it straight in).
     --out also writes a standalone HTML file (no-desktop fallback)."""
     import dashboard
+
     ws = _workspace(a.workspace)
     report = dashboard.report_widget(ws)
     if a.out:
-        doc = dashboard.standalone_document(
-            [report], title="taskplane — mission control")
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".",
-                    exist_ok=True)
+        doc = dashboard.standalone_document([report], title="taskplane — mission control")
+        os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
         with open(a.out, "w", encoding="utf-8", newline="") as f:
             f.write(doc)
     # v1.5.3: headline first (never-skippable), then the widget / pages.
     print("HEADLINE: " + dashboard.headline_loop(ws))
     if getattr(a, "paged", False):
         pages = dashboard.widget_paged(ws)
-        print(json.dumps({"headline": dashboard.headline_loop(ws),
-                          "pages": pages,
-                          "render": "call mcp__visualize__show_widget once "
-                          "PER PAGE, in order, each page's html VERBATIM — "
-                          "no edits, no restyling, no re-authoring"}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "headline": dashboard.headline_loop(ws),
+                    "pages": pages,
+                    "render": "call mcp__visualize__show_widget once "
+                    "PER PAGE, in order, each page's html VERBATIM — "
+                    "no edits, no restyling, no re-authoring",
+                },
+                indent=2,
+            )
+        )
         return 0
     print(report)
     return 0
@@ -6002,32 +7117,40 @@ def _write_review_html(ws: str, name: str, fragments, *, title: str) -> dict:
         stream.write(body)
     os.replace(tmp, path)
     fragment_path = os.path.splitext(path)[0] + ".fragment.html"
-    fragment_body = ('<style>' + dashboard.inline_review_style() + '</style>'
-                     '<div class="tp-inline-review" '
-                     'id="tp-inline-review-root">' +
-                     "\n".join(fragments) + '</div>')
+    fragment_body = (
+        "<style>" + dashboard.inline_review_style() + "</style>"
+        '<div class="tp-inline-review" '
+        'id="tp-inline-review-root">' + "\n".join(fragments) + "</div>"
+    )
     fragment_tmp = f"{fragment_path}.tmp.{os.getpid()}"
     with open(fragment_tmp, "w", encoding="utf-8", newline="") as stream:
         stream.write(fragment_body)
     os.replace(fragment_tmp, fragment_path)
     raw = body.encode("utf-8")
     relative = os.path.relpath(path, ws)
-    display_path = (relative.replace(os.sep, "/")
-                    if relative != ".." and not relative.startswith(
-                        ".." + os.sep) else path)
+    display_path = (
+        relative.replace(os.sep, "/")
+        if relative != ".." and not relative.startswith(".." + os.sep)
+        else path
+    )
     fragment_relative = os.path.relpath(fragment_path, ws)
-    fragment_display = (fragment_relative.replace(os.sep, "/")
-                        if fragment_relative != ".." and not
-                        fragment_relative.startswith(".." + os.sep)
-                        else fragment_path)
+    fragment_display = (
+        fragment_relative.replace(os.sep, "/")
+        if fragment_relative != ".." and not fragment_relative.startswith(".." + os.sep)
+        else fragment_path
+    )
     fragment_raw = fragment_body.encode("utf-8")
     return {
         "path": display_path,
-        "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
-        "inline": {"path": fragment_display, "bytes": len(fragment_raw),
-                   "sha256": hashlib.sha256(fragment_raw).hexdigest()},
+        "bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "inline": {
+            "path": fragment_display,
+            "bytes": len(fragment_raw),
+            "sha256": hashlib.sha256(fragment_raw).hexdigest(),
+        },
         "delivery": "render inline from inline.path using the host widget; "
-                    "use path only as a fallback if inline rendering fails",
+        "use path only as a fallback if inline rendering fails",
     }
 
 
@@ -6035,24 +7158,39 @@ def _bind_review_visual_obligation(ws: str, kind: str, artifact: str) -> dict:
     """Bind a seeded Review obligation to the bytes now on disk."""
     import obligations
 
-    seeded = next((row for row in reversed(obligations.read(ws))
-                   if row.get("event") == "issued"
-                   and row.get("kind") == kind
-                   and row.get("step") == "review"), None)
-    detail = ("deliver the taskPlane lens workflow/dashboard by reference"
-              if kind == "render_dashboard" else
-              "deliver the taskPlane dependency/blast-radius graph by reference")
+    seeded = next(
+        (
+            row
+            for row in reversed(obligations.read(ws))
+            if row.get("event") == "issued"
+            and row.get("kind") == kind
+            and row.get("step") == "review"
+        ),
+        None,
+    )
+    detail = (
+        "deliver the taskPlane lens workflow/dashboard by reference"
+        if kind == "render_dashboard"
+        else "deliver the taskPlane dependency/blast-radius graph by reference"
+    )
     oid = obligations.issue(
-        ws, kind, detail=detail, step="review", artifact=artifact,
-        key=f"review:{kind}", session=(seeded or {}).get("session"),
-        binding=True)
+        ws,
+        kind,
+        detail=detail,
+        step="review",
+        artifact=artifact,
+        key=f"review:{kind}",
+        session=(seeded or {}).get("session"),
+        binding=True,
+    )
     root = os.path.realpath(ws)
     resolved = os.path.realpath(artifact)
-    display_path = (os.path.relpath(resolved, root).replace(os.sep, "/")
-                    if os.path.commonpath((root, resolved)) == root
-                    else resolved)
-    return {"kind": kind, "id": oid,
-            "path": display_path}
+    display_path = (
+        os.path.relpath(resolved, root).replace(os.sep, "/")
+        if os.path.commonpath((root, resolved)) == root
+        else resolved
+    )
+    return {"kind": kind, "id": oid, "path": display_path}
 
 
 def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list]:
@@ -6086,70 +7224,85 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
         lids = list(slot.get("lens_ids") or [])
         result_path = str(slot.get("result_path") or "")
         result_exists = bool(result_path) and os.path.isfile(
-            result_path if os.path.isabs(result_path)
-            else os.path.join(ws, result_path))
-        lanes.append({
-            "id": str(slot.get("slot_id") or ",".join(lids)),
-            "name": ", ".join(lids),
-            "status": "done" if final or result_exists else "running",
-            "findings": (sum(by_lens.get(lid, 0) for lid in lids)
-                         if final else None),
-            "slot_id": slot.get("slot_id"),
-        })
+            result_path if os.path.isabs(result_path) else os.path.join(ws, result_path)
+        )
+        lanes.append(
+            {
+                "id": str(slot.get("slot_id") or ",".join(lids)),
+                "name": ", ".join(lids),
+                "status": "done" if final or result_exists else "running",
+                "findings": (sum(by_lens.get(lid, 0) for lid in lids) if final else None),
+                "slot_id": slot.get("slot_id"),
+            }
+        )
     status = str(manifest.get("status") or state.get("status") or "ready")
     workflow = dashboard.render_review_workflow(
-        status=status, slots=lanes,
-        graph_complete=quality.get("status") == "complete")
-    wave = dashboard.render_lens_wave(lanes, {
-        "title": ("review — canonical collection complete" if final else
-                  "review — selective lenses running"),
-        "subtitle": (f"{len(lanes)} leased slot(s) · one immutable context · "
-                     "no per-lens diff or graph re-derivation"),
-    })
+        status=status, slots=lanes, graph_complete=quality.get("status") == "complete"
+    )
+    wave = dashboard.render_lens_wave(
+        lanes,
+        {
+            "title": (
+                "review — canonical collection complete"
+                if final
+                else "review — selective lenses running"
+            ),
+            "subtitle": (
+                f"{len(lanes)} leased slot(s) · one immutable context · "
+                "no per-lens diff or graph re-derivation"
+            ),
+        },
+    )
     graph = dashboard.render_review_graph(ws, impact)
     execution = state.get("review_execution") or rv.review_execution_preflight()
-    dor_evidence = ((envelope.get("change") or {}).get("dor") or
-                    rv.review_dor_evidence(
-                        ws, state.get("target") or envelope.get("target") or {},
-                        requirement=(envelope.get("requirements") or {}).get(
-                            "requirement"),
-                        acceptance=(envelope.get("requirements") or {}).get(
-                            "acceptance"),
-                        contracts=envelope.get("contracts")))
+    dor_evidence = (envelope.get("change") or {}).get("dor") or rv.review_dor_evidence(
+        ws,
+        state.get("target") or envelope.get("target") or {},
+        requirement=(envelope.get("requirements") or {}).get("requirement"),
+        acceptance=(envelope.get("requirements") or {}).get("acceptance"),
+        contracts=envelope.get("contracts"),
+    )
     dor_evidence = dict(dor_evidence)
     dor_evidence["requested_lenses"] = rv._directive_lens_ids(
-        dor_evidence.get("review_directives") or [],
-        __import__("lens").load_catalog())
+        dor_evidence.get("review_directives") or [], __import__("lens").load_catalog()
+    )
     effective_decision = {}
     if state.get("routing_decision"):
-        effective_decision = store.read(state["routing_decision"]).get(
-            "dispositions") or {}
+        effective_decision = store.read(state["routing_decision"]).get("dispositions") or {}
     dor_evidence["lens_dispositions"] = {
         lid: str((effective_decision.get(lid) or {}).get("verdict") or "n/a")
-        for lid in dor_evidence["requested_lenses"]}
+        for lid in dor_evidence["requested_lenses"]
+    }
     diagnostics = {
         "engine": f"taskplane/{plugin_version()}",
-        "routing_policy": hashlib.sha256(
-            rv.KERNEL_POLICY_VERSION.encode("utf-8")).hexdigest(),
-        "graph": str(quality.get("fingerprint") or
-                     (state.get("quality") or {}).get("fingerprint") or
-                     "unavailable"),
+        "routing_policy": hashlib.sha256(rv.KERNEL_POLICY_VERSION.encode("utf-8")).hexdigest(),
+        "graph": str(
+            quality.get("fingerprint")
+            or (state.get("quality") or {}).get("fingerprint")
+            or "unavailable"
+        ),
         "routing_decision": str(
-            (state.get("routing_decision") or {}).get("fingerprint") or
-            "unavailable"),
+            (state.get("routing_decision") or {}).get("fingerprint") or "unavailable"
+        ),
     }
-    opening = dashboard.render_findings([], {
-        "title": "Engineering review — in progress",
-        "subtitle": "one canonical diff · graph-qualified selective lenses",
-        "graph_fragment": graph,
-        "review_execution": execution,
-        "dor_evidence": dor_evidence,
-        "diagnostic_fingerprints": diagnostics,
-    })
+    opening = dashboard.render_findings(
+        [],
+        {
+            "title": "Engineering review — in progress",
+            "subtitle": "one canonical diff · graph-qualified selective lenses",
+            "graph_fragment": graph,
+            "review_execution": execution,
+            "dor_evidence": dor_evidence,
+            "diagnostic_fingerprints": diagnostics,
+        },
+    )
     visuals = {
         "workflow_and_wave": _write_review_html(
-            ws, "dashboard.html", [workflow, wave, opening],
-            title="taskplane — governed review workflow"),
+            ws,
+            "dashboard.html",
+            [workflow, wave, opening],
+            title="taskplane — governed review workflow",
+        ),
     }
     if final:
         findings_path = os.path.join(rv._public_root(ws), "findings.json")
@@ -6159,78 +7312,104 @@ def _review_visuals(ws: str, manifest: dict, *, final: bool) -> tuple[dict, list
         except (OSError, ValueError):
             projection = {"findings": findings, "meta": {}}
         final_findings = list(projection.get("findings") or [])
-        review_notes = list(projection.get("notes") or
-                            (state.get("revision") or {}).get("notes") or [])
+        review_notes = list(
+            projection.get("notes") or (state.get("revision") or {}).get("notes") or []
+        )
         meta = dict(projection.get("meta") or {})
         requirements_validation = meta.get("requirements_validation")
         if not isinstance(requirements_validation, dict):
             envelope_diff = envelope.get("diff") or {}
             diff_ref = envelope_diff.get("artifact")
-            diff_record = (store.read(diff_ref)
-                           if isinstance(diff_ref, dict) else
-                           {"files": envelope_diff.get("files") or [],
-                            "patch": ""})
+            diff_record = (
+                store.read(diff_ref)
+                if isinstance(diff_ref, dict)
+                else {"files": envelope_diff.get("files") or [], "patch": ""}
+            )
             requirements_validation = rv.evaluate_review_requirements(
-                dor_evidence, diff_record, final_findings, execution)
+                dor_evidence, diff_record, final_findings, execution
+            )
         decision = effective_decision
         runnability = envelope.get("runnability") or {}
-        clean_evidence = [check for row in (state.get("lens_results") or [])
-                          if row.get("verdict") == "pass"
-                          for check in (row.get("checked_evidence") or [])]
-        unchecked = sorted(str(row.get("lens") or "")
-                           for row in (state.get("lens_results") or [])
-                           if row.get("verdict") == "pass"
-                           and not row.get("checked_evidence"))
+        clean_evidence = [
+            check
+            for row in (state.get("lens_results") or [])
+            if row.get("verdict") == "pass"
+            for check in (row.get("checked_evidence") or [])
+        ]
+        unchecked = sorted(
+            str(row.get("lens") or "")
+            for row in (state.get("lens_results") or [])
+            if row.get("verdict") == "pass" and not row.get("checked_evidence")
+        )
         if unchecked:
-            review_notes.append({
-                "title": "Clean verdicts without source-anchored evidence",
-                "scenario": ("Not shown as clean: " + ", ".join(unchecked)),
-                "lens": "review-kernel",
-            })
-        meta.update({
-            "ws": ws, "impact": impact, "routing_decision": decision,
-            "title": "Engineering review",
-            "subtitle": "one canonical diff · graph-qualified selective lenses",
-            "tests": runnability.get("summary"),
-            "clean_evidence": clean_evidence,
-            "review_notes": review_notes,
-            "review_execution": execution,
-            "dor_evidence": dor_evidence,
-            "requirements_validation": requirements_validation,
-            "diagnostic_fingerprints": diagnostics,
-            "graph_fragment": graph,
-            "revision_identity": evidence.revision_identity(
-                state.get("revision") or {}),
-            "gate": True,
-            "gate_title": "review complete — approve or request changes",
-            "gate_buttons": [
-                {"label": "Approve review",
-                 "prompt": f"Approve review run {state.get('run_id')}",
-                 "primary": True},
-                {"label": "Request changes",
-                 "prompt": f"Request changes for review run {state.get('run_id')}"},
-            ],
-            "note": "Approval remains a human decision; taskPlane does not "
-                    "self-approve this gate.",
-        })
+            review_notes.append(
+                {
+                    "title": "Clean verdicts without source-anchored evidence",
+                    "scenario": ("Not shown as clean: " + ", ".join(unchecked)),
+                    "lens": "review-kernel",
+                }
+            )
+        meta.update(
+            {
+                "ws": ws,
+                "impact": impact,
+                "routing_decision": decision,
+                "title": "Engineering review",
+                "subtitle": "one canonical diff · graph-qualified selective lenses",
+                "tests": runnability.get("summary"),
+                "clean_evidence": clean_evidence,
+                "review_notes": review_notes,
+                "review_execution": execution,
+                "dor_evidence": dor_evidence,
+                "requirements_validation": requirements_validation,
+                "diagnostic_fingerprints": diagnostics,
+                "graph_fragment": graph,
+                "revision_identity": evidence.revision_identity(state.get("revision") or {}),
+                "gate": True,
+                "gate_title": "review complete — approve or request changes",
+                "gate_buttons": [
+                    {
+                        "label": "Approve review",
+                        "prompt": f"Approve review run {state.get('run_id')}",
+                        "primary": True,
+                    },
+                    {
+                        "label": "Request changes",
+                        "prompt": f"Request changes for review run {state.get('run_id')}",
+                    },
+                ],
+                "note": "Approval remains a human decision; taskPlane does not "
+                "self-approve this gate.",
+            }
+        )
         findings_fragment = dashboard.render_findings(final_findings, meta)
         visuals["final_dashboard"] = _write_review_html(
-            ws, "dashboard.html", [workflow, wave, findings_fragment],
-            title="taskplane — engineering review")
-    dashboard_ref = (visuals["final_dashboard"] if final else
-                     visuals["workflow_and_wave"])
-    obligations = [_bind_review_visual_obligation(
-        ws, "render_dashboard", os.path.join(ws, dashboard_ref["path"]))]
+            ws,
+            "dashboard.html",
+            [workflow, wave, findings_fragment],
+            title="taskplane — engineering review",
+        )
+    dashboard_ref = visuals["final_dashboard"] if final else visuals["workflow_and_wave"]
+    obligations = [
+        _bind_review_visual_obligation(
+            ws, "render_dashboard", os.path.join(ws, dashboard_ref["path"])
+        )
+    ]
     if final:
         for row in obligations:
-            row["ack"] = (f"tp ack {row['id']} --delivered {row['path']}"
-                          if row.get("id") else None)
+            row["ack"] = f"tp ack {row['id']} --delivered {row['path']}" if row.get("id") else None
     return visuals, obligations
 
 
 _REVIEW_BOOTSTRAP_EXPECTED_FIELDS = {
-    "run_id", "task_id", "role_marker", "worker_identity", "action_id",
-    "lens_ids", "target_fingerprint", "lease_fingerprint",
+    "run_id",
+    "task_id",
+    "role_marker",
+    "worker_identity",
+    "action_id",
+    "lens_ids",
+    "target_fingerprint",
+    "lease_fingerprint",
     "canonical_revision",
 }
 
@@ -6238,38 +7417,30 @@ _REVIEW_BOOTSTRAP_EXPECTED_FIELDS = {
 def _decode_review_bootstrap(value: str, label: str) -> dict:
     try:
         raw = str(value or "")
-        decoded = base64.urlsafe_b64decode(
-            raw + "=" * (-len(raw) % 4)).decode("utf-8")
+        decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode("utf-8")
         result = json.loads(decoded)
     except (ValueError, TypeError, UnicodeDecodeError) as exc:
-        raise tp.StateError(label, "signed review bootstrap is malformed") \
-            from exc
+        raise tp.StateError(label, "signed review bootstrap is malformed") from exc
     if not isinstance(result, dict):
         raise tp.StateError(label, "signed review bootstrap is malformed")
     return result
 
 
-def _review_bootstrap_values(signed_action: str, expected_identity: str,
-                             task_slot: str) -> dict:
+def _review_bootstrap_values(signed_action: str, expected_identity: str, task_slot: str) -> dict:
     action = _decode_review_bootstrap(signed_action, "--signed-action")
-    expected = _decode_review_bootstrap(
-        expected_identity, "--expected-identity")
+    expected = _decode_review_bootstrap(expected_identity, "--expected-identity")
     if set(expected) != _REVIEW_BOOTSTRAP_EXPECTED_FIELDS:
-        raise tp.StateError(
-            "--expected-identity",
-            "review contract expected identity is malformed")
+        raise tp.StateError("--expected-identity", "review contract expected identity is malformed")
     producer = action.get("producer_contract")
-    signed_slot = (producer.get("task_slot")
-                   if isinstance(producer, dict) else None)
+    signed_slot = producer.get("task_slot") if isinstance(producer, dict) else None
     if not isinstance(task_slot, str) or signed_slot != task_slot:
-        raise tp.StateError(
-            "--task-slot", "review contract task slot mismatches action")
+        raise tp.StateError("--task-slot", "review contract task slot mismatches action")
     return {"action": action, "expected": expected, "task_slot": task_slot}
 
 
 def _activate_visible_review_bootstrap(
-        workspace: str, *, action: dict, expected: dict,
-        task_slot: str) -> dict:
+    workspace: str, *, action: dict, expected: dict, task_slot: str
+) -> dict:
     """Activate one command-visible signed slot without inline shell env."""
     sentinel = object()
     prior = os.environ.get("TASKPLANE_TASK", sentinel)
@@ -6277,15 +7448,17 @@ def _activate_visible_review_bootstrap(
     try:
         parent = tp.load_json(
             os.path.join(tp.tp_dir(workspace), "active_contract.json"),
-            default=None, what="standalone review parent contract")
-        parent_budget = ((parent or {}).get("budget")
-                         if isinstance(parent, dict) else {}) or {}
+            default=None,
+            what="standalone review parent contract",
+        )
+        parent_budget = ((parent or {}).get("budget") if isinstance(parent, dict) else {}) or {}
         inherited = parent_budget.get("max_tokens")
         producer_budget = _standalone_review_budget(
-            int(inherited) if isinstance(inherited, int) and
-            not isinstance(inherited, bool) else None)
-        contract = tp.activate_review_contract_action(
-            workspace, action, **expected)
+            int(inherited)
+            if isinstance(inherited, int) and not isinstance(inherited, bool)
+            else None
+        )
+        contract = tp.activate_review_contract_action(workspace, action, **expected)
         active_path = tp.active_contract_path(workspace, task_slot)
         try:
             contract["budget"].update(producer_budget)
@@ -6313,35 +7486,40 @@ def _visible_review_bootstrap(command: str, workspace: str) -> dict | None:
     except ValueError as exc:
         if "review activate-contract" in str(command or ""):
             raise tp.StateError(
-                "review activate-contract",
-                "signed review bootstrap command is malformed") from exc
+                "review activate-contract", "signed review bootstrap command is malformed"
+            ) from exc
         return None
     marker = ["review", "activate-contract"]
-    marker_seen = any(tokens[index:index + 2] == marker
-                      for index in range(max(0, len(tokens) - 1)))
+    marker_seen = any(
+        tokens[index : index + 2] == marker for index in range(max(0, len(tokens) - 1))
+    )
     if not marker_seen:
         return None
     if len(tokens) < 4 or tokens[2:4] != marker:
         raise tp.StateError(
-            "review activate-contract",
-            "signed review bootstrap command shape is invalid")
-    if (os.path.realpath(tokens[0]) != os.path.realpath(sys.executable) or
-            os.path.realpath(tokens[1]) != os.path.realpath(__file__) or
-            len(tokens) != 12 or tokens[4] != "--workspace" or
-            tokens[6] != "--task-slot" or
-            tokens[8] != "--signed-action" or
-            tokens[10] != "--expected-identity"):
+            "review activate-contract", "signed review bootstrap command shape is invalid"
+        )
+    if (
+        os.path.realpath(tokens[0]) != os.path.realpath(sys.executable)
+        or os.path.realpath(tokens[1]) != os.path.realpath(__file__)
+        or len(tokens) != 12
+        or tokens[4] != "--workspace"
+        or tokens[6] != "--task-slot"
+        or tokens[8] != "--signed-action"
+        or tokens[10] != "--expected-identity"
+    ):
         raise tp.StateError(
-            "review activate-contract",
-            "signed review bootstrap command shape is invalid")
+            "review activate-contract", "signed review bootstrap command shape is invalid"
+        )
     bootstrap = _review_bootstrap_values(tokens[9], tokens[11], tokens[7])
     managed_workspace = os.path.realpath(tokens[5])
     event_workspace = os.path.realpath(workspace)
     if managed_workspace != event_workspace:
         import review as review_kernel
+
         managed_workspace = review_kernel.signed_bootstrap_workspace(
-            managed_workspace, expected=bootstrap["expected"],
-            task_slot=bootstrap["task_slot"])
+            managed_workspace, expected=bootstrap["expected"], task_slot=bootstrap["task_slot"]
+        )
     return {**bootstrap, "workspace": managed_workspace}
 
 
@@ -6352,9 +7530,9 @@ def _legacy_review_activation_command(command: str) -> bool:
         return False
     for index, token in enumerate(tokens[:-2]):
         python_name = os.path.basename(token).lower()
-        if (re.fullmatch(r"python(?:\d+(?:\.\d+)?)?(?:\.exe)?",
-                         python_name) and
-                tokens[index + 1:index + 3] == ["-m", "taskplane_lite"]):
+        if re.fullmatch(r"python(?:\d+(?:\.\d+)?)?(?:\.exe)?", python_name) and tokens[
+            index + 1 : index + 3
+        ] == ["-m", "taskplane_lite"]:
             return True
     return False
 
@@ -6377,29 +7555,38 @@ def cmd_review(a) -> int:
     """
     import target as tgt
     import review as rv
+
     ws = _workspace(a.workspace)
     review_action = getattr(a, "review_action", None)
     if review_action == "activate-contract":
-        bootstrap = _review_bootstrap_values(
-            a.signed_action, a.expected_identity, a.task_slot)
+        bootstrap = _review_bootstrap_values(a.signed_action, a.expected_identity, a.task_slot)
         contract = _activate_visible_review_bootstrap(ws, **bootstrap)
-        print(json.dumps({
-            "schema": "taskplane.review-contract-activation/v1",
-            "status": "active", "task_slot": contract["task_slot"],
-            "action_id": contract["bootstrap_action_id"],
-            "lease_fingerprint": contract["bootstrap_lease_fingerprint"],
-            "read_only": contract["read_only"],
-            "write_allow": contract["write_allow"],
-        }, sort_keys=True, separators=(",", ":")))
+        print(
+            json.dumps(
+                {
+                    "schema": "taskplane.review-contract-activation/v1",
+                    "status": "active",
+                    "task_slot": contract["task_slot"],
+                    "action_id": contract["bootstrap_action_id"],
+                    "lease_fingerprint": contract["bootstrap_lease_fingerprint"],
+                    "read_only": contract["read_only"],
+                    "write_allow": contract["write_allow"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         return 0
     enforcement = None
     if review_action in {"start", "resume", "signoff"}:
         active = tp.load_active(ws) or {}
         enforcement, refusal = _enforcement_check(
-            ws, saved=active.get("enforcement"),
+            ws,
+            saved=active.get("enforcement"),
             advisory=bool(getattr(a, "advisory", False)),
             actor=getattr(a, "by", None),
-            run_id=getattr(a, "run_id", None))
+            run_id=getattr(a, "run_id", None),
+        )
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
             return 1
@@ -6407,26 +7594,36 @@ def cmd_review(a) -> int:
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
             state = rv._load_state(ws, a.run_id)
-            pending = state.get("review_execution") or \
-                rv.review_execution_preflight(run_id=state.get("run_id"))
-            action_id = str((pending.get("action") or {}).get("id") or
-                            rv._review_execution_action_id(
-                                state.get("run_id"), "review-execution-mode"))
+            pending = state.get("review_execution") or rv.review_execution_preflight(
+                run_id=state.get("run_id")
+            )
+            action_id = str(
+                (pending.get("action") or {}).get("id")
+                or rv._review_execution_action_id(state.get("run_id"), "review-execution-mode")
+            )
             result = rv.configure_review_execution(
-                ws, selection=a.selection, by=getattr(a, "by", None),
-                approval_receipt=None, run_id=a.run_id)
+                ws,
+                selection=a.selection,
+                by=getattr(a, "by", None),
+                approval_receipt=None,
+                run_id=a.run_id,
+            )
             visuals, owed = _review_visuals(ws, result, final=False)
-            result = rv._manifest({**result, "visuals": visuals,
-                                   "obligations": owed})
+            result = rv._manifest({**result, "visuals": visuals, "obligations": owed})
             kernel_state = rv._load_state(ws, result.get("run_id"))
-            rv._save_state(ws, dict(
-                kernel_state, manifest=result,
-                counters=result["counters"]))
+            rv._save_state(ws, dict(kernel_state, manifest=result, counters=result["counters"]))
         except Exception as exc:
-            print(json.dumps({"schema": "taskplane.review-execution-preflight/v1",
-                              "status": "configuration_failed",
-                              "reason": f"{exc.__class__.__name__}: {exc}"},
-                             sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "schema": "taskplane.review-execution-preflight/v1",
+                        "status": "configuration_failed",
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
@@ -6435,40 +7632,58 @@ def cmd_review(a) -> int:
             ws = rv.resolve_review_workspace(ws, a.run_id)
             state = rv._load_state(ws, a.run_id)
             execution = state.get("review_execution") or {}
-            action_id = str((execution.get(a.kind) or {}).get(
-                "action_id") or "")
+            action_id = str((execution.get(a.kind) or {}).get("action_id") or "")
             if a.status == "executed":
                 receipt = rv._host_review_execution_receipt(
-                    run_id=state["run_id"], action_id=action_id,
+                    run_id=state["run_id"],
+                    action_id=action_id,
                     kind=a.kind,
-                    after_receipt_id=str((execution.get(
-                        "approval_receipt") or {}).get("receipt_id") or ""),
-                    receipt_ref=getattr(a, "receipt", None))
+                    after_receipt_id=str(
+                        (execution.get("approval_receipt") or {}).get("receipt_id") or ""
+                    ),
+                    receipt_ref=getattr(a, "receipt", None),
+                )
             else:
                 receipt = None
             result = rv.record_review_execution(
-                ws, kind=a.kind, status=a.status, detail=a.detail or "",
+                ws,
+                kind=a.kind,
+                status=a.status,
+                detail=a.detail or "",
                 run_id=a.run_id,
-                approval_receipt=receipt)
+                approval_receipt=receipt,
+            )
         except Exception as exc:
-            print(json.dumps({"schema": "taskplane.review-execution-preflight/v1",
-                              "status": "evidence_failed",
-                              "reason": f"{exc.__class__.__name__}: {exc}"},
-                             sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "schema": "taskplane.review-execution-preflight/v1",
+                        "status": "evidence_failed",
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     if getattr(a, "review_action", None) == "sandbox":
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
-            result = rv.prepare_review_validation_sandbox(
-                ws, run_id=a.run_id)
+            result = rv.prepare_review_validation_sandbox(ws, run_id=a.run_id)
         except Exception as exc:
-            print(json.dumps({
-                "schema": "taskplane.review-validation-sandbox/v1",
-                "status": "preparation_failed",
-                "reason": f"{exc.__class__.__name__}: {exc}"},
-                sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "schema": "taskplane.review-validation-sandbox/v1",
+                        "status": "preparation_failed",
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
@@ -6479,58 +7694,82 @@ def cmd_review(a) -> int:
             if command and command[0] == "--":
                 command = command[1:]
             result = rv.run_review_validation_command(
-                ws, command=command, cwd=a.cwd, run_id=a.run_id,
-                timeout=(a.timeout if a.timeout is not None else
-                         _effective_settings_snapshot().limits.timeouts["subprocess_seconds"]))
+                ws,
+                command=command,
+                cwd=a.cwd,
+                run_id=a.run_id,
+                timeout=(
+                    a.timeout
+                    if a.timeout is not None
+                    else _effective_settings_snapshot().limits.timeouts["subprocess_seconds"]
+                ),
+            )
         except Exception as exc:
-            print(json.dumps({
-                "schema": "taskplane.review-validation-command/v1",
-                "status": "validation_failed",
-                "reason": f"{exc.__class__.__name__}: {exc}"},
-                sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "schema": "taskplane.review-validation-command/v1",
+                        "status": "validation_failed",
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0 if result.get("status") == "executed" else 1
         return 0
     if getattr(a, "review_action", None) == "collect":
         try:
-            ws = rv.resolve_review_workspace(
-                ws, getattr(a, "run_id", None))
+            ws = rv.resolve_review_workspace(ws, getattr(a, "run_id", None))
             result = rv.collect_review(
-                ws, publish=not bool(getattr(a, "no_publish", False)),
-                run_id=getattr(a, "run_id", None))
-            visuals, owed = _review_visuals(
-                ws, result, final=result.get("status") == "complete")
-            result = rv._manifest({**result, "visuals": visuals,
-                                   "obligations": owed})
+                ws,
+                publish=not bool(getattr(a, "no_publish", False)),
+                run_id=getattr(a, "run_id", None),
+            )
+            visuals, owed = _review_visuals(ws, result, final=result.get("status") == "complete")
+            result = rv._manifest({**result, "visuals": visuals, "obligations": owed})
         except Exception as exc:
-            failure = {"schema": "taskplane.review-collect-manifest/v2",
-                       "status": "collect_failed",
-                       "reason": f"{exc.__class__.__name__}: {exc}"}
+            failure = {
+                "schema": "taskplane.review-collect-manifest/v2",
+                "status": "collect_failed",
+                "reason": f"{exc.__class__.__name__}: {exc}",
+            }
             if isinstance(exc, rv.ReviewSlotValidationErrors):
                 failure["repairs"] = exc.repairs
                 failure["next_action"] = (
                     "dispatch every listed repair to its original producer "
-                    "in one batch, then retry review collect once")
-            print(json.dumps(failure,
-                             sort_keys=True, separators=(",", ":")))
+                    "in one batch, then retry review collect once"
+                )
+            print(json.dumps(failure, sort_keys=True, separators=(",", ":")))
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     if getattr(a, "review_action", None) == "signoff":
         try:
-            ws = rv.resolve_review_workspace(
-                ws, getattr(a, "run_id", None))
+            ws = rv.resolve_review_workspace(ws, getattr(a, "run_id", None))
             result = rv.signoff_review(
-                ws, decision=a.decision, by=a.by, note=a.note or "",
-                run_id=getattr(a, "run_id", None))
+                ws,
+                decision=a.decision,
+                by=a.by,
+                note=a.note or "",
+                run_id=getattr(a, "run_id", None),
+            )
             if enforcement:
                 result["enforcement"] = enforcement
         except Exception as exc:
-            print(json.dumps({"schema": "taskplane.review-signoff/v1",
-                              "status": "signoff_failed",
-                              "reason": f"{exc.__class__.__name__}: {exc}"},
-                             sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "schema": "taskplane.review-signoff/v1",
+                        "status": "signoff_failed",
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 1
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
@@ -6540,8 +7779,15 @@ def cmd_review(a) -> int:
     if diff_byte_limit is None:
         diff_byte_limit = rv.DEFAULT_MAX_DIFF_BYTES
     if type(diff_byte_limit) is not int or diff_byte_limit <= 0:
-        print(json.dumps({"status": "start_failed", "reason_code": "invalid_diff_limit",
-                          "reason": "--max-diff-bytes must be a positive integer"}))
+        print(
+            json.dumps(
+                {
+                    "status": "start_failed",
+                    "reason_code": "invalid_diff_limit",
+                    "reason": "--max-diff-bytes must be a positive integer",
+                }
+            )
+        )
         return 1
     spec = getattr(a, "spec", None)
     parsed = tgt.parse(spec) if spec else None
@@ -6549,6 +7795,7 @@ def cmd_review(a) -> int:
     if spec and (not parsed or parsed.get("kind") != "pr"):
         try:
             import storage as repository_storage
+
             repository_storage.identity_from_remote(spec)
             remote_repository = True
         except ValueError:
@@ -6557,95 +7804,118 @@ def cmd_review(a) -> int:
         import preflight as repository_preflight_module
 
         engine = repository_preflight_module.RepositoryPreflight()
-        bootstrap = repository_preflight_module.find_bootstrap(
-            ws, run_id=a.run_id)
+        bootstrap = repository_preflight_module.find_bootstrap(ws, run_id=a.run_id)
         try:
             if bootstrap:
                 authorized = repository_preflight_module.authorize_bootstrap(
-                    ws, run_id=a.run_id, action_id=a.action_id,
-                    response=a.response, approved_by=a.by)
+                    ws,
+                    run_id=a.run_id,
+                    action_id=a.action_id,
+                    response=a.response,
+                    approved_by=a.by,
+                )
                 if authorized.get("status") == "cancelled":
-                    print(json.dumps(authorized, sort_keys=True,
-                                     separators=(",", ":")))
+                    print(json.dumps(authorized, sort_keys=True, separators=(",", ":")))
                     return 0
                 repository_preflight = engine.prepare(
-                    bootstrap["spec"], workspace=bootstrap["workspace"],
-                    host=bootstrap["host"], run_id=a.run_id)
+                    bootstrap["spec"],
+                    workspace=bootstrap["workspace"],
+                    host=bootstrap["host"],
+                    run_id=a.run_id,
+                )
                 # Reaching any structured result proves the external store is
                 # available again. Any later pause now lives canonically in
                 # RunStore and must not be shadowed by this bootstrap gate.
                 repository_preflight_module.clear_bootstrap(bootstrap)
             else:
                 repository_preflight = engine.resume(
-                    a.run_id, action_id=a.action_id, response=a.response,
-                    approved_by=a.by)
+                    a.run_id, action_id=a.action_id, response=a.response, approved_by=a.by
+                )
         except Exception as exc:
             if bootstrap and isinstance(exc, OSError):
-                repository_preflight = \
-                    repository_preflight_module.persist_storage_pause(
-                        ws, spec=bootstrap["spec"], host=bootstrap["host"],
-                        run_id=a.run_id,
-                        detail=f"{exc.__class__.__name__}: {exc}")
-                print(json.dumps(repository_preflight, sort_keys=True,
-                                 separators=(",", ":")))
+                repository_preflight = repository_preflight_module.persist_storage_pause(
+                    ws,
+                    spec=bootstrap["spec"],
+                    host=bootstrap["host"],
+                    run_id=a.run_id,
+                    detail=f"{exc.__class__.__name__}: {exc}",
+                )
+                print(json.dumps(repository_preflight, sort_keys=True, separators=(",", ":")))
                 return 2
-            print(json.dumps({
-                "schema": "taskplane.preflight/v1", "status": "needs_user",
-                "run_id": a.run_id,
-                "reason": f"{exc.__class__.__name__}: {exc}"},
-                sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "schema": "taskplane.preflight/v1",
+                        "status": "needs_user",
+                        "run_id": a.run_id,
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 2
         if repository_preflight.get("status") != "ready":
-            print(json.dumps(repository_preflight, sort_keys=True,
-                             separators=(",", ":")))
-            return 0 if repository_preflight.get("status") == \
-                "cancelled" else 2
+            print(json.dumps(repository_preflight, sort_keys=True, separators=(",", ":")))
+            return 0 if repository_preflight.get("status") == "cancelled" else 2
         repository_run = repository_preflight["run_id"]
         ws = os.path.realpath(repository_preflight["checkout"])
-        spec = str(((repository_preflight.get("target") or {}).get(
-            "target") or {}).get("spec") or "")
+        spec = str(
+            ((repository_preflight.get("target") or {}).get("target") or {}).get("spec") or ""
+        )
         parsed = tgt.parse(spec)
-    elif (parsed and parsed.get("kind") == "pr" and all(
-            parsed.get(key) for key in ("host", "owner", "repo"))) or \
-            remote_repository:
+    elif (
+        parsed
+        and parsed.get("kind") == "pr"
+        and all(parsed.get(key) for key in ("host", "owner", "repo"))
+    ) or remote_repository:
         import preflight as repository_preflight_module
 
         host_record = {
             "kind": tp.host(),
-            "session_id": (os.environ.get("CODEX_THREAD_ID") or
-                           os.environ.get("CLAUDE_SESSION_ID")),
+            "session_id": (
+                os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+            ),
         }
         pending = repository_preflight_module.find_bootstrap(ws, spec=spec)
         if pending:
-            print(json.dumps(
-                repository_preflight_module.bootstrap_response(pending),
-                sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    repository_preflight_module.bootstrap_response(pending),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 2
-        repository_run = (getattr(a, "run_id", None) or
-                          repository_preflight_module.new_run_id())
+        repository_run = getattr(a, "run_id", None) or repository_preflight_module.new_run_id()
         try:
-            repository_preflight = \
-                repository_preflight_module.RepositoryPreflight().prepare(
-                    spec, workspace=ws, host=host_record,
-                    run_id=repository_run)
+            repository_preflight = repository_preflight_module.RepositoryPreflight().prepare(
+                spec, workspace=ws, host=host_record, run_id=repository_run
+            )
         except Exception as exc:
             detail = f"{exc.__class__.__name__}: {exc}"
             if isinstance(exc, OSError):
                 paused = repository_preflight_module.persist_storage_pause(
-                    ws, spec=spec, host=host_record, run_id=repository_run,
-                    detail=detail)
-                print(json.dumps(paused, sort_keys=True,
-                                 separators=(",", ":")))
+                    ws, spec=spec, host=host_record, run_id=repository_run, detail=detail
+                )
+                print(json.dumps(paused, sort_keys=True, separators=(",", ":")))
             else:
-                print(json.dumps({
-                    "schema": "taskplane.preflight/v1",
-                    "status": "needs_user", "run_id": repository_run,
-                    "reason": detail, "action": None},
-                    sort_keys=True, separators=(",", ":")))
+                print(
+                    json.dumps(
+                        {
+                            "schema": "taskplane.preflight/v1",
+                            "status": "needs_user",
+                            "run_id": repository_run,
+                            "reason": detail,
+                            "action": None,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
             return 2
         if repository_preflight.get("status") != "ready":
-            print(json.dumps(repository_preflight, sort_keys=True,
-                             separators=(",", ":")))
+            print(json.dumps(repository_preflight, sort_keys=True, separators=(",", ":")))
             return 2
         repository_run = repository_preflight["run_id"]
         ws = os.path.realpath(repository_preflight["checkout"])
@@ -6658,9 +7928,12 @@ def cmd_review(a) -> int:
     #    reads, so it is answered up front rather than discovered later.
     t = tgt.tools()
     out["tools"] = t
-    step("tools", t["git"]["present"],
-         gh=t["gh"]["present"], hint=(None if t["gh"]["present"]
-                                      else tgt.install_hint()))
+    step(
+        "tools",
+        t["git"]["present"],
+        gh=t["gh"]["present"],
+        hint=(None if t["gh"]["present"] else tgt.install_hint()),
+    )
 
     # 2. target — acquire and pin, so the findings can cite the tree.
     if repository_preflight is not None:
@@ -6685,12 +7958,22 @@ def cmd_review(a) -> int:
         preflight["storage"] = "hybrid-external-run"
     out["preflight"] = preflight
     if not preflight["ok"]:
-        step("target", False, status=preflight["status"],
-             reason=preflight["reason"], recovery=preflight["recovery"])
-        out.update({"ok": False, "status": preflight["status"],
-                    "reason": preflight["reason"],
-                    "recovery": preflight["recovery"],
-                    "next": preflight["recovery"]})
+        step(
+            "target",
+            False,
+            status=preflight["status"],
+            reason=preflight["reason"],
+            recovery=preflight["recovery"],
+        )
+        out.update(
+            {
+                "ok": False,
+                "status": preflight["status"],
+                "reason": preflight["reason"],
+                "recovery": preflight["recovery"],
+                "next": preflight["recovery"],
+            }
+        )
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
     tgt.save(ws, rec)
@@ -6700,8 +7983,7 @@ def cmd_review(a) -> int:
     # hydrated this exact range; using base_ref here can pull unrelated
     # upstream commits into the review whenever the branch advanced after
     # the PR diverged, inflating symbols and graph impact.
-    base = rec.get("merge_base") or rec.get("base_ref") or \
-        getattr(a, "base", None) or "HEAD"
+    base = rec.get("merge_base") or rec.get("base_ref") or getattr(a, "base", None) or "HEAD"
     try:
         files = rv.select_diff_paths(rv.canonical_diff_files(ws, base), getattr(a, "paths", None))
         active = tp.load_active(ws) or {}
@@ -6709,16 +7991,32 @@ def cmd_review(a) -> int:
         if coding.get("scope_paths"):
             outside = [path for path in files if not tp.match_any(path, coding["scope_paths"])]
             if outside:
-                raise rv.ReviewKernelError("review paths exceed the active contract: " + ", ".join(outside))
+                raise rv.ReviewKernelError(
+                    "review paths exceed the active contract: " + ", ".join(outside)
+                )
         rec["changed_files"] = files
         rec["diff_policy"] = {"paths": files, "max_diff_bytes": diff_byte_limit}
         rec["fingerprint"] = tgt.fingerprint(rec)
         tgt.save(ws, rec)
     except (ValueError, RuntimeError) as exc:
-        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_paths", "reason": str(exc)}))
+        print(
+            json.dumps(
+                {
+                    "status": "start_failed",
+                    "reason_code": "invalid_review_paths",
+                    "reason": str(exc),
+                }
+            )
+        )
         return 1
-    step("target", True, head=rec["head"][:12], base=(rec.get("base") or "")[:12],
-         fingerprint=rec["fingerprint"], changed=len(rec.get("changed_files") or []))
+    step(
+        "target",
+        True,
+        head=rec["head"][:12],
+        base=(rec.get("base") or "")[:12],
+        fingerprint=rec["fingerprint"],
+        changed=len(rec.get("changed_files") or []),
+    )
 
     # 3. graph + impact — impact-first is not optional, and it costs nothing
     #    here that it would not cost as its own call.
@@ -6726,6 +8024,7 @@ def cmd_review(a) -> int:
     g, imp = {}, {}
     try:
         import depgraph as dg
+
         g = dg.load(ws)
         # RESCAN A GRAPH THAT DESCRIBES ANOTHER TREE (D2). The blast radius
         # is the one input every lens is told NOT to re-derive, so a stored
@@ -6737,9 +8036,13 @@ def cmd_review(a) -> int:
             g = dg.scan(ws)
         imp = dg.impact(ws, files) if files else {}
         out["impact"] = imp
-        step("graph", True, modules=len(g.get("modules") or {}),
-             edges=len(g.get("edges") or []),
-             impacted=imp.get("total_impacted", 0))
+        step(
+            "graph",
+            True,
+            modules=len(g.get("modules") or {}),
+            edges=len(g.get("edges") or []),
+            impacted=imp.get("total_impacted", 0),
+        )
     except Exception as e:
         # Never pretend a stale/partially loaded graph is complete. The
         # canonical pinned diff remains reviewable; ReviewKernel records the
@@ -6754,8 +8057,7 @@ def cmd_review(a) -> int:
             "status": "degraded",
             "reason": graph_errors[0],
             "graph_quality": quality,
-            "recovery": (quality.get("recovery") or
-                         dg.GRAPH_SCAN_RECOVERY),
+            "recovery": (quality.get("recovery") or dg.GRAPH_SCAN_RECOVERY),
             "continuation": "immutable_diff_with_architecture_security_floors",
         }
         # Standalone Review is intentionally useful when graph enrichment is
@@ -6763,8 +8065,13 @@ def cmd_review(a) -> int:
         # review kernel route from the pinned immutable diff with its
         # architecture/security floors. Governed Evaluate/EM and DoD retain
         # their strict refusals in cmd_loop/cmd_dod.
-        step("graph", False, reason=graph_errors[0],
-             recovery=warning["recovery"], continuation=warning["continuation"])
+        step(
+            "graph",
+            False,
+            reason=graph_errors[0],
+            recovery=warning["recovery"],
+            continuation=warning["continuation"],
+        )
         out["graph_quality_warning"] = warning
         preflight["graph_quality_warning"] = warning
         # Adapt the producer-complete scan record into ReviewKernel's existing
@@ -6774,11 +8081,13 @@ def cmd_review(a) -> int:
         # remains attached to the impact evidence rather than being recast as
         # an unrelated truncation or coverage failure.
         imp = dict(imp)
-        imp.update({
-            "unknown": True,
-            "unknown_reason": "graph_scan_degraded",
-            "graph_scan_quality": quality,
-        })
+        imp.update(
+            {
+                "unknown": True,
+                "unknown_reason": "graph_scan_degraded",
+                "graph_scan_quality": quality,
+            }
+        )
         out["impact"] = imp
     rec["review_cache"] = tgt.review_cache_identity(rec, g)
     preflight["cache_identity"] = rec["review_cache"]
@@ -6788,47 +8097,70 @@ def cmd_review(a) -> int:
     #    A mapper refusal must never strand the caller under an active
     #    read-only contract; graph degradation proceeds from the pinned diff.
     import storage as runtime_storage
+
     locator = runtime_storage.load_workspace_locator(ws)
     write_allow = [".em-review/**"]
     if locator:
-        write_allow = [os.path.join(path, "**")
-                       for path in locator["paths"].values()]
+        write_allow = [os.path.join(path, "**") for path in locator["paths"].values()]
     c = tp.build_contract(
-        (" ".join(a.goal) if getattr(a, "goal", None)
-         else f"engineering review: {spec or base}"),
-        read_only=True, write_allow=write_allow,
-        max_actions=(int(a.max_actions)
-                     if getattr(a, "max_actions", None) is not None else None))
+        (" ".join(a.goal) if getattr(a, "goal", None) else f"engineering review: {spec or base}"),
+        read_only=True,
+        write_allow=write_allow,
+        max_actions=(int(a.max_actions) if getattr(a, "max_actions", None) is not None else None),
+    )
     if enforcement:
         c["enforcement"] = enforcement
-    c["budget"].update(_standalone_review_budget(
-        getattr(a, "max_tokens", None)))
+    c["budget"].update(_standalone_review_budget(getattr(a, "max_tokens", None)))
     _apply_contract_token_ceiling(c, c["budget"]["max_tokens"])
-    c["target"] = {k: rec.get(k) for k in
-                   ("origin", "head", "base", "base_ref", "branch",
-                    "merge_base", "shallow", "fingerprint", "target",
-                    "review_cache", "diff_policy")}
-    out["contract"] = {"task_id": c["task_id"], "read_only": True,
-                       "status": "prepared", "write_allow": write_allow,
-                       "budget": c.get("budget")}
+    c["target"] = {
+        k: rec.get(k)
+        for k in (
+            "origin",
+            "head",
+            "base",
+            "base_ref",
+            "branch",
+            "merge_base",
+            "shallow",
+            "fingerprint",
+            "target",
+            "review_cache",
+            "diff_policy",
+        )
+    }
+    out["contract"] = {
+        "task_id": c["task_id"],
+        "read_only": True,
+        "status": "prepared",
+        "write_allow": write_allow,
+        "budget": c.get("budget"),
+    }
 
     # 5. One normal-flow kernel call: quality before mapping, then exactly
     #    one immutable envelope and exact deep/light slots. Large bytes are
     #    artifacts; stdout is only the compact manifest.
     try:
         import runnability as runmod
+
         probe = runmod.probe_once(ws)
         diff_rc, patch = rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit)
         if diff_rc:
             if diff_rc == rv.CANONICAL_DIFF_TOO_LARGE:
-                print(json.dumps({"schema": "taskplane.review-start-manifest/v2",
-                                  "status": "start_failed", **json.loads(patch)}))
+                print(
+                    json.dumps(
+                        {
+                            "schema": "taskplane.review-start-manifest/v2",
+                            "status": "start_failed",
+                            **json.loads(patch),
+                        }
+                    )
+                )
                 return 1
             raise RuntimeError(patch or "canonical diff derivation failed")
         import review_evidence as _re
+
         store = _re.ArtifactStore(ws)
-        diff_ref = store.put("diff", {"base": base, "patch": patch,
-                                      "files": files})
+        diff_ref = store.put("diff", {"base": base, "patch": patch, "files": files})
         symbols = rv.changed_symbols_from_patch(patch)
         routing_content = rv.changed_content_from_patch(patch)
         review_router = None
@@ -6837,13 +8169,16 @@ def cmd_review(a) -> int:
 
             def _degraded_review_router():
                 routing = lensmod.route(
-                    files, task_type="review", breadth="routed",
-                    stage="review", workspace=ws,
+                    files,
+                    task_type="review",
+                    breadth="routed",
+                    stage="review",
+                    workspace=ws,
                     requirement_text=None,
-                    content_by_file=routing_content)
+                    content_by_file=routing_content,
+                )
                 guardrails = ("architecture", "security")
-                by_id = {str(row.get("id") or ""): row
-                         for row in routing.get("lenses") or []}
+                by_id = {str(row.get("id") or ""): row for row in routing.get("lenses") or []}
                 for lens_id in guardrails:
                     row = by_id.get(lens_id)
                     if row is None:
@@ -6876,54 +8211,66 @@ def cmd_review(a) -> int:
                 progression["sweep_lenses"] = sweep_lenses
                 progression["sweep_count"] = 1 if sweep_lenses else 0
                 progression["deferred_light"] = [
-                    lens_id for lens_id in
-                    progression.get("deferred_light") or []
-                    if lens_id not in guardrails]
+                    lens_id
+                    for lens_id in progression.get("deferred_light") or []
+                    if lens_id not in guardrails
+                ]
                 context["graph_quality_fallback"] = {
                     "mode": "immutable_diff",
-                    "guardrails": ["architecture_floor",
-                                   "security_floor"],
+                    "guardrails": ["architecture_floor", "security_floor"],
                     "sweep_widening": [
-                        lens_id for lens_id in guardrails
-                        if lens_id in sweep_lenses],
+                        lens_id for lens_id in guardrails if lens_id in sweep_lenses
+                    ],
                 }
                 # Routing attached language references before the fallback
                 # promoted security. Refresh that deterministic attachment so
                 # the stored sweep brief applies the newly active floor too.
-                routing = lensmod._attach_language_context(
-                    routing, files, "review")
+                routing = lensmod._attach_language_context(routing, files, "review")
                 return routing
 
             review_router = _degraded_review_router
         manifest = rv.start_review(
-            ws, target=rec, graph=g, impact=imp,
-            diff={"files": files, "changed_symbols": symbols,
-                  "artifact": rv._portable_ref(diff_ref)},
+            ws,
+            target=rec,
+            graph=g,
+            impact=imp,
+            diff={
+                "files": files,
+                "changed_symbols": symbols,
+                "artifact": rv._portable_ref(diff_ref),
+            },
             runnability=runmod.evidence_record(probe),
-            requirement={}, acceptance=[], contracts=[], stage="review",
-            task_type="review", base=base,
-            caller_expander=(None if graph_errors else
-                             rv.bounded_caller_expander(g)),
-            router=review_router, routing_content=routing_content)
+            requirement={},
+            acceptance=[],
+            contracts=[],
+            stage="review",
+            task_type="review",
+            base=base,
+            caller_expander=(None if graph_errors else rv.bounded_caller_expander(g)),
+            router=review_router,
+            routing_content=routing_content,
+        )
         if manifest.get("status") not in {"ready", "needs_user"}:
             if repository_run:
                 import run_store as repository_run_store
+
                 store_record = repository_run_store.RunStore()
                 current = store_record.load(repository_run)
                 store_record.commit(
                     repository_run,
                     expected_revision=int(current["revision"]),
-                    changes={"status": "review_blocked",
-                             "contract": {"status": "inactive",
-                                          "task_id": None},
-                             "review": {"kernel_run_id":
-                                        manifest.get("run_id"),
-                                        "status": manifest.get("status")}})
-            manifest["contract"] = {"status": "inactive",
-                                    "reason": manifest.get("status")}
+                    changes={
+                        "status": "review_blocked",
+                        "contract": {"status": "inactive", "task_id": None},
+                        "review": {
+                            "kernel_run_id": manifest.get("run_id"),
+                            "status": manifest.get("status"),
+                        },
+                    },
+                )
+            manifest["contract"] = {"status": "inactive", "reason": manifest.get("status")}
             manifest["preflight"] = preflight
-            print(json.dumps(rv._manifest(manifest), sort_keys=True,
-                             separators=(",", ":")))
+            print(json.dumps(rv._manifest(manifest), sort_keys=True, separators=(",", ":")))
             return 1
         tp.activate(ws, c, snapshot=tp.git_head(ws))
         step("contract", True, task_id=c["task_id"])
@@ -6934,32 +8281,42 @@ def cmd_review(a) -> int:
             step("obligations", False, reason=e.__class__.__name__)
         if repository_run:
             import run_store as repository_run_store
+
             store_record = repository_run_store.RunStore()
             current = store_record.load(repository_run)
             store_record.commit(
-                repository_run, expected_revision=int(current["revision"]),
-                changes={"status": "governed",
-                         "contract": {"status": "active",
-                                      "task_id": c["task_id"]},
-                         "review": {"kernel_run_id": manifest.get("run_id"),
-                                    "status": manifest.get("status")}})
-        manifest["contract"] = {"task_id": c["task_id"],
-                                "read_only": True, "status": "active"}
+                repository_run,
+                expected_revision=int(current["revision"]),
+                changes={
+                    "status": "governed",
+                    "contract": {"status": "active", "task_id": c["task_id"]},
+                    "review": {
+                        "kernel_run_id": manifest.get("run_id"),
+                        "status": manifest.get("status"),
+                    },
+                },
+            )
+        manifest["contract"] = {"task_id": c["task_id"], "read_only": True, "status": "active"}
         if enforcement:
             manifest["enforcement"] = enforcement
         if repository_run:
             manifest["repository_run_id"] = repository_run
-        manifest["tools"] = {"git": bool(t["git"]["present"]),
-                             "gh": bool(t["gh"]["present"])}
+        manifest["tools"] = {"git": bool(t["git"]["present"]), "gh": bool(t["gh"]["present"])}
         manifest["preflight"] = preflight
         visuals, owed = _review_visuals(ws, manifest, final=False)
         manifest["visuals"] = visuals
         manifest["obligations"] = owed
         manifest = rv._manifest(manifest)
         kernel_state = rv._load_state(ws, manifest.get("run_id"))
-        rv._save_state(ws, dict(
-            kernel_state, manifest=manifest, counters=manifest["counters"],
-            **({"enforcement": enforcement} if enforcement else {})))
+        rv._save_state(
+            ws,
+            dict(
+                kernel_state,
+                manifest=manifest,
+                counters=manifest["counters"],
+                **({"enforcement": enforcement} if enforcement else {}),
+            ),
+        )
     except Exception as e:
         step("route", False, reason=f"{e.__class__.__name__}: {e}")
         # review start owns this contract.  A failed opening must not leave a
@@ -6970,10 +8327,17 @@ def cmd_review(a) -> int:
                 tp.clear(ws)
         except Exception:
             pass
-        print(json.dumps({"schema": "taskplane.review-start-manifest/v2",
-                          "status": "start_failed",
-                          "reason": f"{e.__class__.__name__}: {e}"},
-                         sort_keys=True, separators=(",", ":")))
+        print(
+            json.dumps(
+                {
+                    "schema": "taskplane.review-start-manifest/v2",
+                    "status": "start_failed",
+                    "reason": f"{e.__class__.__name__}: {e}",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         return 1
     print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     return 0 if manifest.get("status") == "ready" else 2
@@ -6987,6 +8351,7 @@ def cmd_target(a) -> int:
     no base, no head, so nothing distinguished a review of a checkout from
     a review of a rendered web diff."""
     import target as tgt
+
     ws = _workspace(a.workspace)
     action = getattr(a, "target_action", None) or "show"
 
@@ -7000,20 +8365,25 @@ def cmd_target(a) -> int:
         if getattr(a, "json", False):
             print(json.dumps(t, indent=2, sort_keys=True))
             return 0
-        print(f"git : {'yes' if t['git']['present'] else 'NO'}"
-              f"   {t['git']['version'] or ''}")
+        print(f"git : {'yes' if t['git']['present'] else 'NO'}   {t['git']['version'] or ''}")
         gh = t["gh"]
-        auth = ("authenticated" if gh["authenticated"] else
-                "NOT authenticated (`gh auth login`)"
-                if gh["present"] else "")
-        print(f"gh  : {'yes' if gh['present'] else 'NO'}"
-              f"   {gh['version'] or ''}  {auth}")
+        auth = (
+            "authenticated"
+            if gh["authenticated"]
+            else "NOT authenticated (`gh auth login`)"
+            if gh["present"]
+            else ""
+        )
+        print(f"gh  : {'yes' if gh['present'] else 'NO'}   {gh['version'] or ''}  {auth}")
         if not gh["present"]:
-            print(f"\n`gh` is REQUIRED to review a remote pull request. A "
-                  f"clone carries the code and none of the intent — the "
-                  f"title, body, linked issues and review conversation are "
-                  f"not in the git objects. Install it:\n  {t['hint']}\n"
-                  f"or run `tp target tools --install`.", file=sys.stderr)
+            print(
+                f"\n`gh` is REQUIRED to review a remote pull request. A "
+                f"clone carries the code and none of the intent — the "
+                f"title, body, linked issues and review conversation are "
+                f"not in the git objects. Install it:\n  {t['hint']}\n"
+                f"or run `tp target tools --install`.",
+                file=sys.stderr,
+            )
             return 1
         return 0
 
@@ -7027,9 +8397,11 @@ def cmd_target(a) -> int:
         return 0
 
     if action == "pin":
-        rec = tgt.pin(ws, base=getattr(a, "base", None),
-                      target=tgt.parse(getattr(a, "spec", None))
-                      if getattr(a, "spec", None) else None)
+        rec = tgt.pin(
+            ws,
+            base=getattr(a, "base", None),
+            target=tgt.parse(getattr(a, "spec", None)) if getattr(a, "spec", None) else None,
+        )
         if not rec.get("ok"):
             print(f"taskplane: {rec.get('reason')}", file=sys.stderr)
             return 1
@@ -7039,13 +8411,16 @@ def cmd_target(a) -> int:
 
     rec = tgt.load(ws)
     if getattr(a, "json", False):
-        print(json.dumps(rec or {"ok": False, "reason": "no target record"},
-                         indent=2, sort_keys=True))
+        print(
+            json.dumps(rec or {"ok": False, "reason": "no target record"}, indent=2, sort_keys=True)
+        )
         return 0 if rec else 1
     if not rec:
-        print("taskplane: this workspace is not bound to a reviewed tree. "
-              "`tp target pin --base <ref>`, or `tp target fetch <pr-url>`.",
-              file=sys.stderr)
+        print(
+            "taskplane: this workspace is not bound to a reviewed tree. "
+            "`tp target pin --base <ref>`, or `tp target fetch <pr-url>`.",
+            file=sys.stderr,
+        )
         return 1
     _print_target(rec, tgt)
     return 0
@@ -7065,89 +8440,114 @@ def cmd_repository(a) -> int:
         except Exception as exc:
             try:
                 import review as review_runtime
-                review_ws = review_runtime.resolve_review_workspace(
-                    ws, a.run_id)
+
+                review_ws = review_runtime.resolve_review_workspace(ws, a.run_id)
                 state = review_runtime._load_state(review_ws, a.run_id)
                 value = state.get("manifest")
-                if state.get("status") == "complete" or \
-                        not isinstance(value, dict) or \
-                        value.get("run_id") != a.run_id:
-                    raise review_runtime.ReviewKernelError(
-                        "active review manifest is unavailable")
+                if (
+                    state.get("status") == "complete"
+                    or not isinstance(value, dict)
+                    or value.get("run_id") != a.run_id
+                ):
+                    raise review_runtime.ReviewKernelError("active review manifest is unavailable")
             except Exception:
-                print(json.dumps({
-                    "schema": "taskplane.preflight/v1",
-                    "status": "unavailable", "run_id": a.run_id,
-                    "reason": f"{exc.__class__.__name__}: {exc}"},
-                    sort_keys=True, separators=(",", ":")))
+                print(
+                    json.dumps(
+                        {
+                            "schema": "taskplane.preflight/v1",
+                            "status": "unavailable",
+                            "run_id": a.run_id,
+                            "reason": f"{exc.__class__.__name__}: {exc}",
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
                 return 1
         print(json.dumps(value, sort_keys=True, separators=(",", ":")))
         return 0
     if action == "resume":
-        bootstrap = repository_preflight_module.find_bootstrap(
-            ws, run_id=a.run_id)
+        bootstrap = repository_preflight_module.find_bootstrap(ws, run_id=a.run_id)
         try:
             if bootstrap:
                 authorized = repository_preflight_module.authorize_bootstrap(
-                    ws, run_id=a.run_id, action_id=a.action_id,
-                    response=a.response, approved_by=a.by)
+                    ws,
+                    run_id=a.run_id,
+                    action_id=a.action_id,
+                    response=a.response,
+                    approved_by=a.by,
+                )
                 if authorized.get("status") == "cancelled":
                     value = authorized
                 else:
                     value = engine.prepare(
-                        bootstrap["spec"], workspace=bootstrap["workspace"],
-                        host=bootstrap["host"], run_id=a.run_id)
+                        bootstrap["spec"],
+                        workspace=bootstrap["workspace"],
+                        host=bootstrap["host"],
+                        run_id=a.run_id,
+                    )
                     repository_preflight_module.clear_bootstrap(bootstrap)
             else:
                 value = engine.resume(
-                    a.run_id, action_id=a.action_id, response=a.response,
-                    approved_by=a.by)
+                    a.run_id, action_id=a.action_id, response=a.response, approved_by=a.by
+                )
         except Exception as exc:
             if bootstrap and isinstance(exc, OSError):
                 value = repository_preflight_module.persist_storage_pause(
-                    ws, spec=bootstrap["spec"], host=bootstrap["host"],
+                    ws,
+                    spec=bootstrap["spec"],
+                    host=bootstrap["host"],
                     run_id=a.run_id,
-                    detail=f"{exc.__class__.__name__}: {exc}")
-                print(json.dumps(value, sort_keys=True,
-                                 separators=(",", ":")))
+                    detail=f"{exc.__class__.__name__}: {exc}",
+                )
+                print(json.dumps(value, sort_keys=True, separators=(",", ":")))
                 return 2
-            print(json.dumps({
-                "schema": "taskplane.preflight/v1", "status": "needs_user",
-                "run_id": a.run_id,
-                "reason": f"{exc.__class__.__name__}: {exc}"},
-                sort_keys=True, separators=(",", ":")))
+            print(
+                json.dumps(
+                    {
+                        "schema": "taskplane.preflight/v1",
+                        "status": "needs_user",
+                        "run_id": a.run_id,
+                        "reason": f"{exc.__class__.__name__}: {exc}",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 2
     else:
-        host = {"kind": tp.host(),
-                "session_id": (os.environ.get("CODEX_THREAD_ID") or
-                               os.environ.get("CLAUDE_SESSION_ID"))}
+        host = {
+            "kind": tp.host(),
+            "session_id": (
+                os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+            ),
+        }
         try:
-            pending = repository_preflight_module.find_bootstrap(
-                ws, spec=a.spec)
+            pending = repository_preflight_module.find_bootstrap(ws, spec=a.spec)
         except runtime_storage.StorageIdentityError:
             # `repository prepare` is the recovery boundary for an invalid
             # checkout locator.  Bootstrap lookup ordinarily follows that
             # locator, but prepare already has an explicit Git checkout and
             # can safely resolve its identity/layout before overwriting the
             # bad locator.  Other repository actions remain fail-closed.
-            candidate = os.path.realpath(os.path.abspath(os.path.expanduser(
-                str(a.spec or ""))))
-            if candidate != os.path.realpath(ws) or \
-                    not os.path.isdir(candidate):
+            candidate = os.path.realpath(os.path.abspath(os.path.expanduser(str(a.spec or ""))))
+            if candidate != os.path.realpath(ws) or not os.path.isdir(candidate):
                 raise
             pending = None
         if pending:
             value = repository_preflight_module.bootstrap_response(pending)
         else:
-            run_id = (getattr(a, "run_id", None) or
-                      repository_preflight_module.new_run_id())
+            run_id = getattr(a, "run_id", None) or repository_preflight_module.new_run_id()
             try:
-                value = engine.prepare(
-                    a.spec, workspace=ws, host=host, run_id=run_id)
+                value = engine.prepare(a.spec, workspace=ws, host=host, run_id=run_id)
             except OSError as exc:
                 value = repository_preflight_module.persist_storage_pause(
-                    ws, spec=a.spec, host=host, run_id=run_id,
-                    detail=f"{exc.__class__.__name__}: {exc}")
+                    ws,
+                    spec=a.spec,
+                    host=host,
+                    run_id=run_id,
+                    detail=f"{exc.__class__.__name__}: {exc}",
+                )
     print(json.dumps(value, sort_keys=True, separators=(",", ":")))
     return 0 if value.get("status") in {"ready", "cancelled"} else 2
 
@@ -7156,21 +8556,23 @@ def _print_target(rec, tgt) -> None:
     t = rec.get("target") or {}
     if t.get("kind") == "pr":
         who = "/".join(x for x in (t.get("owner"), t.get("repo")) if x)
-        print(f"target      : {who}#{t.get('number')}" if who
-              else f"target      : PR #{t.get('number')}")
+        print(
+            f"target      : {who}#{t.get('number')}"
+            if who
+            else f"target      : PR #{t.get('number')}"
+        )
     print(f"origin      : {rec.get('origin') or '(none)'}")
-    print(f"head        : {(rec.get('head') or '')[:12]} "
-          f"({rec.get('branch') or 'detached'})")
+    print(f"head        : {(rec.get('head') or '')[:12]} ({rec.get('branch') or 'detached'})")
     if rec.get("base"):
-        print(f"base        : {(rec.get('base') or '')[:12]} "
-              f"({rec.get('base_ref')})")
+        print(f"base        : {(rec.get('base') or '')[:12]} ({rec.get('base_ref')})")
         print(f"changed     : {len(rec.get('changed_files') or [])} file(s)")
     if rec.get("dirty"):
-        print(f"dirty       : {len(rec['dirty'])} path(s) — "
-              f"the tree is not exactly this commit")
+        print(f"dirty       : {len(rec['dirty'])} path(s) — the tree is not exactly this commit")
     print(f"fingerprint : {rec.get('fingerprint')}")
-    print("Cite this in findings `meta.target` so the sign-off gate can "
-          "check that the findings and the tree are the same thing.")
+    print(
+        "Cite this in findings `meta.target` so the sign-off gate can "
+        "check that the findings and the tree are the same thing."
+    )
 
 
 def cmd_onboard(a) -> int:
@@ -7179,6 +8581,7 @@ def cmd_onboard(a) -> int:
     onboarding dashboard fragment that walks a new user in from zero.
     --json prints the readiness report instead (for the driver to branch on)."""
     import dashboard
+
     ws = _workspace(a.workspace)
     result = None
     values = getattr(a, "setup_values", None)
@@ -7193,8 +8596,12 @@ def cmd_onboard(a) -> int:
         elif getattr(a, "install_codex_hooks", False) or getattr(a, "install_launcher", False):
             result = {"launcher": _install_codex_hooks(ws)}
     except (OSError, ValueError, TypeError, runtime_storage.StorageIdentityError) as exc:
-        result = {"schema": "taskplane.onboarding-setup-result/v1",
-                  "status": "refused", "error": str(exc), "run_preserved": True}
+        result = {
+            "schema": "taskplane.onboarding-setup-result/v1",
+            "status": "refused",
+            "error": str(exc),
+            "run_preserved": True,
+        }
     report = _onboard_report(ws)
     failed = bool(result and result.get("status") in {"refused", "blocked"})
     if failed and isinstance(values, dict):
@@ -7216,9 +8623,14 @@ def cmd_onboard(a) -> int:
     for line in report.get("install", {}).get("paths", []):
         print(line)
     for row in report.get("foreign_state") or []:
-        print("FOREIGN STATE: " + str(row.get("plugin")) + " at "
-              + str(row.get("root")) + " — "
-              + str(row.get("remediation") or ""))
+        print(
+            "FOREIGN STATE: "
+            + str(row.get("plugin"))
+            + " at "
+            + str(row.get("root"))
+            + " — "
+            + str(row.get("remediation") or "")
+        )
     print(dashboard.render_onboarding(report, out=a.out))
     return 2 if failed else 0
 
@@ -7238,6 +8650,7 @@ def cmd_findings(a) -> int:
     gate (the loop dashboard can't). Prints the inline widget fragment."""
     import dashboard
     import review as review_runtime
+
     review_ws = _workspace(a.workspace)
     review_root = review_runtime._public_root(review_ws)
     path = a.file or os.path.join(review_root, "findings.json")
@@ -7263,8 +8676,10 @@ def cmd_findings(a) -> int:
     _bind = None
     try:
         import target as _tgt
-        _bind = _tgt.binding_problem(_workspace(a.workspace), data
-                                     if isinstance(data, dict) else None)
+
+        _bind = _tgt.binding_problem(
+            _workspace(a.workspace), data if isinstance(data, dict) else None
+        )
     except Exception:
         _bind = None
     if _bind:
@@ -7288,44 +8703,49 @@ def cmd_findings(a) -> int:
     # obligation ledger already checks, and delivering the file discharges
     # the obligation exactly as a widget render does.
     _imax = _inline_max()
-    if _imax and not getattr(a, "paged", False) \
-            and not getattr(a, "html", False):
+    if _imax and not getattr(a, "paged", False) and not getattr(a, "html", False):
         _doc = dashboard.render_findings(findings, meta)
         if len(_doc) > _imax:
             _p = a.out or os.path.join(review_root, "findings.html")
             try:
                 os.makedirs(os.path.dirname(_p), exist_ok=True)
                 with open(_p, "w", encoding="utf-8") as f:
-                    f.write(dashboard.standalone_document(
-                        [_doc], title="review findings"))
+                    f.write(dashboard.standalone_document([_doc], title="review findings"))
                 print(f"RENDER-BY-REFERENCE: {_p}")
-                print(f"  {len(_doc):,} chars — too large to retype through a "
-                      f"widget tool. DELIVER THIS FILE (SendUserFile / the "
-                      f"host's artifact channel); do NOT paste its contents "
-                      f"back. `tp ack <id> --delivered {_p}` records it, and "
-                      f"the fingerprint proves it was the engine's own bytes.")
+                print(
+                    f"  {len(_doc):,} chars — too large to retype through a "
+                    f"widget tool. DELIVER THIS FILE (SendUserFile / the "
+                    f"host's artifact channel); do NOT paste its contents "
+                    f"back. `tp ack <id> --delivered {_p}` records it, and "
+                    f"the fingerprint proves it was the engine's own bytes."
+                )
                 return 0
             except OSError:
-                pass          # unwritable: fall through and print inline
+                pass  # unwritable: fall through and print inline
     if getattr(a, "paged", False):
         pages = dashboard.render_findings_paged(findings, meta)
-        print(json.dumps({"headline":
-                          dashboard.headline_findings(findings, meta),
-                          "pages": pages,
-                          "render": "call mcp__visualize__show_widget once "
-                          "PER PAGE, in order, each page's html VERBATIM — "
-                          "byte-for-byte, no edits, no restyling, no "
-                          "re-authoring. The pages ARE the deliverable; "
-                          "never summarize them as prose"}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "headline": dashboard.headline_findings(findings, meta),
+                    "pages": pages,
+                    "render": "call mcp__visualize__show_widget once "
+                    "PER PAGE, in order, each page's html VERBATIM — "
+                    "byte-for-byte, no edits, no restyling, no "
+                    "re-authoring. The pages ARE the deliverable; "
+                    "never summarize them as prose",
+                },
+                indent=2,
+            )
+        )
         return 0
     if getattr(a, "html", False):
         pages = dashboard.render_findings_paged(findings, meta)
         doc = dashboard.standalone_document(
-            [p["html"] for p in pages],
-            title=str(meta.get("title") or "review findings"))
+            [p["html"] for p in pages], title=str(meta.get("title") or "review findings")
+        )
         if a.out:
-            os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".",
-                        exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
             with open(a.out, "w", encoding="utf-8") as f:
                 f.write(doc)
             print(a.out)
@@ -7346,12 +8766,12 @@ def cmd_northstar(a) -> int:
     ws = _workspace(a.workspace)
     if a.render:
         import dashboard
+
         try:
             with open(a.render, encoding="utf-8") as f:
                 note = json.load(f)
         except (OSError, ValueError) as e:
-            print(f"taskplane: cannot read note {a.render}: {e}",
-                  file=sys.stderr)
+            print(f"taskplane: cannot read note {a.render}: {e}", file=sys.stderr)
             return 1
         note.setdefault("north_star", north_star(ws))
         # v1.5.4: same render flow as every other command — headline first
@@ -7360,41 +8780,51 @@ def cmd_northstar(a) -> int:
         print(dashboard.render_strategy_note(note, out=a.out))
         return 0
     ns = north_star(ws)
-    print(json.dumps({
-        "north_star": ns,
-        "set": ns is not None,
-        "source": "context/product.md (Direction / north star)",
-        "hint": None if ns else "Add a 'Direction / north star:' line to "
+    print(
+        json.dumps(
+            {
+                "north_star": ns,
+                "set": ns is not None,
+                "source": "context/product.md (Direction / north star)",
+                "hint": None
+                if ns
+                else "Add a 'Direction / north star:' line to "
                 "context/product.md so the review has a direction to measure "
                 "against.",
-    }, indent=2))
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
 def cmd_graph(a) -> int:
     """Dependency graph: scan (deterministic, no tokens), impact, html."""
     import depgraph as dg
+
     ws = _workspace(a.workspace)
     if a.graph_action == "scan":
         dec = bool(getattr(a, "decompose", False))
         g = dg.scan(ws, decompose=dec)
         quality = dg.scan_quality(g)
-        out = {"modules": len(g["modules"]),
-               "edges": len(g["edges"]),
-               "files": len(g["files"]),
-               "stored": os.path.join(tp.kb_root(ws), "graph.json")}
-        if dec:   # ADDITIVE: without --decompose the output is unchanged
+        out = {
+            "modules": len(g["modules"]),
+            "edges": len(g["edges"]),
+            "files": len(g["files"]),
+            "stored": os.path.join(tp.kb_root(ws), "graph.json"),
+        }
+        if dec:  # ADDITIVE: without --decompose the output is unchanged
             out["components"] = len(g.get("components") or [])
         if quality.get("degraded"):
             out["degraded"] = True
             out["graph_quality"] = quality
         if getattr(a, "text", False):
-            print(f"graph scan: modules={out['modules']} edges={out['edges']} "
-                  f"files={out['files']} degraded="
-                  + str(bool(quality.get("degraded"))).lower())
+            print(
+                f"graph scan: modules={out['modules']} edges={out['edges']} "
+                f"files={out['files']} degraded=" + str(bool(quality.get("degraded"))).lower()
+            )
             for row in quality.get("failures") or []:
-                print("  - {producer}: {module} {file} {error_class}: "
-                      "{reason}".format(**row))
+                print("  - {producer}: {module} {file} {error_class}: {reason}".format(**row))
             if quality.get("degraded"):
                 print("  recovery: " + str(quality.get("recovery") or ""))
         else:
@@ -7402,12 +8832,13 @@ def cmd_graph(a) -> int:
         if bool(getattr(a, "strict", False)) and quality.get("degraded"):
             return 1
     elif a.graph_action == "impact":
-        files = (a.files.split(",") if a.files else
-                 _changed_for_impact(ws, a.base))
-        policy = {"local_depth": a.depth,
-                  "boundary_mode": a.boundary,
-                  "contract_depth": a.contract_depth,
-                  "requirement_depth": a.requirement_depth}
+        files = a.files.split(",") if a.files else _changed_for_impact(ws, a.base)
+        policy = {
+            "local_depth": a.depth,
+            "boundary_mode": a.boundary,
+            "contract_depth": a.contract_depth,
+            "requirement_depth": a.requirement_depth,
+        }
         imp = dg.impact(ws, files, max_depth=a.depth, policy=policy)
         prod = dg.product_impact(ws, files)
         imp["affected_requirements"] = prod["affected_requirements"]
@@ -7420,30 +8851,34 @@ def cmd_graph(a) -> int:
         else:
             print(dg.render_context(imp) or "no modules touched.")
     elif a.graph_action == "edge":
-        e = dg.record_edge(ws, a.src, a.dst, kind=a.kind, note=a.note or "",
-                           confidence=a.confidence)
+        e = dg.record_edge(
+            ws, a.src, a.dst, kind=a.kind, note=a.note or "", confidence=a.confidence
+        )
         print(json.dumps({"recorded": e}, indent=2))
     elif a.graph_action == "contract":
         if not a.provider and not (a.consumer or []):
-            print("taskplane: graph contract needs --provider and/or "
-                  "--consumer", file=sys.stderr)
+            print("taskplane: graph contract needs --provider and/or --consumer", file=sys.stderr)
             return 1
-        node = a.name if a.name.startswith(("contract:", "resource:")) \
-            else "contract:" + a.name
+        node = a.name if a.name.startswith(("contract:", "resource:")) else "contract:" + a.name
         edges = []
         if a.provider:
-            edges.append(dg.record_edge(ws, a.provider, node,
-                                        kind="provides", confidence="high"))
+            edges.append(dg.record_edge(ws, a.provider, node, kind="provides", confidence="high"))
         for consumer in a.consumer or []:
-            edges.append(dg.record_edge(ws, consumer, node,
-                                        kind="consumes", confidence="high"))
-        print(json.dumps({"contract": node, "edges": edges,
-                          "boundary": "dependency impact stops at the "
-                                      "contract between entities"}, indent=2))
+            edges.append(dg.record_edge(ws, consumer, node, kind="consumes", confidence="high"))
+        print(
+            json.dumps(
+                {
+                    "contract": node,
+                    "edges": edges,
+                    "boundary": "dependency impact stops at the contract between entities",
+                },
+                indent=2,
+            )
+        )
     elif a.graph_action == "link":
-        r = dg.link_requirement(ws, a.req, (a.files or "").split(","),
-                                kind=a.kind,
-                                replace=not a.keep)
+        r = dg.link_requirement(
+            ws, a.req, (a.files or "").split(","), kind=a.kind, replace=not a.keep
+        )
         print(json.dumps(r, indent=2))
     elif a.graph_action == "html":
         # AN EMPTY GRAPH IS NOT A PICTURE (v2.11.0). Run from the wrong
@@ -7458,19 +8893,23 @@ def cmd_graph(a) -> int:
             hint = ""
             other = _contracts_elsewhere(ws)
             if other:
-                hint = (" Active taskplane contracts exist in: "
-                        + ", ".join(other) + ".")
-            print(f"taskplane: refusing to render a dependency graph for "
-                  f"{ws} — nothing has been scanned there (0 modules, 0 "
-                  f"edges). Run `tp graph scan` in the workspace under "
-                  f"review, or pass `--workspace <path>`.{hint}",
-                  file=sys.stderr)
+                hint = " Active taskplane contracts exist in: " + ", ".join(other) + "."
+            print(
+                f"taskplane: refusing to render a dependency graph for "
+                f"{ws} — nothing has been scanned there (0 modules, 0 "
+                f"edges). Run `tp graph scan` in the workspace under "
+                f"review, or pass `--workspace <path>`.{hint}",
+                file=sys.stderr,
+            )
             return 1
-        files = (a.files.split(",") if a.files else
-                 _changed_for_impact(ws, a.base))
-        out = dg.to_html(ws, files, out=a.out,
-                         focus=getattr(a, "focus", None),
-                         fragment=bool(getattr(a, "fragment", False)))
+        files = a.files.split(",") if a.files else _changed_for_impact(ws, a.base)
+        out = dg.to_html(
+            ws,
+            files,
+            out=a.out,
+            focus=getattr(a, "focus", None),
+            fragment=bool(getattr(a, "fragment", False)),
+        )
         print(out)
         # WS-F: this is THE designed dependency + system-design view. The
         # recurring failure was not that it could not be produced — it was an
@@ -7479,6 +8918,7 @@ def cmd_graph(a) -> int:
         if getattr(a, "out", None):
             try:
                 import obligations
+
                 # A standalone Review seeds its graph obligation before the
                 # artifact exists.  Re-issue that SAME logical obligation
                 # now that graph.html has bytes instead of creating a second
@@ -7487,20 +8927,28 @@ def cmd_graph(a) -> int:
                 # artifact-bound row replace the placeholder during status
                 # reconciliation.  Outside Review, graph html retains its
                 # ordinary graph-scoped obligation.
-                seeded = next((row for row in reversed(obligations.read(ws))
-                               if row.get("event") == "issued"
-                               and row.get("kind") == "render_graph"
-                               and row.get("step") == "review"), None)
+                seeded = next(
+                    (
+                        row
+                        for row in reversed(obligations.read(ws))
+                        if row.get("event") == "issued"
+                        and row.get("kind") == "render_graph"
+                        and row.get("step") == "review"
+                    ),
+                    None,
+                )
                 oid = obligations.issue(
-                    ws, "render_graph",
+                    ws,
+                    "render_graph",
                     detail="show the product's own dependency/system-design "
-                           "view — not a re-drawn substitute",
-                    step="review" if seeded else "graph", artifact=a.out,
+                    "view — not a re-drawn substitute",
+                    step="review" if seeded else "graph",
+                    artifact=a.out,
                     key="review:render_graph" if seeded else None,
-                    session=seeded.get("session") if seeded else None)
+                    session=seeded.get("session") if seeded else None,
+                )
                 if oid:
-                    print(f"OBLIGATION {oid}: show this view, then "
-                          f"`tp ack {oid}`", file=sys.stderr)
+                    print(f"OBLIGATION {oid}: show this view, then `tp ack {oid}`", file=sys.stderr)
             except Exception:
                 pass
     return 0
@@ -7524,6 +8972,7 @@ def _changed_for_impact(ws, base):
 # both hosts insist on their own literal "version" field — so ONE file is
 # authoritative and everything else is mechanically VERIFIED against it:
 # `tp version --verify` (CI-callable, exit 1 on any drift).
+
 
 def _plugin_repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -7565,14 +9014,19 @@ def plugin_version(root: str | None = None) -> str:
         data = tp.load_json(src, what="version manifest")
         v = data.get("version")
         if not isinstance(v, str) or not v.strip():
-            raise tp.StateError(src, "manifest has no usable 'version' field",
-                                "restore the authoritative version string")
+            raise tp.StateError(
+                src,
+                "manifest has no usable 'version' field",
+                "restore the authoritative version string",
+            )
         return v.strip()
     raise tp.StateError(
-        tried[0], "no plugin manifest found (looked for "
-        + ", ".join("/".join(p) for p in _VERSION_SOURCES) + ")",
-        "reinstall the plugin — the package appears to be missing its "
-        "manifest entirely")
+        tried[0],
+        "no plugin manifest found (looked for "
+        + ", ".join("/".join(p) for p in _VERSION_SOURCES)
+        + ")",
+        "reinstall the plugin — the package appears to be missing its manifest entirely",
+    )
 
 
 def _walk_versions(obj, prefix=""):
@@ -7603,17 +9057,14 @@ def version_report(root: str | None = None) -> dict:
         try:
             data = tp.load_json(p, what="version manifest")
         except tp.StateError as e:
-            checks.append({"file": rel, "field": "(unreadable)",
-                           "found": str(e), "ok": False})
+            checks.append({"file": rel, "field": "(unreadable)", "found": str(e), "ok": False})
             return
         found_any = False
         for field, v in _walk_versions(data):
             found_any = True
-            checks.append({"file": rel, "field": field, "found": v,
-                           "ok": v == authoritative})
+            checks.append({"file": rel, "field": field, "found": v, "ok": v == authoritative})
         if not found_any:
-            checks.append({"file": rel, "field": "version", "found": None,
-                           "ok": False})
+            checks.append({"file": rel, "field": "version", "found": None, "ok": False})
 
     _manifest(os.path.join(".claude-plugin", "plugin.json"))
     _manifest(os.path.join(".claude-plugin", "marketplace.json"))
@@ -7629,40 +9080,52 @@ def version_report(root: str | None = None) -> dict:
     #     (the worksheet dropped its hand-synced version mentions for
     #     exactly this reason).
     for rel, must_mention in (
-            ("README.md", True),
-            ("CHANGELOG.md", True),
-            (os.path.join("docs", "openai-submission.md"), False)):
+        ("README.md", True),
+        ("CHANGELOG.md", True),
+        (os.path.join("docs", "openai-submission.md"), False),
+    ):
         p = os.path.join(root, rel)
         if not os.path.exists(p):
-            continue      # docs aren't packaged into every install shape
+            continue  # docs aren't packaged into every install shape
         try:
             with open(p, encoding="utf-8") as f:
                 body = f.read()
         except OSError as e:
-            checks.append({"file": rel, "field": "(unreadable)",
-                           "found": str(e), "ok": False})
+            checks.append({"file": rel, "field": "(unreadable)", "found": str(e), "ok": False})
             continue
         if must_mention:
             needle = "v" + authoritative
-            checks.append({"file": rel, "field": f"mentions '{needle}'",
-                           "found": needle if needle in body else "ABSENT",
-                           "ok": needle in body})
+            checks.append(
+                {
+                    "file": rel,
+                    "field": f"mentions '{needle}'",
+                    "found": needle if needle in body else "ABSENT",
+                    "ok": needle in body,
+                }
+            )
         else:
             mentioned = set(re.findall(r"\bv?(\d+\.\d+\.\d+)\b", body))
             ok = (not mentioned) or (authoritative in mentioned)
-            checks.append({
-                "file": rel,
-                "field": "no stale version literals",
-                "found": (", ".join(sorted(mentioned)) or
-                          "(no version literals — cannot drift)"),
-                "ok": ok})
+            checks.append(
+                {
+                    "file": rel,
+                    "field": "no stale version literals",
+                    "found": (
+                        ", ".join(sorted(mentioned)) or "(no version literals — cannot drift)"
+                    ),
+                    "ok": ok,
+                }
+            )
 
     mismatches = [c for c in checks if not c["ok"]]
-    return {"version": authoritative,
-            "source": ".codex-plugin/plugin.json (authoritative — edit the "
-                      "version THERE; everything else is verified)",
-            "checks": checks, "mismatches": mismatches,
-            "ok": not mismatches}
+    return {
+        "version": authoritative,
+        "source": ".codex-plugin/plugin.json (authoritative — edit the "
+        "version THERE; everything else is verified)",
+        "checks": checks,
+        "mismatches": mismatches,
+        "ok": not mismatches,
+    }
 
 
 def cmd_version(a) -> int:
@@ -7672,10 +9135,12 @@ def cmd_version(a) -> int:
     rep = version_report()
     print(json.dumps(rep, indent=2))
     if not rep["ok"]:
-        print(f"taskplane: version drift — {len(rep['mismatches'])} "
-              f"surface(s) disagree with the authoritative "
-              f"{rep['version']} (.codex-plugin/plugin.json).",
-              file=sys.stderr)
+        print(
+            f"taskplane: version drift — {len(rep['mismatches'])} "
+            f"surface(s) disagree with the authoritative "
+            f"{rep['version']} (.codex-plugin/plugin.json).",
+            file=sys.stderr,
+        )
     return 0 if rep["ok"] else 1
 
 
@@ -7717,8 +9182,7 @@ def _cli_commands(parser, path=(), help_text=None):
         for name in sorted(action.choices):
             if helps.get(name) == argparse.SUPPRESS:
                 continue
-            yield from _cli_commands(action.choices[name], path + (name,),
-                                     helps.get(name))
+            yield from _cli_commands(action.choices[name], path + (name,), helps.get(name))
 
 
 def _cli_cell(text):
@@ -7750,8 +9214,7 @@ def _cli_flags(parser):
     """[(rendered flag names, action)] for this parser, sorted."""
     rows = []
     for action in parser._actions:
-        if isinstance(action, (argparse._SubParsersAction,
-                               argparse._HelpAction)):
+        if isinstance(action, (argparse._SubParsersAction, argparse._HelpAction)):
             continue
         longs = sorted(o for o in action.option_strings if o.startswith("--"))
         if not longs:
@@ -7764,8 +9227,7 @@ def _cli_positionals(parser):
     """[(name, action)] for this parser's positional arguments."""
     out = []
     for action in parser._actions:
-        if isinstance(action, (argparse._SubParsersAction,
-                               argparse._HelpAction)):
+        if isinstance(action, (argparse._SubParsersAction, argparse._HelpAction)):
             continue
         if action.option_strings:
             continue
@@ -7774,7 +9236,9 @@ def _cli_positionals(parser):
 
 
 _CLI_NARGS_NOTE = {
-    "*": "zero or more", "+": "one or more", "?": "optional",
+    "*": "zero or more",
+    "+": "one or more",
+    "?": "optional",
     argparse.REMAINDER: "zero or more",
 }
 
@@ -7783,8 +9247,11 @@ def _cli_positional_qualifiers(action):
     """Render a positional's cardinality and closed value contract."""
     nargs = action.nargs
     required = (
-        nargs is None or nargs == "+" or
-        isinstance(nargs, int) and not isinstance(nargs, bool) and nargs > 0
+        nargs is None
+        or nargs == "+"
+        or isinstance(nargs, int)
+        and not isinstance(nargs, bool)
+        and nargs > 0
     )
     qualifiers = ["required" if required else "optional"]
     cardinality = _CLI_NARGS_NOTE.get(action.nargs)
@@ -7793,13 +9260,12 @@ def _cli_positional_qualifiers(action):
     if cardinality and cardinality != qualifiers[0]:
         qualifiers.append(cardinality)
     if action.choices:
-        choices = ", ".join(f"`{_cli_cell(choice)}`"
-                            for choice in action.choices)
+        choices = ", ".join(f"`{_cli_cell(choice)}`" for choice in action.choices)
         qualifiers.append("choices: " + choices)
     return "; ".join(qualifiers)
 
-CLI_REFERENCE_REGEN = ("python3 taskplane/tp.py help --md > "
-                       "docs/cli-reference.md")
+
+CLI_REFERENCE_REGEN = "python3 taskplane/tp.py help --md > docs/cli-reference.md"
 
 _CLI_REVIEW_OPTION_NOTE = [
     "When ReviewKernel returns `status: needs_user`, execute the selected",
@@ -7829,38 +9295,89 @@ _CLI_REVIEW_OPTION_NOTE = [
 _CLI_STAGE_REQUEST_FIELDS = {
     "history": ("schema", "run_id", "cursor", "limit"),
     "start": (
-        "schema", "stage", "expected_revision", "operation_id",
-        "expected_predecessor_fingerprints", "foreground", "authority",
+        "schema",
+        "stage",
+        "expected_revision",
+        "operation_id",
+        "expected_predecessor_fingerprints",
+        "foreground",
+        "authority",
         "declared_scope",
     ),
     "reuse": (
-        "schema", "stage", "successor_stage", "expected_revision",
-        "operation_id", "expected_predecessor_fingerprints", "foreground",
-        "authority", "declared_scope", "reason", "actor",
+        "schema",
+        "stage",
+        "successor_stage",
+        "expected_revision",
+        "operation_id",
+        "expected_predecessor_fingerprints",
+        "foreground",
+        "authority",
+        "declared_scope",
+        "reason",
+        "actor",
     ),
     "resume": (
-        "schema", "run_id", "stage_id", "expected_head_fingerprint",
-        "expected_revision", "operation_id", "attempt_id", "authority",
+        "schema",
+        "run_id",
+        "stage_id",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "attempt_id",
+        "authority",
         "declared_scope",
     ),
     "terminalize": (
-        "schema", "run_id", "stage_id", "expected_head_fingerprint",
-        "expected_revision", "operation_id", "outcome", "actor",
-        "terminalized_at", "reason_code", "reason",
-        "completed_deliverables", "completion_evidence", "handoff_manifest",
+        "schema",
+        "run_id",
+        "stage_id",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "outcome",
+        "actor",
+        "terminalized_at",
+        "reason_code",
+        "reason",
+        "completed_deliverables",
+        "completion_evidence",
+        "handoff_manifest",
         "authority",
     ),
     "terminalize-and-start": (
-        "schema", "run_id", "predecessor_stage_id", "stage",
-        "successor_stage", "expected_head_fingerprint", "expected_revision",
-        "operation_id", "outcome", "actor", "terminalized_at",
-        "reason_code", "reason", "completed_deliverables",
-        "completion_evidence", "foreground", "authority", "declared_scope",
+        "schema",
+        "run_id",
+        "predecessor_stage_id",
+        "stage",
+        "successor_stage",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "outcome",
+        "actor",
+        "terminalized_at",
+        "reason_code",
+        "reason",
+        "completed_deliverables",
+        "completion_evidence",
+        "foreground",
+        "authority",
+        "declared_scope",
     ),
     "split": (
-        "schema", "run_id", "stage_id", "expected_head_fingerprint",
-        "expected_revision", "operation_id", "child_specs", "actor",
-        "terminalized_at", "reason", "authority", "declared_scopes",
+        "schema",
+        "run_id",
+        "stage_id",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "child_specs",
+        "actor",
+        "terminalized_at",
+        "reason",
+        "authority",
+        "declared_scopes",
     ),
 }
 
@@ -7868,49 +9385,82 @@ _CLI_STAGE_REQUIRED_FIELDS = {
     "history": ("run_id",),
     "start": ("stage", "expected_revision", "operation_id", "authority"),
     "reuse": (
-        "stage OR successor_stage", "expected_revision", "operation_id",
-        "expected_predecessor_fingerprints", "authority", "reason", "actor",
+        "stage OR successor_stage",
+        "expected_revision",
+        "operation_id",
+        "expected_predecessor_fingerprints",
+        "authority",
+        "reason",
+        "actor",
     ),
     "resume": (
-        "run_id", "stage_id", "expected_head_fingerprint",
-        "expected_revision", "operation_id", "authority",
+        "run_id",
+        "stage_id",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "authority",
     ),
     "terminalize": (
-        "run_id", "stage_id", "expected_head_fingerprint",
-        "expected_revision", "operation_id", "outcome", "actor",
-        "terminalized_at", "authority",
+        "run_id",
+        "stage_id",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "outcome",
+        "actor",
+        "terminalized_at",
+        "authority",
     ),
     "terminalize-and-start": (
-        "predecessor_stage_id", "stage OR successor_stage",
-        "expected_head_fingerprint", "expected_revision", "operation_id",
-        "outcome", "actor", "terminalized_at", "authority",
+        "predecessor_stage_id",
+        "stage OR successor_stage",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "outcome",
+        "actor",
+        "terminalized_at",
+        "authority",
     ),
     "split": (
-        "run_id", "stage_id", "expected_head_fingerprint",
-        "expected_revision", "operation_id", "child_specs", "actor",
-        "terminalized_at", "reason", "authority",
+        "run_id",
+        "stage_id",
+        "expected_head_fingerprint",
+        "expected_revision",
+        "operation_id",
+        "child_specs",
+        "actor",
+        "terminalized_at",
+        "reason",
+        "authority",
     ),
 }
 
 _CLI_STAGE_OPTIONAL_FIELDS = {
     "history": ("schema", "cursor", "limit"),
     "start": (
-        "schema", "expected_predecessor_fingerprints (required for a "
-        "successor; omit for a root)", "foreground", "declared_scope",
+        "schema",
+        "expected_predecessor_fingerprints (required for a successor; omit for a root)",
+        "foreground",
+        "declared_scope",
     ),
     "reuse": ("schema", "foreground", "declared_scope"),
     "resume": ("schema", "attempt_id", "declared_scope"),
     "terminalize": (
-        "schema", "reason_code + reason (required for closed/discarded; "
-        "forbidden for done)", "completed_deliverables + completion_evidence "
+        "schema",
+        "reason_code + reason (required for closed/discarded; forbidden for done)",
+        "completed_deliverables + completion_evidence "
         "(all deliverables and non-empty evidence required for done)",
         "handoff_manifest",
     ),
     "terminalize-and-start": (
-        "schema", "run_id", "reason_code + reason (required for "
-        "closed/discarded; forbidden for done)",
+        "schema",
+        "run_id",
+        "reason_code + reason (required for closed/discarded; forbidden for done)",
         "completed_deliverables + completion_evidence (all deliverables and "
-        "non-empty evidence required for done)", "foreground",
+        "non-empty evidence required for done)",
+        "foreground",
         "declared_scope",
     ),
     "split": ("schema", "declared_scopes"),
@@ -7949,7 +9499,9 @@ _CLI_STAGE_VALUE_EXAMPLE = {
     "run_id": "run-r0004",
     "stage_id": "stage-evaluate-001",
     "requirement": {
-        "id": "R-0004", "revision": "4", "fingerprint": "b" * 64,
+        "id": "R-0004",
+        "revision": "4",
+        "fingerprint": "b" * 64,
     },
     "design": {"revision": "2", "fingerprint": "c" * 64},
     "stage_kind": "evaluate",
@@ -7966,15 +9518,17 @@ _CLI_STAGE_VALUE_EXAMPLE = {
     },
     "execution_root_id": "execution-stage-evaluate-001",
     "deliverables": ["evaluation-verdict"],
-    "selected_artifacts": [{
-        "schema": "taskplane.artifact-reference/v1",
-        "kind": "source",
-        "fingerprint": "f" * 64,
-        "digest": "f" * 64,
-        "bytes": 4096,
-        "locator": "artifact://source/" + "f" * 64,
-        "transport": "artifact-reference",
-    }],
+    "selected_artifacts": [
+        {
+            "schema": "taskplane.artifact-reference/v1",
+            "kind": "source",
+            "fingerprint": "f" * 64,
+            "digest": "f" * 64,
+            "bytes": 4096,
+            "locator": "artifact://source/" + "f" * 64,
+            "transport": "artifact-reference",
+        }
+    ],
     "budget": {"attempt_limit": 3, "token_limit": 8000},
     "dependencies": ["t06-cross-host-rollout"],
     "contracts": ["contract:stage-artifact-handoff"],
@@ -8017,15 +9571,14 @@ _CLI_STAGE_HISTORY_EXAMPLE = {
 
 def _cli_stage_request_note() -> list[str]:
     """Generator-owned JSON boundary documentation for ``tp.py stage``."""
+
     def render_fields(command: str, entries: tuple[str, ...]) -> str:
         rendered_entries = []
-        fields = sorted(
-            _CLI_STAGE_REQUEST_FIELDS[command], key=len, reverse=True)
+        fields = sorted(_CLI_STAGE_REQUEST_FIELDS[command], key=len, reverse=True)
         for entry in entries:
             rendered = entry
             for field in fields:
-                rendered = re.sub(
-                    rf"\b{re.escape(field)}\b", f"`{field}`", rendered)
+                rendered = re.sub(rf"\b{re.escape(field)}\b", f"`{field}`", rendered)
             rendered_entries.append(rendered)
         return ", ".join(rendered_entries)
 
@@ -8047,10 +9600,8 @@ def _cli_stage_request_note() -> list[str]:
         "| --- | --- | --- |",
     ]
     for command in _CLI_STAGE_REQUEST_FIELDS:
-        required = render_fields(
-            command, _CLI_STAGE_REQUIRED_FIELDS[command])
-        optional = render_fields(
-            command, _CLI_STAGE_OPTIONAL_FIELDS[command])
+        required = render_fields(command, _CLI_STAGE_REQUIRED_FIELDS[command])
+        optional = render_fields(command, _CLI_STAGE_OPTIONAL_FIELDS[command])
         out.append(f"| `{command}` | {required} | {optional} |")
     out += [
         "",
@@ -8099,7 +9650,9 @@ def _cli_stage_request_note() -> list[str]:
         "",
         "```json",
         *json.dumps(
-            _CLI_STAGE_VALUE_EXAMPLE, indent=2, ensure_ascii=False,
+            _CLI_STAGE_VALUE_EXAMPLE,
+            indent=2,
+            ensure_ascii=False,
         ).splitlines(),
         "```",
         "",
@@ -8121,7 +9674,8 @@ def _cli_stage_request_note() -> list[str]:
         "```json",
         *json.dumps(
             _CLI_STAGE_ARTIFACT_REFERENCE_EXAMPLE,
-            indent=2, ensure_ascii=False,
+            indent=2,
+            ensure_ascii=False,
         ).splitlines(),
         "```",
         "",
@@ -8138,7 +9692,9 @@ def _cli_stage_request_note() -> list[str]:
         "",
         "```json",
         *json.dumps(
-            _CLI_STAGE_HISTORY_EXAMPLE, indent=2, ensure_ascii=False,
+            _CLI_STAGE_HISTORY_EXAMPLE,
+            indent=2,
+            ensure_ascii=False,
         ).splitlines(),
         "```",
         "",
@@ -8161,7 +9717,9 @@ def _cli_stage_request_note() -> list[str]:
         "",
         "```json",
         *json.dumps(
-            _CLI_STAGE_SUCCESSOR_EXAMPLE, indent=2, ensure_ascii=False,
+            _CLI_STAGE_SUCCESSOR_EXAMPLE,
+            indent=2,
+            ensure_ascii=False,
         ).splitlines(),
         "```",
         "",
@@ -8187,7 +9745,8 @@ def cli_reference_markdown(parser) -> str:
         raise CliReferenceError(
             "refusing to emit a degenerate CLI reference: the argparse walk "
             f"found {len(commands)} subcommand(s) and {flag_total} long "
-            "flag(s) — the parser tree is empty or was not built")
+            "flag(s) — the parser tree is empty or was not built"
+        )
 
     undocumented = []
     for path, par, help_text in walk:
@@ -8196,40 +9755,32 @@ def cli_reference_markdown(parser) -> str:
             undocumented.append(f"subcommand `{name}` has no help text")
         for longs, action in _cli_flags(par):
             if not str(action.help or "").strip():
-                undocumented.append(
-                    f"flag `{longs[0]}` on `{name}` has no help text")
+                undocumented.append(f"flag `{longs[0]}` on `{name}` has no help text")
     if undocumented:
         raise CliReferenceError(
             "refusing to emit an incomplete CLI reference — "
             f"{len(undocumented)} undocumented surface(s): "
             + "; ".join(undocumented)
             + ". Write the argparse help= text (that IS the documentation) "
-              "and regenerate")
+            "and regenerate"
+        )
 
     out = [f"# `{parser.prog}` CLI reference", ""]
     out += [
-        f"> This file is GENERATED from `{parser.prog}`'s live argparse "
-        "tree — don't",
+        f"> This file is GENERATED from `{parser.prog}`'s live argparse tree — don't",
         "> hand-edit. Regenerate with",
         f"> `{CLI_REFERENCE_REGEN}`.",
-        "> CI regenerates and diffs this file on every push, so a stale "
-        "copy fails",
+        "> CI regenerates and diffs this file on every push, so a stale copy fails",
         "> the build.",
         "",
-        f"Every subcommand of `{parser.prog}` and every long flag it "
-        "accepts, walked",
-        "from the parser the CLI actually dispatches with: a flag cannot "
-        "be listed",
-        "here without existing, and cannot exist without being listed. "
-        "The generator",
-        "REFUSES to emit when a subcommand or a long flag carries no help "
-        "text, so",
-        "the documentation ratchet is enforced at generation time rather "
-        "than by an",
+        f"Every subcommand of `{parser.prog}` and every long flag it accepts, walked",
+        "from the parser the CLI actually dispatches with: a flag cannot be listed",
+        "here without existing, and cannot exist without being listed. The generator",
+        "REFUSES to emit when a subcommand or a long flag carries no help text, so",
+        "the documentation ratchet is enforced at generation time rather than by an",
         "exemption list.",
         "",
-        "argparse's own `-h` / `--help` is accepted by every command below "
-        "and is",
+        "argparse's own `-h` / `--help` is accepted by every command below and is",
         "not repeated in the tables.",
         "",
         "## Commands",
@@ -8254,8 +9805,7 @@ def cli_reference_markdown(parser) -> str:
             out.append("Positional arguments:")
             out.append("")
             for pname, action in positionals:
-                line = (f"- `{pname}` "
-                        f"({_cli_positional_qualifiers(action)})")
+                line = f"- `{pname}` ({_cli_positional_qualifiers(action)})"
                 if str(action.help or "").strip():
                     line += f" — {_cli_cell(action.help)}"
                 out.append(line)
@@ -8265,8 +9815,9 @@ def cli_reference_markdown(parser) -> str:
             out += ["| Flag | Value | What it does |", "| --- | --- | --- |"]
             for longs, action in flags:
                 shown = ", ".join(f"`{o}`" for o in longs)
-                out.append(f"| {shown} | {_cli_cell(_cli_value(action))} "
-                           f"| {_cli_cell(action.help)} |")
+                out.append(
+                    f"| {shown} | {_cli_cell(_cli_value(action))} | {_cli_cell(action.help)} |"
+                )
             out.append("")
     return "\n".join(out).rstrip("\n") + "\n"
 
@@ -8275,8 +9826,10 @@ def cmd_help(a) -> int:
     """`tp help` — the parser's own help; `tp help --md` — the reference."""
     parser = getattr(a, "root_parser", None)
     if parser is None:
-        print("taskplane: help is unavailable — no parser was bound to the "
-              "command (internal error)", file=sys.stderr)
+        print(
+            "taskplane: help is unavailable — no parser was bound to the command (internal error)",
+            file=sys.stderr,
+        )
         return 1
     if not getattr(a, "md", False):
         parser.print_help()
@@ -8293,9 +9846,11 @@ def cmd_help(a) -> int:
 def cmd_pickup(a: argparse.Namespace) -> int:
     """Run one approved repository shelf contract without loop state."""
     import pickup
+
     try:
         result = pickup.run(
-            _workspace(a.workspace), a.design_contract,
+            _workspace(a.workspace),
+            a.design_contract,
             trust_source=a.trust_source,
         )
     except pickup.PickupRefusal as exc:
@@ -8348,8 +9903,7 @@ def _enforce_stage_compatibility(argv=None) -> int | None:
         envelope = _public_engine_error(exc)
         if envelope is None:  # fail closed if registry wiring ever drifts
             raise
-        return _render_engine_error(
-            exc, envelope, workspace=_preparser_workspace(argv))
+        return _render_engine_error(exc, envelope, workspace=_preparser_workspace(argv))
     return None
 
 
@@ -8358,34 +9912,41 @@ def _public_engine_error(exc: BaseException) -> dict | None:
     return PUBLIC_ENGINE_ERROR_REGISTRY.get(type(exc))
 
 
-def _render_engine_error(exc: BaseException, envelope: dict, *,
-                         workspace: str | None = None) -> int:
+def _render_engine_error(
+    exc: BaseException, envelope: dict, *, workspace: str | None = None
+) -> int:
     """Project one known refusal as headline, recovery command, and exit."""
     workspace = shlex.quote(_workspace(workspace))
     program = shlex.quote(os.path.abspath(__file__))
     recovery_value = envelope["recovery"]
-    recovery_templates = ((recovery_value,) if isinstance(recovery_value, str)
-                          else tuple(recovery_value))
-    recovery_commands = [str(template).format(
-        program=program, workspace=workspace)
-        for template in recovery_templates]
-    print(f"taskplane: {envelope['headline']}: "
-          f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    recovery_templates = (
+        (recovery_value,) if isinstance(recovery_value, str) else tuple(recovery_value)
+    )
+    recovery_commands = [
+        str(template).format(program=program, workspace=workspace)
+        for template in recovery_templates
+    ]
+    print(f"taskplane: {envelope['headline']}: {type(exc).__name__}: {exc}", file=sys.stderr)
     for index, recovery in enumerate(recovery_commands, start=1):
-        suffix = ("" if len(recovery_commands) == 1 else
-                  f" {index}/{len(recovery_commands)}")
-        print(f"  {envelope['action_label']}{suffix}: {recovery}",
-              file=sys.stderr)
-    print("  debug: re-run with TASKPLANE_DEBUG=1 for the full traceback",
-          file=sys.stderr)
+        suffix = "" if len(recovery_commands) == 1 else f" {index}/{len(recovery_commands)}"
+        print(f"  {envelope['action_label']}{suffix}: {recovery}", file=sys.stderr)
+    print("  debug: re-run with TASKPLANE_DEBUG=1 for the full traceback", file=sys.stderr)
     return int(envelope["exit_code"])
 
 
-_LIFECYCLE_HOOK_COMMANDS = frozenset({
-    "context", "host-native-check", "screen", "screen-dispatch",
-    "screen-render", "screen-skill", "session-verify", "subagent-start",
-    "subagent-stop",
-})
+_LIFECYCLE_HOOK_COMMANDS = frozenset(
+    {
+        "context",
+        "host-native-check",
+        "screen",
+        "screen-dispatch",
+        "screen-render",
+        "screen-skill",
+        "session-verify",
+        "subagent-start",
+        "subagent-stop",
+    }
+)
 
 
 def _unbound_global_hook(argv=None) -> bool:
@@ -8396,19 +9957,25 @@ def _unbound_global_hook(argv=None) -> bool:
     if os.environ.get("TASKPLANE_HOOK_PATH") not in ("native", "bridge"):
         return False
     workspace = os.getcwd()
-    if os.path.isfile(os.path.join(
-            workspace, ".taskplane", "codex-hook.py")):
+    if os.path.isfile(os.path.join(workspace, ".taskplane", "codex-hook.py")):
         return False
     try:
-        common = tp._run([
-            "git", "rev-parse", "--path-format=absolute", "--git-common-dir",
-        ], cwd=workspace)
+        common = tp._run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            cwd=workspace,
+        )
     except FileNotFoundError:
         return True
     if common.returncode:
         return True
-    launcher = os.path.realpath(os.path.join(
-        common.stdout.strip(), "..", ".taskplane", "codex-hook.py"))
+    launcher = os.path.realpath(
+        os.path.join(common.stdout.strip(), "..", ".taskplane", "codex-hook.py")
+    )
     return not os.path.isfile(launcher)
 
 
@@ -8428,15 +9995,14 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pickup_parser = sub.add_parser(
-        "pickup", help="run one approved shelf Design Contract without a loop",
+        "pickup",
+        help="run one approved shelf Design Contract without a loop",
         allow_abbrev=False,
     )
     pickup_parser.add_argument(
         "design_contract", help="repository-relative approved Design Contract"
     )
-    pickup_parser.add_argument(
-        "--workspace", default=argparse.SUPPRESS, help=_WS_HELP
-    )
+    pickup_parser.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     pickup_parser.add_argument(
         "--trust-source",
         help="attribute one exact full source SHA to the invoking operator",
@@ -8450,80 +10016,117 @@ def main(argv=None) -> int:
     n.add_argument("--tools", help="comma-separated allowed tools (default: any)")
     n.add_argument("--tests", help="DoD test command")
     n.add_argument("--budget", type=float, help="cooperative $ ceiling")
-    n.add_argument("--max-actions", type=int, dest="max_actions",
-                   help="hook-enforced action ceiling (default 60)")
-    n.add_argument("--read-only", action="store_true",
-                   help="review/plan role — block filesystem writes")
-    n.add_argument("--write-allow", action="append", metavar="GLOB",
-                   help="in read-only mode, dirs that ARE writable "
-                        "(e.g. .em-review/**) — repeatable")
-    cs = sub.add_parser("contracts", help="list every active contract slot, "
-                        "including child ownership and stale lifecycle state")
+    n.add_argument(
+        "--max-actions",
+        type=int,
+        dest="max_actions",
+        help="hook-enforced action ceiling (default 60)",
+    )
+    n.add_argument(
+        "--read-only", action="store_true", help="review/plan role — block filesystem writes"
+    )
+    n.add_argument(
+        "--write-allow",
+        action="append",
+        metavar="GLOB",
+        help="in read-only mode, dirs that ARE writable (e.g. .em-review/**) — repeatable",
+    )
+    cs = sub.add_parser(
+        "contracts",
+        help="list every active contract slot, including child ownership and stale lifecycle state",
+    )
     cs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cs.set_defaults(fn=cmd_contracts)
 
-    n.add_argument("--owes", metavar="RUN_TYPE",
-                   help="seed the artifacts this run type owes as BINDING "
-                        "obligations (e.g. `review`): recorded before the "
-                        "work starts, and taskplane's own completion "
-                        "commands stay blocked until each is shown")
-    n.add_argument("--max-tokens", type=int, default=None, dest="max_tokens",
-                   metavar="N",
-                   help="EFFECTIVE-token ceiling for this contract (cache "
-                        "reads x0.1, cache writes x2, output x5 — the "
-                        "weighting cost actually follows). Counts what the "
-                        "host recorded, so it tracks spend where the action "
-                        "ceiling only counts tool calls. Unset = action "
-                        "ceiling only, exactly as before.")
-    n.add_argument("--target", metavar="SPEC",
-                   help="what is being reviewed — a PR url, OWNER/REPO#N, "
-                        "or a ref. Pins this checkout (origin, head, base, "
-                        "dirty state) so the findings can cite the tree they "
-                        "came from and the completion gate can check it")
-    n.add_argument("--base", metavar="REF",
-                   help="diff base for the target pin (e.g. origin/main)")
-    n.add_argument("--fetch", action="store_true",
-                   help="with a PR --target, fetch pull/N/head into this "
-                        "checkout first (needs git; `gh` is what supplies "
-                        "the PR's title, body and discussion)")
-    n.add_argument("--advisory", action="store_true",
-                   help="continue with visibly advisory screen enforcement")
-    n.add_argument("--by", default=None,
-                   help="human identity required with --advisory or a "
-                        "foreign-state override")
-    n.add_argument("--allow-foreign-state", action="append", metavar="ROOT",
-                   help="repeatable exact signed foreign-state root to include; "
-                        "requires --by and is recorded on the contract")
+    n.add_argument(
+        "--owes",
+        metavar="RUN_TYPE",
+        help="seed the artifacts this run type owes as BINDING "
+        "obligations (e.g. `review`): recorded before the "
+        "work starts, and taskplane's own completion "
+        "commands stay blocked until each is shown",
+    )
+    n.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        dest="max_tokens",
+        metavar="N",
+        help="EFFECTIVE-token ceiling for this contract (cache "
+        "reads x0.1, cache writes x2, output x5 — the "
+        "weighting cost actually follows). Counts what the "
+        "host recorded, so it tracks spend where the action "
+        "ceiling only counts tool calls. Unset = action "
+        "ceiling only, exactly as before.",
+    )
+    n.add_argument(
+        "--target",
+        metavar="SPEC",
+        help="what is being reviewed — a PR url, OWNER/REPO#N, "
+        "or a ref. Pins this checkout (origin, head, base, "
+        "dirty state) so the findings can cite the tree they "
+        "came from and the completion gate can check it",
+    )
+    n.add_argument("--base", metavar="REF", help="diff base for the target pin (e.g. origin/main)")
+    n.add_argument(
+        "--fetch",
+        action="store_true",
+        help="with a PR --target, fetch pull/N/head into this "
+        "checkout first (needs git; `gh` is what supplies "
+        "the PR's title, body and discussion)",
+    )
+    n.add_argument(
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+    )
+    n.add_argument(
+        "--by",
+        default=None,
+        help="human identity required with --advisory or a foreign-state override",
+    )
+    n.add_argument(
+        "--allow-foreign-state",
+        action="append",
+        metavar="ROOT",
+        help="repeatable exact signed foreign-state root to include; "
+        "requires --by and is recorded on the contract",
+    )
     n.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     n.set_defaults(fn=cmd_new)
 
-    dc = sub.add_parser("decision", help="decision registry — structured "
-                        "ADRs with lifecycle, links and supersede chains")
+    dc = sub.add_parser(
+        "decision",
+        help="decision registry — structured ADRs with lifecycle, links and supersede chains",
+    )
     dc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dsub = dc.add_subparsers(dest="decision_action", required=True)
     dn = dsub.add_parser("new", help="record a new decision (ADR)")
     dn.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dn.add_argument("title")
-    dn.add_argument("--context", help="the situation that forced the "
-                    "decision")
+    dn.add_argument("--context", help="the situation that forced the decision")
     dn.add_argument("--decision", help="what was decided, in one sentence")
-    dn.add_argument("--rationale", help="why this option won over the "
-                    "alternatives")
-    dn.add_argument("--alternative", action="append",
-                    help="repeatable: 'option | gained | given up'")
+    dn.add_argument("--rationale", help="why this option won over the alternatives")
+    dn.add_argument(
+        "--alternative", action="append", help="repeatable: 'option | gained | given up'"
+    )
     dn.add_argument("--req", help="linked requirement R-XXXX")
-    dn.add_argument("--modules", help="comma-separated module globs this "
-                    "decision governs (drives always-on context injection)")
+    dn.add_argument(
+        "--modules",
+        help="comma-separated module globs this "
+        "decision governs (drives always-on context injection)",
+    )
     dn.add_argument("--supersedes", help="decision id this one replaces")
-    dn.add_argument("--status", default="accepted",
-                    choices=["proposed", "accepted"],
-                    help="lifecycle state to record it in "
-                         "(default: accepted)")
+    dn.add_argument(
+        "--status",
+        default="accepted",
+        choices=["proposed", "accepted"],
+        help="lifecycle state to record it in (default: accepted)",
+    )
     dn.add_argument("--tags", help="comma-separated tags for retrieval")
     dl = dsub.add_parser("list", help="list recorded decisions")
     dl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    dl.add_argument("--status", dest="status_filter",
-                    help="list only decisions in this lifecycle state")
+    dl.add_argument(
+        "--status", dest="status_filter", help="list only decisions in this lifecycle state"
+    )
     dsh = dsub.add_parser("show", help="print one decision in full")
     dsh.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dsh.add_argument("id")
@@ -8533,96 +10136,124 @@ def main(argv=None) -> int:
     dsp = dsub.add_parser("supersede", help="mark a decision replaced by a newer one")
     dsp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     dsp.add_argument("id")
-    dsp.add_argument("--by", required=True,
-                     help="id of the decision that replaces this one")
+    dsp.add_argument("--by", required=True, help="id of the decision that replaces this one")
     dc.set_defaults(fn=cmd_decision)
 
     s = sub.add_parser("screen", help="PreToolUse hook entrypoint (stdin event)")
     s.set_defaults(fn=cmd_screen)
 
-    ss = sub.add_parser("screen-skill", help="PreToolUse collision gate for "
-                        "Skill invocations during governed work")
+    ss = sub.add_parser(
+        "screen-skill", help="PreToolUse collision gate for Skill invocations during governed work"
+    )
     ss.set_defaults(fn=cmd_screen_skill)
 
-    sv = sub.add_parser("session-verify", help="Stop/SessionEnd hook: exit 2 "
-                        "listing artifacts this run owes and never showed")
+    sv = sub.add_parser(
+        "session-verify",
+        help="Stop/SessionEnd hook: exit 2 listing artifacts this run owes and never showed",
+    )
     sv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     sv.set_defaults(fn=cmd_session_verify)
 
-    sr = sub.add_parser("screen-render", help="PreToolUse hook for the "
-                        "inline-render tool: record that a render RAN, and "
-                        "with which bytes. Observes only — never denies")
+    sr = sub.add_parser(
+        "screen-render",
+        help="PreToolUse hook for the "
+        "inline-render tool: record that a render RAN, and "
+        "with which bytes. Observes only — never denies",
+    )
     sr.set_defaults(fn=cmd_screen_render)
 
-    sd = sub.add_parser("screen-dispatch", help="PreToolUse hook for the "
-                        "Agent tool: verify tier-routed model was passed "
-                        "(inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict)")
+    sd = sub.add_parser(
+        "screen-dispatch",
+        help="PreToolUse hook for the "
+        "Agent tool: verify tier-routed model was passed "
+        "(inert unless TASKPLANE_ENFORCE_DISPATCH=warn|strict)",
+    )
     sd.set_defaults(fn=cmd_screen_dispatch)
 
     sas = sub.add_parser(
-        "subagent-start", help="SubagentStart lifecycle trace, bounded "
+        "subagent-start",
+        help="SubagentStart lifecycle trace, bounded "
         "contract context, and leased review-child identity binding "
-        "(stdin event)")
+        "(stdin event)",
+    )
     sas.set_defaults(fn=cmd_subagent_start)
-    saz = sub.add_parser("subagent-stop", help="SubagentStop lifecycle trace "
-                         "and authenticated exact-child terminal cleanup "
-                         "(stdin event; never a completion gate)")
+    saz = sub.add_parser(
+        "subagent-stop",
+        help="SubagentStop lifecycle trace "
+        "and authenticated exact-child terminal cleanup "
+        "(stdin event; never a completion gate)",
+    )
     saz.set_defaults(fn=cmd_subagent_stop)
 
     rd = sub.add_parser("ready", help="Definition-of-Ready entry gate")
     rd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rd.set_defaults(fn=cmd_ready)
 
-    gcp = sub.add_parser("gc", help="prune runtime artifacts (tombstones, "
-                         "stale locks, orphaned tmp) — never governance "
-                         "records")
+    gcp = sub.add_parser(
+        "gc",
+        help="prune runtime artifacts (tombstones, "
+        "stale locks, orphaned tmp) — never governance "
+        "records",
+    )
     gcp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     gcp.set_defaults(fn=cmd_gc)
     wtc = sub.add_parser(
-        "worktree-cleanup", help="replay receipt-scoped post-merge cleanup "
-        "once; never force-removes or deletes branches")
-    wtc.add_argument("action", choices=["replay"],
-                     help="bounded maintenance action")
+        "worktree-cleanup",
+        help="replay receipt-scoped post-merge cleanup "
+        "once; never force-removes or deletes branches",
+    )
+    wtc.add_argument("action", choices=["replay"], help="bounded maintenance action")
     wtc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     wtc.set_defaults(fn=cmd_worktree_cleanup)
     cl = sub.add_parser("clear", help="deactivate the workspace contract")
-    cl.add_argument("--all", action="store_true",
-                    help="release EVERY active slot, not just this process's "
-                         "— the way out when a wave leaked contracts")
-    cl.add_argument("--slot", metavar="SLOT",
-                    help="release one named slot (see `tp contracts`) "
-                         "without setting TASKPLANE_TASK")
-    cl.add_argument("--approved-by",
-                    help="human chat identity authorizing recovery past an "
-                         "exhausted budget")
+    cl.add_argument(
+        "--all",
+        action="store_true",
+        help="release EVERY active slot, not just this process's "
+        "— the way out when a wave leaked contracts",
+    )
+    cl.add_argument(
+        "--slot",
+        metavar="SLOT",
+        help="release one named slot (see `tp contracts`) without setting TASKPLANE_TASK",
+    )
+    cl.add_argument(
+        "--approved-by", help="human chat identity authorizing recovery past an exhausted budget"
+    )
     cl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cl.set_defaults(fn=cmd_clear)
 
     wrl = sub.add_parser(
-        "worker-release", help="authenticated exact-slot terminal cleanup; "
-        "refuses live or non-terminal worker contracts")
-    wrl.add_argument("--slot", required=True,
-                     help="exact worker slot named by its signed action")
-    wrl.add_argument("--signed-action", required=True,
-                     help="URL-safe signed exact-slot release action")
+        "worker-release",
+        help="authenticated exact-slot terminal cleanup; "
+        "refuses live or non-terminal worker contracts",
+    )
+    wrl.add_argument("--slot", required=True, help="exact worker slot named by its signed action")
+    wrl.add_argument(
+        "--signed-action", required=True, help="URL-safe signed exact-slot release action"
+    )
     wrl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     wrl.set_defaults(fn=cmd_worker_release)
 
-    st = sub.add_parser("status", help="show project loop status and the "
-                        "active contract")
+    st = sub.add_parser("status", help="show project loop status and the active contract")
     st.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     st.set_defaults(fn=cmd_status)
 
-    b = sub.add_parser("budget", help="record a cooperative spend estimate, "
-                       "or --grant N more actions (the budget approval gate)")
-    b.add_argument("--spent", type=float,
-                   help="cooperative $ estimate (advisory)")
-    b.add_argument("--grant", type=int, metavar="N",
-                   help="raise the enforced action ceiling by N — for the "
-                        "human / ungoverned main session after approving "
-                        "more budget (a governed agent cannot grant itself)")
-    b.add_argument("--approved-by",
-                   help="human chat identity authorizing this budget grant")
+    b = sub.add_parser(
+        "budget",
+        help="record a cooperative spend estimate, "
+        "or --grant N more actions (the budget approval gate)",
+    )
+    b.add_argument("--spent", type=float, help="cooperative $ estimate (advisory)")
+    b.add_argument(
+        "--grant",
+        type=int,
+        metavar="N",
+        help="raise the enforced action ceiling by N — for the "
+        "human / ungoverned main session after approving "
+        "more budget (a governed agent cannot grant itself)",
+    )
+    b.add_argument("--approved-by", help="human chat identity authorizing this budget grant")
     b.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     b.set_defaults(fn=cmd_budget)
 
@@ -8630,8 +10261,7 @@ def main(argv=None) -> int:
     d.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     d.set_defaults(fn=cmd_dod)
 
-    cp = sub.add_parser(
-        "command", help="durable governed host-command lifecycle")
+    cp = sub.add_parser("command", help="durable governed host-command lifecycle")
     _add_governed_command_actions(cp, fn=cmd_command)
 
     lp = sub.add_parser("loop", help="drive the Evaluate-Loop engine")
@@ -8644,229 +10274,331 @@ def main(argv=None) -> int:
     li = lsub.add_parser("init", help="start an Evaluate-Loop for a goal")
     li.add_argument("goal", nargs="*")
     li.add_argument("--spec", help="path to an existing spec (skips PM)")
-    li.add_argument("--max-fix-cycles", type=int, default=2,
-                    help="fix cycles the loop may run before it escalates "
-                         "to the human (default 2)")
+    li.add_argument(
+        "--max-fix-cycles",
+        type=int,
+        default=2,
+        help="fix cycles the loop may run before it escalates to the human (default 2)",
+    )
     li.add_argument("--checkpoints", help="comma list: plan,em (default both)")
-    li.add_argument("--req", help="anchor the loop to a requirement R-id; "
-                    "requires an exact "
-                    "existing requirement")
-    li.add_argument("--parallel", action="store_true",
-                    help="execute waves of scope-disjoint tasks concurrently, "
-                         "one governed agent per task")
-    li.add_argument("--design", action="store_true",
-                    help="run the Design Contract + human design approval "
-                         "before implementation planning")
-    li.add_argument("--design-only", action="store_true",
-                    help="stop after the human approves the Design Contract "
-                         "instead of continuing to Plan/Build/Review")
-    li.add_argument("--reuse-approved-design", action="store_true",
-                    help="start at Plan from an unchanged completed "
-                         "design-only loop with the same requirement/spec "
-                         "and attributable --by authority")
-    li.add_argument("--force", action="store_true",
-                    help="replace an in-flight loop (the old loop.json is "
-                         "archived first — without this flag re-init refuses)")
-    li.add_argument("--advisory", action="store_true",
-                    help="continue with visibly advisory screen enforcement")
-    li.add_argument("--by", default=None,
-                    help="human identity required with --advisory and with "
-                         "new runs; the value "
-                         "becomes the root stage authority.actor and must use "
-                         "identifier syntax (for example human:vdemkiv; no "
-                         "spaces)")
+    li.add_argument(
+        "--req",
+        help="anchor the loop to a requirement R-id; requires an exact existing requirement",
+    )
+    li.add_argument(
+        "--parallel",
+        action="store_true",
+        help="execute waves of scope-disjoint tasks concurrently, one governed agent per task",
+    )
+    li.add_argument(
+        "--design",
+        action="store_true",
+        help="run the Design Contract + human design approval before implementation planning",
+    )
+    li.add_argument(
+        "--design-only",
+        action="store_true",
+        help="stop after the human approves the Design Contract "
+        "instead of continuing to Plan/Build/Review",
+    )
+    li.add_argument(
+        "--reuse-approved-design",
+        action="store_true",
+        help="start at Plan from an unchanged completed "
+        "design-only loop with the same requirement/spec "
+        "and attributable --by authority",
+    )
+    li.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an in-flight loop (the old loop.json is "
+        "archived first — without this flag re-init refuses)",
+    )
+    li.add_argument(
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+    )
+    li.add_argument(
+        "--by",
+        default=None,
+        help="human identity required with --advisory and with "
+        "new runs; the value "
+        "becomes the root stage authority.actor and must use "
+        "identifier syntax (for example human:vdemkiv; no "
+        "spaces)",
+    )
     ln = lsub.add_parser("next", help="print the next stage brief for the active loop")
-    ln.add_argument("--req", help="attach requirement R-id to the loop "
-                    "before DoR evaluation (design anchor)")
-    ln.add_argument("--emit", choices=["workflow", "task", "auto"],
-                    default="auto",
-                    help="stage dispatch surface (R-0004): 'workflow' wraps "
-                         "an evaluate/fix stage payload as ONE ready-to-run "
-                         "stage-wave workflow invocation, 'task' prints "
-                         "today's payload byte-identically (the mandatory "
-                         "fallback and the only Codex path), 'auto' consults "
-                         "workflow_available() (default)")
-    ln.add_argument("--advisory", action="store_true",
-                    help="acknowledge degraded screen enforcement")
-    ln.add_argument("--by", default=None,
-                    help="human identity required with --advisory")
+    ln.add_argument(
+        "--req", help="attach requirement R-id to the loop before DoR evaluation (design anchor)"
+    )
+    ln.add_argument(
+        "--emit",
+        choices=["workflow", "task", "auto"],
+        default="auto",
+        help="stage dispatch surface (R-0004): 'workflow' wraps "
+        "an evaluate/fix stage payload as ONE ready-to-run "
+        "stage-wave workflow invocation, 'task' prints "
+        "today's payload byte-identically (the mandatory "
+        "fallback and the only Codex path), 'auto' consults "
+        "workflow_available() (default)",
+    )
+    ln.add_argument(
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+    )
+    ln.add_argument("--by", default=None, help="human identity required with --advisory")
     lw = lsub.add_parser("wave", help="print the EXECUTE wave: one brief per scope-disjoint task")
-    lw.add_argument("--emit", choices=["workflow", "task", "auto"],
-                    default="auto",
-                    help="stage dispatch surface (R-0004): 'workflow' wraps "
-                         "the EXECUTE wave as ONE ready-to-run execute-wave "
-                         "workflow invocation covering every wave entry, "
-                         "'task' prints today's wave payload byte-identically "
-                         "(the mandatory fallback and the only Codex path), "
-                         "'auto' consults workflow_available() (default)")
-    lw.add_argument("--advisory", action="store_true",
-                    help="acknowledge degraded screen enforcement")
-    lw.add_argument("--by", default=None,
-                    help="human identity required with --advisory")
+    lw.add_argument(
+        "--emit",
+        choices=["workflow", "task", "auto"],
+        default="auto",
+        help="stage dispatch surface (R-0004): 'workflow' wraps "
+        "the EXECUTE wave as ONE ready-to-run execute-wave "
+        "workflow invocation covering every wave entry, "
+        "'task' prints today's wave payload byte-identically "
+        "(the mandatory fallback and the only Codex path), "
+        "'auto' consults workflow_available() (default)",
+    )
+    lw.add_argument(
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+    )
+    lw.add_argument("--by", default=None, help="human identity required with --advisory")
     lc = lsub.add_parser("claim", help="a worker claims one wave task into its own worktree")
     lc.add_argument("task_id")
-    lc.add_argument("--agent-workspace", required=True,
-                    help="the worker's worktree — its contract activates there")
-    lc.add_argument("--advisory", action="store_true",
-                    help="acknowledge degraded screen enforcement")
-    lc.add_argument("--by", default=None,
-                    help="human identity required with --advisory")
+    lc.add_argument(
+        "--agent-workspace",
+        required=True,
+        help="the worker's worktree — its contract activates there",
+    )
+    lc.add_argument(
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+    )
+    lc.add_argument("--by", default=None, help="human identity required with --advisory")
     lg = lsub.add_parser("gate", help="orchestrator-only: judge the evidence and advance the loop")
     lg.add_argument("outcome", choices=["pass", "fail", "unavailable"])
-    lg.add_argument("--note", default="",
-                    help="one-line note recorded with the gate decision")
+    lg.add_argument("--note", default="", help="one-line note recorded with the gate decision")
     lg.add_argument("--task", help="task id (parallel execute waves)")
-    lg.add_argument("--req", help="attach requirement R-id to the loop "
-                    "before DoR evaluation (design anchor)")
-    lg.add_argument("--advisory", action="store_true",
-                    help="acknowledge degraded screen enforcement")
-    lg.add_argument("--by", default=None,
-                    help="human identity required with --advisory")
-    lsu = lsub.add_parser("submit", help="worker submits evidence without "
-                            "transitioning state; the orchestrator gates")
+    lg.add_argument(
+        "--req", help="attach requirement R-id to the loop before DoR evaluation (design anchor)"
+    )
+    lg.add_argument(
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+    )
+    lg.add_argument("--by", default=None, help="human identity required with --advisory")
+    lsu = lsub.add_parser(
+        "submit", help="worker submits evidence without transitioning state; the orchestrator gates"
+    )
     lsu.add_argument("outcome", choices=["pass", "fail", "unavailable"])
-    lsu.add_argument("--note", default="",
-                     help="one-line evidence note recorded with the "
-                          "submission")
+    lsu.add_argument(
+        "--note", default="", help="one-line evidence note recorded with the submission"
+    )
     lsu.add_argument("--task", help="task id (parallel execute waves)")
-    ls_ = lsub.add_parser("select", help="A/B selection gate: pick the "
-                          "variant that ships (or 'hybrid')")
+    ls_ = lsub.add_parser(
+        "select", help="A/B selection gate: pick the variant that ships (or 'hybrid')"
+    )
     ls_.add_argument("choice", help="variant letter, task id, or 'hybrid'")
     ls_.add_argument("--note", help="the WHY — recorded to the KB")
     la = lsub.add_parser("approve", help="record a human approval at a checkpoint gate")
-    la.add_argument("--by", default=None,
-                    help="who approved and where (e.g. a Slack user + "
-                         "quoted reply) — recorded in trace + KB")
+    la.add_argument(
+        "--by",
+        default=None,
+        help="who approved and where (e.g. a Slack user + quoted reply) — recorded in trace + KB",
+    )
     la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    la.add_argument("--force", action="store_true",
-                    help="pass a BLOCKED refinement gate anyway")
-    la.add_argument("--advisory", action="store_true",
-                    help="acknowledge degraded screen enforcement")
+    la.add_argument("--force", action="store_true", help="pass a BLOCKED refinement gate anyway")
+    la.add_argument(
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+    )
     lr = lsub.add_parser(
-        "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort")
+        "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort"
+    )
     lr.add_argument(
-        "decision", choices=["retry", "pass", "skip", "defer", "abort", "limits-advisory", "reconcile"])
-    lr.add_argument("--by",
-                    help="human approving the exact recovery decision")
-    lr.add_argument("--reason", help="explicit Build acceptance, review deferral or EM baseline selection")
-    lr.add_argument("--phase-operation", help="exact existing phase operation to reconcile or retry once")
-    lr.add_argument("--candidate-fingerprint", help="exact candidate SHA-256 for the new phase attempt")
-    lrestore = lsub.add_parser("restore-settings",
-        help="restore a digest-only run's exact original settings without changing policy")
-    lrestore.add_argument("--from", dest="settings_from", required=True,
-        help="original complete settings JSON matching the saved run digest")
-    lr.add_argument("--worker-stopped", action="store_true",
-                    help="attest the expired unbound worker is stopped; not a completion or pass")
+        "decision",
+        choices=["retry", "pass", "skip", "defer", "abort", "limits-advisory", "reconcile"],
+    )
+    lr.add_argument("--by", help="human approving the exact recovery decision")
+    lr.add_argument(
+        "--reason", help="explicit Build acceptance, review deferral or EM baseline selection"
+    )
+    lr.add_argument(
+        "--phase-operation", help="exact existing phase operation to reconcile or retry once"
+    )
+    lr.add_argument(
+        "--candidate-fingerprint", help="exact candidate SHA-256 for the new phase attempt"
+    )
+    lrestore = lsub.add_parser(
+        "restore-settings",
+        help="restore a digest-only run's exact original settings without changing policy",
+    )
+    lrestore.add_argument(
+        "--from",
+        dest="settings_from",
+        required=True,
+        help="original complete settings JSON matching the saved run digest",
+    )
+    lr.add_argument(
+        "--worker-stopped",
+        action="store_true",
+        help="attest the expired unbound worker is stopped; not a completion or pass",
+    )
     lam = lsub.add_parser(
-        "amend", help="apply a human-approved Product or Design amendment while preserving phase history")
-    lam.add_argument("--phase", choices=["product", "design"], required=True,
-                     help="phase whose current scope or candidate the human is amending")
-    lam.add_argument("--req", required=True,
-                     help="the existing requirement containing the approved scope")
-    lam.add_argument("--preview", action="store_true",
-                     help="read the exact current fingerprints without applying an amendment")
+        "amend",
+        help="apply a human-approved Product or Design amendment while preserving phase history",
+    )
+    lam.add_argument(
+        "--phase",
+        choices=["product", "design"],
+        required=True,
+        help="phase whose current scope or candidate the human is amending",
+    )
+    lam.add_argument(
+        "--req", required=True, help="the existing requirement containing the approved scope"
+    )
+    lam.add_argument(
+        "--preview",
+        action="store_true",
+        help="read the exact current fingerprints without applying an amendment",
+    )
     lam.add_argument("--by", help="the run's accountable human approving this amendment")
-    lam.add_argument("--reason", help="the human-approved scope change; distinct from final Design approval")
-    lam.add_argument("--expected-stage-fingerprint",
-                     help="exact prior stage fingerprint returned by --preview")
-    lam.add_argument("--requirement-fingerprint",
-                     help="exact amended requirement fingerprint returned by --preview")
-    lam.add_argument("--candidate-fingerprint",
-                     help="exact amended candidate fingerprint returned by --preview")
-    lam.add_argument("--worker-stopped", action="store_true",
-                     help="confirm the former worker is stopped; the engine also verifies its lifecycle")
+    lam.add_argument(
+        "--reason", help="the human-approved scope change; distinct from final Design approval"
+    )
+    lam.add_argument(
+        "--expected-stage-fingerprint", help="exact prior stage fingerprint returned by --preview"
+    )
+    lam.add_argument(
+        "--requirement-fingerprint",
+        help="exact amended requirement fingerprint returned by --preview",
+    )
+    lam.add_argument(
+        "--candidate-fingerprint", help="exact amended candidate fingerprint returned by --preview"
+    )
+    lam.add_argument(
+        "--worker-stopped",
+        action="store_true",
+        help="confirm the former worker is stopped; the engine also verifies its lifecycle",
+    )
     lam.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lr.add_argument(
-        "--accept-producer-receipt-outage", action="store_true",
-        help="accept only the exact fingerprint supplied alongside --by")
+        "--accept-producer-receipt-outage",
+        action="store_true",
+        help="accept only the exact fingerprint supplied alongside --by",
+    )
     lr.add_argument(
-        "--outage-fingerprint",
-        help="exact current evaluator outage fingerprint; replay-safe")
+        "--outage-fingerprint", help="exact current evaluator outage fingerprint; replay-safe"
+    )
     lrp = lsub.add_parser(
-        "replan", help="human: archive frozen tasks and return to Plan for "
-        "a corrected plan plus fresh approval")
-    lrp.add_argument("--by", required=True,
-                     help="human approving the return to Plan")
-    lrp.add_argument("--reason", required=True,
-                     help="configuration defect or changed decision")
-    le = lsub.add_parser("evidence", help="assemble every mechanically-derivable "
-                         "fact the evaluate gate will check (suite result, diff, "
-                         "criteria, routed lenses, graph obligations) with the "
-                         "judgment slots left empty for the evaluator to fill")
+        "replan",
+        help="human: archive frozen tasks and return to Plan for "
+        "a corrected plan plus fresh approval",
+    )
+    lrp.add_argument("--by", required=True, help="human approving the return to Plan")
+    lrp.add_argument("--reason", required=True, help="configuration defect or changed decision")
+    le = lsub.add_parser(
+        "evidence",
+        help="assemble every mechanically-derivable "
+        "fact the evaluate gate will check (suite result, diff, "
+        "criteria, routed lenses, graph obligations) with the "
+        "judgment slots left empty for the evaluator to fill",
+    )
     le.add_argument("--task", help="task id (default: the loop's current task)")
-    le.add_argument("--write", action="store_true",
-                    help="also drop the skeleton at .eval/verdict.json when no "
-                         "verdict is already there (never overwrites)")
+    le.add_argument(
+        "--write",
+        action="store_true",
+        help="also drop the skeleton at .eval/verdict.json when no "
+        "verdict is already there (never overwrites)",
+    )
     lguide = lsub.add_parser(
-        "guide", help="before pass submission, check deterministic workflow "
-        "facts and return one bounded drift correction")
+        "guide",
+        help="before pass submission, check deterministic workflow "
+        "facts and return one bounded drift correction",
+    )
     lguide.add_argument("--task", help="task id (parallel execute waves)")
     lau = lsub.add_parser(
-        "authorize", help="derive routine authority for a real host/facade "
-        "flow from the bound consolidated receipt")
+        "authorize",
+        help="derive routine authority for a real host/facade "
+        "flow from the bound consolidated receipt",
+    )
     lau.add_argument(
-        "flow", help="routine flow identity (facade, delivery, product, "
-        "design, build, engineering, status, help, north_star or tag_slack)")
+        "flow",
+        help="routine flow identity (facade, delivery, product, "
+        "design, build, engineering, status, help, north_star or tag_slack)",
+    )
     lsub.add_parser(
-        "host-input", help="consume one trusted-session host event JSON "
-        "object from stdin through the governed human-input boundary")
+        "host-input",
+        help="consume one trusted-session host event JSON "
+        "object from stdin through the governed human-input boundary",
+    )
     lt = lsub.add_parser(
-        "terminal", help="orchestrator-only: idempotently close the whole "
-        "run for cancellation, interruption, or handoff")
-    lt.add_argument("outcome", choices=(
-        "cancellation", "interruption", "handoff"))
-    lt.add_argument("--by", required=True,
-                    help="attributable orchestrator/human identity; host "
-                    "session authority is derived from the environment")
+        "terminal",
+        help="orchestrator-only: idempotently close the whole "
+        "run for cancellation, interruption, or handoff",
+    )
+    lt.add_argument("outcome", choices=("cancellation", "interruption", "handoff"))
+    lt.add_argument(
+        "--by",
+        required=True,
+        help="attributable orchestrator/human identity; host "
+        "session authority is derived from the environment",
+    )
     lsub.add_parser("status", help="show the loop's stage, tasks and gates")
     lsub.add_parser("retro", help="print the loop retrospective")
-    lsub.add_parser("verify-dispatch", help="audit whether dispatched agents "
-                    "used the models the briefs resolved (tier routing)")
-    lcmd = lsub.add_parser(
-        "command", help="run a durable command through the live loop root")
+    lsub.add_parser(
+        "verify-dispatch",
+        help="audit whether dispatched agents used the models the briefs resolved (tier routing)",
+    )
+    lcmd = lsub.add_parser("command", help="run a durable command through the live loop root")
     _add_governed_command_actions(lcmd)
     lp.set_defaults(fn=cmd_loop)
 
-    sg = sub.add_parser(
-        "stage", help="drive isolated stage lifecycle and bounded handoffs")
+    sg = sub.add_parser("stage", help="drive isolated stage lifecycle and bounded handoffs")
     sg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     sgsub = sg.add_subparsers(dest="stage_action", required=True)
     for action, help_text in (
-            ("read-input", "read only the verified input named by a stage startup"),
-            ("collect-lenses", "collect the exact lens plan saved in a phase startup"),
-            ("prepare-lenses", "dispatch shared lenses for the exact current phase candidate"),
-            ("start", "start a root or verified successor stage"),
-            ("resume", "create a fresh attempt in an active stage root"),
-            ("terminalize", "record one immutable terminal outcome"),
-            ("terminalize-and-start", "atomically terminalize a predecessor "
-                                      "and start its verified successor"),
-            ("split", "close a parent and atomically create isolated children"),
-            ("history", "read a bounded page of immutable stage summaries"),
-            ("reuse", "explicitly authorize non-default artifact reuse")):
+        ("read-input", "read only the verified input named by a stage startup"),
+        ("collect-lenses", "collect the exact lens plan saved in a phase startup"),
+        ("prepare-lenses", "dispatch shared lenses for the exact current phase candidate"),
+        ("start", "start a root or verified successor stage"),
+        ("resume", "create a fresh attempt in an active stage root"),
+        ("terminalize", "record one immutable terminal outcome"),
+        (
+            "terminalize-and-start",
+            "atomically terminalize a predecessor and start its verified successor",
+        ),
+        ("split", "close a parent and atomically create isolated children"),
+        ("history", "read a bounded page of immutable stage summaries"),
+        ("reuse", "explicitly authorize non-default artifact reuse"),
+    ):
         command = sgsub.add_parser(action, help=help_text)
         command.add_argument(
-            "--request", required=True, metavar="FILE|-",
-            help="closed stage-command JSON object; '-' reads standard input")
-        command.add_argument(
-            "--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+            "--request",
+            required=True,
+            metavar="FILE|-",
+            help="closed stage-command JSON object; '-' reads standard input",
+        )
+        command.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     sg.set_defaults(fn=cmd_stage)
 
     ln = sub.add_parser("lens", help="route lenses for a change")
     lnsub = ln.add_subparsers(dest="lens_action", required=True)
     lnr = lnsub.add_parser("route", help="decide which lenses a change needs")
     lnr.add_argument("--base", default="HEAD", help="git base to diff against")
-    lnr.add_argument("--task-type", help="declared task type (feature, "
-                     "bugfix, refactor, ...) — widens the routed set")
-    lnr.add_argument("--artifact-type",
-                     help="route on an artifact instead of the diff — "
-                          "'strategy' summons the advisory (board) tier")
+    lnr.add_argument(
+        "--task-type",
+        help="declared task type (feature, bugfix, refactor, ...) — widens the routed set",
+    )
+    lnr.add_argument(
+        "--artifact-type",
+        help="route on an artifact instead of the diff — "
+        "'strategy' summons the advisory (board) tier",
+    )
     lnr.add_argument("--only", help="comma list — only these lenses")
     lnr.add_argument("--skip", help="comma list — skip these lenses")
-    lnr.add_argument("--all", action="store_true", dest="breadth_all",
-                     help="full catalog: routed lenses run deep, the rest "
-                          "as a quick sweep — nothing skipped")
-    lnr.add_argument("--json", action="store_true",
-                     help="print the routing decision as JSON")
+    lnr.add_argument(
+        "--all",
+        action="store_true",
+        dest="breadth_all",
+        help="full catalog: routed lenses run deep, the rest as a quick sweep — nothing skipped",
+    )
+    lnr.add_argument("--json", action="store_true", help="print the routing decision as JSON")
     lnr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnr.set_defaults(fn=cmd_lens)
 
@@ -8876,8 +10608,7 @@ def main(argv=None) -> int:
     lnc.set_defaults(fn=cmd_lens)
 
     lnl = lnsub.add_parser("list", help="every lens in the catalog")
-    lnl.add_argument("--json", action="store_true",
-                     help="print the catalog as JSON")
+    lnl.add_argument("--json", action="store_true", help="print the catalog as JSON")
     lnl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnl.set_defaults(fn=cmd_lens)
 
@@ -8886,36 +10617,52 @@ def main(argv=None) -> int:
     lns.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lns.set_defaults(fn=cmd_lens)
 
-    lnd = lnsub.add_parser("dispatch", help="ready-to-dispatch lens-agent "
-                           "briefs — one read-only agent per selected lens, "
-                           "fanned out in parallel")
-    lnd.add_argument("--base", default="HEAD",
-                     help="git base to diff against (default HEAD)")
-    lnd.add_argument("--task-type", help="declared task type (feature, "
-                     "bugfix, refactor, ...) — widens the routed set")
-    lnd.add_argument("--only", help="comma list — dispatch only these "
-                     "lenses")
-    lnd.add_argument("--skip", help="comma list — do not dispatch these "
-                     "lenses")
-    lnd.add_argument("--all", action="store_true", dest="breadth_all",
-                     help="full catalog: routed lenses run deep, the rest "
-                          "as a quick sweep — nothing skipped")
+    lnd = lnsub.add_parser(
+        "dispatch",
+        help="ready-to-dispatch lens-agent "
+        "briefs — one read-only agent per selected lens, "
+        "fanned out in parallel",
+    )
+    lnd.add_argument("--base", default="HEAD", help="git base to diff against (default HEAD)")
+    lnd.add_argument(
+        "--task-type",
+        help="declared task type (feature, bugfix, refactor, ...) — widens the routed set",
+    )
+    lnd.add_argument("--only", help="comma list — dispatch only these lenses")
+    lnd.add_argument("--skip", help="comma list — do not dispatch these lenses")
+    lnd.add_argument(
+        "--all",
+        action="store_true",
+        dest="breadth_all",
+        help="full catalog: routed lenses run deep, the rest as a quick sweep — nothing skipped",
+    )
     lnd.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lnd.set_defaults(fn=cmd_lens)
 
-    yl = sub.add_parser("yield", help="what the harness returns (lens yield "
-                        "and where findings are caught) — advisory, gates "
-                        "nothing")
+    yl = sub.add_parser(
+        "yield",
+        help="what the harness returns (lens yield "
+        "and where findings are caught) — advisory, gates "
+        "nothing",
+    )
     yl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    yl.add_argument("--json", action="store_true",
-                    help="emit the raw report instead of the table")
+    yl.add_argument("--json", action="store_true", help="emit the raw report instead of the table")
     ylsub = yl.add_subparsers(dest="yield_action")
-    ym = ylsub.add_parser("mark", help="record a human verdict on one "
-                          "finding: acted or dismissed")
+    ym = ylsub.add_parser("mark", help="record a human verdict on one finding: acted or dismissed")
     ym.add_argument("finding", help="the finding fingerprint from `tp yield`")
-    ym.add_argument("verdict", choices=[
-        "acted", "dismissed", "resolved", "accepted", "closed", "deferred",
-        "not-a-defect"], help="durable human disposition")
+    ym.add_argument(
+        "verdict",
+        choices=[
+            "acted",
+            "dismissed",
+            "resolved",
+            "accepted",
+            "closed",
+            "deferred",
+            "not-a-defect",
+        ],
+        help="durable human disposition",
+    )
     ym.add_argument("--by", help="who decided (attribution, like gates)")
     ym.add_argument("--note", default="", help="why, in one line")
     yl.set_defaults(fn=cmd_yield)
@@ -8925,18 +10672,17 @@ def main(argv=None) -> int:
     kbsub = kbp.add_subparsers(dest="kb_action", required=True)
     kr = kbsub.add_parser("record", help="record a decision in the knowledge base")
     kr.add_argument("title")
-    kr.add_argument("--context", help="the situation the decision was "
-                    "made in")
+    kr.add_argument("--context", help="the situation the decision was made in")
     kr.add_argument("--decision", help="what was decided, in one sentence")
     kr.add_argument("--rationale", help="why this option won")
     kr.add_argument("--tags", help="comma-separated tags for retrieval")
     kr.add_argument("--files", help="comma-separated context file globs")
     kt = kbsub.add_parser("retrieve", help="recall the decisions that govern given files or tags")
-    kt.add_argument("--files", help="comma-separated file globs — retrieve "
-                    "decisions that govern them")
+    kt.add_argument(
+        "--files", help="comma-separated file globs — retrieve decisions that govern them"
+    )
     kt.add_argument("--tags", help="comma-separated tags to match")
-    kt.add_argument("--limit", type=int, default=5,
-                    help="most decisions to return (default 5)")
+    kt.add_argument("--limit", type=int, default=5, help="most decisions to return (default 5)")
     kbsub.add_parser("list", help="list every recorded decision")
     kbsub.add_parser("lint", help="check the knowledge base for malformed or empty records")
     kbsub.add_parser("where", help="show the selected project knowledge store")
@@ -8947,201 +10693,281 @@ def main(argv=None) -> int:
     rqsub = rq.add_subparsers(dest="req_action", required=True)
     rn = rqsub.add_parser("new", help="record a requirement (or a change request)")
     rn.add_argument("title")
-    rn.add_argument("--functional", action="append",
-                    help="a functional statement (repeatable)")
-    rn.add_argument("--nfr", action="append", metavar="LENS=STATEMENT",
-                    help="a non-functional requirement by lens (repeatable)")
-    rn.add_argument("--acceptance", action="append",
-                    help="an acceptance criterion (repeatable)")
-    rn.add_argument("--open", action="append",
-                    help="an open question (repeatable)")
+    rn.add_argument("--functional", action="append", help="a functional statement (repeatable)")
+    rn.add_argument(
+        "--nfr",
+        action="append",
+        metavar="LENS=STATEMENT",
+        help="a non-functional requirement by lens (repeatable)",
+    )
+    rn.add_argument("--acceptance", action="append", help="an acceptance criterion (repeatable)")
+    rn.add_argument("--open", action="append", help="an open question (repeatable)")
     rn.add_argument("--tags", help="comma-separated tags for retrieval")
-    rn.add_argument("--files",
-                    help="comma-separated context file globs")
-    rn.add_argument("--changed-from", dest="changed_from",
-                    help="R-id this change request derives from")
-    rn.add_argument("--depends", action="append", metavar="R-XXXX",
-                    help="R-id this requirement depends on (repeatable) — "
-                         "recorded as a product edge in the graph")
-    rn.add_argument("--contract", action="append",
-                    metavar="RELATION:CONTRACT",
-                    help="repeatable requirement boundary: provides, consumes, "
-                         "or changes a named API/event/data/runtime contract")
-    ra = rqsub.add_parser("amend", help="revise the same requirement after "
-                            "Product requests changes")
+    rn.add_argument("--files", help="comma-separated context file globs")
+    rn.add_argument(
+        "--changed-from", dest="changed_from", help="R-id this change request derives from"
+    )
+    rn.add_argument(
+        "--depends",
+        action="append",
+        metavar="R-XXXX",
+        help="R-id this requirement depends on (repeatable) — "
+        "recorded as a product edge in the graph",
+    )
+    rn.add_argument(
+        "--contract",
+        action="append",
+        metavar="RELATION:CONTRACT",
+        help="repeatable requirement boundary: provides, consumes, "
+        "or changes a named API/event/data/runtime contract",
+    )
+    ra = rqsub.add_parser(
+        "amend", help="revise the same requirement after Product requests changes"
+    )
     ra.add_argument("id", metavar="R-XXXX")
-    ra.add_argument("--functional", action="append",
-                    help="replace functional statements (repeatable)")
-    ra.add_argument("--nfr", action="append", metavar="LENS=STATEMENT",
-                    help="add or replace an NFR by lens (repeatable)")
-    ra.add_argument("--acceptance", action="append",
-                    help="replace acceptance criteria (repeatable)")
-    ra.add_argument("--open", action="append",
-                    help="replace open questions (repeatable)")
-    ra.add_argument("--clear-open", action="store_true",
-                    help="close every open product question")
+    ra.add_argument(
+        "--functional", action="append", help="replace functional statements (repeatable)"
+    )
+    ra.add_argument(
+        "--nfr",
+        action="append",
+        metavar="LENS=STATEMENT",
+        help="add or replace an NFR by lens (repeatable)",
+    )
+    ra.add_argument(
+        "--acceptance", action="append", help="replace acceptance criteria (repeatable)"
+    )
+    ra.add_argument("--open", action="append", help="replace open questions (repeatable)")
+    ra.add_argument("--clear-open", action="store_true", help="close every open product question")
     ra.add_argument("--files", help="replace comma-separated context globs")
     rs = rqsub.add_parser("score", help="score a requirement's refinement against the bar")
     rs.add_argument("id")
     rs.add_argument("--files", help="comma-separated changed-file globs")
-    rs.add_argument("--task-type", help="declared task type — sets the "
-                    "refinement bar this requirement is scored against")
-    rs.add_argument("--threshold", type=float, default=0.6,
-                    help="refinement score the requirement must reach "
-                         "(default 0.6)")
-    rs.add_argument("--high-cost", action="store_true",
-                    help="hard-block below threshold (irreversible work)")
+    rs.add_argument(
+        "--task-type",
+        help="declared task type — sets the refinement bar this requirement is scored against",
+    )
+    rs.add_argument(
+        "--threshold",
+        type=float,
+        default=0.6,
+        help="refinement score the requirement must reach (default 0.6)",
+    )
+    rs.add_argument(
+        "--high-cost", action="store_true", help="hard-block below threshold (irreversible work)"
+    )
     rsg = rqsub.add_parser("signoff", help="record the human Product gate")
     rsg.add_argument("id", metavar="R-XXXX")
     rsg.add_argument("decision", choices=("approve", "changes"))
-    rsg.add_argument("--by", required=True,
-                     help="the human approval or change-request words")
+    rsg.add_argument("--by", required=True, help="the human approval or change-request words")
     rsg.add_argument("--note", help="optional decision rationale")
-    rm = rqsub.add_parser("mode", help="pick the delivery mode for a refinement score and change size")
-    rm.add_argument("--refinement", type=float, required=True,
-                    help="the requirement's refinement score (0.0-1.0)")
+    rm = rqsub.add_parser(
+        "mode", help="pick the delivery mode for a refinement score and change size"
+    )
+    rm.add_argument(
+        "--refinement",
+        type=float,
+        required=True,
+        help="the requirement's refinement score (0.0-1.0)",
+    )
     rm.add_argument("--size", type=int, required=True, help="files changed")
     rdb = rqsub.add_parser("debt", help="record technical debt taken on knowingly")
     rdb.add_argument("title")
     rdb.add_argument("--req", help="requirement id this debt belongs to")
     rdb.add_argument("--reason", help="why the debt was taken on")
-    rdb.add_argument("--follow-up", dest="follow_up",
-                     help="what would pay the debt off")
+    rdb.add_argument("--follow-up", dest="follow_up", help="what would pay the debt off")
     rdb.add_argument("--tags", help="comma-separated tags for retrieval")
-    rdb.add_argument("--files",
-                     help="comma-separated file globs the debt lives in")
+    rdb.add_argument("--files", help="comma-separated file globs the debt lives in")
     rqsub.add_parser("list", help="list recorded requirements")
     rq.set_defaults(fn=cmd_req)
 
-    gp = sub.add_parser("graph", help="dependency graph: scan, impact, "
-                        "contracts, requirement links, visualization")
+    gp = sub.add_parser(
+        "graph", help="dependency graph: scan, impact, contracts, requirement links, visualization"
+    )
     gp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     gsub = gp.add_subparsers(dest="graph_action", required=True)
     gs = gsub.add_parser("scan", help="rebuild the dependency graph from the working tree")
-    gs.add_argument("--decompose", action="store_true",
-                    help="derive the component layer (graph.json "
-                         "'components'; R-0003 contract:component-map)")
-    gs.add_argument("--strict", action="store_true",
-                    help="persist the normal fail-open record, then return "
-                         "nonzero when any graph producer is degraded")
+    gs.add_argument(
+        "--decompose",
+        action="store_true",
+        help="derive the component layer (graph.json 'components'; R-0003 contract:component-map)",
+    )
+    gs.add_argument(
+        "--strict",
+        action="store_true",
+        help="persist the normal fail-open record, then return "
+        "nonzero when any graph producer is degraded",
+    )
     gsf = gs.add_mutually_exclusive_group()
-    gsf.add_argument("--json", action="store_true",
-                     help="print machine JSON (the backward-compatible "
-                          "default)")
-    gsf.add_argument("--text", action="store_true",
-                     help="print a concise human graph-quality report")
+    gsf.add_argument(
+        "--json", action="store_true", help="print machine JSON (the backward-compatible default)"
+    )
+    gsf.add_argument(
+        "--text", action="store_true", help="print a concise human graph-quality report"
+    )
     gi = gsub.add_parser("impact", help="what a change reaches: blast radius across the graph")
-    gi.add_argument("--files", help="comma-separated changed files "
-                    "(default: git diff + untracked)")
-    gi.add_argument("--base", default="HEAD",
-                    help="git base to diff against (default HEAD)")
-    gi.add_argument("--depth", type=int, default=3,
-                    help="dependency hops to walk locally (default 3)")
-    gi.add_argument("--boundary", choices=["contract-only", "stop", "expand"],
-                    default="contract-only",
-                    help="what the walk does at a distributed boundary "
-                         "(default contract-only)")
-    gi.add_argument("--contract-depth", type=int, default=1,
-                    help="hops to keep walking past a contract boundary "
-                         "(default 1)")
-    gi.add_argument("--requirement-depth", type=int, default=1,
-                    help="hops to walk into the requirement layer "
-                         "(default 1)")
-    gi.add_argument("--json", action="store_true",
-                    help="print the impact set as JSON")
+    gi.add_argument("--files", help="comma-separated changed files (default: git diff + untracked)")
+    gi.add_argument("--base", default="HEAD", help="git base to diff against (default HEAD)")
+    gi.add_argument(
+        "--depth", type=int, default=3, help="dependency hops to walk locally (default 3)"
+    )
+    gi.add_argument(
+        "--boundary",
+        choices=["contract-only", "stop", "expand"],
+        default="contract-only",
+        help="what the walk does at a distributed boundary (default contract-only)",
+    )
+    gi.add_argument(
+        "--contract-depth",
+        type=int,
+        default=1,
+        help="hops to keep walking past a contract boundary (default 1)",
+    )
+    gi.add_argument(
+        "--requirement-depth",
+        type=int,
+        default=1,
+        help="hops to walk into the requirement layer (default 1)",
+    )
+    gi.add_argument("--json", action="store_true", help="print the impact set as JSON")
     ge = gsub.add_parser("edge", help="record an edge the scanner cannot see")
-    ge.add_argument("src"); ge.add_argument("dst")
-    ge.add_argument("--kind", default="runtime",
-                    help="edge kind, e.g. runtime or build "
-                         "(default runtime)")
+    ge.add_argument("src")
+    ge.add_argument("dst")
+    ge.add_argument(
+        "--kind", default="runtime", help="edge kind, e.g. runtime or build (default runtime)"
+    )
     ge.add_argument("--note", help="why this edge exists")
-    ge.add_argument("--confidence", choices=["high", "medium", "low"],
-                    default="medium",
-                    help="how sure the edge is (default medium)")
-    gc = gsub.add_parser("contract", help="record an explicit distributed "
-                         "boundary; consumers depend on the contract")
+    ge.add_argument(
+        "--confidence",
+        choices=["high", "medium", "low"],
+        default="medium",
+        help="how sure the edge is (default medium)",
+    )
+    gc = gsub.add_parser(
+        "contract", help="record an explicit distributed boundary; consumers depend on the contract"
+    )
     gc.add_argument("name")
     gc.add_argument("--provider", help="module that provides the contract")
-    gc.add_argument("--consumer", action="append",
-                    help="module that consumes the contract (repeatable)")
-    gl = gsub.add_parser("link", help="product layer: link a requirement "
-                         "to the modules that plan/realize it")
-    gl.add_argument("--req", required=True, metavar="R-XXXX",
-                    help="the requirement being linked")
-    gl.add_argument("--files", required=True,
-                    help="comma-separated files or scope globs")
-    gl.add_argument("--kind", default="realizes",
-                    choices=["planned", "realizes"],
-                    help="link kind: a planned or a realized requirement "
-                         "(default realizes)")
-    gl.add_argument("--keep", action="store_true",
-                    help="append instead of replacing existing links")
+    gc.add_argument(
+        "--consumer", action="append", help="module that consumes the contract (repeatable)"
+    )
+    gl = gsub.add_parser(
+        "link", help="product layer: link a requirement to the modules that plan/realize it"
+    )
+    gl.add_argument("--req", required=True, metavar="R-XXXX", help="the requirement being linked")
+    gl.add_argument("--files", required=True, help="comma-separated files or scope globs")
+    gl.add_argument(
+        "--kind",
+        default="realizes",
+        choices=["planned", "realizes"],
+        help="link kind: a planned or a realized requirement (default realizes)",
+    )
+    gl.add_argument(
+        "--keep", action="store_true", help="append instead of replacing existing links"
+    )
     gh = gsub.add_parser("html", help="render the graph as a standalone HTML view")
-    gh.add_argument("--files", help="comma-separated changed files to "
-                    "highlight (default: git diff + untracked)")
-    gh.add_argument("--base", default="HEAD",
-                    help="git base to diff against (default HEAD)")
-    gh.add_argument("--out",
-                    help="write the HTML here instead of stdout")
-    gh.add_argument("--focus", type=int, metavar="DEPTH",
-                    help="crop to the changed set plus everything within "
-                         "DEPTH dependency hops — the same map, small "
-                         "enough to render inline in chat")
-    gh.add_argument("--fragment", action="store_true",
-                    help="emit an embeddable fragment (the same page, "
-                         "carried byte-for-byte in an srcdoc iframe) so the "
-                         "graph can be shown inline instead of as a file")
+    gh.add_argument(
+        "--files", help="comma-separated changed files to highlight (default: git diff + untracked)"
+    )
+    gh.add_argument("--base", default="HEAD", help="git base to diff against (default HEAD)")
+    gh.add_argument("--out", help="write the HTML here instead of stdout")
+    gh.add_argument(
+        "--focus",
+        type=int,
+        metavar="DEPTH",
+        help="crop to the changed set plus everything within "
+        "DEPTH dependency hops — the same map, small "
+        "enough to render inline in chat",
+    )
+    gh.add_argument(
+        "--fragment",
+        action="store_true",
+        help="emit an embeddable fragment (the same page, "
+        "carried byte-for-byte in an srcdoc iframe) so the "
+        "graph can be shown inline instead of as a file",
+    )
     gp.set_defaults(fn=cmd_graph)
 
     db = sub.add_parser("dashboard", help="render the mission-control view")
     db.add_argument("--out", help="write the standalone report to this path")
-    db.add_argument("--paged", action="store_true",
-                    help="emit ordered <=14KB pages (JSON) for reliable "
-                         "inline rendering + a never-skippable headline")
+    db.add_argument(
+        "--paged",
+        action="store_true",
+        help="emit ordered <=14KB pages (JSON) for reliable "
+        "inline rendering + a never-skippable headline",
+    )
     db.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     db.set_defaults(fn=cmd_dashboard)
 
-    op = sub.add_parser("onboard", help="cold-start readiness — folder + git "
-                        "snapshot + init; renders the onboarding dashboard")
-    op.add_argument("--json", action="store_true",
-                    help="print the readiness report instead of the widget")
+    op = sub.add_parser(
+        "onboard",
+        help="cold-start readiness — folder + git "
+        "snapshot + init; renders the onboarding dashboard",
+    )
+    op.add_argument(
+        "--json", action="store_true", help="print the readiness report instead of the widget"
+    )
     op.add_argument("--out", help="also write the fragment to this path")
-    op.add_argument("--install-codex-hooks", action="store_true",
-                    help="deprecated alias for --install-launcher; hooks are supplied only by the plugin")
-    op.add_argument("--install-launcher", action="store_true",
-                    help="install/refresh the ignored CLI launcher without registering project hooks")
-    op.add_argument("--execution-storage", choices=["project"],
-                    help="explicitly select project .taskplane execution storage; active runs refuse migration")
-    op.add_argument("--apply-setup", metavar="JSON_FILE_OR_DASH",
-                    help="apply validated inline setup values from a JSON file or stdin (-)")
+    op.add_argument(
+        "--install-codex-hooks",
+        action="store_true",
+        help="deprecated alias for --install-launcher; hooks are supplied only by the plugin",
+    )
+    op.add_argument(
+        "--install-launcher",
+        action="store_true",
+        help="install/refresh the ignored CLI launcher without registering project hooks",
+    )
+    op.add_argument(
+        "--execution-storage",
+        choices=["project"],
+        help="explicitly select project .taskplane execution storage; active runs refuse migration",
+    )
+    op.add_argument(
+        "--apply-setup",
+        metavar="JSON_FILE_OR_DASH",
+        help="apply validated inline setup values from a JSON file or stdin (-)",
+    )
     op.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     op.set_defaults(fn=cmd_onboard)
 
-    fp = sub.add_parser("findings", help="render a review findings dashboard "
-                        "(all severities, filterable) from a findings JSON")
-    fp.add_argument("--file", help="findings JSON (default "
-                    ".em-review/findings.json)")
+    fp = sub.add_parser(
+        "findings",
+        help="render a review findings dashboard (all severities, filterable) from a findings JSON",
+    )
+    fp.add_argument("--file", help="findings JSON (default .em-review/findings.json)")
     fp.add_argument("--out", help="also write the fragment to this path")
-    fp.add_argument("--paged", action="store_true",
-                    help="emit ordered <=14KB pages (JSON) for reliable "
-                         "inline rendering + a never-skippable headline")
-    fp.add_argument("--html", action="store_true",
-                    help="emit ONE self-contained HTML document (palette and "
-                         "dark mode included) — the documented fallback when "
-                         "the host cannot render inline fragments")
+    fp.add_argument(
+        "--paged",
+        action="store_true",
+        help="emit ordered <=14KB pages (JSON) for reliable "
+        "inline rendering + a never-skippable headline",
+    )
+    fp.add_argument(
+        "--html",
+        action="store_true",
+        help="emit ONE self-contained HTML document (palette and "
+        "dark mode included) — the documented fallback when "
+        "the host cannot render inline fragments",
+    )
     fp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     fp.set_defaults(fn=cmd_findings)
 
-    nsp = sub.add_parser("north-star", help="on-demand strategic review: print "
-                         "the project's north star, or render a strategic note")
-    nsp.add_argument("--render", help="a strategic-note JSON to render as the "
-                     "inline widget fragment")
+    nsp = sub.add_parser(
+        "north-star",
+        help="on-demand strategic review: print "
+        "the project's north star, or render a strategic note",
+    )
+    nsp.add_argument(
+        "--render", help="a strategic-note JSON to render as the inline widget fragment"
+    )
     nsp.add_argument("--out", help="also write the fragment to this path")
     nsp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     nsp.set_defaults(fn=cmd_northstar)
 
-    shp = sub.add_parser("share", help="plan-aware knowledge sharing: "
-                         "status / plan / set private|shared / push")
+    shp = sub.add_parser(
+        "share", help="plan-aware knowledge sharing: status / plan / set private|shared / push"
+    )
     shsub = shp.add_subparsers(dest="share_cmd", required=True)
     sst = shsub.add_parser("status", help="show what is private and what is shared")
     sst.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
@@ -9152,17 +10978,23 @@ def main(argv=None) -> int:
     sse.add_argument("value", choices=["private", "shared"])
     sse.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     spu = shsub.add_parser("push", help="publish private decisions to the shared store")
-    spu.add_argument("--ids", default=None,
-                     help="comma-separated private decision ids; default = "
-                          "everything unpublished")
+    spu.add_argument(
+        "--ids",
+        default=None,
+        help="comma-separated private decision ids; default = everything unpublished",
+    )
     spu.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     shp.set_defaults(fn=cmd_share)
 
     ip = sub.add_parser("init", help="scaffold context docs + KB + graph")
-    ip.add_argument("--plan", choices=["personal", "team", "enterprise"],
-                    default=None, help="choose knowledge storage at init — "
-                    "personal is private/external; team/enterprise is "
-                    "shared in-repo")
+    ip.add_argument(
+        "--plan",
+        choices=["personal", "team", "enterprise"],
+        default=None,
+        help="choose knowledge storage at init — "
+        "personal is private/external; team/enterprise is "
+        "shared in-repo",
+    )
     ip.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     ip.set_defaults(fn=cmd_init)
 
@@ -9178,202 +11010,269 @@ def main(argv=None) -> int:
     tsw.add_argument("name")
     tcl = tksub.add_parser("close", help="close a track")
     tcl.add_argument("name")
-    tcl.add_argument("--status", default="done",
-                     help="status to close the track in (default done)")
+    tcl.add_argument("--status", default="done", help="status to close the track in (default done)")
     tk.set_defaults(fn=cmd_track)
 
     hnc = sub.add_parser("host-native-check", help=argparse.SUPPRESS)
-    hnc.add_argument("--host", choices=["claude", "codex"], required=True,
-                     help=argparse.SUPPRESS)
+    hnc.add_argument("--host", choices=["claude", "codex"], required=True, help=argparse.SUPPRESS)
     hnc.set_defaults(fn=cmd_host_native_check)
 
     cx = sub.add_parser("context", help="session-start context summary")
     cx.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cx.set_defaults(fn=cmd_context)
 
-    us = sub.add_parser("summary", help="simple human view: progress and "
-                        "decisions, while agents keep the detailed harness")
-    us.add_argument("--json", action="store_true",
-                    help="print the summary as JSON")
+    us = sub.add_parser(
+        "summary",
+        help="simple human view: progress and decisions, while agents keep the detailed harness",
+    )
+    us.add_argument("--json", action="store_true", help="print the summary as JSON")
     us.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     us.set_defaults(fn=cmd_summary)
 
-    hp = sub.add_parser("help", help="print this help; with --md, the "
-                        "generated markdown CLI reference "
-                        "(docs/cli-reference.md)")
-    hp.add_argument("--md", action="store_true",
-                    help="print the deterministic markdown CLI "
-                         "reference walked from the live argparse "
-                         "tree, instead of argparse's own help")
+    hp = sub.add_parser(
+        "help",
+        help="print this help; with --md, the "
+        "generated markdown CLI reference "
+        "(docs/cli-reference.md)",
+    )
+    hp.add_argument(
+        "--md",
+        action="store_true",
+        help="print the deterministic markdown CLI "
+        "reference walked from the live argparse "
+        "tree, instead of argparse's own help",
+    )
     hp.set_defaults(fn=cmd_help, root_parser=p)
 
-    vp = sub.add_parser("version", help="print the plugin version; "
-                        "--verify cross-checks every derived version "
-                        "surface against the single source "
-                        "(.codex-plugin/plugin.json) — CI-callable, "
-                        "exit 1 on drift")
-    vp.add_argument("--verify", action="store_true",
-                    help="cross-check every derived version surface "
-                         "against the single source; exit 1 on drift")
+    vp = sub.add_parser(
+        "version",
+        help="print the plugin version; "
+        "--verify cross-checks every derived version "
+        "surface against the single source "
+        "(.codex-plugin/plugin.json) — CI-callable, "
+        "exit 1 on drift",
+    )
+    vp.add_argument(
+        "--verify",
+        action="store_true",
+        help="cross-check every derived version surface against the single source; exit 1 on drift",
+    )
     vp.set_defaults(fn=cmd_version)
 
-    rvp = sub.add_parser("review", help="open a review in ONE call — tools, "
-                         "target pin, graph, impact, contract, obligations, "
-                         "routing, runnability and the ready-to-dispatch "
-                         "briefs, as one JSON payload")
+    rvp = sub.add_parser(
+        "review",
+        help="open a review in ONE call — tools, "
+        "target pin, graph, impact, contract, obligations, "
+        "routing, runnability and the ready-to-dispatch "
+        "briefs, as one JSON payload",
+    )
     rvsub = rvp.add_subparsers(dest="review_action")
     rva = rvsub.add_parser(
-        "activate-contract", help="verify one signed leased-review action "
-                         "and activate only its producer slot")
+        "activate-contract",
+        help="verify one signed leased-review action and activate only its producer slot",
+    )
     rva.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    rva.add_argument("--task-slot", required=True,
-                     help="exact signed producer slot visible to host screen")
-    rva.add_argument("--signed-action", required=True,
-                     help="URL-safe encoded signed ReviewKernel action")
-    rva.add_argument("--expected-identity", required=True,
-                     help="URL-safe encoded exact worker/lease identity")
+    rva.add_argument(
+        "--task-slot", required=True, help="exact signed producer slot visible to host screen"
+    )
+    rva.add_argument(
+        "--signed-action", required=True, help="URL-safe encoded signed ReviewKernel action"
+    )
+    rva.add_argument(
+        "--expected-identity", required=True, help="URL-safe encoded exact worker/lease identity"
+    )
     rva.set_defaults(fn=cmd_review)
-    rvs = rvsub.add_parser("start", help="establish the facts and activate "
-                           "the read-only contract")
+    rvs = rvsub.add_parser("start", help="establish the facts and activate the read-only contract")
     rvs.add_argument("spec", nargs="?", help="PR url, OWNER/REPO#N, or a ref")
     rvs.add_argument("--base", default=None, help="diff base ref")
     rvs.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvs.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
-    rvs.add_argument("--fetch", action="store_true",
-                     help="fetch pull/N/head into this checkout first")
-    rvs.add_argument("--goal", nargs="*", default=None,
-                     help="contract goal text (default: derived)")
-    rvs.add_argument("--max-actions", type=int, default=None,
-                     dest="max_actions",
-                     help="action ceiling for the review contract (default "
-                          "40). Prefer --max-tokens: an action cost ~11k "
-                          "effective tokens on the measured review, with a "
-                          "two-order-of-magnitude spread")
-    rvs.add_argument("--max-tokens", type=int, default=None, dest="max_tokens",
-                     help="effective-token ceiling for the review contract")
+    rvs.add_argument(
+        "--fetch", action="store_true", help="fetch pull/N/head into this checkout first"
+    )
+    rvs.add_argument(
+        "--goal", nargs="*", default=None, help="contract goal text (default: derived)"
+    )
+    rvs.add_argument(
+        "--max-actions",
+        type=int,
+        default=None,
+        dest="max_actions",
+        help="action ceiling for the review contract (default "
+        "40). Prefer --max-tokens: an action cost ~11k "
+        "effective tokens on the measured review, with a "
+        "two-order-of-magnitude spread",
+    )
+    rvs.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        dest="max_tokens",
+        help="effective-token ceiling for the review contract",
+    )
     rvs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    rvs.add_argument("--run-id", default=None,
-                     help="resume or deterministically name the repository "
-                          "preflight run")
-    rvs.add_argument("--advisory", action="store_true",
-                     help="continue with visibly advisory screen enforcement")
-    rvs.add_argument("--by", default=None,
-                     help="human identity required with --advisory")
+    rvs.add_argument(
+        "--run-id",
+        default=None,
+        help="resume or deterministically name the repository preflight run",
+    )
+    rvs.add_argument(
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+    )
+    rvs.add_argument("--by", default=None, help="human identity required with --advisory")
     rvs.set_defaults(fn=cmd_review)
     rvr = rvsub.add_parser(
-        "resume", help="apply one explicit user decision and continue the "
-        "same repository preflight and review")
-    rvr.add_argument("--run-id", required=True,
-                     help="run-id from the needs_user preflight response")
-    rvr.add_argument("--action-id", required=True,
-                     help="exact pending user-action id")
-    rvr.add_argument("--response", required=True,
-                     choices=("approve", "retry", "initialize", "cancel"),
-                     help="the user's decision for the pending action")
-    rvr.add_argument("--by", required=True,
-                     help="the user's approving/cancelling chat identity")
-    rvr.add_argument("--advisory", action="store_true",
-                     help="continue with visibly advisory screen enforcement")
+        "resume",
+        help="apply one explicit user decision and continue the "
+        "same repository preflight and review",
+    )
+    rvr.add_argument(
+        "--run-id", required=True, help="run-id from the needs_user preflight response"
+    )
+    rvr.add_argument("--action-id", required=True, help="exact pending user-action id")
+    rvr.add_argument(
+        "--response",
+        required=True,
+        choices=("approve", "retry", "initialize", "cancel"),
+        help="the user's decision for the pending action",
+    )
+    rvr.add_argument("--by", required=True, help="the user's approving/cancelling chat identity")
+    rvr.add_argument(
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+    )
     rvr.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvr.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
-    rvr.add_argument("--goal", nargs="*", default=None,
-                     help="contract goal text after preflight resumes")
-    rvr.add_argument("--max-actions", type=int, default=None,
-                     dest="max_actions",
-                     help="action ceiling for the resumed review contract")
-    rvr.add_argument("--max-tokens", type=int, default=None,
-                     dest="max_tokens",
-                     help="effective-token ceiling for the resumed review")
+    rvr.add_argument(
+        "--goal", nargs="*", default=None, help="contract goal text after preflight resumes"
+    )
+    rvr.add_argument(
+        "--max-actions",
+        type=int,
+        default=None,
+        dest="max_actions",
+        help="action ceiling for the resumed review contract",
+    )
+    rvr.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        dest="max_tokens",
+        help="effective-token ceiling for the resumed review",
+    )
     rvr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvr.set_defaults(fn=cmd_review)
-    rvc = rvsub.add_parser("collect", help="validate leased lens results and "
-                           "publish one canonical findings revision")
-    rvc.add_argument("--no-publish", action="store_true",
-                     help="skip the external artifact-store snapshot (tests "
-                          "and isolated calibration only)")
-    rvc.add_argument("--run-id", default=None,
-                     help="select one active review when several starts coexist")
+    rvc = rvsub.add_parser(
+        "collect", help="validate leased lens results and publish one canonical findings revision"
+    )
+    rvc.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="skip the external artifact-store snapshot (tests and isolated calibration only)",
+    )
+    rvc.add_argument(
+        "--run-id", default=None, help="select one active review when several starts coexist"
+    )
     rvc.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvc.set_defaults(fn=cmd_review)
     rvo = rvsub.add_parser(
-        "option", help="record the human's optional dynamic review/render choice")
+        "option", help="record the human's optional dynamic review/render choice"
+    )
     rvo.add_argument("selection", choices=("static", "dynamic", "dynamic-render"))
-    rvo.add_argument("--receipt", default=None,
-                     help="optional host message/turn reference; receipt "
-                          "content is resolved from the host transcript")
-    rvo.add_argument("--by", default=None,
-                     help="deprecated display attribution; receipt actor is authoritative")
+    rvo.add_argument(
+        "--receipt",
+        default=None,
+        help="optional host message/turn reference; receipt "
+        "content is resolved from the host transcript",
+    )
+    rvo.add_argument(
+        "--by", default=None, help="deprecated display attribution; receipt actor is authoritative"
+    )
     rvo.add_argument("--run-id", required=True, help="active review run")
     rvo.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvo.set_defaults(fn=cmd_review)
-    rve = rvsub.add_parser(
-        "evidence", help="record approved dynamic validation or render evidence")
+    rve = rvsub.add_parser("evidence", help="record approved dynamic validation or render evidence")
     rve.add_argument("kind", choices=("dynamic_validation", "functionality_render"))
     rve.add_argument("status", choices=("unavailable", "failed", "executed"))
     rve.add_argument("--detail", default="", help="bounded evidence summary")
-    rve.add_argument("--receipt", default=None,
-                     help="optional host message/turn reference; receipt "
-                          "content is resolved from the host transcript")
+    rve.add_argument(
+        "--receipt",
+        default=None,
+        help="optional host message/turn reference; receipt "
+        "content is resolved from the host transcript",
+    )
     rve.add_argument("--run-id", required=True, help="active review run")
     rve.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rve.set_defaults(fn=cmd_review)
     rvsa = rvsub.add_parser(
-        "sandbox", help="create a disposable writable PR copy for "
-        "validation-only build repair and dynamic checks")
+        "sandbox",
+        help="create a disposable writable PR copy for "
+        "validation-only build repair and dynamic checks",
+    )
     rvsa.add_argument("--run-id", required=True, help="active review run")
     rvsa.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvsa.set_defaults(fn=cmd_review)
     rvv = rvsub.add_parser(
-        "validate", help="run one argv-only dynamic check inside the registered "
-        "validation sandbox and record its evidence")
+        "validate",
+        help="run one argv-only dynamic check inside the registered "
+        "validation sandbox and record its evidence",
+    )
     rvv.add_argument("--run-id", required=True, help="active review run")
     rvv.add_argument("--cwd", default=".", help="sandbox-relative working directory")
     rvv.add_argument(
-        "--timeout", type=int,
-        default=None,
-                     help="command timeout in seconds (maximum 1800)")
-    rvv.add_argument("command", nargs=argparse.REMAINDER,
-                     help="command argv after --; no shell interpretation")
+        "--timeout", type=int, default=None, help="command timeout in seconds (maximum 1800)"
+    )
+    rvv.add_argument(
+        "command", nargs=argparse.REMAINDER, help="command argv after --; no shell interpretation"
+    )
     rvv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvv.set_defaults(fn=cmd_review)
-    rvsg = rvsub.add_parser("signoff", help="record the human decision for a "
-                            "collected standalone review")
+    rvsg = rvsub.add_parser(
+        "signoff", help="record the human decision for a collected standalone review"
+    )
     rvsg.add_argument("decision", choices=("approve", "changes"))
-    rvsg.add_argument("--by", required=True,
-                      help="the human approval or change-request words")
+    rvsg.add_argument("--by", required=True, help="the human approval or change-request words")
     rvsg.add_argument("--note", help="optional decision rationale")
-    rvsg.add_argument("--run-id", default=None,
-                      help="select the collected review run")
+    rvsg.add_argument("--run-id", default=None, help="select the collected review run")
     rvsg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    rvsg.add_argument("--advisory", action="store_true",
-                      help="acknowledge degraded screen enforcement")
+    rvsg.add_argument(
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+    )
     rvsg.set_defaults(fn=cmd_review)
     rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvp.set_defaults(fn=cmd_review)
 
-    tg = sub.add_parser("target", help="what is being reviewed — acquire a "
-                        "pull request, pin the checkout, or check that git "
-                        "and gh are actually available")
+    tg = sub.add_parser(
+        "target",
+        help="what is being reviewed — acquire a "
+        "pull request, pin the checkout, or check that git "
+        "and gh are actually available",
+    )
     tg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    tg.add_argument("--json", action="store_true",
-                    help="print the target record as JSON")
+    tg.add_argument("--json", action="store_true", help="print the target record as JSON")
     tgsub = tg.add_subparsers(dest="target_action")
-    tgf = tgsub.add_parser("fetch", help="fetch a pull request into this "
-                           "checkout and pin it (git fetch pull/N/head)")
+    tgf = tgsub.add_parser(
+        "fetch", help="fetch a pull request into this checkout and pin it (git fetch pull/N/head)"
+    )
     tgf.add_argument("spec", help="PR url, OWNER/REPO#N, or #N")
-    tgf.add_argument("--base", default=None,
-                     help="diff base (default: the remote's default branch)")
+    tgf.add_argument(
+        "--base", default=None, help="diff base (default: the remote's default branch)"
+    )
     tgf.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    tgp = tgsub.add_parser("pin", help="record what THIS checkout is — "
-                           "origin, head, base, dirty state, fingerprint")
+    tgp = tgsub.add_parser(
+        "pin", help="record what THIS checkout is — origin, head, base, dirty state, fingerprint"
+    )
     tgp.add_argument("--base", default=None, help="diff base ref")
-    tgp.add_argument("--spec", default=None,
-                     help="the target this checkout represents (PR url, ref)")
+    tgp.add_argument(
+        "--spec", default=None, help="the target this checkout represents (PR url, ref)"
+    )
     tgp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    tgt_ = tgsub.add_parser("tools", help="is git present, is gh present and "
-                            "authenticated — a remote PR review needs both")
-    tgt_.add_argument("--install", action="store_true",
-                      help="install gh via this host's package manager")
+    tgt_ = tgsub.add_parser(
+        "tools",
+        help="is git present, is gh present and authenticated — a remote PR review needs both",
+    )
+    tgt_.add_argument(
+        "--install", action="store_true", help="install gh via this host's package manager"
+    )
     tgt_.add_argument("--json", action="store_true", help="JSON report")
     tgt_.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     tgs = tgsub.add_parser("show", help="print the pinned target record")
@@ -9382,73 +11281,78 @@ def main(argv=None) -> int:
     tg.set_defaults(fn=cmd_target)
 
     rp = sub.add_parser(
-        "repository", help="automatic source precondition: resolve, "
-        "authenticate, acquire, checkout, verify, and resume")
+        "repository",
+        help="automatic source precondition: resolve, "
+        "authenticate, acquire, checkout, verify, and resume",
+    )
     rpsub = rp.add_subparsers(dest="repository_action", required=True)
-    rpp = rpsub.add_parser(
-        "prepare", help="prepare a local repository or remote pull request")
+    rpp = rpsub.add_parser("prepare", help="prepare a local repository or remote pull request")
     rpp.add_argument("spec", help="PR URL, OWNER/REPO#N, ref, or local target")
-    rpp.add_argument("--run-id", default=None,
-                     help="optional stable run id for idempotent retry")
+    rpp.add_argument("--run-id", default=None, help="optional stable run id for idempotent retry")
     rpp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rpp.set_defaults(fn=cmd_repository)
-    rpr = rpsub.add_parser(
-        "resume", help="apply an explicit user action and resume the same run")
-    rpr.add_argument("--run-id", required=True,
-                     help="run-id from the needs_user response")
-    rpr.add_argument("--action-id", required=True,
-                     help="exact pending user-action id")
-    rpr.add_argument("--response", required=True,
-                     choices=("approve", "retry", "initialize", "cancel"),
-                     help="the user's decision for the pending action")
-    rpr.add_argument("--by", required=True,
-                     help="human chat identity approving the action")
+    rpr = rpsub.add_parser("resume", help="apply an explicit user action and resume the same run")
+    rpr.add_argument("--run-id", required=True, help="run-id from the needs_user response")
+    rpr.add_argument("--action-id", required=True, help="exact pending user-action id")
+    rpr.add_argument(
+        "--response",
+        required=True,
+        choices=("approve", "retry", "initialize", "cancel"),
+        help="the user's decision for the pending action",
+    )
+    rpr.add_argument("--by", required=True, help="human chat identity approving the action")
     rpr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rpr.set_defaults(fn=cmd_repository)
     rps = rpsub.add_parser("status", help="print one canonical run manifest")
-    rps.add_argument("--run-id", required=True,
-                     help="canonical repository/run manifest id")
+    rps.add_argument("--run-id", required=True, help="canonical repository/run manifest id")
     rps.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rps.set_defaults(fn=cmd_repository)
-    rs = sub.add_parser(
-        "root-seed", help="prepare the reference-only seed before root start")
-    rs.add_argument("--request", required=True,
-                    help="bounded JSON containing context and inputs")
-    rs.add_argument("--output", required=True,
-                    help="workspace-relative root-seed.json destination")
+    rs = sub.add_parser("root-seed", help="prepare the reference-only seed before root start")
+    rs.add_argument("--request", required=True, help="bounded JSON containing context and inputs")
+    rs.add_argument("--output", required=True, help="workspace-relative root-seed.json destination")
     rs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rs.set_defaults(fn=cmd_root_seed)
 
     pv = sub.add_parser(
-        "preview", help="launch a private governed working preview from a "
-        "closed JSON request")
-    pv.add_argument("--request", required=True,
-                    help="bounded JSON request matching the documented "
-                    "taskplane preview request contract")
+        "preview", help="launch a private governed working preview from a closed JSON request"
+    )
+    pv.add_argument(
+        "--request",
+        required=True,
+        help="bounded JSON request matching the documented taskplane preview request contract",
+    )
     pv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     pv.set_defaults(fn=cmd_preview)
 
-    ak = sub.add_parser("ack", help="discharge an obligation the engine "
-                        "issued (WS-F evals); --status lists what is open")
+    ak = sub.add_parser(
+        "ack",
+        help="discharge an obligation the engine issued (WS-F evals); --status lists what is open",
+    )
     ak.add_argument("id", nargs="?", help="obligation id, e.g. o-1a2b3c4d5e")
-    ak.add_argument("--evidence", default="",
-                    help="one line on how it was shown")
-    ak.add_argument("--fingerprint", default=None,
-                    help="content fingerprint of what was actually shown "
-                         "(defaults to the artifact the obligation names)")
-    ak.add_argument("--delivered", metavar="PATH",
-                    help="discharge by DELIVERING the engine's artifact file "
-                         "(SendUserFile / the host's artifact channel) "
-                         "instead of retyping it inline — same bytes, same "
-                         "fingerprint, none of the re-authoring cost")
-    ak.add_argument("--status", action="store_true",
-                    help="print issued / acknowledged / open / mismatched")
+    ak.add_argument("--evidence", default="", help="one line on how it was shown")
+    ak.add_argument(
+        "--fingerprint",
+        default=None,
+        help="content fingerprint of what was actually shown "
+        "(defaults to the artifact the obligation names)",
+    )
+    ak.add_argument(
+        "--delivered",
+        metavar="PATH",
+        help="discharge by DELIVERING the engine's artifact file "
+        "(SendUserFile / the host's artifact channel) "
+        "instead of retyping it inline — same bytes, same "
+        "fingerprint, none of the re-authoring cost",
+    )
+    ak.add_argument(
+        "--status", action="store_true", help="print issued / acknowledged / open / mismatched"
+    )
     ak.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     ak.set_defaults(fn=cmd_ack)
 
     a = p.parse_args(argv)
     if not hasattr(a, "workspace"):
-        a.workspace = None      # SUPPRESS leaves it unset when never passed
+        a.workspace = None  # SUPPRESS leaves it unset when never passed
     # USER-LAYER ERROR BOUNDARY. The "simple front" translates raw
     # tracebacks into governed messages — but it NEVER swallows: a failure
     # stays a FAILURE (nonzero exit) and the full detail stays available.
@@ -9467,26 +11371,25 @@ def main(argv=None) -> int:
     try:
         return _run_hook_command(a)
     except BrokenPipeError:
-        raise                    # handled at the __main__ boundary below
-    except Exception as exc:     # noqa: BLE001 — the user-layer boundary
+        raise  # handled at the __main__ boundary below
+    except Exception as exc:  # noqa: BLE001 — the user-layer boundary
         if os.environ.get("TASKPLANE_DEBUG"):
-            raise                # operator asked for the raw exception
-        if isinstance(exc, FileNotFoundError) and \
-                getattr(exc, "filename", None) == "git":
+            raise  # operator asked for the raw exception
+        if isinstance(exc, FileNotFoundError) and getattr(exc, "filename", None) == "git":
             # git is the load-bearing external tool of the whole design;
             # its absence gets the documented remedy, not a stack trace.
-            print(f"taskplane: {a.cmd} failed: git is required — install "
-                  "git and re-run (see README prerequisites).",
-                  file=sys.stderr)
+            print(
+                f"taskplane: {a.cmd} failed: git is required — install "
+                "git and re-run (see README prerequisites).",
+                file=sys.stderr,
+            )
             return 1
         envelope = _public_engine_error(exc)
         if envelope is not None:
-            return _render_engine_error(
-                exc, envelope, workspace=getattr(a, "workspace", None))
+            return _render_engine_error(exc, envelope, workspace=getattr(a, "workspace", None))
         # Unexpected: short reason first, then the FULL traceback — the
         # boundary governs the message, it never destroys the evidence.
-        print(f"taskplane: {a.cmd} failed: "
-              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"taskplane: {a.cmd} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return 70
 

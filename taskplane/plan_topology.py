@@ -49,18 +49,28 @@ class PlanTopologyError(RuntimeError):
     """The Plan topology or trace-derived metrics are structurally unsafe."""
 
 
-def produce_dependency_plan(workspace: str, *, binding: Mapping[str, Any],
-        seam_contracts: Sequence[Mapping[str, Any]], plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def produce_dependency_plan(
+    workspace: str,
+    *,
+    binding: Mapping[str, Any],
+    seam_contracts: Sequence[Mapping[str, Any]],
+    plan: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Use the incumbent live source scanner and decomposition producer."""
     graph = _depgraph.scan(workspace, decompose=True)
     decomposition = dependency_plan_projection(graph, plan)
     coverage = graph["meta"]["source_coverage"]
-    manifest = _wiring_closure.build_seam_manifest(decomposition,
-        binding={**binding, "source_tree": decomposition["source_tree"],
-            "graph_fingerprint": decomposition["fingerprint"]}, contracts=seam_contracts,
-        expected=expected_dependency_topology(decomposition, plan, seam_contracts))
-    return {"source-coverage": coverage, "decomposition": decomposition,
-        "seam-manifest": manifest}
+    manifest = _wiring_closure.build_seam_manifest(
+        decomposition,
+        binding={
+            **binding,
+            "source_tree": decomposition["source_tree"],
+            "graph_fingerprint": decomposition["fingerprint"],
+        },
+        contracts=seam_contracts,
+        expected=expected_dependency_topology(decomposition, plan, seam_contracts),
+    )
+    return {"source-coverage": coverage, "decomposition": decomposition, "seam-manifest": manifest}
 
 
 def dependency_plan_projection(graph: dict, plan: Mapping[str, Any] | None = None) -> dict:
@@ -68,8 +78,12 @@ def dependency_plan_projection(graph: dict, plan: Mapping[str, Any] | None = Non
     owners = None
     if plan is not None:
         tasks = plan["tasks"]
-        scoped_modules = {task["id"]: set(_depgraph.modules_for_scope(
-            task["scope"], _depgraph.declared_module_ids(graph))) for task in tasks}
+        scoped_modules = {
+            task["id"]: set(
+                _depgraph.modules_for_scope(task["scope"], _depgraph.declared_module_ids(graph))
+            )
+            for task in tasks
+        }
         owners = {}
         for component in graph.get("components", []):
             for task in tasks:
@@ -77,7 +91,10 @@ def dependency_plan_projection(graph: dict, plan: Mapping[str, Any] | None = Non
                 # module. Only scanned components qualify; a genuinely new
                 # module still requires the Plan's explicit new_modules.
                 if component["module"] in scoped_modules[task["id"]] or any(
-                        _scope_matches(scope, path) for scope in task["scope"] for path in component["files"]):
+                    _scope_matches(scope, path)
+                    for scope in task["scope"]
+                    for path in component["files"]
+                ):
                     module = component["module"]
                     if module in owners and owners[module] != task["id"]:
                         raise ValueError("source module has ambiguous Plan task ownership")
@@ -90,8 +107,17 @@ def expected_dependency_topology(decomposition, plan, contracts):
     if plan is None:
         return None
     owners = {node: task["id"] for task in decomposition["tasks"] for node in task["nodes"]}
-    files = {node: sorted({path for row in decomposition["components"]
-        if row["module"] == node for path in row["files"]}) for node in owners}
+    files = {
+        node: sorted(
+            {
+                path
+                for row in decomposition["components"]
+                if row["module"] == node
+                for path in row["files"]
+            }
+        )
+        for node in owners
+    }
     tasks = {task["id"]: task for task in plan["tasks"]}
     new_nodes = set()
     for task in tasks.values():
@@ -120,12 +146,17 @@ def expected_dependency_topology(decomposition, plan, contracts):
         if owners[a] != owners[b]:
             dependencies[owners[b]].add(owners[a])
     # Include non-source tasks as ordering nodes, retaining their approved deps.
-    dependencies.update({key: set(task.get("deps", [])) for key, task in tasks.items()
-        if key not in dependencies})
-    return {"nodes": sorted(owners), "owners": owners, "files": files,
+    dependencies.update(
+        {key: set(task.get("deps", [])) for key, task in tasks.items() if key not in dependencies}
+    )
+    return {
+        "nodes": sorted(owners),
+        "owners": owners,
+        "files": files,
         "edges": [{"producer": a, "consumer": b, "kind": kind} for a, b, kind in sorted(edges)],
         "dependencies": {task: sorted(deps) for task, deps in dependencies.items()},
-        "order": {task: index for index, task in enumerate(_topological_order(dependencies))}}
+        "order": {task: index for index, task in enumerate(_topological_order(dependencies))},
+    }
 
 
 def task_conformance_scope(topology, task_id):
@@ -140,9 +171,13 @@ def task_conformance_scope(topology, task_id):
         if current not in required:
             required.add(current)
             pending.extend(dependencies[current])
-    return {"task_id": task_id, "required_tasks": sorted(required),
-        "required_nodes": sorted(node for node, owner in topology["owners"].items()
-            if owner in required)}
+    return {
+        "task_id": task_id,
+        "required_tasks": sorted(required),
+        "required_nodes": sorted(
+            node for node, owner in topology["owners"].items() if owner in required
+        ),
+    }
 
 
 def canonical_plan_fingerprint(plan: Mapping[str, Any]) -> str:
@@ -306,8 +341,9 @@ def build_plan_traceability(
     return material
 
 
-def build_plan_acceptance(design: Mapping[str, Any], plan: Mapping[str, Any],
-        *, binding: Mapping[str, Any]) -> dict[str, Any]:
+def build_plan_acceptance(
+    design: Mapping[str, Any], plan: Mapping[str, Any], *, binding: Mapping[str, Any]
+) -> dict[str, Any]:
     """Derive exact task and joint proof obligations from the existing owners."""
     trace = build_plan_traceability(design, plan)
     owners = build_plan_owner_inventory(design, plan)
@@ -323,28 +359,44 @@ def build_plan_acceptance(design: Mapping[str, Any], plan: Mapping[str, Any],
             if not selectors:
                 raise PlanTopologyError("contribution lacks an exact approved proof")
             for selector in selectors:
-                obligations.append({"kind": "task", **contribution,
-                    "selector": selector, "command": task["tests"]})
+                obligations.append(
+                    {"kind": "task", **contribution, "selector": selector, "command": task["tests"]}
+                )
     for journey_id, journey in trace["journeys"].items():
         for selector in (journey["positive"], journey["severed"]):
-            obligations.append({"kind": "joint", "journey": journey_id,
-                "criteria": journey["criteria"], "owner": journey["owner"],
-                "selector": selector, "command": "python3 -m pytest -q " + selector})
+            obligations.append(
+                {
+                    "kind": "joint",
+                    "journey": journey_id,
+                    "criteria": journey["criteria"],
+                    "owner": journey["owner"],
+                    "selector": selector,
+                    "command": "python3 -m pytest -q " + selector,
+                }
+            )
     for row in obligations:
         row["id"] = content_fingerprint(row)
-    material = {"schema": "taskplane.acceptance-evidence/v1", "binding": dict(binding),
+    material = {
+        "schema": "taskplane.acceptance-evidence/v1",
+        "binding": dict(binding),
         "traceability_fingerprint": trace["fingerprint"],
         "owner_inventory_fingerprint": owners["fingerprint"],
-        "contributions": contributions, "obligations": obligations}
+        "contributions": contributions,
+        "obligations": obligations,
+    }
     material["fingerprint"] = content_fingerprint(material)
     return material
 
 
-def acceptance_evidence_errors(contract: Mapping[str, Any], evidence: Mapping[str, Any],
-        *, read: Any) -> list[str]:
+def acceptance_evidence_errors(
+    contract: Mapping[str, Any], evidence: Mapping[str, Any], *, read: Any
+) -> list[str]:
     """Read exact immutable observations; task completion cannot accept a criterion."""
     errors = []
-    if evidence.get("schema") != "taskplane.acceptance-evidence/v1" or evidence.get("binding") != contract["binding"]:
+    if (
+        evidence.get("schema") != "taskplane.acceptance-evidence/v1"
+        or evidence.get("binding") != contract["binding"]
+    ):
         errors.append("acceptance binding is missing or stale")
     if evidence.get("contributions") != contract["contributions"]:
         errors.append("required contribution inventory differs")
@@ -359,11 +411,15 @@ def acceptance_evidence_errors(contract: Mapping[str, Any], evidence: Mapping[st
         row = by_id.get(obligation["id"], {})
         try:
             observation = read(row["reference"])
-            if observation.get("schema") != "taskplane.acceptance-proof/v1" or \
-                    observation.get("obligation") != obligation or \
-                    observation.get("binding") != contract["binding"] or \
-                    type(observation.get("returncode")) is not int or observation["returncode"] != 0 or \
-                    observation.get("evidence_mode") not in {"real", "simulated"} or not observation.get("output"):
+            if (
+                observation.get("schema") != "taskplane.acceptance-proof/v1"
+                or observation.get("obligation") != obligation
+                or observation.get("binding") != contract["binding"]
+                or type(observation.get("returncode")) is not int
+                or observation["returncode"] != 0
+                or observation.get("evidence_mode") not in {"real", "simulated"}
+                or not observation.get("output")
+            ):
                 raise ValueError("proof observation differs")
         except (KeyError, ValueError, OSError, TypeError):
             errors.append("required proof is missing or stale: " + obligation["id"])

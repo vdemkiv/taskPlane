@@ -4,6 +4,7 @@ This module owns interpretation only: it reads JSON, validates and freezes the
 result, and emits a deterministic receipt.  It never dispatches work, selects
 host-native authority, reads secrets, or mutates process state.
 """
+
 from __future__ import annotations
 
 if __package__:
@@ -21,14 +22,20 @@ from typing import Any
 
 from taskplane.authority import DECISION_SCHEMA
 from taskplane import stage_values as stage_entities
+
 DEFAULT_SETTINGS_PATH = Path(__file__).with_name("operational-settings.json")
-DEFAULT_LENS_CATALOG_PATH = \
-    Path(__file__).resolve().parent.parent / "lenses" / "catalog.json"
+DEFAULT_LENS_CATALOG_PATH = Path(__file__).resolve().parent.parent / "lenses" / "catalog.json"
 RECEIPT_SCHEMA = "taskplane.operational-settings-receipt/v1"
 CURRENT_SCHEMA = "taskplane.operational-settings/v2"
 STAGES = (
-    "product", "design", "plan", "build", "evaluate", "fix",
-    "engineering", "retro",
+    "product",
+    "design",
+    "plan",
+    "build",
+    "evaluate",
+    "fix",
+    "engineering",
+    "retro",
 )
 ROUTED_LENS_STAGES = frozenset(("product", "design", "plan"))
 ZERO_LENS_STAGES = frozenset(("build", "evaluate", "fix", "engineering", "retro"))
@@ -43,15 +50,37 @@ _ENV_TIERS = {
     "DEEP": ("product", "design", "plan"),
 }
 REQUIRED_DASHBOARD_LIFECYCLE_EVENTS = (
-    "gate", "submit", "next_action", "approve", "select", "resolve",
-    "replan", "handle_host_input", "cleanup_replay", "retro",
-    "worker_terminal", "terminalize_run",
+    "gate",
+    "submit",
+    "next_action",
+    "approve",
+    "select",
+    "resolve",
+    "replan",
+    "handle_host_input",
+    "cleanup_replay",
+    "retro",
+    "worker_terminal",
+    "terminalize_run",
 )
 
-_TOP = frozenset({
-    "schema", "stages", "lenses", "build", "tests", "limits", "workflow",
-    "cleanup", "runtime", "dashboard", "overrides", "observability", "phase_definitions",
-})
+_TOP = frozenset(
+    {
+        "schema",
+        "stages",
+        "lenses",
+        "build",
+        "tests",
+        "limits",
+        "workflow",
+        "cleanup",
+        "runtime",
+        "dashboard",
+        "overrides",
+        "observability",
+        "phase_definitions",
+    }
+)
 _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     (): _TOP,
     ("stages",): frozenset(STAGES),
@@ -60,29 +89,47 @@ _SHAPE: dict[tuple[str, ...], frozenset[str]] = {
     ("lenses", "routing"): frozenset(STAGES),
     ("lenses", "counts"): frozenset(STAGES),
     ("build",): frozenset(("shards", "concurrency")),
-    ("tests",): frozenset((
-        "backend", "selection", "shards", "cache",
-        "cache_max_age_seconds")),
+    ("tests",): frozenset(("backend", "selection", "shards", "cache", "cache_max_age_seconds")),
     ("limits",): frozenset(("timeouts", "budgets")),
-    ("limits", "timeouts"): frozenset((
-        "task_seconds", "subprocess_seconds", "wait_seconds",
-        "lens_wait_seconds", "lens_minimum_wait_seconds")),
-    ("limits", "budgets"): frozenset((
-        "max_actions", "lens_deep_max_actions", "lens_sweep_max_actions",
-        "target_tokens", "max_tokens", "max_cost_usd")),
-    ("workflow",): frozenset((
-        "transport", "worker_inheritance", "root_session")),
-    ("workflow", "worker_inheritance"): frozenset((
-        "model", "reasoning", "context")),
-    ("workflow", "root_session"): frozenset((
-        "resume", "seed", "seed_budget_tokens", "root_budget_tokens")),
+    ("limits", "timeouts"): frozenset(
+        (
+            "task_seconds",
+            "subprocess_seconds",
+            "wait_seconds",
+            "lens_wait_seconds",
+            "lens_minimum_wait_seconds",
+        )
+    ),
+    ("limits", "budgets"): frozenset(
+        (
+            "max_actions",
+            "lens_deep_max_actions",
+            "lens_sweep_max_actions",
+            "target_tokens",
+            "max_tokens",
+            "max_cost_usd",
+        )
+    ),
+    ("workflow",): frozenset(("transport", "worker_inheritance", "root_session")),
+    ("workflow", "worker_inheritance"): frozenset(("model", "reasoning", "context")),
+    ("workflow", "root_session"): frozenset(
+        ("resume", "seed", "seed_budget_tokens", "root_budget_tokens")
+    ),
     ("cleanup",): frozenset(("worktrees", "artifacts_days")),
-    ("runtime",): frozenset((
-        "audit_every", "inline_max_bytes", "orphan_ttl_seconds",
-        "obligations", "runnability", "review_max_attempts")),
+    ("runtime",): frozenset(
+        (
+            "audit_every",
+            "inline_max_bytes",
+            "orphan_ttl_seconds",
+            "obligations",
+            "runnability",
+            "review_max_attempts",
+        )
+    ),
     ("dashboard",): frozenset(("refresh",)),
-    ("dashboard", "refresh"): frozenset((
-        "lifecycle_events", "session_event", "replay_on_session_start")),
+    ("dashboard", "refresh"): frozenset(
+        ("lifecycle_events", "session_event", "replay_on_session_start")
+    ),
     ("overrides",): frozenset(("safe_paths", "governance_paths")),
     ("observability",): frozenset(("receipt", "include_values")),
 }
@@ -151,18 +198,28 @@ def _phase_capability(value: str) -> None:
     if not isinstance(value, str):
         raise SettingsError("phase capability must be a string")
     kind, separator, target = value.partition(":")
-    if (not separator or not target or "*" in target or
-            any(char.isspace() for char in target) or
-            kind not in {"network", "environment", "dependency", "root"}):
+    if (
+        not separator
+        or not target
+        or "*" in target
+        or any(char.isspace() for char in target)
+        or kind not in {"network", "environment", "dependency", "root"}
+    ):
         raise SettingsError("unsupported phase capability")
-    if kind == "root" and (not target.startswith("/") or target == "/" or
-                           any(part in {"", ".", ".."} for part in target.split("/")[1:])):
+    if kind == "root" and (
+        not target.startswith("/")
+        or target == "/"
+        or any(part in {"", ".", ".."} for part in target.split("/")[1:])
+    ):
         raise SettingsError("invalid root capability")
 
 
 def load_phase_registry(
-    definitions: object, *, skills: Mapping[str, bytes],
-    validator_inventory: Mapping[str, str], artifact_schemas: Mapping[str, str],
+    definitions: object,
+    *,
+    skills: Mapping[str, bytes],
+    validator_inventory: Mapping[str, str],
+    artifact_schemas: Mapping[str, str],
     available_capabilities: Sequence[str] = (),
 ) -> PhaseRegistry:
     """Admit orchestrator-loaded definitions against explicit trusted inventories.
@@ -185,7 +242,10 @@ def load_phase_registry(
         if phase_id in phases:
             raise SettingsError("duplicate phase id")
         skill = skills.get(str(row["skill_ref"]))
-        if not isinstance(skill, bytes) or hashlib.sha256(skill).hexdigest() != row["skill_content_fingerprint"]:
+        if (
+            not isinstance(skill, bytes)
+            or hashlib.sha256(skill).hexdigest() != row["skill_content_fingerprint"]
+        ):
             raise SettingsError("missing or changed skill content")
         validators = _phase_strings(row["domain_validator_refs"], "domain validators")
         if not set(validators) <= set(validator_inventory):
@@ -197,8 +257,11 @@ def load_phase_registry(
             if not isinstance(artifacts, list):
                 raise SettingsError("invalid artifact declarations")
             for artifact in artifacts:
-                if not isinstance(artifact, dict) or artifact_schemas.get(
-                        str(artifact["artifact_class"])) != artifact["artifact_schema_version"]:
+                if (
+                    not isinstance(artifact, dict)
+                    or artifact_schemas.get(str(artifact["artifact_class"]))
+                    != artifact["artifact_schema_version"]
+                ):
                     raise SettingsError("undeclared or changed artifact schema")
         required = _phase_strings(row["capability_requirements"], "capability requirements")
         for capability in required:
@@ -206,15 +269,20 @@ def load_phase_registry(
         if not set(required) <= set(granted):
             raise SettingsError("unavailable phase capability")
         phases[phase_id] = PhaseDefinition(
-            phase_id, _phase_strings(row["predecessors"], "predecessors"),
-            _phase_strings(row["successors"], "successors"), required, value)
+            phase_id,
+            _phase_strings(row["predecessors"], "predecessors"),
+            _phase_strings(row["successors"], "successors"),
+            required,
+            value,
+        )
     entries = [str(row["id"]) for row in rows if row["entry"]]
     terminals = [str(row["id"]) for row in rows if row["terminal"]]
     if len(entries) != 1 or len(terminals) != 1:
         raise SettingsError("phase DAG requires one entry and terminal")
     for phase in phases.values():
-        if (not phase.predecessors) != (phase.id == entries[0]) or (
-                not phase.successors) != (phase.id == terminals[0]):
+        if (not phase.predecessors) != (phase.id == entries[0]) or (not phase.successors) != (
+            phase.id == terminals[0]
+        ):
             raise SettingsError("unreachable or conflicting entry/terminal phase")
         for predecessor in phase.predecessors:
             if predecessor not in phases or phase.id not in phases[predecessor].successors:
@@ -225,8 +293,11 @@ def load_phase_registry(
     ordered: list[PhaseDefinition] = []
     remaining = dict(phases)
     while remaining:
-        ready = [phase for phase in remaining.values()
-                 if not set(phase.predecessors).intersection(remaining)]
+        ready = [
+            phase
+            for phase in remaining.values()
+            if not set(phase.predecessors).intersection(remaining)
+        ]
         if not ready:
             raise SettingsError("cyclic or unreachable phase DAG")
         for phase in ready:
@@ -297,8 +368,9 @@ class LensSettings:
             "counts": dict(self.counts),
         }
 
-    def policy_for(self, stage: str, *, catalog_ids: Sequence[str] | None = None
-                   ) -> StageLensPolicy:
+    def policy_for(
+        self, stage: str, *, catalog_ids: Sequence[str] | None = None
+    ) -> StageLensPolicy:
         """Return the executable typed policy without another config source."""
         if stage not in STAGES:
             raise SettingsError(f"unsupported lens policy stage: {stage}")
@@ -312,8 +384,8 @@ class LensSettings:
             unknown = sorted(set(policy.mandatory) - known)
             if unknown:
                 raise SettingsError(
-                    f"lenses.routing.{stage} contains unknown catalog ids: "
-                    + ", ".join(unknown))
+                    f"lenses.routing.{stage} contains unknown catalog ids: " + ", ".join(unknown)
+                )
         return policy
 
 
@@ -335,9 +407,13 @@ class TestSettings:
     cache_max_age_seconds: int | float
 
     def to_dict(self) -> dict[str, Any]:
-        return {"backend": self.backend, "selection": self.selection,
-                "shards": self.shards, "cache": self.cache,
-                "cache_max_age_seconds": self.cache_max_age_seconds}
+        return {
+            "backend": self.backend,
+            "selection": self.selection,
+            "shards": self.shards,
+            "cache": self.cache,
+            "cache_max_age_seconds": self.cache_max_age_seconds,
+        }
 
 
 @dataclass(frozen=True)
@@ -367,8 +443,7 @@ class RootSessionSettings:
     def consumer_projection(self, consumer: str) -> dict[str, Any]:
         """Project the complete policy only to its named Part A consumer."""
         if consumer != "root-seed.prepare":
-            raise SettingsError(
-                f"unknown root_session consumer: {consumer}")
+            raise SettingsError(f"unknown root_session consumer: {consumer}")
         return self.to_dict()
 
 
@@ -379,9 +454,11 @@ class WorkflowSettings:
     root_session: RootSessionSettings
 
     def to_dict(self) -> dict[str, Any]:
-        return {"transport": self.transport,
-                "worker_inheritance": dict(self.worker_inheritance),
-                "root_session": self.root_session.to_dict()}
+        return {
+            "transport": self.transport,
+            "worker_inheritance": dict(self.worker_inheritance),
+            "root_session": self.root_session.to_dict(),
+        }
 
 
 @dataclass(frozen=True)
@@ -441,8 +518,10 @@ class OverrideSettings:
     governance_paths: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
-        return {"safe_paths": list(self.safe_paths),
-                "governance_paths": list(self.governance_paths)}
+        return {
+            "safe_paths": list(self.safe_paths),
+            "governance_paths": list(self.governance_paths),
+        }
 
 
 @dataclass(frozen=True)
@@ -476,9 +555,12 @@ class OperationalSettings:
         return {
             "schema": self.schema,
             "stages": {key: value.to_dict() for key, value in self.stages.items()},
-            "lenses": self.lenses.to_dict(), "build": self.build.to_dict(),
-            "tests": self.tests.to_dict(), "limits": self.limits.to_dict(),
-            "workflow": self.workflow.to_dict(), "cleanup": self.cleanup.to_dict(),
+            "lenses": self.lenses.to_dict(),
+            "build": self.build.to_dict(),
+            "tests": self.tests.to_dict(),
+            "limits": self.limits.to_dict(),
+            "workflow": self.workflow.to_dict(),
+            "cleanup": self.cleanup.to_dict(),
             "runtime": self.runtime.to_dict(),
             "dashboard": self.dashboard.to_dict(),
             "overrides": self.overrides.to_dict(),
@@ -498,7 +580,9 @@ def _reject_secrets(value: object, path: tuple[str, ...] = ()) -> None:
         for key, item in value.items():
             name = str(key).lower()
             if any(part in name for part in _SECRET_PARTS):
-                raise SettingsError("secret-bearing setting is forbidden: " + ".".join(path + (str(key),)))
+                raise SettingsError(
+                    "secret-bearing setting is forbidden: " + ".".join(path + (str(key),))
+                )
             _reject_secrets(item, path + (str(key),))
     elif isinstance(value, list):
         for item in value:
@@ -548,7 +632,8 @@ def _leaf_paths(value: Mapping[str, Any], prefix: tuple[str, ...] = ()) -> list[
 def _matches(pattern: str, path: str) -> bool:
     expected, actual = pattern.split("."), path.split(".")
     return len(expected) == len(actual) and all(
-        left == "*" or left == right for left, right in zip(expected, actual))
+        left == "*" or left == right for left, right in zip(expected, actual)
+    )
 
 
 def _value_at(value: Mapping[str, Any], path: str) -> object:
@@ -594,13 +679,17 @@ def _nonnegative_number(value: object, label: str) -> int | float:
 
 
 def _validate_and_type(
-    data: Mapping[str, Any], receipt: Mapping[str, Any], *,
+    data: Mapping[str, Any],
+    receipt: Mapping[str, Any],
+    *,
     catalog_ids: frozenset[str],
 ) -> OperationalSettings:
     if data.get("schema") != CURRENT_SCHEMA:
         raise SettingsError("unsupported operational settings schema")
     if data.get("phase_definitions") and receipt.get("precedence") != ["durable-run"]:
-        raise SettingsError("phase_definitions are owned by agents/spec-phase-definitions.json; remove the settings copy")
+        raise SettingsError(
+            "phase_definitions are owned by agents/spec-phase-definitions.json; remove the settings copy"
+        )
     phase_definitions = _phase_bytes(data.get("phase_definitions", []))
     stages_raw = _plain_mapping(data.get("stages"), "stages")
     # Historical sealed runs retain their exact settings bytes. Fresh loads
@@ -631,39 +720,38 @@ def _validate_and_type(
     counts: dict[str, int] = {}
     for name in stage_names:
         route = routes_raw.get(name)
-        if not isinstance(route, list) or not all(isinstance(item, str) and item.strip() for item in route):
+        if not isinstance(route, list) or not all(
+            isinstance(item, str) and item.strip() for item in route
+        ):
             raise SettingsError(f"lenses.routing.{name} must be a string list")
         if len(set(route)) != len(route):
             raise SettingsError(f"lenses.routing.{name} contains conflicting duplicates")
         unknown = sorted(set(route) - catalog_ids)
         if unknown:
             raise SettingsError(
-                f"lenses.routing.{name} contains unknown catalog ids: "
-                + ", ".join(unknown))
+                f"lenses.routing.{name} contains unknown catalog ids: " + ", ".join(unknown)
+            )
         routing[name] = tuple(route)
         counts[name] = _positive_int(counts_raw.get(name), f"lenses.counts.{name}", zero=True)
         if len(routing[name]) > counts[name]:
-            raise SettingsError(
-                f"lenses.routing.{name} cannot exceed its maximum count")
+            raise SettingsError(f"lenses.routing.{name} cannot exceed its maximum count")
     for name in ZERO_LENS_STAGES.intersection(stage_names):
         if routing[name] or counts[name] != 0:
-            raise SettingsError(
-                f"{name} must preserve the zero lens worker invariant")
+            raise SettingsError(f"{name} must preserve the zero lens worker invariant")
     for name in ROUTED_LENS_STAGES:
         if not routing[name] or counts[name] == 0:
-            raise SettingsError(
-                f"lenses.routing.{name} requires a mandatory catalog lens")
+            raise SettingsError(f"lenses.routing.{name} requires a mandatory catalog lens")
     if counts["design"] > DESIGN_LENS_MAX:
-        raise SettingsError(
-            f"lenses.counts.design cannot exceed {DESIGN_LENS_MAX}")
+        raise SettingsError(f"lenses.counts.design cannot exceed {DESIGN_LENS_MAX}")
     if counts["plan"] > PLAN_LENS_MAX:
-        raise SettingsError(
-            f"lenses.counts.plan cannot exceed {PLAN_LENS_MAX}")
+        raise SettingsError(f"lenses.counts.plan cannot exceed {PLAN_LENS_MAX}")
 
     build_raw = _plain_mapping(data.get("build"), "build")
     build_shards = _positive_int(build_raw.get("shards"), "build.shards")
     concurrency = build_raw.get("concurrency")
-    if concurrency != "native" and (isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1):
+    if concurrency != "native" and (
+        isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1
+    ):
         raise SettingsError("build.concurrency must be native or a positive integer")
 
     tests_raw = _plain_mapping(data.get("tests"), "tests")
@@ -676,134 +764,138 @@ def _validate_and_type(
     if not isinstance(tests_raw.get("cache"), bool):
         raise SettingsError("tests.cache must be boolean")
     cache_max_age_seconds = _nonnegative_number(
-        tests_raw.get("cache_max_age_seconds"),
-        "tests.cache_max_age_seconds")
+        tests_raw.get("cache_max_age_seconds"), "tests.cache_max_age_seconds"
+    )
 
     limits_raw = _plain_mapping(data.get("limits"), "limits")
     timeouts_raw = _plain_mapping(limits_raw.get("timeouts"), "limits.timeouts")
-    timeouts = {key: _positive_int(timeouts_raw.get(key), f"limits.timeouts.{key}")
-                for key in (
-                    "task_seconds", "subprocess_seconds", "wait_seconds",
-                    "lens_wait_seconds", "lens_minimum_wait_seconds")}
+    timeouts = {
+        key: _positive_int(timeouts_raw.get(key), f"limits.timeouts.{key}")
+        for key in (
+            "task_seconds",
+            "subprocess_seconds",
+            "wait_seconds",
+            "lens_wait_seconds",
+            "lens_minimum_wait_seconds",
+        )
+    }
     if timeouts["lens_minimum_wait_seconds"] > timeouts["lens_wait_seconds"]:
         raise SettingsError(
             "limits.timeouts.lens_minimum_wait_seconds cannot exceed "
-            "limits.timeouts.lens_wait_seconds")
+            "limits.timeouts.lens_wait_seconds"
+        )
     budgets_raw = _plain_mapping(limits_raw.get("budgets"), "limits.budgets")
     budgets: dict[str, int | float | None] = {
         key: _positive_int(budgets_raw.get(key), f"limits.budgets.{key}")
-        for key in (
-            "max_actions", "lens_deep_max_actions",
-            "lens_sweep_max_actions")}
+        for key in ("max_actions", "lens_deep_max_actions", "lens_sweep_max_actions")
+    }
     for key in ("target_tokens", "max_tokens", "max_cost_usd"):
         value = budgets_raw.get(key)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+        ):
             raise SettingsError(f"limits.budgets.{key} must be null or positive")
         budgets[key] = value
     if budgets["target_tokens"] is None or budgets["max_tokens"] is None:
-        raise SettingsError(
-            "limits.budgets target_tokens and max_tokens must be non-null")
+        raise SettingsError("limits.budgets target_tokens and max_tokens must be non-null")
     if budgets["target_tokens"] >= budgets["max_tokens"]:
-        raise SettingsError(
-            "limits.budgets.target_tokens must be below max_tokens")
+        raise SettingsError("limits.budgets.target_tokens must be below max_tokens")
 
     workflow_raw = _plain_mapping(data.get("workflow"), "workflow")
     if workflow_raw.get("transport") != "native":
         raise SettingsError("workflow.transport must preserve native host authority")
-    inheritance_raw = _plain_mapping(workflow_raw.get("worker_inheritance"), "workflow.worker_inheritance")
+    inheritance_raw = _plain_mapping(
+        workflow_raw.get("worker_inheritance"), "workflow.worker_inheritance"
+    )
     if any(not isinstance(inheritance_raw.get(key), bool) for key in ("model", "reasoning")):
         raise SettingsError("workflow worker inheritance values must be boolean")
     if not all(inheritance_raw[key] for key in ("model", "reasoning")):
-        raise SettingsError(
-            "workflow worker inheritance cannot disable canonical dispatch fields")
+        raise SettingsError("workflow worker inheritance cannot disable canonical dispatch fields")
     if inheritance_raw.get("context") != "none":
-        raise SettingsError(
-            "workflow worker context inheritance must be 'none'")
-    root_session_raw = _plain_mapping(
-        workflow_raw.get("root_session"), "workflow.root_session")
+        raise SettingsError("workflow worker context inheritance must be 'none'")
+    root_session_raw = _plain_mapping(workflow_raw.get("root_session"), "workflow.root_session")
     if root_session_raw.get("resume") != "forbidden":
-        raise SettingsError(
-            "workflow.root_session.resume must be 'forbidden'")
+        raise SettingsError("workflow.root_session.resume must be 'forbidden'")
     if root_session_raw.get("seed") != "digest-only":
-        raise SettingsError(
-            "workflow.root_session.seed must be 'digest-only'")
+        raise SettingsError("workflow.root_session.seed must be 'digest-only'")
     seed_budget_tokens = _positive_int(
-        root_session_raw.get("seed_budget_tokens"),
-        "workflow.root_session.seed_budget_tokens")
+        root_session_raw.get("seed_budget_tokens"), "workflow.root_session.seed_budget_tokens"
+    )
     root_budget_tokens = _positive_int(
-        root_session_raw.get("root_budget_tokens"),
-        "workflow.root_session.root_budget_tokens")
+        root_session_raw.get("root_budget_tokens"), "workflow.root_session.root_budget_tokens"
+    )
     if seed_budget_tokens >= root_budget_tokens:
         raise SettingsError(
-            "workflow.root_session.seed_budget_tokens must be below "
-            "root_budget_tokens")
+            "workflow.root_session.seed_budget_tokens must be below root_budget_tokens"
+        )
     root_session = RootSessionSettings(
-        resume="forbidden", seed="digest-only",
+        resume="forbidden",
+        seed="digest-only",
         seed_budget_tokens=seed_budget_tokens,
-        root_budget_tokens=root_budget_tokens)
+        root_budget_tokens=root_budget_tokens,
+    )
 
     cleanup_raw = _plain_mapping(data.get("cleanup"), "cleanup")
     if cleanup_raw.get("worktrees") not in {"after-merge", "retain", "manual"}:
         raise SettingsError("cleanup.worktrees is unsupported")
-    artifacts_days = _positive_int(cleanup_raw.get("artifacts_days"), "cleanup.artifacts_days", zero=True)
+    artifacts_days = _positive_int(
+        cleanup_raw.get("artifacts_days"), "cleanup.artifacts_days", zero=True
+    )
 
     runtime_raw = _plain_mapping(data.get("runtime"), "runtime")
-    audit_every = _positive_int(runtime_raw.get("audit_every"),
-                                "runtime.audit_every")
-    inline_max_bytes = _positive_int(runtime_raw.get("inline_max_bytes"),
-                                     "runtime.inline_max_bytes", zero=True)
-    orphan_ttl_seconds = _positive_int(runtime_raw.get("orphan_ttl_seconds"),
-                                       "runtime.orphan_ttl_seconds")
+    audit_every = _positive_int(runtime_raw.get("audit_every"), "runtime.audit_every")
+    inline_max_bytes = _positive_int(
+        runtime_raw.get("inline_max_bytes"), "runtime.inline_max_bytes", zero=True
+    )
+    orphan_ttl_seconds = _positive_int(
+        runtime_raw.get("orphan_ttl_seconds"), "runtime.orphan_ttl_seconds"
+    )
     obligations = runtime_raw.get("obligations")
     if obligations not in {"enforce", "advisory"}:
         raise SettingsError("runtime.obligations is unsupported")
     runnability = runtime_raw.get("runnability")
     if runnability not in {"probe", "disabled"}:
         raise SettingsError("runtime.runnability is unsupported")
-    review_max_attempts = _positive_int(runtime_raw.get("review_max_attempts"),
-                                        "runtime.review_max_attempts")
+    review_max_attempts = _positive_int(
+        runtime_raw.get("review_max_attempts"), "runtime.review_max_attempts"
+    )
 
     dashboard_raw = _plain_mapping(data.get("dashboard"), "dashboard")
-    refresh_raw = _plain_mapping(dashboard_raw.get("refresh"),
-                                 "dashboard.refresh")
+    refresh_raw = _plain_mapping(dashboard_raw.get("refresh"), "dashboard.refresh")
     lifecycle_events = refresh_raw.get("lifecycle_events")
-    if not isinstance(lifecycle_events, list) or not lifecycle_events or not all(
-            isinstance(item, str) and item.strip()
-            for item in lifecycle_events):
-        raise SettingsError(
-            "dashboard.refresh.lifecycle_events must be a non-empty string list")
+    if (
+        not isinstance(lifecycle_events, list)
+        or not lifecycle_events
+        or not all(isinstance(item, str) and item.strip() for item in lifecycle_events)
+    ):
+        raise SettingsError("dashboard.refresh.lifecycle_events must be a non-empty string list")
     if len(set(lifecycle_events)) != len(lifecycle_events):
+        raise SettingsError("dashboard.refresh.lifecycle_events contains duplicates")
+    if frozenset(lifecycle_events) != frozenset(REQUIRED_DASHBOARD_LIFECYCLE_EVENTS):
         raise SettingsError(
-            "dashboard.refresh.lifecycle_events contains duplicates")
-    if frozenset(lifecycle_events) != frozenset(
-            REQUIRED_DASHBOARD_LIFECYCLE_EVENTS):
-        raise SettingsError(
-            "dashboard.refresh.lifecycle_events must exactly match required "
-            "governed transitions")
-    typed_lifecycle_events = [
-        item for item in lifecycle_events if isinstance(item, str)
-    ]
+            "dashboard.refresh.lifecycle_events must exactly match required governed transitions"
+        )
+    typed_lifecycle_events = [item for item in lifecycle_events if isinstance(item, str)]
     session_event = refresh_raw.get("session_event")
     if not isinstance(session_event, str) or not session_event.strip():
         raise SettingsError("dashboard.refresh.session_event must be a string")
     replay_on_session_start = refresh_raw.get("replay_on_session_start")
     if not isinstance(replay_on_session_start, bool):
-        raise SettingsError(
-            "dashboard.refresh.replay_on_session_start must be boolean")
+        raise SettingsError("dashboard.refresh.replay_on_session_start must be boolean")
 
     overrides_raw = _plain_mapping(data.get("overrides"), "overrides")
     safe_paths = overrides_raw.get("safe_paths")
     governance_paths = overrides_raw.get("governance_paths")
     if not isinstance(safe_paths, list) or not all(
-            isinstance(item, str) and item for item in safe_paths):
+        isinstance(item, str) and item for item in safe_paths
+    ):
         raise SettingsError("overrides.safe_paths must be a string list")
     if not isinstance(governance_paths, list) or not all(
-            isinstance(item, str) and item for item in governance_paths):
+        isinstance(item, str) and item for item in governance_paths
+    ):
         raise SettingsError("overrides.governance_paths must be a string list")
     typed_safe_paths = [item for item in safe_paths if isinstance(item, str)]
-    typed_governance_paths = [
-        item for item in governance_paths if isinstance(item, str)
-    ]
+    typed_governance_paths = [item for item in governance_paths if isinstance(item, str)]
     observable_raw = _plain_mapping(data.get("observability"), "observability")
     if any(not isinstance(observable_raw.get(key), bool) for key in ("receipt", "include_values")):
         raise SettingsError("observability values must be boolean")
@@ -817,12 +909,18 @@ def _validate_and_type(
         "schema": CURRENT_SCHEMA,
         "phase_definitions": [json.loads(value) for value in phase_definitions],
         "stages": {key: value.to_dict() for key, value in stages.items()},
-        "lenses": {"routing": {key: list(value) for key, value in routing.items()}, "counts": counts},
+        "lenses": {
+            "routing": {key: list(value) for key, value in routing.items()},
+            "counts": counts,
+        },
         "build": {"shards": build_shards, "concurrency": concurrency},
-        "tests": {"backend": backend, "selection": selection,
-                  "shards": test_shards,
-                  "cache": tests_raw["cache"],
-                  "cache_max_age_seconds": cache_max_age_seconds},
+        "tests": {
+            "backend": backend,
+            "selection": selection,
+            "shards": test_shards,
+            "cache": tests_raw["cache"],
+            "cache_max_age_seconds": cache_max_age_seconds,
+        },
         "limits": {"timeouts": timeouts, "budgets": budgets},
         "workflow": {
             "transport": "native",
@@ -838,13 +936,14 @@ def _validate_and_type(
             "runnability": runnability,
             "review_max_attempts": review_max_attempts,
         },
-        "dashboard": {"refresh": {
-            "lifecycle_events": typed_lifecycle_events,
-            "session_event": session_event,
-            "replay_on_session_start": replay_on_session_start,
-        }},
-        "overrides": {"safe_paths": typed_safe_paths,
-                      "governance_paths": typed_governance_paths},
+        "dashboard": {
+            "refresh": {
+                "lifecycle_events": typed_lifecycle_events,
+                "session_event": session_event,
+                "replay_on_session_start": replay_on_session_start,
+            }
+        },
+        "overrides": {"safe_paths": typed_safe_paths, "governance_paths": typed_governance_paths},
         "observability": dict(observable_raw),
     }
     digest = _digest(normalized)
@@ -855,22 +954,28 @@ def _validate_and_type(
         lenses=LensSettings(_freeze(routing), _freeze(counts)),
         build=BuildSettings(build_shards, concurrency),
         tests=TestSettings(
-            backend, selection, test_shards,
-            tests_raw["cache"], cache_max_age_seconds),
+            backend, selection, test_shards, tests_raw["cache"], cache_max_age_seconds
+        ),
         limits=LimitSettings(_freeze(timeouts), _freeze(budgets)),
-        workflow=WorkflowSettings(
-            "native", _freeze(dict(inheritance_raw)), root_session),
+        workflow=WorkflowSettings("native", _freeze(dict(inheritance_raw)), root_session),
         cleanup=CleanupSettings(cleanup_raw["worktrees"], artifacts_days),
         runtime=RuntimeSettings(
-            audit_every, inline_max_bytes, orphan_ttl_seconds, obligations,
-            runnability, review_max_attempts),
-        dashboard=DashboardSettings(DashboardRefreshSettings(
-            tuple(typed_lifecycle_events), session_event,
-            replay_on_session_start)),
-        overrides=OverrideSettings(
-            tuple(typed_safe_paths), tuple(typed_governance_paths)),
+            audit_every,
+            inline_max_bytes,
+            orphan_ttl_seconds,
+            obligations,
+            runnability,
+            review_max_attempts,
+        ),
+        dashboard=DashboardSettings(
+            DashboardRefreshSettings(
+                tuple(typed_lifecycle_events), session_event, replay_on_session_start
+            )
+        ),
+        overrides=OverrideSettings(tuple(typed_safe_paths), tuple(typed_governance_paths)),
         observability=ObservabilitySettings(observable_raw["receipt"], False),
-        digest=digest, receipt=_freeze(sealed_receipt),
+        digest=digest,
+        receipt=_freeze(sealed_receipt),
         phase_definitions=phase_definitions,
     )
 
@@ -883,11 +988,9 @@ def _read_json(path: Path) -> dict[str, Any]:
     return _plain_mapping(raw, "settings")
 
 
-
 def _require_v2_root_session(raw: Mapping[str, Any]) -> None:
     workflow = _plain_mapping(raw.get("workflow"), "workflow")
-    root_session = _plain_mapping(
-        workflow.get("root_session"), "workflow.root_session")
+    root_session = _plain_mapping(workflow.get("root_session"), "workflow.root_session")
     expected = _SHAPE[("workflow", "root_session")]
     if set(root_session) != set(expected):
         missing = sorted(set(expected) - set(root_session))
@@ -899,7 +1002,8 @@ def _require_v2_root_session(raw: Mapping[str, Any]) -> None:
             detail.append("unknown " + ", ".join(extra))
         raise SettingsError(
             "workflow.root_session must contain exactly the operative Part A "
-            "keys: " + "; ".join(detail))
+            "keys: " + "; ".join(detail)
+        )
 
 
 def _read_lens_catalog() -> tuple[frozenset[str], str]:
@@ -913,10 +1017,8 @@ def _read_lens_catalog() -> tuple[frozenset[str], str]:
         if not isinstance(row, Mapping):
             raise SettingsError(f"lens catalog row {index} must be an object")
         lens_id = row.get("id")
-        if not isinstance(lens_id, str) or not lens_id.strip() or \
-                lens_id != lens_id.strip():
-            raise SettingsError(
-                f"lens catalog row {index} has an invalid id")
+        if not isinstance(lens_id, str) or not lens_id.strip() or lens_id != lens_id.strip():
+            raise SettingsError(f"lens catalog row {index} has an invalid id")
         ids.append(lens_id)
     if len(set(ids)) != len(ids):
         raise SettingsError("lens catalog contains duplicate ids")
@@ -926,6 +1028,7 @@ def _read_lens_catalog() -> tuple[frozenset[str], str]:
 def project_settings_path(workspace: str | Path) -> Path:
     """The ignored project-owned stage preferences, separate from sealed runs."""
     from taskplane import storage
+
     path = Path(storage.project_taskplane_home(str(workspace))) / "settings.json"
     if path.is_symlink():
         raise SettingsError("project settings must not be a symbolic link")
@@ -941,9 +1044,12 @@ def validate_project_stages(value: object) -> dict[str, Any]:
         row = _plain_mapping(row, name)
         if not row or set(row) - {"model", "reasoning"}:
             raise SettingsError("unsupported phase setting: " + name)
-        if "model" in row and (not isinstance(row["model"], str) or
-                not row["model"].strip() or len(row["model"]) > 128 or
-                any(c.isspace() for c in row["model"].strip())):
+        if "model" in row and (
+            not isinstance(row["model"], str)
+            or not row["model"].strip()
+            or len(row["model"]) > 128
+            or any(c.isspace() for c in row["model"].strip())
+        ):
             raise SettingsError(name + " model must be inherit or a host model ID")
         if "reasoning" in row and row["reasoning"] not in REASONING:
             raise SettingsError(name + " reasoning is unsupported")
@@ -959,13 +1065,16 @@ def read_project_settings(workspace: str | Path) -> tuple[dict[str, Any], str]:
     return raw, _digest(raw)
 
 
-def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
-                  overlay: Mapping[str, Any] | None = None,
-                  environment: Mapping[str, str] | None = None,
-                  authority: Mapping[str, Any] | None = None,
-                  host_capabilities: object | None = None,
-                  workspace: str | Path | None = None,
-                  use_run_snapshot: bool = True) -> OperationalSettings:
+def load_settings(
+    path: str | Path = DEFAULT_SETTINGS_PATH,
+    *,
+    overlay: Mapping[str, Any] | None = None,
+    environment: Mapping[str, str] | None = None,
+    authority: Mapping[str, Any] | None = None,
+    host_capabilities: object | None = None,
+    workspace: str | Path | None = None,
+    use_run_snapshot: bool = True,
+) -> OperationalSettings:
     """Load defaults < file < environment < receipted overlay.
 
     ``host_capabilities`` is accepted to make the boundary explicit, but does
@@ -978,6 +1087,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     # including flat CLI imports and package imports. Host negotiation is
     # deliberately separate from configuration selection.
     from taskplane import run_context
+
     bound = run_context.current_settings()
     if use_run_snapshot and bound is not None and Path(path) == DEFAULT_SETTINGS_PATH:
         if overlay is not None:
@@ -990,8 +1100,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     if raw.get("schema") == CURRENT_SCHEMA:
         _require_v2_root_session(raw)
     else:
-        raise SettingsError(
-            "unsupported settings schema; current v2 settings are required")
+        raise SettingsError("unsupported settings schema; current v2 settings are required")
     _validate_keys(raw)
     effective = _merge(defaults, raw)
     precedence = ["defaults", "file"]
@@ -1007,8 +1116,10 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         environment_overlay: dict[str, Any] = {"stages": {}, "tests": {}}
         applied: list[str] = []
         for tier, stages in _ENV_TIERS.items():
-            for field, prefix in (("model", "TASKPLANE_MODEL_"),
-                                  ("reasoning", "TASKPLANE_REASONING_")):
+            for field, prefix in (
+                ("model", "TASKPLANE_MODEL_"),
+                ("reasoning", "TASKPLANE_REASONING_"),
+            ):
                 name = prefix + tier
                 if name not in environment:
                     continue
@@ -1018,8 +1129,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 if not stage_value:
                     continue
                 for stage in stages:
-                    environment_overlay["stages"].setdefault(stage, {})[
-                        field] = stage_value
+                    environment_overlay["stages"].setdefault(stage, {})[field] = stage_value
                     applied.append(f"stages.{stage}.{field}")
         runtime_overlay: dict[str, Any] = {}
         integer_aliases = {
@@ -1035,31 +1145,41 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
             try:
                 integer_value = int(raw_value)
             except ValueError as exc:
-                raise SettingsError(
-                    f"environment {name} must be an integer") from exc
+                raise SettingsError(f"environment {name} must be an integer") from exc
             if field in runtime_overlay:
-                raise SettingsError(
-                    "duplicate environment aliases for runtime." +
-                    field)
+                raise SettingsError("duplicate environment aliases for runtime." + field)
             runtime_overlay[field] = integer_value
             applied.append(f"runtime.{field}")
         enum_aliases = {
             "TASKPLANE_OBLIGATIONS": (
-                "obligations", {"on": "enforce", "enforce": "enforce",
-                                "off": "advisory", "0": "advisory",
-                                "false": "advisory", "advisory": "advisory"}),
+                "obligations",
+                {
+                    "on": "enforce",
+                    "enforce": "enforce",
+                    "off": "advisory",
+                    "0": "advisory",
+                    "false": "advisory",
+                    "advisory": "advisory",
+                },
+            ),
             "TASKPLANE_RUNNABILITY": (
-                "runnability", {"on": "probe", "probe": "probe",
-                                "off": "disabled", "0": "disabled",
-                                "false": "disabled", "no": "disabled"}),
+                "runnability",
+                {
+                    "on": "probe",
+                    "probe": "probe",
+                    "off": "disabled",
+                    "0": "disabled",
+                    "false": "disabled",
+                    "no": "disabled",
+                },
+            ),
         }
         for name, (field, aliases) in enum_aliases.items():
             if name not in environment:
                 continue
             raw_value = str(environment[name]).strip().lower()
             if raw_value not in aliases:
-                raise SettingsError(
-                    f"environment {name} is unsupported")
+                raise SettingsError(f"environment {name} is unsupported")
             runtime_overlay[field] = aliases[raw_value]
             applied.append(f"runtime.{field}")
         if runtime_overlay:
@@ -1067,48 +1187,53 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         if "TASKPLANE_NO_SUITE_CACHE" in environment:
             raw_value = str(environment["TASKPLANE_NO_SUITE_CACHE"]).strip().lower()
             cache_aliases = {
-                "1": False, "true": False, "on": False, "yes": False,
-                "0": True, "false": True, "off": True, "no": True,
+                "1": False,
+                "true": False,
+                "on": False,
+                "yes": False,
+                "0": True,
+                "false": True,
+                "off": True,
+                "no": True,
             }
             if raw_value not in cache_aliases:
-                raise SettingsError(
-                    "environment TASKPLANE_NO_SUITE_CACHE is unsupported")
+                raise SettingsError("environment TASKPLANE_NO_SUITE_CACHE is unsupported")
             environment_overlay["tests"]["cache"] = cache_aliases[raw_value]
             applied.append("tests.cache")
         if "TASKPLANE_SUITE_CACHE_MAX_AGE" in environment:
-            raw_value = str(
-                environment["TASKPLANE_SUITE_CACHE_MAX_AGE"]).strip()
+            raw_value = str(environment["TASKPLANE_SUITE_CACHE_MAX_AGE"]).strip()
             try:
                 parsed = float(raw_value)
             except ValueError as exc:
                 raise SettingsError(
-                    "environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
-                    "be a finite number") from exc
+                    "environment TASKPLANE_SUITE_CACHE_MAX_AGE must be a finite number"
+                ) from exc
             try:
                 _canonical(parsed)
             except SettingsError as exc:
                 raise SettingsError(
-                    "environment TASKPLANE_SUITE_CACHE_MAX_AGE must "
-                    "be a finite number") from exc
+                    "environment TASKPLANE_SUITE_CACHE_MAX_AGE must be a finite number"
+                ) from exc
             # Historic zero and negative values both meant "never cite".
             cache_age_value: int | float = max(0.0, parsed)
             if isinstance(cache_age_value, float) and cache_age_value.is_integer():
                 cache_age_value = int(cache_age_value)
-            environment_overlay["tests"][
-                "cache_max_age_seconds"] = cache_age_value
+            environment_overlay["tests"]["cache_max_age_seconds"] = cache_age_value
             applied.append("tests.cache_max_age_seconds")
-        if (environment_overlay["stages"] or environment_overlay["tests"]
-                or runtime_overlay):
+        if environment_overlay["stages"] or environment_overlay["tests"] or runtime_overlay:
             paths = _leaf_paths(environment_overlay)
             safe_patterns = defaults["overrides"]["safe_paths"]
-            governance = [path for path in paths if not any(
-                _matches(pattern, path) for pattern in safe_patterns)
-                and _value_at(environment_overlay, path) !=
-                _value_at(effective, path)]
-            requested_age = environment_overlay["tests"].get(
-                "cache_max_age_seconds")
-            if requested_age is not None and requested_age > \
-                    effective["tests"]["cache_max_age_seconds"]:
+            governance = [
+                path
+                for path in paths
+                if not any(_matches(pattern, path) for pattern in safe_patterns)
+                and _value_at(environment_overlay, path) != _value_at(effective, path)
+            ]
+            requested_age = environment_overlay["tests"].get("cache_max_age_seconds")
+            if (
+                requested_age is not None
+                and requested_age > effective["tests"]["cache_max_age_seconds"]
+            ):
                 governance.append("tests.cache_max_age_seconds")
             governance = sorted(set(governance))
             authority_fingerprint = None
@@ -1116,8 +1241,8 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 authority_fingerprint = _exact_authority(authority)
                 if authority_fingerprint is None:
                     raise SettingsError(
-                        "governance-weakening environment override requires "
-                        "exact authority")
+                        "governance-weakening environment override requires exact authority"
+                    )
             effective = _merge(effective, environment_overlay)
             precedence.append("environment")
             environment_receipt = {
@@ -1135,17 +1260,23 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         # safe-path declaration.  Classification is pinned to the shipped
         # canonical policy, while the file copy remains observable settings.
         safe_patterns = defaults["overrides"]["safe_paths"]
-        governance = [path for path in paths if not any(
-            _matches(pattern, path) for pattern in safe_patterns)
-            and _value_at(supplied, path) != _value_at(effective, path)]
+        governance = [
+            path
+            for path in paths
+            if not any(_matches(pattern, path) for pattern in safe_patterns)
+            and _value_at(supplied, path) != _value_at(effective, path)
+        ]
         supplied_tests = supplied.get("tests")
-        requested_age = supplied_tests.get("cache_max_age_seconds") \
-            if isinstance(supplied_tests, Mapping) else None
+        requested_age = (
+            supplied_tests.get("cache_max_age_seconds")
+            if isinstance(supplied_tests, Mapping)
+            else None
+        )
         if requested_age is not None and (
-                isinstance(requested_age, bool)
-                or not isinstance(requested_age, (int, float))
-                or requested_age >
-                effective["tests"]["cache_max_age_seconds"]):
+            isinstance(requested_age, bool)
+            or not isinstance(requested_age, (int, float))
+            or requested_age > effective["tests"]["cache_max_age_seconds"]
+        ):
             governance.append("tests.cache_max_age_seconds")
         governance = sorted(set(governance))
         authority_fingerprint = None
@@ -1155,8 +1286,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                 raise SettingsError("governance-weakening override requires exact authority")
         effective = _merge(effective, supplied)
         precedence.append("overlay")
-        overlay_receipt = {"applied": paths,
-                           "authority_fingerprint": authority_fingerprint}
+        overlay_receipt = {"applied": paths, "authority_fingerprint": authority_fingerprint}
     _reject_secrets(effective)
     _validate_keys(effective)
     receipt = {
@@ -1164,12 +1294,12 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         "precedence": precedence,
         "migration": migration,
         "environment": environment_receipt,
-        "overlay": overlay_receipt, "project": project_receipt,
+        "overlay": overlay_receipt,
+        "project": project_receipt,
     }
     catalog_ids, catalog_digest = _read_lens_catalog()
     receipt["lens_catalog_digest"] = catalog_digest
-    return _validate_and_type(
-        effective, receipt, catalog_ids=catalog_ids)
+    return _validate_and_type(effective, receipt, catalog_ids=catalog_ids)
 
 
 def from_snapshot(value: Mapping[str, Any], *, expected_digest: str) -> OperationalSettings:
@@ -1181,9 +1311,18 @@ def from_snapshot(value: Mapping[str, Any], *, expected_digest: str) -> Operatio
     _validate_keys(raw)
     _require_v2_root_session(raw)
     catalog_ids, catalog_digest = _read_lens_catalog()
-    checked = _validate_and_type(raw, {"schema": RECEIPT_SCHEMA,
-        "precedence": ["durable-run"], "migration": None, "environment": None,
-        "overlay": None, "lens_catalog_digest": catalog_digest}, catalog_ids=catalog_ids)
+    checked = _validate_and_type(
+        raw,
+        {
+            "schema": RECEIPT_SCHEMA,
+            "precedence": ["durable-run"],
+            "migration": None,
+            "environment": None,
+            "overlay": None,
+            "lens_catalog_digest": catalog_digest,
+        },
+        catalog_ids=catalog_ids,
+    )
     if checked.digest != expected_digest:
         raise SettingsError("run settings snapshot is not canonical")
     return checked
@@ -1203,15 +1342,35 @@ def settings_receipt(settings: OperationalSettings) -> dict[str, Any]:
 
 
 __all__ = [
-    "BuildSettings", "CleanupSettings", "DashboardRefreshSettings",
-    "DashboardSettings", "DEFAULT_LENS_CATALOG_PATH", "DEFAULT_SETTINGS_PATH",
-    "LensSettings", "LimitSettings", "ObservabilitySettings",
-    "OperationalSettings", "OverrideSettings", "RuntimeSettings",
+    "BuildSettings",
+    "CleanupSettings",
+    "DashboardRefreshSettings",
+    "DashboardSettings",
+    "DEFAULT_LENS_CATALOG_PATH",
+    "DEFAULT_SETTINGS_PATH",
+    "LensSettings",
+    "LimitSettings",
+    "ObservabilitySettings",
+    "OperationalSettings",
+    "OverrideSettings",
+    "RuntimeSettings",
     "RootSessionSettings",
-    "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS", "SettingsError",
-    "StageLensPolicy", "StageSettings", "TestSettings", "WorkflowSettings",
-    "STAGES", "ROUTED_LENS_STAGES", "ZERO_LENS_STAGES",
-    "DESIGN_LENS_MAX", "PLAN_LENS_MAX", "load_settings", "from_snapshot",
-    "PhaseDefinition", "PhaseRegistry", "load_phase_registry",
-    "settings_digest", "settings_receipt",
+    "REQUIRED_DASHBOARD_LIFECYCLE_EVENTS",
+    "SettingsError",
+    "StageLensPolicy",
+    "StageSettings",
+    "TestSettings",
+    "WorkflowSettings",
+    "STAGES",
+    "ROUTED_LENS_STAGES",
+    "ZERO_LENS_STAGES",
+    "DESIGN_LENS_MAX",
+    "PLAN_LENS_MAX",
+    "load_settings",
+    "from_snapshot",
+    "PhaseDefinition",
+    "PhaseRegistry",
+    "load_phase_registry",
+    "settings_digest",
+    "settings_receipt",
 ]

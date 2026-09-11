@@ -19,13 +19,14 @@ import os
 from typing import Any, Mapping
 
 import taskplane_lite as tp
-import loop as _loop        # engine owns the state machine; the view derives
-import kb as _kb            # from its public read models (display_pipeline,
-import depgraph as _dg      # STEP_ROLE, kb.counts, depgraph.summary) instead
-import plan_topology as _pt # Plan DAG/waves stay owned by one topology model.
+import loop as _loop  # engine owns the state machine; the view derives
+import kb as _kb  # from its public read models (display_pipeline,
+import depgraph as _dg  # STEP_ROLE, kb.counts, depgraph.summary) instead
+import plan_topology as _pt  # Plan DAG/waves stay owned by one topology model.
 import host_native
 import wave_metrics
-                            # of re-encoding schemas that then drift.
+
+# of re-encoding schemas that then drift.
 import text_runtime as _text
 
 # trace event → (icon, label, css class)
@@ -84,9 +85,10 @@ def render_lossless_dashboard_inline(canonical_json: str) -> str:
     return (
         '<section class="tp-lossless-dashboard" '
         'aria-label="Taskplane dashboard"><h2>Taskplane dashboard</h2>'
-        f'<pre>{html.escape(raw)}</pre>'
+        f"<pre>{html.escape(raw)}</pre>"
         '<script type="application/x-taskplane-json-base64" '
-        f'data-taskplane-canonical="true">{encoded}</script></section>')
+        f'data-taskplane-canonical="true">{encoded}</script></section>'
+    )
 
 
 def _read_trace_all(ws: str, stats: dict | None = None) -> list:
@@ -130,10 +132,9 @@ def _read_trace_all(ws: str, stats: dict | None = None) -> list:
         with open(p, "rb") as f:
             if size > TRACE_TAIL_BYTES:
                 f.seek(size - TRACE_TAIL_BYTES)
-                dropped = f.readline()       # partial first line after seek
+                dropped = f.readline()  # partial first line after seek
                 stats["tail"] = True
-                stats["tail_skipped_bytes"] += (size - TRACE_TAIL_BYTES
-                                                + len(dropped))
+                stats["tail_skipped_bytes"] += size - TRACE_TAIL_BYTES + len(dropped)
             for raw in f:
                 ln = raw.decode("utf-8", "replace")
                 if not ln.strip():
@@ -142,9 +143,9 @@ def _read_trace_all(ws: str, stats: dict | None = None) -> list:
                     e = json.loads(ln)
                 except ValueError:
                     stats["unparseable"] += 1
-                    continue   # a truncated/partial record — skip it, don't
-                               # crash the whole render; COUNTED for the
-                               # visible notice, never silently dropped
+                    continue  # a truncated/partial record — skip it, don't
+                    # crash the whole render; COUNTED for the
+                    # visible notice, never silently dropped
                 if not isinstance(e, dict):
                     stats["unparseable"] += 1
                     continue
@@ -176,11 +177,12 @@ def _trace_notice(stats: dict | None) -> str:
         bits.append(_msg("trace_tail", mb=f"{mb:.1f}"))
     if not bits:
         return ""
-    return (f'<div id="tp-trace-notice" role="note" style="border:1px solid '
-            f'var(--border-strong);border-radius:6px;padding:7px 12px;'
-            f'margin-bottom:12px;font-family:var(--font-mono);'
-            f'font-size:11px;color:var(--text-secondary)">⚠ '
-            + _esc(" · ".join(bits)) + '</div>')
+    return (
+        f'<div id="tp-trace-notice" role="note" style="border:1px solid '
+        f"var(--border-strong);border-radius:6px;padding:7px 12px;"
+        f"margin-bottom:12px;font-family:var(--font-mono);"
+        f'font-size:11px;color:var(--text-secondary)">⚠ ' + _esc(" · ".join(bits)) + "</div>"
+    )
 
 
 def _read_trace(ws: str, limit: int = 24) -> list:
@@ -198,8 +200,14 @@ def _current_run_events(events: list[dict]) -> list[dict]:
     a provenance bug.  Legacy logs have no run id, so the latest durable
     ``loop_init`` is the conservative boundary.
     """
-    boundary = next((index for index in range(len(events) - 1, -1, -1)
-                     if events[index].get("event") == "loop_init"), None)
+    boundary = next(
+        (
+            index
+            for index in range(len(events) - 1, -1, -1)
+            if events[index].get("event") == "loop_init"
+        ),
+        None,
+    )
     return events[boundary:] if boundary is not None else events
 
 
@@ -219,8 +227,10 @@ def _visible_text(value: object, limit: int) -> str:
     bounded = _text.truncate_graphemes(value, limit)
     if not bounded.truncated:
         return _esc(bounded.full)
-    return (f'<span aria-hidden="true">{_esc(bounded.visible)}</span>'
-            f'<span class="sr">{_esc(bounded.full)}</span>')
+    return (
+        f'<span aria-hidden="true">{_esc(bounded.visible)}</span>'
+        f'<span class="sr">{_esc(bounded.full)}</span>'
+    )
 
 
 def _visible_plain(value: object, limit: int) -> str:
@@ -241,6 +251,7 @@ def _fmt_ts(ts) -> str:
     as the VIEWER's time with no marker. One helper so a future client-side
     Intl formatting swap is one change."""
     import time as _t
+
     try:
         return _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(float(ts)))
     except (TypeError, ValueError, OSError, OverflowError):
@@ -258,34 +269,36 @@ def _counts(ws: str) -> dict:
     # key access in the view.
     c = _kb.counts(ws)
     g = _dg.summary(ws)
-    return {"decisions": c["decisions"], "requirements": c["requirements"],
-            "debt": c["debt_open"], "modules": g["modules"],
-            "edges": g["edges"]}
+    return {
+        "decisions": c["decisions"],
+        "requirements": c["requirements"],
+        "debt": c["debt_open"],
+        "modules": g["modules"],
+        "edges": g["edges"],
+    }
 
 
 def _render_pipeline(state, step) -> str:
     """The full-page pipeline strip. Each node carries a visually-hidden
     state word (done/current/pending, + human gate), so step state is not
     conveyed by dot color alone."""
-    main = [(s, lbl, h) for s, lbl, h in _loop.display_pipeline(state)
-            if s != "fix"]
+    main = [(s, lbl, h) for s, lbl, h in _loop.display_pipeline(state) if s != "fix"]
     order = [s[0] for s in main]
     cur_i = order.index(step) if step in order else -1
     pipe_html = []
     for i, (_sid, label, gate) in enumerate(main):
-        cls = "done" if (cur_i >= 0 and i < cur_i) else \
-              ("cur" if i == cur_i else "todo")
+        cls = "done" if (cur_i >= 0 and i < cur_i) else ("cur" if i == cur_i else "todo")
         if gate:
             cls += " gate"
         wait = " · waiting on you" if (i == cur_i and gate) else ""
-        st_word = ("done" if cls.startswith("done")
-                   else "current step" if i == cur_i else "pending")
+        st_word = "done" if cls.startswith("done") else "current step" if i == cur_i else "pending"
         if gate:
             st_word += " · human gate"
         sr = f'<span class="sr"> — {st_word}</span>'
         pipe_html.append(
             f'<div class="node {cls}"><span class="dot"></span>'
-            f'<span class="nl">{label}{wait}{sr}</span></div>')
+            f'<span class="nl">{label}{wait}{sr}</span></div>'
+        )
         if i < len(main) - 1:
             pipe_html.append('<div class="conn"></div>')
     if step == "fix":
@@ -293,10 +306,9 @@ def _render_pipeline(state, step) -> str:
     return "".join(pipe_html)
 
 
-def render(ws: str, out: str | None = None, *,
-           locale: str | None = None) -> str:
+def render(ws: str, out: str | None = None, *, locale: str | None = None) -> str:
     tstats = {}
-    all_ev = _read_trace_all(ws, stats=tstats)   # trace parsed ONCE/render
+    all_ev = _read_trace_all(ws, stats=tstats)  # trace parsed ONCE/render
     state = _load_loop(ws)
     trace = all_ev[-24:][::-1]
     counts = _counts(ws)
@@ -317,115 +329,137 @@ def render(ws: str, out: str | None = None, *,
     if parallel and step in ("execute",):
         for t in tasks:
             stt = t.get("status", "pending")
-            badge = {"running": "running", "built": "built",
-                     "passed": "passed", "pending": "queued",
-                     "failed": "failed"}.get(stt, stt)
+            badge = {
+                "running": "running",
+                "built": "built",
+                "passed": "passed",
+                "pending": "queued",
+                "failed": "failed",
+            }.get(stt, stt)
             wt = t.get("workspace", "")
-            wt = ".tp-work/" + wt.split(".tp-work/")[-1] if ".tp-work/" in wt \
+            wt = (
+                ".tp-work/" + wt.split(".tp-work/")[-1]
+                if ".tp-work/" in wt
                 else ("—" if not wt else wt)
+            )
             scope = _esc(", ".join(t.get("scope", [])))
             agent_cards.append(
                 f'<div class="agent {stt}"><div class="ah">'
-                f'<b>{_esc(t.get("id","?"))}</b><span class="badge {stt}">'
+                f'<b>{_esc(t.get("id", "?"))}</b><span class="badge {stt}">'
                 f'{_esc(badge)}</span></div><div class="ameta">tp-executor · '
-                f'scope <code>{scope}</code></div>'
-                f'<div class="ameta">worktree <code>{_esc(wt)}</code></div></div>')
+                f"scope <code>{scope}</code></div>"
+                f'<div class="ameta">worktree <code>{_esc(wt)}</code></div></div>'
+            )
     elif contract:
         projection = tp.contract_projection(contract)
         ro = projection["read_only"]
         sc = projection["display_scope"] or [
-            "(nothing — released/read-only)" if ro else "(any — set scope!)"]
+            "(nothing — released/read-only)" if ro else "(any — set scope!)"
+        ]
         deny = projection["deny"]
         agent_cards.append(
             f'<div class="agent running"><div class="ah">'
-            f'<b>{STEP_ROLE_LABEL.get(step, step)}</b>'
+            f"<b>{STEP_ROLE_LABEL.get(step, step)}</b>"
             f'<span class="badge running">active</span></div>'
             f'<div class="ameta">{"read-only review" if ro else "build"} '
-            f'contract {_esc(contract.get("task_id",""))}</div>'
+            f"contract {_esc(contract.get('task_id', ''))}</div>"
             f'<div class="ameta">scope <code>{_esc(", ".join(sc))}</code></div>'
             f'<div class="ameta">deny <code>'
-            f'{_esc(", ".join(deny[:3]) or "(none declared)")}'
-            f'{"…" if len(deny) > 3 else ""}'
-            f'</code></div></div>')
+            f"{_esc(', '.join(deny[:3]) or '(none declared)')}"
+            f"{'…' if len(deny) > 3 else ''}"
+            f"</code></div></div>"
+        )
     else:
-        awaiting = {"design_approval": "Review the design, then approve.",
-                    "plan_approval": "Review the plan, then approve.",
-                    "signoff": "Review the EM report, then sign off.",
-                    "retro": "Finalizing lessons and the dependency graph.",
-                    "done": "Loop complete.", "escalated": "Resolve to continue."}
+        awaiting = {
+            "design_approval": "Review the design, then approve.",
+            "plan_approval": "Review the plan, then approve.",
+            "signoff": "Review the EM report, then sign off.",
+            "retro": "Finalizing lessons and the dependency graph.",
+            "done": "Loop complete.",
+            "escalated": "Resolve to continue.",
+        }
         agent_cards.append(
             f'<div class="agent idle"><div class="ah"><b>no active contract'
             f'</b><span class="badge idle">'
-            f'{"human gate" if step in awaiting else "idle"}</span></div>'
+            f"{'human gate' if step in awaiting else 'idle'}</span></div>"
             f'<div class="ameta">{awaiting.get(step, "workspace ungoverned")}'
-            f'</div></div>')
+            f"</div></div>"
+        )
 
     # task roster (always, compact)
     roster = ""
     if tasks:
         rows = "".join(
-            f'<tr><td>{_esc(t.get("id"))}</td>'
-            f'<td><span class="badge {_esc(t.get("status","pending"))}">'
-            f'{_esc(t.get("status","pending"))}</span></td>'
-            f'<td>{int(t.get("fix_cycles",0) or 0)}</td></tr>' for t in tasks)
-        roster = (f'<table class="roster"><tr><th>task</th><th>status</th>'
-                  f'<th>fix</th></tr>{rows}</table>')
+            f"<tr><td>{_esc(t.get('id'))}</td>"
+            f'<td><span class="badge {_esc(t.get("status", "pending"))}">'
+            f"{_esc(t.get('status', 'pending'))}</span></td>"
+            f"<td>{int(t.get('fix_cycles', 0) or 0)}</td></tr>"
+            for t in tasks
+        )
+        roster = (
+            f'<table class="roster"><tr><th>task</th><th>status</th><th>fix</th></tr>{rows}</table>'
+        )
 
     # live feed
     feed = []
     for e in trace:
-        icon, label, cls = EVENT_STYLE.get(
-            e["event"], ("·", e["event"], "info"))
+        icon, label, cls = EVENT_STYLE.get(e["event"], ("·", e["event"], "info"))
         extra = ""
         if e["event"] == "loop_step":
-            extra = f' {_arrow()} {e.get("step","")} ({e.get("role","")})'
+            extra = f" {_arrow()} {e.get('step', '')} ({e.get('role', '')})"
         elif e["event"] == "hook_deny":
-            who = f'[{e["_agent"]}] ' if e.get("_agent") else ""
-            extra = f' {who}{e.get("tool","")}: {str(e.get("reason",""))[:50]}'
+            who = f"[{e['_agent']}] " if e.get("_agent") else ""
+            extra = f" {who}{e.get('tool', '')}: {str(e.get('reason', ''))[:50]}"
         elif e["event"] == "loop_gate":
-            extra = f' {e.get("step","")} = {e.get("outcome","")}'
+            extra = f" {e.get('step', '')} = {e.get('outcome', '')}"
         elif e["event"] == "lens_route":
             extra = " " + _msg("n_lenses", n=len(e.get("lenses", [])))
         elif e["event"] == "loop_wave":
-            extra = f' ready: {", ".join(e.get("ready", []))}'
+            extra = f" ready: {', '.join(e.get('ready', []))}"
         elif e["event"] == "refinement_gate":
-            extra = f' {e.get("task","")} score {e.get("score","")}'
+            extra = f" {e.get('task', '')} score {e.get('score', '')}"
         elif e["event"] == "graph_impact":
-            extra = f' {e.get("impacted",0)} modules'
-        feed.append(f'<li class="ev {cls}"><span class="ei">{icon}</span>'
-                    f'<span class="et">{_esc(label)}</span>'
-                    f'<span class="ex">{_esc(extra)}</span></li>')
+            extra = f" {e.get('impacted', 0)} modules"
+        feed.append(
+            f'<li class="ev {cls}"><span class="ei">{icon}</span>'
+            f'<span class="et">{_esc(label)}</span>'
+            f'<span class="ex">{_esc(extra)}</span></li>'
+        )
     feed_html = "".join(feed) or '<li class="ev info">no events yet</li>'
 
     stat = lambda v, l: (f'<div class="stat"><b>{v}</b><span>{l}</span></div>')
-    stats = (stat(counts["modules"], "graph modules")
-             + stat(counts["edges"], "edges")
-             + stat(counts["requirements"], "requirements")
-             + stat(counts["decisions"], "KB decisions")
-             + stat(counts["debt"], "open debt")
-             + stat(f'<span class="{"hot" if denials else ""}">{denials}</span>',
-                    "hook blocks"))
+    stats = (
+        stat(counts["modules"], "graph modules")
+        + stat(counts["edges"], "edges")
+        + stat(counts["requirements"], "requirements")
+        + stat(counts["decisions"], "KB decisions")
+        + stat(counts["debt"], "open debt")
+        + stat(f'<span class="{"hot" if denials else ""}">{denials}</span>', "hook blocks")
+    )
     stage_lineage = render_stage_lineage(_bounded_stage_view(ws))
 
     locale = _text.normalize_locale(locale)
-    html = _TEMPLATE.replace("__GOAL__", _visible_text(goal, 80)) \
-        .replace("__STEP__", _esc(step)) \
-        .replace("__MODE__", "parallel waves" if parallel else "serial") \
-        .replace("__LANG__", _attr(locale)) \
-        .replace("__PAGE_TITLE__", _esc(_msg("mission_title", locale=locale))) \
-        .replace("__MISSION_TITLE__", _esc(_msg("mission_title", locale=locale))) \
-        .replace("__MOTION_PAUSE__", _esc(_msg("motion_pause", locale=locale))) \
-        .replace("__MOTION_RESUME__", _esc(_msg("motion_resume", locale=locale))) \
-        .replace("__MOTION_LABEL__", _attr(_msg("motion_control_label", locale=locale))) \
-        .replace("__NOTICE__", _trace_notice(tstats)) \
-        .replace("__STAGE_LINEAGE__", stage_lineage) \
-        .replace("__PIPE__", pipe) \
-        .replace("__AGENTS__", "".join(agent_cards)) \
-        .replace("__ROSTER__", roster) \
-        .replace("__FEED__", feed_html) \
+    html = (
+        _TEMPLATE.replace("__GOAL__", _visible_text(goal, 80))
+        .replace("__STEP__", _esc(step))
+        .replace("__MODE__", "parallel waves" if parallel else "serial")
+        .replace("__LANG__", _attr(locale))
+        .replace("__PAGE_TITLE__", _esc(_msg("mission_title", locale=locale)))
+        .replace("__MISSION_TITLE__", _esc(_msg("mission_title", locale=locale)))
+        .replace("__MOTION_PAUSE__", _esc(_msg("motion_pause", locale=locale)))
+        .replace("__MOTION_RESUME__", _esc(_msg("motion_resume", locale=locale)))
+        .replace("__MOTION_LABEL__", _attr(_msg("motion_control_label", locale=locale)))
+        .replace("__NOTICE__", _trace_notice(tstats))
+        .replace("__STAGE_LINEAGE__", stage_lineage)
+        .replace("__PIPE__", pipe)
+        .replace("__AGENTS__", "".join(agent_cards))
+        .replace("__ROSTER__", roster)
+        .replace("__FEED__", feed_html)
         .replace("__STATS__", stats)
+    )
     if out is None:
         import storage as runtime_storage
+
         out = runtime_storage.dashboard_path(ws)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
@@ -560,18 +594,25 @@ button.textContent=paused?button.dataset.resumeLabel:button.dataset.pauseLabel;}
 # icons, sendPrompt() gate buttons. No outer background, no titles inside.
 
 _ICON = {
-    "loop_init": ("ti-rocket", "s"), "project_init": ("ti-folder", "s"),
-    "contract_activated": ("ti-lock", "w"), "loop_step": ("ti-player-play", "a"),
-    "hook_deny": ("ti-ban", "d"), "budget_deny": ("ti-gauge", "d"),
+    "loop_init": ("ti-rocket", "s"),
+    "project_init": ("ti-folder", "s"),
+    "contract_activated": ("ti-lock", "w"),
+    "loop_step": ("ti-player-play", "a"),
+    "hook_deny": ("ti-ban", "d"),
+    "budget_deny": ("ti-gauge", "d"),
     "loop_gate": ("ti-point", "s"),
-    "loop_approve": ("ti-check", "g"), "loop_wave": ("ti-arrows-split", "g"),
-    "loop_claim": ("ti-hand-grab", "g"), "kb_recall": ("ti-brain", "w"),
+    "loop_approve": ("ti-check", "g"),
+    "loop_wave": ("ti-arrows-split", "g"),
+    "loop_claim": ("ti-hand-grab", "g"),
+    "kb_recall": ("ti-brain", "w"),
     "decision_recorded": ("ti-brain", "w"),
     "requirement_recorded": ("ti-clipboard-text", "w"),
-    "lens_route": ("ti-search", "a"), "graph_impact": ("ti-affiliate", "a"),
+    "lens_route": ("ti-search", "a"),
+    "graph_impact": ("ti-affiliate", "a"),
     "graph_scan": ("ti-topology-star", "a"),
     "refinement_gate": ("ti-chart-dots", "a"),
-    "loop_retro": ("ti-refresh", "g"), "loop_resolve": ("ti-scale", "g"),
+    "loop_retro": ("ti-refresh", "g"),
+    "loop_resolve": ("ti-scale", "g"),
     "debt_recorded": ("ti-bookmark", "w"),
 }
 # MONOCHROME design language: grayscale foundation, typography-led
@@ -579,9 +620,13 @@ _ICON = {
 # fills), inverted blocks for the human gate + current stage, and exactly
 # ONE signal color — danger red, reserved for blocked/failed. Everything
 # uses CSS variables, so it inverts cleanly in dark mode.
-_ICOLOR = {"a": "var(--text-secondary)", "d": "var(--text-danger)",
-           "g": "var(--text-secondary)", "w": "var(--text-secondary)",
-           "s": "var(--text-muted)"}
+_ICOLOR = {
+    "a": "var(--text-secondary)",
+    "d": "var(--text-danger)",
+    "g": "var(--text-secondary)",
+    "w": "var(--text-secondary)",
+    "s": "var(--text-muted)",
+}
 # badge: (bg, fg, label) — outlined mono pills; red only for failed
 _BADGE = {
     "running": ("var(--surface-0)", "var(--text-primary)", "running"),
@@ -592,20 +637,18 @@ _BADGE = {
     "skipped": ("none", "var(--text-muted)", "skipped"),
 }
 # micro label: the mono lowercase letterspaced card header
-_MICRO = ('font-family:var(--font-mono);font-size:10.5px;letter-spacing:'
-          '1.2px;color:var(--text-muted)')
-_CARD = ('background:none;border:1px solid var(--border);'
-         'border-radius:6px;padding:14px')
+_MICRO = (
+    "font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.2px;color:var(--text-muted)"
+)
+_CARD = "background:none;border:1px solid var(--border);border-radius:6px;padding:14px"
 # Keyboard equivalent for role=button divs/spans: Enter or Space fires the
 # element's own onclick, so journey steps and spine nodes are reachable
 # without a mouse (WCAG 2.1 keyboard-operable).
-_KEYCLICK = ("if(event.key==='Enter'||event.key===' '){"
-             "event.preventDefault();this.click()}")
+_KEYCLICK = "if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}"
 
 
 def _esc(s: str) -> str:
-    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
-            .replace(">", "&gt;"))
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _attr(s: str) -> str:
@@ -624,6 +667,7 @@ def _bounded_stage_view(ws: str) -> dict:
     """
     try:
         import loop_status
+
         view = loop_status.bounded_stage_view(ws, limit=100)
         if isinstance(view, dict):
             return view
@@ -654,9 +698,11 @@ def _stage_summary_label(summary) -> str:
     state = summary.get("state") or "\u2014"
     outcome = summary.get("outcome") or "in progress"
     reason = summary.get("reason")
-    reason_text = f' \u00b7 reason {_esc(reason)}' if reason else ""
-    return (f'<code>{_esc(stage_id)}</code> \u00b7 {_esc(kind)} \u00b7 '
-            f'{_esc(state)} \u00b7 outcome {_esc(outcome)}{reason_text}')
+    reason_text = f" \u00b7 reason {_esc(reason)}" if reason else ""
+    return (
+        f"<code>{_esc(stage_id)}</code> \u00b7 {_esc(kind)} \u00b7 "
+        f"{_esc(state)} \u00b7 outcome {_esc(outcome)}{reason_text}"
+    )
 
 
 def _stage_lineage_label(row) -> str:
@@ -665,16 +711,13 @@ def _stage_lineage_label(row) -> str:
         return _esc(row)
     parent = row.get("parent_stage_id")
     predecessors = row.get("predecessor_stage_ids")
-    predecessor_ids = (predecessors if isinstance(predecessors, list)
-                       else [])
+    predecessor_ids = predecessors if isinstance(predecessors, list) else []
     sources = ([parent] if parent is not None else []) + predecessor_ids
     source_text = ", ".join(_esc(value) for value in sources) or "root"
     child = _esc(row.get("child_stage_id") or "\u2014")
     operation = row.get("split_operation_id")
-    operation_text = (f' \u00b7 operation <code>{_esc(operation)}</code>'
-                      if operation else "")
-    return (f'{source_text} {_arrow()} <code>{child}</code>'
-            f'{operation_text}')
+    operation_text = f" \u00b7 operation <code>{_esc(operation)}</code>" if operation else ""
+    return f"{source_text} {_arrow()} <code>{child}</code>{operation_text}"
 
 
 def render_stage_lineage(view) -> str:
@@ -686,8 +729,11 @@ def render_stage_lineage(view) -> str:
     execution root, or trace can be opened while painting the dashboard.
     """
     if not isinstance(view, dict):
-        view = {"status": "corrupt", "available": False,
-                "error": "invalid bounded stage projection"}
+        view = {
+            "status": "corrupt",
+            "available": False,
+            "error": "invalid bounded stage projection",
+        }
     status = str(view.get("status") or "corrupt")
     mode = view.get("mode")
     available = bool(view.get("available"))
@@ -695,16 +741,15 @@ def render_stage_lineage(view) -> str:
     error = str(raw_error)[:512] if raw_error else None
     warning = status in {"ambiguous", "corrupt"}
     role = "alert" if warning else "status"
-    accent = ("var(--text-danger,#e34948)" if warning
-              else "var(--border-strong,#55554a)")
+    accent = "var(--text-danger,#e34948)" if warning else "var(--border-strong,#55554a)"
     status_text = _esc(status)
     if mode:
-        status_text += f' \u00b7 mode {_esc(mode)}'
+        status_text += f" \u00b7 mode {_esc(mode)}"
     run_bits = []
     if view.get("run_id") is not None:
-        run_bits.append(f'run <code>{_esc(view.get("run_id"))}</code>')
+        run_bits.append(f"run <code>{_esc(view.get('run_id'))}</code>")
     if view.get("revision") is not None:
-        run_bits.append(f'revision {_esc(view.get("revision"))}')
+        run_bits.append(f"revision {_esc(view.get('revision'))}")
     run_text = (" \u00b7 " + " \u00b7 ".join(run_bits)) if run_bits else ""
 
     body = []
@@ -712,92 +757,93 @@ def render_stage_lineage(view) -> str:
     if available and isinstance(current, dict):
         body.append(
             '<div class="tp-stage-current"><strong>Current stage</strong> \u00b7 '
-            + _stage_summary_label(current) + '</div>')
+            + _stage_summary_label(current)
+            + "</div>"
+        )
     elif available:
-        body.append('<div class="tp-stage-current"><strong>Current stage'
-                    '</strong> \u00b7 none active</div>')
+        body.append(
+            '<div class="tp-stage-current"><strong>Current stage</strong> \u00b7 none active</div>'
+        )
     else:
         body.append(
             '<div class="tp-stage-current"><strong>Stage lineage '
-            f'unavailable</strong> \u00b7 {_esc(status)}</div>')
+            f"unavailable</strong> \u00b7 {_esc(status)}</div>"
+        )
 
     predecessors = view.get("predecessor_stages")
     predecessor_rows = predecessors if isinstance(predecessors, list) else []
     if predecessor_rows:
-        items = "".join(
-            f'<li>{_stage_summary_label(row)}</li>'
-            for row in predecessor_rows[:100])
+        items = "".join(f"<li>{_stage_summary_label(row)}</li>" for row in predecessor_rows[:100])
         body.append(
-            '<div class="tp-stage-group"><strong>Predecessors</strong>'
-            f'<ul>{items}</ul></div>')
+            f'<div class="tp-stage-group"><strong>Predecessors</strong><ul>{items}</ul></div>'
+        )
     elif isinstance(current, dict):
         predecessor_ids = current.get("predecessor_stage_ids")
         if isinstance(predecessor_ids, list) and predecessor_ids:
             items = "".join(
-                f'<li><code>{_esc(stage_id)}</code> \u00b7 outcome \u2014</li>'
-                for stage_id in predecessor_ids[:100])
+                f"<li><code>{_esc(stage_id)}</code> \u00b7 outcome \u2014</li>"
+                for stage_id in predecessor_ids[:100]
+            )
             body.append(
-                '<div class="tp-stage-group"><strong>Predecessors</strong>'
-                f'<ul>{items}</ul></div>')
+                f'<div class="tp-stage-group"><strong>Predecessors</strong><ul>{items}</ul></div>'
+            )
 
     handoff = view.get("handoff_fingerprint")
     body.append(
         '<div class="tp-stage-group"><strong>Handoff fingerprint</strong> '
-        f'\u00b7 <code>{_esc(handoff or "—")}</code></div>')
+        f"\u00b7 <code>{_esc(handoff or '—')}</code></div>"
+    )
 
     children = view.get("child_stage_ids")
     child_ids = children if isinstance(children, list) else []
     if child_ids:
-        items = "".join(
-            f'<li><code>{_esc(stage_id)}</code></li>'
-            for stage_id in child_ids[:100])
+        items = "".join(f"<li><code>{_esc(stage_id)}</code></li>" for stage_id in child_ids[:100])
         body.append(
-            '<div class="tp-stage-group"><strong>Child stages</strong>'
-            f'<ul>{items}</ul></div>')
+            f'<div class="tp-stage-group"><strong>Child stages</strong><ul>{items}</ul></div>'
+        )
 
     lineage = view.get("lineage")
     lineage_rows = lineage if isinstance(lineage, list) else []
     if lineage_rows:
-        items = "".join(
-            f'<li>{_stage_lineage_label(row)}</li>'
-            for row in lineage_rows[:100])
+        items = "".join(f"<li>{_stage_lineage_label(row)}</li>" for row in lineage_rows[:100])
         body.append(
-            '<div class="tp-stage-group"><strong>Child lineage</strong>'
-            f'<ul>{items}</ul></div>')
+            f'<div class="tp-stage-group"><strong>Child lineage</strong><ul>{items}</ul></div>'
+        )
 
     history = view.get("history")
     history_rows = history if isinstance(history, list) else []
     if history_rows:
-        items = "".join(
-            f'<li>{_stage_summary_label(row)}</li>'
-            for row in history_rows[:100])
+        items = "".join(f"<li>{_stage_summary_label(row)}</li>" for row in history_rows[:100])
         body.append(
             '<details class="tp-stage-group"><summary><strong>Bounded stage '
-            f'history</strong> \u00b7 {len(history_rows[:100])}</summary>'
-            f'<ul>{items}</ul></details>')
+            f"history</strong> \u00b7 {len(history_rows[:100])}</summary>"
+            f"<ul>{items}</ul></details>"
+        )
 
     limits = view.get("limits")
     if isinstance(limits, dict):
         body.append(
             '<div class="tp-stage-limits">projection limits \u00b7 history '
-            f'{_esc(limits.get("history", "—"))} \u00b7 lineage '
-            f'{_esc(limits.get("lineage", "—"))}</div>')
+            f"{_esc(limits.get('history', '—'))} \u00b7 lineage "
+            f"{_esc(limits.get('lineage', '—'))}</div>"
+        )
     if error:
         body.append(
             f'<div class="tp-stage-error"><strong>{_esc(status)} stage '
-            f'state</strong> \u00b7 {_esc(error)}</div>')
+            f"state</strong> \u00b7 {_esc(error)}</div>"
+        )
 
     return (
         f'<section id="tp-stage-lineage" class="tp-stage-lineage" '
         f'role="{role}" aria-labelledby="tp-stage-lineage-title" style="'
-        f'border:1px solid {accent};border-inline-start:4px solid {accent};'
+        f"border:1px solid {accent};border-inline-start:4px solid {accent};"
         f'border-radius:6px;padding:10px 13px;margin-bottom:14px">'
         '<div style="display:flex;justify-content:space-between;gap:12px;'
         'flex-wrap:wrap;margin-bottom:7px"><strong '
         'id="tp-stage-lineage-title">Stage &amp; lineage</strong>'
-        f'<span>status: {status_text}{run_text}</span></div>'
-        '<div style="font-size:12px;line-height:1.55">'
-        + "".join(body) + '</div></section>')
+        f"<span>status: {status_text}{run_text}</span></div>"
+        '<div style="font-size:12px;line-height:1.55">' + "".join(body) + "</div></section>"
+    )
 
 
 def _jsattr(s: str) -> str:
@@ -810,19 +856,15 @@ def _jsattr(s: str) -> str:
     XSS regression). We must BACKSLASH-escape the JS metacharacters first (a
     backslash survives HTML decoding and reaches the JS engine), THEN
     HTML-escape the attribute/markup delimiters. Order matters."""
-    s = (str(s).replace("\\", "\\\\").replace("'", "\\'")
-         .replace("\n", "\\n").replace("\r", "\\r"))
-    return (s.replace("&", "&amp;").replace('"', "&quot;")
-            .replace("<", "&lt;").replace(">", "&gt;"))
+    s = str(s).replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
+    return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 # --------------------------------------------------- north-star review note
 
 _ALIGN = {  # alignment verdict -> (label, dot color, accent border)
-    "on-course": ("on course", "var(--text-success,var(--text-primary))",
-                  "var(--border-strong)"),
-    "drift": ("drift", "var(--text-warning,var(--text-primary))",
-              "var(--border-strong)"),
+    "on-course": ("on course", "var(--text-success,var(--text-primary))", "var(--border-strong)"),
+    "drift": ("drift", "var(--text-warning,var(--text-primary))", "var(--border-strong)"),
     "off-course": ("off course", "var(--text-danger)", "var(--border-danger)"),
 }
 _REC = {  # recommendation -> accent
@@ -847,42 +889,52 @@ def render_strategy_note(note, out=None):
     ns = n.get("north_star")
     al = n.get("alignment") or {}
     verdict = str(al.get("verdict", "")).lower().replace(" ", "-")
-    alabel, adot, aborder = _ALIGN.get(
-        verdict, ("unrated", "var(--text-muted)", "var(--border)"))
+    alabel, adot, aborder = _ALIGN.get(verdict, ("unrated", "var(--text-muted)", "var(--border)"))
     rec = str(n.get("recommendation", "")).lower().replace(" ", "-")
     rcol = _REC.get(rec, "var(--text-muted)")
 
-    ns_line = (f'<span style="{_MICRO}">vs north star</span> '
-               f'<span style="font-size:12.5px;color:var(--text-secondary)">'
-               f'{_esc(ns)}</span>' if ns else
-               f'<span style="{_MICRO}">no north star set — add a '
-               f'"Direction / north star:" line to context/product.md</span>')
+    ns_line = (
+        f'<span style="{_MICRO}">vs north star</span> '
+        f'<span style="font-size:12.5px;color:var(--text-secondary)">'
+        f"{_esc(ns)}</span>"
+        if ns
+        else f'<span style="{_MICRO}">no north star set — add a '
+        f'"Direction / north star:" line to context/product.md</span>'
+    )
 
     rows = []
-    for ln in (n.get("lenses") or []):
+    for ln in n.get("lenses") or []:
         rows.append(
             f'<div style="display:flex;gap:10px;padding:7px 0;border-top:1px '
             f'solid var(--border)"><span style="font-family:var(--font-mono);'
             f'font-size:12px;min-width:104px;color:var(--text-primary)">'
-            f'{_esc(ln.get("name",""))}</span>'
+            f"{_esc(ln.get('name', ''))}</span>"
             f'<span style="font-family:var(--font-mono);font-size:11px;'
             f'min-width:52px;color:var(--text-secondary)">'
-            f'{_esc(ln.get("read",""))}</span>'
+            f"{_esc(ln.get('read', ''))}</span>"
             f'<span style="font-size:12.5px;color:var(--text-secondary);'
-            f'line-height:1.5;flex:1">{_esc(ln.get("note",""))}</span></div>')
+            f'line-height:1.5;flex:1">{_esc(ln.get("note", ""))}</span></div>'
+        )
 
     tension = n.get("tension")
     tension_html = (
         f'<div style="margin-top:10px;font-size:12.5px;color:var(--text-'
         f'secondary)"><span style="{_MICRO}">sharpest tension</span><br>'
-        f'{_esc(tension)}</div>' if tension else "")
-    rationale = (f'<div style="font-size:12.5px;color:var(--text-secondary);'
-                 f'line-height:1.55;margin-top:3px">{_esc(n.get("rationale"))}'
-                 f'</div>' if n.get("rationale") else "")
+        f"{_esc(tension)}</div>"
+        if tension
+        else ""
+    )
+    rationale = (
+        f'<div style="font-size:12.5px;color:var(--text-secondary);'
+        f'line-height:1.55;margin-top:3px">{_esc(n.get("rationale"))}'
+        f"</div>"
+        if n.get("rationale")
+        else ""
+    )
 
     frag = (
         f'<h2 class="sr-only">North-star review of {target}: alignment '
-        f'{_esc(alabel)}; recommendation {_esc(rec or "none")}.</h2>'
+        f"{_esc(alabel)}; recommendation {_esc(rec or 'none')}.</h2>"
         f'<div style="padding:0.5rem 0;font-family:var(--font-sans);'
         f'color:var(--text-primary)">'
         f'<div style="display:flex;justify-content:space-between;align-items:'
@@ -890,19 +942,20 @@ def render_strategy_note(note, out=None):
         f'<div style="font-size:16px;font-weight:500">North-star review</div>'
         f'<div style="font-size:13px;color:var(--text-secondary)">{target}</div>'
         f'</div><span style="border:1px solid {aborder};border-radius:20px;'
-        f'padding:3px 12px;font-family:var(--font-mono);font-size:11px;'
+        f"padding:3px 12px;font-family:var(--font-mono);font-size:11px;"
         f'white-space:nowrap;color:{adot}">● {_esc(alabel)}</span></div>'
         f'<div style="margin:8px 0 4px">{ns_line}</div>'
         f'<div style="{_CARD};margin-top:10px">'
         f'<div style="font-size:13px;color:var(--text-secondary);'
-        f'line-height:1.6">{_esc(al.get("note",""))}</div>'
-        f'{"".join(rows)}{tension_html}</div>'
+        f'line-height:1.6">{_esc(al.get("note", ""))}</div>'
+        f"{''.join(rows)}{tension_html}</div>"
         f'<div style="{_CARD};margin-top:8px;border-inline-start:3px solid {rcol};'
         f'border-radius:0 6px 6px 0"><span style="{_MICRO}">recommendation'
         f'</span> <span style="font-weight:500;font-size:13.5px;color:{rcol}">'
-        f'{_esc(rec or "—")}</span>{rationale}</div>'
+        f"{_esc(rec or '—')}</span>{rationale}</div>"
         f'<div style="{_MICRO};margin-top:10px">advisory — the north-star '
-        f'review informs your call; it never gates the loop</div></div>')
+        f"review informs your call; it never gates the loop</div></div>"
+    )
 
     if out:
         try:
@@ -957,8 +1010,14 @@ def _sev_info(sev):
     if s in _SEV:
         rank, label, dot, accent = _SEV[s]
         return bucket, rank, label, dot, accent, False
-    return (bucket, 1, f"{s or 'unrated'} ⚠ unrated → {bucket}",
-            "var(--text-danger)", "var(--border-danger)", True)
+    return (
+        bucket,
+        1,
+        f"{s or 'unrated'} ⚠ unrated → {bucket}",
+        "var(--text-danger)",
+        "var(--border-danger)",
+        True,
+    )
 
 
 # A5 machinery warn rows (contract:findings-v2). `router_audit`'s gate half
@@ -969,19 +1028,25 @@ def _sev_info(sev):
 # lens attribution") is not itself a blocker: it is a DUPLICATE view of a
 # defect that is already on its own row.
 
+
 def _machinery_warn_shape(f) -> bool:
     """The machinery warn-row shape: warn flag, machinery owner, original
     finding nested (audit._unattributed_rows). Shape alone decides nothing
     here — see `_advisory_rows`."""
-    return (isinstance(f, dict) and f.get("warn") is True
-            and f.get("owner") == "router"
-            and isinstance(f.get("finding"), dict))
+    return (
+        isinstance(f, dict)
+        and f.get("warn") is True
+        and f.get("owner") == "router"
+        and isinstance(f.get("finding"), dict)
+    )
 
 
 def _finding_identity(f):
-    return (str((f or {}).get("title") or ""), str((f or {}).get("file") or ""),
-            str((f or {}).get("line") if (f or {}).get("line") is not None
-                else ""))
+    return (
+        str((f or {}).get("title") or ""),
+        str((f or {}).get("file") or ""),
+        str((f or {}).get("line") if (f or {}).get("line") is not None else ""),
+    )
 
 
 def _advisory_rows(findings) -> set:
@@ -997,10 +1062,12 @@ def _advisory_rows(findings) -> set:
     the renderer can never show LESS than what the em gate blocks on (the
     gate's own exemption is re-derived independently in audit.py)."""
     rows = [f for f in findings or [] if isinstance(f, dict)]
-    present = {_finding_identity(f) for f in rows
-               if not _machinery_warn_shape(f)}
-    return {id(f) for f in rows if _machinery_warn_shape(f)
-            and _finding_identity(f.get("finding")) in present}
+    present = {_finding_identity(f) for f in rows if not _machinery_warn_shape(f)}
+    return {
+        id(f)
+        for f in rows
+        if _machinery_warn_shape(f) and _finding_identity(f.get("finding")) in present
+    }
 
 
 def _row_sev_info(f, advisory=False):
@@ -1010,11 +1077,10 @@ def _row_sev_info(f, advisory=False):
     rather than as a second, independent blocker. Every other row is
     unchanged — the no-downgrade guardrail is intact for anything that can
     block."""
-    sev = (f.get("severity", "med") if isinstance(f, dict) else "med")
+    sev = f.get("severity", "med") if isinstance(f, dict) else "med"
     bucket, rank, label, dot, accent, flagged = _sev_info(sev)
     if advisory:
-        return ("info", 4, f"machinery warn · {label}",
-                "var(--text-muted)", "var(--border)", False)
+        return ("info", 4, f"machinery warn · {label}", "var(--text-muted)", "var(--border)", False)
     return bucket, rank, label, dot, accent, flagged
 
 
@@ -1039,39 +1105,41 @@ def _alias(f):
 # window.sendPrompt — a click must never pretend success; instead the exact
 # reply to type in chat is revealed next to the button.
 _SEND_JS = (
-    'function tpHint(b,m){if(b._tph)return;b._tph=1;'
+    "function tpHint(b,m){if(b._tph)return;b._tph=1;"
     'var d=document.createElement("div");'
     'd.style.cssText="margin-top:8px;padding:6px 10px;border-radius:6px;'
-    'background:var(--surface-0);color:var(--text-primary);'
+    "background:var(--surface-0);color:var(--text-primary);"
     'font-family:var(--font-mono);font-size:11.5px;flex-basis:100%";'
     'd.setAttribute("role","note");'
     'd.textContent="no chat bridge in this static view — reply in chat: "+m;'
-    'b.parentNode.appendChild(d);}'
-    'function tpHasBridge(){return !!(window.openai&&'
+    "b.parentNode.appendChild(d);}"
+    "function tpHasBridge(){return !!(window.openai&&"
     'typeof window.openai.sendFollowUpMessage==="function")||'
     'typeof window.sendPrompt==="function";}'
-    'function tpSend(b,m){var sent;try{if(window.openai&&'
+    "function tpSend(b,m){var sent;try{if(window.openai&&"
     'typeof window.openai.sendFollowUpMessage==="function")'
-    '{sent=window.openai.sendFollowUpMessage({prompt:m});}'
+    "{sent=window.openai.sendFollowUpMessage({prompt:m});}"
     'else if(typeof window.sendPrompt==="function"){sent=window.sendPrompt(m);}'
-    'else{tpHint(b,m);return Promise.resolve(false);}'
-    '}catch(e){return Promise.reject(e);}return Promise.resolve(sent);}'
+    "else{tpHint(b,m);return Promise.resolve(false);}"
+    "}catch(e){return Promise.reject(e);}return Promise.resolve(sent);}"
     '(function(){var r=document.getElementById("tp-inline-review-root")||document;'
     'if(r.dataset&&r.dataset.tpBound)return;if(r.dataset)r.dataset.tpBound="1";'
     'r.addEventListener("click",function(e){var b=e.target.closest("button");'
-    'if(!b||!r.contains(b))return;if(b.dataset.tpPrompt)'
-    '{tpSend(b,b.dataset.tpPrompt);}});})();')
+    "if(!b||!r.contains(b))return;if(b.dataset.tpPrompt)"
+    "{tpSend(b,b.dataset.tpPrompt);}});})();"
+)
 
 # Findings controls exist only in render_findings. The shared chat bridge is
 # also used by the Dashboard and paged summaries, which have no tpFilter.
 _FINDINGS_BIND_JS = (
     '(function(){var r=document.getElementById("tp-inline-review-root")||document;'
-    'if(r.dataset&&r.dataset.tpFindingsBound)return;'
+    "if(r.dataset&&r.dataset.tpFindingsBound)return;"
     'if(r.dataset)r.dataset.tpFindingsBound="1";'
     'r.addEventListener("click",function(e){var b=e.target.closest("button");'
-    'if(!b||!r.contains(b))return;if(b.dataset.sev)'
-    '{tpFilter(b.dataset.sev);return;}if(b.dataset.tpfToggle)'
-    '{tpToggle(Number(b.dataset.tpfToggle));}});tpFilter("all");})();')
+    "if(!b||!r.contains(b))return;if(b.dataset.sev)"
+    "{tpFilter(b.dataset.sev);return;}if(b.dataset.tpfToggle)"
+    '{tpToggle(Number(b.dataset.tpfToggle));}});tpFilter("all");})();'
+)
 
 # Render-reliability contract (v1.5.3): a dashboard's data is too valuable to
 # depend on a single big widget that might get skipped. Three guarantees:
@@ -1080,10 +1148,10 @@ _FINDINGS_BIND_JS = (
 #  2. render_findings_paged() — splits a large fragment into ordered,
 #     self-contained pages each under PAGE_BUDGET, rendered one after another.
 #  3. the skills instruct the driver to render EVERY page and never summarize.
-PAGE_BUDGET = 14000     # max UTF-8 BYTES per inline fragment (ENFORCED in
-                        # v2.3.0: a page over budget is a bug — split
-                        # further; content only ever leaves a page via an
-                        # explicit '+N more' marker, never silently)
+PAGE_BUDGET = 14000  # max UTF-8 BYTES per inline fragment (ENFORCED in
+# v2.3.0: a page over budget is a bug — split
+# further; content only ever leaves a page via an
+# explicit '+N more' marker, never silently)
 
 # The canonical PR-review projection uses the same transport ceiling as the
 # mission-control widget, but has its own explicit name because it is a
@@ -1153,10 +1221,11 @@ def _review_value(value, *, limit=900) -> str:
     if len(text.encode("utf-8")) <= limit:
         return _esc(text)
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-    prefix = text.encode("utf-8")[:max(80, limit - 180)].decode(
-        "utf-8", "ignore")
-    return (_esc(prefix) + f'… <span class="muted">complete value in the '
-            f'JSON/Markdown/HTML artifacts · sha256:{digest}</span>')
+    prefix = text.encode("utf-8")[: max(80, limit - 180)].decode("utf-8", "ignore")
+    return (
+        _esc(prefix) + f'… <span class="muted">complete value in the '
+        f"JSON/Markdown/HTML artifacts · sha256:{digest}</span>"
+    )
 
 
 def _review_token(value, *, limit=160) -> str:
@@ -1177,34 +1246,36 @@ def _review_semantic_projection(model: dict) -> dict:
 
 
 def _review_options(rows, key: str) -> str:
-    values = sorted({_review_token(row.get(key)) for row in rows
-                     if row.get(key) is not None})
+    values = sorted({_review_token(row.get(key)) for row in rows if row.get(key) is not None})
     return '<option value="">all</option>' + "".join(
-        f'<option value="{_attr(value)}">{_esc(value)}</option>'
-        for value in values)
+        f'<option value="{_attr(value)}">{_esc(value)}</option>' for value in values
+    )
 
 
 def _review_approvable(model: dict) -> bool:
     revision = model["revision"]
     collection = model["collection"]
     criteria_ok = bool(model["criteria"]) and all(
-        str(row.get("verdict") or "") in ("pass", "not-applicable") and
-        bool(str(row.get("rationale") or "").strip()) and
-        bool(row.get("evidence")) and
-        bool(str(row.get("verification") or
-                 row.get("validation_mode") or "").strip()) and
-        bool(str(row.get("responsible") or "").strip())
-        for row in model["criteria"])
+        str(row.get("verdict") or "") in ("pass", "not-applicable")
+        and bool(str(row.get("rationale") or "").strip())
+        and bool(row.get("evidence"))
+        and bool(str(row.get("verification") or row.get("validation_mode") or "").strip())
+        and bool(str(row.get("responsible") or "").strip())
+        for row in model["criteria"]
+    )
     slots_ok = bool(model["slots"]) and all(
-        str(row.get("status") or "") in ("valid", "done", "complete")
-        for row in model["slots"])
+        str(row.get("status") or "") in ("valid", "done", "complete") for row in model["slots"]
+    )
     return (
-        bool(model["gate"].get("approval_enabled")) and
-        revision.get("disposition") == "canonical" and
-        revision.get("status") == "complete" and
-        collection.get("status") == "complete" and
-        not (collection.get("gaps") or []) and
-        criteria_ok and slots_ok and bool(model["gate"].get("consent")))
+        bool(model["gate"].get("approval_enabled"))
+        and revision.get("disposition") == "canonical"
+        and revision.get("status") == "complete"
+        and collection.get("status") == "complete"
+        and not (collection.get("gaps") or [])
+        and criteria_ok
+        and slots_ok
+        and bool(model["gate"].get("consent"))
+    )
 
 
 def _review_receipt(model: dict, action: str) -> tuple[str, str]:
@@ -1217,28 +1288,42 @@ def _review_receipt(model: dict, action: str) -> tuple[str, str]:
     return receipt, prompt
 
 
-def _review_page(*, title: str, body: str, model: dict, index: int,
-                 total: int, budget: int, model_fingerprint: str) -> str:
+def _review_page(
+    *,
+    title: str,
+    body: str,
+    model: dict,
+    index: int,
+    total: int,
+    budget: int,
+    model_fingerprint: str,
+) -> str:
     revision = model["revision"]
-    target = (revision.get("target_revision") or
-              model["provenance"].get("target_revision") or "unknown")
+    target = (
+        revision.get("target_revision") or model["provenance"].get("target_revision") or "unknown"
+    )
     fingerprint = str(revision.get("fingerprint") or "")
-    nav = (f'<nav role="navigation" aria-label="Review pages" class="mono">'
-           f'page {index}/{total} · {_esc(title)}</nav>')
+    nav = (
+        f'<nav role="navigation" aria-label="Review pages" class="mono">'
+        f"page {index}/{total} · {_esc(title)}</nav>"
+    )
     header = (
         '<header><div class="mono">governed PR review</div>'
         f'<h1 style="font-size:20px;margin:3px 0">{_esc(str(revision.get("id") or "review"))}</h1>'
         f'<div class="muted">target {_esc(str(target))} · revision '
-        f'{_esc(fingerprint[:12] or "unavailable")} · '
-        f'{_esc(str(revision.get("disposition") or "unknown"))}</div>{nav}</header>')
-    page = (_REVIEW_INLINE_STYLE + '<div class="tpr" tabindex="-1" '
-            f'data-model-fingerprint="{_attr(model_fingerprint)}" '
-            'onkeydown="tpReviewKey(event)">' + header + body + '</div>'
-            + _REVIEW_INLINE_SCRIPT)
+        f"{_esc(fingerprint[:12] or 'unavailable')} · "
+        f"{_esc(str(revision.get('disposition') or 'unknown'))}</div>{nav}</header>"
+    )
+    page = (
+        _REVIEW_INLINE_STYLE + '<div class="tpr" tabindex="-1" '
+        f'data-model-fingerprint="{_attr(model_fingerprint)}" '
+        'onkeydown="tpReviewKey(event)">' + header + body + "</div>" + _REVIEW_INLINE_SCRIPT
+    )
     if len(page.encode("utf-8")) > budget:
         raise ValueError(
             f"review inline page '{title}' exceeds {budget} bytes; "
-            "split semantic rows before rendering")
+            "split semantic rows before rendering"
+        )
     return page
 
 
@@ -1253,7 +1338,8 @@ def _review_pack(rows, render, *, budget: int, reserve: int = 4700) -> list[str]
             raise ValueError(
                 "one review semantic row exceeds the inline page capacity; "
                 "store its large values in the lossless artifact and render "
-                "their explicit references")
+                "their explicit references"
+            )
         if current and size + item_size > capacity:
             chunks.append("".join(current))
             current, size = [], 0
@@ -1264,8 +1350,9 @@ def _review_pack(rows, render, *, budget: int, reserve: int = 4700) -> list[str]
     return chunks or [""]
 
 
-def render_review_model_paged(model, *, host: str = "codex",
-                              budget: int = REVIEW_INLINE_PAGE_BUDGET) -> list:
+def render_review_model_paged(
+    model, *, host: str = "codex", budget: int = REVIEW_INLINE_PAGE_BUDGET
+) -> list:
     """Project one canonical review model into host-neutral bounded pages.
 
     ``host`` is transport metadata only and never enters HTML or receipt
@@ -1278,85 +1365,107 @@ def render_review_model_paged(model, *, host: str = "codex",
         raise ValueError("supported review host must be claude or codex")
     if not isinstance(budget, int) or budget < _REVIEW_INLINE_MIN_BUDGET:
         raise ValueError(
-            f"review inline page budget must be at least "
-            f"{_REVIEW_INLINE_MIN_BUDGET} bytes")
+            f"review inline page budget must be at least {_REVIEW_INLINE_MIN_BUDGET} bytes"
+        )
     try:
         from . import review_artifacts
     except ImportError:  # dashboard is also imported as a top-level module
         import review_artifacts
-    clean = _review_semantic_projection(
-        review_artifacts.sanitize_model(model)["model"])
-    semantic = json.dumps(clean, sort_keys=True, separators=(",", ":"),
-                          ensure_ascii=False).encode("utf-8")
+    clean = _review_semantic_projection(review_artifacts.sanitize_model(model)["model"])
+    semantic = json.dumps(clean, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
     model_fingerprint = hashlib.sha256(semantic).hexdigest()
-    dor, collection, validation = (clean["dor"], clean["collection"],
-                                   clean["validation"])
+    dor, collection, validation = (clean["dor"], clean["collection"], clean["validation"])
     sources = "".join(
-        '<li><b>' + _esc(str(row.get("kind") or "source")) + '</b> · ' +
-        _esc(str(row.get("status") or "unknown")) + ' · ' +
-        _review_value(row.get("identity") or "unknown", limit=300) + ' @ ' +
-        _review_value(row.get("revision") or "unknown", limit=180) +
-        ' · <code>' + _review_value(
-            row.get("provenance_ref") or row.get("provenance") or
-            "unavailable", limit=300) + '</code>' +
-        (f' · <span class="muted">{len(str(row.get("content") or "").encode("utf-8"))} '
-         'source bytes retained in artifacts</span>' if row.get("content") else '') +
-        '</li>' for row in dor.get("sources") or [])
+        "<li><b>"
+        + _esc(str(row.get("kind") or "source"))
+        + "</b> · "
+        + _esc(str(row.get("status") or "unknown"))
+        + " · "
+        + _review_value(row.get("identity") or "unknown", limit=300)
+        + " @ "
+        + _review_value(row.get("revision") or "unknown", limit=180)
+        + " · <code>"
+        + _review_value(
+            row.get("provenance_ref") or row.get("provenance") or "unavailable", limit=300
+        )
+        + "</code>"
+        + (
+            f' · <span class="muted">{len(str(row.get("content") or "").encode("utf-8"))} '
+            "source bytes retained in artifacts</span>"
+            if row.get("content")
+            else ""
+        )
+        + "</li>"
+        for row in dor.get("sources") or []
+    )
     gaps = collection.get("gaps") or []
     consent = clean["gate"].get("consent")
-    consent_text = ("consent pending" if not consent else
-                    "consent recorded · " + str(
-                        consent.get("mode") if isinstance(consent, dict)
-                        else consent))
+    consent_text = (
+        "consent pending"
+        if not consent
+        else "consent recorded · "
+        + str(consent.get("mode") if isinstance(consent, dict) else consent)
+    )
     overview = (
-        '<section><h2>Definition of Ready</h2>'
+        "<section><h2>Definition of Ready</h2>"
         f'<div class="pill">{_esc(str(dor.get("status") or "unknown"))}</div>'
-        f'<ul>{sources or "<li>No accessible DoR source recorded</li>"}</ul></section>'
+        f"<ul>{sources or '<li>No accessible DoR source recorded</li>'}</ul></section>"
         '<section class="grid"><div class="card"><h2>Dynamic validation</h2>'
-        f'<p>{_review_value(validation)}</p></div>'
+        f"<p>{_review_value(validation)}</p></div>"
         '<div class="card"><h2>Provisional gaps</h2>'
-        f'<p>{_review_value(gaps) if gaps else "none"}</p></div>'
+        f"<p>{_review_value(gaps) if gaps else 'none'}</p></div>"
         '<div class="card"><h2>Provenance</h2>'
-        f'<p>{_review_value(clean["provenance"])}</p></div>'
+        f"<p>{_review_value(clean['provenance'])}</p></div>"
         '<div class="card"><h2>Gate reason</h2>'
-        f'<p>{_review_value(clean["gate"].get("reason") or "not recorded")}</p>'
-        f'<p class="muted">{_esc(consent_text)}</p></div></section>')
+        f"<p>{_review_value(clean['gate'].get('reason') or 'not recorded')}</p>"
+        f'<p class="muted">{_esc(consent_text)}</p></div></section>'
+    )
 
     def criterion(row):
         cid = _review_token(row.get("id") or "criterion")
-        return ('<details class="card"><summary data-tp-focus tabindex="0" '
-                f'id="tp-criterion-{_attr(cid)}">'
-                f'<b>{_esc(str(row.get("id") or "criterion"))}</b> · '
-                f'{_esc(str(row.get("verdict") or "unproven"))} · '
-                f'{_review_value(row.get("text") or row.get("criterion") or "")}'
-                '</summary><p><b>Rationale:</b> '
-                f'{_review_value(row.get("rationale"))}</p><p><b>Evidence:</b> '
-                f'{_review_value(row.get("evidence"))}</p><p><b>Verification:</b> '
-                f'{_review_value(row.get("verification") or row.get("validation_mode"))}'
-                '</p><p><b>Responsible:</b> '
-                f'{_review_value(row.get("responsible"))}</p></details>')
+        return (
+            '<details class="card"><summary data-tp-focus tabindex="0" '
+            f'id="tp-criterion-{_attr(cid)}">'
+            f"<b>{_esc(str(row.get('id') or 'criterion'))}</b> · "
+            f"{_esc(str(row.get('verdict') or 'unproven'))} · "
+            f"{_review_value(row.get('text') or row.get('criterion') or '')}"
+            "</summary><p><b>Rationale:</b> "
+            f"{_review_value(row.get('rationale'))}</p><p><b>Evidence:</b> "
+            f"{_review_value(row.get('evidence'))}</p><p><b>Verification:</b> "
+            f"{_review_value(row.get('verification') or row.get('validation_mode'))}"
+            "</p><p><b>Responsible:</b> "
+            f"{_review_value(row.get('responsible'))}</p></details>"
+        )
 
     def slot(row):
         sid = _review_token(row.get("slot_id") or "slot")
-        return ('<div class="card" data-tp-focus tabindex="0" '
-                f'id="tp-slot-{_attr(sid)}"><h3>'
-                f'{_esc(str(row.get("slot_id") or "slot"))}</h3><p>lenses: '
-                f'{_review_value(row.get("lens_ids") or row.get("lens"))}</p>'
-                f'<p>status: <b>{_esc(str(row.get("status") or "unknown"))}</b>'
-                f' · result {_review_value(row.get("result_fingerprint"))}</p></div>')
+        return (
+            '<div class="card" data-tp-focus tabindex="0" '
+            f'id="tp-slot-{_attr(sid)}"><h3>'
+            f"{_esc(str(row.get('slot_id') or 'slot'))}</h3><p>lenses: "
+            f"{_review_value(row.get('lens_ids') or row.get('lens'))}</p>"
+            f"<p>status: <b>{_esc(str(row.get('status') or 'unknown'))}</b>"
+            f" · result {_review_value(row.get('result_fingerprint'))}</p></div>"
+        )
 
     findings = clean["findings"]
     filter_bar = (
         '<div aria-label="Filter findings" class="card">'
         '<label>severity <select data-filter="severity" '
-        'onchange="tpReviewFilter(this.closest(\'.tpr\'))">' +
-        _review_options(findings, "severity") + '</select></label>'
+        "onchange=\"tpReviewFilter(this.closest('.tpr'))\">"
+        + _review_options(findings, "severity")
+        + "</select></label>"
         '<label>lens <select data-filter="lens" '
-        'onchange="tpReviewFilter(this.closest(\'.tpr\'))">' +
-        _review_options(findings, "lens") + '</select></label>'
+        "onchange=\"tpReviewFilter(this.closest('.tpr'))\">"
+        + _review_options(findings, "lens")
+        + "</select></label>"
         '<label>file <select data-filter="file" '
-        'onchange="tpReviewFilter(this.closest(\'.tpr\'))">' +
-        _review_options(findings, "file") + '</select></label></div>')
+        "onchange=\"tpReviewFilter(this.closest('.tpr'))\">"
+        + _review_options(findings, "file")
+        + "</select></label></div>"
+    )
 
     def finding(row):
         fid = str(row.get("id") or "finding")
@@ -1369,33 +1478,43 @@ def render_review_model_paged(model, *, host: str = "codex",
             f'data-severity="{_attr(severity)}" '
             f'data-lens="{_attr(lens)}" '
             f'data-file="{_attr(file_token)}" '
-            f'><summary id="tp-{_attr(dom_id)}" data-tp-focus tabindex="0"><b>' +
-            _review_value(fid, limit=300) + '</b> · ' +
-            _esc(str(row.get("severity") or "unrated")) + ' · ' +
-            _esc(str(row.get("lens") or "unattributed")) + ' · ' +
-            _review_value(row.get("title") or row.get("issue") or "Finding") +
-            '</summary><p><code>' + _esc(str(row.get("file") or "unknown")) +
-            (':' + _esc(str(row.get("line"))) if row.get("line") else '') +
-            '</code></p><p><b>Rationale:</b> ' +
-            _review_value(row.get("rationale") or row.get("why")) +
-            '</p><p><b>Scenario:</b> ' + _review_value(row.get("scenario")) +
-            '</p><p><b>Action:</b> ' +
-            _review_value(row.get("action") or row.get("fix") or
-                          row.get("suggestion")) +
-            '</p><p><b>Evidence:</b> ' + _review_value(row.get("evidence")) +
-            '</p><p><b>Provenance:</b> ' +
-            _review_value(row.get("provenance")) + '</p></details>')
+            f'><summary id="tp-{_attr(dom_id)}" data-tp-focus tabindex="0"><b>'
+            + _review_value(fid, limit=300)
+            + "</b> · "
+            + _esc(str(row.get("severity") or "unrated"))
+            + " · "
+            + _esc(str(row.get("lens") or "unattributed"))
+            + " · "
+            + _review_value(row.get("title") or row.get("issue") or "Finding")
+            + "</summary><p><code>"
+            + _esc(str(row.get("file") or "unknown"))
+            + (":" + _esc(str(row.get("line"))) if row.get("line") else "")
+            + "</code></p><p><b>Rationale:</b> "
+            + _review_value(row.get("rationale") or row.get("why"))
+            + "</p><p><b>Scenario:</b> "
+            + _review_value(row.get("scenario"))
+            + "</p><p><b>Action:</b> "
+            + _review_value(row.get("action") or row.get("fix") or row.get("suggestion"))
+            + "</p><p><b>Evidence:</b> "
+            + _review_value(row.get("evidence"))
+            + "</p><p><b>Provenance:</b> "
+            + _review_value(row.get("provenance"))
+            + "</p></details>"
+        )
 
     sections: list[tuple[str, str]] = [("review overview", overview)]
-    sections.extend(("Acceptance criteria", '<h2>Acceptance criteria</h2>' + body)
-                    for body in _review_pack(clean["criteria"], criterion,
-                                             budget=budget))
-    sections.extend(("Lens status", '<h2>Lens status</h2>' + body)
-                    for body in _review_pack(clean["slots"], slot,
-                                             budget=budget))
-    sections.extend(("Findings", '<h2>Findings</h2>' + filter_bar + body)
-                    for body in _review_pack(findings, finding, budget=budget,
-                                             reserve=6200))
+    sections.extend(
+        ("Acceptance criteria", "<h2>Acceptance criteria</h2>" + body)
+        for body in _review_pack(clean["criteria"], criterion, budget=budget)
+    )
+    sections.extend(
+        ("Lens status", "<h2>Lens status</h2>" + body)
+        for body in _review_pack(clean["slots"], slot, budget=budget)
+    )
+    sections.extend(
+        ("Findings", "<h2>Findings</h2>" + filter_bar + body)
+        for body in _review_pack(findings, finding, budget=budget, reserve=6200)
+    )
 
     approvable = _review_approvable(clean)
     actions = clean["gate"].get("actions") or ["approve", "request-changes"]
@@ -1408,28 +1527,43 @@ def render_review_model_paged(model, *, host: str = "codex",
             f'<button data-action="{_attr(action)}" '
             f'{"disabled " if disabled else ""}data-receipt="{receipt}" '
             f'data-prompt="{_attr(prompt)}" onclick="tpReviewAction(this)">'
-            f'{_esc(action.replace("-", " "))}</button>')
-    gate = ('<section><h2>Human disposition</h2><p>Gate reason: '
-            f'{_review_value(clean["gate"].get("reason"))}</p><p>' +
-            " ".join(buttons) + '</p><p class="muted">Actions carry a '
-            'session/revision/action receipt. Approval is enabled only for a '
-            'complete, gap-free, justified canonical revision.</p></section>')
+            f"{_esc(action.replace('-', ' '))}</button>"
+        )
+    gate = (
+        "<section><h2>Human disposition</h2><p>Gate reason: "
+        f"{_review_value(clean['gate'].get('reason'))}</p><p>"
+        + " ".join(buttons)
+        + '</p><p class="muted">Actions carry a '
+        "session/revision/action receipt. Approval is enabled only for a "
+        "complete, gap-free, justified canonical revision.</p></section>"
+    )
     sections.append(("human disposition", gate))
 
     total = len(sections)
     pages = []
     for index, (title, body) in enumerate(sections, 1):
-        html = _review_page(title=title, body=body, model=clean, index=index,
-                            total=total, budget=budget,
-                            model_fingerprint=model_fingerprint)
-        pages.append({
-            "schema": "taskplane.review-inline-page/v1",
-            "title": title, "index": index, "total": total,
-            "html": html, "bytes": len(html.encode("utf-8")),
-            "model_fingerprint": model_fingerprint,
-            "revision_fingerprint": clean["revision"].get("fingerprint"),
-            "transport": {"host": host},
-        })
+        html = _review_page(
+            title=title,
+            body=body,
+            model=clean,
+            index=index,
+            total=total,
+            budget=budget,
+            model_fingerprint=model_fingerprint,
+        )
+        pages.append(
+            {
+                "schema": "taskplane.review-inline-page/v1",
+                "title": title,
+                "index": index,
+                "total": total,
+                "html": html,
+                "bytes": len(html.encode("utf-8")),
+                "model_fingerprint": model_fingerprint,
+                "revision_fingerprint": clean["revision"].get("fingerprint"),
+                "transport": {"host": host},
+            }
+        )
     return pages
 
 
@@ -1456,12 +1590,20 @@ def headline_findings(findings, meta=None) -> str:
         if cov.get("v2"):
             # v2 coverage honesty: every lens dispositioned with evidence —
             # the headline says so (format pinned by test).
-            cov_seg = _msg("headline_findings_coverage_v2",
-                           deep=cov["deep"], light=cov["light"],
-                           na=cov["na"], total=cov["total"])
+            cov_seg = _msg(
+                "headline_findings_coverage_v2",
+                deep=cov["deep"],
+                light=cov["light"],
+                na=cov["na"],
+                total=cov["total"],
+            )
         else:
-            cov_seg = _msg("headline_findings_coverage", deep=cov["deep"],
-                           sweep=cov["sweep"], total=cov["total"])
+            cov_seg = _msg(
+                "headline_findings_coverage",
+                deep=cov["deep"],
+                sweep=cov["sweep"],
+                total=cov["total"],
+            )
     # Read the split off the ENGINE. Re-deriving it here would be a second
     # implementation of the blocking rule, free to disagree with the one the
     # gate actually applies — the drift shape this codebase already carries
@@ -1470,42 +1612,44 @@ def headline_findings(findings, meta=None) -> str:
     # gate judges it.
     blocking_seg = ""
     try:
-        changed = ((meta.get("impact") or {}).get("changed_files")
-                   or meta.get("changed_files"))
+        changed = (meta.get("impact") or {}).get("changed_files") or meta.get("changed_files")
         split = _loop.classify_findings(findings or [], changed)
         nblock = len(split["blockers"])
         if nblock:
             blocking_seg = _msg(
-                "headline_findings_blocking", n=nblock,
-                split=_msg("headline_findings_split",
-                           r=len(split["regressions"]),
-                           h=len([f for f in split["blockers"]
-                                  if f in split["unclassified"]]),
-                           p=len(split["pre_existing"]),
-                           o=len(split["observations"])))
+                "headline_findings_blocking",
+                n=nblock,
+                split=_msg(
+                    "headline_findings_split",
+                    r=len(split["regressions"]),
+                    h=len([f for f in split["blockers"] if f in split["unclassified"]]),
+                    p=len(split["pre_existing"]),
+                    o=len(split["observations"]),
+                ),
+            )
         elif findings:
             blocking_seg = _msg("headline_findings_noblock", t=len(findings))
     except Exception:
-        blocking_seg = ""          # the headline must never fail to print
+        blocking_seg = ""  # the headline must never fail to print
 
     rec = meta.get("headline") or meta.get("recommendation")
     return _msg(
         "headline_findings",
         blocking=blocking_seg,
         title=meta.get("title") or "review findings",
-        high=c["high"], med=c["med"], low=c["low"],
+        high=c["high"],
+        med=c["med"],
+        low=c["low"],
         total=c["high"] + c["med"] + c["low"],
-        unrated=_msg("headline_findings_unrated", n=unrated)
-        if unrated else "",
-        notes=_msg("headline_findings_notes", n=c["info"])
-        if c["info"] else "",
-        tests=_msg("headline_findings_tests", tests=meta["tests"])
-        if meta.get("tests") else "",
+        unrated=_msg("headline_findings_unrated", n=unrated) if unrated else "",
+        notes=_msg("headline_findings_notes", n=c["info"]) if c["info"] else "",
+        tests=_msg("headline_findings_tests", tests=meta["tests"]) if meta.get("tests") else "",
         coverage=cov_seg,
-        impact=_msg("headline_findings_impact",
-                    n=meta["impact"].get("total_impacted", 0))
-        if meta.get("impact") else "",
-        rec=_msg("headline_findings_rec", rec=rec) if rec else "")
+        impact=_msg("headline_findings_impact", n=meta["impact"].get("total_impacted", 0))
+        if meta.get("impact")
+        else "",
+        rec=_msg("headline_findings_rec", rec=rec) if rec else "",
+    )
 
 
 def headline_northstar(note) -> str:
@@ -1521,7 +1665,7 @@ def headline_northstar(note) -> str:
 
 
 def _ptitle(t):
-    return (f'<div style="{_MICRO};margin-bottom:8px">{_esc(t)}</div>')
+    return f'<div style="{_MICRO};margin-bottom:8px">{_esc(t)}</div>'
 
 
 def _compact_card(f, open_=True):
@@ -1532,11 +1676,15 @@ def _compact_card(f, open_=True):
     loc = ""
     if f.get("file"):
         ln = f":{f['line']}" if f.get("line") not in (None, "") else ""
-        loc = (f'<span style="font-family:var(--font-mono);font-size:10px;'
-               f'color:var(--text-muted)"> · {_esc(f["file"])}{_esc(ln)}</span>')
-    dom = (f'<span style="font-family:var(--font-mono);font-size:9.5px;'
-           f'color:var(--text-muted);min-width:80px">{_esc(f.get("domain",""))}'
-           f'</span>')
+        loc = (
+            f'<span style="font-family:var(--font-mono);font-size:10px;'
+            f'color:var(--text-muted)"> · {_esc(f["file"])}{_esc(ln)}</span>'
+        )
+    dom = (
+        f'<span style="font-family:var(--font-mono);font-size:9.5px;'
+        f'color:var(--text-muted);min-width:80px">{_esc(f.get("domain", ""))}'
+        f"</span>"
+    )
     det = ""
     if open_ and (f.get("scenario") or f.get("fix")):
         parts = []
@@ -1544,22 +1692,29 @@ def _compact_card(f, open_=True):
         # bisect an HTML entity (a dangling '&am') and eat far more visible
         # characters than intended on entity-heavy text.
         if f.get("scenario"):
-            parts.append(f'<b style="color:var(--text-primary);'
-                         f'font-weight:500">fail</b> '
-                         f'{_visible_text(f["scenario"], 260)}')
+            parts.append(
+                f'<b style="color:var(--text-primary);'
+                f'font-weight:500">fail</b> '
+                f"{_visible_text(f['scenario'], 260)}"
+            )
         if f.get("fix"):
-            parts.append(f'<b style="color:var(--text-primary);'
-                         f'font-weight:500">fix</b> '
-                         f'{_visible_text(f["fix"], 220)}')
-        det = (f'<div style="padding:3px 0 2px;padding-inline-start:88px;'
-               f'font-size:11.5px;'
-               f'color:var(--text-secondary);line-height:1.5">'
-               + "<br>".join(parts) + "</div>")
-    return (f'<div style="border-top:.5px solid var(--border)">'
-            f'<div style="padding:5px 0;font-size:12.5px;display:flex;gap:8px">'
-            f'{dom}<span style="flex:1">{_esc(f.get("title",""))}'
-            f'<span style="font-family:var(--font-mono);font-size:9.5px;'
-            f'color:{dot}"> {_esc(slabel)}</span>{loc}</span></div>{det}</div>')
+            parts.append(
+                f'<b style="color:var(--text-primary);'
+                f'font-weight:500">fix</b> '
+                f"{_visible_text(f['fix'], 220)}"
+            )
+        det = (
+            f'<div style="padding:3px 0 2px;padding-inline-start:88px;'
+            f"font-size:11.5px;"
+            f'color:var(--text-secondary);line-height:1.5">' + "<br>".join(parts) + "</div>"
+        )
+    return (
+        f'<div style="border-top:.5px solid var(--border)">'
+        f'<div style="padding:5px 0;font-size:12.5px;display:flex;gap:8px">'
+        f'{dom}<span style="flex:1">{_esc(f.get("title", ""))}'
+        f'<span style="font-family:var(--font-mono);font-size:9.5px;'
+        f'color:{dot}"> {_esc(slabel)}</span>{loc}</span></div>{det}</div>'
+    )
 
 
 # Reserved headroom per page for the wrapper (outer div + sr heading +
@@ -1577,10 +1732,12 @@ def _truncate_marked(html, budget):
         return html
 
     def _marker(omitted):
-        return (f'<div style="font-family:var(--font-mono);font-size:11px;'
-                f'color:var(--text-danger);padding:6px 0">… +{omitted} more '
-                f'characters truncated to honor the page budget — open '
-                f'.taskplane/dashboard.html for the complete view</div>')
+        return (
+            f'<div style="font-family:var(--font-mono);font-size:11px;'
+            f'color:var(--text-danger);padding:6px 0">… +{omitted} more '
+            f"characters truncated to honor the page budget — open "
+            f".taskplane/dashboard.html for the complete view</div>"
+        )
 
     kept = html
     for _ in range(64):
@@ -1588,9 +1745,9 @@ def _truncate_marked(html, budget):
         if len(kept) + len(m) <= budget:
             return kept + m
         cut = kept.rfind("</div>", 0, max(0, budget - len(m)))
-        kept = kept[:cut + 6] if cut > 0 else kept[:max(0, budget - len(m))]
+        kept = kept[: cut + 6] if cut > 0 else kept[: max(0, budget - len(m))]
     m = _marker(len(html) - len(kept))
-    return kept[:max(0, budget - len(m))] + m
+    return kept[: max(0, budget - len(m))] + m
 
 
 _CLEAN_SHOWN = 12
@@ -1622,30 +1779,41 @@ def _render_clean(clean):
         # Only treat a short leading token as a domain label — a sentence
         # that merely contains a colon keeps its text intact.
         if sep and len(dom) <= 28 and "." not in dom:
-            label = (f'<span style="font-family:var(--font-mono);'
-                     f'font-size:10.5px;color:var(--text-muted);'
-                     f'text-transform:uppercase;letter-spacing:.6px">'
-                     f'{_esc(dom)}</span> ')
+            label = (
+                f'<span style="font-family:var(--font-mono);'
+                f"font-size:10.5px;color:var(--text-muted);"
+                f'text-transform:uppercase;letter-spacing:.6px">'
+                f"{_esc(dom)}</span> "
+            )
             body = _esc(rest)
         else:
             label, body = "", _esc(text)
-        rows.append('<li style="margin:0 0 6px;padding-inline-start:2px;'
-                    'line-height:1.5">' + label + body + '</li>')
+        rows.append(
+            '<li style="margin:0 0 6px;padding-inline-start:2px;'
+            'line-height:1.5">' + label + body + "</li>"
+        )
     omitted = len(clean) - len(rows)
-    more = ("" if omitted <= 0 else
-            f'<li style="margin:0;list-style:none;margin-inline-start:-1.1em;'
-            f'font-family:var(--font-mono);font-size:11px;'
-            f'color:var(--text-muted)">+{omitted} more clean check'
-            f'{"" if omitted == 1 else "s"} not shown here — all '
-            f'{len(clean)} are in the review’s findings.json</li>')
-    return ('<details style="margin-top:10px;font-size:12px;'
-            'color:var(--text-secondary)" open>'
-            '<summary style="cursor:pointer;font-weight:500;'
-            'color:var(--text-primary)">'
-            f'clean — {len(clean)} area{"" if len(clean) == 1 else "s"} '
-            'checked and found sound</summary>'
-            '<ul style="margin:8px 0 0;padding-inline-start:1.1em">'
-            + "".join(rows) + more + '</ul></details>')
+    more = (
+        ""
+        if omitted <= 0
+        else f'<li style="margin:0;list-style:none;margin-inline-start:-1.1em;'
+        f"font-family:var(--font-mono);font-size:11px;"
+        f'color:var(--text-muted)">+{omitted} more clean check'
+        f"{'' if omitted == 1 else 's'} not shown here — all "
+        f"{len(clean)} are in the review’s findings.json</li>"
+    )
+    return (
+        '<details style="margin-top:10px;font-size:12px;'
+        'color:var(--text-secondary)" open>'
+        '<summary style="cursor:pointer;font-weight:500;'
+        'color:var(--text-primary)">'
+        f"clean — {len(clean)} area{'' if len(clean) == 1 else 's'} "
+        "checked and found sound</summary>"
+        '<ul style="margin:8px 0 0;padding-inline-start:1.1em">'
+        + "".join(rows)
+        + more
+        + "</ul></details>"
+    )
 
 
 # The palette every fragment ASSUMES. Fragments are written for an inline
@@ -1780,12 +1948,14 @@ def standalone_document(fragments, title="review findings") -> str:
     the document shell around them is new.
     """
     body = '<hr class="pg">'.join(fragments or [])
-    return ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
-            "<meta charset=\"utf-8\">\n"
-            "<meta name=\"viewport\" content=\"width=device-width,"
-            "initial-scale=1\">\n<title>" + _esc(title) + "</title>\n"
-            "<style>" + _DOC_VARS + "</style>\n</head>\n<body>\n"
-            "<div class=\"wrap\">\n" + body + "\n</div>\n</body>\n</html>\n")
+    return (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width,'
+        'initial-scale=1">\n<title>' + _esc(title) + "</title>\n"
+        "<style>" + _DOC_VARS + "</style>\n</head>\n<body>\n"
+        '<div class="wrap">\n' + body + "\n</div>\n</body>\n</html>\n"
+    )
 
 
 def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
@@ -1810,49 +1980,60 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
         f = _alias(f)
         k, _, _, _, _, _ = _row_sev_info(f, a)
         norm.append({**f, "_key": k, "_adv": a})
-    buckets = {k: [f for f in norm if f["_key"] == k]
-               for k in ("high", "med", "low", "info")}
+    buckets = {k: [f for f in norm if f["_key"] == k] for k in ("high", "med", "low", "info")}
     c = {k: len(v) for k, v in buckets.items()}
     pages = []
 
     # page 1 — summary: title, counts, tests, clean, gate
     chip_defs = [
         ("high", "high", "var(--bg-danger)", "var(--text-danger)"),
-        ("med", "med", "var(--bg-warning,var(--surface-1))",
-         "var(--text-warning,var(--text-primary))"),
-        ("low", "low", "var(--surface-1)", "var(--text-secondary)")]
+        (
+            "med",
+            "med",
+            "var(--bg-warning,var(--surface-1))",
+            "var(--text-warning,var(--text-primary))",
+        ),
+        ("low", "low", "var(--surface-1)", "var(--text-secondary)"),
+    ]
     if c["info"]:
-        chip_defs.append(("info", "notes", "var(--surface-1)",
-                          "var(--text-muted)"))
+        chip_defs.append(("info", "notes", "var(--surface-1)", "var(--text-muted)"))
     chips = "".join(
         f'<span style="font-family:var(--font-mono);font-size:11px;'
-        f'padding:2px 9px;border-radius:12px;margin-inline-end:6px;'
+        f"padding:2px 9px;border-radius:12px;margin-inline-end:6px;"
         f'background:{bg};color:{fg}">{lbl} {c[k]}</span>'
-        for k, lbl, bg, fg in chip_defs)
+        for k, lbl, bg, fg in chip_defs
+    )
     clean = meta.get("clean") or []
     clean_html = _render_clean(clean)
     rec = meta.get("headline") or meta.get("recommendation") or ""
-    rec_html = (f'<div style="border-inline-start:3px solid '
-                f'var(--border-danger);'
-                f'padding:8px 12px;margin-top:12px;background:var(--surface-1);'
-                f'border-radius:0 8px 8px 0;font-size:12.5px">{_esc(rec)}</div>'
-                if rec else "")
+    rec_html = (
+        f'<div style="border-inline-start:3px solid '
+        f"var(--border-danger);"
+        f"padding:8px 12px;margin-top:12px;background:var(--surface-1);"
+        f'border-radius:0 8px 8px 0;font-size:12.5px">{_esc(rec)}</div>'
+        if rec
+        else ""
+    )
     sub = _esc(meta.get("subtitle", ""))
-    tests = (f' · {_esc(meta["tests"])}' if meta.get("tests") else "")
+    tests = f" · {_esc(meta['tests'])}" if meta.get("tests") else ""
     summary_h2 = (
         f'<h2 class="sr-only">Review findings summary: {c["high"]} high, '
-        f'{c["med"]} medium, {c["low"]} low'
-        + (f', {c["info"]} notes' if c["info"] else "") + '.</h2>')
+        f"{c['med']} medium, {c['low']} low"
+        + (f", {c['info']} notes" if c["info"] else "")
+        + ".</h2>"
+    )
     summary_core = (
         f'<div style="font-size:16px;'
-        f'font-weight:500">{_esc(meta.get("title","review findings"))}</div>'
+        f'font-weight:500">{_esc(meta.get("title", "review findings"))}</div>'
         f'<div style="font-size:12px;color:var(--text-secondary);'
-        f'margin-bottom:10px">{sub}{tests}</div>{chips}{clean_html}{rec_html}')
+        f'margin-bottom:10px">{sub}{tests}</div>{chips}{clean_html}{rec_html}'
+    )
 
     def _wrap_summary(body):
-        return (summary_h2 + '<div style="padding:.5rem 0;font-family:'
-                'var(--font-sans);color:var(--text-primary)">' + body
-                + '</div>')
+        return (
+            summary_h2 + '<div style="padding:.5rem 0;font-family:'
+            'var(--font-sans);color:var(--text-primary)">' + body + "</div>"
+        )
 
     # v2.3.1 (H3&H4): a PAGED review must never make the human's primary
     # action (the sign-off gate) unreachable, nor drop lens coverage / the
@@ -1863,18 +2044,19 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
     # the truncatable part is only the summary's title/chips/clean/rec.
     gate_html = _gate_box(meta)
     _cov_map = _effective_coverage(meta)  # routing_decision wins over legacy
-    coverage_html = (render_lens_coverage(_cov_map)
-                      if _cov_map is not None else "")
-    graph_html = (render_review_graph(meta["ws"], meta.get("impact"))
-                  if meta.get("ws") else "")
-    note_html = (f'<div style="{_MICRO};margin-top:10px">'
-                 f'{_esc(meta["note"])}</div>' if meta.get("note") else "")
+    coverage_html = render_lens_coverage(_cov_map) if _cov_map is not None else ""
+    graph_html = render_review_graph(meta["ws"], meta.get("impact")) if meta.get("ws") else ""
+    note_html = (
+        f'<div style="{_MICRO};margin-top:10px">{_esc(meta["note"])}</div>'
+        if meta.get("note")
+        else ""
+    )
     # the gate buttons call tpSend(...) — wire it on this page (paged
     # fragments are otherwise self-contained and never include it).
-    gate_js = f'<script>{_SEND_JS}</script>' if gate_html else ""
+    gate_js = f"<script>{_SEND_JS}</script>" if gate_html else ""
 
     fixed_tail = gate_html + note_html + gate_js
-    fixed_bytes = (_page_bytes(_wrap_summary("")) + _page_bytes(fixed_tail))
+    fixed_bytes = _page_bytes(_wrap_summary("")) + _page_bytes(fixed_tail)
     fitted_core = _fit_page(summary_core, max(256, budget - fixed_bytes))
 
     extras = coverage_html + graph_html
@@ -1882,31 +2064,35 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
     if extras:
         with_extras = _wrap_summary(fitted_core + extras + fixed_tail)
         extras_fit_on_summary = _page_bytes(with_extras) <= budget
-    summary_page = (with_extras if extras_fit_on_summary
-                     else _wrap_summary(fitted_core + fixed_tail))
+    summary_page = with_extras if extras_fit_on_summary else _wrap_summary(fitted_core + fixed_tail)
     pages.append({"title": "summary", "html": summary_page})
     if extras and not extras_fit_on_summary:
         # coverage + graph didn't fit alongside the gate on page 1 — they
         # still land on their OWN page rather than being dropped silently.
-        pages.append({
-            "title": "lens coverage & graph",
-            # a LARGE v2 coverage map (26 evidenced dispositions) can
-            # exceed the page budget on its own — the extras page honors
-            # the SAME enforced byte budget as every other page (_fit_page:
-            # over-budget content leaves only via an explicit marker).
-            "html": _fit_page(
-                '<h3 class="sr-only">Lens coverage and dependency '
-                'graph.</h3><div style="padding:.5rem 0;'
-                'font-family:var(--font-sans);'
-                f'color:var(--text-primary)">{extras}</div>', budget)})
+        pages.append(
+            {
+                "title": "lens coverage & graph",
+                # a LARGE v2 coverage map (26 evidenced dispositions) can
+                # exceed the page budget on its own — the extras page honors
+                # the SAME enforced byte budget as every other page (_fit_page:
+                # over-budget content leaves only via an explicit marker).
+                "html": _fit_page(
+                    '<h3 class="sr-only">Lens coverage and dependency '
+                    'graph.</h3><div style="padding:.5rem 0;'
+                    "font-family:var(--font-sans);"
+                    f'color:var(--text-primary)">{extras}</div>',
+                    budget,
+                ),
+            }
+        )
 
     def chunk(bucket, label, open_):
         effective = max(1000, budget - _PAGE_RESERVE)
         rows = []
         for f in bucket:
             r = _compact_card(f, open_)
-            if len(r) > effective:   # one pathological card — marked, never
-                r = _truncate_marked(r, effective)          # silently over
+            if len(r) > effective:  # one pathological card — marked, never
+                r = _truncate_marked(r, effective)  # silently over
             rows.append(r)
         # greedily pack rows against budget MINUS the wrapper reserve, so
         # the assembled page (wrapper included) honors the guarantee
@@ -1921,14 +2107,16 @@ def render_findings_paged(findings, meta=None, budget=PAGE_BUDGET):
             packed.append(cur)
         for i, grp in enumerate(packed, 1):
             suffix = f" (part {i}/{len(packed)})" if len(packed) > 1 else ""
-            html = (f'<h3 class="sr-only">{_esc(label)} findings'
-                    f'{_esc(suffix)} — {len(bucket)} total.</h3>'
-                    f'<div style="padding:.5rem 0;font-family:'
-                    f'var(--font-sans);color:var(--text-primary)">'
-                    + _ptitle(f"{label} · {len(bucket)}{suffix}")
-                    + "".join(grp) + "</div>")
-            pages.append({"title": f"{label}{suffix}",
-                          "html": _truncate_marked(html, budget)})
+            html = (
+                f'<h3 class="sr-only">{_esc(label)} findings'
+                f"{_esc(suffix)} — {len(bucket)} total.</h3>"
+                f'<div style="padding:.5rem 0;font-family:'
+                f'var(--font-sans);color:var(--text-primary)">'
+                + _ptitle(f"{label} · {len(bucket)}{suffix}")
+                + "".join(grp)
+                + "</div>"
+            )
+            pages.append({"title": f"{label}{suffix}", "html": _truncate_marked(html, budget)})
 
     if buckets["high"]:
         chunk(buckets["high"], "high — fix first", True)
@@ -1952,8 +2140,9 @@ def _catalog():
     """The lens catalog — the single source of truth for what lenses exist.
     Rendered dynamically so adding a lens to catalog.json appears in every
     dashboard with zero hand-maintenance (v1.5.4)."""
-    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                     "lenses", "catalog.json")
+    p = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lenses", "catalog.json"
+    )
     try:
         with open(p, encoding="utf-8") as f:
             c = json.load(f)
@@ -1975,8 +2164,11 @@ def _catalog():
 
 def _cov_is_v2(routed) -> bool:
     """True when the coverage map carries v2 dict entries."""
-    return bool(routed) and isinstance(routed, dict) and any(
-        isinstance(v, dict) for v in routed.values())
+    return (
+        bool(routed)
+        and isinstance(routed, dict)
+        and any(isinstance(v, dict) for v in routed.values())
+    )
 
 
 def _effective_coverage(meta):
@@ -2035,20 +2227,31 @@ def _lens_coverage_v2(routed):
                 light += 1
             else:
                 na += 1
-        row = {"id": lz["id"], "name": lz.get("name", lz["id"]),
-               "tier": tier, "score": score, "reason": reason}
+        row = {
+            "id": lz["id"],
+            "name": lz.get("name", lz["id"]),
+            "tier": tier,
+            "score": score,
+            "reason": reason,
+        }
         if isinstance(entry, dict) and entry.get("promotion"):
             row["promotion"] = entry["promotion"]
         # R-0003 (contract:lens-brief, ADDITIVE): the component(s) that
         # contributed a routed lens — the key exists only when the routing
         # ran the component path, so legacy maps render byte-identically.
         if isinstance(entry, dict) and entry.get("component_attribution"):
-            row["components"] = [str(c)
-                                 for c in entry["component_attribution"]]
+            row["components"] = [str(c) for c in entry["component_attribution"]]
         groups.setdefault(lz.get("group", "other"), []).append(row)
-    return {"total": len(cat), "deep": deep, "light": light, "na": na,
-            "sweep": 0, "skipped": skipped, "v2": True,
-            "groups": [{"group": g, "lenses": v} for g, v in groups.items()]}
+    return {
+        "total": len(cat),
+        "deep": deep,
+        "light": light,
+        "na": na,
+        "sweep": 0,
+        "skipped": skipped,
+        "v2": True,
+        "groups": [{"group": g, "lenses": v} for g, v in groups.items()],
+    }
 
 
 def lens_coverage(routed=None):
@@ -2070,10 +2273,15 @@ def lens_coverage(routed=None):
         elif tier == "sweep":
             sweep += 1
         groups.setdefault(lz.get("group", "other"), []).append(
-            {"id": lz["id"], "name": lz.get("name", lz["id"]), "tier": tier})
-    return {"total": len(cat), "deep": deep, "sweep": sweep,
-            "skipped": len(cat) - deep - sweep,
-            "groups": [{"group": g, "lenses": v} for g, v in groups.items()]}
+            {"id": lz["id"], "name": lz.get("name", lz["id"]), "tier": tier}
+        )
+    return {
+        "total": len(cat),
+        "deep": deep,
+        "sweep": sweep,
+        "skipped": len(cat) - deep - sweep,
+        "groups": [{"group": g, "lenses": v} for g, v in groups.items()],
+    }
 
 
 def _render_lens_coverage_v2(routed):
@@ -2084,10 +2292,12 @@ def _render_lens_coverage_v2(routed):
     deliverable, not a tooltip-only nicety). Same style patterns as the
     legacy panel: inline HTML, existing CSS vars, collapsible details."""
     cov = _lens_coverage_v2(routed)
-    _tier = {"deep": ("var(--text-danger)", "deep", "solid"),
-             "light": ("var(--text-secondary)", "light", "solid"),
-             "n/a": ("var(--text-muted)", "n/a", "dashed"),
-             "—": ("var(--text-muted)", "—", "dashed")}
+    _tier = {
+        "deep": ("var(--text-danger)", "deep", "solid"),
+        "light": ("var(--text-secondary)", "light", "solid"),
+        "n/a": ("var(--text-muted)", "n/a", "dashed"),
+        "—": ("var(--text-muted)", "—", "dashed"),
+    }
     rows = []
     for grp in cov["groups"]:
         chips = []
@@ -2096,24 +2306,24 @@ def _render_lens_coverage_v2(routed):
             col, word, border = _tier[l["tier"]]
             tip = l["reason"]
             if l["score"] is not None:
-                tip = f'score {l["score"]}' + (f' · {tip}' if tip else "")
+                tip = f"score {l['score']}" + (f" · {tip}" if tip else "")
             if l.get("components"):
                 # R-0003 component attribution — ADDITIVE: the tip suffix
                 # and inline line exist only when the routing was
                 # component-assembled; legacy renders byte-identically.
-                tip += ' · via ' + ", ".join(l["components"])
+                tip += " · via " + ", ".join(l["components"])
             if l.get("promotion"):
                 trigger_count = len(l["promotion"].get("triggers") or [])
-                tip += (" · promoted from light after "
-                        f"{trigger_count} high-severity finding(s)")
+                tip += f" · promoted from light after {trigger_count} high-severity finding(s)"
             chips.append(
                 f'<span title="{_attr(tip)}" style="display:inline-flex;'
-                f'align-items:center;gap:5px;font-size:11.5px;'
-                f'padding:2px 9px;border:1px {border} var(--border);'
+                f"align-items:center;gap:5px;font-size:11.5px;"
+                f"padding:2px 9px;border:1px {border} var(--border);"
                 f'border-radius:12px;margin:0 5px 5px 0;color:{col}">'
-                f'{_esc(l["name"])}'
+                f"{_esc(l['name'])}"
                 f'<span style="font-family:var(--font-mono);font-size:9px">'
-                f'{word}</span></span>')
+                f"{word}</span></span>"
+            )
             if l["tier"] == "n/a":
                 # _attr (not just _esc): quotes entity-encoded too, so an
                 # attribute-breakout payload in evidence can't even APPEAR
@@ -2122,33 +2332,42 @@ def _render_lens_coverage_v2(routed):
                 reasons.append(
                     f'<div style="font-size:11px;'
                     f'color:var(--text-muted);padding:1px 0">○ '
-                    f'{_esc(l["name"])} — n/a: '
-                    f'{_attr(l["reason"] or "no evidence recorded")}</div>')
+                    f"{_esc(l['name'])} — n/a: "
+                    f"{_attr(l['reason'] or 'no evidence recorded')}</div>"
+                )
             elif l.get("components"):
                 reasons.append(
                     f'<div style="font-size:11px;'
                     f'color:var(--text-muted);padding:1px 0">◆ '
-                    f'{_esc(l["name"])} — component: '
-                    f'{_attr(", ".join(l["components"]))}</div>')
+                    f"{_esc(l['name'])} — component: "
+                    f"{_attr(', '.join(l['components']))}</div>"
+                )
             if l.get("promotion"):
                 triggers = l["promotion"].get("triggers") or []
-                titles = "; ".join(str(row.get("title") or "untitled")
-                                   for row in triggers)
+                titles = "; ".join(str(row.get("title") or "untitled") for row in triggers)
                 reasons.append(
                     f'<div style="font-size:11px;color:var(--text-danger);'
                     f'padding:1px 0">↗ {_esc(l["name"])} — promoted '
-                    f'light → deep: {_attr(titles)}</div>')
-        rows.append(f'<div style="margin-top:8px"><div style="{_MICRO};'
-                    f'margin-bottom:3px">{_esc(grp["group"])}</div>'
-                    + "".join(chips) + "".join(reasons) + "</div>")
-    summary = (f'{cov["total"]} lenses · {cov["deep"]} deep · '
-               f'{cov["light"]} light · {cov["na"]} n/a (evidenced)')
+                    f"light → deep: {_attr(titles)}</div>"
+                )
+        rows.append(
+            f'<div style="margin-top:8px"><div style="{_MICRO};'
+            f'margin-bottom:3px">{_esc(grp["group"])}</div>'
+            + "".join(chips)
+            + "".join(reasons)
+            + "</div>"
+        )
+    summary = (
+        f"{cov['total']} lenses · {cov['deep']} deep · "
+        f"{cov['light']} light · {cov['na']} n/a (evidenced)"
+    )
     if cov["skipped"]:
-        summary += f' · {cov["skipped"]} did not fire'
-    return (f'<details style="margin-top:14px" id="tp-lens-coverage">'
-            f'<summary style="cursor:pointer;{_MICRO}">LENS COVERAGE — '
-            f'{summary}</summary><div style="margin-top:6px">'
-            + "".join(rows) + '</div></details>')
+        summary += f" · {cov['skipped']} did not fire"
+    return (
+        f'<details style="margin-top:14px" id="tp-lens-coverage">'
+        f'<summary style="cursor:pointer;{_MICRO}">LENS COVERAGE — '
+        f'{summary}</summary><div style="margin-top:6px">' + "".join(rows) + "</div></details>"
+    )
 
 
 def render_lens_coverage(routed=None):
@@ -2169,36 +2388,47 @@ def render_lens_coverage(routed=None):
     if _cov_is_v2(routed):
         return _render_lens_coverage_v2(routed)
     cov = lens_coverage(routed)
-    _tier = {"deep": ("var(--text-danger)", "deep"),
-             "sweep": ("var(--text-secondary)", "sweep"),
-             "—": ("var(--text-muted)", "—")}
+    _tier = {
+        "deep": ("var(--text-danger)", "deep"),
+        "sweep": ("var(--text-secondary)", "sweep"),
+        "—": ("var(--text-muted)", "—"),
+    }
     _didnt_fire = _tier["—"]
     rows = []
     for grp in cov["groups"]:
         chips = "".join(
             f'<span style="display:inline-flex;align-items:center;gap:5px;'
-            f'font-size:11.5px;padding:2px 9px;border:1px solid var(--border);'
-            f'border-radius:12px;margin:0 5px 5px 0;'
+            f"font-size:11.5px;padding:2px 9px;border:1px solid var(--border);"
+            f"border-radius:12px;margin:0 5px 5px 0;"
             f'color:{_tier.get(l["tier"], _didnt_fire)[0]}">'
-            f'{_esc(l["name"])}'
-            + (f'<span style="font-family:var(--font-mono);font-size:9px">'
-               f'{_tier.get(l["tier"], _didnt_fire)[1]}</span>'
-               if routed else "")
-            + '</span>'
-            for l in grp["lenses"])
-        rows.append(f'<div style="margin-top:8px"><div style="{_MICRO};'
-                    f'margin-bottom:3px">{_esc(grp["group"])}</div>{chips}</div>')
+            f"{_esc(l['name'])}"
+            + (
+                f'<span style="font-family:var(--font-mono);font-size:9px">'
+                f"{_tier.get(l['tier'], _didnt_fire)[1]}</span>"
+                if routed
+                else ""
+            )
+            + "</span>"
+            for l in grp["lenses"]
+        )
+        rows.append(
+            f'<div style="margin-top:8px"><div style="{_MICRO};'
+            f'margin-bottom:3px">{_esc(grp["group"])}</div>{chips}</div>'
+        )
     if routed:
-        summary = (f'{cov["total"]} lenses · {cov["deep"]} deep · '
-                   f'{cov["sweep"]} sweep · {cov["skipped"]} did not fire')
+        summary = (
+            f"{cov['total']} lenses · {cov['deep']} deep · "
+            f"{cov['sweep']} sweep · {cov['skipped']} did not fire"
+        )
         label = "LENS COVERAGE"
     else:
-        summary = f'{cov["total"]} lenses across {len(cov["groups"])} groups'
+        summary = f"{cov['total']} lenses across {len(cov['groups'])} groups"
         label = "LENS CATALOG"
-    return (f'<details style="margin-top:14px" id="tp-lens-coverage">'
-            f'<summary style="cursor:pointer;{_MICRO}">{label} — '
-            f'{summary}</summary><div style="margin-top:6px">'
-            + "".join(rows) + '</div></details>')
+    return (
+        f'<details style="margin-top:14px" id="tp-lens-coverage">'
+        f'<summary style="cursor:pointer;{_MICRO}">{label} — '
+        f'{summary}</summary><div style="margin-top:6px">' + "".join(rows) + "</div></details>"
+    )
 
 
 def render_review_graph(ws, impact=None, tasks=None):
@@ -2209,18 +2439,20 @@ def render_review_graph(ws, impact=None, tasks=None):
     g = _dg.load(ws)
     have = bool(g.get("modules") or g.get("edges"))
     if not have:
-        return ('<details style="margin-top:10px" id="tp-review-graph">'
-                f'<summary style="cursor:'
-                f'pointer;{_MICRO}">DEPENDENCY GRAPH — not scanned</summary>'
-                '<div style="font-size:12px;color:var(--text-muted);'
-                'margin-top:6px">No graph yet — run <code style="font-family:'
-                'var(--font-mono)">tp graph scan</code>. Note: the scanner '
-                'follows in-language imports; cross-service calls in a '
-                'polyglot repo (e.g. a Node gateway calling Python services '
-                'over HTTP) are not import edges, so the graph can look sparse '
-                '— record those links with <code style="font-family:'
-                'var(--font-mono)">tp graph edge</code> or in an ADR.</div>'
-                '</details>')
+        return (
+            '<details style="margin-top:10px" id="tp-review-graph">'
+            f'<summary style="cursor:'
+            f'pointer;{_MICRO}">DEPENDENCY GRAPH — not scanned</summary>'
+            '<div style="font-size:12px;color:var(--text-muted);'
+            'margin-top:6px">No graph yet — run <code style="font-family:'
+            'var(--font-mono)">tp graph scan</code>. Note: the scanner '
+            "follows in-language imports; cross-service calls in a "
+            "polyglot repo (e.g. a Node gateway calling Python services "
+            "over HTTP) are not import edges, so the graph can look sparse "
+            '— record those links with <code style="font-family:'
+            'var(--font-mono)">tp graph edge</code> or in an ADR.</div>'
+            "</details>"
+        )
     n_mod = len(g.get("modules", {}))
     n_edge = len(g.get("edges", []))
     line = f"{n_mod} modules · {n_edge} edges"
@@ -2233,17 +2465,23 @@ def render_review_graph(ws, impact=None, tasks=None):
     if impact:
         tot = impact.get("total_impacted", 0)
         touched = ", ".join(_esc(m) for m in (impact.get("touched") or [])[:8])
-        body = (f'<div style="font-size:12.5px;color:var(--text-secondary);'
-                f'margin-top:6px"><b style="font-weight:500;color:'
-                f'var(--text-primary)">{tot} modules impacted</b> by the '
-                f'changed set{" — " + touched if touched else ""}</div>')
+        body = (
+            f'<div style="font-size:12.5px;color:var(--text-secondary);'
+            f'margin-top:6px"><b style="font-weight:500;color:'
+            f'var(--text-primary)">{tot} modules impacted</b> by the '
+            f"changed set{' — ' + touched if touched else ''}</div>"
+        )
     if not body:
-        body = ('<div style="font-size:12px;color:var(--text-muted);'
-                'margin-top:6px">no change set to compute blast radius</div>')
+        body = (
+            '<div style="font-size:12px;color:var(--text-muted);'
+            'margin-top:6px">no change set to compute blast radius</div>'
+        )
     flow = render_dependency_flow(ws, impact=impact, tasks=tasks or [])
-    return (f'<div id="tp-review-graph">{flow}<details style="margin-top:10px">'
-            f'<summary style="cursor:pointer;{_MICRO}">MODULE-LEVEL GRAPH — {line}'
-            f'</summary>{body}</details></div>')
+    return (
+        f'<div id="tp-review-graph">{flow}<details style="margin-top:10px">'
+        f'<summary style="cursor:pointer;{_MICRO}">MODULE-LEVEL GRAPH — {line}'
+        f"</summary>{body}</details></div>"
+    )
 
 
 def _gate_box(meta):
@@ -2255,11 +2493,14 @@ def _gate_box(meta):
     if not meta.get("gate"):
         return ""
     title = _esc(meta.get("gate_title", "your call — the review is the deliverable"))
-    note = _esc(meta.get(
-        "gate_note",
-        "Approve or request changes explicitly. Blocking findings withhold "
-        "the gate; accepted deviations and nonblocking findings remain "
-        "recorded rather than disappearing."))
+    note = _esc(
+        meta.get(
+            "gate_note",
+            "Approve or request changes explicitly. Blocking findings withhold "
+            "the gate; accepted deviations and nonblocking findings remain "
+            "recorded rather than disappearing.",
+        )
+    )
     return (
         '<div class="tp-sec" id="tp-review-gate">'
         '<p class="tp-kicker">gate — your call</p>'
@@ -2273,14 +2514,16 @@ def _gate_box(meta):
         + "".join(
             f'<button type="button" data-tp-prompt="{_attr(b["prompt"])}" '
             f'style="border:'
-            f'{"none" if b.get("primary") else "1px solid var(--surface-2)"};'
-            f'border-radius:6px;padding:9px 15px;font-size:13px;'
-            f'font-weight:500;cursor:pointer;font-family:var(--font-sans);'
-            f'background:{"var(--surface-2)" if b.get("primary") else "none"};'
+            f"{'none' if b.get('primary') else '1px solid var(--surface-2)'};"
+            f"border-radius:6px;padding:9px 15px;font-size:13px;"
+            f"font-weight:500;cursor:pointer;font-family:var(--font-sans);"
+            f"background:{'var(--surface-2)' if b.get('primary') else 'none'};"
             f'color:{"var(--text-primary)" if b.get("primary") else "var(--surface-2)"}">'
-            f'{_esc(b["label"])}</button>'
-            for b in meta.get("gate_buttons", []))
-        + '</div></div></div>')
+            f"{_esc(b['label'])}</button>"
+            for b in meta.get("gate_buttons", [])
+        )
+        + "</div></div></div>"
+    )
 
 
 def _canonical_revision_badge(meta):
@@ -2288,10 +2531,13 @@ def _canonical_revision_badge(meta):
     if "revision_identity" not in meta:
         return ""
     row = meta.get("revision_identity")
-    keys = ("target_fingerprint", "context_fingerprint",
-            "findings_fingerprint", "canonical_revision")
-    if not isinstance(row, dict) or any(row.get(key) in (None, "")
-                                        for key in keys):
+    keys = (
+        "target_fingerprint",
+        "context_fingerprint",
+        "findings_fingerprint",
+        "canonical_revision",
+    )
+    if not isinstance(row, dict) or any(row.get(key) in (None, "") for key in keys):
         raise ValueError("complete canonical revision identity is required")
     try:
         revision = int(row["canonical_revision"])
@@ -2308,8 +2554,9 @@ def _canonical_revision_badge(meta):
         f'data-context-fingerprint="{_attr(context_fp)}" '
         f'data-findings-fingerprint="{_attr(findings_fp)}" '
         f'style="{_MICRO};margin-bottom:10px">'
-        f'revision {revision} · target {_esc(target_fp)} · context '
-        f'{_esc(context_fp)} · findings {_esc(findings_fp)}</div>')
+        f"revision {revision} · target {_esc(target_fp)} · context "
+        f"{_esc(context_fp)} · findings {_esc(findings_fp)}</div>"
+    )
 
 
 def _diagnostic_fingerprints(meta):
@@ -2323,11 +2570,14 @@ def _diagnostic_fingerprints(meta):
         f'<div><span style="{_MICRO}">{_esc(key.replace("_", " "))}</span> '
         f'<code style="font-family:var(--font-mono);font-size:10.5px;'
         f'color:var(--text-secondary)">{_esc(rows[key])}</code></div>'
-        for key in required)
-    return ('<details class="tp-sec" id="tp-review-fingerprints">'
-            f'<summary style="cursor:pointer;{_MICRO}">REVIEW IDENTITY</summary>'
-            f'<div style="margin-top:8px;display:grid;gap:5px">{values}</div>'
-            '</details>')
+        for key in required
+    )
+    return (
+        '<details class="tp-sec" id="tp-review-fingerprints">'
+        f'<summary style="cursor:pointer;{_MICRO}">REVIEW IDENTITY</summary>'
+        f'<div style="margin-top:8px;display:grid;gap:5px">{values}</div>'
+        "</details>"
+    )
 
 
 def _review_execution_panel(meta):
@@ -2336,41 +2586,53 @@ def _review_execution_panel(meta):
         return ""
     dynamic = record.get("dynamic_validation") or {}
     render = record.get("functionality_render") or {}
-    if record.get("selection") == "dynamic" and \
-            render.get("status") == "declined" and \
-            render.get("detail") == "human did not select inline rendering":
-        render = dict(render, status="not_selected",
-                      detail="not included in the selected dynamic review mode")
+    if (
+        record.get("selection") == "dynamic"
+        and render.get("status") == "declined"
+        and render.get("detail") == "human did not select inline rendering"
+    ):
+        render = dict(
+            render, status="not_selected", detail="not included in the selected dynamic review mode"
+        )
     static = bool(record.get("static_only"))
     label = "STATIC-ONLY" if static else "DYNAMIC REVIEW"
     rows = "".join(
         f'<div style="padding:5px 0;border-top:1px solid var(--border)">'
         f'<span style="{_MICRO}">{_esc(name)}</span> '
         f'<b style="font-size:12px;font-weight:500">{_esc(row.get("status", "pending"))}</b>'
-        + (f'<div style="font-size:11.5px;color:var(--text-secondary)">'
-           f'{_esc(row.get("detail"))}</div>' if row.get("detail") else "")
-        + '</div>'
-        for name, row in (("dynamic validation", dynamic),
-                          ("functionality render", render)))
+        + (
+            f'<div style="font-size:11.5px;color:var(--text-secondary)">'
+            f"{_esc(row.get('detail'))}</div>"
+            if row.get("detail")
+            else ""
+        )
+        + "</div>"
+        for name, row in (("dynamic validation", dynamic), ("functionality render", render))
+    )
     actions = ""
     action = record.get("action") or {}
     if record.get("status") == "needs_user" and action.get("choices"):
-        actions = ('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
-                   + "".join(
-                       f'<button type="button" data-tp-prompt="'
-                       f'{_attr(str(choice.get("prompt") or ""))}" '
-                       f'style="border:1px solid var(--border-strong);'
-                       f'background:none;border-radius:6px;padding:7px 11px;'
-                       f'cursor:pointer;color:var(--text-primary)">'
-                       f'{_esc(choice.get("label") or choice.get("response"))}</button>'
-                       f'<div style="font-size:11px;color:var(--text-secondary);'
-                       f'flex-basis:100%">{_esc(choice.get("description") or "")}</div>'
-                       for choice in action.get("choices") or []) + '</div>')
+        actions = (
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
+            + "".join(
+                f'<button type="button" data-tp-prompt="'
+                f'{_attr(str(choice.get("prompt") or ""))}" '
+                f'style="border:1px solid var(--border-strong);'
+                f"background:none;border-radius:6px;padding:7px 11px;"
+                f'cursor:pointer;color:var(--text-primary)">'
+                f"{_esc(choice.get('label') or choice.get('response'))}</button>"
+                f'<div style="font-size:11px;color:var(--text-secondary);'
+                f'flex-basis:100%">{_esc(choice.get("description") or "")}</div>'
+                for choice in action.get("choices") or []
+            )
+            + "</div>"
+        )
     return (
         '<section class="tp-sec" id="tp-review-execution">'
         '<p class="tp-kicker">review evidence</p>'
         f'<div style="font-family:var(--font-mono);font-size:11px;'
-        f'font-weight:600;margin-bottom:7px">{label}</div>{rows}{actions}</section>')
+        f'font-weight:600;margin-bottom:7px">{label}</div>{rows}{actions}</section>'
+    )
 
 
 def _review_dor_panel(meta):
@@ -2383,43 +2645,55 @@ def _review_dor_panel(meta):
         '<div style="padding:6px 0;border-top:1px solid var(--border)">'
         f'<span style="{_MICRO}">{_esc(row.get("check") or "check")}</span> '
         f'<b style="font-size:12px;font-weight:500">'
-        f'{_esc(row.get("status") or "unknown")}</b>'
+        f"{_esc(row.get('status') or 'unknown')}</b>"
         f'<div style="font-size:11.5px;color:var(--text-secondary)">'
-        f'{_esc(row.get("detail") or "")}</div></div>'
-        for row in dor.get("checks") or [])
+        f"{_esc(row.get('detail') or '')}</div></div>"
+        for row in dor.get("checks") or []
+    )
     commits = "".join(
         '<li style="margin:3px 0"><code style="font-family:var(--font-mono);'
         f'font-size:10.5px">{_esc(str(row.get("sha") or "")[:8])}</code> '
-        f'{_esc(row.get("subject") or "")}</li>'
-        for row in dor.get("commits") or [])
-    commit_html = (f'<details style="margin-top:8px"><summary style="cursor:pointer;'
-                   f'{_MICRO}">PR COMMIT SPECIFICATION — '
-                   f'{len(dor.get("commits") or [])}</summary>'
-                   f'<ul style="margin:7px 0 0 18px;padding:0;font-size:12px;'
-                   f'color:var(--text-secondary)">{commits}</ul></details>'
-                   if commits else "")
+        f"{_esc(row.get('subject') or '')}</li>"
+        for row in dor.get("commits") or []
+    )
+    commit_html = (
+        f'<details style="margin-top:8px"><summary style="cursor:pointer;'
+        f'{_MICRO}">PR COMMIT SPECIFICATION — '
+        f"{len(dor.get('commits') or [])}</summary>"
+        f'<ul style="margin:7px 0 0 18px;padding:0;font-size:12px;'
+        f'color:var(--text-secondary)">{commits}</ul></details>'
+        if commits
+        else ""
+    )
     requirements = "".join(
-        f'<li style="margin:3px 0">{_esc(row)}</li>'
-        for row in dor.get("requirements") or [])
+        f'<li style="margin:3px 0">{_esc(row)}</li>' for row in dor.get("requirements") or []
+    )
     acceptance = "".join(
-        f'<li style="margin:3px 0">{_esc(row)}</li>'
-        for row in dor.get("acceptance") or [])
+        f'<li style="margin:3px 0">{_esc(row)}</li>' for row in dor.get("acceptance") or []
+    )
     requested = dor.get("requested_lenses") or {}
     dispositions = dor.get("lens_dispositions") or {}
 
     def directive_dispositions(row):
-        return ", ".join(sorted(
-            lid + " (" + str(dispositions.get(lid) or "requested") + ")"
-            for lid, values in requested.items()
-            if (row.get("text") or "") in values)) or "unmapped"
+        return (
+            ", ".join(
+                sorted(
+                    lid + " (" + str(dispositions.get(lid) or "requested") + ")"
+                    for lid, values in requested.items()
+                    if (row.get("text") or "") in values
+                )
+            )
+            or "unmapped"
+        )
 
     directives = "".join(
         '<li style="margin:3px 0">'
-        f'{_esc(row.get("text") or "")} '
+        f"{_esc(row.get('text') or '')} "
         f'<span style="{_MICRO}">→ '
-        f'{_esc(directive_dispositions(row))}'
-        '</span></li>'
-        for row in dor.get("review_directives") or [])
+        f"{_esc(directive_dispositions(row))}"
+        "</span></li>"
+        for row in dor.get("review_directives") or []
+    )
     lists = "".join(
         f'<div style="margin-top:10px"><div style="{_MICRO}">{label} — {count}</div>'
         f'<ul style="margin:6px 0 0 18px;padding:0;font-size:12px;'
@@ -2427,16 +2701,22 @@ def _review_dor_panel(meta):
         for label, count, items in (
             ("PR REQUIREMENTS", len(dor.get("requirements") or []), requirements),
             ("ACCEPTANCE CRITERIA", len(dor.get("acceptance") or []), acceptance),
-            ("REVIEW DIRECTIVES / LENS DISPATCH",
-             len(dor.get("review_directives") or []), directives),
-        ) if items)
+            (
+                "REVIEW DIRECTIVES / LENS DISPATCH",
+                len(dor.get("review_directives") or []),
+                directives,
+            ),
+        )
+        if items
+    )
     return (
         '<section class="tp-sec" id="tp-review-dor">'
         '<p class="tp-kicker">definition of ready — specification evidence</p>'
         f'<div style="font-family:var(--font-mono);font-size:11px;'
         f'font-weight:600;margin-bottom:7px">{_esc(status.upper())} · '
-        f'source: {_esc(source.replace("_", " "))}</div>{rows}{lists}{commit_html}'
-        '</section>')
+        f"source: {_esc(source.replace('_', ' '))}</div>{rows}{lists}{commit_html}"
+        "</section>"
+    )
 
 
 def _requirements_validation_panel(meta):
@@ -2445,42 +2725,55 @@ def _requirements_validation_panel(meta):
         return ""
     counts = validation.get("counts") or {}
     summary = " · ".join(
-        f'{int(counts.get(key, 0))} {label}' for key, label in (
-            ("met", "met"), ("partial", "partial"),
-            ("not_met", "not met"), ("cannot_verify", "cannot verify")))
+        f"{int(counts.get(key, 0))} {label}"
+        for key, label in (
+            ("met", "met"),
+            ("partial", "partial"),
+            ("not_met", "not met"),
+            ("cannot_verify", "cannot verify"),
+        )
+    )
     rows = []
     for row in validation.get("criteria") or []:
         evidence = "".join(
-            f'<li style="margin:2px 0">{_esc(item)}</li>'
-            for item in row.get("evidence") or [])
+            f'<li style="margin:2px 0">{_esc(item)}</li>' for item in row.get("evidence") or []
+        )
         findings = "".join(
             '<li style="margin:2px 0">'
-            f'{_esc(item.get("severity") or "")} · '
-            f'{_esc(item.get("title") or "finding")}'
-            f'{" — " + _esc(item.get("file")) if item.get("file") else ""}'
-            '</li>' for item in row.get("related_findings") or [])
+            f"{_esc(item.get('severity') or '')} · "
+            f"{_esc(item.get('title') or 'finding')}"
+            f"{' — ' + _esc(item.get('file')) if item.get('file') else ''}"
+            "</li>"
+            for item in row.get("related_findings") or []
+        )
         rows.append(
             '<details style="border-top:1px solid var(--border);padding:8px 0">'
             '<summary style="cursor:pointer;font-size:12.5px">'
             f'<code style="font-family:var(--font-mono);font-size:10.5px">'
-            f'{_esc(row.get("id") or "AC")}</code> '
-            f'<b>{_esc(str(row.get("status") or "unknown").replace("_", " "))}</b>'
-            f' · {_esc(row.get("criterion") or "")}</summary>'
+            f"{_esc(row.get('id') or 'AC')}</code> "
+            f"<b>{_esc(str(row.get('status') or 'unknown').replace('_', ' '))}</b>"
+            f" · {_esc(row.get('criterion') or '')}</summary>"
             f'<div style="margin:7px 0 0 18px;font-size:11.5px;color:'
             f'var(--text-secondary)"><div style="{_MICRO}">EVIDENCE · '
-            f'{_esc(row.get("validation_mode") or "static")}</div>'
+            f"{_esc(row.get('validation_mode') or 'static')}</div>"
             f'<ul style="margin:4px 0 7px 16px;padding:0">{evidence}</ul>'
-            + (f'<div style="{_MICRO}">RELATED FINDINGS</div><ul style="margin:'
-               f'4px 0 0 16px;padding:0">{findings}</ul>' if findings else "")
-            + '</div></details>')
+            + (
+                f'<div style="{_MICRO}">RELATED FINDINGS</div><ul style="margin:'
+                f'4px 0 0 16px;padding:0">{findings}</ul>'
+                if findings
+                else ""
+            )
+            + "</div></details>"
+        )
     return (
         '<section class="tp-sec" id="tp-requirements-validation">'
         '<p class="tp-kicker">requirements validation — implementation result</p>'
         f'<div style="font-family:var(--font-mono);font-size:11px;'
         f'font-weight:600;margin-bottom:7px">'
-        f'{_esc(str(validation.get("status") or "not available").upper())}</div>'
+        f"{_esc(str(validation.get('status') or 'not available').upper())}</div>"
         f'<div style="font-size:11.5px;color:var(--text-secondary);'
-        f'margin-bottom:6px">{_esc(summary)}</div>{"".join(rows)}</section>')
+        f'margin-bottom:6px">{_esc(summary)}</div>{"".join(rows)}</section>'
+    )
 
 
 def _review_notes(meta):
@@ -2491,22 +2784,31 @@ def _review_notes(meta):
     for note in notes:
         location = ""
         if note.get("file"):
-            suffix = f':{note["line"]}' if note.get("line") else ""
-            location = (f'<code style="font-family:var(--font-mono);font-size:10.5px;'
-                        f'color:var(--text-muted)">{_esc(note["file"])}'
-                        f'{_esc(suffix)}</code>')
+            suffix = f":{note['line']}" if note.get("line") else ""
+            location = (
+                f'<code style="font-family:var(--font-mono);font-size:10.5px;'
+                f'color:var(--text-muted)">{_esc(note["file"])}'
+                f"{_esc(suffix)}</code>"
+            )
         rows.append(
             '<div style="padding:8px 0;border-top:1px solid var(--border)">'
             f'<div style="font-size:13px;font-weight:500">'
-            f'{_esc(note.get("title") or note.get("issue") or "Review note")}</div>'
-            f'<div>{location}</div>'
-            + (f'<div style="font-size:12px;color:var(--text-secondary);margin-top:3px">'
-               f'{_esc(note.get("scenario") or note.get("why") or "")}</div>'
-               if note.get("scenario") or note.get("why") else "")
-            + '</div>')
-    return ('<section class="tp-sec" id="tp-review-notes">'
-            f'<p class="tp-kicker">notes &amp; observations · {len(notes)}</p>'
-            + "".join(rows) + '</section>')
+            f"{_esc(note.get('title') or note.get('issue') or 'Review note')}</div>"
+            f"<div>{location}</div>"
+            + (
+                f'<div style="font-size:12px;color:var(--text-secondary);margin-top:3px">'
+                f"{_esc(note.get('scenario') or note.get('why') or '')}</div>"
+                if note.get("scenario") or note.get("why")
+                else ""
+            )
+            + "</div>"
+        )
+    return (
+        '<section class="tp-sec" id="tp-review-notes">'
+        f'<p class="tp-kicker">notes &amp; observations · {len(notes)}</p>'
+        + "".join(rows)
+        + "</section>"
+    )
 
 
 def _clean_evidence(meta):
@@ -2515,20 +2817,27 @@ def _clean_evidence(meta):
         return ""
     rows = []
     for check in checks:
-        suffix = f':{check["line"]}' if check.get("line") else ""
+        suffix = f":{check['line']}" if check.get("line") else ""
         rows.append(
             '<li style="margin-bottom:6px">'
             f'<span style="{_MICRO}">{_esc(check.get("lens") or "check")}</span> '
-            f'{_esc(check.get("claim") or "")}'
-            + (f' <code style="font-family:var(--font-mono);font-size:10.5px;'
-               f'color:var(--text-muted)">{_esc(check.get("file"))}'
-               f'{_esc(suffix)}</code>' if check.get("file") else "")
-            + '</li>')
-    return ('<details class="tp-sec" id="tp-clean-evidence" open>'
-            f'<summary style="cursor:pointer;{_MICRO}">SOURCE-ANCHORED CLEAN '
-            f'EVIDENCE · {len(checks)}</summary><ul style="padding-inline-start:18px;'
-            f'font-size:12px;color:var(--text-secondary)">{"".join(rows)}</ul>'
-            '</details>')
+            f"{_esc(check.get('claim') or '')}"
+            + (
+                f' <code style="font-family:var(--font-mono);font-size:10.5px;'
+                f'color:var(--text-muted)">{_esc(check.get("file"))}'
+                f"{_esc(suffix)}</code>"
+                if check.get("file")
+                else ""
+            )
+            + "</li>"
+        )
+    return (
+        '<details class="tp-sec" id="tp-clean-evidence" open>'
+        f'<summary style="cursor:pointer;{_MICRO}">SOURCE-ANCHORED CLEAN '
+        f'EVIDENCE · {len(checks)}</summary><ul style="padding-inline-start:18px;'
+        f'font-size:12px;color:var(--text-secondary)">{"".join(rows)}</ul>'
+        "</details>"
+    )
 
 
 def render_findings(findings, meta=None, out=None):
@@ -2550,18 +2859,18 @@ def render_findings(findings, meta=None, out=None):
         f = _alias(f)
         key, rank, _, _, _, _ = _row_sev_info(f, a)
         norm.append({**f, "_key": key, "_rank": rank, "_adv": a})
-    norm.sort(key=lambda x: (x["_rank"], str(x.get("domain", "")),
-                             str(x.get("file", ""))))
-    counts = {k: sum(1 for f in norm if f["_key"] == k)
-              for k in ("high", "med", "low", "info")}
+    norm.sort(key=lambda x: (x["_rank"], str(x.get("domain", "")), str(x.get("file", ""))))
+    counts = {k: sum(1 for f in norm if f["_key"] == k) for k in ("high", "med", "low", "info")}
     total = len(norm)
 
     # severity filter chips (all / high / med / low) — click filters via JS
-    _chip_style = ('border:1px solid var(--border-strong);background:none;'
-                   'border-radius:20px;padding:6px 14px;cursor:pointer;'
-                   'font-family:var(--font-mono);font-size:12px;'
-                   'display:inline-flex;align-items:center;gap:7px;'
-                   'color:var(--text-secondary)')
+    _chip_style = (
+        "border:1px solid var(--border-strong);background:none;"
+        "border-radius:20px;padding:6px 14px;cursor:pointer;"
+        "font-family:var(--font-mono);font-size:12px;"
+        "display:inline-flex;align-items:center;gap:7px;"
+        "color:var(--text-secondary)"
+    )
 
     def chip(key, label, n, danger=False):
         col = "var(--text-danger)" if danger and n else "var(--text-primary)"
@@ -2571,14 +2880,16 @@ def render_findings(findings, meta=None, out=None):
             f'data-tp-action="filter" '
             f'style="{_chip_style}">'
             f'<span style="font-size:15px;font-weight:500;color:{col}">{n}'
-            f'</span> {label}</button>')
+            f"</span> {label}</button>"
+        )
 
-    chips = (chip("all", "all", total)
-             + chip("high", "high", counts["high"], danger=True)
-             + chip("med", "medium", counts["med"])
-             + chip("low", "low", counts["low"])
-             + (chip("info", "notes", counts["info"])
-                if counts["info"] else ""))
+    chips = (
+        chip("all", "all", total)
+        + chip("high", "high", counts["high"], danger=True)
+        + chip("med", "medium", counts["med"])
+        + chip("low", "low", counts["low"])
+        + (chip("info", "notes", counts["info"]) if counts["info"] else "")
+    )
 
     # one card per finding
     cards = []
@@ -2587,45 +2898,58 @@ def render_findings(findings, meta=None, out=None):
         loc = ""
         if f.get("file"):
             ln = f":{f['line']}" if f.get("line") not in (None, "") else ""
-            loc = (f'<code style="font-family:var(--font-mono);font-size:11px;'
-                   f'color:var(--text-secondary)">{_esc(f["file"])}'
-                   f'{_esc(ln)}</code>')
-        dom = (f'<span style="{_MICRO}">{_esc(f["domain"])}</span>'
-               if f.get("domain") else "")
+            loc = (
+                f'<code style="font-family:var(--font-mono);font-size:11px;'
+                f'color:var(--text-secondary)">{_esc(f["file"])}'
+                f"{_esc(ln)}</code>"
+            )
+        dom = f'<span style="{_MICRO}">{_esc(f["domain"])}</span>' if f.get("domain") else ""
         status = f.get("status", "")
         sbadge = ""
         if status:
             fixed = str(status).lower() in ("fixed", "resolved", "done")
             sbadge = (
                 f'<span style="border:1px solid '
-                f'{"var(--border)" if fixed else accent};border-radius:20px;'
-                f'padding:1px 9px;font-family:var(--font-mono);font-size:10px;'
+                f"{'var(--border)' if fixed else accent};border-radius:20px;"
+                f"padding:1px 9px;font-family:var(--font-mono);font-size:10px;"
                 f'color:{"var(--text-secondary)" if fixed else dot}">'
-                f'{"✓ " if fixed else ""}{_esc(status)}</span>')
-        scenario = (f'<div style="font-size:13px;color:var(--text-secondary);'
-                    f'line-height:1.65;margin-top:8px"><span style="{_MICRO}">'
-                    f'FAILURE</span><br>{_esc(f["scenario"])}</div>'
-                    if f.get("scenario") else "")
-        fix = (f'<div style="font-size:13px;color:var(--text-secondary);'
-               f'line-height:1.65;margin-top:8px"><span style="{_MICRO}">FIX'
-               f'</span><br>{_esc(f["fix"])}</div>' if f.get("fix") else "")
+                f"{'✓ ' if fixed else ''}{_esc(status)}</span>"
+            )
+        scenario = (
+            f'<div style="font-size:13px;color:var(--text-secondary);'
+            f'line-height:1.65;margin-top:8px"><span style="{_MICRO}">'
+            f"FAILURE</span><br>{_esc(f['scenario'])}</div>"
+            if f.get("scenario")
+            else ""
+        )
+        fix = (
+            f'<div style="font-size:13px;color:var(--text-secondary);'
+            f'line-height:1.65;margin-top:8px"><span style="{_MICRO}">FIX'
+            f"</span><br>{_esc(f['fix'])}</div>"
+            if f.get("fix")
+            else ""
+        )
         body = scenario + fix
         # collapsed by default beyond the summary line; details toggle
         details = (
             f'<div id="tpf-d{i}" style="display:none;border-top:1px solid '
             f'var(--border);margin-top:10px;padding-top:4px">{body}</div>'
-            if body else "")
+            if body
+            else ""
+        )
         toggle = (
             f' · <button type="button" data-tpf-toggle="{i}" '
             f'aria-expanded="false" aria-label="toggle failure and fix detail" '
             f'style="border:none;background:none;color:var(--text-muted);'
-            f'font-family:var(--font-mono);font-size:11px;cursor:pointer;'
+            f"font-family:var(--font-mono);font-size:11px;cursor:pointer;"
             f'padding:0"><span id="tpf-t{i}">details ▾</span></button>'
-            if body else "")
+            if body
+            else ""
+        )
         cards.append(
             f'<div class="tpf-card" data-sev="{f["_key"]}" style="{_CARD};'
-            f'border-inline-start:3px solid {accent};'
-            f'border-radius:0 6px 6px 0;'
+            f"border-inline-start:3px solid {accent};"
+            f"border-radius:0 6px 6px 0;"
             f'margin-bottom:8px">'
             f'<div style="display:flex;align-items:baseline;gap:9px;'
             f'flex-wrap:wrap"><span style="width:8px;height:8px;border-radius:'
@@ -2633,10 +2957,12 @@ def render_findings(findings, meta=None, out=None):
             f'<span style="font-family:var(--font-mono);font-size:10px;'
             f'letter-spacing:1px;color:{dot}">{_esc(slabel)}</span>'
             f'{dom}<span style="font-weight:500;font-size:14px;flex:1;'
-            f'min-width:180px">{_esc(f.get("title",""))}</span>{sbadge}</div>'
-            f'<div style="margin-top:5px">{loc}{toggle}</div>{details}</div>')
-    cards_html = "".join(cards) or ('<div style="font-size:13px;color:'
-                                    'var(--text-muted)">no findings</div>')
+            f'min-width:180px">{_esc(f.get("title", ""))}</span>{sbadge}</div>'
+            f'<div style="margin-top:5px">{loc}{toggle}</div>{details}</div>'
+        )
+    cards_html = "".join(cards) or (
+        '<div style="font-size:13px;color:var(--text-muted)">no findings</div>'
+    )
 
     # clean checks (what passed) — collapsed list
     clean = meta.get("clean") or []
@@ -2645,31 +2971,40 @@ def render_findings(findings, meta=None, out=None):
         items = "".join(
             f'<div style="font-size:12.5px;color:var(--text-secondary);'
             f'padding:3px 0;display:flex;gap:7px"><span style="color:'
-            f'var(--text-primary)">✓</span>{_esc(c)}</div>' for c in clean)
+            f'var(--text-primary)">✓</span>{_esc(c)}</div>'
+            for c in clean
+        )
         clean_html = (
             f'<details style="margin-top:14px"><summary style="cursor:pointer;'
             f'{_MICRO}">CLEAN — {len(clean)} checks passed</summary>'
-            f'<div style="margin-top:8px">{items}</div></details>')
+            f'<div style="margin-top:8px">{items}</div></details>'
+        )
 
     tests = meta.get("tests")
     tests_pill = (
         f'<span style="border:1px solid var(--border-strong);color:'
-        f'var(--text-primary);border-radius:20px;padding:4px 12px;'
+        f"var(--text-primary);border-radius:20px;padding:4px 12px;"
         f'font-family:var(--font-mono);font-size:11.5px">'
-        f'{_esc(tests)}</span>' if tests else "")
+        f"{_esc(tests)}</span>"
+        if tests
+        else ""
+    )
 
     gate_html = _gate_box(meta)
 
     title = _esc(meta.get("title", "review findings"))
     subtitle = _esc(meta.get("subtitle", ""))
-    note = (f'<div style="{_MICRO};margin-top:10px">{_esc(meta["note"])}</div>'
-            if meta.get("note") else "")
+    note = (
+        f'<div style="{_MICRO};margin-top:10px">{_esc(meta["note"])}</div>'
+        if meta.get("note")
+        else ""
+    )
     # v1.5.4: coverage + blast-radius surfaced IN the review — both derive from
     # their source of truth (catalog.json / graph.json), so new lenses and the
     # graph can't be silently dropped.
     coverage_html = ""
-    cov_map = _effective_coverage(meta)   # routing_decision wins over
-    if cov_map is not None:               # lens_coverage; absent → no panel
+    cov_map = _effective_coverage(meta)  # routing_decision wins over
+    if cov_map is not None:  # lens_coverage; absent → no panel
         coverage_html = render_lens_coverage(cov_map)
     graph_html = str(meta.get("graph_fragment") or "")
     if not graph_html and meta.get("ws"):
@@ -2683,27 +3018,27 @@ def render_findings(findings, meta=None, out=None):
 
     frag = (
         f'<h2 class="sr-only">Review findings: {counts["high"]} high, '
-        f'{counts["med"]} medium, {counts["low"]} low'
-        + (f', {counts["info"]} notes' if counts["info"] else "")
-        + '. Filter by severity '
-        f'and expand each for the failure scenario and fix.</h2>'
+        f"{counts['med']} medium, {counts['low']} low"
+        + (f", {counts['info']} notes" if counts["info"] else "")
+        + ". Filter by severity "
+        f"and expand each for the failure scenario and fix.</h2>"
         f'<div dir="auto" style="padding:0.5rem 0;'
-        f'font-family:var(--font-sans);color:'
+        f"font-family:var(--font-sans);color:"
         f'var(--text-primary)">'
-        f'{revision_badge}'
+        f"{revision_badge}"
         f'<div style="display:flex;justify-content:space-between;'
         f'align-items:flex-start;gap:12px;margin-bottom:12px"><div>'
         f'<div style="font-size:16px;font-weight:500">{title}</div>'
         f'<div style="font-size:13px;color:var(--text-secondary)">{subtitle}'
-        f'</div></div>{tests_pill}</div>'
+        f"</div></div>{tests_pill}</div>"
         f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px" '
         f'id="tpf-chips">{chips}</div>'
         f'<div id="tpf-list">{cards_html}</div>'
-        f'{fingerprints_html}{execution_html}{dor_html}{requirements_html}'
-        f'{coverage_html}{graph_html}'
-        f'{evidence_html}{clean_html}{review_notes_html}{gate_html}{note}'
-        f'<script>{_SEND_JS}'
-        f'function tpFilter(s){{'
+        f"{fingerprints_html}{execution_html}{dor_html}{requirements_html}"
+        f"{coverage_html}{graph_html}"
+        f"{evidence_html}{clean_html}{review_notes_html}{gate_html}{note}"
+        f"<script>{_SEND_JS}"
+        f"function tpFilter(s){{"
         f'document.querySelectorAll(".tpf-card").forEach(function(c){{'
         f'c.style.display=(s==="all"||c.dataset.sev===s)?"block":"none";}});'
         f'document.querySelectorAll(".tpf-chip").forEach(function(b){{'
@@ -2719,7 +3054,8 @@ def render_findings(findings, meta=None, out=None):
         f'var open=d.style.display==="block";'
         f'd.style.display=open?"none":"block";t.textContent=open?"details ▾":"details ▴";'
         f'if(b&&b.setAttribute)b.setAttribute("aria-expanded",open?"false":"true");}}'
-        f'{_FINDINGS_BIND_JS}</script></div>')
+        f"{_FINDINGS_BIND_JS}</script></div>"
+    )
 
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
@@ -2729,6 +3065,7 @@ def render_findings(findings, meta=None, out=None):
 
 
 # ------------------------------------------------------- lens-wave progress
+
 
 def render_lens_wave(lenses, meta=None, out=None):
     """A live PROGRESS board for a lens fan-out — rendered BEFORE the agents
@@ -2742,9 +3079,10 @@ def render_lens_wave(lenses, meta=None, out=None):
     """
     meta = meta or {}
     order = {"running": 0, "queued": 1, "done": 2, "blocked": 3}
-    items = sorted(lenses or [],
-                   key=lambda x: (order.get(x.get("status", "queued"), 9),
-                                  str(x.get("name", ""))))
+    items = sorted(
+        lenses or [],
+        key=lambda x: (order.get(x.get("status", "queued"), 9), str(x.get("name", ""))),
+    )
     total = len(items)
     done = sum(1 for x in items if x.get("status") == "done")
     running = sum(1 for x in items if x.get("status") == "running")
@@ -2753,27 +3091,42 @@ def render_lens_wave(lenses, meta=None, out=None):
         st = x.get("status", "queued")
         if st == "done":
             n = x.get("findings")
-            dot, lab = "var(--text-primary)", (
-                _msg("n_findings", n=n) if n
-                else "clean") if n is not None else "done"
-            badge = (f'<span style="font-family:var(--font-mono);font-size:'
-                     f'10.5px;color:{"var(--text-danger)" if n else "var(--text-muted)"}">'
-                     f'{_esc(lab)}</span>')
+            dot, lab = (
+                "var(--text-primary)",
+                (_msg("n_findings", n=n) if n else "clean") if n is not None else "done",
+            )
+            badge = (
+                f'<span style="font-family:var(--font-mono);font-size:'
+                f'10.5px;color:{"var(--text-danger)" if n else "var(--text-muted)"}">'
+                f"{_esc(lab)}</span>"
+            )
             ring = "background:var(--text-primary)"
         elif st == "running":
-            dot, badge = "var(--text-primary)", (
-                '<span style="font-family:var(--font-mono);font-size:10.5px;'
-                'color:var(--text-secondary)">running…</span>')
+            dot, badge = (
+                "var(--text-primary)",
+                (
+                    '<span style="font-family:var(--font-mono);font-size:10.5px;'
+                    'color:var(--text-secondary)">running…</span>'
+                ),
+            )
             ring = "background:var(--text-primary)"
         elif st == "blocked":
-            dot, badge = "var(--text-danger)", (
-                '<span style="font-family:var(--font-mono);font-size:10.5px;'
-                'color:var(--text-danger)">blocked</span>')
+            dot, badge = (
+                "var(--text-danger)",
+                (
+                    '<span style="font-family:var(--font-mono);font-size:10.5px;'
+                    'color:var(--text-danger)">blocked</span>'
+                ),
+            )
             ring = "background:var(--text-danger)"
         else:
-            dot, badge = "var(--border-strong)", (
-                '<span style="font-family:var(--font-mono);font-size:10.5px;'
-                'color:var(--text-muted)">queued</span>')
+            dot, badge = (
+                "var(--border-strong)",
+                (
+                    '<span style="font-family:var(--font-mono);font-size:10.5px;'
+                    'color:var(--text-muted)">queued</span>'
+                ),
+            )
             ring = "background:none;border:1.5px solid var(--border-strong)"
         return (
             f'<div style="display:flex;align-items:center;gap:9px;'
@@ -2781,20 +3134,24 @@ def render_lens_wave(lenses, meta=None, out=None):
             f'<span style="width:8px;height:8px;border-radius:50%;flex:none;'
             f'box-sizing:border-box;{ring}"></span>'
             f'<span style="font-family:var(--font-mono);font-size:12.5px;'
-            f'flex:1;color:{dot}">{_esc(x.get("id",""))}</span>{badge}</div>')
+            f'flex:1;color:{dot}">{_esc(x.get("id", ""))}</span>{badge}</div>'
+        )
 
     lanes = "".join(lane(x) for x in items)
     pct = int(100 * done / total) if total else 0
-    phase = ("all lenses reported" if done == total and total else
-             f"{running} running · {done}/{total} reported" if total else
-             "no lenses")
+    phase = (
+        "all lenses reported"
+        if done == total and total
+        else f"{running} running · {done}/{total} reported"
+        if total
+        else "no lenses"
+    )
     title = _esc(meta.get("title", "review — lenses running"))
-    sub = _esc(meta.get("subtitle",
-               "each lens is a read-only governed agent, running in parallel"))
+    sub = _esc(meta.get("subtitle", "each lens is a read-only governed agent, running in parallel"))
 
     frag = (
         f'<h2 class="sr-only">Lens review in progress: {done} of {total} '
-        f'lenses reported, {running} running.</h2>'
+        f"lenses reported, {running} running.</h2>"
         f'<div style="padding:0.5rem 0;font-family:var(--font-sans);'
         f'color:var(--text-primary)">'
         f'<div style="display:flex;justify-content:space-between;'
@@ -2802,18 +3159,19 @@ def render_lens_wave(lenses, meta=None, out=None):
         f'<div style="font-size:16px;font-weight:500">{title}</div>'
         f'<div style="font-size:13px;color:var(--text-secondary)">{sub}</div>'
         f'</div><span aria-live="polite" style="font-family:var(--font-mono);'
-        f'font-size:11px;'
+        f"font-size:11px;"
         f'color:var(--text-muted)">{_esc(phase)}</span>'
-        f'</div>'
+        f"</div>"
         f'<div style="height:5px;background:var(--surface-0);border-radius:3px;'
         f'overflow:hidden;margin:12px 0 14px"><span style="display:block;'
         f'height:100%;width:{pct}%;background:var(--text-primary)"></span></div>'
         f'<div style="display:grid;grid-template-columns:repeat(auto-fill,'
         f'minmax(200px,1fr));gap:8px">{lanes}</div>'
         f'<div style="{_MICRO};margin-top:12px">read-only harness on every '
-        f'lens-agent — reads the diff, writes only its findings, touches no '
-        f'code. Results merge into the findings dashboard at the gate.</div>'
-        f'</div>')
+        f"lens-agent — reads the diff, writes only its findings, touches no "
+        f"code. Results merge into the findings dashboard at the gate.</div>"
+        f"</div>"
+    )
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         with open(out, "w", encoding="utf-8") as fh:
@@ -2826,17 +3184,47 @@ def render_lens_wave(lenses, meta=None, out=None):
 # One action vocabulary for the text fallback and the interactive dashboard.
 _ONBOARDING_ACTIONS = {
     "attach_folder": ("Let's give taskplane a place to work", "connect a project folder"),
-    "init_git": ("One step: put this folder under git", "create a git snapshot (git init + commit)"),
+    "init_git": (
+        "One step: put this folder under git",
+        "create a git snapshot (git init + commit)",
+    ),
     "tp_init": ("Almost there — initialize taskplane", "initialize taskplane (tp init)"),
-    "install_codex_hooks": ("Prepare the project launcher", "install or restore the project CLI launcher; use plugin-provided hooks only"),
-    "install_or_enable_hooks": ("Connect taskplane to this session", "install or enable taskplane hooks"),
-    "start_new_session": ("Review and enable taskplane hooks", "trust and enable taskplane hooks in host settings; start a new session only if initial loading still requires it"),
-    "check_hook_identity": ("Check the hook connection", "review and enable taskplane hooks in host settings, then retry onboarding in this task"),
-    "contact_administrator": ("Administrator action is needed", "ask your administrator to allow taskplane hooks"),
-    "review_repository_trust": ("Review repository trust", "review this repository's hook permission"),
-    "recover_run_binding": ("Recover the current run", "recover this checkout's declared run binding"),
-    "archive_run": ("Review the retained run", "approve archiving the unsupported run before new work"),
-    "repair_phase_configuration": ("Repair the installed phase configuration", "use one consistent plugin build"),
+    "install_codex_hooks": (
+        "Prepare the project launcher",
+        "install or restore the project CLI launcher; use plugin-provided hooks only",
+    ),
+    "install_or_enable_hooks": (
+        "Connect taskplane to this session",
+        "install or enable taskplane hooks",
+    ),
+    "start_new_session": (
+        "Review and enable taskplane hooks",
+        "trust and enable taskplane hooks in host settings; start a new session only if initial loading still requires it",
+    ),
+    "check_hook_identity": (
+        "Check the hook connection",
+        "review and enable taskplane hooks in host settings, then retry onboarding in this task",
+    ),
+    "contact_administrator": (
+        "Administrator action is needed",
+        "ask your administrator to allow taskplane hooks",
+    ),
+    "review_repository_trust": (
+        "Review repository trust",
+        "review this repository's hook permission",
+    ),
+    "recover_run_binding": (
+        "Recover the current run",
+        "recover this checkout's declared run binding",
+    ),
+    "archive_run": (
+        "Review the retained run",
+        "approve archiving the unsupported run before new work",
+    ),
+    "repair_phase_configuration": (
+        "Repair the installed phase configuration",
+        "use one consistent plugin build",
+    ),
     "resume_run": ("Resume the saved run", "read the saved run; dispatch will recheck readiness"),
     "ready": ("Ready to go", "ready for governed work"),
 }
@@ -2844,11 +3232,14 @@ _ONBOARDING_ACTIONS = {
 
 def _onboarding_action(report):
     action = report.get("next_action")
-    if action == "ready" and (report.get("ready") is not True or
-            any(not row.get("ok") for row in report.get("checks") or [])):
+    if action == "ready" and (
+        report.get("ready") is not True
+        or any(not row.get("ok") for row in report.get("checks") or [])
+    ):
         action = None
     title, detail = _ONBOARDING_ACTIONS.get(
-        action, ("Setup needs attention", "check the incomplete setup prerequisite"))
+        action, ("Setup needs attention", "check the incomplete setup prerequisite")
+    )
     return action, title, detail
 
 
@@ -2860,12 +3251,13 @@ def headline_onboarding(report):
     host = report.get("host")
     tail = f" · host: {host}" if host else ""
     foreign = report.get("foreign_state") or []
-    collision = (" · FOREIGN STATE: "
-                 + ", ".join(str(row.get("plugin")) + " at "
-                             + str(row.get("root")) for row in foreign)
-                 if foreign else "")
-    return (f"setup {ok}/{len(checks)} prerequisites ready · next: {nxt}"
-            f"{tail}{collision}")
+    collision = (
+        " · FOREIGN STATE: "
+        + ", ".join(str(row.get("plugin")) + " at " + str(row.get("root")) for row in foreign)
+        if foreign
+        else ""
+    )
+    return f"setup {ok}/{len(checks)} prerequisites ready · next: {nxt}{tail}{collision}"
 
 
 _ONBOARDING_SETUP_STYLE = """
@@ -2965,16 +3357,24 @@ def render_onboarding(report, out=None):
     plan = config.get("knowledge_plan") or "personal"
 
     def options(choices, selected):
-        return "".join(f'<option value="{_attr(value)}"'
-                       + (' selected' if value == selected else '')
-                       + f'>{_esc(label)}</option>' for value, label in choices)
+        return "".join(
+            f'<option value="{_attr(value)}"'
+            + (" selected" if value == selected else "")
+            + f">{_esc(label)}</option>"
+            for value, label in choices
+        )
 
     rows = "".join(
-        '<div class="tp-check"><strong>' + ('✓' if row.get('ok') else '○')
-        + ' ' + _esc(row.get('label', '')) + '</strong><small>'
-        + _esc(row.get('detail', ''))
-        + ('' if row.get('ok') else ' · ' + _esc(row.get('hint', '')))
-        + '</small></div>' for row in checks)
+        '<div class="tp-check"><strong>'
+        + ("✓" if row.get("ok") else "○")
+        + " "
+        + _esc(row.get("label", ""))
+        + "</strong><small>"
+        + _esc(row.get("detail", ""))
+        + ("" if row.get("ok") else " · " + _esc(row.get("hint", "")))
+        + "</small></div>"
+        for row in checks
+    )
     context_fields = []
     attempted_context = (report.get("submitted_values") or {}).get("context") or {}
     for key, row in (config.get("context") or {}).items():
@@ -2982,116 +3382,229 @@ def render_onboarding(report, out=None):
         if isinstance(attempted, dict) and isinstance(attempted.get("text"), str):
             row = {**row, "text": attempted["text"], "digest": attempted.get("expected_digest")}
         if not row.get("editable", True):
-            context_fields.append('<p>' + _esc(row.get('label', key))
-                + ' is too large for inline editing. Open <code>'
-                + _esc(row.get('path', '')) + '</code>.</p>')
+            context_fields.append(
+                "<p>"
+                + _esc(row.get("label", key))
+                + " is too large for inline editing. Open <code>"
+                + _esc(row.get("path", ""))
+                + "</code>.</p>"
+            )
             continue
         context_fields.append(
             f'<label class="tp-context">{_esc(row.get("label", key))}'
             f'<textarea data-context="{_attr(key)}" data-digest="{_attr(row.get("digest") or "")}" '
             f'data-retry="{str(bool(attempted)).lower()}" maxlength="12000" rows="5">{_esc(row.get("text", ""))}</textarea>'
-            f'<small>{_esc(row.get("path", ""))}</small></label>')
+            f"<small>{_esc(row.get('path', ''))}</small></label>"
+        )
     settings_view = report.get("settings") or {}
     stages = {name: dict(row) for name, row in (settings_view.get("stages") or {}).items()}
     submitted = report.get("submitted_values") or {}
     submitted_settings = submitted.get("settings") or {}
     for name, row in (submitted_settings.get("stages") or {}).items():
         if name in stages and isinstance(row, dict):
-            stages[name].update({key: value for key, value in row.items()
-                                 if key in {"model", "reasoning"} and isinstance(value, str)})
-    reasoning_choices = [(name, name.title()) for name in
-                         (settings_view.get("reasoning_choices") or ["inherit", "low", "medium", "high", "xhigh", "max", "ultra"])]
+            stages[name].update(
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key in {"model", "reasoning"} and isinstance(value, str)
+                }
+            )
+    reasoning_choices = [
+        (name, name.title())
+        for name in (
+            settings_view.get("reasoning_choices")
+            or ["inherit", "low", "medium", "high", "xhigh", "max", "ultra"]
+        )
+    ]
     for row in stages.values():
         row["model"] = row.get("model") or "inherit"
         row["reasoning"] = row.get("reasoning") or "inherit"
+
     def common(field):
         values = {row[field] for row in stages.values()}
         return next(iter(values)) if len(values) == 1 else ""
-    stage_rows = "".join('<tr><th scope="row">' + _esc(name.title())
-        + '</th><td><input aria-label="' + _attr(name.title() + ' model')
-        + '" data-stage="' + _attr(name) + '" data-field="model" maxlength="128" required value="'
-        + _attr(row['model']) + '"></td><td><select aria-label="'
-        + _attr(name.title() + ' reasoning') + '" data-stage="' + _attr(name)
+
+    stage_rows = "".join(
+        '<tr><th scope="row">'
+        + _esc(name.title())
+        + '</th><td><input aria-label="'
+        + _attr(name.title() + " model")
+        + '" data-stage="'
+        + _attr(name)
+        + '" data-field="model" maxlength="128" required value="'
+        + _attr(row["model"])
+        + '"></td><td><select aria-label="'
+        + _attr(name.title() + " reasoning")
+        + '" data-stage="'
+        + _attr(name)
         + '" data-field="reasoning">'
-        + options(reasoning_choices + ([] if row['reasoning'] in dict(reasoning_choices) else
-            [(row['reasoning'], row['reasoning'] + ' (choose a supported value)')]), row['reasoning'])
-        + '</select></td></tr>' for name, row in stages.items())
-    setup_result = report.get('setup_result') or {}
-    failed = setup_result.get('status') in {'refused', 'blocked'}
-    save_message = ('Could not finish setup: ' + str(setup_result.get('error') or
-        (setup_result.get('launcher') or {}).get('reason') or 'Please retry.')
-        if failed else 'Saved. These preferences apply to new runs.'
-        if setup_result.get('status') == 'applied' else
-        'Changes are saved only after TaskPlane confirms them.')
-    phase_detail = (report.get('phase_configuration') or {}).get('phases') or []
-    knowledge_options = ([('keep-existing', {'personal': 'Keep private knowledge', 'team': 'Keep team sharing', 'enterprise': 'Keep organization sharing'}.get(plan, 'Keep current sharing'))]
-                         if initialized else [('personal', 'Private in this project'), ('team', 'Shared with team'), ('enterprise', 'Shared with organization')])
-    knowledge_selected = 'keep-existing' if initialized else plan
-    execution_selected = 'project' if os.path.realpath(str(execution_home)) == os.path.realpath(str(project_home)) else 'keep-existing'
-    foreign = "".join('<p role="alert">Competing orchestrator state: '
-        + _esc(row.get('plugin', '')) + ' at <code>' + _esc(row.get('root', ''))
-        + '</code>. ' + _esc(row.get('remediation', '')) + '</p>'
-        for row in report.get('foreign_state') or [])
-    launcher = report.get('codex_hooks') or {}
-    root_id = 'tp-onboarding-' + hashlib.sha256(json.dumps(
-        report, sort_keys=True, default=str).encode('utf-8')).hexdigest()[:16]
-    launcher_control = ('' if launcher.get('launcher_ready') and not launcher.get('duplicate_project_hooks') or report.get('host') != 'codex' else
-        '<label class="tp-checkline"><input type="checkbox" name="install_launcher" checked>'
-        'Prepare the project launcher</label><small>Codex hooks come from the TaskPlane plugin.</small>')
-    init_control = ('' if initialized else
-        '<label class="tp-checkline"><input type="checkbox" name="initialize" checked>'
-        'Initialize missing project context</label>')
+        + options(
+            reasoning_choices
+            + (
+                []
+                if row["reasoning"] in dict(reasoning_choices)
+                else [(row["reasoning"], row["reasoning"] + " (choose a supported value)")]
+            ),
+            row["reasoning"],
+        )
+        + "</select></td></tr>"
+        for name, row in stages.items()
+    )
+    setup_result = report.get("setup_result") or {}
+    failed = setup_result.get("status") in {"refused", "blocked"}
+    save_message = (
+        "Could not finish setup: "
+        + str(
+            setup_result.get("error")
+            or (setup_result.get("launcher") or {}).get("reason")
+            or "Please retry."
+        )
+        if failed
+        else "Saved. These preferences apply to new runs."
+        if setup_result.get("status") == "applied"
+        else "Changes are saved only after TaskPlane confirms them."
+    )
+    phase_detail = (report.get("phase_configuration") or {}).get("phases") or []
+    knowledge_options = (
+        [
+            (
+                "keep-existing",
+                {
+                    "personal": "Keep private knowledge",
+                    "team": "Keep team sharing",
+                    "enterprise": "Keep organization sharing",
+                }.get(plan, "Keep current sharing"),
+            )
+        ]
+        if initialized
+        else [
+            ("personal", "Private in this project"),
+            ("team", "Shared with team"),
+            ("enterprise", "Shared with organization"),
+        ]
+    )
+    knowledge_selected = "keep-existing" if initialized else plan
+    execution_selected = (
+        "project"
+        if os.path.realpath(str(execution_home)) == os.path.realpath(str(project_home))
+        else "keep-existing"
+    )
+    foreign = "".join(
+        '<p role="alert">Competing orchestrator state: '
+        + _esc(row.get("plugin", ""))
+        + " at <code>"
+        + _esc(row.get("root", ""))
+        + "</code>. "
+        + _esc(row.get("remediation", ""))
+        + "</p>"
+        for row in report.get("foreign_state") or []
+    )
+    launcher = report.get("codex_hooks") or {}
+    root_id = (
+        "tp-onboarding-"
+        + hashlib.sha256(
+            json.dumps(report, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:16]
+    )
+    launcher_control = (
+        ""
+        if launcher.get("launcher_ready")
+        and not launcher.get("duplicate_project_hooks")
+        or report.get("host") != "codex"
+        else '<label class="tp-checkline"><input type="checkbox" name="install_launcher" checked>'
+        "Prepare the project launcher</label><small>Codex hooks come from the TaskPlane plugin.</small>"
+    )
+    init_control = (
+        ""
+        if initialized
+        else '<label class="tp-checkline"><input type="checkbox" name="initialize" checked>'
+        "Initialize missing project context</label>"
+    )
     frag = (
-        '<style>' + inline_review_style().replace('#tp-inline-review-root', '.tp-onboarding') + _ONBOARDING_SETUP_STYLE + '</style>'
+        "<style>"
+        + inline_review_style().replace("#tp-inline-review-root", ".tp-onboarding")
+        + _ONBOARDING_SETUP_STYLE
+        + "</style>"
         f'<section id="{root_id}" class="tp-onboarding" aria-label="TaskPlane setup" data-workspace="{_attr(workspace)}" '
         f'data-settings-digest="{_attr(submitted_settings.get("expected_digest") or settings_view.get("digest", ""))}" data-ready="{str(ready).lower()}" data-next-detail="{_attr(next_detail)}">'
         '<div class="tp-kicker">TASKPLANE / SETUP</div>'
-        f'<h2>{_esc(headline)}</h2><p>Configure this project, then continue your TaskPlane request.</p>'
+        f"<h2>{_esc(headline)}</h2><p>Configure this project, then continue your TaskPlane request.</p>"
         f'<div aria-live="polite">{done} of {len(checks)} checks ready</div>'
         f'<progress value="{done}" max="{max(1, len(checks))}" aria-label="Verified setup readiness"></progress>'
-        + foreign + (f'<p role="alert">Configuration needs attention: {_esc(config["error"])}</p>'
-                     if config.get('error') else '')
+        + foreign
+        + (
+            f'<p role="alert">Configuration needs attention: {_esc(config["error"])}</p>'
+            if config.get("error")
+            else ""
+        )
         + '<form><div class="tp-sec"><h3>Your project</h3>'
         f'<label>Project folder<input readonly value="{_attr(workspace)}"></label>'
         '<div class="tp-grid" style="margin-top:14px"><label>Execution files'
         '<select name="execution_storage">'
-        + options([('project', 'Inside this project (.taskplane)'), ('keep-existing', 'Keep current location')], execution_selected)
-        + f'</select><small>Selected project location: <code>{_esc(project_home)}</code></small>'
-        f'<small>Current location: <code>{_esc(execution_home)}</code></small></label>'
+        + options(
+            [
+                ("project", "Inside this project (.taskplane)"),
+                ("keep-existing", "Keep current location"),
+            ],
+            execution_selected,
+        )
+        + f"</select><small>Selected project location: <code>{_esc(project_home)}</code></small>"
+        f"<small>Current location: <code>{_esc(execution_home)}</code></small></label>"
         '<label>Knowledge sharing<select name="knowledge_plan">'
-        + options(knowledge_options, knowledge_selected) + '</select>'
-        + ('<small>The current knowledge store is preserved.</small>' if initialized else
-           '<small>Private knowledge stays in project storage. Shared knowledge uses the repository store.</small>')
-        + (f'<small>Current store: <code>{_esc(config["knowledge_home"])}</code></small>'
-           if config.get('knowledge_home') else '')
-        + '</label></div>' + launcher_control + init_control + '</div>'
+        + options(knowledge_options, knowledge_selected)
+        + "</select>"
+        + (
+            "<small>The current knowledge store is preserved.</small>"
+            if initialized
+            else "<small>Private knowledge stays in project storage. Shared knowledge uses the repository store.</small>"
+        )
+        + (
+            f"<small>Current store: <code>{_esc(config['knowledge_home'])}</code></small>"
+            if config.get("knowledge_home")
+            else ""
+        )
+        + "</label></div>"
+        + launcher_control
+        + init_control
+        + "</div>"
         '<div class="tp-sec"><h3>Model preferences</h3><div class="tp-grid">'
         '<label>Model for all phases<input name="common_model" maxlength="128" '
         f'value="{_attr(common("model"))}" placeholder="Different models by phase">'
-        '<small>Use inherit to follow this task, or a model ID available in your host.</small></label>'
+        "<small>Use inherit to follow this task, or a model ID available in your host.</small></label>"
         '<label>Reasoning for all phases<select name="common_reasoning">'
-        + options([('', 'Different reasoning by phase')] + reasoning_choices, common('reasoning'))
-        + '</select></label></div><p>Applies to new runs. Current runs keep their saved configuration.</p>'
-        + ('<p>Environment overrides are active and take priority over project preferences.</p>'
-           if settings_view.get('environment_overrides') else '') + '</div>'
+        + options([("", "Different reasoning by phase")] + reasoning_choices, common("reasoning"))
+        + "</select></label></div><p>Applies to new runs. Current runs keep their saved configuration.</p>"
+        + (
+            "<p>Environment overrides are active and take priority over project preferences.</p>"
+            if settings_view.get("environment_overrides")
+            else ""
+        )
+        + "</div>"
         '<details class="tp-sec"><summary>Advanced · per-phase settings</summary>'
-        '<p>Override individual phases. Host availability is checked when work starts.</p>'
-        f'<p>{_esc(" → ".join(phase_detail))}</p>'
+        "<p>Override individual phases. Host availability is checked when work starts.</p>"
+        f"<p>{_esc(' → '.join(phase_detail))}</p>"
         '<div class="tp-scroll"><table><thead><tr><th>Phase</th><th>Model</th><th>Reasoning</th></tr></thead>'
-        '<tbody>' + stage_rows + '</tbody></table></div></details>'
+        "<tbody>" + stage_rows + "</tbody></table></div></details>"
         '<details class="tp-sec"><summary>Project context</summary>'
-        '<p>Edit the facts TaskPlane uses to understand this project.</p>'
-        + ''.join(context_fields) + '</details>'
-        '<div class="tp-actions"><button type="submit" class="primary">' + ('Retry save' if failed else 'Save setup') + '</button>'
+        "<p>Edit the facts TaskPlane uses to understand this project.</p>"
+        + "".join(context_fields)
+        + "</details>"
+        '<div class="tp-actions"><button type="submit" class="primary">'
+        + ("Retry save" if failed else "Save setup")
+        + "</button>"
         '<button type="button" data-refresh>Check readiness</button></div></form>'
         f'<p role="{"alert" if failed else "status"}" aria-live="polite" data-status>{_esc(save_message)}</p>'
         '<div data-fallback hidden><label>Request to copy<textarea readonly rows="6"></textarea></label></div>'
-        '<details class="tp-sec"><summary>Readiness details</summary>' + rows
-        + '<small>Hook registration: TaskPlane plugin. Runtime readiness requires host-observed evidence.</small></details>'
+        '<details class="tp-sec"><summary>Readiness details</summary>'
+        + rows
+        + "<small>Hook registration: TaskPlane plugin. Runtime readiness requires host-observed evidence.</small></details>"
         '<div class="tp-actions"><button type="button" data-continue>'
-        + ('Continue' if ready else 'Continue setup') + '</button></div>'
-        '<script>' + _ONBOARDING_SETUP_JS.replace(
-            '__TP_ONBOARDING_ROOT__', json.dumps(root_id)) + '</script></section>')
+        + ("Continue" if ready else "Continue setup")
+        + "</button></div>"
+        "<script>"
+        + _ONBOARDING_SETUP_JS.replace("__TP_ONBOARDING_ROOT__", json.dumps(root_id))
+        + "</script></section>"
+    )
     if out:
         os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         with open(out, "w", encoding="utf-8") as handle:
@@ -3128,6 +3641,7 @@ def _run_metrics(ws, tasks, contract, events=None):
 # BUDGET (max_actions — every governed tool call metered, ceiling blocks
 # before the action runs). These helpers read the live meters.
 
+
 def _harness_agents(ws):
     """Every active harness: the main workspace contract plus each parallel
     worker's (.tp-work/<task>/), with its live meter."""
@@ -3146,17 +3660,22 @@ def _harness_agents(ws):
                     m = json.load(f).get(tid, {})
             except (ValueError, OSError):
                 m = {}
-        sc = (c.get("coding") or {}).get("scope_paths") or \
-            (c.get("write_allow") if c.get("read_only") else []) or []
-        out.append({
-            "label": tag or (c.get("task") or tid),
-            "tag": tag,
-            "read_only": bool(c.get("read_only")),
-            "scope": sc,
-            "used": m.get("actions", 0),
-            "denies": m.get("denies", 0),
-            "max": (c.get("budget") or {}).get("max_actions"),
-        })
+        sc = (
+            (c.get("coding") or {}).get("scope_paths")
+            or (c.get("write_allow") if c.get("read_only") else [])
+            or []
+        )
+        out.append(
+            {
+                "label": tag or (c.get("task") or tid),
+                "tag": tag,
+                "read_only": bool(c.get("read_only")),
+                "scope": sc,
+                "used": m.get("actions", 0),
+                "denies": m.get("denies", 0),
+                "max": (c.get("budget") or {}).get("max_actions"),
+            }
+        )
 
     one(ws, None)
     workroot = os.path.join(ws, ".tp-work")
@@ -3174,8 +3693,7 @@ def _meter_totals(ws):
     workroot = os.path.join(ws, ".tp-work")
     if os.path.isdir(workroot):
         for d in sorted(os.listdir(workroot)):
-            paths.append(os.path.join(workroot, d, ".taskplane",
-                                      "meter.json"))
+            paths.append(os.path.join(workroot, d, ".taskplane", "meter.json"))
     for p in paths:
         if not os.path.exists(p):
             continue
@@ -3194,33 +3712,41 @@ def _meter_bar(used, mx):
     """Budget meter, monochrome: primary fill on a hairline track; the ONE
     signal color (danger) appears only at the ceiling."""
     if not mx:
-        return (f'<div style="{_MICRO};margin-top:6px">'
-                f'{_msg("no_ceiling", n=used)}</div>')
+        return f'<div style="{_MICRO};margin-top:6px">{_msg("no_ceiling", n=used)}</div>'
     pct = min(100, int(100 * used / mx))
     at_cap = used >= mx
     col = "var(--text-danger)" if at_cap else "var(--text-primary)"
-    cnt = ("var(--text-danger)" if at_cap else
-           "var(--text-primary)" if pct >= 70 else "var(--text-secondary)")
+    cnt = (
+        "var(--text-danger)"
+        if at_cap
+        else "var(--text-primary)"
+        if pct >= 70
+        else "var(--text-secondary)"
+    )
     return (
         f'<div style="display:flex;align-items:center;gap:8px;margin-top:7px">'
         f'<span style="{_MICRO}">budget</span><span style="flex:1;height:4px;'
         f'background:var(--surface-0);border-radius:2px;overflow:hidden">'
         f'<span style="display:block;height:100%;width:{pct}%;background:'
         f'{col}"></span></span><span style="flex:none;font-size:11.5px;'
-        f'color:{cnt};font-family:var(--font-mono);font-weight:'
-        f'{"500" if pct >= 70 else "400"}">{used}/{mx}</span></div>')
+        f"color:{cnt};font-family:var(--font-mono);font-weight:"
+        f'{"500" if pct >= 70 else "400"}">{used}/{mx}</span></div>'
+    )
 
 
 def _harness_card(h):
     ro = "read-only review" if h["read_only"] else "build"
     blocked = h["denies"]
-    shield = ('<span style="font-family:var(--font-mono);font-size:11.5px;'
-              'color:var(--text-secondary)"><i class="ti ti-shield-check" '
-              'aria-hidden="true"></i> on topic</span>' if not blocked else
-              f'<span style="font-family:var(--font-mono);font-size:11.5px;'
-              f'color:var(--text-danger);font-weight:500"><i class="ti '
-              f'ti-shield-x" aria-hidden="true"></i> {blocked} blocked'
-              f'</span>')
+    shield = (
+        '<span style="font-family:var(--font-mono);font-size:11.5px;'
+        'color:var(--text-secondary)"><i class="ti ti-shield-check" '
+        'aria-hidden="true"></i> on topic</span>'
+        if not blocked
+        else f'<span style="font-family:var(--font-mono);font-size:11.5px;'
+        f'color:var(--text-danger);font-weight:500"><i class="ti '
+        f'ti-shield-x" aria-hidden="true"></i> {blocked} blocked'
+        f"</span>"
+    )
     scope = _esc(", ".join(h["scope"])[:70] or "(any — set scope!)")
     return (
         f'<div style="border:1px solid var(--border);border-radius:6px;'
@@ -3228,49 +3754,51 @@ def _harness_card(h):
         f'space-between;align-items:center;gap:10px;flex-wrap:wrap">'
         f'<span style="font-weight:500">{_esc(str(h["label"])[:34])}'
         f'<span style="{_MICRO};font-weight:400"> · {ro}</span></span>'
-        f'{shield}</div>'
+        f"{shield}</div>"
         f'<div style="font-size:12px;color:var(--text-secondary);margin-top:'
         f'3px"><code style="font-family:var(--font-mono);font-size:11px">'
-        f'{scope}</code></div>{_meter_bar(h["used"], h["max"])}</div>')
+        f"{scope}</code></div>{_meter_bar(h['used'], h['max'])}</div>"
+    )
 
 
 # Governance spine for the widget rail. execute/evaluate/fix collapse into
 # one "Build" phase — the per-task LANES below the rail show the non-linear
 # inner loop (build → evaluate ⟲ fix) and what runs in parallel.
 _SPINE = [
-    ("pm", "Define", False), ("design", "Design", False),
+    ("pm", "Define", False),
+    ("design", "Design", False),
     ("design_approval", "Approve design", True),
     ("plan", "Plan", False),
-    ("plan_approval", "Approve", True), ("build", "Build", False),
-    ("em", "Review", False), ("signoff", "Sign-off", True),
+    ("plan_approval", "Approve", True),
+    ("build", "Build", False),
+    ("em", "Review", False),
+    ("signoff", "Sign-off", True),
     ("done", "Done", False),
 ]
 _BUILD_STEPS = {"execute", "evaluate", "fix"}
 
 _CHIP = {  # lane stage → (dot css, text color, bg)
     "done": ("background:var(--text-primary)", "var(--text-secondary)", ""),
-    "cur": ("background:var(--surface-2)", "var(--surface-2)",
-            "background:var(--text-primary);"),
-    "fail": ("background:var(--surface-2)", "var(--surface-2)",
-             "background:var(--text-danger);"),
-    "todo": ("background:none;border:1.5px solid var(--border-strong)",
-             "var(--text-muted)", ""),
+    "cur": ("background:var(--surface-2)", "var(--surface-2)", "background:var(--text-primary);"),
+    "fail": ("background:var(--surface-2)", "var(--surface-2)", "background:var(--text-danger);"),
+    "todo": ("background:none;border:1.5px solid var(--border-strong)", "var(--text-muted)", ""),
 }
 
 
 def _chip(label, st):
     dot, col, bg = _CHIP[st]
     w = "500" if st in ("cur", "fail") else "400"
-    return (f'<span style="display:flex;align-items:center;gap:5px;padding:'
-            f'3px 9px;border-radius:20px;font-family:var(--font-mono);'
-            f'font-size:11.5px;white-space:nowrap;{bg}color:{col};'
-            f'font-weight:{w}"><span style="width:6px;height:6px;'
-            f'border-radius:50%;flex:none;box-sizing:border-box;{dot}">'
-            f'</span>{label}</span>')
+    return (
+        f'<span style="display:flex;align-items:center;gap:5px;padding:'
+        f"3px 9px;border-radius:20px;font-family:var(--font-mono);"
+        f"font-size:11.5px;white-space:nowrap;{bg}color:{col};"
+        f'font-weight:{w}"><span style="width:6px;height:6px;'
+        f'border-radius:50%;flex:none;box-sizing:border-box;{dot}">'
+        f"</span>{label}</span>"
+    )
 
 
-_CONN = ('<span style="flex:none;width:12px;height:2px;'
-         'background:var(--border)"></span>')
+_CONN = '<span style="flex:none;width:12px;height:2px;background:var(--border)"></span>'
 
 
 def _lane(t, loop_step, meter=None):
@@ -3294,15 +3822,17 @@ def _lane(t, loop_step, meter=None):
             stages = ("cur", "todo", "todo")
     else:
         stages = ("todo", "todo", "todo")
-    bg, fg, lbl = _BADGE.get(stt, ("var(--surface-0)",
-                                   "var(--text-muted)", stt))
-    fixlbl = "fix" + (f' <i class="ti ti-refresh" aria-hidden="true"></i>{fx}'
-                      if fx else "")
+    bg, fg, lbl = _BADGE.get(stt, ("var(--surface-0)", "var(--text-muted)", stt))
+    fixlbl = "fix" + (f' <i class="ti ti-refresh" aria-hidden="true"></i>{fx}' if fx else "")
     deps = t.get("deps") or []
-    wait = (f' · waits on {_esc(", ".join(deps))}'
-            if deps and stt == "pending" else "")
-    rail = (_chip("build", stages[0]) + _CONN + _chip("evaluate", stages[1])
-            + _CONN + _chip(fixlbl, stages[2]))
+    wait = f" · waits on {_esc(', '.join(deps))}" if deps and stt == "pending" else ""
+    rail = (
+        _chip("build", stages[0])
+        + _CONN
+        + _chip("evaluate", stages[1])
+        + _CONN
+        + _chip(fixlbl, stages[2])
+    )
     scope = _esc(", ".join(t.get("scope", [])))
     bar = _meter_bar(meter["used"], meter["max"]) if meter else ""
     return (
@@ -3311,12 +3841,13 @@ def _lane(t, loop_step, meter=None):
         f'between;align-items:center;gap:10px;flex-wrap:wrap"><span style="'
         f'font-weight:500">{_esc(t.get("id", "?"))}</span><span style="'
         f'display:flex;align-items:center">{rail}</span><span style="'
-        f'background:{bg};color:{fg};border:1px solid var(--border);'
-        f'border-radius:20px;padding:2px 9px;font-family:var(--font-mono);'
+        f"background:{bg};color:{fg};border:1px solid var(--border);"
+        f"border-radius:20px;padding:2px 9px;font-family:var(--font-mono);"
         f'font-size:10.5px">{_esc(lbl)}</span></div><div style="font-size:12px;'
         f'color:var(--text-secondary);margin-top:4px"><code style="'
         f'font-family:var(--font-mono);font-size:11px">{scope}</code>'
-        f'{wait}</div>{bar}</div>')
+        f"{wait}</div>{bar}</div>"
+    )
 
 
 _flow_label = _pt._flow_label
@@ -3336,24 +3867,31 @@ def phase_graph_projection(
 ) -> dict[str, Any]:
     """Compatibility facade over the canonical read-model composition."""
     import loop_status
+
     return loop_status.phase_graph_projection(
-        workspace, state, snapshot_values=snapshot_values, impact=impact,
-        module_impact_limit=module_impact_limit, require_bound=require_bound)
+        workspace,
+        state,
+        snapshot_values=snapshot_values,
+        impact=impact,
+        module_impact_limit=module_impact_limit,
+        require_bound=require_bound,
+    )
 
 
 render_phase_dependency_graphs = _pt.render_phase_dependency_graphs
+
 
 def _current_graph_impact(ws, tasks, supplied=None):
     """Use canonical impact when present; otherwise derive one display view."""
     if isinstance(supplied, dict) and supplied.get("touched"):
         return supplied
-    scope = sorted({str(s).rstrip("*").rstrip("/") for t in (tasks or [])
-                    for s in (t.get("scope") or []) if s})
+    scope = sorted(
+        {str(s).rstrip("*").rstrip("/") for t in (tasks or []) for s in (t.get("scope") or []) if s}
+    )
     if not scope:
         return supplied if isinstance(supplied, dict) else {}
     try:
-        return _dg.impact(
-            ws, scope, policy=_dg.aggregate_impact_policy(tasks or []))
+        return _dg.impact(ws, scope, policy=_dg.aggregate_impact_policy(tasks or []))
     except Exception:
         return supplied if isinstance(supplied, dict) else {}
 
@@ -3391,16 +3929,17 @@ def render_dependency_flow(ws, impact=None, tasks=None):
         layers[top] = list(dict.fromkeys(callers))
         if touched:
             via_edges.extend((caller, touched[0], False) for caller in callers)
-    boundaries = list(dict.fromkeys(
-        [str(x) for x in (impact.get("boundary_nodes") or [])]
-        + [str(x) for x in (impact.get("expanded_contracts") or [])]))[:3]
-    blocked = [row for row in (impact.get("policy_blocked") or [])
-               if isinstance(row, dict)][:3]
+    boundaries = list(
+        dict.fromkeys(
+            [str(x) for x in (impact.get("boundary_nodes") or [])]
+            + [str(x) for x in (impact.get("expanded_contracts") or [])]
+        )
+    )[:3]
+    blocked = [row for row in (impact.get("policy_blocked") or []) if isinstance(row, dict)][:3]
 
     ordered_rows = []
     for depth in sorted(layers, reverse=True):
-        row = [n for n in layers[depth]
-               if n not in touched and n not in boundaries]
+        row = [n for n in layers[depth] if n not in touched and n not in boundaries]
         if row:
             ordered_rows.append(("reached", depth, row))
     if touched:
@@ -3409,11 +3948,13 @@ def render_dependency_flow(ws, impact=None, tasks=None):
     if boundary_only:
         ordered_rows.append(("boundary", -1, boundary_only))
     if not ordered_rows:
-        return ('<div class="tp-sec" id="tp-dependency-flow">'
-                '<p class="tp-kicker">dependency graph — change path</p>'
-                '<p class="tp-lede">No change-aware path is available yet. '
-                'The module graph summary remains below; scan or provide a '
-                'canonical impact before review.</p></div>')
+        return (
+            '<div class="tp-sec" id="tp-dependency-flow">'
+            '<p class="tp-kicker">dependency graph — change path</p>'
+            '<p class="tp-lede">No change-aware path is available yet. '
+            "The module graph summary remains below; scan or provide a "
+            "canonical impact before review.</p></div>"
+        )
 
     width, box_h, gap_y = 880, 52, 78
     positions, row_y = {}, 14
@@ -3423,8 +3964,7 @@ def render_dependency_flow(ws, impact=None, tasks=None):
         total = len(names) * box_w + max(0, len(names) - 1) * gap_x
         start = (width - total) / 2
         for idx, name in enumerate(names):
-            positions[name] = (start + idx * (box_w + gap_x), row_y,
-                               box_w, kind, depth)
+            positions[name] = (start + idx * (box_w + gap_x), row_y, box_w, kind, depth)
         row_y += gap_y
     height = max(150, row_y - gap_y + box_h + 16)
     selected, edges = set(positions), []
@@ -3437,8 +3977,7 @@ def render_dependency_flow(ws, impact=None, tasks=None):
         if source in selected and target in selected:
             edges.append((source, target, False))
     if touched and boundary_only:
-        edges.extend((touched[0], boundary, False)
-                     for boundary in boundary_only)
+        edges.extend((touched[0], boundary, False) for boundary in boundary_only)
     for row in blocked:
         source = str(row.get("module") or "")
         target = str(row.get("via") or "")
@@ -3446,8 +3985,7 @@ def render_dependency_flow(ws, impact=None, tasks=None):
             edges.append((source, target, True))
     if not edges and len(ordered_rows) > 1:
         for upper, lower in zip(ordered_rows, ordered_rows[1:]):
-            edges.extend((source, lower[2][0], False)
-                         for source in upper[2])
+            edges.extend((source, lower[2][0], False) for source in upper[2])
     edges = list(dict.fromkeys(edges))
 
     token = hashlib.sha256("\0".join(sorted(selected)).encode()).hexdigest()[:10]
@@ -3467,25 +4005,25 @@ def render_dependency_flow(ws, impact=None, tasks=None):
             f'<path d="M{x1:.1f},{y1:.1f} L{x1:.1f},{mid:.1f} '
             f'L{x2:.1f},{mid:.1f} L{x2:.1f},{y2:.1f}" fill="none" '
             f'stroke="{color}" stroke-width="1.4"{dash} '
-            f'marker-end="url(#{mark})"/>')
+            f'marker-end="url(#{mark})"/>'
+        )
 
     nodes = []
     for name, (x, y, box_w, kind, depth) in positions.items():
         if kind == "changed":
-            fill, stroke, stroke_w, dash = (
-                "var(--changed-bg)", "var(--accent)", "1.6", "")
-            title, meta, weight = (
-                f"{_flow_label(name)} — CHANGED", "changed by this scope", "600")
+            fill, stroke, stroke_w, dash = ("var(--changed-bg)", "var(--accent)", "1.6", "")
+            title, meta, weight = (f"{_flow_label(name)} — CHANGED", "changed by this scope", "600")
         elif kind == "boundary":
             fill, stroke, stroke_w = "none", "var(--line)", "1"
             dash = ' stroke-dasharray="5 4"'
             title, meta, weight = (
-                _flow_label(name), "contract boundary — traversal stops here", "500")
+                _flow_label(name),
+                "contract boundary — traversal stops here",
+                "500",
+            )
         else:
-            fill, stroke, stroke_w, dash = (
-                "var(--surface-1)", "var(--line)", "1", "")
-            title, meta, weight = (
-                _flow_label(name), f"reached, unchanged · depth {depth}", "500")
+            fill, stroke, stroke_w, dash = ("var(--surface-1)", "var(--line)", "1", "")
+            title, meta, weight = (_flow_label(name), f"reached, unchanged · depth {depth}", "500")
         nodes.append(
             f'<g><rect x="{x:.1f}" y="{y:.1f}" width="{box_w:.1f}" '
             f'height="{box_h}" rx="7" fill="{fill}" stroke="{stroke}" '
@@ -3495,18 +4033,22 @@ def render_dependency_flow(ws, impact=None, tasks=None):
             f'font-weight="{weight}" fill="var(--text-primary)">{_esc(title)}</text>'
             f'<text x="{x + 14:.1f}" y="{y + 40:.1f}" '
             f'font-family="var(--font-mono)" font-size="10" '
-            f'fill="var(--text-secondary)">{_esc(meta)}</text></g>')
+            f'fill="var(--text-secondary)">{_esc(meta)}</text></g>'
+        )
 
-    desc = (f'{len(touched)} changed module(s), '
-            f'{impact.get("total_impacted", 0)} impacted module(s), '
-            f'depth limit {impact.get("depth_limit", "—")}; '
-            f'{"truncated" if impact.get("truncated") else "not truncated"}.')
+    desc = (
+        f"{len(touched)} changed module(s), "
+        f"{impact.get('total_impacted', 0)} impacted module(s), "
+        f"depth limit {impact.get('depth_limit', '—')}; "
+        f"{'truncated' if impact.get('truncated') else 'not truncated'}."
+    )
     warning = ""
     if blocked:
-        reasons = ", ".join(sorted(
-            {str(row.get("reason") or "policy") for row in blocked}))
-        warning = (f'<div class="tp-lede" style="color:var(--text-danger);'
-                   f'margin-top:8px">policy-stopped path(s): {_esc(reasons)}</div>')
+        reasons = ", ".join(sorted({str(row.get("reason") or "policy") for row in blocked}))
+        warning = (
+            f'<div class="tp-lede" style="color:var(--text-danger);'
+            f'margin-top:8px">policy-stopped path(s): {_esc(reasons)}</div>'
+        )
     return (
         '<div class="tp-sec" id="tp-dependency-flow">'
         '<p class="tp-kicker">dependency graph — change path and blast radius</p>'
@@ -3521,7 +4063,9 @@ def render_dependency_flow(ws, impact=None, tasks=None):
         f'<marker id="{danger_marker}" viewBox="0 0 10 10" refX="9" '
         'refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
         '<path d="M0,0 L10,5 L0,10 z" fill="var(--danger)"/></marker></defs>'
-        + "".join(paths) + "".join(nodes) + '</svg>'
+        + "".join(paths)
+        + "".join(nodes)
+        + "</svg>"
         '<div class="legend" style="display:flex;gap:16px;flex-wrap:wrap;'
         'font-size:11.5px;color:var(--text-secondary);margin-top:12px">'
         '<span><i style="width:11px;height:11px;border-radius:3px;display:inline-block;'
@@ -3532,7 +4076,8 @@ def render_dependency_flow(ws, impact=None, tasks=None):
         'margin-right:6px;background:transparent;border:1px dashed var(--line)"></i>contract boundary</span>'
         '<span><i style="width:11px;height:11px;border-radius:3px;display:inline-block;'
         'margin-right:6px;background:var(--danger-bg);border:1px solid var(--danger)"></i>policy/error path</span>'
-        f'</div><p class="tp-lede" style="margin-top:10px">{_esc(desc)}</p>{warning}</div>')
+        f'</div><p class="tp-lede" style="margin-top:10px">{_esc(desc)}</p>{warning}</div>'
+    )
 
 
 def render_workflow_flow(state, step, tasks):
@@ -3541,11 +4086,9 @@ def render_workflow_flow(state, step, tasks):
     current = "build" if step in _BUILD_STEPS else step
     rows = list(_SPINE)
     if not state.get("design_required"):
-        rows = [row for row in rows
-                if row[0] not in ("design", "design_approval")]
+        rows = [row for row in rows if row[0] not in ("design", "design_approval")]
     elif state.get("design_only"):
-        rows = [row for row in rows
-                if row[0] in ("pm", "design", "design_approval", "done")]
+        rows = [row for row in rows if row[0] in ("pm", "design", "design_approval", "done")]
     rows = _loop.splice_selection(rows, state)
     order = [row[0] for row in rows]
     current_i = order.index(current) if current in order else -1
@@ -3560,10 +4103,10 @@ def render_workflow_flow(state, step, tasks):
                 f'<line x1="{box_x + box_w / 2}" y1="{y + box_h}" '
                 f'x2="{box_x + box_w / 2}" y2="{y + gap}" '
                 'stroke="var(--line)" stroke-width="1.4" '
-                f'marker-end="url(#{marker})"/>')
+                f'marker-end="url(#{marker})"/>'
+            )
         if current_i >= 0 and idx < current_i:
-            fill, stroke, sw, status = (
-                "var(--surface-1)", "var(--line)", "1", "complete")
+            fill, stroke, sw, status = ("var(--surface-1)", "var(--line)", "1", "complete")
         elif idx == current_i:
             fill = "var(--danger-bg)" if gate else "var(--changed-bg)"
             stroke = "var(--danger)" if gate else "var(--accent)"
@@ -3573,9 +4116,9 @@ def render_workflow_flow(state, step, tasks):
             fill, stroke, sw, status = "none", "var(--line)", "1", "pending"
         if sid == "build" and tasks:
             done = sum(1 for task in tasks if task.get("status") == "passed")
-            meta = f'{done}/{len(tasks)} tasks passed · build → evaluate ⟲ fix'
+            meta = f"{done}/{len(tasks)} tasks passed · build → evaluate ⟲ fix"
         elif gate:
-            meta = f'{status} · explicit approval or rejection required'
+            meta = f"{status} · explicit approval or rejection required"
         else:
             meta = status
         nodes.append(
@@ -3586,7 +4129,8 @@ def render_workflow_flow(state, step, tasks):
             f'fill="var(--text-primary)">{_esc(label)}</text>'
             f'<text x="{box_x + 14}" y="{y + 40}" '
             'font-family="var(--font-mono)" font-size="10.5" '
-            f'fill="var(--text-secondary)">{_esc(meta)}</text>')
+            f'fill="var(--text-secondary)">{_esc(meta)}</text>'
+        )
         if idx == current_i and gate:
             callout_y = max(4, y - 6)
             nodes.append(
@@ -3600,7 +4144,8 @@ def render_workflow_flow(state, step, tasks):
                 'font-weight="600" fill="var(--text-primary)">your decision</text>'
                 f'<text x="702" y="{callout_y + 43}" '
                 'font-family="var(--font-mono)" font-size="9.5" '
-                'fill="var(--text-secondary)">approve · request changes</text>')
+                'fill="var(--text-secondary)">approve · request changes</text>'
+            )
     return (
         '<div class="tp-sec" id="tp-workflow-flow">'
         '<p class="tp-kicker">workflow execution — stages, evidence, and human gates</p>'
@@ -3609,17 +4154,19 @@ def render_workflow_flow(state, step, tasks):
         'style="margin-top:10px">'
         f'<title id="tp-workflow-title-{token}">taskPlane governed workflow and current human gate.</title>'
         f'<desc id="tp-workflow-desc-{token}">Current stage: {_esc(str(step or "none"))}. '
-        'Decision stages require explicit human approval or rejection.</desc>'
+        "Decision stages require explicit human approval or rejection.</desc>"
         f'<defs><marker id="{marker}" viewBox="0 0 10 10" refX="9" refY="5" '
         'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
         '<path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/></marker></defs>'
-        + "".join(arrows) + "".join(nodes) + '</svg>'
+        + "".join(arrows)
+        + "".join(nodes)
+        + "</svg>"
         '<p class="tp-lede">Every arrow is contract activation → bounded work → evidence → orchestrator gate. '
-        'Only the human closes approval, selection, and sign-off gates.</p></div>')
+        "Only the human closes approval, selection, and sign-off gates.</p></div>"
+    )
 
 
-def render_review_workflow(*, status: str, slots=None,
-                           graph_complete: bool = True) -> str:
+def render_review_workflow(*, status: str, slots=None, graph_complete: bool = True) -> str:
     """Standalone ReviewKernel workflow in the canonical taskPlane style.
 
     A pure engineering review has no delivery-loop PM/Plan/Build state, so the
@@ -3635,23 +4182,40 @@ def render_review_workflow(*, status: str, slots=None,
     total = len(slots)
     impact_degraded = not graph_complete
     impact_blocked = status == "impact_incomplete" or (
-        status == "graph_evidence_sparse" and not total)
+        status == "graph_evidence_sparse" and not total
+    )
     done = sum(1 for row in slots if row.get("status") == "done")
     rows = [
-        ("target", "target pinned", True,
-         "immutable head · base · fingerprint"),
-        ("impact", "graph + blast radius", not impact_blocked,
-         "blocked — graph evidence incomplete" if impact_blocked else
-         "immutable diff fallback · graph warning" if impact_degraded else
-         "one bounded impact derivation"),
-        ("route", "selective lens mapping",
-         bool(total) or complete, "26 dispositions · deep/light/n-a"),
-        ("wave", "leased review wave", complete,
-         f"{done}/{total} slots reported · one shared context"),
-        ("collect", "canonical collection", complete,
-         "one revision · findings/report/dashboard identity"),
-        ("gate", "human approval or rejection", False,
-         "explicit decision required"),
+        ("target", "target pinned", True, "immutable head · base · fingerprint"),
+        (
+            "impact",
+            "graph + blast radius",
+            not impact_blocked,
+            "blocked — graph evidence incomplete"
+            if impact_blocked
+            else "immutable diff fallback · graph warning"
+            if impact_degraded
+            else "one bounded impact derivation",
+        ),
+        (
+            "route",
+            "selective lens mapping",
+            bool(total) or complete,
+            "26 dispositions · deep/light/n-a",
+        ),
+        (
+            "wave",
+            "leased review wave",
+            complete,
+            f"{done}/{total} slots reported · one shared context",
+        ),
+        (
+            "collect",
+            "canonical collection",
+            complete,
+            "one revision · findings/report/dashboard identity",
+        ),
+        ("gate", "human approval or rejection", False, "explicit decision required"),
     ]
     if impact_blocked:
         current = "impact"
@@ -3662,8 +4226,10 @@ def render_review_workflow(*, status: str, slots=None,
     width, box_x, box_w, box_h, gap = 880, 170, 490, 52, 72
     height = 14 + len(rows) * gap
     token = hashlib.sha256(
-        (status + "|" + "|".join(str(x.get("slot_id") or x.get("id") or "")
-                                  for x in slots)).encode()).hexdigest()[:10]
+        (
+            status + "|" + "|".join(str(x.get("slot_id") or x.get("id") or "") for x in slots)
+        ).encode()
+    ).hexdigest()[:10]
     marker = f"tp-review-workflow-ar-{token}"
     arrows, nodes = [], []
     for idx, (sid, label, is_done, meta) in enumerate(rows):
@@ -3673,14 +4239,13 @@ def render_review_workflow(*, status: str, slots=None,
                 f'<line x1="{box_x + box_w / 2}" y1="{y + box_h}" '
                 f'x2="{box_x + box_w / 2}" y2="{y + gap}" '
                 'stroke="var(--line)" stroke-width="1.4" '
-                f'marker-end="url(#{marker})"/>')
+                f'marker-end="url(#{marker})"/>'
+            )
         active = sid == current
         if active:
             gate = sid == "gate"
-            fill = "var(--danger-bg)" if gate or impact_blocked else \
-                "var(--changed-bg)"
-            stroke = "var(--danger)" if gate or impact_blocked else \
-                "var(--accent)"
+            fill = "var(--danger-bg)" if gate or impact_blocked else "var(--changed-bg)"
+            stroke = "var(--danger)" if gate or impact_blocked else "var(--accent)"
             sw = "1.6"
         elif is_done:
             fill, stroke, sw = "var(--surface-1)", "var(--line)", "1"
@@ -3694,7 +4259,8 @@ def render_review_workflow(*, status: str, slots=None,
             f'fill="var(--text-primary)">{_esc(label)}</text>'
             f'<text x="{box_x + 14}" y="{y + 40}" '
             'font-family="var(--font-mono)" font-size="10.5" '
-            f'fill="var(--text-secondary)">{_esc(meta)}</text>')
+            f'fill="var(--text-secondary)">{_esc(meta)}</text>'
+        )
         if sid == "gate" and active:
             nodes.append(
                 f'<path d="M{box_x + box_w},{y + box_h / 2} '
@@ -3707,7 +4273,8 @@ def render_review_workflow(*, status: str, slots=None,
                 'font-weight="600" fill="var(--text-primary)">your decision</text>'
                 f'<text x="702" y="{max(4, y - 6) + 43}" '
                 'font-family="var(--font-mono)" font-size="9.5" '
-                'fill="var(--text-secondary)">approve · request changes</text>')
+                'fill="var(--text-secondary)">approve · request changes</text>'
+            )
     return (
         '<div class="tp-sec" id="tp-review-workflow">'
         '<p class="tp-kicker">workflow execution — governed engineering review</p>'
@@ -3715,16 +4282,19 @@ def render_review_workflow(*, status: str, slots=None,
         f'aria-labelledby="tp-review-workflow-title-{token} '
         f'tp-review-workflow-desc-{token}" style="margin-top:10px">'
         f'<title id="tp-review-workflow-title-{token}">Engineering review '
-        'workflow and current gate.</title>'
+        "workflow and current gate.</title>"
         f'<desc id="tp-review-workflow-desc-{token}">Current review state: '
-        f'{_esc(status)}. The final approval or rejection belongs to the human.</desc>'
+        f"{_esc(status)}. The final approval or rejection belongs to the human.</desc>"
         f'<defs><marker id="{marker}" viewBox="0 0 10 10" refX="9" refY="5" '
         'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
         '<path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/></marker></defs>'
-        + "".join(arrows) + "".join(nodes) + '</svg>'
+        + "".join(arrows)
+        + "".join(nodes)
+        + "</svg>"
         '<p class="tp-lede">The diff and graph are derived once, scoped views '
-        'fan out only to mapped lenses, and collection seals one canonical '
-        'revision before the human gate.</p></div>')
+        "fan out only to mapped lenses, and collection seals one canonical "
+        "revision before the human gate.</p></div>"
+    )
 
 
 def _graph_panel(ws, tasks, state=None, snapshot_values=None):
@@ -3732,86 +4302,100 @@ def _graph_panel(ws, tasks, state=None, snapshot_values=None):
     radius of the current tasks' scope — all from the committed graph."""
     state = state if isinstance(state, Mapping) else (_load_loop(ws) or {})
     current_impact = _current_graph_impact(ws, tasks)
-    phase_html = render_phase_dependency_graphs(phase_graph_projection(
-        ws, state, snapshot_values=snapshot_values,
-        impact=current_impact if current_impact else None,
-        require_bound=True))
-    g = _dg.load(ws)          # external store, via the graph owner's loader
+    phase_html = render_phase_dependency_graphs(
+        phase_graph_projection(
+            ws,
+            state,
+            snapshot_values=snapshot_values,
+            impact=current_impact if current_impact else None,
+            require_bound=True,
+        )
+    )
+    g = _dg.load(ws)  # external store, via the graph owner's loader
     if not (g.get("modules") or g.get("edges")):
-        return (phase_html
-                + '<div style="font-size:13px;color:var(--text-muted)">no '
-                'dependency graph yet — scanned at loop start, or run '
-                '<code style="font-family:var(--font-mono)">tp graph scan'
-                '</code>. In a polyglot repo the scanner follows in-language '
-                'imports, so cross-service calls (a Node gateway → Python '
-                'services over HTTP) are not import edges and the graph can '
-                'look sparse — record those with <code style="font-family:'
-                'var(--font-mono)">tp graph edge</code>.</div>')
+        return (
+            phase_html + '<div style="font-size:13px;color:var(--text-muted)">no '
+            "dependency graph yet — scanned at loop start, or run "
+            '<code style="font-family:var(--font-mono)">tp graph scan'
+            "</code>. In a polyglot repo the scanner follows in-language "
+            "imports, so cross-service calls (a Node gateway → Python "
+            "services over HTTP) are not import edges and the graph can "
+            'look sparse — record those with <code style="font-family:'
+            'var(--font-mono)">tp graph edge</code>.</div>'
+        )
     mods, edges = g.get("modules", {}), g.get("edges", [])
-    internal = [e for e in edges
-                if not str(e.get("to", "")).startswith("ext:")]
+    internal = [e for e in edges if not str(e.get("to", "")).startswith("ext:")]
     deg = {}
     for e in internal:
         for k in ("from", "to"):
             m = e.get(k)
             if m and m != "(root)" and not str(m).startswith("req:"):
-                deg[m] = deg.get(m, 0) + 1   # product nodes get their own panel
+                deg[m] = deg.get(m, 0) + 1  # product nodes get their own panel
     hubs = sorted(deg.items(), key=lambda kv: -kv[1])[:7]
     mx = hubs[0][1] if hubs else 1
     bars = "".join(
         f'<div style="display:flex;align-items:center;gap:8px;font-size:12px;'
         f'padding:3px 0"><span style="flex:1 1 96px;min-width:0;'
-        f'max-width:150px;overflow:hidden;'
-        f'text-overflow:ellipsis;white-space:nowrap;color:var(--text-'
+        f"max-width:150px;overflow:hidden;"
+        f"text-overflow:ellipsis;white-space:nowrap;color:var(--text-"
         f'secondary)">{_esc(m)}</span><span style="flex:1;height:8px;'
         f'background:var(--surface-0);border-radius:4px;overflow:hidden">'
         f'<span style="display:block;height:100%;width:{int(100 * d / mx)}%;'
         f'background:var(--text-primary);border-radius:2px"></span></span>'
         f'<span style="flex:none;width:26px;text-align:end;color:'
-        f'var(--text-muted)">{d}</span></div>' for m, d in hubs)
+        f'var(--text-muted)">{d}</span></div>'
+        for m, d in hubs
+    )
     tile3 = (
         f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
         f'<div style="background:none;border:1px solid '
-        f'var(--border);border-radius:12px;padding:10px 16px;text-align:'
+        f"var(--border);border-radius:12px;padding:10px 16px;text-align:"
         f'center;min-width:92px"><div style="font-size:22px;font-weight:500;font-family:var(--font-mono);'
         f'color:var(--text-primary)">{len(mods)}</div><div style="font-size:'
         f'11px;color:var(--text-muted)">modules</div></div>'
         f'<div style="background:none;border:1px solid '
-        f'var(--border);border-radius:12px;padding:10px 16px;text-align:'
+        f"var(--border);border-radius:12px;padding:10px 16px;text-align:"
         f'center;min-width:92px"><div style="font-size:22px;font-weight:500;font-family:var(--font-mono);'
         f'color:var(--text-primary)">{len(internal)}</div><div style="'
         f'font-size:11px;color:var(--text-muted)">internal edges</div></div>'
         f'<div style="background:none;border:1px solid '
-        f'var(--border);border-radius:12px;padding:10px 16px;text-align:'
+        f"var(--border);border-radius:12px;padding:10px 16px;text-align:"
         f'center;min-width:92px"><div style="font-size:22px;font-weight:500;font-family:var(--font-mono);'
         f'color:var(--text-primary)">{len(edges) - len(internal)}</div>'
         f'<div style="font-size:11px;color:var(--text-muted)">external deps'
-        f'</div></div></div>')
+        f"</div></div></div>"
+    )
     imp_html = ""
-    scope = sorted({s.rstrip("*").rstrip("/") for t in tasks
-                    for s in t.get("scope", []) if s})
+    scope = sorted({s.rstrip("*").rstrip("/") for t in tasks for s in t.get("scope", []) if s})
     if scope:
         try:
             im = current_impact
             touched = im.get("touched", [])
             chips = "".join(
                 f'<span style="background:none;border:1px solid var(--border-strong);'
-                f'color:var(--text-secondary);border-radius:20px;padding:2px 10px;'
+                f"color:var(--text-secondary);border-radius:20px;padding:2px 10px;"
                 f'font-family:var(--font-mono);font-size:11.5px">'
-                f'{_esc(m)}</span>' for m in touched[:8])
+                f"{_esc(m)}</span>"
+                for m in touched[:8]
+            )
             d1 = (im.get("impacted") or {}).get(1, [])
             rows = "".join(
                 f'<div style="font-size:12px;color:var(--text-secondary);'
                 f'padding:2px 0">{_esc(e.get("module", ""))} <span style="'
                 f'color:var(--text-muted)">({_esc(e.get("kind", ""))} '
-                f'{_arrow(back=True)} '
-                f'{_esc(e.get("via", ""))})</span></div>' for e in d1[:6])
-            more = (f'<div style="font-size:12px;color:var(--text-muted);'
-                    f'padding:2px 0">…+{len(d1) - 6} more at depth 1</div>'
-                    if len(d1) > 6 else "")
+                f"{_arrow(back=True)} "
+                f"{_esc(e.get('via', ''))})</span></div>"
+                for e in d1[:6]
+            )
+            more = (
+                f'<div style="font-size:12px;color:var(--text-muted);'
+                f'padding:2px 0">…+{len(d1) - 6} more at depth 1</div>'
+                if len(d1) > 6
+                else ""
+            )
             imp_html = (
                 f'<div style="background:none;border:1px solid '
-                f'var(--border);border-radius:6px;padding:14px;margin-top:'
+                f"var(--border);border-radius:6px;padding:14px;margin-top:"
                 f'12px"><div style="font-size:12px;color:var(--text-muted);'
                 f'letter-spacing:.5px;margin-bottom:8px">blast radius of the '
                 f'current scope</div><div style="display:flex;gap:6px;'
@@ -3819,7 +4403,8 @@ def _graph_panel(ws, tasks, state=None, snapshot_values=None):
                 f'<div style="font-size:13px;color:var(--text-secondary);'
                 f'margin-bottom:6px">'
                 + _msg("dependent_modules", n=im.get("total_impacted", 0))
-                + f'</div>{rows}{more}</div>')
+                + f"</div>{rows}{more}</div>"
+            )
         except Exception:
             imp_html = ""
 
@@ -3827,28 +4412,26 @@ def _graph_panel(ws, tasks, state=None, snapshot_values=None):
     # plans/realizes, product depends-edges, and any shared surface the
     # plan gate flagged on the current tasks.
     prod_html = ""
-    req_edges = [e for e in edges
-                 if str(e.get("from", "")).startswith("req:")]
+    req_edges = [e for e in edges if str(e.get("from", "")).startswith("req:")]
     if req_edges:
         by_req = {}
         for e in req_edges:
-            by_req.setdefault(e["from"], {"planned": [], "realizes": [],
-                                          "depends": []})
+            by_req.setdefault(e["from"], {"planned": [], "realizes": [], "depends": []})
             k = e.get("kind")
             if k in ("planned", "realizes", "depends"):
                 by_req[e["from"]][k].append(str(e.get("to", "")))
         rows = []
         for rid_n in sorted(by_req):
             d = by_req[rid_n]
-            mods_txt = ", ".join(_esc(m) for m in
-                                 (d["realizes"] or d["planned"])[:6])
+            mods_txt = ", ".join(_esc(m) for m in (d["realizes"] or d["planned"])[:6])
             kind_lbl = "realizes" if d["realizes"] else "planned"
-            dep_txt = ("".join(
+            dep_txt = "".join(
                 f'<span style="border:1px solid var(--border-strong);'
-                f'color:var(--text-secondary);border-radius:20px;'
-                f'padding:1px 8px;font-family:var(--font-mono);'
+                f"color:var(--text-secondary);border-radius:20px;"
+                f"padding:1px 8px;font-family:var(--font-mono);"
                 f'font-size:10.5px;margin-inline-start:4px">{_arrow()} {_esc(r)}</span>'
-                for r in d["depends"][:4]))
+                for r in d["depends"][:4]
+            )
             rows.append(
                 f'<div style="display:flex;align-items:baseline;gap:8px;'
                 f'font-size:12px;padding:3px 0;flex-wrap:wrap">'
@@ -3856,45 +4439,50 @@ def _graph_panel(ws, tasks, state=None, snapshot_values=None):
                 f'color:var(--text-primary)">{_esc(rid_n)}</span>'
                 f'<span style="font-family:var(--font-mono);font-size:10px;'
                 f'letter-spacing:1px;color:var(--text-muted)">'
-                f'{kind_lbl}</span>'
+                f"{kind_lbl}</span>"
                 f'<span style="color:var(--text-secondary)">{mods_txt}'
-                f'</span>{dep_txt}</div>')
-        shared = sorted({r for t in tasks
-                         for r in (t.get("blast") or {}).get(
-                             "shared_with", [])})
+                f"</span>{dep_txt}</div>"
+            )
+        shared = sorted({r for t in tasks for r in (t.get("blast") or {}).get("shared_with", [])})
         shared_html = (
             f'<div style="font-size:12px;color:var(--text-danger);'
             f'margin-top:6px">⚠ shared surface — current scope overlaps: '
-            f'{", ".join(_esc(r) for r in shared)} (their criteria need '
-            f're-checking at review)</div>' if shared else "")
+            f"{', '.join(_esc(r) for r in shared)} (their criteria need "
+            f"re-checking at review)</div>"
+            if shared
+            else ""
+        )
         prod_html = (
             f'<div style="background:none;border:1px solid var(--border);'
             f'border-radius:6px;padding:14px;margin-top:12px">'
             f'<div style="font-family:var(--font-mono);font-size:10.5px;'
-            f'letter-spacing:1.2px;color:var(--text-muted);margin-bottom:'
+            f"letter-spacing:1.2px;color:var(--text-muted);margin-bottom:"
             f'8px">product layer — requirements ↔ modules</div>'
-            f'{"".join(rows)}{shared_html}</div>')
-    return (phase_html
-            + render_dependency_flow(ws, impact=current_impact, tasks=tasks)
-            + '<div class="tp-sec"><p class="tp-kicker">module-level graph — what the engine computed</p>'
-            + tile3
-            + f'<div style="background:none;border:1px solid '
-              f'var(--border);border-radius:6px;padding:14px"><div style="'
-              f'font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.2px;color:var(--text-muted);'
-              f'margin-bottom:8px">most connected modules</div>{bars}</div>'
-            + imp_html + prod_html
-            + '<div style="font-size:12px;color:var(--text-muted);margin-top:'
-              '10px">from the committed dependency graph — engineering AND '
-              'product edges (deterministic, zero tokens).</div></div>')
+            f"{''.join(rows)}{shared_html}</div>"
+        )
+    return (
+        phase_html
+        + render_dependency_flow(ws, impact=current_impact, tasks=tasks)
+        + '<div class="tp-sec"><p class="tp-kicker">module-level graph — what the engine computed</p>'
+        + tile3
+        + f'<div style="background:none;border:1px solid '
+        f'var(--border);border-radius:6px;padding:14px"><div style="'
+        f"font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.2px;color:var(--text-muted);"
+        f'margin-bottom:8px">most connected modules</div>{bars}</div>'
+        + imp_html
+        + prod_html
+        + '<div style="font-size:12px;color:var(--text-muted);margin-top:'
+        '10px">from the committed dependency graph — engineering AND '
+        "product edges (deterministic, zero tokens).</div></div>"
+    )
 
 
 def _context_panel(ws, state, trace_all):
     """Context tab: the requirement, its acceptance criteria, routed lenses,
     scope, recent KB decisions and open debt — what the loop is holding."""
-    idx = _kb.load_index(ws)      # external store, via the KB owner's loader
+    idx = _kb.load_index(ws)  # external store, via the KB owner's loader
     rid = (state or {}).get("requirement_id")
-    req = next((r for r in idx.get("requirements", [])
-                if r.get("id") == rid), None)
+    req = next((r for r in idx.get("requirements", []) if r.get("id") == rid), None)
     parts = []
     # R-0002: governing decisions — accepted ADRs whose modules overlap the
     # current task's scope; always shown, they are in force for this work.
@@ -3906,60 +4494,69 @@ def _context_panel(ws, state, trace_all):
             f'<div style="display:flex;gap:8px;align-items:baseline;'
             f'font-size:13px;padding:3px 0"><span style="font-family:'
             f'var(--font-mono);font-size:11px;color:var(--text-muted)">'
-            f'{_esc(d["id"])}</span><span>{_esc(d["title"])}</span>'
+            f"{_esc(d['id'])}</span><span>{_esc(d['title'])}</span>"
             f'<span style="font-family:var(--font-mono);font-size:10px;'
             f'color:var(--text-success,var(--text-primary))">in force'
-            f'</span></div>' for d in gov)
+            f"</span></div>"
+            for d in gov
+        )
         parts.append(
             f'<div id="tp-governing" style="border:1px solid var(--border);'
             f'border-radius:6px;padding:12px 14px;margin-bottom:12px">'
             f'<div style="{_MICRO};margin-bottom:6px">governing decisions '
-            f'\u2014 accepted, scope-linked</div>{rows}</div>')
+            f"\u2014 accepted, scope-linked</div>{rows}</div>"
+        )
     # R-0004: current-state grounding \u2014 the as-built inventory every design
     # lens is grounded in; shown whenever it's filled.
     _cs = _kb.current_state(ws)
     if _cs:
-        _n_lines = sum(1 for ln in _cs["text"].splitlines()
-                       if ln.strip() and not ln.strip().startswith("#"))
+        _n_lines = sum(
+            1 for ln in _cs["text"].splitlines() if ln.strip() and not ln.strip().startswith("#")
+        )
         parts.append(
             f'<div id="tp-current-state" style="border:1px solid '
-            f'var(--border);border-radius:6px;padding:12px 14px;'
+            f"var(--border);border-radius:6px;padding:12px 14px;"
             f'margin-bottom:12px"><div style="{_MICRO};margin-bottom:6px">'
-            f'current state \u2014 as-built inventory (grounding)</div>'
+            f"current state \u2014 as-built inventory (grounding)</div>"
             f'<div style="font-size:13px">{_esc(_cs["path"])} '
             f'<span style="font-family:var(--font-mono);font-size:10px;'
             f'color:var(--text-success,var(--text-primary))">grounds design '
-            f'lenses \u00b7 {_n_lines} lines</span></div></div>')
+            f"lenses \u00b7 {_n_lines} lines</span></div></div>"
+        )
     if req:
         acc = "".join(
             f'<div style="display:flex;gap:8px;align-items:baseline;'
             f'font-size:13px;padding:3px 0"><i class="ti ti-target" '
             f'style="color:var(--text-secondary)" aria-hidden="true"></i>'
-            f'<span>{_esc(a)}</span></div>' for a in req.get("acceptance", []))
+            f"<span>{_esc(a)}</span></div>"
+            for a in req.get("acceptance", [])
+        )
         fun = "".join(
             f'<div style="font-size:13px;color:var(--text-secondary);'
             f'padding:2px 0">· {_esc(f)}</div>'
-            for f in req.get("functional", []))
+            for f in req.get("functional", [])
+        )
         nfr = "".join(
             f'<div style="font-size:12px;color:var(--text-muted);padding:'
             f'2px 0">{_esc(k)}: {_esc(v)}</div>'
-            for k, v in (req.get("nfr") or {}).items())
+            for k, v in (req.get("nfr") or {}).items()
+        )
         parts.append(
             f'<div style="background:none;border:1px solid '
-            f'var(--border);border-radius:6px;padding:14px;margin-bottom:'
+            f"var(--border);border-radius:6px;padding:14px;margin-bottom:"
             f'12px"><div style="display:flex;justify-content:space-between;'
             f'align-items:center;margin-bottom:8px"><span style="font-family:var(--font-mono);font-size:10.5px;'
             f'letter-spacing:1.2px;color:var(--text-muted)">requirement '
             f'{_esc(rid or "")}</span><span style="background:var(--surface-'
-            f'0);color:var(--text-muted);border-radius:20px;padding:2px 9px;'
+            f"0);color:var(--text-muted);border-radius:20px;padding:2px 9px;"
             f'font-size:11px">{_esc(req.get("status", ""))}</span></div>'
             f'<div style="font-weight:500;margin-bottom:6px">'
-            f'{_esc(req.get("title", ""))}</div>{fun}'
+            f"{_esc(req.get('title', ''))}</div>{fun}"
             f'<div style="font-size:12px;color:var(--text-muted);'
             f'letter-spacing:.5px;margin:10px 0 4px">acceptance criteria '
-            f'(→ DoD)</div>{acc}{nfr}</div>')
-    lenses = next((e.get("lenses", []) for e in trace_all
-                   if e.get("event") == "lens_route"), [])
+            f"(→ DoD)</div>{acc}{nfr}</div>"
+        )
+    lenses = next((e.get("lenses", []) for e in trace_all if e.get("event") == "lens_route"), [])
     if lenses:
         pairs = []
         for x in lenses:
@@ -3969,55 +4566,63 @@ def _context_panel(ws, state, trace_all):
                 pairs.append((_esc(x), ""))
         lchips = "".join(
             f'<span style="background:none;color:var(--text-'
-            f'secondary);border:1px solid var(--border-strong);border-radius:20px;'
+            f"secondary);border:1px solid var(--border-strong);border-radius:20px;"
             f'padding:3px 11px;font-family:var(--font-mono);font-size:11.5px">{name}<span style="color:'
             f'var(--text-muted)"> · {mode}</span></span>'
-            for name, mode in pairs)
+            for name, mode in pairs
+        )
         parts.append(
             f'<div style="background:none;border:1px solid '
-            f'var(--border);border-radius:6px;padding:14px;margin-bottom:'
+            f"var(--border);border-radius:6px;padding:14px;margin-bottom:"
             f'12px"><div style="font-size:12px;color:var(--text-muted);'
             f'letter-spacing:.5px;margin-bottom:8px">routed lenses (picked '
             f'by the diff, not by role)</div><div style="display:flex;gap:'
-            f'6px;flex-wrap:wrap">{lchips}</div></div>')
+            f'6px;flex-wrap:wrap">{lchips}</div></div>'
+        )
     decs = (idx.get("decisions") or [])[-3:][::-1]
     if decs:
         drows = "".join(
             f'<div style="display:flex;justify-content:space-between;gap:10px'
-            f';font-size:13px;padding:4px 0;border-bottom:1px solid '
+            f";font-size:13px;padding:4px 0;border-bottom:1px solid "
             f'var(--border)"><span>{_esc(d.get("id", ""))} '
             f'{_visible_text(d.get("title", ""), 44)}</span><span style="color:'
             f'var(--text-muted);font-size:12px">'
-            f'{_esc(", ".join((d.get("tags") or [])[:2]))}</span></div>'
-            for d in decs)
+            f"{_esc(', '.join((d.get('tags') or [])[:2]))}</span></div>"
+            for d in decs
+        )
         parts.append(
             f'<div style="background:none;border:1px solid '
-            f'var(--border);border-radius:6px;padding:14px;margin-bottom:'
+            f"var(--border);border-radius:6px;padding:14px;margin-bottom:"
             f'12px"><div style="font-size:12px;color:var(--text-muted);'
             f'letter-spacing:.5px;margin-bottom:8px">recent KB decisions '
-            f'(committed, injected at review steps)</div>{drows}</div>')
+            f"(committed, injected at review steps)</div>{drows}</div>"
+        )
     debt = [d for d in (idx.get("debt") or []) if d.get("status") == "open"]
     if debt:
         drows = "".join(
             f'<div style="display:flex;gap:8px;align-items:baseline;'
             f'font-size:13px;padding:3px 0"><i class="ti ti-bookmark" '
             f'style="color:var(--text-secondary)" aria-hidden="true"></i>'
-            f'<span>{_esc(d.get("title", d.get("id", "")))}</span></div>'
-            for d in debt[:5])
+            f"<span>{_esc(d.get('title', d.get('id', '')))}</span></div>"
+            for d in debt[:5]
+        )
         parts.append(
             f'<div style="background:none;border:1px solid '
-            f'var(--border);border-radius:6px;padding:14px;margin-bottom:'
+            f"var(--border);border-radius:6px;padding:14px;margin-bottom:"
             f'12px"><div style="font-size:12px;color:var(--text-muted);'
             f'letter-spacing:.5px;margin-bottom:8px">open debt</div>{drows}'
-            f'</div>')
+            f"</div>"
+        )
     # v1.5.4: the lens catalog is part of the governed context — show it here
     # (sourced from catalog.json), so adding a lens is reflected in the loop
     # dashboard without touching this file.
     parts.append(render_lens_coverage(None))
     if not parts:
-        return ('<div style="font-size:13px;color:var(--text-muted)">no '
-                'context recorded yet — the PM step records the requirement '
-                'first.</div>')
+        return (
+            '<div style="font-size:13px;color:var(--text-muted)">no '
+            "context recorded yet — the PM step records the requirement "
+            "first.</div>"
+        )
     return "".join(parts)
 
 
@@ -4038,24 +4643,36 @@ def _agents_hero(harness, tasks, step, parallel):
         for t in tasks:
             stt = t.get("status", "pending")
             h = hmap.get(t.get("id")) or (hmain if stt == "running" else None)
-            cards.append({
-                "id": t.get("id", "?"),
-                "status": stt,
-                "act": {"running": "editing files", "built": "built · gating",
-                        "passed": "done", "failed": "fix cycle",
-                        "pending": "queued"}.get(stt, stt),
-                "scope": ", ".join(t.get("scope", [])),
-                "used": (h or {}).get("used"), "max": (h or {}).get("max"),
-                "denies": (h or {}).get("denies", 0),
-            })
+            cards.append(
+                {
+                    "id": t.get("id", "?"),
+                    "status": stt,
+                    "act": {
+                        "running": "editing files",
+                        "built": "built · gating",
+                        "passed": "done",
+                        "failed": "fix cycle",
+                        "pending": "queued",
+                    }.get(stt, stt),
+                    "scope": ", ".join(t.get("scope", [])),
+                    "used": (h or {}).get("used"),
+                    "max": (h or {}).get("max"),
+                    "denies": (h or {}).get("denies", 0),
+                }
+            )
     else:
         for h in harness:
-            cards.append({
-                "id": h["label"], "status": "running",
-                "act": "read-only review" if h["read_only"] else "building",
-                "scope": ", ".join(h["scope"]),
-                "used": h["used"], "max": h["max"], "denies": h["denies"],
-            })
+            cards.append(
+                {
+                    "id": h["label"],
+                    "status": "running",
+                    "act": "read-only review" if h["read_only"] else "building",
+                    "scope": ", ".join(h["scope"]),
+                    "used": h["used"],
+                    "max": h["max"],
+                    "denies": h["denies"],
+                }
+            )
     if not cards:
         return ""
 
@@ -4067,23 +4684,21 @@ def _agents_hero(harness, tasks, step, parallel):
     for c in cards:
         stt = c["status"]
         if stt == "passed":
-            dot = 'background:var(--text-primary)'
-            act = ('<i class="ti ti-check" aria-hidden="true"></i> ' + c["act"])
+            dot = "background:var(--text-primary)"
+            act = '<i class="ti ti-check" aria-hidden="true"></i> ' + c["act"]
         elif stt == "failed":
-            dot = 'background:var(--text-danger)'
+            dot = "background:var(--text-danger)"
             act = c["act"]
         elif stt == "running":
-            dot = ('background:var(--text-primary);box-shadow:0 0 0 3px '
-                   'var(--surface-0)')
+            dot = "background:var(--text-primary);box-shadow:0 0 0 3px var(--surface-0)"
             act = c["act"]
         else:  # pending
-            dot = ('background:none;border:1.5px solid var(--border-strong)')
+            dot = "background:none;border:1.5px solid var(--border-strong)"
             act = c["act"]
         budget = ""
         if c.get("max"):
             pct = min(100, int(100 * (c["used"] or 0) / c["max"]))
-            bc = ("var(--text-danger)" if (c["used"] or 0) >= c["max"]
-                  else "var(--text-primary)")
+            bc = "var(--text-danger)" if (c["used"] or 0) >= c["max"] else "var(--text-primary)"
             budget = (
                 f'<div style="display:flex;align-items:center;gap:6px;margin-'
                 f'top:7px"><span style="flex:1;height:3px;background:var(--'
@@ -4091,13 +4706,17 @@ def _agents_hero(harness, tasks, step, parallel):
                 f'"display:block;height:100%;width:{pct}%;background:{bc}">'
                 f'</span></span><span style="font-family:var(--font-mono);'
                 f'font-size:10px;color:var(--text-muted)">{c["used"]}/'
-                f'{c["max"]}</span></div>')
+                f"{c['max']}</span></div>"
+            )
         elif c.get("used") is not None:
-            budget = (f'<div style="{_MICRO};margin-top:7px">{c["used"]} '
-                      f'actions</div>')
-        flag = (f'<span style="color:var(--text-danger);font-family:var(--'
-                f'font-mono);font-size:10px"><i class="ti ti-ban" aria-hidden='
-                f'"true"></i> {c["denies"]}</span>' if c.get("denies") else "")
+            budget = f'<div style="{_MICRO};margin-top:7px">{c["used"]} actions</div>'
+        flag = (
+            f'<span style="color:var(--text-danger);font-family:var(--'
+            f'font-mono);font-size:10px"><i class="ti ti-ban" aria-hidden='
+            f'"true"></i> {c["denies"]}</span>'
+            if c.get("denies")
+            else ""
+        )
         scope = _esc(c["scope"][:38] or "—")
         chips.append(
             f'<div style="flex:1;min-width:150px;border:1px solid var(--'
@@ -4110,22 +4729,25 @@ def _agents_hero(harness, tasks, step, parallel):
             f'{_MICRO};margin-top:4px;padding-inline-start:15px">{_esc(act)}</div>'
             f'<div style="font-size:11px;color:var(--text-secondary);margin-'
             f'top:2px;padding-inline-start:15px"><code style="font-family:var(--font-'
-            f'mono);font-size:10.5px">{scope}</code></div>{budget}</div>')
+            f'mono);font-size:10.5px">{scope}</code></div>{budget}</div>'
+        )
     return (
         f'<div style="border:1px solid var(--border-strong);border-radius:6px;'
         f'padding:12px 14px;margin-bottom:14px"><div style="display:flex;'
         f'align-items:center;gap:8px;margin-bottom:10px"><i class="ti ti-'
         f'arrows-split" aria-hidden="true" style="color:var(--text-primary)">'
         f'</i><span style="font-weight:500;font-size:14px">'
-        f'{_msg("n_agents", verb=verb, n=head_n)}</span>'
-        f'{"" if not parallel else "<span style=" + chr(34) + _MICRO + chr(34) + ">· parallel wave</span>"}'
+        f"{_msg('n_agents', verb=verb, n=head_n)}</span>"
+        f"{'' if not parallel else '<span style=' + chr(34) + _MICRO + chr(34) + '>· parallel wave</span>'}"
         f'<span style="flex:1"></span>'
         f'<span style="{_MICRO}">{n_done}/{head_n} done</span></div>'
         f'<div style="display:flex;gap:8px;flex-wrap:wrap">{"".join(chips)}'
-        f'</div></div>')
+        f"</div></div>"
+    )
 
 
 # --- Dashboard v2 (R-0001): step journey, model table, always-on stats ---
+
 
 def _trace_note_text(value):
     """Project a trace note into safe, useful dashboard text.
@@ -4135,12 +4757,13 @@ def _trace_note_text(value):
     worse, try to recover the original), but legacy traces can still contain a
     plain note and remain readable through the normal HTML escaping path.
     """
-    if isinstance(value, dict) and \
-            value.get("schema") == "taskplane.audit-minimized/v1":
+    if isinstance(value, dict) and value.get("schema") == "taskplane.audit-minimized/v1":
         size = value.get("bytes")
-        suffix = (f" · {size} bytes"
-                  if isinstance(size, int) and not isinstance(size, bool)
-                  and size >= 0 else "")
+        suffix = (
+            f" · {size} bytes"
+            if isinstance(size, int) and not isinstance(size, bool) and size >= 0
+            else ""
+        )
         return "note minimized for audit; raw text intentionally omitted" + suffix
     return "" if value is None else str(value)
 
@@ -4160,6 +4783,7 @@ def _journey(ws, events=None, state=None):
     if state.get("requirement_id"):
         try:
             import requirements as _reqs
+
             req = _reqs.get_requirement(ws, state["requirement_id"])
         except Exception:
             req = None
@@ -4169,22 +4793,31 @@ def _journey(ws, events=None, state=None):
     for e in full:
         ev = e.get("event")
         if ev == "model_tier":
-            visits.append({
-                "step": e.get("step"), "task": e.get("task"),
-                "tier": e.get("tier"), "model": e.get("model"),
-                "agent": _loop.STEP_ROLE.get(e.get("step"), "\u2014"),
-                "ts": e.get("ts"), "ts_end": None,
-                "outcome": None, "note": "", "dor": None,
-                "criteria": criteria if e.get("step") in ("pm", "design") else None,
-                "design": _loop._design_context(ws, state)
-                if e.get("step") in ("design", "design_approval") else None,
-                "plan": plan_tasks if e.get("step") in
-                ("plan", "plan_approval") else None})
+            visits.append(
+                {
+                    "step": e.get("step"),
+                    "task": e.get("task"),
+                    "tier": e.get("tier"),
+                    "model": e.get("model"),
+                    "agent": _loop.STEP_ROLE.get(e.get("step"), "\u2014"),
+                    "ts": e.get("ts"),
+                    "ts_end": None,
+                    "outcome": None,
+                    "note": "",
+                    "dor": None,
+                    "criteria": criteria if e.get("step") in ("pm", "design") else None,
+                    "design": _loop._design_context(ws, state)
+                    if e.get("step") in ("design", "design_approval")
+                    else None,
+                    "plan": plan_tasks if e.get("step") in ("plan", "plan_approval") else None,
+                }
+            )
         elif ev == "loop_step" and visits and e.get("dor_ready") is not None:
             visits[-1]["dor"] = {
                 "ready": e.get("dor_ready"),
                 "blockers": e.get("dor_blockers") or [],
-                "warnings": e.get("dor_warnings") or []}
+                "warnings": e.get("dor_warnings") or [],
+            }
         elif ev == "loop_gate":
             step = e.get("step")
             for v in reversed(visits):
@@ -4196,24 +4829,40 @@ def _journey(ws, events=None, state=None):
             else:
                 # human gates (plan_approval, signoff, selection) have no
                 # model_tier brief — the gate event IS the visit
-                visits.append({
-                    "step": step, "task": e.get("task"), "tier": None,
-                    "model": None, "agent": "you",
-                    "ts": e.get("ts"), "ts_end": e.get("ts"),
-                    "outcome": e.get("outcome"),
-                    "note": _trace_note_text(e.get("note")), "dor": None,
-                    "criteria": criteria if step in
-                    ("design_approval", "signoff") else None,
-                    "design": _loop._design_context(ws, state)
-                    if step == "design_approval" else None,
-                    "plan": plan_tasks if step == "plan_approval"
-                    else None})
+                visits.append(
+                    {
+                        "step": step,
+                        "task": e.get("task"),
+                        "tier": None,
+                        "model": None,
+                        "agent": "you",
+                        "ts": e.get("ts"),
+                        "ts_end": e.get("ts"),
+                        "outcome": e.get("outcome"),
+                        "note": _trace_note_text(e.get("note")),
+                        "dor": None,
+                        "criteria": criteria if step in ("design_approval", "signoff") else None,
+                        "design": _loop._design_context(ws, state)
+                        if step == "design_approval"
+                        else None,
+                        "plan": plan_tasks if step == "plan_approval" else None,
+                    }
+                )
         elif ev == "loop_resolve":
-            visits.append({
-                "step": "resolve", "task": e.get("task"), "tier": None,
-                "model": None, "agent": "you",
-                "ts": e.get("ts"), "ts_end": e.get("ts"),
-                "outcome": e.get("decision"), "note": "", "dor": None})
+            visits.append(
+                {
+                    "step": "resolve",
+                    "task": e.get("task"),
+                    "tier": None,
+                    "model": None,
+                    "agent": "you",
+                    "ts": e.get("ts"),
+                    "ts_end": e.get("ts"),
+                    "outcome": e.get("decision"),
+                    "note": "",
+                    "dor": None,
+                }
+            )
     return visits
 
 
@@ -4249,12 +4898,16 @@ def _model_rows(ws):
         if o is None:
             disp = "\u2014"
         else:
-            disp = (o.get("model") or "session") +                 (" \u2713" if o.get("ok") else " \u2717")
-        rows.append({"agent": e.get("agent") or "\u2014",
-                     "what": e.get("ref") or e.get("kind") or "\u2014",
-                     "tier": e.get("model_tier") or "\u2014",
-                     "resolved": e.get("model") or "inherit",
-                     "dispatched": disp})
+            disp = (o.get("model") or "session") + (" \u2713" if o.get("ok") else " \u2717")
+        rows.append(
+            {
+                "agent": e.get("agent") or "\u2014",
+                "what": e.get("ref") or e.get("kind") or "\u2014",
+                "tier": e.get("model_tier") or "\u2014",
+                "resolved": e.get("model") or "inherit",
+                "dispatched": disp,
+            }
+        )
     return rows
 
 
@@ -4267,18 +4920,19 @@ def render_journey(visits, suffix="s"):
     for i, v in enumerate(visits):
         oid = f"tpj{suffix}{i}"
         oc = v["outcome"]
-        dot = ("var(--text-success,var(--text-primary))" if oc == "pass"
-               or oc in ("approved", "retry", "skip", "defer")
-               else "var(--text-danger)" if oc in ("fail", "rejected",
-                                                   "abort")
-               else "var(--border-strong)")
+        dot = (
+            "var(--text-success,var(--text-primary))"
+            if oc == "pass" or oc in ("approved", "retry", "skip", "defer")
+            else "var(--text-danger)"
+            if oc in ("fail", "rejected", "abort")
+            else "var(--border-strong)"
+        )
         label = _esc(v["step"] or "\u2014")
         if v.get("task"):
-            label += f' \u00b7 {_esc(str(v["task"]))}'
+            label += f" \u00b7 {_esc(str(v['task']))}"
         meta = _esc(v["agent"] or "\u2014")
         if v.get("tier"):
-            meta += (f' \u00b7 {_esc(v["tier"])} '
-                     f'({_esc(v["model"] or "session")})')
+            meta += f" \u00b7 {_esc(v['tier'])} ({_esc(v['model'] or 'session')})"
         items.append(
             f'<div onclick="tpJ(\'{suffix}\',{i})" id="{oid}-b" '
             f'role="button" tabindex="0" aria-expanded="false" '
@@ -4287,48 +4941,56 @@ def render_journey(visits, suffix="s"):
             f'detail" onkeydown="{_KEYCLICK}" '
             f'data-step="{_attr(v["step"] or "")}" '
             f'style="display:flex;align-items:center;gap:8px;padding:6px '
-            f'9px;border-radius:6px;cursor:pointer;font-size:12.5px;'
+            f"9px;border-radius:6px;cursor:pointer;font-size:12.5px;"
             f'border:1px solid transparent">'
             f'<span style="width:8px;height:8px;border-radius:50%;flex:none;'
             f'background:{dot}"></span><span>{label}</span>'
             f'<span style="margin-inline-start:auto;'
-            f'font-family:var(--font-mono);'
-            f'font-size:10px;color:var(--text-muted)">{meta}</span></div>')
+            f"font-family:var(--font-mono);"
+            f'font-size:10px;color:var(--text-muted)">{meta}</span></div>'
+        )
         kv = []
+
         def _row(k, val):
-            kv.append(f'<div style="display:flex;justify-content:'
-                      f'space-between;gap:12px;font-size:12px;padding:4px 0;'
-                      f'border-bottom:1px solid var(--border)">'
-                      f'<span style="color:var(--text-muted)">{k}</span>'
-                      f'<span style="text-align:end">{val}</span></div>')
+            kv.append(
+                f'<div style="display:flex;justify-content:'
+                f"space-between;gap:12px;font-size:12px;padding:4px 0;"
+                f'border-bottom:1px solid var(--border)">'
+                f'<span style="color:var(--text-muted)">{k}</span>'
+                f'<span style="text-align:end">{val}</span></div>'
+            )
+
         _row("agent", _esc(v["agent"] or "\u2014"))
         if v.get("tier"):
-            _row("model", f'tier {_esc(v["tier"])} {_arrow()} '
-                          f'{_esc(v["model"] or "inherit (session)")}')
+            _row(
+                "model",
+                f"tier {_esc(v['tier'])} {_arrow()} {_esc(v['model'] or 'inherit (session)')}",
+            )
         _row("outcome", _esc(oc or "in progress"))
         if v.get("note"):
             _row("decision / note", _esc(v["note"]))
         if v.get("dor"):
             d = v["dor"]
-            _row("DoR", ("ready \u2713" if d["ready"] else "NOT READY: "
-                         + _esc("; ".join(d["blockers"])))
-                 + (_msg("n_warnings", n=len(d["warnings"]))
-                    if d["warnings"] else ""))
+            _row(
+                "DoR",
+                ("ready \u2713" if d["ready"] else "NOT READY: " + _esc("; ".join(d["blockers"])))
+                + (_msg("n_warnings", n=len(d["warnings"])) if d["warnings"] else ""),
+            )
         if v.get("ts"):
             when = _fmt_ts(v["ts"])
             dur = ""
             if v.get("ts_end"):
-                dur = f' \u00b7 {max(0, int(v["ts_end"] - v["ts"]))}s'
+                dur = f" \u00b7 {max(0, int(v['ts_end'] - v['ts']))}s"
             _row("when", _esc(when) + " UTC" + dur)
         artifacts = ""
         if v.get("criteria"):
-            lis = "".join(f'<li style="margin:3px 0">{_esc(str(a))}</li>'
-                          for a in v["criteria"])
+            lis = "".join(f'<li style="margin:3px 0">{_esc(str(a))}</li>' for a in v["criteria"])
             artifacts += (
                 f'<div style="{_MICRO};margin:10px 0 4px">acceptance '
-                f'criteria \u2014 all {len(v["criteria"])}, for review'
+                f"criteria \u2014 all {len(v['criteria'])}, for review"
                 f'</div><ol style="margin:0;padding-inline-start:18px;'
-                f'font-size:12px;line-height:1.45">{lis}</ol>')
+                f'font-size:12px;line-height:1.45">{lis}</ol>'
+            )
         if v.get("plan"):
             trs = ""
             for t in v["plan"]:
@@ -4342,61 +5004,77 @@ def render_journey(visits, suffix="s"):
                     f'<td style="padding:3px 6px;font-family:'
                     f'var(--font-mono);font-size:11px">{_tsc}</td>'
                     f'<td style="padding:3px 6px">{_tdp}</td>'
-                    f'<td style="padding:3px 6px">{_tst}</td></tr>')
-            th = ("font-size:9.5px;"
-                  "letter-spacing:.6px;color:var(--text-muted);text-align:"
-                  "start;padding:3px 6px;border-bottom:1px solid "
-                  "var(--border)")
+                    f'<td style="padding:3px 6px">{_tst}</td></tr>'
+                )
+            th = (
+                "font-size:9.5px;"
+                "letter-spacing:.6px;color:var(--text-muted);text-align:"
+                "start;padding:3px 6px;border-bottom:1px solid "
+                "var(--border)"
+            )
             artifacts += (
                 f'<div style="{_MICRO};margin:10px 0 4px">'
-                + _esc(_msg("plan_all_tasks", n=len(v["plan"]))) + '</div>'
+                + _esc(_msg("plan_all_tasks", n=len(v["plan"])))
+                + "</div>"
                 f'<table style="width:100%;border-collapse:collapse;'
                 f'font-size:12px"><tr><th style="{th}">task</th>'
                 f'<th style="{th}">scope</th><th style="{th}">deps</th>'
-                f'<th style="{th}">status</th></tr>{trs}</table>')
+                f'<th style="{th}">status</th></tr>{trs}</table>'
+            )
         details.append(
             f'<div id="{oid}" style="display:none;padding:2px 4px">'
-            + "".join(kv) + artifacts + '</div>')
+            + "".join(kv)
+            + artifacts
+            + "</div>"
+        )
     # tpJ marks the active step with aria-current + aria-expanded (not
     # color alone): SR users hear which step's details are showing.
-    js = ('<script>function tpJ(sfx,i){var n=0;'
-          'while(document.getElementById("tpj"+sfx+n)){'
-          'var d=document.getElementById("tpj"+sfx+n),'
-          'b=document.getElementById("tpj"+sfx+n+"-b");'
-          'var on=n===i;'
-          'd.style.display=on?"block":"none";'
-          'b.style.borderColor=on?"var(--border-strong)":"transparent";'
-          'b.style.background=on?"var(--surface-0)":"none";'
-          'b.setAttribute("aria-expanded",on?"true":"false");'
-          'if(on){b.setAttribute("aria-current","true");}'
-          'else{b.removeAttribute("aria-current");}'
-          'n++;}}</script>')
+    js = (
+        "<script>function tpJ(sfx,i){var n=0;"
+        'while(document.getElementById("tpj"+sfx+n)){'
+        'var d=document.getElementById("tpj"+sfx+n),'
+        'b=document.getElementById("tpj"+sfx+n+"-b");'
+        "var on=n===i;"
+        'd.style.display=on?"block":"none";'
+        'b.style.borderColor=on?"var(--border-strong)":"transparent";'
+        'b.style.background=on?"var(--surface-0)":"none";'
+        'b.setAttribute("aria-expanded",on?"true":"false");'
+        'if(on){b.setAttribute("aria-current","true");}'
+        'else{b.removeAttribute("aria-current");}'
+        "n++;}}</script>"
+    )
     return (
         f'<div id="tp-journey-{suffix}" style="border:1px solid '
-        f'var(--border);border-radius:6px;padding:12px 14px;margin-bottom:'
+        f"var(--border);border-radius:6px;padding:12px 14px;margin-bottom:"
         f'14px"><div style="{_MICRO};margin-bottom:8px">step journey \u2014 '
-        f'click a step for its execution &amp; decisions</div>'
+        f"click a step for its execution &amp; decisions</div>"
         f'<div class="tp-jgrid" style="display:grid;'
-        f'grid-template-columns:minmax(220px,38%) '
+        f"grid-template-columns:minmax(220px,38%) "
         f'1fr;gap:12px"><div>{"".join(items)}</div>'
-        f'<div>{"".join(details)}'
+        f"<div>{''.join(details)}"
         f'<div style="font-size:11px;color:var(--text-muted);padding:4px">'
-        f'select a step on the left</div></div></div></div>' + js)
+        f"select a step on the left</div></div></div></div>" + js
+    )
 
 
 def render_stats(ws, metrics, denials, suffix="s"):
     """The always-on stats band (was retro-only) + the agent\u2192model
     table \u2014 who ran which step/lens on which model, live."""
     rows = _model_rows(ws)
-    cells = [("agents", metrics["agents"]), ("steps", metrics["steps"]),
-             ("waves", metrics["waves"]), ("fix cycles", metrics["fixes"]),
-             ("blocks", denials)]
+    cells = [
+        ("agents", metrics["agents"]),
+        ("steps", metrics["steps"]),
+        ("waves", metrics["waves"]),
+        ("fix cycles", metrics["fixes"]),
+        ("blocks", denials),
+    ]
     band = "".join(
         f'<div style="flex:1;text-align:center;padding:7px 6px">'
         f'<div style="font-size:16px;font-weight:600;'
         f'{"color:var(--text-danger)" if k == "blocks" and v else ""}">{v}'
         f'</div><div style="{_MICRO}">{k}</div></div>'
-        for k, v in cells)
+        for k, v in cells
+    )
     tbl = ""
     if rows:
         tr = "".join(
@@ -4407,20 +5085,25 @@ def render_stats(ws, metrics, denials, suffix="s"):
             f'font-size:11px">{_esc(r["resolved"])}</td>'
             f'<td style="padding:4px 6px;font-family:var(--font-mono);'
             f'font-size:11px">{_esc(r["dispatched"])}</td></tr>'
-            for r in rows[-14:])
-        th = ('font-size:9.5px;letter-spacing:.6px;'
-              'color:var(--text-muted);text-align:start;padding:3px 6px;'
-              'border-bottom:1px solid var(--border)')
+            for r in rows[-14:]
+        )
+        th = (
+            "font-size:9.5px;letter-spacing:.6px;"
+            "color:var(--text-muted);text-align:start;padding:3px 6px;"
+            "border-bottom:1px solid var(--border)"
+        )
         tbl = (
             f'<table id="tp-models-{suffix}" style="width:100%;'
             f'border-collapse:collapse;font-size:12px;margin-top:8px">'
             f'<tr><th style="{th}">agent</th><th style="{th}">step / lens'
             f'</th><th style="{th}">tier</th><th style="{th}">resolved</th>'
-            f'<th style="{th}">dispatched</th></tr>{tr}</table>')
+            f'<th style="{th}">dispatched</th></tr>{tr}</table>'
+        )
     return (
         f'<div id="tp-stats-{suffix}" style="border:1px solid var(--border);'
         f'border-radius:6px;padding:8px 10px;margin-bottom:14px">'
-        f'<div style="display:flex;gap:4px">{band}</div>{tbl}</div>')
+        f'<div style="display:flex;gap:4px">{band}</div>{tbl}</div>'
+    )
 
 
 def headline_loop(ws: str) -> str:
@@ -4434,17 +5117,22 @@ def headline_loop(ws: str) -> str:
         return "taskplane: no active loop"
     step = state.get("step", "—")
     tasks = state.get("tasks") or []
-    done = sum(1 for t in tasks if t.get("status") in
-               ("passed", "done", "external", "skipped", "not_selected",
-                "reference"))
+    done = sum(
+        1
+        for t in tasks
+        if t.get("status") in ("passed", "done", "external", "skipped", "not_selected", "reference")
+    )
     goal = _visible_plain(state.get("goal") or "", 60)
-    gate = _msg("headline_loop_gate") if step in (
-        "design_approval", "plan_approval", "signoff", "selection") else ""
+    gate = (
+        _msg("headline_loop_gate")
+        if step in ("design_approval", "plan_approval", "signoff", "selection")
+        else ""
+    )
     exhausted, used, mx = _budget_state(ws, tp.load_active(ws))
-    budget = (_msg("headline_loop_budget", used=used, max=mx)
-              if exhausted else "")
-    return _msg("headline_loop", step=step, done=done, total=len(tasks),
-                goal=goal, gate=gate, budget=budget)
+    budget = _msg("headline_loop_budget", used=used, max=mx) if exhausted else ""
+    return _msg(
+        "headline_loop", step=step, done=done, total=len(tasks), goal=goal, gate=gate, budget=budget
+    )
 
 
 def _budget_state(ws, contract):
@@ -4461,8 +5149,7 @@ def _budget_state(ws, contract):
     try:
         _mp = os.path.join(tp.tp_dir(ws), "meter.json")
         with open(_mp, encoding="utf-8") as _f:
-            budget_used = int((json.load(_f).get(_tid) or {})
-                              .get("actions", 0))
+            budget_used = int((json.load(_f).get(_tid) or {}).get("actions", 0))
     except (OSError, ValueError, TypeError):
         budget_used = 0
     return budget_used >= budget_max, budget_used, budget_max
@@ -4477,11 +5164,11 @@ def _widget_spine(state, step, tasks, sfx="s"):
     # engine so the two rails can't drift.
     spine_rows = list(_SPINE)
     if not (state or {}).get("design_required"):
-        spine_rows = [row for row in spine_rows
-                      if row[0] not in ("design", "design_approval")]
+        spine_rows = [row for row in spine_rows if row[0] not in ("design", "design_approval")]
     elif (state or {}).get("design_only"):
-        spine_rows = [row for row in spine_rows
-                      if row[0] in ("pm", "design", "design_approval", "done")]
+        spine_rows = [
+            row for row in spine_rows if row[0] in ("pm", "design", "design_approval", "done")
+        ]
     spine = _loop.splice_selection(spine_rows, state)
     order = [s[0] for s in spine]
     cur_i = order.index(spine_step) if spine_step in order else -1
@@ -4489,8 +5176,9 @@ def _widget_spine(state, step, tasks, sfx="s"):
     nodes = []
     for i, (sid, label, gate) in enumerate(spine):
         if sid == "build" and len(tasks) > 1:
-            label = (f'Build <i class="ti ti-arrows-split" aria-hidden='
-                     f'"true"></i> {len(tasks)} lanes')
+            label = (
+                f'Build <i class="ti ti-arrows-split" aria-hidden="true"></i> {len(tasks)} lanes'
+            )
         sq = "2px" if gate else "50%"
         if cur_i >= 0 and i < cur_i:
             dot = "background:var(--text-primary)"
@@ -4501,7 +5189,7 @@ def _widget_spine(state, step, tasks, sfx="s"):
             bg = "background:var(--text-primary);"
             wt = " · you" if gate else ""
             if sid == "build" and step in _BUILD_STEPS:
-                wt = f' · {step}'
+                wt = f" · {step}"
         else:
             dot = "background:none;border:1.5px solid var(--border-strong)"
             col, wt, bg = "var(--text-muted)", "", ""
@@ -4509,90 +5197,119 @@ def _widget_spine(state, step, tasks, sfx="s"):
         # ids are per-view (s/d suffix): the rail renders once in the simple
         # view and once in the detailed view, and duplicate DOM ids made
         # tpSpine highlight the HIDDEN copy.
-        click = (f' onclick="tpSpine(\'{sid}\')" id="tp-spine-{sfx}-{sid}" '
-                 f'role="button" tabindex="0" onkeydown="{_KEYCLICK}" '
-                 f'aria-label="stage {sid} — see how it was executed" '
-                 f'class="tp-spine-n" title="see how this '
-                 f'stage was executed"' if visited else "")
+        click = (
+            f' onclick="tpSpine(\'{sid}\')" id="tp-spine-{sfx}-{sid}" '
+            f'role="button" tabindex="0" onkeydown="{_KEYCLICK}" '
+            f'aria-label="stage {sid} — see how it was executed" '
+            f'class="tp-spine-n" title="see how this '
+            f'stage was executed"'
+            if visited
+            else ""
+        )
         nodes.append(
             f'<span{click} style="display:flex;align-items:center;gap:6px;'
-            f'padding:5px 11px;border-radius:20px;font-family:'
-            f'var(--font-mono);'
-            f'font-size:12px;white-space:nowrap;{bg}color:{col};font-weight:'
-            f'{"500" if i == cur_i else "400"}'
+            f"padding:5px 11px;border-radius:20px;font-family:"
+            f"var(--font-mono);"
+            f"font-size:12px;white-space:nowrap;{bg}color:{col};font-weight:"
+            f"{'500' if i == cur_i else '400'}"
             f'{";cursor:pointer" if visited else ""}"><span style="width:7px;'
-            f'height:7px;border-radius:{sq};flex:none;box-sizing:border-box;'
-            f'{dot}"></span>{label}{wt}</span>')
+            f"height:7px;border-radius:{sq};flex:none;box-sizing:border-box;"
+            f'{dot}"></span>{label}{wt}</span>'
+        )
         if i < len(spine) - 1:
-            nodes.append('<span style="flex:1;min-width:6px;height:1px;'
-                         'background:var(--border)"></span>')
+            nodes.append(
+                '<span style="flex:1;min-width:6px;height:1px;background:var(--border)"></span>'
+            )
     caption = ""
     if tasks:
         caption = (
             f'<div style="{_MICRO};margin:-8px 0 14px;padding:0 4px">inside '
-            f'build each task runs build {_arrow()} evaluate ⟲ fix (≤2) — '
-            f'lanes run '
-            f'in parallel when scope-disjoint and deps are clear</div>')
-    return ('<div style="display:flex;align-items:center;gap:2px;border:'
-            '1px solid var(--border);border-radius:6px;'
-            'padding:12px 14px;margin-bottom:14px;flex-wrap:wrap">'
-            + "".join(nodes) + "</div>" + caption)
+            f"build each task runs build {_arrow()} evaluate ⟲ fix (≤2) — "
+            f"lanes run "
+            f"in parallel when scope-disjoint and deps are clear</div>"
+        )
+    return (
+        '<div style="display:flex;align-items:center;gap:2px;border:'
+        "1px solid var(--border);border-radius:6px;"
+        'padding:12px 14px;margin-bottom:14px;flex-wrap:wrap">'
+        + "".join(nodes)
+        + "</div>"
+        + caption
+    )
 
 
-def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used,
-                    budget_max):
+def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used, budget_max):
     """The gate action bar — buttons grey out on click via tpFire()."""
     gatebar = ""
-    btn = ('border:none;border-radius:6px;padding:9px 16px;font-size:'
-           '13px;font-weight:500;cursor:pointer;font-family:var(--font-sans)')
+    btn = (
+        "border:none;border-radius:6px;padding:9px 16px;font-size:"
+        "13px;font-weight:500;cursor:pointer;font-family:var(--font-sans)"
+    )
     # the human gate is THE moment — an inverted block, white-on-black
-    prim = f'{btn};background:var(--surface-2);color:var(--text-primary)'
-    sec = (f'{btn};background:none;color:var(--surface-2);'
-           f'border:1px solid var(--surface-2)')
+    prim = f"{btn};background:var(--surface-2);color:var(--text-primary)"
+    sec = f"{btn};background:none;color:var(--surface-2);border:1px solid var(--surface-2)"
 
     def gate_box(icon, title, sub, buttons, danger=False):
         bg = "var(--text-danger)" if danger else "var(--text-primary)"
-        return (f'<div style="background:{bg};border-radius:6px;padding:'
-                f'15px 16px;margin-bottom:14px;display:flex;justify-content:'
-                f'space-between;align-items:center;gap:14px;flex-wrap:wrap">'
-                f'<div><div style="font-weight:500;color:var(--surface-2)">'
-                f'<i class="ti {icon}" aria-hidden="true"></i> {title}</div>'
-                f'<div style="font-family:var(--font-mono);font-size:11.5px;'
-                f'letter-spacing:.6px;color:var(--surface-2);opacity:.72;'
-                f'margin-top:3px">{sub}</div>'
-                f'</div><div style="display:flex;gap:8px">{buttons}</div></div>')
+        return (
+            f'<div style="background:{bg};border-radius:6px;padding:'
+            f"15px 16px;margin-bottom:14px;display:flex;justify-content:"
+            f'space-between;align-items:center;gap:14px;flex-wrap:wrap">'
+            f'<div><div style="font-weight:500;color:var(--surface-2)">'
+            f'<i class="ti {icon}" aria-hidden="true"></i> {title}</div>'
+            f'<div style="font-family:var(--font-mono);font-size:11.5px;'
+            f"letter-spacing:.6px;color:var(--surface-2);opacity:.72;"
+            f'margin-top:3px">{sub}</div>'
+            f'</div><div style="display:flex;gap:8px">{buttons}</div></div>'
+        )
 
     if step == "design_approval":
-        _derr = _loop._design_dod_errors(ws, state) if state else [
-            "no design state"]
+        _derr = _loop._design_dod_errors(ws, state) if state else ["no design state"]
         if _derr:
-            _dsub = _msg("design_dod_fail", n=len(_derr),
-                         details=_esc("; ".join(_derr)[:150]))
+            _dsub = _msg("design_dod_fail", n=len(_derr), details=_esc("; ".join(_derr)[:150]))
         else:
             _dsub = "Design DoD ✅ alternatives, graph, contracts, risks, and acceptance mapped"
         amendment = (state or {}).get("phase_amendment")
-        if isinstance(amendment, dict) and amendment.get("review_basis") == "human-directed-amendment":
+        if (
+            isinstance(amendment, dict)
+            and amendment.get("review_basis") == "human-directed-amendment"
+        ):
             _dsub += " · human-directed amendment; final Design approval pending"
-        b = (f'<button style="{prim}" onclick="tpFire(this,\'approve the '
-             f'Design Contract\',\'approved\')"><i class="ti ti-check" '
-             f'aria-hidden="true"></i> approve design</button><button '
-             f'style="{sec}" onclick="tpFire(this,\'send the design back, I '
-             f'want changes\')">request changes</button>')
-        gatebar = gate_box("ti-drafting", "your gate — approve the HOW before "
-                           "planning", _dsub, b, danger=bool(_derr))
+        b = (
+            f'<button style="{prim}" onclick="tpFire(this,\'approve the '
+            f"Design Contract','approved')\"><i class=\"ti ti-check\" "
+            f'aria-hidden="true"></i> approve design</button><button '
+            f'style="{sec}" onclick="tpFire(this,\'send the design back, I '
+            f"want changes')\">request changes</button>"
+        )
+        gatebar = gate_box(
+            "ti-drafting",
+            "your gate — approve the HOW before planning",
+            _dsub,
+            b,
+            danger=bool(_derr),
+        )
     elif step == "plan_approval":
         n = len(tasks)
-        b = (f'<button style="{prim}" onclick="tpFire(this,\'approve the plan\','
-             f'\'approved\')"><i class="ti ti-check" aria-hidden="true"></i> '
-             f'approve plan</button><button style="{sec}" onclick="tpFire(this,'
-             f'\'send the plan back, I want changes\')">request changes</button>')
-        gatebar = gate_box("ti-hand-stop", "your gate — nothing builds until "
-                           "you approve", _msg("n_tasks_planned", n=n), b)
+        b = (
+            f'<button style="{prim}" onclick="tpFire(this,\'approve the plan\','
+            f'\'approved\')"><i class="ti ti-check" aria-hidden="true"></i> '
+            f'approve plan</button><button style="{sec}" onclick="tpFire(this,'
+            f"'send the plan back, I want changes')\">request changes</button>"
+        )
+        gatebar = gate_box(
+            "ti-hand-stop",
+            "your gate — nothing builds until you approve",
+            _msg("n_tasks_planned", n=n),
+            b,
+        )
     elif step == "signoff":
-        b = (f'<button style="{prim}" onclick="tpFire(this,\'sign off on this\','
-             f'\'signed off\')"><i class="ti ti-check" aria-hidden="true"></i> '
-             f'sign off</button><button style="{sec}" onclick="tpFire(this,'
-             f'\'send it back, not ready to ship\')">send back</button>')
+        b = (
+            f'<button style="{prim}" onclick="tpFire(this,\'sign off on this\','
+            f'\'signed off\')"><i class="ti ti-check" aria-hidden="true"></i> '
+            f'sign off</button><button style="{sec}" onclick="tpFire(this,'
+            f"'send it back, not ready to ship')\">send back</button>"
+        )
         # Rendering is observational.  _signoff_dod can discover a regression
         # radius and execute current/baseline tests, so invoking it here made
         # a dashboard refresh an expensive hidden gate.  Display a previously
@@ -4603,25 +5320,35 @@ def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used,
             _dsub = "all tasks reviewed · cached DoD ✅"
         elif isinstance(_dod, dict):
             _errors = list(_dod.get("errors") or [])
-            _dsub = _msg("signoff_dod_fail", n=len(_errors),
-                         details=_esc("; ".join(_errors)[:150]))
+            _dsub = _msg("signoff_dod_fail", n=len(_errors), details=_esc("; ".join(_errors)[:150]))
         else:
-            _dsub = ("final DoD is evaluated only when you act · dashboard "
-                     "rendering never executes tests")
-        gatebar = gate_box("ti-writing-sign", "your gate — EM review done, "
-                           "final sign-off", _dsub, b,
-                           danger=isinstance(_dod, dict)
-                           and not bool(_dod.get("passed")))
+            _dsub = (
+                "final DoD is evaluated only when you act · dashboard "
+                "rendering never executes tests"
+            )
+        gatebar = gate_box(
+            "ti-writing-sign",
+            "your gate — EM review done, final sign-off",
+            _dsub,
+            b,
+            danger=isinstance(_dod, dict) and not bool(_dod.get("passed")),
+        )
     elif step == "escalated":
-        b = (f'<button style="{sec}" onclick="tpFire(this,\'retry the task\','
-             f'\'retrying\')">retry</button><button style="{sec}" onclick='
-             f'"tpFire(this,\'skip this task\',\'skipped\')">skip</button>'
-             f'<button style="{btn};background:var(--surface-2);color:var(--'
-             f'text-danger);border:1px solid var(--border-danger)" onclick='
-             f'"tpFire(this,\'abort the loop\',\'aborted\')">abort</button>')
-        gatebar = gate_box("ti-alert-triangle", "escalated — fix cycles "
-                           "exhausted, your call", "choose how to proceed", b,
-                           danger=True)
+        b = (
+            f'<button style="{sec}" onclick="tpFire(this,\'retry the task\','
+            f'\'retrying\')">retry</button><button style="{sec}" onclick='
+            f"\"tpFire(this,'skip this task','skipped')\">skip</button>"
+            f'<button style="{btn};background:var(--surface-2);color:var(--'
+            f'text-danger);border:1px solid var(--border-danger)" onclick='
+            f"\"tpFire(this,'abort the loop','aborted')\">abort</button>"
+        )
+        gatebar = gate_box(
+            "ti-alert-triangle",
+            "escalated — fix cycles exhausted, your call",
+            "choose how to proceed",
+            b,
+            danger=True,
+        )
     elif step == "selection":
         variants = [t for t in tasks if t.get("variant")] or tasks
         # The variant/id come from agent-authored task data and are
@@ -4631,48 +5358,67 @@ def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used,
         # the v0.9.5 XSS regression). _esc stays correct for the visible label.
         vb = "".join(
             f'<button style="{prim}" onclick="tpFire(this,'
-            f'\'select variant {_jsattr(str(t.get("variant") or t["id"]))} '
-            f'({_jsattr(str(t["id"]))}) as the winner\',\'selected\')">'
+            f"'select variant {_jsattr(str(t.get('variant') or t['id']))} "
+            f"({_jsattr(str(t['id']))}) as the winner','selected')\">"
             f'<i class="ti ti-check" aria-hidden="true"></i> '
-            f'{_esc(str(t.get("variant") or t["id"]))}</button>'
-            for t in variants)
-        vb += (f'<button style="{sec}" onclick="tpFire(this,\'select hybrid '
-               f'— merge the best of both variants\',\'hybrid\')">⚡ hybrid'
-               f'</button><button style="{sec}" onclick="tpFire(this,'
-               f'\'send both variants back, neither ships\')">neither'
-               f'</button>')
+            f"{_esc(str(t.get('variant') or t['id']))}</button>"
+            for t in variants
+        )
+        vb += (
+            f'<button style="{sec}" onclick="tpFire(this,\'select hybrid '
+            f"— merge the best of both variants','hybrid')\">⚡ hybrid"
+            f'</button><button style="{sec}" onclick="tpFire(this,'
+            f"'send both variants back, neither ships')\">neither"
+            f"</button>"
+        )
         gatebar = gate_box(
-            "ti-arrows-split", "your gate — A/B selection: pick what ships",
-            f"{len(variants)} variants built &amp; evaluated · they never "
-            "merge, you choose", vb)
+            "ti-arrows-split",
+            "your gate — A/B selection: pick what ships",
+            f"{len(variants)} variants built &amp; evaluated · they never merge, you choose",
+            vb,
+        )
     elif step == "retro":
         gatebar = gate_box(
-            "ti-refresh", "finalizing — retro + graph true-up",
+            "ti-refresh",
+            "finalizing — retro + graph true-up",
             "no action needed from you · the loop remains open until the "
-            "engine seals its lessons and graph", "")
+            "engine seals its lessons and graph",
+            "",
+        )
     elif step == "done":
-        gatebar = gate_box("ti-circle-check", "loop complete — nothing "
-                           "pending", "retro and graph true-up recorded", "")
+        gatebar = gate_box(
+            "ti-circle-check",
+            "loop complete — nothing pending",
+            "retro and graph true-up recorded",
+            "",
+        )
     elif step == "failed":
-        b = (f'<button style="{sec}" onclick="tpFire(this,\'start a new loop '
-             f'for this goal\')">start over</button>')
-        gatebar = gate_box("ti-alert-triangle", "loop failed", "review the "
-                           "trace, then decide", b, danger=True)
+        b = (
+            f'<button style="{sec}" onclick="tpFire(this,\'start a new loop '
+            f"for this goal')\">start over</button>"
+        )
+        gatebar = gate_box(
+            "ti-alert-triangle", "loop failed", "review the trace, then decide", b, danger=True
+        )
     elif step and budget_exhausted:
         # The run is blocked on the action budget — a REAL human gate even
         # though the loop step didn't change. Make it loud and name the exact
         # (out-of-workspace) recovery, so the banner never says "no action
         # needed" while the agent is stuck against the wall.
-        gb = (f'<button style="{prim}" onclick="tpFire(this,\'the action '
-              f'budget is exhausted — grant 25 more actions from outside the '
-              f'workspace\',\'granting\')"><i class="ti ti-plus" '
-              f'aria-hidden="true"></i> approve 25 more</button>')
+        gb = (
+            f'<button style="{prim}" onclick="tpFire(this,\'the action '
+            f"budget is exhausted — grant 25 more actions from outside the "
+            f"workspace','granting')\"><i class=\"ti ti-plus\" "
+            f'aria-hidden="true"></i> approve 25 more</button>'
+        )
         gatebar = gate_box(
             "ti-hand-stop",
             f"action budget exhausted ({budget_used}/{budget_max}) — your call",
             "the agent is blocked at the wall; grant more actions (run from a "
             "directory OUTSIDE this workspace) or clear the contract to stop",
-            gb, danger=True)
+            gb,
+            danger=True,
+        )
     elif step:
         # No human gate open — say so EXPLICITLY, so a status check answers
         # "is anything waiting on me?" at a glance, and name the next gate.
@@ -4681,39 +5427,45 @@ def _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used,
         if (state or {}).get("design_required") and step in ("pm", "design"):
             nxt = "design approval"
         else:
-            nxt = ("plan approval" if step in ("pm", "plan")
-                   and "plan" in cps else "sign-off")
+            nxt = "plan approval" if step in ("pm", "plan") and "plan" in cps else "sign-off"
         gatebar = (
             f'<div style="border:1px solid var(--border);border-radius:6px;'
-            f'padding:11px 16px;margin-bottom:14px;display:flex;'
+            f"padding:11px 16px;margin-bottom:14px;display:flex;"
             f'align-items:center;gap:10px;flex-wrap:wrap">'
             f'<span style="width:8px;height:8px;border-radius:50%;'
             f'background:var(--text-primary);flex:none" aria-hidden="true">'
             f'</span><span style="font-size:13px;color:var(--text-primary)">'
-            f'no action needed from you</span>'
+            f"no action needed from you</span>"
             f'<span style="font-family:var(--font-mono);font-size:11.5px;'
             f'color:var(--text-muted)">{_esc(role)} is on {_esc(step)} · '
-            f'next human gate: {nxt}</span></div>')
+            f"next human gate: {nxt}</span></div>"
+        )
     from taskplane import run_context
+
     if run_context.resource_limits_advisory(ws):
-        gatebar = ('<p role="status" style="color:var(--text-warning)">'
-            'Ignore limits for this run only — advisory. '
-            'Future runs require explicit approval before additional budget.</p>' + gatebar)
+        gatebar = (
+            '<p role="status" style="color:var(--text-warning)">'
+            "Ignore limits for this run only — advisory. "
+            "Future runs require explicit approval before additional budget.</p>" + gatebar
+        )
     return gatebar
 
 
 def _widget_lanes(state, step, tasks, contract, hmap, hmain):
     """Build lanes — one per task, each its own mini-pipeline + live meter."""
-    cur_id = (tasks[(state or {}).get("current_task", 0)].get("id")
-              if tasks and (state or {}).get("current_task", 0) < len(tasks)
-              else None)
+    cur_id = (
+        tasks[(state or {}).get("current_task", 0)].get("id")
+        if tasks and (state or {}).get("current_task", 0) < len(tasks)
+        else None
+    )
+
     def lane_meter(t):
-        if t.get("id") in hmap:                      # parallel worker
+        if t.get("id") in hmap:  # parallel worker
             return hmap[t.get("id")]
-        if (hmain and step in _BUILD_STEPS
-                and t.get("id") == cur_id):          # serial current task
+        if hmain and step in _BUILD_STEPS and t.get("id") == cur_id:  # serial current task
             return hmain
         return None
+
     cards = [_lane(t, step, lane_meter(t)) for t in tasks]
     if not cards and contract:
         projection = tp.contract_projection(contract)
@@ -4726,9 +5478,11 @@ def _widget_lanes(state, step, tasks, contract, hmap, hmain):
             f'{_esc(STEP_ROLE_LABEL.get(step, step))}</div><div style="font-'
             f'size:12px;color:var(--text-secondary);margin-top:3px">'
             f'{"read-only" if ro else "build"} · <code style="font-family:'
-            f'var(--font-mono);font-size:11px">{sc}</code></div></div>')
-    return "".join(cards) or ('<div style="font-size:13px;color:var('
-                              '--text-muted)">no active tasks</div>')
+            f'var(--font-mono);font-size:11px">{sc}</code></div></div>'
+        )
+    return "".join(cards) or (
+        '<div style="font-size:13px;color:var(--text-muted)">no active tasks</div>'
+    )
 
 
 def _widget_feed(trace):
@@ -4739,83 +5493,89 @@ def _widget_feed(trace):
         ic, cc = _ICON.get(e["event"], ("ti-point", "s"))
         detail = ""
         if e["event"] == "loop_step":
-            detail = f'{e.get("step","")} ({e.get("role","")})'
+            detail = f"{e.get('step', '')} ({e.get('role', '')})"
         elif e["event"] == "hook_deny":
-            who = f'[{e["_agent"]}] ' if e.get("_agent") else ""
-            detail = f'{who}{e.get("tool","")} out of scope'
+            who = f"[{e['_agent']}] " if e.get("_agent") else ""
+            detail = f"{who}{e.get('tool', '')} out of scope"
         elif e["event"] == "budget_deny":
-            detail = (f'{e.get("used","")}/{e.get("max","")} actions — '
-                      f'harness stopped')
+            detail = f"{e.get('used', '')}/{e.get('max', '')} actions — harness stopped"
         elif e["event"] == "loop_gate":
-            detail = f'{e.get("step","")} = {e.get("outcome","")}'
+            detail = f"{e.get('step', '')} = {e.get('outcome', '')}"
         elif e["event"] == "lens_route":
             detail = _msg("n_lenses", n=len(e.get("lenses", [])))
         elif e["event"] == "loop_wave":
-            detail = f'ready: {", ".join(e.get("ready",[]))}'
+            detail = f"ready: {', '.join(e.get('ready', []))}"
         elif e["event"] == "refinement_gate":
-            detail = f'{e.get("task","")} · {e.get("score","")}'
+            detail = f"{e.get('task', '')} · {e.get('score', '')}"
         elif e["event"] == "graph_impact":
-            detail = f'{e.get("impacted",0)} modules'
+            detail = f"{e.get('impacted', 0)} modules"
         label = e["event"].replace("_", " ")
         feed.append(
             f'<div style="display:flex;gap:8px;align-items:baseline;padding:'
             f'6px 2px;border-bottom:1px solid var(--border);font-size:13px">'
             f'<i class="ti {ic}" style="color:{_ICOLOR[cc]}" aria-hidden='
             f'"true"></i><span>{_esc(label)} <span style="color:var(--text-'
-            f'secondary)">{_esc(detail)}</span></span></div>')
-    return "".join(feed) or ('<div style="font-size:13px;color:var(--'
-                             'text-muted)">no events yet</div>')
+            f'secondary)">{_esc(detail)}</span></span></div>'
+        )
+    return "".join(feed) or (
+        '<div style="font-size:13px;color:var(--text-muted)">no events yet</div>'
+    )
 
 
 def _widget_ministats(metrics, totals):
     """Run stats as a compact strip — oversized mono numerals."""
+
     def cell(v, l, hot=False):
         col = "var(--text-danger)" if hot else "var(--text-primary)"
-        return (f'<div style="padding:8px 6px;text-align:center"><div style='
-                f'"font-size:17px;font-weight:500;font-family:var(--font-'
-                f'mono);color:{col}">{v}</div><div style="{_MICRO}">{l}'
-                f'</div></div>')
+        return (
+            f'<div style="padding:8px 6px;text-align:center"><div style='
+            f'"font-size:17px;font-weight:500;font-family:var(--font-'
+            f'mono);color:{col}">{v}</div><div style="{_MICRO}">{l}'
+            f"</div></div>"
+        )
+
     return (
         f'<div style="{_CARD};padding:8px;margin-bottom:12px"><div style="'
         f'display:grid;grid-template-columns:repeat(3,1fr)">'
-        + cell(metrics["agents"], "agents") + cell(metrics["waves"], "waves")
+        + cell(metrics["agents"], "agents")
+        + cell(metrics["waves"], "waves")
         + cell(metrics["fixes"], "fixes")
         + cell(totals["actions"], "actions")
         + cell(metrics["blocks"], "blocks", hot=bool(metrics["blocks"]))
-        + cell(metrics["steps"], "steps") + '</div></div>')
+        + cell(metrics["steps"], "steps")
+        + "</div></div>"
+    )
 
 
 def _widget_dor(full_trace, step):
     """DoR strip — the entry-gate verdict for the CURRENT step, surfaced
     from the latest loop_step trace. `full_trace` is newest-first."""
-    dor_ev = next((e for e in full_trace
-                   if e.get("event") == "loop_step"), None)
-    if dor_ev is None or step in ("done", "failed") \
-            or dor_ev.get("dor_ready") is None:
+    dor_ev = next((e for e in full_trace if e.get("event") == "loop_step"), None)
+    if dor_ev is None or step in ("done", "failed") or dor_ev.get("dor_ready") is None:
         return ""
     _rdy = dor_ev.get("dor_ready")
     _blk = dor_ev.get("dor_blockers") or []
     _wrn = dor_ev.get("dor_warnings") or []
     if not _rdy:
-        _dc, _dl, _dd = ("var(--text-danger)", "NOT READY",
-                         _esc("; ".join(_blk)))
+        _dc, _dl, _dd = ("var(--text-danger)", "NOT READY", _esc("; ".join(_blk)))
     elif _wrn:
-        _dc, _dl, _dd = ("var(--text-warning,var(--text-primary))",
-                         "ready", _msg("dor_warnings", n=len(_wrn),
-                                       details=_esc("; ".join(_wrn))))
+        _dc, _dl, _dd = (
+            "var(--text-warning,var(--text-primary))",
+            "ready",
+            _msg("dor_warnings", n=len(_wrn), details=_esc("; ".join(_wrn))),
+        )
     else:
-        _dc, _dl, _dd = ("var(--text-success,var(--text-primary))",
-                         "ready", "")
+        _dc, _dl, _dd = ("var(--text-success,var(--text-primary))", "ready", "")
     return (
         f'<div style="border:1px solid var(--border);border-radius:6px;'
-        f'padding:8px 13px;margin-bottom:14px;display:flex;align-items:'
+        f"padding:8px 13px;margin-bottom:14px;display:flex;align-items:"
         f'center;gap:9px;flex-wrap:wrap"><span style="{_MICRO}">DoR</span>'
         f'<span style="font-size:12.5px;font-weight:500;color:{_dc}">'
-        f'{_dl}</span>'
-        + (f'<span style="font-size:12px;color:var(--text-secondary)">'
-           f'{_dd}</span>' if _dd else "")
+        f"{_dl}</span>"
+        + (f'<span style="font-size:12px;color:var(--text-secondary)">{_dd}</span>' if _dd else "")
         + f'<span style="{_MICRO};margin-inline-start:auto">entry gate · '
-          f'{_esc(step)}</span></div>')
+        f"{_esc(step)}</span></div>"
+    )
 
 
 # The widget's client-side controller — a static block (moved out of the
@@ -4824,28 +5584,27 @@ def _widget_dor(full_trace, step):
 # the exact reply to type in chat (via tpHint) instead of falsely rendering
 # "✓ approved" for a message that never went anywhere.
 _WIDGET_JS = (
-    '<script>' + _SEND_JS +
-    'function tpGateStatus(b,t,kind){var p=b.parentNode;'
+    "<script>" + _SEND_JS + "function tpGateStatus(b,t,kind){var p=b.parentNode;"
     'var d=p.querySelector("[data-tp-delivery-status]");if(!d)'
     '{d=document.createElement("div");d.dataset.tpDeliveryStatus="1";'
     'd.setAttribute("role",kind==="error"?"alert":"status");'
     'd.setAttribute("aria-live","polite");d.style.cssText="margin-top:8px;'
     'font-family:var(--font-mono);font-size:11.5px;flex-basis:100%";'
     'p.appendChild(d);}d.setAttribute("role",kind==="error"?"alert":"status");'
-    'd.textContent=t;}'
-    'function tpFire(b,m,l){'
-    'if(!tpHasBridge()){tpHint(b,m);return;}'
-    'b.disabled=true;'
+    "d.textContent=t;}"
+    "function tpFire(b,m,l){"
+    "if(!tpHasBridge()){tpHint(b,m);return;}"
+    "b.disabled=true;"
     'var choices=Array.from(b.parentNode.querySelectorAll("button"));'
-    'choices.forEach(function(x){if(!x.dataset.tpLabel)x.dataset.tpLabel=x.innerHTML;'
+    "choices.forEach(function(x){if(!x.dataset.tpLabel)x.dataset.tpLabel=x.innerHTML;"
     'x.disabled=true;x.setAttribute("aria-disabled","true");x.style.opacity="0.45";});'
     'b.setAttribute("aria-busy","true");b.innerHTML="sending…";'
     'tpGateStatus(b,"sending to chat…","pending");'
-    'tpSend(b,m).then(function(result){if(result===false||'
+    "tpSend(b,m).then(function(result){if(result===false||"
     '(result&&typeof result==="object"&&(result.ok===false||'
     'result.delivered===false))){throw new Error("bridge did not confirm delivery");}'
     'return result;}).then(function(){b.removeAttribute("aria-busy");'
-    'b.innerHTML="<i class=\'ti ti-check\' aria-hidden=\'true\'></i> "+(l||"sent");'
+    "b.innerHTML=\"<i class='ti ti-check' aria-hidden='true'></i> \"+(l||\"sent\");"
     'tpGateStatus(b,"delivered to chat","success");},function(e){'
     'choices.forEach(function(x){x.disabled=false;x.removeAttribute("aria-disabled");'
     'x.style.opacity="";x.style.cursor="pointer";if(x.dataset.tpLabel)'
@@ -4863,12 +5622,12 @@ _WIDGET_JS = (
     'b.setAttribute("aria-selected",on?"true":"false");'
     'b.setAttribute("tabindex",on?"0":"-1");'
     'b.style.textDecoration=on?"underline":"none";'
-    'if(on&&moveFocus)b.focus();});}'
+    "if(on&&moveFocus)b.focus();});}"
     'function tpTabKey(e,w){var keys=["ArrowLeft","ArrowRight","Home","End"];'
     'if(keys.indexOf(e.key)<0)return;var tabs=["loop","map"],i=tabs.indexOf(w);'
     'if(e.key==="Home")i=0;else if(e.key==="End")i=tabs.length-1;'
     'else i=(i+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;'
-    'e.preventDefault();tpTab(tabs[i],true);}'
+    "e.preventDefault();tpTab(tabs[i],true);}"
     'function tpView(v){var s=document.getElementById("tp-simple"),'
     'd=document.getElementById("tp-detail"),'
     'bs=document.getElementById("tp-vb-simple"),'
@@ -4876,7 +5635,7 @@ _WIDGET_JS = (
     'ts=document.getElementById("tp-detail-tabs");'
     'if(!s||!d||!bs||!bd)return;var on=v==="detail";'
     's.style.display=on?"none":"block";d.style.display=on?"block":"none";'
-    'if(ts)ts.hidden=!on;'
+    "if(ts)ts.hidden=!on;"
     'function st(b,a){b.style.background=a?"var(--text-primary)":"none";'
     'b.style.color=a?"var(--surface-2)":"var(--text-secondary)";'
     'b.setAttribute("aria-pressed",a?"true":"false");'
@@ -4888,20 +5647,20 @@ _WIDGET_JS = (
     'build:["execute","evaluate","fix","escalated","resolve"],'
     'selection:["selection"],em:["em"],signoff:["signoff"],'
     'done:["done"]};'
-    'function tpSpine(sid){var steps=tpMap[sid]||[sid];'
+    "function tpSpine(sid){var steps=tpMap[sid]||[sid];"
     'var td=document.getElementById("tp-detail");'
-    'var sfx=td&&td.style.display==='
+    "var sfx=td&&td.style.display==="
     '"block"?"d":"s";var j=document.getElementById("tp-journey-"+sfx);'
-    'if(!j)return;var best=-1,n=0;'
+    "if(!j)return;var best=-1,n=0;"
     'while(true){var b=document.getElementById("tpj"+sfx+n+"-b");'
     'if(!b)break;if(steps.indexOf(b.getAttribute("data-step"))>=0)'
-    'best=n;n++;}'
-    'if(best>=0){tpJ(sfx,best);'
+    "best=n;n++;}"
+    "if(best>=0){tpJ(sfx,best);"
     # spine node ids are per-view (tp-spine-<sfx>-<sid>) — the same rail is
     # rendered in both the simple and detailed views, and highlighting must
     # land on the VISIBLE copy, not a hidden duplicate id.
     'var ns=document.getElementsByClassName("tp-spine-n");'
-    'for(var q=0;q<ns.length;q++){if(ns[q].style.background.indexOf('
+    "for(var q=0;q<ns.length;q++){if(ns[q].style.background.indexOf("
     '"text-primary")<0){ns[q].style.background="none";'
     'ns[q].removeAttribute("aria-current");}}'
     'var me=document.getElementById("tp-spine-"+sfx+"-"+sid);'
@@ -4909,20 +5668,22 @@ _WIDGET_JS = (
     'if(me.style.background.indexOf("text-primary")<0)'
     'me.style.background="var(--surface-0)";}'
     'j.scrollIntoView({behavior:"smooth",block:"nearest"});}}'
-    'tpView("simple");tpTab("loop");</script>')
+    'tpView("simple");tpTab("loop");</script>'
+)
 
 # Responsive fallback for the widget's fixed two-column grids: inline styles
 # win over stylesheet rules, so the collapse uses !important — below ~640px
 # the loop panel and journey grids degrade to one column instead of forcing
 # horizontal overflow on phones / narrow sidebars.
 _WIDGET_CSS = (
-    '<style>.tp-sec{border-top:1px solid var(--border);margin-top:28px;'
-    'padding-top:14px}.tp-kicker{font-family:var(--font-mono);font-size:10px;'
-    'letter-spacing:1.6px;text-transform:uppercase;color:var(--text-muted);'
-    'margin:0 0 4px}.tp-lede{font-size:13px;color:var(--text-secondary);'
-    'line-height:1.65;margin:2px 0 0}'
-    '@media (max-width:640px){.tp-grid2,.tp-jgrid{'
-    'grid-template-columns:1fr!important}}</style>')
+    "<style>.tp-sec{border-top:1px solid var(--border);margin-top:28px;"
+    "padding-top:14px}.tp-kicker{font-family:var(--font-mono);font-size:10px;"
+    "letter-spacing:1.6px;text-transform:uppercase;color:var(--text-muted);"
+    "margin:0 0 4px}.tp-lede{font-size:13px;color:var(--text-secondary);"
+    "line-height:1.65;margin:2px 0 0}"
+    "@media (max-width:640px){.tp-grid2,.tp-jgrid{"
+    "grid-template-columns:1fr!important}}</style>"
+)
 
 
 def _widget_tabs(tabbtn: str) -> str:
@@ -4932,15 +5693,20 @@ def _widget_tabs(tabbtn: str) -> str:
         f'aria-controls="tp-panel-{key}" tabindex="{0 if key == "loop" else -1}" '
         f'aria-selected="{"true" if key == "loop" else "false"}" '
         f'style="{tabbtn}'
-        + (';background:var(--text-primary);color:var(--surface-2);'
-           'text-decoration:underline' if key == "loop" else "")
+        + (
+            ";background:var(--text-primary);color:var(--surface-2);text-decoration:underline"
+            if key == "loop"
+            else ""
+        )
         + f'" onclick="tpTab(\'{key}\',true)" '
-          f'onkeydown="tpTabKey(event,\'{key}\')">{label}</button>'
-        for key, label in (("loop", "execution detail"),
-                           ("map", "graph &amp; context detail")))
-    return (f'<div id="tp-detail-tabs" role="tablist" '
-            f'aria-label="Dashboard detail views" '
-            f'style="display:flex;gap:6px">{tabs}</div>')
+        f"onkeydown=\"tpTabKey(event,'{key}')\">{label}</button>"
+        for key, label in (("loop", "execution detail"), ("map", "graph &amp; context detail"))
+    )
+    return (
+        f'<div id="tp-detail-tabs" role="tablist" '
+        f'aria-label="Dashboard detail views" '
+        f'style="display:flex;gap:6px">{tabs}</div>'
+    )
 
 
 def _widget_detail_panels(parts: dict) -> str:
@@ -4949,10 +5715,11 @@ def _widget_detail_panels(parts: dict) -> str:
         '<div id="tp-detail">'
         '<div id="tp-panel-loop" role="tabpanel" '
         f'aria-labelledby="tp-tab-loop">{parts["pipe_d"]}'
-        f'{parts["journey_d"]}{parts["loop_panel"]}</div>'
+        f"{parts['journey_d']}{parts['loop_panel']}</div>"
         '<div id="tp-panel-map" role="tabpanel" '
         f'aria-labelledby="tp-tab-map" hidden>{parts["map_panel"]}</div>'
-        '</div>')
+        "</div>"
+    )
 
 
 def _amendment_notice(state: Mapping | None) -> str:
@@ -4962,9 +5729,12 @@ def _amendment_notice(state: Mapping | None) -> str:
     return (
         '<section class="tp-sec" data-phase-amendment="true" role="status">'
         '<p class="tp-kicker">scope amended</p><p class="tp-lede">'
-        + _esc(amendment.get("reason", "")) + '</p><p class="tp-lede">'
-        + 'Recorded for ' + _esc(amendment.get("actor", "the user"))
-        + '. Prior work and evidence remain in history.</p></section>')
+        + _esc(amendment.get("reason", ""))
+        + '</p><p class="tp-lede">'
+        + "Recorded for "
+        + _esc(amendment.get("actor", "the user"))
+        + ". Prior work and evidence remain in history.</p></section>"
+    )
 
 
 def _widget_parts(ws: str) -> dict:
@@ -4980,20 +5750,21 @@ def _widget_parts(ws: str) -> dict:
     tasks = (state or {}).get("tasks") or []
     parallel = bool((state or {}).get("parallel"))
     tstats = {}
-    all_ev = _current_run_events(
-        _read_trace_all(ws, stats=tstats))       # parsed once, run-bound once
+    all_ev = _current_run_events(_read_trace_all(ws, stats=tstats))  # parsed once, run-bound once
     trace = all_ev[-8:][::-1]
     full_trace = all_ev[::-1]
-    denials = sum(1 for e in full_trace
-                  if e["event"] in ("hook_deny", "budget_deny"))
+    denials = sum(1 for e in full_trace if e["event"] in ("hook_deny", "budget_deny"))
     metrics = _run_metrics(ws, tasks, contract, events=all_ev)
     harness = _harness_agents(ws)
     hmap = {h["tag"]: h for h in harness if h["tag"]}
     hmain = next((h for h in harness if not h["tag"]), None)
     totals = _meter_totals(ws)
     budget_exhausted, budget_used, budget_max = _budget_state(ws, contract)
-    enforcement = (((state or {}).get("enforcement") or {}).get("current")
-                   or (contract or {}).get("enforcement") or {})
+    enforcement = (
+        ((state or {}).get("enforcement") or {}).get("current")
+        or (contract or {}).get("enforcement")
+        or {}
+    )
     enforcement_status = str(enforcement.get("status") or "unproven")
     advisory = enforcement.get("advisory") or {}
     actor = str(advisory.get("actor") or "")
@@ -5001,42 +5772,46 @@ def _widget_parts(ws: str) -> dict:
     evidence_id = str(enforcement.get("evidence_id") or "")
     assurance = (
         f'<div role="status" style="border:1px solid var(--border-strong);'
-        f'border-inline-start:4px solid var(--text-primary);border-radius:6px;'
+        f"border-inline-start:4px solid var(--text-primary);border-radius:6px;"
         f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
-        f'<strong>screen enforcement: {_esc(enforcement_status)}</strong>'
-        + (f' · acknowledged by {_esc(actor)} at {_esc(when)}'
-           if actor else '')
-        + (f' · evidence {_esc(evidence_id[:20])}' if evidence_id else '')
-        + '</div>' + _amendment_notice(state))
+        f"<strong>screen enforcement: {_esc(enforcement_status)}</strong>"
+        + (f" · acknowledged by {_esc(actor)} at {_esc(when)}" if actor else "")
+        + (f" · evidence {_esc(evidence_id[:20])}" if evidence_id else "")
+        + "</div>"
+        + _amendment_notice(state)
+    )
     try:
         import collision
+
         foreign = collision.load_ledger(ws) or {}
     except Exception:
         foreign = {}
-    foreign_counts = foreign.get("counts") \
-        if isinstance(foreign.get("counts"), dict) else {}
-    foreign_total = sum(int(value or 0) for key, value in foreign_counts.items()
-                        if key != "signed_roots")
+    foreign_counts = foreign.get("counts") if isinstance(foreign.get("counts"), dict) else {}
+    foreign_total = sum(
+        int(value or 0) for key, value in foreign_counts.items() if key != "signed_roots"
+    )
     foreign_total += int(foreign_counts.get("signed_roots") or 0)
-    identities = [str(row.get("identity") or row.get("root") or "")
-                  for row in ((foreign.get("identities") or [])
-                              + (foreign.get("state_roots") or []))
-                  if isinstance(row, dict)]
+    identities = [
+        str(row.get("identity") or row.get("root") or "")
+        for row in ((foreign.get("identities") or []) + (foreign.get("state_roots") or []))
+        if isinstance(row, dict)
+    ]
     interference = ""
     if foreign_total:
         interference = (
             f'<div role="alert" style="border:1px solid var(--text-danger);'
-            f'border-inline-start:4px solid var(--text-danger);border-radius:6px;'
+            f"border-inline-start:4px solid var(--text-danger);border-radius:6px;"
             f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
-            f'<strong>foreign interference: {foreign_total}</strong> · '
-            f'{_esc(json.dumps(foreign_counts, sort_keys=True))}'
-            + (f' · identities {_esc(", ".join(identities))}'
-               if identities else '') + '</div>')
-    cleanup_rows = ((state or {}).get("worktree_cleanups") or {})
+            f"<strong>foreign interference: {foreign_total}</strong> · "
+            f"{_esc(json.dumps(foreign_counts, sort_keys=True))}"
+            + (f" · identities {_esc(', '.join(identities))}" if identities else "")
+            + "</div>"
+        )
+    cleanup_rows = (state or {}).get("worktree_cleanups") or {}
     try:
         import runtime_eval
-        cleanup_projection = runtime_eval.worktree_cleanup_projection(
-            cleanup_rows)
+
+        cleanup_projection = runtime_eval.worktree_cleanup_projection(cleanup_rows)
     except Exception:
         cleanup_projection = {"headline": False, "outcomes": [], "counts": {}}
     cleanup_alert = ""
@@ -5044,38 +5819,50 @@ def _widget_parts(ws: str) -> dict:
         reasons = "; ".join(
             str(row.get("task_id")) + ": " + str(row.get("reason"))
             for row in cleanup_projection.get("outcomes") or []
-            if row.get("outcome") in {"preserved", "manual-attention"})
+            if row.get("outcome") in {"preserved", "manual-attention"}
+        )
         cleanup_alert = (
             f'<div role="alert" style="border:1px solid var(--text-danger);'
-            f'border-inline-start:4px solid var(--text-danger);border-radius:6px;'
+            f"border-inline-start:4px solid var(--text-danger);border-radius:6px;"
             f'padding:9px 12px;margin:0 0 12px;font-size:12px">'
-            f'<strong>worktree cleanup needs attention</strong> · '
-            f'{_esc(reasons)}</div>')
+            f"<strong>worktree cleanup needs attention</strong> · "
+            f"{_esc(reasons)}</div>"
+        )
 
     pipe_s = _widget_spine(state, step, tasks, "s")
     pipe_d = _widget_spine(state, step, tasks, "d")
-    gatebar = _widget_gatebar(ws, state, step, tasks, budget_exhausted,
-                              budget_used, budget_max)
+    gatebar = _widget_gatebar(ws, state, step, tasks, budget_exhausted, budget_used, budget_max)
     cards_html = _widget_lanes(state, step, tasks, contract, hmap, hmain)
     feed_html = _widget_feed(trace)
 
-    lanes_title = ("build lanes · parallel" if parallel and len(tasks) > 1
-                   else "build lanes" if len(tasks) > 1 else
-                   "build lane" if tasks else "tasks &amp; contracts")
+    lanes_title = (
+        "build lanes · parallel"
+        if parallel and len(tasks) > 1
+        else "build lanes"
+        if len(tasks) > 1
+        else "build lane"
+        if tasks
+        else "tasks &amp; contracts"
+    )
     ministats = _widget_ministats(metrics, totals)
-    feed_panel = (f'<div style="{_CARD}"><div style="{_MICRO};'
-                  f'margin-bottom:10px">live feed</div>'
-                  f'<div aria-live="polite" aria-atomic="false">'
-                  f'{feed_html}</div></div>')
-    lanes_panel = (f'<div style="{_CARD}"><div style="{_MICRO};margin-'
-                   f'bottom:10px">{lanes_title}</div><div style="display:'
-                   f'flex;flex-direction:column;gap:8px">{cards_html}'
-                   f'</div></div>')
+    feed_panel = (
+        f'<div style="{_CARD}"><div style="{_MICRO};'
+        f'margin-bottom:10px">live feed</div>'
+        f'<div aria-live="polite" aria-atomic="false">'
+        f"{feed_html}</div></div>"
+    )
+    lanes_panel = (
+        f'<div style="{_CARD}"><div style="{_MICRO};margin-'
+        f'bottom:10px">{lanes_title}</div><div style="display:'
+        f'flex;flex-direction:column;gap:8px">{cards_html}'
+        f"</div></div>"
+    )
     loop_panel = (
         f'<div class="tp-grid2" style="display:grid;'
-        f'grid-template-columns:1.25fr 1fr;'
+        f"grid-template-columns:1.25fr 1fr;"
         f'gap:12px">{lanes_panel}<div>'
-        f'{ministats}{feed_panel}</div></div>')
+        f"{ministats}{feed_panel}</div></div>"
+    )
 
     # graph + context merged into one "map" tab — the codebase context
     # (hubs, blast radius) above the work context (requirement, lenses, KB)
@@ -5084,7 +5871,8 @@ def _widget_parts(ws: str) -> dict:
     context_html = (
         _context_panel(ws, state, full_trace)
         + f'<div style="{_MICRO};margin-top:10px">action budgets are '
-        'hook-enforced; dollar spend stays cooperative in the plugin.</div>')
+        "hook-enforced; dollar spend stays cooperative in the plugin.</div>"
+    )
     # Interactive widgets route the graph and its supporting context through
     # one labelled detail tab.  The durable report still renders both in its
     # linear evidence order, while the inline widget avoids a duplicate graph.
@@ -5094,36 +5882,50 @@ def _widget_parts(ws: str) -> dict:
     # and each agent's harness (on topic + within budget)
     hcards = "".join(_harness_card(h) for h in harness)
     if not hcards:
-        why = ("waiting at a human gate — no agent is running"
-               if step in ("design_approval", "plan_approval", "signoff",
-                           "escalated", "done")
-               else "no contract active — workspace ungoverned")
-        hcards = (f'<div style="font-size:13px;color:var(--text-muted)">'
-                  f'{why}</div>')
+        why = (
+            "waiting at a human gate — no agent is running"
+            if step in ("design_approval", "plan_approval", "signoff", "escalated", "done")
+            else "no contract active — workspace ungoverned"
+        )
+        hcards = f'<div style="font-size:13px;color:var(--text-muted)">{why}</div>'
     n_pass = sum(1 for t in tasks if t.get("status") == "passed")
-    prog = (f'<div style="font-size:12px;color:var(--text-muted);margin-top:'
-            f'10px">'
-            + _msg("tasks_progress", done=n_pass, total=len(tasks),
-                   actions=totals["actions"], blocked=denials)
-            + '</div>' if tasks else "")
+    prog = (
+        f'<div style="font-size:12px;color:var(--text-muted);margin-top:'
+        f'10px">'
+        + _msg(
+            "tasks_progress",
+            done=n_pass,
+            total=len(tasks),
+            actions=totals["actions"],
+            blocked=denials,
+        )
+        + "</div>"
+        if tasks
+        else ""
+    )
     hero = _agents_hero(harness, tasks, step, parallel)
     harness_panel = (
         f'<div style="background:none;border:1px solid '
         f'var(--border);border-radius:6px;padding:14px"><div style="'
-        f'font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.2px;color:var(--text-muted);'
+        f"font-family:var(--font-mono);font-size:10.5px;letter-spacing:1.2px;color:var(--text-muted);"
         f'margin-bottom:10px">agent harnesses — on topic · within budget'
         f'</div><div style="display:flex;flex-direction:column;gap:8px">'
-        f'{hcards}</div>{prog}{_yield_strip(ws)}</div>')
+        f"{hcards}</div>{prog}{_yield_strip(ws)}</div>"
+    )
 
-    tabbtn = ('border:none;background:none;font-family:var(--font-mono);'
-              'font-size:12px;letter-spacing:.8px;font-weight:500;'
-              'padding:6px 14px;cursor:pointer;border-radius:20px;'
-              'color:var(--text-secondary)')
+    tabbtn = (
+        "border:none;background:none;font-family:var(--font-mono);"
+        "font-size:12px;letter-spacing:.8px;font-weight:500;"
+        "padding:6px 14px;cursor:pointer;border-radius:20px;"
+        "color:var(--text-secondary)"
+    )
     tabs = _widget_tabs(tabbtn)
-    vbtn = ('border:none;background:none;font-family:var(--font-mono);'
-            'font-size:11.5px;letter-spacing:.8px;font-weight:500;'
-            'padding:4px 11px;cursor:pointer;border-radius:20px;'
-            'color:var(--text-secondary)')
+    vbtn = (
+        "border:none;background:none;font-family:var(--font-mono);"
+        "font-size:11.5px;letter-spacing:.8px;font-weight:500;"
+        "padding:4px 11px;cursor:pointer;border-radius:20px;"
+        "color:var(--text-secondary)"
+    )
     toggle = (
         f'<div style="display:flex;gap:2px;border:1px solid var(--border);'
         f'border-radius:20px;padding:2px"><button id="tp-vb-simple" '
@@ -5131,7 +5933,8 @@ def _widget_parts(ws: str) -> dict:
         f'style="{vbtn}" onclick="tpView(\'simple\')">simple</button>'
         f'<button id="tp-vb-detail" aria-pressed="false" '
         f'style="{vbtn}" '
-        f'onclick="tpView(\'detail\')">detailed</button></div>')
+        f"onclick=\"tpView('detail')\">detailed</button></div>"
+    )
     step_badge = _esc(step.replace("_", " "))
     dor_html = _widget_dor(full_trace, step)
 
@@ -5149,29 +5952,51 @@ def _widget_parts(ws: str) -> dict:
         f'secondary)">goal: {goal}{" · parallel" if parallel else ""}</div>'
         f'</div><div style="display:flex;gap:10px;align-items:center">'
         f'<span style="border:1px solid var(--border-strong);color:'
-        f'var(--text-primary);border-radius:20px;padding:4px 12px;'
-        f'font-family:var(--font-mono);font-size:11.5px;letter-spacing:.8px;'
+        f"var(--text-primary);border-radius:20px;padding:4px 12px;"
+        f"font-family:var(--font-mono);font-size:11.5px;letter-spacing:.8px;"
         f'font-weight:500;white-space:nowrap">step: {step_badge}</span>'
-        f'{toggle}</div></div>')
-    sr = (f'<h2 class="sr-only">taskplane mission control: the governed loop '
-          f'is at step {step_badge} for goal {goal}.'
-          + (' The action budget is exhausted — a human must grant more '
-             'actions.' if budget_exhausted else '') + '</h2>')
+        f"{toggle}</div></div>"
+    )
+    sr = (
+        f'<h2 class="sr-only">taskplane mission control: the governed loop '
+        f"is at step {step_badge} for goal {goal}."
+        + (
+            " The action budget is exhausted — a human must grant more actions."
+            if budget_exhausted
+            else ""
+        )
+        + "</h2>"
+    )
     notice = _trace_notice(tstats)
     return {
-        "sr": sr, "header": header, "notice": notice,
-        "assurance": assurance, "interference": interference,
-        "cleanup_alert": cleanup_alert, "hero": hero,
+        "sr": sr,
+        "header": header,
+        "notice": notice,
+        "assurance": assurance,
+        "interference": interference,
+        "cleanup_alert": cleanup_alert,
+        "hero": hero,
         "stage_lineage": stage_lineage,
-        "gatebar": gatebar, "dor": dor_html, "stats": stats_html,
-        "pipe_s": pipe_s, "pipe_d": pipe_d,
-        "journey_s": journey_s, "journey_d": journey_d,
-        "harness_panel": harness_panel, "loop_panel": loop_panel,
-        "lanes_panel": lanes_panel, "ministats": ministats,
-        "feed_panel": feed_panel, "graph": graph_html,
-        "workflow": workflow_html, "context": context_html,
-        "map_panel": map_panel, "tabs": tabs,
-        "step_badge": step_badge, "goal": goal, "visits": visits,
+        "gatebar": gatebar,
+        "dor": dor_html,
+        "stats": stats_html,
+        "pipe_s": pipe_s,
+        "pipe_d": pipe_d,
+        "journey_s": journey_s,
+        "journey_d": journey_d,
+        "harness_panel": harness_panel,
+        "loop_panel": loop_panel,
+        "lanes_panel": lanes_panel,
+        "ministats": ministats,
+        "feed_panel": feed_panel,
+        "graph": graph_html,
+        "workflow": workflow_html,
+        "context": context_html,
+        "map_panel": map_panel,
+        "tabs": tabs,
+        "step_badge": step_badge,
+        "goal": goal,
+        "visits": visits,
     }
 
 
@@ -5181,6 +6006,7 @@ def _yield_strip(ws: str) -> str:
     an empty panel is clutter, and this is an instrument, not a gate."""
     try:
         import yield_meter
+
         rep = yield_meter.report(ws)
     except Exception:
         return ""
@@ -5188,14 +6014,15 @@ def _yield_strip(ws: str) -> str:
         return ""
     e = rep["escape"]
     quiet = yield_meter.zero_yield(rep)
-    tail = (f' · quiet lenses: {", ".join(quiet[:4])}' if quiet else "")
+    tail = f" · quiet lenses: {', '.join(quiet[:4])}" if quiet else ""
     return (
         f'<div style="font-size:11.5px;color:var(--text-muted);margin-top:'
         f'10px;padding-top:8px;border-top:1px dashed var(--border)">'
-        f'yield — {rep["findings"]} finding(s) over {rep["reviews"]} '
-        f'review(s), {rep["dispositioned"]} dispositioned · caught: '
-        f'{e["in_task"]} in task, {e["at_review"]} at review, '
-        f'{e["after_signoff"]} after sign-off{tail}</div>')
+        f"yield — {rep['findings']} finding(s) over {rep['reviews']} "
+        f"review(s), {rep['dispositioned']} dispositioned · caught: "
+        f"{e['in_task']} in task, {e['at_review']} at review, "
+        f"{e['after_signoff']} after sign-off{tail}</div>"
+    )
 
 
 def widget(ws: str) -> str:
@@ -5206,10 +6033,10 @@ def widget(ws: str) -> str:
     instead). Composition of the named parts from _widget_parts()."""
     p = _widget_parts(ws)
     return (
-        p["sr"] + _WIDGET_CSS
-        + f'<div dir="auto" style="padding:0.5rem 0;'
-          f'font-family:var(--font-sans);color:'
-          f'var(--text-primary)">' + p["header"]
+        p["sr"] + _WIDGET_CSS + f'<div dir="auto" style="padding:0.5rem 0;'
+        f"font-family:var(--font-sans);color:"
+        f'var(--text-primary)">'
+        + p["header"]
         + p["notice"]
         + p["assurance"]
         + p["interference"]
@@ -5221,11 +6048,10 @@ def widget(ws: str) -> str:
         + p["stats"]
         + p["workflow"]
         + f'<div style="margin-bottom:14px;border-bottom:'
-          f'1px solid var(--border);padding-bottom:10px">{p["tabs"]}</div>'
+        f'1px solid var(--border);padding-bottom:10px">{p["tabs"]}</div>'
         + f'<div id="tp-simple">{p["pipe_s"]}{p["journey_s"]}'
-          f'{p["harness_panel"]}</div>'
-        + _widget_detail_panels(p) + '</div>'
-        + _WIDGET_JS)
+        f"{p['harness_panel']}</div>" + _widget_detail_panels(p) + "</div>" + _WIDGET_JS
+    )
 
 
 def report_widget(ws: str) -> str:
@@ -5244,27 +6070,42 @@ def report_widget(ws: str) -> str:
         f'flex-start;gap:12px;margin-bottom:12px"><div><div style="font-size:'
         f'21px;font-weight:600;line-height:1.3">{p["goal"]}</div>'
         f'<div class="tp-lede">workflow state and evidence are projected from '
-        f'the active loop; approval remains a human decision.</div></div>'
+        f"the active loop; approval remains a human decision.</div></div>"
         f'<span style="border:1px solid var(--border-strong);color:'
-        f'var(--text-primary);border-radius:20px;padding:4px 12px;'
-        f'font-family:var(--font-mono);font-size:11.5px;letter-spacing:.8px;'
-        f'white-space:nowrap">step: {p["step_badge"]}</span></div>')
+        f"var(--text-primary);border-radius:20px;padding:4px 12px;"
+        f"font-family:var(--font-mono);font-size:11.5px;letter-spacing:.8px;"
+        f'white-space:nowrap">step: {p["step_badge"]}</span></div>'
+    )
     execution = (
         '<div class="tp-sec"><p class="tp-kicker">execution — governed '
-        'agents and current evidence</p>' + p["loop_panel"] + '</div>')
+        "agents and current evidence</p>" + p["loop_panel"] + "</div>"
+    )
     context = (
         '<div class="tp-sec"><p class="tp-kicker">requirements, decisions, '
-        'and review context</p>' + p["context"] + '</div>')
+        "and review context</p>" + p["context"] + "</div>"
+    )
     return (
-        p["sr"] + _WIDGET_CSS
+        p["sr"]
+        + _WIDGET_CSS
         + '<div dir="auto" style="padding:.5rem 0;font-family:var(--font-sans);'
-          'color:var(--text-primary)">' + header
-        + p["notice"] + p["assurance"] + p["interference"]
+        'color:var(--text-primary)">'
+        + header
+        + p["notice"]
+        + p["assurance"]
+        + p["interference"]
         + p["cleanup_alert"]
         + p["stage_lineage"]
-        + p["hero"] + p["dor"] + p["stats"]
-        + p["workflow"] + p["graph"] + execution + context
-        + p["gatebar"] + '</div>' + _WIDGET_JS)
+        + p["hero"]
+        + p["dor"]
+        + p["stats"]
+        + p["workflow"]
+        + p["graph"]
+        + execution
+        + context
+        + p["gatebar"]
+        + "</div>"
+        + _WIDGET_JS
+    )
 
 
 def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
@@ -5284,11 +6125,9 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
     loop_value = values.get("loop")
     loop = loop_value if isinstance(loop_value, Mapping) else {}
     stage = str(snapshot.get("stage") or loop.get("step") or "unknown")
-    goal = _visible_text(loop.get("goal") or snapshot.get("target") or
-                         "Taskplane run", 120)
+    goal = _visible_text(loop.get("goal") or snapshot.get("target") or "Taskplane run", 120)
     phase = {"schema": _PHASE_GRAPH_SCHEMA, "step": stage}
-    for key in ("design_graph", "plan_task_dag", "plan_waves",
-                "module_impact"):
+    for key in ("design_graph", "plan_task_dag", "plan_waves", "module_impact"):
         component = values.get(key)
         if isinstance(component, Mapping):
             phase[key] = dict(component)
@@ -5300,21 +6139,23 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
             '<section class="tp-phase-graph" id="tp-phase-graphs-pending" '
             'data-status="pending"><p class="tp-kicker">dependency graph</p>'
             '<p class="tp-lede">No graph artifact is bound to this run and '
-            'stage yet. Prior workspace artifacts were not reused.</p></section>')
+            "stage yet. Prior workspace artifacts were not reused.</p></section>"
+        )
     if graph_error:
         graphs = (
             '<section class="tp-phase-graph" id="tp-phase-graphs-degraded" '
             'data-status="degraded" role="status"><p class="tp-kicker">'
             'dependency graph · degraded</p><p class="tp-lede">'
-            + _esc(graph_error) + '</p></section>' + graphs)
+            + _esc(graph_error)
+            + "</p></section>"
+            + graphs
+        )
 
     provenance_value = values.get("provenance")
-    provenance = (provenance_value if isinstance(provenance_value, Mapping)
-                  else {})
+    provenance = provenance_value if isinstance(provenance_value, Mapping) else {}
     binding_rows = [
         ("run", snapshot.get("run_id")),
-        ("requirement", provenance.get("requirement_id") or
-         loop.get("requirement_id")),
+        ("requirement", provenance.get("requirement_id") or loop.get("requirement_id")),
         ("stage", stage),
         ("revision", snapshot.get("revision")),
     ]
@@ -5323,49 +6164,66 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
     if values.get("candidate_sha"):
         binding_rows.append(("observed candidate", values.get("candidate_sha")))
     if values.get("candidate_execution_status"):
-        binding_rows.append(("candidate execution proof",
-                             values.get("candidate_execution_status")))
-    binding_rows.extend((
-        ("settings", provenance.get("settings_digest") or
-         values.get("settings_digest")),
-        ("authority receipt", provenance.get("authority_receipt")),
-        ("snapshot", snapshot.get("fingerprint")),
-        ("graph receipt", provenance.get("graph_receipt") or
-         phase.get("fingerprint")),
-        ("publication epoch", provenance.get("publication_epoch") or
-         snapshot.get("sequence")),
-    ))
+        binding_rows.append(("candidate execution proof", values.get("candidate_execution_status")))
+    binding_rows.extend(
+        (
+            ("settings", provenance.get("settings_digest") or values.get("settings_digest")),
+            ("authority receipt", provenance.get("authority_receipt")),
+            ("snapshot", snapshot.get("fingerprint")),
+            ("graph receipt", provenance.get("graph_receipt") or phase.get("fingerprint")),
+            ("publication epoch", provenance.get("publication_epoch") or snapshot.get("sequence")),
+        )
+    )
     binding = (
         '<section class="tp-sec" id="tp-canonical-provenance" '
         'aria-labelledby="tp-canonical-provenance-label"><p class="tp-kicker" '
         'id="tp-canonical-provenance-label">current snapshot binding</p>'
-        '<dl class="tp-binding">' + "".join(
-            '<dt>' + _esc(label) + '</dt><dd data-binding="' +
-            _attr(label.replace(" ", "-")) + '">' +
-            _esc(value if value not in (None, "") else "unavailable") +
-            '</dd>' for label, value in binding_rows) + '</dl></section>')
+        '<dl class="tp-binding">'
+        + "".join(
+            "<dt>"
+            + _esc(label)
+            + '</dt><dd data-binding="'
+            + _attr(label.replace(" ", "-"))
+            + '">'
+            + _esc(value if value not in (None, "") else "unavailable")
+            + "</dd>"
+            for label, value in binding_rows
+        )
+        + "</dl></section>"
+    )
 
-    tasks = [row for row in (loop.get("tasks") or ())
-             if isinstance(row, Mapping)]
+    tasks = [row for row in (loop.get("tasks") or ()) if isinstance(row, Mapping)]
     task_rows = "".join(
-        '<li><code>' + _esc(row.get("id", "?")) + '</code> · '
-        + _esc(row.get("status", "unknown")) + '</li>' for row in tasks)
+        "<li><code>"
+        + _esc(row.get("id", "?"))
+        + "</code> · "
+        + _esc(row.get("status", "unknown"))
+        + "</li>"
+        for row in tasks
+    )
     execution = (
         '<section class="tp-sec" id="tp-canonical-execution">'
         '<p class="tp-kicker">current execution</p><p class="tp-lede">'
-        + str(len(tasks)) + ' governed tasks from the frozen snapshot</p>'
-        + ('<ol>' + task_rows + '</ol>' if task_rows else
-           '<p class="tp-lede">No task set is bound at this stage.</p>')
-        + '</section>')
+        + str(len(tasks))
+        + " governed tasks from the frozen snapshot</p>"
+        + (
+            "<ol>" + task_rows + "</ol>"
+            if task_rows
+            else '<p class="tp-lede">No task set is bound at this stage.</p>'
+        )
+        + "</section>"
+    )
     actions = "".join(
-        '<button data-dashboard-action="' + _attr(action) + '">' +
-        _esc(action) + '</button>'
+        '<button data-dashboard-action="' + _attr(action) + '">' + _esc(action) + "</button>"
         for action in snapshot.get("safe_actions") or ()
-        if isinstance(action, str))
+        if isinstance(action, str)
+    )
     action_panel = (
         '<section class="tp-sec" id="tp-canonical-actions">'
-        '<p class="tp-kicker">governed actions</p>' + actions + '</section>'
-        if actions else "")
+        '<p class="tp-kicker">governed actions</p>' + actions + "</section>"
+        if actions
+        else ""
+    )
     metrics = render_wave_metrics_projection(values.get("wave_metrics"))
     root_receipt = values.get("root_hygiene_receipt")
     root_metrics = ""
@@ -5376,27 +6234,42 @@ def render_canonical_dashboard_snapshot(snapshot: Mapping[str, Any]) -> str:
             '<section class="tp-sec" id="tp-canonical-root-hygiene">'
             '<p class="tp-kicker">root-session hygiene</p>'
             '<dl class="tp-binding"><dt>receipt</dt><dd>'
-            + _esc(root["receipt_fingerprint"]) + '</dd>'
-            '<dt>root tokens</dt><dd>' + _esc(totals["root_tokens"]) + '</dd>'
-            '<dt>worker tokens</dt><dd>' + _esc(totals["worker_tokens"]) + '</dd>'
-            '<dt>wave tokens</dt><dd>' + _esc(totals["wave_tokens"]) + '</dd>'
-            '</dl></section>')
-    stage_status = (" · finalizing — retro + graph true-up"
-                    if stage == "retro" else "")
+            + _esc(root["receipt_fingerprint"])
+            + "</dd>"
+            "<dt>root tokens</dt><dd>" + _esc(totals["root_tokens"]) + "</dd>"
+            "<dt>worker tokens</dt><dd>" + _esc(totals["worker_tokens"]) + "</dd>"
+            "<dt>wave tokens</dt><dd>" + _esc(totals["wave_tokens"]) + "</dd>"
+            "</dl></section>"
+        )
+    stage_status = " · finalizing — retro + graph true-up" if stage == "retro" else ""
     return (
-        _WIDGET_CSS
-        + '<main id="dashboard-snapshot" data-dashboard-source="canonical" '
-          'data-run-id="' + _attr(snapshot.get("run_id", "")) + '" '
-          'data-revision="' + _attr(snapshot.get("revision", "")) + '">'
+        _WIDGET_CSS + '<main id="dashboard-snapshot" data-dashboard-source="canonical" '
+        'data-run-id="' + _attr(snapshot.get("run_id", "")) + '" '
+        'data-revision="'
+        + _attr(snapshot.get("revision", ""))
+        + '">'
         + '<p class="tp-kicker">taskplane · canonical governed snapshot</p>'
-        + '<h1 style="font-size:21px;margin:4px 0">' + _esc(goal) + '</h1>'
-        + '<p class="tp-lede">stage <code>' + _esc(stage)
-        + '</code> · sequence ' + _esc(snapshot.get("sequence", ""))
-        + stage_status + '</p>'
-        + _amendment_notice(loop) + binding + root_metrics
+        + '<h1 style="font-size:21px;margin:4px 0">'
+        + _esc(goal)
+        + "</h1>"
+        + '<p class="tp-lede">stage <code>'
+        + _esc(stage)
+        + "</code> · sequence "
+        + _esc(snapshot.get("sequence", ""))
+        + stage_status
+        + "</p>"
+        + _amendment_notice(loop)
+        + binding
+        + root_metrics
         + '<section class="tp-sec" id="tp-canonical-phase-graphs">'
-          '<p class="tp-kicker">stage dependency graph</p>' + graphs
-        + '</section>' + execution + metrics + action_panel + '</main>')
+        '<p class="tp-kicker">stage dependency graph</p>'
+        + graphs
+        + "</section>"
+        + execution
+        + metrics
+        + action_panel
+        + "</main>"
+    )
 
 
 def _page_bytes(html: str) -> int:
@@ -5413,18 +6286,30 @@ native_dashboard_projection = host_native.native_dashboard_projection
 
 _HOST_SURFACE_TOKENS = {
     "light": {
-        "background": "#ffffff", "surface": "#f8fafc",
-        "text": "#111827", "muted": "#4b5563", "border": "#64748b",
-        "focus": "#1d4ed8", "status": "#166534",
-        "success": "#166534", "pending": "#854d0e",
-        "warning": "#92400e", "failure": "#b91c1c",
+        "background": "#ffffff",
+        "surface": "#f8fafc",
+        "text": "#111827",
+        "muted": "#4b5563",
+        "border": "#64748b",
+        "focus": "#1d4ed8",
+        "status": "#166534",
+        "success": "#166534",
+        "pending": "#854d0e",
+        "warning": "#92400e",
+        "failure": "#b91c1c",
     },
     "dark": {
-        "background": "#111827", "surface": "#1f2937",
-        "text": "#f9fafb", "muted": "#d1d5db", "border": "#94a3b8",
-        "focus": "#93c5fd", "status": "#86efac",
-        "success": "#86efac", "pending": "#fde047",
-        "warning": "#fdba74", "failure": "#fca5a5",
+        "background": "#111827",
+        "surface": "#1f2937",
+        "text": "#f9fafb",
+        "muted": "#d1d5db",
+        "border": "#94a3b8",
+        "focus": "#93c5fd",
+        "status": "#86efac",
+        "success": "#86efac",
+        "pending": "#fde047",
+        "warning": "#fdba74",
+        "failure": "#fca5a5",
     },
 }
 
@@ -5437,17 +6322,18 @@ def _dashboard_value_markup(value, *, omit=(), locale: str | None = None):
             if key in omit:
                 continue
             rows.append(
-                f'<div><dt>{html.escape(str(key))}</dt><dd>'
-                f'{_dashboard_value_markup(item, locale=locale)}</dd></div>')
-        return '<dl class="tp-value">' + "".join(rows) + '</dl>'
+                f"<div><dt>{html.escape(str(key))}</dt><dd>"
+                f"{_dashboard_value_markup(item, locale=locale)}</dd></div>"
+            )
+        return '<dl class="tp-value">' + "".join(rows) + "</dl>"
     if isinstance(value, list):
-        return ('<ul class="tp-value-list">' + "".join(
-            f'<li>{_dashboard_value_markup(item, locale=locale)}</li>'
-            for item in value)
-            + '</ul>')
+        return (
+            '<ul class="tp-value-list">'
+            + "".join(f"<li>{_dashboard_value_markup(item, locale=locale)}</li>" for item in value)
+            + "</ul>"
+        )
     if value is None:
-        return (f'<span class="tp-muted">'
-                f'{html.escape(_msg("not_recorded", locale=locale))}</span>')
+        return f'<span class="tp-muted">{html.escape(_msg("not_recorded", locale=locale))}</span>'
     if isinstance(value, bool):
         return _msg("boolean_yes" if value else "boolean_no", locale=locale)
     return html.escape(str(value))
@@ -5468,54 +6354,83 @@ def _dashboard_collection_markup(collection, *, locale: str | None = None):
     pages = []
     for page in collection["pages"]:
         items = "".join(
-            '<li data-item-id="' + html.escape(str(item["id"]), quote=True)
-            + '">' + _dashboard_value_markup(item, locale=locale) + '</li>'
-            for item in page["items"])
+            '<li data-item-id="'
+            + html.escape(str(item["id"]), quote=True)
+            + '">'
+            + _dashboard_value_markup(item, locale=locale)
+            + "</li>"
+            for item in page["items"]
+        )
         pages.append(
             f'<ol data-carousel-page="{page["position"]}"'
-            + ('' if page["position"] == active else ' hidden')
-            + f'>{items}</ol>')
-    filters = html.escape(json.dumps(collection["filters"], sort_keys=True),
-                          quote=True)
-    labels = [_msg("carousel_position", locale=locale,
-                   items=collection["total_items"], page=page,
-                   pages=max(total, 1))
-              for page in range(1, max(total, 1) + 1)]
+            + ("" if page["position"] == active else " hidden")
+            + f">{items}</ol>"
+        )
+    filters = html.escape(json.dumps(collection["filters"], sort_keys=True), quote=True)
+    labels = [
+        _msg(
+            "carousel_position",
+            locale=locale,
+            items=collection["total_items"],
+            page=page,
+            pages=max(total, 1),
+        )
+        for page in range(1, max(total, 1) + 1)
+    ]
     labels_attr = html.escape(json.dumps(labels, ensure_ascii=False), quote=True)
     return (
         f'<div class="tp-carousel" data-carousel-current="{active}" '
         f'data-carousel-total="{total}" data-carousel-filters="{filters}" '
         f'data-carousel-labels="{labels_attr}">'
         f'<p class="tp-muted" data-carousel-position aria-live="polite">'
-        + html.escape(_msg("carousel_position", locale=locale,
-                           items=collection["total_items"], page=active,
-                           pages=max(total, 1))) + '</p>'
+        + html.escape(
+            _msg(
+                "carousel_position",
+                locale=locale,
+                items=collection["total_items"],
+                page=active,
+                pages=max(total, 1),
+            )
+        )
+        + "</p>"
         + "".join(pages)
         + '<div class="tp-carousel-controls">'
-          '<button type="button" data-carousel-direction="previous"'
-        + (' disabled' if active <= 1 else '') + '>'
-        + html.escape(_msg("previous", locale=locale)) + '</button>'
-          '<button type="button" data-carousel-direction="next"'
-        + (' disabled' if not total or active >= total else '') + '>'
-        + html.escape(_msg("next", locale=locale)) + '</button>'
-          '</div></div>')
+        '<button type="button" data-carousel-direction="previous"'
+        + (" disabled" if active <= 1 else "")
+        + ">"
+        + html.escape(_msg("previous", locale=locale))
+        + "</button>"
+        '<button type="button" data-carousel-direction="next"'
+        + (" disabled" if not total or active >= total else "")
+        + ">"
+        + html.escape(_msg("next", locale=locale))
+        + "</button>"
+        "</div></div>"
+    )
 
 
 def _dashboard_component_state(status: object) -> tuple[str, str]:
     """Return a finite semantic state and a non-color-only symbol."""
 
     normalized = " ".join(str(status or "").casefold().replace("_", " ").split())
-    if any(word in normalized for word in
-           ("failed", "failure", "error", "blocked", "rejected", "denied")):
+    if any(
+        word in normalized
+        for word in ("failed", "failure", "error", "blocked", "rejected", "denied")
+    ):
         return "failure", "&#10007;"
-    if any(word in normalized for word in
-           ("pending", "queued", "running", "waiting", "in progress", "started")):
+    if any(
+        word in normalized
+        for word in ("pending", "queued", "running", "waiting", "in progress", "started")
+    ):
         return "pending", "&#8230;"
-    if any(word in normalized for word in
-           ("warning", "degraded", "partial", "stale", "unavailable")):
+    if any(
+        word in normalized for word in ("warning", "degraded", "partial", "stale", "unavailable")
+    ):
         return "warning", "&#9888;"
-    if any(word in normalized for word in
-           ("ready", "passed", "complete", "available", "success", "done")):
+    if any(
+        word in normalized
+        for word in ("ready", "passed", "complete", "available", "success", "done")
+    ):
         return "success", "&#10003;"
     return "neutral", "&#8226;"
 
@@ -5527,18 +6442,17 @@ def _dashboard_recovery_action(actions, state: str) -> str | None:
     recovery_prefixes = ("retry", "resume", "request changes", "open recovery")
 
     def is_recovery(action: str) -> bool:
-        normalized = " ".join(
-            action.casefold().replace("_", " ").replace("-", " ").split())
-        return any(normalized == prefix or normalized.startswith(prefix + " ")
-                   for prefix in recovery_prefixes)
+        normalized = " ".join(action.casefold().replace("_", " ").replace("-", " ").split())
+        return any(
+            normalized == prefix or normalized.startswith(prefix + " ")
+            for prefix in recovery_prefixes
+        )
 
     return next((action for action in available if is_recovery(action)), None)
 
 
-def _dashboard_status_text(catalog: _text.MessageCatalog,
-                           status: object) -> str:
-    normalized = "_".join(
-        str(status or "").casefold().replace("-", " ").split())
+def _dashboard_status_text(catalog: _text.MessageCatalog, status: object) -> str:
+    normalized = "_".join(str(status or "").casefold().replace("-", " ").split())
     return catalog.messages.get(f"status_{normalized}", str(status))
 
 
@@ -5551,26 +6465,40 @@ def _dashboard_action_classification(action):
     """
     normalized = " ".join(str(action).casefold().replace("_", " ").split())
     terminal = (
-        "abort", "cancel", "complete", "finish", "close workflow",
-        "end workflow", "sign off", "skip",
+        "abort",
+        "cancel",
+        "complete",
+        "finish",
+        "close workflow",
+        "end workflow",
+        "sign off",
+        "skip",
     )
     exclusive = (
-        "approve", "decline", "reject", "select", "choose",
-        "request changes", "send back",
+        "approve",
+        "decline",
+        "reject",
+        "select",
+        "choose",
+        "request changes",
+        "send back",
     )
-    if any(normalized == verb or normalized.startswith(verb + " ")
-           for verb in terminal):
+    if any(normalized == verb or normalized.startswith(verb + " ") for verb in terminal):
         return "terminal"
-    if any(normalized == verb or normalized.startswith(verb + " ")
-           for verb in exclusive):
+    if any(normalized == verb or normalized.startswith(verb + " ") for verb in exclusive):
         return "mutually-exclusive"
     return "independent"
 
 
-def render_native_dashboard_surface(projection, *, viewport_px=1024,
-                                    theme="light", text_scale_percent=100,
-                                    reduced_motion=False,
-                                    locale: str | None = None):
+def render_native_dashboard_surface(
+    projection,
+    *,
+    viewport_px=1024,
+    theme="light",
+    text_scale_percent=100,
+    reduced_motion=False,
+    locale: str | None = None,
+):
     """Render the host projection as a bounded, testable inline surface.
 
     This is the shared fallback/reference projector used when a host does not
@@ -5585,8 +6513,7 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         raise ValueError("unsupported dashboard projection")
     if theme not in _HOST_SURFACE_TOKENS:
         raise ValueError("theme must be light or dark")
-    if isinstance(viewport_px, bool) or not isinstance(viewport_px, int) \
-            or viewport_px < 320:
+    if isinstance(viewport_px, bool) or not isinstance(viewport_px, int) or viewport_px < 320:
         raise ValueError("viewport_px must be at least 320")
     if text_scale_percent not in {100, 200}:
         raise ValueError("text_scale_percent must be 100 or 200")
@@ -5594,8 +6521,7 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
     catalog = _text.load_catalog(locale)
     locale = catalog.requested_locale
     tokens = _HOST_SURFACE_TOKENS[theme]
-    token_css = ";".join(
-        f"--tp-{name}:{value}" for name, value in tokens.items())
+    token_css = ";".join(f"--tp-{name}:{value}" for name, value in tokens.items())
     layout = "single-column" if viewport_px < 720 else "responsive-grid"
     motion = "none" if reduced_motion else "120ms ease"
     styles = (
@@ -5634,39 +6560,44 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         component_id = html.escape(str(component["id"]), quote=True)
         label_id = f"tp-{component_id}-label"
         value = component.get("value", {})
-        status = value.get("status", "available") if isinstance(value, dict) \
-            else "available"
+        status = value.get("status", "available") if isinstance(value, dict) else "available"
         status_text = _dashboard_status_text(catalog, status)
         state_kind, status_symbol = _dashboard_component_state(status)
-        status_label = _msg("component_state", locale=locale,
-                            status=status_text)
+        status_label = _msg("component_state", locale=locale, status=status_text)
         recovery_action = _dashboard_recovery_action(actions, state_kind)
         recovery = (
             f'<p class="tp-recovery">'
-            f'{html.escape(_msg("component_recovery", locale=locale, action=recovery_action))}'
-            f'</p>' if recovery_action else "")
-        provenance = value.get(
-            "provenance", _msg("not_recorded", locale=locale)) \
-            if isinstance(value, dict) else "not recorded"
+            f"{html.escape(_msg('component_recovery', locale=locale, action=recovery_action))}"
+            f"</p>"
+            if recovery_action
+            else ""
+        )
+        provenance = (
+            value.get("provenance", _msg("not_recorded", locale=locale))
+            if isinstance(value, dict)
+            else "not recorded"
+        )
         collection = component.get("collection")
-        collection_text = _dashboard_collection_markup(
-            collection, locale=locale) \
-            if collection else ""
-        semantic_value = _dashboard_value_markup(
-            value, omit={"status", "provenance", "items"}, locale=locale) \
-            if isinstance(value, dict) else _dashboard_value_markup(
-                value, locale=locale)
+        collection_text = (
+            _dashboard_collection_markup(collection, locale=locale) if collection else ""
+        )
+        semantic_value = (
+            _dashboard_value_markup(value, omit={"status", "provenance", "items"}, locale=locale)
+            if isinstance(value, dict)
+            else _dashboard_value_markup(value, locale=locale)
+        )
         cards.append(
             f'<section class="tp-sec" data-purpose="{component_id}" '
             f'aria-labelledby="{label_id}"><h2 id="{label_id}">{component_id}</h2>'
             f'<p class="tp-status" data-state="{state_kind}" '
             f'role="{"alert" if state_kind == "failure" else "status"}">'
             f'<span aria-hidden="true">{status_symbol}</span> '
-            f'<span>{html.escape(status_label)}</span></p>{recovery}'
-            f'{semantic_value}{collection_text}'
+            f"<span>{html.escape(status_label)}</span></p>{recovery}"
+            f"{semantic_value}{collection_text}"
             f'<p class="tp-muted">'
-            f'{html.escape(_msg("provenance", locale=locale, value=provenance))}</p>'
-            f'</section>')
+            f"{html.escape(_msg('provenance', locale=locale, value=provenance))}</p>"
+            f"</section>"
+        )
 
     inline_actions = projection.get("presentation", {}).get("primary_actions", [])[:2]
     detail_actions = projection.get("presentation", {}).get("detail_actions", [])
@@ -5680,28 +6611,40 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         f'data-dashboard-action="true" data-action-classification="'
         f'{_dashboard_action_classification(action)}" '
         f'data-prompt="{html.escape(str(action), quote=True)}">'
-        f'{html.escape(str(action))}</button>' for action in inline_actions)
+        f"{html.escape(str(action))}</button>"
+        for action in inline_actions
+    )
     detail_buttons = "".join(
         f'<button type="button" aria-label="{html.escape(str(action))}" '
         f'aria-describedby="tp-detail-delivery-status" '
         f'data-dashboard-action="true" data-action-classification="'
         f'{_dashboard_action_classification(action)}" '
         f'data-prompt="{html.escape(str(action), quote=True)}">'
-        f'{html.escape(str(action))}</button>' for action in detail_actions)
+        f"{html.escape(str(action))}</button>"
+        for action in detail_actions
+    )
     action_buttons += (
         f'<button class="tp-action" type="button" aria-label="'
         f'{html.escape(_msg("open_details", locale=locale), quote=True)}" '
         f'aria-controls="tp-fullscreen-detail" data-detail-trigger="true">'
-        f'{html.escape(_msg("dashboard_details", locale=locale))}</button>')
+        f"{html.escape(_msg('dashboard_details', locale=locale))}</button>"
+    )
 
-    js_text = {key: json.dumps(_msg(key, locale=locale), ensure_ascii=False)
-               .replace("<", "\\u003c") for key in (
-                   "delivery_sending_button", "delivery_sending",
-                   "delivery_sent", "delivery_empty")}
-    js_template = {key: json.dumps(_msg(key, locale=locale, message="__MESSAGE__"),
-                                   ensure_ascii=False).replace("<", "\\u003c")
-                   for key in ("delivery_no_bridge", "delivery_delivered",
-                               "delivery_failed")}
+    js_text = {
+        key: json.dumps(_msg(key, locale=locale), ensure_ascii=False).replace("<", "\\u003c")
+        for key in (
+            "delivery_sending_button",
+            "delivery_sending",
+            "delivery_sent",
+            "delivery_empty",
+        )
+    }
+    js_template = {
+        key: json.dumps(
+            _msg(key, locale=locale, message="__MESSAGE__"), ensure_ascii=False
+        ).replace("<", "\\u003c")
+        for key in ("delivery_no_bridge", "delivery_delivered", "delivery_failed")
+    }
     if locale.split("-", 1)[0] == "en":
         js_no_bridge = '"No chat bridge in this static view — reply in chat: "+message'
         js_delivered = '"Delivered to chat: "+message'
@@ -5712,148 +6655,159 @@ def render_native_dashboard_surface(projection, *, viewport_px=1024,
         js_failed = f'{js_template["delivery_failed"]}.replace("__MESSAGE__",message)'
 
     interaction = (
-        '<script>(function(){'
+        "<script>(function(){"
         'var root=document.currentScript.closest(".tp-host");'
-        'if(!root){return;}'
-        'function all(s){return root.querySelectorAll?Array.from(root.querySelectorAll(s)):[];}'
-        'function statusFor(control){var surface=null;'
+        "if(!root){return;}"
+        "function all(s){return root.querySelectorAll?Array.from(root.querySelectorAll(s)):[];}"
+        "function statusFor(control){var surface=null;"
         'if(control&&typeof control.closest==="function")'
         '{surface=control.closest(".tp-detail");}'
-        'if(surface&&surface.querySelector){var local='
+        "if(surface&&surface.querySelector){var local="
         'surface.querySelector("[data-delivery-scope=detail]");if(local)return local;}'
         'return root.querySelector("[data-delivery-scope=shared]")||'
         'root.querySelector("[data-delivery-status]");}'
-        'function report(control,message,error){var status=statusFor(control);'
-        'if(!status)return;status.textContent=message;'
+        "function report(control,message,error){var status=statusFor(control);"
+        "if(!status)return;status.textContent=message;"
         'status.setAttribute("role",error?"alert":"status");}'
-        'function actionGroup(control){var group=null;'
+        "function actionGroup(control){var group=null;"
         'if(control&&typeof control.closest==="function")'
         '{group=control.closest("[data-delivery-actions]");}'
-        'return group&&group.querySelectorAll?'
+        "return group&&group.querySelectorAll?"
         'Array.from(group.querySelectorAll("[data-dashboard-action]")):[control];}'
-        'function hasBridge(){return !!(window.openai&&'
+        "function hasBridge(){return !!(window.openai&&"
         'typeof window.openai.sendFollowUpMessage==="function")||'
         'typeof window.sendPrompt==="function";}'
-        'function bridge(message){var result;try{if(window.openai&&'
+        "function bridge(message){var result;try{if(window.openai&&"
         'typeof window.openai.sendFollowUpMessage==="function")'
-        '{result=window.openai.sendFollowUpMessage({prompt:message});}'
+        "{result=window.openai.sendFollowUpMessage({prompt:message});}"
         'else if(typeof window.sendPrompt==="function"){result=window.sendPrompt(message);}'
-        'else{return null;}}catch(error){return Promise.reject(error);}'
-        'return Promise.resolve(result);}'
-        'function deliver(control,message){if(!hasBridge()){'
-        f'report(control,{js_no_bridge},false);'
-        'return;}var controls=actionGroup(control);controls.forEach(function(item){'
-        'if(!item.dataset.deliveryLabel)item.dataset.deliveryLabel=item.textContent;'
-        'item.disabled=true;});'
+        "else{return null;}}catch(error){return Promise.reject(error);}"
+        "return Promise.resolve(result);}"
+        "function deliver(control,message){if(!hasBridge()){"
+        f"report(control,{js_no_bridge},false);"
+        "return;}var controls=actionGroup(control);controls.forEach(function(item){"
+        "if(!item.dataset.deliveryLabel)item.dataset.deliveryLabel=item.textContent;"
+        "item.disabled=true;});"
         f'control.setAttribute("aria-busy","true");control.textContent={js_text["delivery_sending_button"]};'
-        f'report(control,{js_text["delivery_sending"]},false);bridge(message).then(function(result){{'
+        f"report(control,{js_text['delivery_sending']},false);bridge(message).then(function(result){{"
         'if(result===false||(result&&typeof result==="object"&&'
-        '(result.ok===false||result.delivered===false)))'
+        "(result.ok===false||result.delivered===false)))"
         '{throw new Error("bridge did not confirm delivery");}'
-        'return result;}).then(function(){'
+        "return result;}).then(function(){"
         f'control.removeAttribute("aria-busy");control.textContent={js_text["delivery_sent"]};'
         'if((control.dataset.actionClassification||"independent")==="independent")'
-        '{controls.forEach(function(item){if(item!==control&&'
+        "{controls.forEach(function(item){if(item!==control&&"
         '(item.dataset.actionClassification||"independent")==="independent")'
-        '{item.disabled=false;if(item.dataset.deliveryLabel)'
-        'item.textContent=item.dataset.deliveryLabel;}});}'
-        f'report(control,{js_delivered},false);}},function(){{'
-        'controls.forEach(function(item){item.disabled=false;'
-        'if(item.dataset.deliveryLabel)item.textContent=item.dataset.deliveryLabel;});'
+        "{item.disabled=false;if(item.dataset.deliveryLabel)"
+        "item.textContent=item.dataset.deliveryLabel;}});}"
+        f"report(control,{js_delivered},false);}},function(){{"
+        "controls.forEach(function(item){item.disabled=false;"
+        "if(item.dataset.deliveryLabel)item.textContent=item.dataset.deliveryLabel;});"
         'control.removeAttribute("aria-busy");'
-        f'report(control,{js_failed},true);}});}}'
+        f"report(control,{js_failed},true);}});}}"
         'all("[data-dashboard-action]").forEach(function(button){'
         'button.addEventListener("click",function(){deliver(button,button.dataset.prompt);});});'
         'var form=root.querySelector(".tp-composer");'
         'if(form){form.addEventListener("submit",function(event){event.preventDefault();'
         'var input=form.querySelector("textarea");var submit=form.querySelector("button[type=submit]");'
         f'var message=input?input.value.trim():"";if(!message){{report(submit,{js_text["delivery_empty"]},true);'
-        'return;}deliver(submit,message);});}'
+        "return;}deliver(submit,message);});}"
         'all("[data-carousel-direction]").forEach(function(button){'
         'button.addEventListener("click",function(){var carousel=button.closest(".tp-carousel");'
-        'var current=Number(carousel.dataset.carouselCurrent),total=Number(carousel.dataset.carouselTotal);'
+        "var current=Number(carousel.dataset.carouselCurrent),total=Number(carousel.dataset.carouselTotal);"
         'var next=Math.max(1,Math.min(total,current+(button.dataset.carouselDirection==="next"?1:-1)));'
-        'carousel.dataset.carouselCurrent=String(next);'
+        "carousel.dataset.carouselCurrent=String(next);"
         'Array.from(carousel.querySelectorAll("[data-carousel-page]")).forEach(function(page){'
-        'page.hidden=Number(page.dataset.carouselPage)!==next;});'
+        "page.hidden=Number(page.dataset.carouselPage)!==next;});"
         'var position=carousel.querySelector("[data-carousel-position]");'
         'var labels=JSON.parse(carousel.dataset.carouselLabels||"[]");'
-        'if(position&&labels[next-1])position.textContent=labels[next-1];'
+        "if(position&&labels[next-1])position.textContent=labels[next-1];"
         'var previous=carousel.querySelector("[data-carousel-direction=previous]");'
         'var following=carousel.querySelector("[data-carousel-direction=next]");'
-        'if(previous)previous.disabled=next<=1;if(following)following.disabled=next>=total;});});'
+        "if(previous)previous.disabled=next<=1;if(following)following.disabled=next>=total;});});"
         'var trigger=root.querySelector("[data-detail-trigger]");'
         'var dialog=root.querySelector("#tp-fullscreen-detail");'
         'var closer=root.querySelector("[data-detail-close]");'
-        'var opener=null;'
-        'function openDetail(){opener=document.activeElement||trigger;'
+        "var opener=null;"
+        "function openDetail(){opener=document.activeElement||trigger;"
         'if(typeof dialog.showModal==="function"){dialog.showModal();}'
         'else{dialog.setAttribute("open","");}'
-        'closer.focus();}'
-        'function closeDetail(){'
+        "closer.focus();}"
+        "function closeDetail(){"
         'if(dialog.open&&typeof dialog.close==="function"){dialog.close();}'
         'else{dialog.removeAttribute("open");}'
         'if(opener&&typeof opener.focus==="function"){opener.focus();}}'
         'if(trigger&&dialog&&closer){trigger.addEventListener("click",openDetail);'
         'closer.addEventListener("click",closeDetail);'
         'dialog.addEventListener("cancel",function(event){'
-        'event.preventDefault();closeDetail();});}'
-        '})();</script>')
+        "event.preventDefault();closeDetail();});}"
+        "})();</script>"
+    )
 
     identity = projection.get("identity", {})
     evidence = projection.get("evidence", [])
     detail_evidence = (
         '<div role="region" aria-labelledby="tp-evidence-title">'
         '<h3 id="tp-evidence-title">'
-        + html.escape(_msg("workflow_evidence", locale=locale)) + '</h3>'
-        + _dashboard_value_markup({
-            "identity": identity,
-            "stage": projection.get("stage"),
-            "state": projection.get("state"),
-            "evidence": evidence,
-        }, locale=locale) + '</div>')
+        + html.escape(_msg("workflow_evidence", locale=locale))
+        + "</h3>"
+        + _dashboard_value_markup(
+            {
+                "identity": identity,
+                "stage": projection.get("stage"),
+                "state": projection.get("state"),
+                "evidence": evidence,
+            },
+            locale=locale,
+        )
+        + "</div>"
+    )
 
     locale_notice = (
         f'<p class="tp-muted" role="status" data-locale-fallback="true">'
-        f'{html.escape(_msg("locale_fallback", locale=locale, details="; ".join(catalog.errors)))}'
-        f'</p>' if catalog.errors else "")
+        f"{html.escape(_msg('locale_fallback', locale=locale, details='; '.join(catalog.errors)))}"
+        f"</p>"
+        if catalog.errors
+        else ""
+    )
 
     return (
         '<div class="tp-host" data-host="'
         + html.escape(str(projection["presentation"]["host"]), quote=True)
         + f'" lang="{html.escape(locale, quote=True)}" dir="auto" '
-          f'data-theme="{theme}" data-layout="{layout}" '
-          f'data-viewport-width="{viewport_px}" data-reduced-motion="'
+        f'data-theme="{theme}" data-layout="{layout}" '
+        f'data-viewport-width="{viewport_px}" data-reduced-motion="'
         + ("true" if reduced_motion else "false")
         + f'" style="{token_css};font-size:{text_scale_percent}%;transition:{motion}">'
-          f'<style>{styles}</style>{locale_notice}<main class="tp-dashboard" '
-          f'aria-label="{html.escape(_msg("dashboard_aria", locale=locale), quote=True)}">'
-          f'{"".join(cards)}</main>'
-          f'<nav class="tp-actions" aria-label="'
-          f'{html.escape(_msg("dashboard_actions", locale=locale), quote=True)}" '
-          f'data-delivery-actions="true">{action_buttons}</nav>'
-          f'<dialog id="tp-fullscreen-detail" class="tp-detail" '
-          f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">'
-          f'{html.escape(_msg("dashboard_details", locale=locale))}</h2>'
-          f'{detail_evidence}<div class="tp-detail-actions" '
-          f'data-delivery-actions="true">{detail_buttons}</div>'
-          f'<p id="tp-detail-delivery-status" class="tp-delivery-status" '
-          f'data-delivery-status="true" '
-          f'data-delivery-scope="detail" role="status" aria-live="polite" '
-          f'aria-atomic="true"></p>'
-          f'<button type="button" aria-label="'
-          f'{html.escape(_msg("close_details", locale=locale), quote=True)}" '
-          f'data-detail-close="true">{html.escape(_msg("close", locale=locale))}'
-          f'</button></dialog><form class="tp-composer" aria-label="'
-          f'{html.escape(_msg("conversation_composer", locale=locale), quote=True)}">'
-          f'<label for="tp-message">{html.escape(_msg("message_label", locale=locale))}'
-          f'</label><textarea id="tp-message" name="message"></textarea>'
-          f'<button type="submit">{html.escape(_msg("send", locale=locale))}'
-          f'</button></form>'
-          f'<p class="tp-delivery-status" data-delivery-status="true" '
-          f'data-delivery-scope="shared" role="status" aria-live="polite" '
-          f'aria-atomic="true"></p>'
-          f'{interaction}</div>')
+        f'<style>{styles}</style>{locale_notice}<main class="tp-dashboard" '
+        f'aria-label="{html.escape(_msg("dashboard_aria", locale=locale), quote=True)}">'
+        f"{''.join(cards)}</main>"
+        f'<nav class="tp-actions" aria-label="'
+        f'{html.escape(_msg("dashboard_actions", locale=locale), quote=True)}" '
+        f'data-delivery-actions="true">{action_buttons}</nav>'
+        f'<dialog id="tp-fullscreen-detail" class="tp-detail" '
+        f'aria-labelledby="tp-detail-title"><h2 id="tp-detail-title">'
+        f"{html.escape(_msg('dashboard_details', locale=locale))}</h2>"
+        f'{detail_evidence}<div class="tp-detail-actions" '
+        f'data-delivery-actions="true">{detail_buttons}</div>'
+        f'<p id="tp-detail-delivery-status" class="tp-delivery-status" '
+        f'data-delivery-status="true" '
+        f'data-delivery-scope="detail" role="status" aria-live="polite" '
+        f'aria-atomic="true"></p>'
+        f'<button type="button" aria-label="'
+        f'{html.escape(_msg("close_details", locale=locale), quote=True)}" '
+        f'data-detail-close="true">{html.escape(_msg("close", locale=locale))}'
+        f'</button></dialog><form class="tp-composer" aria-label="'
+        f'{html.escape(_msg("conversation_composer", locale=locale), quote=True)}">'
+        f'<label for="tp-message">{html.escape(_msg("message_label", locale=locale))}'
+        f'</label><textarea id="tp-message" name="message"></textarea>'
+        f'<button type="submit">{html.escape(_msg("send", locale=locale))}'
+        f"</button></form>"
+        f'<p class="tp-delivery-status" data-delivery-status="true" '
+        f'data-delivery-scope="shared" role="status" aria-live="polite" '
+        f'aria-atomic="true"></p>'
+        f"{interaction}</div>"
+    )
 
 
 def _fit_page(html: str, budget: int) -> str:
@@ -5874,10 +6828,10 @@ def _fit_page(html: str, budget: int) -> str:
 
 def _wrap_page(sr: str, body: str) -> str:
     """A self-contained paged fragment: sr heading + widget chrome."""
-    return (sr + _WIDGET_CSS
-            + '<div dir="auto" style="padding:0.5rem 0;'
-              'font-family:var(--font-sans);color:var(--text-primary)">'
-            + body + '</div>')
+    return (
+        sr + _WIDGET_CSS + '<div dir="auto" style="padding:0.5rem 0;'
+        'font-family:var(--font-sans);color:var(--text-primary)">' + body + "</div>"
+    )
 
 
 def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
@@ -5897,8 +6851,7 @@ def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
     pages = []
 
     def add(title, body, sr_text=None):
-        sr = (f'<h2 class="sr-only">{_esc(sr_text or title)}</h2>'
-              if sr_text is not False else "")
+        sr = f'<h2 class="sr-only">{_esc(sr_text or title)}</h2>' if sr_text is not False else ""
         pages.append({"title": title, "html": _wrap_page(sr, body)})
 
     # page 1 — status & gate: header, notices, hero, gate banner, DoR,
@@ -5911,61 +6864,73 @@ def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
     # tpFire/tpSend/tpView/tpTab). Without this, a page 1 over budget got
     # tail-truncated by _fit_page straight through the trailing <script>,
     # leaving the emitted gate buttons calling undefined functions.
-    p1_prefix = (p["sr"] + _WIDGET_CSS
-                 + '<div dir="auto" style="padding:0.5rem 0;'
-                   'font-family:var(--font-sans);'
-                   'color:var(--text-primary)">')
-    p1_suffix = '</div>' + _WIDGET_JS
+    p1_prefix = (
+        p["sr"] + _WIDGET_CSS + '<div dir="auto" style="padding:0.5rem 0;'
+        "font-family:var(--font-sans);"
+        'color:var(--text-primary)">'
+    )
+    p1_suffix = "</div>" + _WIDGET_JS
     p1_fixed_bytes = _page_bytes(p1_prefix) + _page_bytes(p1_suffix)
-    p1_body = (p["header"] + p["notice"] + p["assurance"]
-               + p["interference"]
-               + p["cleanup_alert"]
-               + p["stage_lineage"]
-               + p["hero"] + p["gatebar"]
-               + p["dor"] + p["stats"] + p["pipe_s"] + p["harness_panel"])
+    p1_body = (
+        p["header"]
+        + p["notice"]
+        + p["assurance"]
+        + p["interference"]
+        + p["cleanup_alert"]
+        + p["stage_lineage"]
+        + p["hero"]
+        + p["gatebar"]
+        + p["dor"]
+        + p["stats"]
+        + p["pipe_s"]
+        + p["harness_panel"]
+    )
     p1_body = _fit_page(p1_body, max(256, budget - p1_fixed_bytes))
-    pages.append({"title": "mission control — status & gate",
-                  "html": p1_prefix + p1_body + p1_suffix})
+    pages.append(
+        {"title": "mission control — status & gate", "html": p1_prefix + p1_body + p1_suffix}
+    )
 
     # page 2+ — the step journey (split by visits when oversized)
     visits = p["visits"]
     if visits:
         j = _wrap_page("", render_journey(visits, "s"))
         if _page_bytes(j) <= budget:
-            add("step journey", render_journey(visits, "s"),
-                "step journey — every traversed step with its decisions.")
+            add(
+                "step journey",
+                render_journey(visits, "s"),
+                "step journey — every traversed step with its decisions.",
+            )
         else:
             n_chunks = 2
             while n_chunks <= max(2, len(visits)):
                 size = max(1, (len(visits) + n_chunks - 1) // n_chunks)
-                chunks = [visits[i:i + size]
-                          for i in range(0, len(visits), size)]
-                rendered = [_wrap_page("", render_journey(c, f"s{ci}"))
-                            for ci, c in enumerate(chunks)]
-                if all(_page_bytes(r) <= budget for r in rendered) \
-                        or size == 1:
+                chunks = [visits[i : i + size] for i in range(0, len(visits), size)]
+                rendered = [
+                    _wrap_page("", render_journey(c, f"s{ci}")) for ci, c in enumerate(chunks)
+                ]
+                if all(_page_bytes(r) <= budget for r in rendered) or size == 1:
                     for ci, c in enumerate(chunks):
-                        add(f"step journey (part {ci + 1}/{len(chunks)})",
+                        add(
+                            f"step journey (part {ci + 1}/{len(chunks)})",
                             render_journey(c, f"s{ci}"),
-                            f"step journey part {ci + 1} of {len(chunks)}.")
+                            f"step journey part {ci + 1} of {len(chunks)}.",
+                        )
                     break
                 n_chunks += 1
 
     # build lanes + live feed (split apart if together they exceed budget)
-    lanes_feed = p["lanes_panel"] + '<div style="height:12px"></div>' \
-        + p["ministats"] + p["feed_panel"]
+    lanes_feed = (
+        p["lanes_panel"] + '<div style="height:12px"></div>' + p["ministats"] + p["feed_panel"]
+    )
     if _page_bytes(_wrap_page("", lanes_feed)) <= budget:
-        add("build lanes & live feed", lanes_feed,
-            "build lanes and the live event feed.")
+        add("build lanes & live feed", lanes_feed, "build lanes and the live event feed.")
     else:
         add("build lanes", p["lanes_panel"], "build lanes.")
-        add("live feed", p["ministats"] + p["feed_panel"],
-            "run stats and the live event feed.")
+        add("live feed", p["ministats"] + p["feed_panel"], "run stats and the live event feed.")
 
     # graph, then context (already the two natural halves of the map tab)
     add("dependency graph", p["graph"], "dependency graph.")
-    add("context", p["context"],
-        "requirement, lenses, decisions and debt context.")
+    add("context", p["context"], "requirement, lenses, decisions and debt context.")
 
     n = len(pages)
     for i, page in enumerate(pages, 1):

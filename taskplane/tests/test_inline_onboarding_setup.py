@@ -182,9 +182,9 @@ def test_refusal_reports_completed_storage_selection(workspace, monkeypatch, cap
                      json=True, out=None)
     assert cli.cmd_onboard(args) == 2
     result = json.loads(capsys.readouterr().out)
-    assert result["status"] == "refused"
+    assert result["setup_result"]["status"] == "refused"
     assert result["storage_selection"] == selection
-    assert result["run_preserved"] is True
+    assert result["setup_result"]["run_preserved"] is True
 
 
 def test_native_observation_requires_no_project_hook_rows(workspace, monkeypatch):

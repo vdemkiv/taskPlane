@@ -19,6 +19,7 @@ import stat as stat_runtime
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
 if __package__:
     from .primitives import content_fingerprint as artifact_fingerprint
 else:
@@ -56,11 +57,9 @@ TRANSCRIPT_PROJECTION_SCHEMA = "taskplane.transcript-usage-checkpoint/v1"
 USAGE_CAPABILITY_SCHEMA = "taskplane.host-usage-capability/v1"
 LENS_ROUTE_TELEMETRY_SCHEMA = "taskplane.lens-route-telemetry/v1"
 WAVE_METRICS_SOURCE_SCHEMA = "taskplane.wave-metrics-dispatch-source/v1"
-TERMINAL_METRICS_SOURCE_SCHEMA = \
-    "taskplane.terminal-metrics-dispatch-source/v1"
+TERMINAL_METRICS_SOURCE_SCHEMA = "taskplane.terminal-metrics-dispatch-source/v1"
 ROOT_ADMISSION_SCHEMA = "taskplane.root-session-dispatch-admission/v1"
-ROOT_ADMISSION_PROJECTION_SCHEMA = \
-    "taskplane.root-session-dispatch-admission-projection/v1"
+ROOT_ADMISSION_PROJECTION_SCHEMA = "taskplane.root-session-dispatch-admission-projection/v1"
 
 MAX_LENS_ROUTE_REASON_BYTES = 512
 MAX_LENS_ROUTE_ARTIFACT_BYTES = 128 * 1024
@@ -79,14 +78,28 @@ MAX_TRANSCRIPT_PROJECTION_BYTES = 64 * 1024 * 1024
 MAX_TRANSCRIPT_USAGE_IDENTITIES = 100_000
 
 THREAD_TYPES = frozenset({"main", "worker", "lens", "evaluator", "guardian"})
-EVENT_KINDS = frozenset({
-    "progress", "complete", "attention", "failed", "cancelled",
-    "interrupted", "handoff", "partial-host",
-})
-TERMINAL_EVENT_KINDS = frozenset({
-    "complete", "attention", "failed", "cancelled", "interrupted",
-    "handoff",
-})
+EVENT_KINDS = frozenset(
+    {
+        "progress",
+        "complete",
+        "attention",
+        "failed",
+        "cancelled",
+        "interrupted",
+        "handoff",
+        "partial-host",
+    }
+)
+TERMINAL_EVENT_KINDS = frozenset(
+    {
+        "complete",
+        "attention",
+        "failed",
+        "cancelled",
+        "interrupted",
+        "handoff",
+    }
+)
 MAX_EVENT_BYTES = 64 * 1024
 MAX_EVENTS = 256
 WAVE_BUDGET_CEILINGS: dict[str, int] = {
@@ -100,53 +113,118 @@ WAVE_BUDGET_CEILINGS: dict[str, int] = {
 # and was the source of repeated false scope-review stops.
 ADMISSION_BUDGET_FIELDS = ("elapsed_seconds", "sessions")
 
-_IDENTITY_FIELDS = frozenset({
-    "run_id", "source_sha", "design_fingerprint", "plan_fingerprint",
-})
-_DISPATCH_FIELDS = frozenset({
-    "dispatch_id", "thread_id", "thread_type", "task_id", "dependencies",
-    "shared_owner", "started_at", "ended_at", "wait_duration_seconds",
-    "correction_count", "events",
-})
-_USAGE_FIELDS = frozenset({
-    "input_tokens", "cached_input_tokens", "uncached_input_tokens",
-    "output_tokens", "reasoning_tokens", "total_tokens",
-})
-_BINDING_FIELDS = frozenset({
-    "schema", *_DISPATCH_FIELDS, "usage", "usage_source_fingerprint",
-    "usage_integrity_fingerprint", "finalized_receipt_fingerprint",
-})
-_USAGE_BASELINE_FIELDS = frozenset({
-    "schema", "dispatch_id", "provider", "usage", "source_fingerprint",
-    "integrity_fingerprint",
-})
-_STABLE_DISPATCH_IDENTITY_FIELDS = frozenset({
-    "dispatch_id", "thread_id", "thread_type", "task_id", "dependencies",
-    "shared_owner",
-})
-_LENS_ROUTE_TELEMETRY_FIELDS = frozenset({
-    "schema", "stage", "target_pseudonym", "route_fingerprint",
-    "selected_count", "lenses", "totals", "terminal_status",
-    "redactions", "fingerprint",
-})
-_LENS_ROUTE_METRIC_FIELDS = frozenset({
-    "estimated_tokens", "actual_tokens", "runtime_ms", "cache_reused",
-    "invalidation_cause",
-})
-_LENS_ROUTE_ROW_FIELDS = frozenset({"lens", "reason"}) | \
-    _LENS_ROUTE_METRIC_FIELDS
-_LENS_ROUTE_TOTAL_FIELDS = frozenset({
-    "estimated_tokens", "actual_tokens", "runtime_ms",
-    "cache_reused_count", "invalidation_count",
-})
+_IDENTITY_FIELDS = frozenset(
+    {
+        "run_id",
+        "source_sha",
+        "design_fingerprint",
+        "plan_fingerprint",
+    }
+)
+_DISPATCH_FIELDS = frozenset(
+    {
+        "dispatch_id",
+        "thread_id",
+        "thread_type",
+        "task_id",
+        "dependencies",
+        "shared_owner",
+        "started_at",
+        "ended_at",
+        "wait_duration_seconds",
+        "correction_count",
+        "events",
+    }
+)
+_USAGE_FIELDS = frozenset(
+    {
+        "input_tokens",
+        "cached_input_tokens",
+        "uncached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+    }
+)
+_BINDING_FIELDS = frozenset(
+    {
+        "schema",
+        *_DISPATCH_FIELDS,
+        "usage",
+        "usage_source_fingerprint",
+        "usage_integrity_fingerprint",
+        "finalized_receipt_fingerprint",
+    }
+)
+_USAGE_BASELINE_FIELDS = frozenset(
+    {
+        "schema",
+        "dispatch_id",
+        "provider",
+        "usage",
+        "source_fingerprint",
+        "integrity_fingerprint",
+    }
+)
+_STABLE_DISPATCH_IDENTITY_FIELDS = frozenset(
+    {
+        "dispatch_id",
+        "thread_id",
+        "thread_type",
+        "task_id",
+        "dependencies",
+        "shared_owner",
+    }
+)
+_LENS_ROUTE_TELEMETRY_FIELDS = frozenset(
+    {
+        "schema",
+        "stage",
+        "target_pseudonym",
+        "route_fingerprint",
+        "selected_count",
+        "lenses",
+        "totals",
+        "terminal_status",
+        "redactions",
+        "fingerprint",
+    }
+)
+_LENS_ROUTE_METRIC_FIELDS = frozenset(
+    {
+        "estimated_tokens",
+        "actual_tokens",
+        "runtime_ms",
+        "cache_reused",
+        "invalidation_cause",
+    }
+)
+_LENS_ROUTE_ROW_FIELDS = frozenset({"lens", "reason"}) | _LENS_ROUTE_METRIC_FIELDS
+_LENS_ROUTE_TOTAL_FIELDS = frozenset(
+    {
+        "estimated_tokens",
+        "actual_tokens",
+        "runtime_ms",
+        "cache_reused_count",
+        "invalidation_count",
+    }
+)
 _LENS_ROUTE_STAGES = frozenset({"product", "design", "plan"})
 _LENS_ROUTE_TERMINAL_ALIASES = {
-    "success": "success", "pass": "success", "passed": "success",
-    "complete": "success", "completed": "success",
-    "failed": "failed", "fail": "failed", "failure": "failed",
-    "cancelled": "cancelled", "canceled": "cancelled",
-    "interrupted": "interrupted", "interruption": "interrupted",
-    "handoff": "handoff", "handed-off": "handoff",
+    "success": "success",
+    "pass": "success",
+    "passed": "success",
+    "complete": "success",
+    "completed": "success",
+    "failed": "failed",
+    "fail": "failed",
+    "failure": "failed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "interrupted": "interrupted",
+    "interruption": "interrupted",
+    "handoff": "handoff",
+    "handed-off": "handoff",
     "handed_off": "handoff",
 }
 _LENS_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")
@@ -157,7 +235,8 @@ _PRIVATE_REASON = re.compile(
     r"|\b(?:sk|gh[opsu]|xox[baprs])-[a-z0-9_-]{8,}"
     r"|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}"
     r"|(?:^|[\s=])/(?:[^/\s]+/)+[^\s]*"
-    r"|(?:^|[\s=])[a-z]:\\[^\s]+)")
+    r"|(?:^|[\s=])[a-z]:\\[^\s]+)"
+)
 
 
 class DispatchTelemetryError(DeliveryPolicyError):
@@ -199,8 +278,11 @@ def _telemetry_object(value: object) -> dict[str, object]:
 
 
 def _telemetry_code(value: object) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value) or \
-            _PRIVATE_REASON.search(value):
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", value)
+        or _PRIVATE_REASON.search(value)
+    ):
         raise DispatchTelemetryError("telemetry reason code invalid")
     return value
 
@@ -224,30 +306,51 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
             raise DispatchTelemetryError("telemetry runtime signing identity is malformed")
         key = inputs.trusted_keys.get(key_id)
         if key is None or key.status != "active" or issued_at > inputs.now:
-            raise DispatchTelemetryError("telemetry runtime signing authority is disabled or from the future")
-    verified = stage_handoff.verify_contract(inputs.runtime_receipt,
-        trusted_keys=inputs.trusted_keys, expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
-        expected_freshness=inputs.freshness, now=inputs.now,
-        historical=inputs.resource_limits_advisory)
+            raise DispatchTelemetryError(
+                "telemetry runtime signing authority is disabled or from the future"
+            )
+    verified = stage_handoff.verify_contract(
+        inputs.runtime_receipt,
+        trusted_keys=inputs.trusted_keys,
+        expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
+        expected_freshness=inputs.freshness,
+        now=inputs.now,
+        historical=inputs.resource_limits_advisory,
+    )
     result = _telemetry_object(verified["payload"])
-    nonce = inputs.nonce_source.validate(inputs.nonce, inputs.nonce_bindings,
-        enforce_deadline=not inputs.resource_limits_advisory)
-    for field in ("run_id", "phase_id", "attempt_id", "operation_id", "candidate_fingerprint",
-                  "definition_set_fingerprint", "phase_definition_fingerprint",
-                  "sealed_package_fingerprint", "knowledge_fingerprint", "authority_fingerprint",
-                  "nonce_digest"):
+    nonce = inputs.nonce_source.validate(
+        inputs.nonce, inputs.nonce_bindings, enforce_deadline=not inputs.resource_limits_advisory
+    )
+    for field in (
+        "run_id",
+        "phase_id",
+        "attempt_id",
+        "operation_id",
+        "candidate_fingerprint",
+        "definition_set_fingerprint",
+        "phase_definition_fingerprint",
+        "sealed_package_fingerprint",
+        "knowledge_fingerprint",
+        "authority_fingerprint",
+        "nonce_digest",
+    ):
         if result[field] != nonce[field]:
             raise DispatchTelemetryError("telemetry attempt binding mismatch")
     ledger = validate_ledger(inputs.ledger)
     # The run ledger retains its original target. Build signs its produced
     # commit, and later phases review that commit; those revisions may differ.
     # The nonce and signed result also bind the original target digest.
-    source_matches = ledger["source_sha"] == inputs.freshness["candidate_sha"] or \
-        artifact_fingerprint({"revision": ledger["source_sha"]}) == result["candidate_fingerprint"]
+    source_matches = (
+        ledger["source_sha"] == inputs.freshness["candidate_sha"]
+        or artifact_fingerprint({"revision": ledger["source_sha"]})
+        == result["candidate_fingerprint"]
+    )
     if ledger["run_id"] != result["run_id"] or not source_matches:
         raise DispatchTelemetryError("telemetry ledger identity mismatch")
-    binding = next((row for row in ledger.get("bindings", [])
-                    if row["dispatch_id"] == result["attempt_id"]), None)
+    binding = next(
+        (row for row in ledger.get("bindings", []) if row["dispatch_id"] == result["attempt_id"]),
+        None,
+    )
     if binding is None:
         raise DispatchTelemetryError("telemetry attempt binding missing")
     events = binding["events"]
@@ -279,15 +382,18 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
     terminal = [event for event in events if event["kind"] in TERMINAL_EVENT_KINDS]
     if len(terminal) != 1 or terminal[0] != events[-1] or not result["terminal_identity"]:
         raise TelemetryIncompleteError("telemetry required terminal field missing")
-    timing = next((row for row in ledger["dispatches"]
-                   if row["dispatch_id"] == binding["dispatch_id"]), binding)
+    timing = next(
+        (row for row in ledger["dispatches"] if row["dispatch_id"] == binding["dispatch_id"]),
+        binding,
+    )
     if previous_at != timing["ended_at"]:
         raise DispatchTelemetryError("telemetry terminal timing mismatch")
     outcome = terminal[0]["kind"]
     if result["status"] == "accepted" and outcome != "complete":
         raise DispatchTelemetryError("telemetry terminal outcome mismatch")
-    if len(inputs.knowledge_proposals) > MAX_EVENTS or \
-            len(inputs.knowledge_proposals) != len(inputs.knowledge_receipts):
+    if len(inputs.knowledge_proposals) > MAX_EVENTS or len(inputs.knowledge_proposals) != len(
+        inputs.knowledge_receipts
+    ):
         raise DispatchTelemetryError("telemetry knowledge receipt inventory mismatch")
     knowledge: dict[str, str] = {}
     counts: dict[str, int] = {}
@@ -295,8 +401,13 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
         for field in ("run_id", "phase_id", "attempt_id", "candidate_fingerprint"):
             if proposal.get(field) != result[field]:
                 raise DispatchTelemetryError("telemetry knowledge attempt mismatch")
-        applied = stage_handoff.consume_knowledge_receipt(receipt, proposal=proposal,
-            trusted_keys=inputs.trusted_keys, expected_freshness=inputs.freshness, now=inputs.now)
+        applied = stage_handoff.consume_knowledge_receipt(
+            receipt,
+            proposal=proposal,
+            trusted_keys=inputs.trusted_keys,
+            expected_freshness=inputs.freshness,
+            now=inputs.now,
+        )
         identity = str(applied["proposal_fingerprint"])
         if identity in knowledge:
             raise DispatchTelemetryError("telemetry knowledge proposal duplicated")
@@ -307,13 +418,24 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
         counts[status] = counts.get(status, 0) + 1
     runtime_proposals = result["knowledge_proposals"]
     if not isinstance(runtime_proposals, list) or any(
-            _telemetry_object(row).get("proposal_fingerprint") not in knowledge for row in runtime_proposals):
+        _telemetry_object(row).get("proposal_fingerprint") not in knowledge
+        for row in runtime_proposals
+    ):
         raise DispatchTelemetryError("telemetry runtime knowledge receipt missing")
-    attempt = next(row for row in terminal_attempt_attribution(ledger)
-                   if row["attempt_fingerprint"] == content_fingerprint({
-                       "schema": "taskplane.dispatch-attempt-identity/v1", "run_id": ledger["run_id"],
-                       "dispatch_id": binding["dispatch_id"], "thread_id": binding["thread_id"],
-                       "task_id": binding["task_id"]}))
+    attempt = next(
+        row
+        for row in terminal_attempt_attribution(ledger)
+        if row["attempt_fingerprint"]
+        == content_fingerprint(
+            {
+                "schema": "taskplane.dispatch-attempt-identity/v1",
+                "run_id": ledger["run_id"],
+                "dispatch_id": binding["dispatch_id"],
+                "thread_id": binding["thread_id"],
+                "task_id": binding["task_id"],
+            }
+        )
+    )
     measured = attempt["usage_status"] == "measured"
     continuation = _telemetry_object(result["continuation"])
     kind = _telemetry_code(continuation["kind"])
@@ -321,42 +443,57 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
     missing = [] if measured else ["provider_usage_unavailable"]
     if result["reason_code"] is not None:
         missing.append(_telemetry_code(result["reason_code"]))
+
     def pseudonym(field: str) -> str:
-        return content_fingerprint({"run": result["run_id"], "field": field, "value": result[field]})
+        return content_fingerprint(
+            {"run": result["run_id"], "field": field, "value": result[field]}
+        )
+
     material: dict[str, object] = {
         "schema": "taskplane.attempt-telemetry/v1",
-        "run_id": pseudonym("run_id"), "phase_id": _telemetry_code(result["phase_id"]),
-        "attempt_id": pseudonym("attempt_id"), "operation_id": pseudonym("operation_id"),
+        "run_id": pseudonym("run_id"),
+        "phase_id": _telemetry_code(result["phase_id"]),
+        "attempt_id": pseudonym("attempt_id"),
+        "operation_id": pseudonym("operation_id"),
         "candidate_fingerprint": result["candidate_fingerprint"],
         "agent_definition_fingerprint": result["phase_definition_fingerprint"],
-        "artifact_reference_fingerprints": [content_fingerprint(inputs.runtime_receipt),
-            content_fingerprint(ledger), content_fingerprint(inputs.freshness)],
+        "artifact_reference_fingerprints": [
+            content_fingerprint(inputs.runtime_receipt),
+            content_fingerprint(ledger),
+            content_fingerprint(inputs.freshness),
+        ],
         "knowledge_fingerprint_consumed": result["knowledge_fingerprint"],
         "knowledge_update_reference_fingerprints": sorted(knowledge.values()),
         "knowledge_update_admission_counts": counts,
         "taskplane_nonce_receipt_digest": content_fingerprint(nonce),
-        "pseudonymous_host_event_id": content_fingerprint({"run": result["run_id"],
-                                                           "event": result["terminal_identity"]}),
-        "started_at": binding["started_at"], "ended_at": previous_at,
+        "pseudonymous_host_event_id": content_fingerprint(
+            {"run": result["run_id"], "event": result["terminal_identity"]}
+        ),
+        "started_at": binding["started_at"],
+        "ended_at": previous_at,
         "elapsed_ms": int((previous_at - binding["started_at"]) * 1000),
         "last_progress_at": progress[-1] if progress else None,
         "wait_reason_code": "host_observation" if binding["wait_duration_seconds"] else None,
-        "terminal_outcome": outcome, "effect_state": result["effect_state"],
+        "terminal_outcome": outcome,
+        "effect_state": result["effect_state"],
         "continuation": {"kind": kind, "phase_id": _telemetry_code(continuation["phase_id"])},
-        "next_permitted_action": kind, "missing_evidence_codes": missing,
+        "next_permitted_action": kind,
+        "missing_evidence_codes": missing,
         "correction_count": binding["correction_count"],
         "replay_count": len(inputs.event_deliveries) - len(delivered),
         "usage_status": attempt["usage_status"],
         "usage_source": attempt["usage_source_fingerprint"] if measured else None,
         "token_counts_when_available": dict(binding["usage"]) if measured else None,
-        "cache_semantics": ("input-includes-cache-read;total-includes-cache-write;reasoning-in-output"
-                            if measured else None),
+        "cache_semantics": (
+            "input-includes-cache-read;total-includes-cache-write;reasoning-in-output"
+            if measured
+            else None
+        ),
     }
     return {**material, "fingerprint": content_fingerprint(material)}
 
 
-def _transcript_usage_row(row: Mapping[str, Any]) \
-        -> tuple[dict[str, Any] | None, str | None]:
+def _transcript_usage_row(row: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     """Return one provider usage block and its stable message identity."""
     containers = []
     for key in ("message", "response", "payload", "event"):
@@ -368,39 +505,53 @@ def _transcript_usage_row(row: Mapping[str, Any]) \
         usage = container.get("usage")
         if not isinstance(usage, dict):
             continue
-        identity = next((str(container.get(key)) for key in (
-            "id", "message_id", "response_id", "request_id")
-            if container.get(key) not in (None, "")), None)
+        identity = next(
+            (
+                str(container.get(key))
+                for key in ("id", "message_id", "response_id", "request_id")
+                if container.get(key) not in (None, "")
+            ),
+            None,
+        )
         if identity is None:
-            identity = next((str(row.get(key)) for key in (
-                "id", "message_id", "response_id", "request_id")
-                if row.get(key) not in (None, "")), None)
+            identity = next(
+                (
+                    str(row.get(key))
+                    for key in ("id", "message_id", "response_id", "request_id")
+                    if row.get(key) not in (None, "")
+                ),
+                None,
+            )
         return usage, identity
     return None, None
 
 
 def _unavailable_transcript_projection(
-        provider: str, reason: str, *, byte_limit: int,
-        bytes_read: int = 0) -> dict[str, Any]:
+    provider: str, reason: str, *, byte_limit: int, bytes_read: int = 0
+) -> dict[str, Any]:
     return {
         "schema": TRANSCRIPT_PROJECTION_SCHEMA,
-        "status": "unavailable", "provider": str(provider),
-        "reason": str(reason), "bytes_read": int(bytes_read),
-        "byte_limit": int(byte_limit), "effective_tokens": None,
-        "usage": None, "source_fingerprint": None,
+        "status": "unavailable",
+        "provider": str(provider),
+        "reason": str(reason),
+        "bytes_read": int(bytes_read),
+        "byte_limit": int(byte_limit),
+        "effective_tokens": None,
+        "usage": None,
+        "source_fingerprint": None,
     }
 
 
 def _checkpoint_authority(value: bytes | None) -> bytes:
-    authority = (_TRANSCRIPT_CHECKPOINT_AUTHORITY if value is None else value)
+    authority = _TRANSCRIPT_CHECKPOINT_AUTHORITY if value is None else value
     if not isinstance(authority, bytes) or len(authority) < 32:
-        raise DispatchTelemetryError(
-            "transcript checkpoint authority is invalid")
+        raise DispatchTelemetryError("transcript checkpoint authority is invalid")
     return authority
 
 
 def _seal_transcript_checkpoint(
-        checkpoint: Mapping[str, Any], authority: bytes) -> dict[str, object]:
+    checkpoint: Mapping[str, Any], authority: bytes
+) -> dict[str, object]:
     """Content-address and authenticate every checkpoint field as one unit."""
     sealed = dict(checkpoint)
     sealed["authority_id"] = hashlib.sha256(authority).hexdigest()
@@ -408,13 +559,13 @@ def _seal_transcript_checkpoint(
     sealed["content_sha256"] = content_sha256
     sealed["authenticator"] = hmac.new(
         authority,
-        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode(
-            "utf-8"), hashlib.sha256).hexdigest()
+        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
     return sealed
 
 
-def _authorized_transcript_checkpoint(
-        checkpoint: Mapping[str, Any], authority: bytes) -> bool:
+def _authorized_transcript_checkpoint(checkpoint: Mapping[str, Any], authority: bytes) -> bool:
     """Accept only an intact checkpoint minted by this engine instance."""
     try:
         candidate = dict(checkpoint)
@@ -422,28 +573,33 @@ def _authorized_transcript_checkpoint(
         content_sha256 = candidate.pop("content_sha256")
     except (KeyError, TypeError, ValueError):
         return False
-    if not isinstance(content_sha256, str) or re.fullmatch(
-            r"[0-9a-f]{64}", content_sha256) is None or \
-            not isinstance(authenticator, str) or re.fullmatch(
-                r"[0-9a-f]{64}", authenticator) is None:
+    if (
+        not isinstance(content_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", content_sha256) is None
+        or not isinstance(authenticator, str)
+        or re.fullmatch(r"[0-9a-f]{64}", authenticator) is None
+    ):
         return False
     if candidate.get("authority_id") != hashlib.sha256(
-            authority).hexdigest() or not hmac.compare_digest(
-                content_fingerprint(candidate), content_sha256):
+        authority
+    ).hexdigest() or not hmac.compare_digest(content_fingerprint(candidate), content_sha256):
         return False
     expected = hmac.new(
         authority,
-        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode(
-            "utf-8"), hashlib.sha256).hexdigest()
+        (TRANSCRIPT_PROJECTION_SCHEMA + "\0" + content_sha256).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
     return hmac.compare_digest(authenticator, expected)
 
 
 def project_transcript_usage(
-        path: str, *, provider: str,
-        checkpoint: Mapping[str, Any] | None = None,
-        checkpoint_authority: bytes | None = None,
-        byte_limit: int = MAX_TRANSCRIPT_PROJECTION_BYTES
-        ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    path: str,
+    *,
+    provider: str,
+    checkpoint: Mapping[str, Any] | None = None,
+    checkpoint_authority: bytes | None = None,
+    byte_limit: int = MAX_TRANSCRIPT_PROJECTION_BYTES,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Project one selected transcript with a content-bound checkpoint.
 
     Every call reads at most ``byte_limit`` bytes and authenticates the entire
@@ -451,16 +607,20 @@ def project_transcript_usage(
     inode/size/timestamps alone are never treated as proof that an earlier
     prefix survived a same-inode rewrite.
     """
-    if isinstance(byte_limit, bool) or not isinstance(byte_limit, int) or \
-            byte_limit <= 0 or byte_limit > MAX_TRANSCRIPT_PROJECTION_BYTES:
-        raise DispatchTelemetryError(
-            "transcript projection byte limit is invalid")
+    if (
+        isinstance(byte_limit, bool)
+        or not isinstance(byte_limit, int)
+        or byte_limit <= 0
+        or byte_limit > MAX_TRANSCRIPT_PROJECTION_BYTES
+    ):
+        raise DispatchTelemetryError("transcript projection byte limit is invalid")
     if str(provider).lower() == "codex":
         try:
             snapshot = native_session_meter.read_snapshot(path)
         except native_session_meter.NativeSessionMeterError as exc:
             return _unavailable_transcript_projection(
-                provider, str(exc), byte_limit=byte_limit), None
+                provider, str(exc), byte_limit=byte_limit
+            ), None
         native_usage = dict(snapshot["usage"])
         effective = int(
             native_usage["uncached_input_tokens"] * WEIGHTS["input"]
@@ -487,8 +647,7 @@ def project_transcript_usage(
             "duplicates_removed": 0,
             "effective_tokens": effective,
             "usage": native_usage,
-            "source_fingerprint": snapshot[
-                "source_identity_fingerprint"],
+            "source_fingerprint": snapshot["source_identity_fingerprint"],
             "native_session": snapshot,
         }, None
     authority = _checkpoint_authority(checkpoint_authority)
@@ -498,96 +657,116 @@ def project_transcript_usage(
             before = os.fstat(stream.fileno())
             if not stat_runtime.S_ISREG(before.st_mode):
                 return _unavailable_transcript_projection(
-                    provider, "selected transcript is not a regular file",
-                    byte_limit=byte_limit), None
+                    provider, "selected transcript is not a regular file", byte_limit=byte_limit
+                ), None
             if before.st_size > byte_limit:
                 return _unavailable_transcript_projection(
-                    provider, "selected transcript exceeds the byte cap",
-                    byte_limit=byte_limit), None
+                    provider, "selected transcript exceeds the byte cap", byte_limit=byte_limit
+                ), None
             payload = stream.read(before.st_size + 1)
             after = os.fstat(stream.fileno())
     except OSError as exc:
         return _unavailable_transcript_projection(
-            provider, exc.__class__.__name__, byte_limit=byte_limit), None
-    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns",
-                     "st_ctime_ns")
+            provider, exc.__class__.__name__, byte_limit=byte_limit
+        ), None
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
     if len(payload) != before.st_size or any(
-            getattr(before, field) != getattr(after, field)
-            for field in stable_fields):
+        getattr(before, field) != getattr(after, field) for field in stable_fields
+    ):
         return _unavailable_transcript_projection(
-            provider, "selected transcript changed during projection",
-            byte_limit=byte_limit, bytes_read=len(payload)), None
+            provider,
+            "selected transcript changed during projection",
+            byte_limit=byte_limit,
+            bytes_read=len(payload),
+        ), None
 
     path_fingerprint = hashlib.sha256(selected.encode("utf-8")).hexdigest()
     prior = dict(checkpoint) if isinstance(checkpoint, Mapping) else {}
-    reusable_shape = _authorized_transcript_checkpoint(prior, authority) and \
-        prior.get("schema") == TRANSCRIPT_PROJECTION_SCHEMA and \
-        prior.get("path_fingerprint") == path_fingerprint and \
-        prior.get("provider") == str(provider) and \
-        prior.get("device") == int(before.st_dev) and \
-        prior.get("inode") == int(before.st_ino) and \
-        isinstance(prior.get("offset"), int) and \
-        not isinstance(prior.get("offset"), bool) and \
-        0 <= int(prior["offset"]) <= before.st_size and \
-        isinstance(prior.get("size"), int) and \
-        not isinstance(prior.get("size"), bool) and \
-        0 <= int(prior["size"]) <= before.st_size and \
-        isinstance(prior.get("mtime_ns"), int) and \
-        not isinstance(prior.get("mtime_ns"), bool) and \
-        isinstance(prior.get("ctime_ns"), int) and \
-        not isinstance(prior.get("ctime_ns"), bool) and \
-        isinstance(prior.get("consumed_prefix_sha256"), str) and \
-        re.fullmatch(r"[0-9a-f]{64}",
-                     str(prior.get("consumed_prefix_sha256"))) is not None and \
-        isinstance(prior.get("totals"), Mapping) and \
-        isinstance(prior.get("seen_identity_hashes"), list) and \
-        len(prior["seen_identity_hashes"]) <= \
-        MAX_TRANSCRIPT_USAGE_IDENTITIES and all(
-            isinstance(value, str) and
-            re.fullmatch(r"[0-9a-f]{64}", value)
-            for value in prior["seen_identity_hashes"])
+    reusable_shape = (
+        _authorized_transcript_checkpoint(prior, authority)
+        and prior.get("schema") == TRANSCRIPT_PROJECTION_SCHEMA
+        and prior.get("path_fingerprint") == path_fingerprint
+        and prior.get("provider") == str(provider)
+        and prior.get("device") == int(before.st_dev)
+        and prior.get("inode") == int(before.st_ino)
+        and isinstance(prior.get("offset"), int)
+        and not isinstance(prior.get("offset"), bool)
+        and 0 <= int(prior["offset"]) <= before.st_size
+        and isinstance(prior.get("size"), int)
+        and not isinstance(prior.get("size"), bool)
+        and 0 <= int(prior["size"]) <= before.st_size
+        and isinstance(prior.get("mtime_ns"), int)
+        and not isinstance(prior.get("mtime_ns"), bool)
+        and isinstance(prior.get("ctime_ns"), int)
+        and not isinstance(prior.get("ctime_ns"), bool)
+        and isinstance(prior.get("consumed_prefix_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", str(prior.get("consumed_prefix_sha256"))) is not None
+        and isinstance(prior.get("totals"), Mapping)
+        and isinstance(prior.get("seen_identity_hashes"), list)
+        and len(prior["seen_identity_hashes"]) <= MAX_TRANSCRIPT_USAGE_IDENTITIES
+        and all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in prior["seen_identity_hashes"]
+        )
+    )
     reusable = False
     if reusable_shape:
         candidate_offset = int(prior["offset"])
-        prefix_digest = hashlib.sha256(
-            payload[:candidate_offset]).hexdigest()
+        prefix_digest = hashlib.sha256(payload[:candidate_offset]).hexdigest()
         size_progress = int(prior["size"]) <= before.st_size
-        timestamp_progress = (
-            int(before.st_mtime_ns) >= int(prior["mtime_ns"]) and
-            int(before.st_ctime_ns) >= int(prior["ctime_ns"]))
-        unchanged_metadata = (
-            int(prior["size"]) != before.st_size or
-            (int(before.st_mtime_ns) == int(prior["mtime_ns"]) and
-             int(before.st_ctime_ns) == int(prior["ctime_ns"])))
-        empty_regrowth = candidate_offset == 0 and int(
-            prior["size"]) != before.st_size
+        timestamp_progress = int(before.st_mtime_ns) >= int(prior["mtime_ns"]) and int(
+            before.st_ctime_ns
+        ) >= int(prior["ctime_ns"])
+        unchanged_metadata = int(prior["size"]) != before.st_size or (
+            int(before.st_mtime_ns) == int(prior["mtime_ns"])
+            and int(before.st_ctime_ns) == int(prior["ctime_ns"])
+        )
+        empty_regrowth = candidate_offset == 0 and int(prior["size"]) != before.st_size
         reusable = bool(
-            size_progress and timestamp_progress and unchanged_metadata and
-            not empty_regrowth and
-            prefix_digest == prior["consumed_prefix_sha256"])
+            size_progress
+            and timestamp_progress
+            and unchanged_metadata
+            and not empty_regrowth
+            and prefix_digest == prior["consumed_prefix_sha256"]
+        )
     if reusable:
         offset = int(prior["offset"])
         try:
-            totals = {key: _nonnegative_integer(
-                prior["totals"].get(key, 0), f"checkpoint.{key}")
+            totals = {
+                key: _nonnegative_integer(prior["totals"].get(key, 0), f"checkpoint.{key}")
                 for key in (
-                    "uncached_input_tokens", "cached_input_tokens",
-                    "cache_creation_tokens", "output_tokens",
-                    "reasoning_tokens", "raw_total_tokens",
-                    "effective_tokens", "messages", "duplicates_removed")}
+                    "uncached_input_tokens",
+                    "cached_input_tokens",
+                    "cache_creation_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                    "raw_total_tokens",
+                    "effective_tokens",
+                    "messages",
+                    "duplicates_removed",
+                )
+            }
         except DispatchTelemetryError:
             return _unavailable_transcript_projection(
-                provider, "transcript usage checkpoint is malformed",
-                byte_limit=byte_limit), None
-        seen: set[str] = set(
-            str(value) for value in prior["seen_identity_hashes"])
+                provider, "transcript usage checkpoint is malformed", byte_limit=byte_limit
+            ), None
+        seen: set[str] = set(str(value) for value in prior["seen_identity_hashes"])
     else:
         offset = 0
-        totals = {key: 0 for key in (
-            "uncached_input_tokens", "cached_input_tokens",
-            "cache_creation_tokens", "output_tokens", "reasoning_tokens",
-            "raw_total_tokens", "effective_tokens", "messages",
-            "duplicates_removed")}
+        totals = {
+            key: 0
+            for key in (
+                "uncached_input_tokens",
+                "cached_input_tokens",
+                "cache_creation_tokens",
+                "output_tokens",
+                "reasoning_tokens",
+                "raw_total_tokens",
+                "effective_tokens",
+                "messages",
+                "duplicates_removed",
+            )
+        }
         seen = set()
 
     appended = payload[offset:]
@@ -597,60 +776,82 @@ def project_transcript_usage(
     for raw in complete.splitlines():
         if len(raw) > 2 * 1024 * 1024:
             return _unavailable_transcript_projection(
-                provider, "selected transcript record exceeds the byte cap",
-                byte_limit=byte_limit, bytes_read=len(payload)), None
+                provider,
+                "selected transcript record exceeds the byte cap",
+                byte_limit=byte_limit,
+                bytes_read=len(payload),
+            ), None
         try:
             row = json.loads(raw.decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, ValueError):
             return _unavailable_transcript_projection(
-                provider, "selected transcript has a malformed complete record",
-                byte_limit=byte_limit, bytes_read=len(payload)), None
+                provider,
+                "selected transcript has a malformed complete record",
+                byte_limit=byte_limit,
+                bytes_read=len(payload),
+            ), None
         if not isinstance(row, Mapping):
             continue
         usage, identity = _transcript_usage_row(row)
         if usage is None:
             continue
-        identity_fingerprint = hashlib.sha256(
-            identity.encode("utf-8")).hexdigest() if identity else None
+        identity_fingerprint = (
+            hashlib.sha256(identity.encode("utf-8")).hexdigest() if identity else None
+        )
         if identity_fingerprint and identity_fingerprint in seen:
             totals["duplicates_removed"] += 1
             continue
         normalized = normalize_usage(usage, provider=str(provider))
         if normalized.get("available") is not True:
             return _unavailable_transcript_projection(
-                provider, str(normalized.get("reason") or
-                              "provider usage is unavailable"),
-                byte_limit=byte_limit, bytes_read=len(payload)), None
+                provider,
+                str(normalized.get("reason") or "provider usage is unavailable"),
+                byte_limit=byte_limit,
+                bytes_read=len(payload),
+            ), None
         if identity_fingerprint:
             if len(seen) >= MAX_TRANSCRIPT_USAGE_IDENTITIES:
                 return _unavailable_transcript_projection(
-                    provider, "selected transcript identity cap exceeded",
-                    byte_limit=byte_limit, bytes_read=len(payload)), None
+                    provider,
+                    "selected transcript identity cap exceeded",
+                    byte_limit=byte_limit,
+                    bytes_read=len(payload),
+                ), None
             seen.add(identity_fingerprint)
-        for key in ("uncached_input_tokens", "cached_input_tokens",
-                    "cache_creation_tokens", "output_tokens",
-                    "reasoning_tokens", "raw_total_tokens",
-                    "effective_tokens"):
+        for key in (
+            "uncached_input_tokens",
+            "cached_input_tokens",
+            "cache_creation_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "raw_total_tokens",
+            "effective_tokens",
+        ):
             totals[key] += int(normalized.get(key, 0))
         totals["messages"] += 1
 
     next_offset = offset + complete_end
-    consumed_prefix_sha256 = hashlib.sha256(
-        payload[:next_offset]).hexdigest()
-    checkpoint_row = _seal_transcript_checkpoint({
-        "schema": TRANSCRIPT_PROJECTION_SCHEMA,
-        "path_fingerprint": path_fingerprint, "provider": str(provider),
-        "device": int(before.st_dev), "inode": int(before.st_ino),
-        "mode": int(before.st_mode), "size": int(before.st_size),
-        "mtime_ns": int(before.st_mtime_ns),
-        "ctime_ns": int(before.st_ctime_ns),
-        "offset": int(next_offset),
-        "consumed_prefix_sha256": consumed_prefix_sha256,
-        "totals": totals, "seen_identity_hashes": sorted(seen),
-    }, authority)
+    consumed_prefix_sha256 = hashlib.sha256(payload[:next_offset]).hexdigest()
+    checkpoint_row = _seal_transcript_checkpoint(
+        {
+            "schema": TRANSCRIPT_PROJECTION_SCHEMA,
+            "path_fingerprint": path_fingerprint,
+            "provider": str(provider),
+            "device": int(before.st_dev),
+            "inode": int(before.st_ino),
+            "mode": int(before.st_mode),
+            "size": int(before.st_size),
+            "mtime_ns": int(before.st_mtime_ns),
+            "ctime_ns": int(before.st_ctime_ns),
+            "offset": int(next_offset),
+            "consumed_prefix_sha256": consumed_prefix_sha256,
+            "totals": totals,
+            "seen_identity_hashes": sorted(seen),
+        },
+        authority,
+    )
     usage = {
-        "input_tokens": totals["cached_input_tokens"] +
-        totals["uncached_input_tokens"],
+        "input_tokens": totals["cached_input_tokens"] + totals["uncached_input_tokens"],
         "cached_input_tokens": totals["cached_input_tokens"],
         "uncached_input_tokens": totals["uncached_input_tokens"],
         "output_tokens": totals["output_tokens"],
@@ -659,45 +860,63 @@ def project_transcript_usage(
     }
     if totals["messages"] == 0:
         return _unavailable_transcript_projection(
-            provider, "selected transcript has no provider usage totals",
-            byte_limit=byte_limit, bytes_read=len(payload)), checkpoint_row
-    source_fingerprint = content_fingerprint({
-        "schema": TRANSCRIPT_PROJECTION_SCHEMA,
-        "path_fingerprint": path_fingerprint,
-        "device": int(before.st_dev), "inode": int(before.st_ino),
-        "offset": int(next_offset),
-        "consumed_prefix_sha256": consumed_prefix_sha256,
-        "usage": usage,
-    })
+            provider,
+            "selected transcript has no provider usage totals",
+            byte_limit=byte_limit,
+            bytes_read=len(payload),
+        ), checkpoint_row
+    source_fingerprint = content_fingerprint(
+        {
+            "schema": TRANSCRIPT_PROJECTION_SCHEMA,
+            "path_fingerprint": path_fingerprint,
+            "device": int(before.st_dev),
+            "inode": int(before.st_ino),
+            "offset": int(next_offset),
+            "consumed_prefix_sha256": consumed_prefix_sha256,
+            "usage": usage,
+        }
+    )
     return {
-        "schema": TRANSCRIPT_PROJECTION_SCHEMA, "status": "available",
-        "provider": str(provider), "reason": None,
+        "schema": TRANSCRIPT_PROJECTION_SCHEMA,
+        "status": "available",
+        "provider": str(provider),
+        "reason": None,
         "path_fingerprint": path_fingerprint,
-        "device": int(before.st_dev), "inode": int(before.st_ino),
-        "offset": int(next_offset), "size": int(before.st_size),
-        "bytes_read": len(payload), "byte_limit": int(byte_limit),
+        "device": int(before.st_dev),
+        "inode": int(before.st_ino),
+        "offset": int(next_offset),
+        "size": int(before.st_size),
+        "bytes_read": len(payload),
+        "byte_limit": int(byte_limit),
         "messages": totals["messages"],
         "duplicates_removed": totals["duplicates_removed"],
         "effective_tokens": totals["effective_tokens"],
-        "usage": usage, "source_fingerprint": source_fingerprint,
+        "usage": usage,
+        "source_fingerprint": source_fingerprint,
     }, checkpoint_row
 
 
-def usage_capability(usage: Mapping[str, Any] | None, *,
-                     reason: str | None = None) -> dict[str, Any]:
+def usage_capability(
+    usage: Mapping[str, Any] | None, *, reason: str | None = None
+) -> dict[str, Any]:
     """Describe token-budget truth without turning absence into enforcement."""
     if not isinstance(usage, Mapping):
         return {
-            "schema": USAGE_CAPABILITY_SCHEMA, "status": "unavailable",
-            "budget_claim": False, "enforcement": "not-enforced",
+            "schema": USAGE_CAPABILITY_SCHEMA,
+            "status": "unavailable",
+            "budget_claim": False,
+            "enforcement": "not-enforced",
             "observed_tokens": None,
             "reason": str(reason or "host token totals are unavailable"),
         }
     normalized = _usage(usage)
     return {
-        "schema": USAGE_CAPABILITY_SCHEMA, "status": "available",
-        "budget_claim": True, "enforcement": "host-observed",
-        "observed_tokens": normalized["total_tokens"], "reason": None,
+        "schema": USAGE_CAPABILITY_SCHEMA,
+        "status": "available",
+        "budget_claim": True,
+        "enforcement": "host-observed",
+        "observed_tokens": normalized["total_tokens"],
+        "reason": None,
     }
 
 
@@ -721,24 +940,24 @@ def _route_counter(value: object, label: str, maximum: int) -> int:
     normalized = _nonnegative_integer(value, label)
     if normalized > maximum:
         kind = "token" if "token" in label else "runtime"
-        raise DispatchTelemetryError(
-            f"{label} exceeds the lens-route {kind} bound")
+        raise DispatchTelemetryError(f"{label} exceeds the lens-route {kind} bound")
     return normalized
 
 
 def _lens_id(value: object, label: str = "lens") -> str:
     if not isinstance(value, str):
-        raise DispatchTelemetryError(
-            f"{label} must be a bounded lowercase lens id")
+        raise DispatchTelemetryError(f"{label} must be a bounded lowercase lens id")
     normalized = value.strip()
     if _LENS_ID.fullmatch(normalized) is None:
-        raise DispatchTelemetryError(
-            f"{label} must be a bounded lowercase lens id")
+        raise DispatchTelemetryError(f"{label} must be a bounded lowercase lens id")
     return normalized
 
 
 def _bounded_reason_code(
-        value: object, label: str, *, persisted: bool = False,
+    value: object,
+    label: str,
+    *,
+    persisted: bool = False,
 ) -> tuple[str, int]:
     """Return one reason code without retaining private content."""
     if not isinstance(value, str) or not value.strip():
@@ -747,15 +966,17 @@ def _bounded_reason_code(
     if persisted and _REDACTED_REASON_CODE.fullmatch(normalized) is not None:
         return normalized, 0
     encoded = normalized.encode("utf-8")
-    safe = len(encoded) <= MAX_LENS_ROUTE_REASON_BYTES and \
-        _REASON_CODE.fullmatch(normalized) is not None and \
-        _PRIVATE_REASON.search(normalized) is None and \
-        not normalized.lower().startswith("redacted-content:")
+    safe = (
+        len(encoded) <= MAX_LENS_ROUTE_REASON_BYTES
+        and _REASON_CODE.fullmatch(normalized) is not None
+        and _PRIVATE_REASON.search(normalized) is None
+        and not normalized.lower().startswith("redacted-content:")
+    )
     if safe:
         return normalized, 0
     digest = hashlib.sha256(
-        ("taskplane.lens-route-reason/v1\0" + normalized).encode(
-            "utf-8")).hexdigest()
+        ("taskplane.lens-route-reason/v1\0" + normalized).encode("utf-8")
+    ).hexdigest()
     return f"redacted-content:{digest}", 1
 
 
@@ -764,51 +985,43 @@ def _canonical_route_status(value: object) -> str:
     status = _LENS_ROUTE_TERMINAL_ALIASES.get(normalized)
     if status is None:
         raise DispatchTelemetryError(
-            "lens-route terminal status must be success, failed, cancelled, "
-            "interrupted, or handoff")
+            "lens-route terminal status must be success, failed, cancelled, interrupted, or handoff"
+        )
     return status
 
 
-def _route_selection(route: Mapping[str, Any]) \
-        -> tuple[str, str, list[str], dict[str, Mapping[str, Any]]]:
-    if not isinstance(route, Mapping) or route.get("schema") != \
-            "taskplane.lens-route-policy/v1":
-        raise DispatchTelemetryError(
-            "lens-route telemetry requires a focused route decision")
+def _route_selection(
+    route: Mapping[str, Any],
+) -> tuple[str, str, list[str], dict[str, Mapping[str, Any]]]:
+    if not isinstance(route, Mapping) or route.get("schema") != "taskplane.lens-route-policy/v1":
+        raise DispatchTelemetryError("lens-route telemetry requires a focused route decision")
     stage = str(route.get("stage") or "")
     if stage not in _LENS_ROUTE_STAGES:
         raise DispatchTelemetryError("lens-route telemetry stage is invalid")
-    route_fingerprint = _sha256_fingerprint(
-        route.get("route_fingerprint"), "route fingerprint")
-    raw_selected = route.get(
-        "dispatchable_selected", route.get("selected"))
+    route_fingerprint = _sha256_fingerprint(route.get("route_fingerprint"), "route fingerprint")
+    raw_selected = route.get("dispatchable_selected", route.get("selected"))
     if not isinstance(raw_selected, list):
-        raise DispatchTelemetryError(
-            "lens-route selected lenses must be a list")
+        raise DispatchTelemetryError("lens-route selected lenses must be a list")
     selected = [_lens_id(value, "selected lens") for value in raw_selected]
     if len(selected) > 26 or len(set(selected)) != len(selected):
-        raise DispatchTelemetryError(
-            "lens-route selected lenses must be unique and bounded")
+        raise DispatchTelemetryError("lens-route selected lenses must be unique and bounded")
     dispositions = route.get("dispositions")
     if not isinstance(dispositions, list):
-        raise DispatchTelemetryError(
-            "lens-route dispositions must be a list")
+        raise DispatchTelemetryError("lens-route dispositions must be a list")
     indexed: dict[str, Mapping[str, Any]] = {}
     for row in dispositions:
         if not isinstance(row, Mapping):
-            raise DispatchTelemetryError(
-                "lens-route disposition must be a mapping")
+            raise DispatchTelemetryError("lens-route disposition must be a mapping")
         lens = _lens_id(row.get("lens"), "disposition lens")
         if lens in indexed:
-            raise DispatchTelemetryError(
-                "lens-route disposition lens is duplicated")
+            raise DispatchTelemetryError("lens-route disposition lens is duplicated")
         indexed[lens] = row
     if any(
-            lens not in indexed or indexed[lens].get("disposition") not in
-            {"execute_deep", "execute_light"}
-            for lens in selected):
-        raise DispatchTelemetryError(
-            "lens-route selected dispositions are incomplete or invalid")
+        lens not in indexed
+        or indexed[lens].get("disposition") not in {"execute_deep", "execute_light"}
+        for lens in selected
+    ):
+        raise DispatchTelemetryError("lens-route selected dispositions are incomplete or invalid")
     return stage, route_fingerprint, selected, indexed
 
 
@@ -820,8 +1033,7 @@ def _identity(values: Mapping[str, object]) -> dict[str, str]:
             "telemetry identity requires exactly run/source/Design/Plan: "
             f"missing={sorted(missing)} unknown={sorted(unknown)}"
         )
-    identity = {field: str(values[field] or "").strip()
-                for field in _IDENTITY_FIELDS}
+    identity = {field: str(values[field] or "").strip() for field in _IDENTITY_FIELDS}
     if any(not value for value in identity.values()):
         raise DispatchTelemetryError("telemetry identity values are required")
     return identity
@@ -835,88 +1047,91 @@ def _sha256_fingerprint(value: object, label: str) -> str:
 
 
 def build_lens_route_telemetry(
-        route: Mapping[str, Any], *, target: str, terminal_status: str,
-        lens_metrics: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    route: Mapping[str, Any],
+    *,
+    target: str,
+    terminal_status: str,
+    lens_metrics: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
     """Build one closed, bounded, privacy-safe terminal route receipt."""
     stage, route_fingerprint, selected, dispositions = _route_selection(route)
     if not isinstance(target, str) or not target.strip():
-        raise DispatchTelemetryError(
-            "lens-route telemetry target is required")
+        raise DispatchTelemetryError("lens-route telemetry target is required")
     if len(target.encode("utf-8")) > 64 * 1024:
-        raise DispatchTelemetryError(
-            "lens-route telemetry target exceeds the input bound")
-    if not isinstance(lens_metrics, Mapping) or \
-            any(not isinstance(key, str) for key in lens_metrics) or \
-            set(lens_metrics) != set(selected):
-        raise DispatchTelemetryError(
-            "lens-route metrics must name exactly selected lenses")
+        raise DispatchTelemetryError("lens-route telemetry target exceeds the input bound")
+    if (
+        not isinstance(lens_metrics, Mapping)
+        or any(not isinstance(key, str) for key in lens_metrics)
+        or set(lens_metrics) != set(selected)
+    ):
+        raise DispatchTelemetryError("lens-route metrics must name exactly selected lenses")
 
     rows: list[dict[str, Any]] = []
     redactions = 0
     for lens in selected:
         metric = lens_metrics[lens]
-        if not isinstance(metric, Mapping) or \
-                set(metric) != _LENS_ROUTE_METRIC_FIELDS:
-            raise DispatchTelemetryError(
-                f"lens-route metric for {lens} must use its closed schema")
+        if not isinstance(metric, Mapping) or set(metric) != _LENS_ROUTE_METRIC_FIELDS:
+            raise DispatchTelemetryError(f"lens-route metric for {lens} must use its closed schema")
         reason, reason_redactions = _bounded_reason_code(
-            dispositions[lens].get("reason"), f"lens {lens} reason")
+            dispositions[lens].get("reason"), f"lens {lens} reason"
+        )
         cause_value = metric.get("invalidation_cause")
         if cause_value is None:
             cause = None
             cause_redactions = 0
         else:
             cause, cause_redactions = _bounded_reason_code(
-                cause_value, f"lens {lens} invalidation cause")
+                cause_value, f"lens {lens} invalidation cause"
+            )
         estimated = _route_counter(
-            metric.get("estimated_tokens"),
-            f"lens {lens} estimated_tokens", MAX_LENS_ROUTE_TOKENS)
+            metric.get("estimated_tokens"), f"lens {lens} estimated_tokens", MAX_LENS_ROUTE_TOKENS
+        )
         actual = _route_counter(
-            metric.get("actual_tokens"),
-            f"lens {lens} actual_tokens", MAX_LENS_ROUTE_TOKENS)
+            metric.get("actual_tokens"), f"lens {lens} actual_tokens", MAX_LENS_ROUTE_TOKENS
+        )
         runtime_ms = _route_counter(
-            metric.get("runtime_ms"),
-            f"lens {lens} runtime_ms", MAX_LENS_ROUTE_RUNTIME_MS)
+            metric.get("runtime_ms"), f"lens {lens} runtime_ms", MAX_LENS_ROUTE_RUNTIME_MS
+        )
         reused = metric.get("cache_reused")
         if not isinstance(reused, bool):
-            raise DispatchTelemetryError(
-                f"lens {lens} cache_reused must be a boolean")
+            raise DispatchTelemetryError(f"lens {lens} cache_reused must be a boolean")
         if reused and actual:
-            raise DispatchTelemetryError(
-                "reused lens cannot record actual tokens")
+            raise DispatchTelemetryError("reused lens cannot record actual tokens")
         if reused and cause is not None:
-            raise DispatchTelemetryError(
-                "reused lens cannot record invalidation")
-        rows.append({
-            "lens": lens, "reason": reason,
-            "estimated_tokens": estimated, "actual_tokens": actual,
-            "runtime_ms": runtime_ms, "cache_reused": reused,
-            "invalidation_cause": cause,
-        })
+            raise DispatchTelemetryError("reused lens cannot record invalidation")
+        rows.append(
+            {
+                "lens": lens,
+                "reason": reason,
+                "estimated_tokens": estimated,
+                "actual_tokens": actual,
+                "runtime_ms": runtime_ms,
+                "cache_reused": reused,
+                "invalidation_cause": cause,
+            }
+        )
         redactions += reason_redactions + cause_redactions
 
     totals = {
         "estimated_tokens": sum(row["estimated_tokens"] for row in rows),
         "actual_tokens": sum(row["actual_tokens"] for row in rows),
         "runtime_ms": sum(row["runtime_ms"] for row in rows),
-        "cache_reused_count": sum(
-            1 for row in rows if row["cache_reused"]),
-        "invalidation_count": sum(
-            1 for row in rows if row["invalidation_cause"] is not None),
+        "cache_reused_count": sum(1 for row in rows if row["cache_reused"]),
+        "invalidation_count": sum(1 for row in rows if row["invalidation_cause"] is not None),
     }
-    if totals["estimated_tokens"] > MAX_LENS_ROUTE_TOKENS or \
-            totals["actual_tokens"] > MAX_LENS_ROUTE_TOKENS:
-        raise DispatchTelemetryError(
-            "lens-route totals exceed the token bound")
+    if (
+        totals["estimated_tokens"] > MAX_LENS_ROUTE_TOKENS
+        or totals["actual_tokens"] > MAX_LENS_ROUTE_TOKENS
+    ):
+        raise DispatchTelemetryError("lens-route totals exceed the token bound")
     if totals["runtime_ms"] > MAX_LENS_ROUTE_RUNTIME_MS:
-        raise DispatchTelemetryError(
-            "lens-route totals exceed the runtime bound")
+        raise DispatchTelemetryError("lens-route totals exceed the runtime bound")
     material: dict[str, Any] = {
         "schema": LENS_ROUTE_TELEMETRY_SCHEMA,
         "stage": stage,
         "target_pseudonym": hashlib.sha256(
-            ("taskplane.lens-route-target/v1\0" + target.strip()).encode(
-                "utf-8")).hexdigest(),
+            ("taskplane.lens-route-target/v1\0" + target.strip()).encode("utf-8")
+        ).hexdigest(),
         "route_fingerprint": route_fingerprint,
         "selected_count": len(selected),
         "lenses": rows,
@@ -926,136 +1141,122 @@ def build_lens_route_telemetry(
     }
     material["fingerprint"] = content_fingerprint(material)
     if len(canonical_json(material)) > MAX_LENS_ROUTE_ARTIFACT_BYTES:
-        raise DispatchTelemetryError(
-            "lens-route telemetry artifact exceeds 128 KiB")
+        raise DispatchTelemetryError("lens-route telemetry artifact exceeds 128 KiB")
     return validate_lens_route_telemetry(material)
 
 
-def validate_lens_route_telemetry(
-        record: Mapping[str, Any]) -> dict[str, Any]:
+def validate_lens_route_telemetry(record: Mapping[str, Any]) -> dict[str, Any]:
     """Validate an untrusted terminal route receipt without private inputs."""
-    if not isinstance(record, Mapping) or \
-            record.get("schema") != LENS_ROUTE_TELEMETRY_SCHEMA or \
-            set(record) != _LENS_ROUTE_TELEMETRY_FIELDS:
-        raise DispatchTelemetryError(
-            "lens-route telemetry must use its closed schema")
+    if (
+        not isinstance(record, Mapping)
+        or record.get("schema") != LENS_ROUTE_TELEMETRY_SCHEMA
+        or set(record) != _LENS_ROUTE_TELEMETRY_FIELDS
+    ):
+        raise DispatchTelemetryError("lens-route telemetry must use its closed schema")
     fingerprint_value = _sha256_fingerprint(
-        record.get("fingerprint"), "lens-route telemetry fingerprint")
-    material = {key: value for key, value in record.items()
-                if key != "fingerprint"}
-    if not hmac.compare_digest(
-            content_fingerprint(material), fingerprint_value):
-        raise DispatchTelemetryError(
-            "lens-route telemetry fingerprint mismatched")
+        record.get("fingerprint"), "lens-route telemetry fingerprint"
+    )
+    material = {key: value for key, value in record.items() if key != "fingerprint"}
+    if not hmac.compare_digest(content_fingerprint(material), fingerprint_value):
+        raise DispatchTelemetryError("lens-route telemetry fingerprint mismatched")
     if record.get("stage") not in _LENS_ROUTE_STAGES:
         raise DispatchTelemetryError("lens-route telemetry stage is invalid")
-    _sha256_fingerprint(
-        record.get("target_pseudonym"), "target pseudonym")
-    _sha256_fingerprint(
-        record.get("route_fingerprint"), "route fingerprint")
-    if record.get("terminal_status") not in set(
-            _LENS_ROUTE_TERMINAL_ALIASES.values()):
-        raise DispatchTelemetryError(
-            "lens-route telemetry terminal status is invalid")
+    _sha256_fingerprint(record.get("target_pseudonym"), "target pseudonym")
+    _sha256_fingerprint(record.get("route_fingerprint"), "route fingerprint")
+    if record.get("terminal_status") not in set(_LENS_ROUTE_TERMINAL_ALIASES.values()):
+        raise DispatchTelemetryError("lens-route telemetry terminal status is invalid")
     rows = record.get("lenses")
     if not isinstance(rows, list):
-        raise DispatchTelemetryError(
-            "lens-route telemetry lenses must be a list")
-    selected_count = _nonnegative_integer(
-        record.get("selected_count"), "selected_count")
+        raise DispatchTelemetryError("lens-route telemetry lenses must be a list")
+    selected_count = _nonnegative_integer(record.get("selected_count"), "selected_count")
     if selected_count != len(rows) or selected_count > 26:
-        raise DispatchTelemetryError(
-            "lens-route selected count mismatched")
+        raise DispatchTelemetryError("lens-route selected count mismatched")
     normalized_rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     redaction_count = 0
     for row in rows:
         if not isinstance(row, Mapping) or set(row) != _LENS_ROUTE_ROW_FIELDS:
-            raise DispatchTelemetryError(
-                "lens-route telemetry row must use its closed schema")
+            raise DispatchTelemetryError("lens-route telemetry row must use its closed schema")
         lens = _lens_id(row.get("lens"))
         if lens in seen:
-            raise DispatchTelemetryError(
-                "lens-route telemetry lens is duplicated")
+            raise DispatchTelemetryError("lens-route telemetry lens is duplicated")
         seen.add(lens)
         reason, changed = _bounded_reason_code(
-            row.get("reason"), f"lens {lens} reason", persisted=True)
+            row.get("reason"), f"lens {lens} reason", persisted=True
+        )
         if changed or reason != row.get("reason"):
-            raise DispatchTelemetryError(
-                "persisted lens-route reason is not privacy-safe")
+            raise DispatchTelemetryError("persisted lens-route reason is not privacy-safe")
         cause_value = row.get("invalidation_cause")
         if cause_value is None:
             cause = None
         else:
             cause, changed = _bounded_reason_code(
-                cause_value, f"lens {lens} invalidation cause",
-                persisted=True)
+                cause_value, f"lens {lens} invalidation cause", persisted=True
+            )
             if changed or cause != cause_value:
-                raise DispatchTelemetryError(
-                    "persisted invalidation cause is not privacy-safe")
+                raise DispatchTelemetryError("persisted invalidation cause is not privacy-safe")
         estimated = _route_counter(
-            row.get("estimated_tokens"),
-            f"lens {lens} estimated_tokens", MAX_LENS_ROUTE_TOKENS)
+            row.get("estimated_tokens"), f"lens {lens} estimated_tokens", MAX_LENS_ROUTE_TOKENS
+        )
         actual = _route_counter(
-            row.get("actual_tokens"),
-            f"lens {lens} actual_tokens", MAX_LENS_ROUTE_TOKENS)
+            row.get("actual_tokens"), f"lens {lens} actual_tokens", MAX_LENS_ROUTE_TOKENS
+        )
         runtime_ms = _route_counter(
-            row.get("runtime_ms"),
-            f"lens {lens} runtime_ms", MAX_LENS_ROUTE_RUNTIME_MS)
+            row.get("runtime_ms"), f"lens {lens} runtime_ms", MAX_LENS_ROUTE_RUNTIME_MS
+        )
         reused = row.get("cache_reused")
         if not isinstance(reused, bool):
-            raise DispatchTelemetryError(
-                f"lens {lens} cache_reused must be a boolean")
+            raise DispatchTelemetryError(f"lens {lens} cache_reused must be a boolean")
         if reused and actual:
-            raise DispatchTelemetryError(
-                "reused lens cannot record actual tokens")
+            raise DispatchTelemetryError("reused lens cannot record actual tokens")
         if reused and cause is not None:
-            raise DispatchTelemetryError(
-                "reused lens cannot record invalidation")
-        normalized_rows.append({
-            "lens": lens, "reason": reason,
-            "estimated_tokens": estimated, "actual_tokens": actual,
-            "runtime_ms": runtime_ms, "cache_reused": reused,
-            "invalidation_cause": cause,
-        })
+            raise DispatchTelemetryError("reused lens cannot record invalidation")
+        normalized_rows.append(
+            {
+                "lens": lens,
+                "reason": reason,
+                "estimated_tokens": estimated,
+                "actual_tokens": actual,
+                "runtime_ms": runtime_ms,
+                "cache_reused": reused,
+                "invalidation_cause": cause,
+            }
+        )
+        redaction_count += int(_REDACTED_REASON_CODE.fullmatch(reason) is not None)
         redaction_count += int(
-            _REDACTED_REASON_CODE.fullmatch(reason) is not None)
-        redaction_count += int(isinstance(cause, str) and
-                               _REDACTED_REASON_CODE.fullmatch(cause)
-                               is not None)
+            isinstance(cause, str) and _REDACTED_REASON_CODE.fullmatch(cause) is not None
+        )
 
     expected_totals = {
-        "estimated_tokens": sum(
-            row["estimated_tokens"] for row in normalized_rows),
-        "actual_tokens": sum(
-            row["actual_tokens"] for row in normalized_rows),
+        "estimated_tokens": sum(row["estimated_tokens"] for row in normalized_rows),
+        "actual_tokens": sum(row["actual_tokens"] for row in normalized_rows),
         "runtime_ms": sum(row["runtime_ms"] for row in normalized_rows),
-        "cache_reused_count": sum(
-            1 for row in normalized_rows if row["cache_reused"]),
+        "cache_reused_count": sum(1 for row in normalized_rows if row["cache_reused"]),
         "invalidation_count": sum(
-            1 for row in normalized_rows
-            if row["invalidation_cause"] is not None),
+            1 for row in normalized_rows if row["invalidation_cause"] is not None
+        ),
     }
     totals = record.get("totals")
-    if not isinstance(totals, Mapping) or \
-            set(totals) != _LENS_ROUTE_TOTAL_FIELDS or \
-            dict(totals) != expected_totals:
-        raise DispatchTelemetryError(
-            "lens-route telemetry totals mismatched")
-    redactions = _nonnegative_integer(
-        record.get("redactions"), "redactions")
+    if (
+        not isinstance(totals, Mapping)
+        or set(totals) != _LENS_ROUTE_TOTAL_FIELDS
+        or dict(totals) != expected_totals
+    ):
+        raise DispatchTelemetryError("lens-route telemetry totals mismatched")
+    redactions = _nonnegative_integer(record.get("redactions"), "redactions")
     if redactions != redaction_count:
-        raise DispatchTelemetryError(
-            "lens-route telemetry redaction count mismatched")
+        raise DispatchTelemetryError("lens-route telemetry redaction count mismatched")
     if len(canonical_json(record)) > MAX_LENS_ROUTE_ARTIFACT_BYTES:
-        raise DispatchTelemetryError(
-            "lens-route telemetry artifact exceeds 128 KiB")
+        raise DispatchTelemetryError("lens-route telemetry artifact exceeds 128 KiB")
     return dict(record)
 
 
 def _usage_integrity_fingerprint(
-        ledger: Mapping[str, Any], binding: Mapping[str, Any],
-        usage: Mapping[str, Any], source_fingerprint: object) -> str:
+    ledger: Mapping[str, Any],
+    binding: Mapping[str, Any],
+    usage: Mapping[str, Any],
+    source_fingerprint: object,
+) -> str:
     """Bind canonical counters to their ledger and native dispatch identity."""
     identity = _identity({field: ledger.get(field) for field in _IDENTITY_FIELDS})
     dispatch = {field: binding.get(field) for field in _DISPATCH_FIELDS}
@@ -1068,35 +1269,39 @@ def _usage_integrity_fingerprint(
         "ledger_identity": identity,
         "dispatch": dispatch,
         "usage": _usage(usage),
-        "source_fingerprint": _sha256_fingerprint(
-            source_fingerprint, "usage source fingerprint"),
+        "source_fingerprint": _sha256_fingerprint(source_fingerprint, "usage source fingerprint"),
     }
     return content_fingerprint(material)
 
 
 def _usage_baseline_integrity_fingerprint(
-        ledger: Mapping[str, Any], binding: Mapping[str, Any], *,
-        provider: str, usage: Mapping[str, Any],
-        source_fingerprint: object) -> str:
+    ledger: Mapping[str, Any],
+    binding: Mapping[str, Any],
+    *,
+    provider: str,
+    usage: Mapping[str, Any],
+    source_fingerprint: object,
+) -> str:
     provider_name = str(provider or "").strip().lower()
     if provider_name not in {"codex", "claude"}:
-        raise DispatchTelemetryError(
-            "usage baseline provider must be codex or claude")
-    identity = _identity({field: ledger.get(field)
-                          for field in _IDENTITY_FIELDS})
+        raise DispatchTelemetryError("usage baseline provider must be codex or claude")
+    identity = _identity({field: ledger.get(field) for field in _IDENTITY_FIELDS})
     dispatch = {
         field: binding.get(field)
         for field in (*sorted(_STABLE_DISPATCH_IDENTITY_FIELDS), "started_at")
     }
-    return content_fingerprint({
-        "schema": "taskplane.dispatch-usage-baseline/v1",
-        "ledger_identity": identity,
-        "dispatch": dispatch,
-        "provider": provider_name,
-        "usage": _usage(usage),
-        "source_fingerprint": _sha256_fingerprint(
-            source_fingerprint, "usage baseline source fingerprint"),
-    })
+    return content_fingerprint(
+        {
+            "schema": "taskplane.dispatch-usage-baseline/v1",
+            "ledger_identity": identity,
+            "dispatch": dispatch,
+            "provider": provider_name,
+            "usage": _usage(usage),
+            "source_fingerprint": _sha256_fingerprint(
+                source_fingerprint, "usage baseline source fingerprint"
+            ),
+        }
+    )
 
 
 def _validate_receipt_integrity(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1105,19 +1310,27 @@ def _validate_receipt_integrity(row: Mapping[str, Any]) -> dict[str, Any]:
     usage = {field: row.get(field) for field in _USAGE_FIELDS}
     expected = _receipt(dispatch, usage)
     if any(row.get(field) != value for field, value in expected.items()):
-        raise DispatchTelemetryError(
-            "final dispatch usage integrity fingerprint mismatched")
+        raise DispatchTelemetryError("final dispatch usage integrity fingerprint mismatched")
     return expected
 
 
-def new_ledger(*, run_id: str, source_sha: str, design_fingerprint: str,
-               plan_fingerprint: str, started_at: int | float) -> dict[str, Any]:
+def new_ledger(
+    *,
+    run_id: str,
+    source_sha: str,
+    design_fingerprint: str,
+    plan_fingerprint: str,
+    started_at: int | float,
+) -> dict[str, Any]:
     """Create one append-only wave ledger bound to exact delivery identity."""
-    identity = _identity({
-        "run_id": run_id, "source_sha": source_sha,
-        "design_fingerprint": design_fingerprint,
-        "plan_fingerprint": plan_fingerprint,
-    })
+    identity = _identity(
+        {
+            "run_id": run_id,
+            "source_sha": source_sha,
+            "design_fingerprint": design_fingerprint,
+            "plan_fingerprint": plan_fingerprint,
+        }
+    )
     return {
         "schema": LEDGER_SCHEMA,
         **identity,
@@ -1138,8 +1351,7 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
     _nonnegative_integer(ledger.get("revision"), "revision")
     rows = ledger.get("dispatches")
     if not isinstance(rows, list):
-        raise DispatchTelemetryError(
-            "dispatch telemetry rows must be a list")
+        raise DispatchTelemetryError("dispatch telemetry rows must be a list")
     ids: set[str] = set()
     for row in rows:
         if not isinstance(row, Mapping) or row.get("schema") != RECEIPT_SCHEMA:
@@ -1153,24 +1365,19 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(bindings, list):
         raise DispatchTelemetryError("dispatch telemetry bindings must be a list")
     binding_ids: set[str] = set()
-    receipt_fingerprints = {
-        str(row.get("fingerprint") or ""): row for row in rows
-    }
+    receipt_fingerprints = {str(row.get("fingerprint") or ""): row for row in rows}
     for binding in bindings:
-        if not isinstance(binding, Mapping) or \
-                binding.get("schema") != DISPATCH_BINDING_SCHEMA:
+        if not isinstance(binding, Mapping) or binding.get("schema") != DISPATCH_BINDING_SCHEMA:
             raise DispatchTelemetryError("dispatch telemetry binding is invalid")
         if set(binding) != _BINDING_FIELDS:
-            raise DispatchTelemetryError(
-                "dispatch telemetry binding must use its closed schema")
+            raise DispatchTelemetryError("dispatch telemetry binding must use its closed schema")
         canonical = _receipt(
             {field: binding.get(field) for field in _DISPATCH_FIELDS},
             {field: 0 for field in _USAGE_FIELDS},
         )
         dispatch_id = str(binding.get("dispatch_id") or "")
         if not dispatch_id or dispatch_id in binding_ids:
-            raise DispatchTelemetryError(
-                "dispatch telemetry binding identity is duplicated")
+            raise DispatchTelemetryError("dispatch telemetry binding identity is duplicated")
         binding_ids.add(dispatch_id)
         usage = binding.get("usage")
         source = binding.get("usage_source_fingerprint")
@@ -1178,64 +1385,64 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
         if usage is None:
             if source is not None or integrity is not None:
                 raise DispatchTelemetryError(
-                    "empty dispatch usage cannot retain integrity evidence")
+                    "empty dispatch usage cannot retain integrity evidence"
+                )
         else:
             normalized = _usage(usage)
-            expected_integrity = _usage_integrity_fingerprint(
-                ledger, binding, normalized, source)
+            expected_integrity = _usage_integrity_fingerprint(ledger, binding, normalized, source)
             if integrity != expected_integrity:
                 raise DispatchTelemetryError(
-                    "active dispatch usage integrity fingerprint mismatched")
+                    "active dispatch usage integrity fingerprint mismatched"
+                )
         finalized = binding.get("finalized_receipt_fingerprint")
         if finalized is not None:
             if usage is None:
-                raise DispatchTelemetryError(
-                    "finalized dispatch telemetry has no bound usage")
-            finalized = _sha256_fingerprint(
-                finalized, "finalized receipt fingerprint")
+                raise DispatchTelemetryError("finalized dispatch telemetry has no bound usage")
+            finalized = _sha256_fingerprint(finalized, "finalized receipt fingerprint")
             receipt = receipt_fingerprints.get(finalized)
             if receipt is None:
-                raise DispatchTelemetryError(
-                    "finalized dispatch telemetry receipt is missing")
+                raise DispatchTelemetryError("finalized dispatch telemetry receipt is missing")
             if receipt.get("dispatch_id") != dispatch_id:
+                raise DispatchTelemetryError("finalized dispatch telemetry identity mismatched")
+            if any(
+                receipt.get(field)
+                != (canonical["dependencies"] if field == "dependencies" else binding.get(field))
+                for field in _STABLE_DISPATCH_IDENTITY_FIELDS
+            ):
+                raise DispatchTelemetryError("finalized dispatch telemetry identity mismatched")
+            if normalized != {field: receipt.get(field) for field in _USAGE_FIELDS}:
                 raise DispatchTelemetryError(
-                    "finalized dispatch telemetry identity mismatched")
-            if any(receipt.get(field) != (canonical["dependencies"]
-                   if field == "dependencies" else binding.get(field))
-                   for field in _STABLE_DISPATCH_IDENTITY_FIELDS):
-                raise DispatchTelemetryError(
-                    "finalized dispatch telemetry identity mismatched")
-            if normalized != {field: receipt.get(field)
-                              for field in _USAGE_FIELDS}:
-                raise DispatchTelemetryError(
-                    "finalized dispatch usage disagrees with active evidence")
+                    "finalized dispatch usage disagrees with active evidence"
+                )
     baselines = ledger.get("usage_baselines", [])
     if not isinstance(baselines, list):
         raise DispatchTelemetryError("dispatch usage baselines must be a list")
     baseline_ids: set[str] = set()
     bindings_by_id = {str(row["dispatch_id"]): row for row in bindings}
     for baseline in baselines:
-        if not isinstance(baseline, Mapping) or set(baseline) != \
-                _USAGE_BASELINE_FIELDS or baseline.get("schema") != \
-                "taskplane.dispatch-usage-baseline/v1":
+        if (
+            not isinstance(baseline, Mapping)
+            or set(baseline) != _USAGE_BASELINE_FIELDS
+            or baseline.get("schema") != "taskplane.dispatch-usage-baseline/v1"
+        ):
             raise DispatchTelemetryError("dispatch usage baseline is invalid")
         dispatch_id = str(baseline.get("dispatch_id") or "")
         binding = bindings_by_id.get(dispatch_id)
         if binding is None or dispatch_id in baseline_ids:
-            raise DispatchTelemetryError(
-                "dispatch usage baseline identity is invalid")
+            raise DispatchTelemetryError("dispatch usage baseline identity is invalid")
         baseline_ids.add(dispatch_id)
         baseline_usage = baseline.get("usage")
         if not isinstance(baseline_usage, Mapping):
-            raise DispatchTelemetryError(
-                "dispatch usage baseline is invalid")
+            raise DispatchTelemetryError("dispatch usage baseline is invalid")
         expected = _usage_baseline_integrity_fingerprint(
-            ledger, binding, provider=str(baseline.get("provider") or ""),
+            ledger,
+            binding,
+            provider=str(baseline.get("provider") or ""),
             usage=baseline_usage,
-            source_fingerprint=baseline.get("source_fingerprint"))
+            source_fingerprint=baseline.get("source_fingerprint"),
+        )
         if baseline.get("integrity_fingerprint") != expected:
-            raise DispatchTelemetryError(
-                "dispatch usage baseline integrity fingerprint mismatched")
+            raise DispatchTelemetryError("dispatch usage baseline integrity fingerprint mismatched")
     root_admission = ledger.get("root_admission")
     if root_admission is not None:
         _validate_root_admission(root_admission)
@@ -1244,29 +1451,28 @@ def validate_ledger(ledger: Mapping[str, Any]) -> dict[str, Any]:
 
 def _usage(value: Mapping[str, Any]) -> dict[str, int]:
     if not isinstance(value, Mapping) or set(value) != _USAGE_FIELDS:
-        raise DispatchTelemetryError(
-            "observed usage requires exactly the dispatch token counters")
+        raise DispatchTelemetryError("observed usage requires exactly the dispatch token counters")
     normalized = {
-        field: _nonnegative_integer(value.get(field), f"usage.{field}")
-        for field in _USAGE_FIELDS
+        field: _nonnegative_integer(value.get(field), f"usage.{field}") for field in _USAGE_FIELDS
     }
-    if normalized["cached_input_tokens"] + \
-            normalized["uncached_input_tokens"] != \
-            normalized["input_tokens"]:
-        raise DispatchTelemetryError(
-            "cached and uncached input do not reconcile")
-    if normalized["total_tokens"] < normalized["input_tokens"] + \
-            normalized["output_tokens"]:
+    if (
+        normalized["cached_input_tokens"] + normalized["uncached_input_tokens"]
+        != normalized["input_tokens"]
+    ):
+        raise DispatchTelemetryError("cached and uncached input do not reconcile")
+    if normalized["total_tokens"] < normalized["input_tokens"] + normalized["output_tokens"]:
         raise DispatchTelemetryError("total tokens do not reconcile")
     return normalized
 
 
 def _bind_dispatch(
-        ledger: MutableMapping[str, Any],
-        dispatch: Mapping[str, Any], *,
-        usage: Mapping[str, Any] | None = None,
-        source_fingerprint: str | None = None,
-        allow_root_admission: bool) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    dispatch: Mapping[str, Any],
+    *,
+    usage: Mapping[str, Any] | None = None,
+    source_fingerprint: str | None = None,
+    allow_root_admission: bool,
+) -> dict[str, Any]:
     """Bind one observed native dispatch to its deterministic intent id.
 
     A host may supply its initial cumulative observation atomically with the
@@ -1279,8 +1485,8 @@ def _bind_dispatch(
     missing = _DISPATCH_FIELDS.difference(dispatch)
     if unknown or missing:
         raise DispatchTelemetryError(
-            "dispatch binding is closed: "
-            f"missing={sorted(missing)} unknown={sorted(unknown)}")
+            f"dispatch binding is closed: missing={sorted(missing)} unknown={sorted(unknown)}"
+        )
     canonical = _receipt(dispatch, {field: 0 for field in _USAGE_FIELDS})
     material = {
         "schema": DISPATCH_BINDING_SCHEMA,
@@ -1288,84 +1494,98 @@ def _bind_dispatch(
         "dependencies": canonical["dependencies"],
         "usage": (_usage(usage) if usage is not None else None),
         "usage_source_fingerprint": (
-            _sha256_fingerprint(
-                source_fingerprint, "usage source fingerprint")
-            if usage is not None else None
+            _sha256_fingerprint(source_fingerprint, "usage source fingerprint")
+            if usage is not None
+            else None
         ),
         "usage_integrity_fingerprint": None,
         "finalized_receipt_fingerprint": None,
     }
     if (usage is None) != (source_fingerprint is None):
         raise DispatchTelemetryError(
-            "initial usage and its source fingerprint are required together")
+            "initial usage and its source fingerprint are required together"
+        )
     if usage is not None:
-        material["usage_integrity_fingerprint"] = \
-            _usage_integrity_fingerprint(
-                ledger, material, material["usage"],
-                material["usage_source_fingerprint"])
+        material["usage_integrity_fingerprint"] = _usage_integrity_fingerprint(
+            ledger, material, material["usage"], material["usage_source_fingerprint"]
+        )
     bindings = ledger.setdefault("bindings", [])
-    existing = next((row for row in bindings
-                     if row["dispatch_id"] == material["dispatch_id"]), None)
+    existing = next(
+        (row for row in bindings if row["dispatch_id"] == material["dispatch_id"]), None
+    )
     if existing is not None:
         identity_fields = {
-            "dispatch_id", "thread_id", "thread_type", "task_id",
-            "dependencies", "shared_owner",
+            "dispatch_id",
+            "thread_id",
+            "thread_type",
+            "task_id",
+            "dependencies",
+            "shared_owner",
         }
         # Historical bindings retain their original order and integrity digest.
         # Compare only dependency identity canonically; never rewrite the row.
         existing_dependencies = sorted(set(str(value) for value in existing["dependencies"]))
-        if any((existing_dependencies if field == "dependencies" else existing.get(field)) != material.get(field)
-               for field in identity_fields):
+        if any(
+            (existing_dependencies if field == "dependencies" else existing.get(field))
+            != material.get(field)
+            for field in identity_fields
+        ):
             raise DispatchTelemetryError("dispatch binding id collision")
         return dict(existing)
-    if ledger.get("root_admission") is not None and not \
-            allow_root_admission:
+    if ledger.get("root_admission") is not None and not allow_root_admission:
         raise DispatchTelemetryError(
-            "configured root admission requires atomic screen_dispatch "
-            "admission")
+            "configured root admission requires atomic screen_dispatch admission"
+        )
     bindings.append(material)
     ledger["revision"] = int(ledger["revision"]) + 1
     return dict(material)
 
 
 def bind_dispatch(
-        ledger: MutableMapping[str, Any],
-        dispatch: Mapping[str, Any], *,
-        usage: Mapping[str, Any] | None = None,
-        source_fingerprint: str | None = None) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    dispatch: Mapping[str, Any],
+    *,
+    usage: Mapping[str, Any] | None = None,
+    source_fingerprint: str | None = None,
+) -> dict[str, Any]:
     """Bind a dispatch when no root admission transaction is configured."""
     return _bind_dispatch(
-        ledger, dispatch, usage=usage,
+        ledger,
+        dispatch,
+        usage=usage,
         source_fingerprint=source_fingerprint,
-        allow_root_admission=False)
+        allow_root_admission=False,
+    )
 
 
 def capture_usage_baseline(
-        ledger: MutableMapping[str, Any], *, dispatch_id: str,
-        provider: str, usage: Mapping[str, Any],
-        source_fingerprint: str) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    *,
+    dispatch_id: str,
+    provider: str,
+    usage: Mapping[str, Any],
+    source_fingerprint: str,
+) -> dict[str, Any]:
     """Bind one authenticated cumulative start observation to an attempt."""
     validate_ledger(ledger)
-    binding = next((row for row in ledger.get("bindings", [])
-                    if row["dispatch_id"] == str(dispatch_id)), None)
+    binding = next(
+        (row for row in ledger.get("bindings", []) if row["dispatch_id"] == str(dispatch_id)), None
+    )
     if binding is None:
-        raise DispatchTelemetryError(
-            "usage baseline has no live dispatch binding")
-    if binding.get("finalized_receipt_fingerprint") or \
-            binding.get("usage") is not None:
-        raise DispatchTelemetryError(
-            "usage baseline must precede terminal usage")
+        raise DispatchTelemetryError("usage baseline has no live dispatch binding")
+    if binding.get("finalized_receipt_fingerprint") or binding.get("usage") is not None:
+        raise DispatchTelemetryError("usage baseline must precede terminal usage")
     normalized = _usage(usage)
     provider_name = str(provider or "").strip().lower()
-    source = _sha256_fingerprint(
-        source_fingerprint, "usage baseline source fingerprint")
+    source = _sha256_fingerprint(source_fingerprint, "usage baseline source fingerprint")
     baselines = ledger.setdefault("usage_baselines", [])
-    existing = next((row for row in baselines
-                     if row.get("dispatch_id") == str(dispatch_id)), None)
+    existing = next((row for row in baselines if row.get("dispatch_id") == str(dispatch_id)), None)
     if existing is not None:
-        if existing.get("provider") != provider_name or \
-                existing.get("source_fingerprint") != source or \
-                existing.get("usage") != normalized:
+        if (
+            existing.get("provider") != provider_name
+            or existing.get("source_fingerprint") != source
+            or existing.get("usage") != normalized
+        ):
             raise DispatchTelemetryError("dispatch usage baseline conflicts")
         return dict(existing)
     record = {
@@ -1375,8 +1595,8 @@ def capture_usage_baseline(
         "usage": normalized,
         "source_fingerprint": source,
         "integrity_fingerprint": _usage_baseline_integrity_fingerprint(
-            ledger, binding, provider=provider_name, usage=normalized,
-            source_fingerprint=source),
+            ledger, binding, provider=provider_name, usage=normalized, source_fingerprint=source
+        ),
     }
     baselines.append(record)
     ledger["revision"] = int(ledger["revision"]) + 1
@@ -1385,130 +1605,147 @@ def capture_usage_baseline(
 
 
 def observe_terminal_usage_delta(
-        ledger: MutableMapping[str, Any], *, dispatch_id: str,
-        provider: str, usage: Mapping[str, Any],
-        source_fingerprint: str) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    *,
+    dispatch_id: str,
+    provider: str,
+    usage: Mapping[str, Any],
+    source_fingerprint: str,
+) -> dict[str, Any]:
     """Persist the positive terminal ``current - baseline`` attempt delta."""
     validate_ledger(ledger)
-    binding = next((row for row in ledger.get("bindings", [])
-                    if row["dispatch_id"] == str(dispatch_id)), None)
+    binding = next(
+        (row for row in ledger.get("bindings", []) if row["dispatch_id"] == str(dispatch_id)), None
+    )
     if binding is None:
-        raise DispatchTelemetryError(
-            "terminal usage has no live dispatch binding")
-    baseline = next((row for row in ledger.get("usage_baselines", [])
-                     if row.get("dispatch_id") == str(dispatch_id)), None)
+        raise DispatchTelemetryError("terminal usage has no live dispatch binding")
+    baseline = next(
+        (
+            row
+            for row in ledger.get("usage_baselines", [])
+            if row.get("dispatch_id") == str(dispatch_id)
+        ),
+        None,
+    )
     if not isinstance(baseline, Mapping):
-        raise DispatchTelemetryError(
-            "terminal usage requires an authenticated start baseline")
+        raise DispatchTelemetryError("terminal usage requires an authenticated start baseline")
     provider_name = str(provider or "").strip().lower()
-    source = _sha256_fingerprint(
-        source_fingerprint, "terminal usage source fingerprint")
-    if provider_name != baseline.get("provider") or source != \
-            baseline.get("source_fingerprint"):
-        raise DispatchTelemetryError(
-            "terminal usage authority disagrees with its baseline")
+    source = _sha256_fingerprint(source_fingerprint, "terminal usage source fingerprint")
+    if provider_name != baseline.get("provider") or source != baseline.get("source_fingerprint"):
+        raise DispatchTelemetryError("terminal usage authority disagrees with its baseline")
     current = _usage(usage)
     baseline_usage = baseline.get("usage")
     if not isinstance(baseline_usage, Mapping):
-        raise DispatchTelemetryError(
-            "terminal usage baseline counters are invalid")
+        raise DispatchTelemetryError("terminal usage baseline counters are invalid")
     start = _usage(baseline_usage)
     if any(current[field] < start[field] for field in _USAGE_FIELDS):
-        raise DispatchTelemetryError(
-            "terminal cumulative usage moved backwards from baseline")
-    delta = {field: current[field] - start[field]
-             for field in _USAGE_FIELDS}
+        raise DispatchTelemetryError("terminal cumulative usage moved backwards from baseline")
+    delta = {field: current[field] - start[field] for field in _USAGE_FIELDS}
     if delta["total_tokens"] <= 0:
-        raise DispatchTelemetryError(
-            "terminal attributed usage must be positive")
-    if delta["cached_input_tokens"] + delta[
-            "uncached_input_tokens"] != delta["input_tokens"] or \
-            delta["total_tokens"] < delta["input_tokens"] + \
-            delta["output_tokens"]:
-        raise DispatchTelemetryError(
-            "terminal attributed usage does not reconcile")
+        raise DispatchTelemetryError("terminal attributed usage must be positive")
+    if (
+        delta["cached_input_tokens"] + delta["uncached_input_tokens"] != delta["input_tokens"]
+        or delta["total_tokens"] < delta["input_tokens"] + delta["output_tokens"]
+    ):
+        raise DispatchTelemetryError("terminal attributed usage does not reconcile")
     return observe_usage(
-        ledger, dispatch_id=str(dispatch_id), usage=delta,
-        source_fingerprint=source)
+        ledger, dispatch_id=str(dispatch_id), usage=delta, source_fingerprint=source
+    )
 
 
 def observe_usage(
-        ledger: MutableMapping[str, Any], *, dispatch_id: str,
-        usage: Mapping[str, Any], source_fingerprint: str) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    *,
+    dispatch_id: str,
+    usage: Mapping[str, Any],
+    source_fingerprint: str,
+) -> dict[str, Any]:
     """Persist one monotonic cumulative provider observation."""
     validate_ledger(ledger)
-    binding = next((row for row in ledger.get("bindings", [])
-                    if row["dispatch_id"] == str(dispatch_id)), None)
+    binding = next(
+        (row for row in ledger.get("bindings", []) if row["dispatch_id"] == str(dispatch_id)), None
+    )
     if binding is None:
         raise DispatchTelemetryError("observed usage has no live dispatch binding")
-    source_fingerprint = _sha256_fingerprint(
-        source_fingerprint, "usage source fingerprint")
+    source_fingerprint = _sha256_fingerprint(source_fingerprint, "usage source fingerprint")
     normalized = _usage(usage)
     if binding.get("finalized_receipt_fingerprint"):
-        if binding.get("usage_source_fingerprint") != source_fingerprint or \
-                binding.get("usage") != normalized:
-            raise DispatchTelemetryError(
-                "finalized dispatch usage replay conflicts")
+        if (
+            binding.get("usage_source_fingerprint") != source_fingerprint
+            or binding.get("usage") != normalized
+        ):
+            raise DispatchTelemetryError("finalized dispatch usage replay conflicts")
         return dict(binding)
     prior_source = binding.get("usage_source_fingerprint")
     if prior_source not in (None, source_fingerprint):
         raise DispatchTelemetryError("dispatch usage source changed")
     prior = binding.get("usage")
     if isinstance(prior, Mapping) and any(
-            normalized[field] < int(prior[field]) for field in _USAGE_FIELDS):
+        normalized[field] < int(prior[field]) for field in _USAGE_FIELDS
+    ):
         raise DispatchTelemetryError("observed dispatch usage moved backwards")
     binding["usage"] = normalized
     binding["usage_source_fingerprint"] = source_fingerprint
     binding["usage_integrity_fingerprint"] = _usage_integrity_fingerprint(
-        ledger, binding, normalized, source_fingerprint)
+        ledger, binding, normalized, source_fingerprint
+    )
     ledger["revision"] = int(ledger["revision"]) + 1
     return dict(binding)
 
 
 def finalize_usage(
-        ledger: MutableMapping[str, Any], *, dispatch_id: str,
-        ended_at: int | float, clock: Clock,
-        events: Sequence[Mapping[str, Any]] | None = None,
-        evidence_store: Any = None) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    *,
+    dispatch_id: str,
+    ended_at: int | float,
+    clock: Clock,
+    events: Sequence[Mapping[str, Any]] | None = None,
+    evidence_store: Any = None,
+) -> dict[str, Any]:
     """Admit the final observed counters for one bound live dispatch."""
     validate_ledger(ledger)
-    binding = next((row for row in ledger.get("bindings", [])
-                    if row["dispatch_id"] == str(dispatch_id)), None)
+    binding = next(
+        (row for row in ledger.get("bindings", []) if row["dispatch_id"] == str(dispatch_id)), None
+    )
     if binding is None:
         raise DispatchTelemetryError("final usage has no live dispatch binding")
     if binding.get("usage") is None:
         raise DispatchTelemetryError("final usage has no provider observation")
     if binding.get("finalized_receipt_fingerprint"):
-        receipt = next((row for row in ledger["dispatches"]
-                        if row["fingerprint"] ==
-                        binding["finalized_receipt_fingerprint"]), None)
+        receipt = next(
+            (
+                row
+                for row in ledger["dispatches"]
+                if row["fingerprint"] == binding["finalized_receipt_fingerprint"]
+            ),
+            None,
+        )
         if receipt is None:
             raise DispatchTelemetryError("finalized usage receipt is missing")
         return {
             "schema": "taskplane.dispatch-telemetry-admission/v1",
-            "status": "duplicate", "receipt": dict(receipt),
+            "status": "duplicate",
+            "receipt": dict(receipt),
             "budget": budget_projection(ledger, clock),
         }
-    dispatch = {
-        field: binding[field] for field in _DISPATCH_FIELDS
-    }
+    dispatch = {field: binding[field] for field in _DISPATCH_FIELDS}
     dispatch["ended_at"] = ended_at
     if events is not None:
         dispatch["events"] = [dict(row) for row in events]
-    result = admit(
-        ledger, dispatch, dict(binding["usage"]), clock,
-        evidence_store=evidence_store)
+    result = admit(ledger, dispatch, dict(binding["usage"]), clock, evidence_store=evidence_store)
     if result["status"] in {"admitted", "duplicate"} and result.get("receipt"):
-        binding["finalized_receipt_fingerprint"] = \
-            result["receipt"]["fingerprint"]
+        binding["finalized_receipt_fingerprint"] = result["receipt"]["fingerprint"]
     return result
 
 
 def terminalize_unavailable(
-        ledger: MutableMapping[str, Any], *, dispatch_id: str,
-        ended_at: int | float, outcome: str,
-        reason: str = "provider usage observation is unavailable" \
-        ) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    *,
+    dispatch_id: str,
+    ended_at: int | float,
+    outcome: str,
+    reason: str = "provider usage observation is unavailable",
+) -> dict[str, Any]:
     """Close lifecycle identity when provider usage is unavailable.
 
     No token counters or positive budget claim are created.  The terminal
@@ -1519,36 +1756,40 @@ def terminalize_unavailable(
     terminal = str(outcome or "").strip()
     unavailable_reason = str(reason or "").strip()[:1024]
     if terminal not in TERMINAL_EVENT_KINDS:
-        raise DispatchTelemetryError(
-            "unavailable dispatch terminal outcome is invalid")
-    binding = next((row for row in ledger.get("bindings", [])
-                    if row["dispatch_id"] == str(dispatch_id)), None)
+        raise DispatchTelemetryError("unavailable dispatch terminal outcome is invalid")
+    binding = next(
+        (row for row in ledger.get("bindings", []) if row["dispatch_id"] == str(dispatch_id)), None
+    )
     if binding is None:
-        raise DispatchTelemetryError(
-            "unavailable terminal outcome has no live dispatch binding")
+        raise DispatchTelemetryError("unavailable terminal outcome has no live dispatch binding")
     if binding.get("finalized_receipt_fingerprint"):
-        receipt = next((row for row in ledger.get("dispatches", [])
-                        if row.get("fingerprint") == binding.get(
-                            "finalized_receipt_fingerprint")), None)
+        receipt = next(
+            (
+                row
+                for row in ledger.get("dispatches", [])
+                if row.get("fingerprint") == binding.get("finalized_receipt_fingerprint")
+            ),
+            None,
+        )
         if receipt is None:
-            raise DispatchTelemetryError(
-                "finalized usage receipt is missing")
+            raise DispatchTelemetryError("finalized usage receipt is missing")
         return {"status": "duplicate", "receipt": dict(receipt)}
     terminal_events = [
-        event for event in binding.get("events") or []
-        if event.get("kind") in TERMINAL_EVENT_KINDS
+        event for event in binding.get("events") or [] if event.get("kind") in TERMINAL_EVENT_KINDS
     ]
     if terminal_events:
         if terminal_events[-1].get("kind") != terminal:
             raise DispatchTelemetryError(
-                "dispatch terminal outcome conflicts with prior observation")
-        prior_reason = str((terminal_events[-1].get("payload") or {}).get(
-            "unavailable_reason") or "")
+                "dispatch terminal outcome conflicts with prior observation"
+            )
+        prior_reason = str(
+            (terminal_events[-1].get("payload") or {}).get("unavailable_reason") or ""
+        )
         if prior_reason and prior_reason != unavailable_reason:
             raise DispatchTelemetryError(
-                "dispatch unavailable reason conflicts with prior observation")
-        return {"status": "duplicate-unavailable",
-                "binding": dict(binding)}
+                "dispatch unavailable reason conflicts with prior observation"
+            )
+        return {"status": "duplicate-unavailable", "binding": dict(binding)}
     binding["ended_at"] = _nonnegative_number(ended_at, "ended_at")
     binding["events"] = [
         *list(binding.get("events") or []),
@@ -1556,17 +1797,19 @@ def terminalize_unavailable(
             dispatch_id=str(binding["dispatch_id"]),
             thread_id=str(binding["thread_id"]),
             thread_type=str(binding["thread_type"]),
-            task_id=str(binding["task_id"]), sequence=len(
-                binding.get("events") or []) + 1,
-            kind=terminal, at=binding["ended_at"], payload={
+            task_id=str(binding["task_id"]),
+            sequence=len(binding.get("events") or []) + 1,
+            kind=terminal,
+            at=binding["ended_at"],
+            payload={
                 "usage_status": "unavailable",
                 "unavailable_reason": unavailable_reason,
-            }),
+            },
+        ),
     ]
     ledger["revision"] = int(ledger["revision"]) + 1
     validate_ledger(ledger)
-    return {"status": "unavailable", "binding": dict(binding),
-            "reason": unavailable_reason}
+    return {"status": "unavailable", "binding": dict(binding), "reason": unavailable_reason}
 
 
 def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float]:
@@ -1584,21 +1827,22 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
         raise DispatchTelemetryError("clock moved before wave start")
     dispatches = list(ledger.get("dispatches") or [])
     bindings = list(ledger.get("bindings") or [])
-    receipt_dispatch_ids = {
-        str(row.get("dispatch_id") or "") for row in dispatches
-    }
+    receipt_dispatch_ids = {str(row.get("dispatch_id") or "") for row in dispatches}
     active_usage = []
     for binding in bindings:
-        if binding.get("finalized_receipt_fingerprint") or \
-                str(binding.get("dispatch_id") or "") in receipt_dispatch_ids:
+        if (
+            binding.get("finalized_receipt_fingerprint")
+            or str(binding.get("dispatch_id") or "") in receipt_dispatch_ids
+        ):
             continue
-        if any(event.get("kind") in TERMINAL_EVENT_KINDS
-               for event in binding.get("events") or []):
+        if any(event.get("kind") in TERMINAL_EVENT_KINDS for event in binding.get("events") or []):
             continue
         usage = binding.get("usage")
         preadmitted = (
-            binding.get("started_at") == 0 and binding.get("ended_at") == 0
-            and not binding.get("events"))
+            binding.get("started_at") == 0
+            and binding.get("ended_at") == 0
+            and not binding.get("events")
+        )
         if usage is None and preadmitted:
             # An atomically admitted dispatch set is assembled before the
             # host starts any member.  It counts as a reserved session, but
@@ -1606,8 +1850,7 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
             # appends its native-start event.
             continue
         if usage is None:
-            raise DispatchTelemetryError(
-                "active native usage is missing before the next dispatch")
+            raise DispatchTelemetryError("active native usage is missing before the next dispatch")
         active_usage.append(_usage(usage))
     observed_sessions = {
         str(row.get("thread_id") or "")
@@ -1619,9 +1862,8 @@ def wave_usage(ledger: Mapping[str, Any], clock: Clock) -> dict[str, int | float
         "sessions": len(observed_sessions),
         "total_tokens": sum(int(row["total_tokens"]) for row in dispatches)
         + sum(row["total_tokens"] for row in active_usage),
-        "uncached_input_tokens": sum(
-            int(row["uncached_input_tokens"]) for row in dispatches
-        ) + sum(row["uncached_input_tokens"] for row in active_usage),
+        "uncached_input_tokens": sum(int(row["uncached_input_tokens"]) for row in dispatches)
+        + sum(row["uncached_input_tokens"] for row in active_usage),
     }
 
 
@@ -1629,64 +1871,73 @@ def ledger_usage_capability(ledger: Mapping[str, Any]) -> dict[str, Any]:
     """Project whether this ledger has any real host-token observation."""
     validate_ledger(ledger)
     terminal_unavailable = [
-        row for row in ledger.get("bindings") or []
-        if row.get("usage") is None and any(
-            event.get("kind") in TERMINAL_EVENT_KINDS
-            for event in row.get("events") or [])
+        row
+        for row in ledger.get("bindings") or []
+        if row.get("usage") is None
+        and any(event.get("kind") in TERMINAL_EVENT_KINDS for event in row.get("events") or [])
     ]
     if terminal_unavailable:
         return usage_capability(
-            None, reason="one or more terminal attempts have no host token "
-            "totals")
-    finalized_ids = {
-        str(row.get("dispatch_id") or "")
-        for row in ledger.get("dispatches") or []
-    }
+            None, reason="one or more terminal attempts have no host token totals"
+        )
+    finalized_ids = {str(row.get("dispatch_id") or "") for row in ledger.get("dispatches") or []}
     rows = [
-        {field: row.get(field) for field in _USAGE_FIELDS}
-        for row in ledger.get("dispatches") or []
+        {field: row.get(field) for field in _USAGE_FIELDS} for row in ledger.get("dispatches") or []
     ]
     rows.extend(
         dict(binding["usage"])
         for binding in ledger.get("bindings") or []
-        if binding.get("usage") is not None and
-        not binding.get("finalized_receipt_fingerprint") and
-        str(binding.get("dispatch_id") or "") not in finalized_ids
+        if binding.get("usage") is not None
+        and not binding.get("finalized_receipt_fingerprint")
+        and str(binding.get("dispatch_id") or "") not in finalized_ids
     )
     if not rows:
-        return usage_capability(
-            None, reason="no host token totals have been observed")
+        return usage_capability(None, reason="no host token totals have been observed")
     normalized = [_usage(row) for row in rows]
-    return usage_capability({
-        field: sum(row[field] for row in normalized)
-        for field in _USAGE_FIELDS
-    })
+    return usage_capability(
+        {field: sum(row[field] for row in normalized) for field in _USAGE_FIELDS}
+    )
 
 
-_ROOT_ADMISSION_FIELDS = frozenset({
-    "schema", "settings_digest", "policy", "configuration_fingerprint",
-    "meter", "observation_authority_fingerprint", "sticky", "reason_code",
-    "refusal_fingerprint",
-})
-_ROOT_SETTINGS_FIELDS = frozenset({
-    "resume", "seed", "seed_budget_tokens", "root_budget_tokens",
-})
+_ROOT_ADMISSION_FIELDS = frozenset(
+    {
+        "schema",
+        "settings_digest",
+        "policy",
+        "configuration_fingerprint",
+        "meter",
+        "observation_authority_fingerprint",
+        "sticky",
+        "reason_code",
+        "refusal_fingerprint",
+    }
+)
+_ROOT_SETTINGS_FIELDS = frozenset(
+    {
+        "resume",
+        "seed",
+        "seed_budget_tokens",
+        "root_budget_tokens",
+    }
+)
 
 
 def _root_policy(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != _ROOT_SETTINGS_FIELDS:
         raise DispatchTelemetryError(
-            "root admission requires the exact root_session settings snapshot")
+            "root admission requires the exact root_session settings snapshot"
+        )
     resume = str(value.get("resume") or "")
     seed = str(value.get("seed") or "")
-    seed_budget = _nonnegative_integer(
-        value.get("seed_budget_tokens"), "root seed budget")
-    root_budget = _nonnegative_integer(
-        value.get("root_budget_tokens"), "root budget")
-    if resume != "forbidden" or seed != "digest-only" or \
-            seed_budget <= 0 or root_budget <= seed_budget:
-        raise DispatchTelemetryError(
-            "root admission settings are unsupported or invalid")
+    seed_budget = _nonnegative_integer(value.get("seed_budget_tokens"), "root seed budget")
+    root_budget = _nonnegative_integer(value.get("root_budget_tokens"), "root budget")
+    if (
+        resume != "forbidden"
+        or seed != "digest-only"
+        or seed_budget <= 0
+        or root_budget <= seed_budget
+    ):
+        raise DispatchTelemetryError("root admission settings are unsupported or invalid")
     return {
         "resume": resume,
         "seed": seed,
@@ -1696,67 +1947,74 @@ def _root_policy(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_root_admission(
-        value: Mapping[str, Any], *,
-        observation_authority: bytes | None = None,
-        require_authenticated_meter: bool = False) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != \
-            _ROOT_ADMISSION_FIELDS or value.get("schema") != \
-            ROOT_ADMISSION_SCHEMA:
+    value: Mapping[str, Any],
+    *,
+    observation_authority: bytes | None = None,
+    require_authenticated_meter: bool = False,
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _ROOT_ADMISSION_FIELDS
+        or value.get("schema") != ROOT_ADMISSION_SCHEMA
+    ):
         raise DispatchTelemetryError("root admission state is invalid")
     settings_digest = _sha256_fingerprint(
-        value.get("settings_digest"), "root admission settings digest")
+        value.get("settings_digest"), "root admission settings digest"
+    )
     policy_value = value.get("policy")
     if not isinstance(policy_value, Mapping):
         raise DispatchTelemetryError("root admission policy is invalid")
     policy = _root_policy(policy_value)
-    configuration = content_fingerprint({
-        "schema": ROOT_ADMISSION_SCHEMA,
-        "settings_digest": settings_digest,
-        "policy": policy,
-    })
+    configuration = content_fingerprint(
+        {
+            "schema": ROOT_ADMISSION_SCHEMA,
+            "settings_digest": settings_digest,
+            "policy": policy,
+        }
+    )
     if value.get("configuration_fingerprint") != configuration:
-        raise DispatchTelemetryError(
-            "root admission configuration fingerprint mismatched")
+        raise DispatchTelemetryError("root admission configuration fingerprint mismatched")
     meter = value.get("meter")
     authority = value.get("observation_authority_fingerprint")
     if meter is None:
         if authority is not None:
-            raise DispatchTelemetryError(
-                "missing root meter cannot retain observation authority")
+            raise DispatchTelemetryError("missing root meter cannot retain observation authority")
     else:
-        if not isinstance(meter, Mapping) or meter.get("schema") != \
-                native_session_meter.ROOT_METER_SCHEMA:
+        if (
+            not isinstance(meter, Mapping)
+            or meter.get("schema") != native_session_meter.ROOT_METER_SCHEMA
+        ):
             raise DispatchTelemetryError("root meter schema is invalid")
         try:
             meter = native_session_meter.validate_root_meter_projection(meter)
         except native_session_meter.NativeSessionMeterError as exc:
             raise DispatchTelemetryError(str(exc)) from exc
         authority_fingerprint = _sha256_fingerprint(
-            authority, "root observation authority fingerprint")
+            authority, "root observation authority fingerprint"
+        )
         if observation_authority is not None:
-            if hashlib.sha256(observation_authority).hexdigest() != \
-                    authority_fingerprint:
-                raise DispatchTelemetryError(
-                    "root observation authority changed")
+            if hashlib.sha256(observation_authority).hexdigest() != authority_fingerprint:
+                raise DispatchTelemetryError("root observation authority changed")
             try:
                 meter = native_session_meter.validate_root_meter(
-                    meter, authority=observation_authority)
+                    meter, authority=observation_authority
+                )
             except native_session_meter.NativeSessionMeterError as exc:
                 raise DispatchTelemetryError(str(exc)) from exc
         elif require_authenticated_meter:
-            raise DispatchTelemetryError(
-                "root observation authority is required for admission")
+            raise DispatchTelemetryError("root observation authority is required for admission")
         if meter.get("status") == "available":
             if meter.get("session_role") != "root" or not isinstance(
-                    meter.get("watermark"), Mapping):
-                raise DispatchTelemetryError(
-                    "available root meter is incomplete")
+                meter.get("watermark"), Mapping
+            ):
+                raise DispatchTelemetryError("available root meter is incomplete")
             meter_usage = meter.get("usage")
             if not isinstance(meter_usage, Mapping):
                 raise DispatchTelemetryError("root meter usage is invalid")
             _usage(meter_usage)
-        elif meter.get("status") != "unavailable" or not str(
-                meter.get("reason_code") or "").strip():
+        elif (
+            meter.get("status") != "unavailable" or not str(meter.get("reason_code") or "").strip()
+        ):
             raise DispatchTelemetryError("root meter status is invalid")
     sticky = value.get("sticky")
     reason_code = value.get("reason_code")
@@ -1764,25 +2022,27 @@ def _validate_root_admission(
     if not isinstance(sticky, bool):
         raise DispatchTelemetryError("root admission sticky state is invalid")
     if sticky:
-        if not str(reason_code or "").strip() or not isinstance(
-                refusal, str) or re.fullmatch(r"[0-9a-f]{64}", refusal) is None:
-            raise DispatchTelemetryError(
-                "sticky root admission refusal is incomplete")
+        if (
+            not str(reason_code or "").strip()
+            or not isinstance(refusal, str)
+            or re.fullmatch(r"[0-9a-f]{64}", refusal) is None
+        ):
+            raise DispatchTelemetryError("sticky root admission refusal is incomplete")
     elif reason_code is not None or refusal is not None:
-        raise DispatchTelemetryError(
-            "open root admission cannot retain a refusal")
+        raise DispatchTelemetryError("open root admission cannot retain a refusal")
     return dict(value)
 
 
 def configure_root_admission(
-        ledger: MutableMapping[str, Any], *,
-        root_session_settings: Mapping[str, Any],
-        settings_digest: str) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    *,
+    root_session_settings: Mapping[str, Any],
+    settings_digest: str,
+) -> dict[str, Any]:
     """Consume one complete immutable P10 root-session settings snapshot."""
     validate_ledger(ledger)
     policy = _root_policy(root_session_settings)
-    digest = _sha256_fingerprint(
-        settings_digest, "root admission settings digest")
+    digest = _sha256_fingerprint(settings_digest, "root admission settings digest")
     material = {
         "schema": ROOT_ADMISSION_SCHEMA,
         "settings_digest": digest,
@@ -1800,10 +2060,8 @@ def configure_root_admission(
     prior = ledger.get("root_admission")
     if prior is not None:
         _validate_root_admission(prior)
-        if prior["configuration_fingerprint"] != configured[
-                "configuration_fingerprint"]:
-            raise DispatchTelemetryError(
-                "root admission cannot change settings snapshots")
+        if prior["configuration_fingerprint"] != configured["configuration_fingerprint"]:
+            raise DispatchTelemetryError("root admission cannot change settings snapshots")
         return dict(prior)
     ledger["root_admission"] = configured
     ledger["revision"] = int(ledger["revision"]) + 1
@@ -1812,91 +2070,99 @@ def configure_root_admission(
 
 
 def record_root_meter(
-        ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *,
-        observation_authority: bytes) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *, observation_authority: bytes
+) -> dict[str, Any]:
     """Attach one fresh monotonic root meter without reopening a refusal."""
-    return _record_root_meter(ledger, meter,
-        observation_authority=observation_authority)
+    return _record_root_meter(ledger, meter, observation_authority=observation_authority)
 
 
 def open_root_generation(
-        ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *,
-        observation_authority: bytes) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *, observation_authority: bytes
+) -> dict[str, Any]:
     """Retain the previous admission while opening a verified seed generation."""
-    return _record_root_meter(ledger, meter,
-        observation_authority=observation_authority, generation=True)
+    return _record_root_meter(
+        ledger, meter, observation_authority=observation_authority, generation=True
+    )
 
 
 def _record_root_meter(
-        ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *,
-        observation_authority: bytes, generation: bool = False) -> dict[str, Any]:
+    ledger: MutableMapping[str, Any],
+    meter: Mapping[str, Any],
+    *,
+    observation_authority: bytes,
+    generation: bool = False,
+) -> dict[str, Any]:
     validate_ledger(ledger)
     admission = ledger.get("root_admission")
     if not isinstance(admission, MutableMapping):
-        raise DispatchTelemetryError(
-            "root meter requires configured root admission")
+        raise DispatchTelemetryError("root meter requires configured root admission")
     _validate_root_admission(admission)
     try:
         checked_meter = native_session_meter.validate_root_meter(
-            meter, authority=observation_authority)
+            meter, authority=observation_authority
+        )
     except native_session_meter.NativeSessionMeterError as exc:
         raise DispatchTelemetryError(str(exc)) from exc
     if not isinstance(observation_authority, bytes):
         raise DispatchTelemetryError("root observation authority is invalid")
-    authority_fingerprint = hashlib.sha256(
-        observation_authority).hexdigest()
+    authority_fingerprint = hashlib.sha256(observation_authority).hexdigest()
     prior = admission.get("meter")
-    if generation and (not isinstance(prior, Mapping) or prior.get("status") != "available" or
-            checked_meter.get("status") != "available" or prior.get("status_receipt_fingerprint") ==
-            checked_meter.get("status_receipt_fingerprint")):
+    if generation and (
+        not isinstance(prior, Mapping)
+        or prior.get("status") != "available"
+        or checked_meter.get("status") != "available"
+        or prior.get("status_receipt_fingerprint")
+        == checked_meter.get("status_receipt_fingerprint")
+    ):
         raise DispatchTelemetryError("root generation requires a new authenticated start binding")
     prior_authority = admission.get("observation_authority_fingerprint")
-    if prior_authority is not None and prior_authority != \
-            authority_fingerprint:
-        raise DispatchTelemetryError(
-            "root observation authority changed")
-    if isinstance(prior, Mapping) and prior.get("status") == "available" and \
-            checked_meter.get("status") == "available":
+    if prior_authority is not None and prior_authority != authority_fingerprint:
+        raise DispatchTelemetryError("root observation authority changed")
+    if (
+        isinstance(prior, Mapping)
+        and prior.get("status") == "available"
+        and checked_meter.get("status") == "available"
+    ):
         prior_watermark = prior.get("watermark") or {}
         next_watermark = checked_meter.get("watermark") or {}
         prior_sequence = int(prior_watermark.get("last_sequence") or 0)
         next_sequence = int(next_watermark.get("last_sequence") or 0)
         if next_sequence == prior_sequence and next_watermark.get(
-                "fingerprint") != prior_watermark.get("fingerprint"):
-            raise DispatchTelemetryError(
-                "root meter sequence has conflicting evidence")
+            "fingerprint"
+        ) != prior_watermark.get("fingerprint"):
+            raise DispatchTelemetryError("root meter sequence has conflicting evidence")
         if next_sequence < prior_sequence:
-            raise DispatchTelemetryError(
-                "root meter watermark moved backwards")
+            raise DispatchTelemetryError("root meter watermark moved backwards")
         identity_fields: tuple[str, ...] = (
-            "session_pseudonym", "source_identity_fingerprint",
+            "session_pseudonym",
+            "source_identity_fingerprint",
             "resumed",
             "first_observed_input_tokens",
         )
         if not generation:
             identity_fields += ("status_receipt_fingerprint",)
-        if any(prior_watermark.get(field) != next_watermark.get(field)
-               for field in identity_fields):
-            raise DispatchTelemetryError(
-                "root meter source or observation authority was replaced")
+        if any(
+            prior_watermark.get(field) != next_watermark.get(field) for field in identity_fields
+        ):
+            raise DispatchTelemetryError("root meter source or observation authority was replaced")
         if next_sequence > prior_sequence and (
-                int(next_watermark.get("turns") or 0) < int(
-                    prior_watermark.get("turns") or 0) or int(
-                    next_watermark.get("peak_context_tokens") or 0) < int(
-                    prior_watermark.get("peak_context_tokens") or 0) or any(
-                    int(next_watermark["usage"][field]) < int(
-                        prior_watermark["usage"][field])
-                    for field in _USAGE_FIELDS)):
-            raise DispatchTelemetryError(
-                "root meter cumulative watermark moved backwards")
+            int(next_watermark.get("turns") or 0) < int(prior_watermark.get("turns") or 0)
+            or int(next_watermark.get("peak_context_tokens") or 0)
+            < int(prior_watermark.get("peak_context_tokens") or 0)
+            or any(
+                int(next_watermark["usage"][field]) < int(prior_watermark["usage"][field])
+                for field in _USAGE_FIELDS
+            )
+        ):
+            raise DispatchTelemetryError("root meter cumulative watermark moved backwards")
     if prior == checked_meter and prior_authority == authority_fingerprint:
         return dict(admission)
     candidate = dict(admission)
     candidate["meter"] = checked_meter
     candidate["observation_authority_fingerprint"] = authority_fingerprint
     _validate_root_admission(
-        candidate, observation_authority=observation_authority,
-        require_authenticated_meter=True)
+        candidate, observation_authority=observation_authority, require_authenticated_meter=True
+    )
     if generation:
         ledger.setdefault("root_admission_history", []).append(copy.deepcopy(admission))
     admission.update(candidate)
@@ -1905,14 +2171,14 @@ def _record_root_meter(
 
 
 def _root_admission_projection(
-        ledger: Mapping[str, Any], *,
-        observation_authority: bytes | None = None) -> dict[str, Any] | None:
+    ledger: Mapping[str, Any], *, observation_authority: bytes | None = None
+) -> dict[str, Any] | None:
     admission = ledger.get("root_admission")
     if admission is None:
         return None
     checked = _validate_root_admission(
-        admission, observation_authority=observation_authority,
-        require_authenticated_meter=True)
+        admission, observation_authority=observation_authority, require_authenticated_meter=True
+    )
     meter = checked.get("meter")
     reason_code = None
     total = None
@@ -1924,11 +2190,11 @@ def _root_admission_projection(
         total = int(meter["usage"]["total_tokens"])
         if total >= int(checked["policy"]["root_budget_tokens"]):
             reason_code = "root_budget_reached"
-        elif checked["policy"]["resume"] == "forbidden" and meter.get(
-                "resumed") is not False:
+        elif checked["policy"]["resume"] == "forbidden" and meter.get("resumed") is not False:
             reason_code = "root_resume_forbidden"
         elif int(meter["first_observed_input_tokens"]) > int(
-                checked["policy"]["seed_budget_tokens"]):
+            checked["policy"]["seed_budget_tokens"]
+        ):
             reason_code = "root_seed_budget_exceeded"
     projection = {
         "schema": ROOT_ADMISSION_PROJECTION_SCHEMA,
@@ -1939,15 +2205,13 @@ def _root_admission_projection(
         "root_total_tokens": total,
         "settings_digest": checked["settings_digest"],
         "settings_consumed": dict(checked["policy"]),
-        "meter_fingerprint": (
-            meter.get("fingerprint") if isinstance(meter, Mapping) else None),
+        "meter_fingerprint": (meter.get("fingerprint") if isinstance(meter, Mapping) else None),
     }
     projection["fingerprint"] = content_fingerprint(projection)
     return projection
 
 
-def _partitioned_usage(ledger: Mapping[str, Any]) \
-        -> tuple[dict[str, int] | None, dict[str, int]]:
+def _partitioned_usage(ledger: Mapping[str, Any]) -> tuple[dict[str, int] | None, dict[str, int]]:
     admission = ledger.get("root_admission")
     root_usage = None
     if isinstance(admission, Mapping):
@@ -1957,8 +2221,7 @@ def _partitioned_usage(ledger: Mapping[str, Any]) \
             if not isinstance(meter_usage, Mapping):
                 raise DispatchTelemetryError("root meter usage is invalid")
             root_usage = _usage(meter_usage)
-    finalized = {str(row.get("dispatch_id") or "")
-                 for row in ledger.get("dispatches") or []}
+    finalized = {str(row.get("dispatch_id") or "") for row in ledger.get("dispatches") or []}
     rows = [
         {field: row[field] for field in _USAGE_FIELDS}
         for row in ledger.get("dispatches") or []
@@ -1967,24 +2230,24 @@ def _partitioned_usage(ledger: Mapping[str, Any]) \
     rows.extend(
         dict(binding["usage"])
         for binding in ledger.get("bindings") or []
-        if binding.get("thread_type") != "main" and
-        binding.get("usage") is not None and
-        str(binding.get("dispatch_id") or "") not in finalized
+        if binding.get("thread_type") != "main"
+        and binding.get("usage") is not None
+        and str(binding.get("dispatch_id") or "") not in finalized
     )
     normalized = [_usage(row) for row in rows]
-    worker_usage = {
-        field: sum(row[field] for row in normalized)
-        for field in _USAGE_FIELDS
-    }
+    worker_usage = {field: sum(row[field] for row in normalized) for field in _USAGE_FIELDS}
     return root_usage, worker_usage
 
 
 def closed_wave_metrics_source(
-        ledger: Mapping[str, Any], clock: Clock, *,
-        candidate_fingerprint: str,
-        billing_total_tokens: int | None = None,
-        archive_upper_bound_tokens: int | None = None,
-        allow_partial: bool = False) -> dict[str, Any]:
+    ledger: Mapping[str, Any],
+    clock: Clock,
+    *,
+    candidate_fingerprint: str,
+    billing_total_tokens: int | None = None,
+    archive_upper_bound_tokens: int | None = None,
+    allow_partial: bool = False,
+) -> dict[str, Any]:
     """Project one closed ledger for the wave-metrics sealing boundary.
 
     Dispatch, session, and usage identities remain inside their producer.  The
@@ -1994,29 +2257,25 @@ def closed_wave_metrics_source(
     cannot substitute one truth class for another.
     """
     identity = validate_ledger(ledger)
-    if not isinstance(candidate_fingerprint, str) or re.fullmatch(
-            r"[0-9a-f]{64}", candidate_fingerprint) is None:
-        raise DispatchTelemetryError(
-            "wave metrics candidate fingerprint must be a sha256 digest")
-    finalized_ids = {
-        str(row.get("dispatch_id") or "")
-        for row in ledger.get("dispatches") or []
-    }
+    if (
+        not isinstance(candidate_fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{64}", candidate_fingerprint) is None
+    ):
+        raise DispatchTelemetryError("wave metrics candidate fingerprint must be a sha256 digest")
+    finalized_ids = {str(row.get("dispatch_id") or "") for row in ledger.get("dispatches") or []}
     active = [
-        row for row in ledger.get("bindings") or []
-        if not row.get("finalized_receipt_fingerprint") and
-        str(row.get("dispatch_id") or "") not in finalized_ids and
-        not any(event.get("kind") in TERMINAL_EVENT_KINDS
-                for event in row.get("events") or [])
+        row
+        for row in ledger.get("bindings") or []
+        if not row.get("finalized_receipt_fingerprint")
+        and str(row.get("dispatch_id") or "") not in finalized_ids
+        and not any(event.get("kind") in TERMINAL_EVENT_KINDS for event in row.get("events") or [])
     ]
     if active:
-        raise DispatchTelemetryError(
-            "wave metrics require a closed dispatch ledger")
+        raise DispatchTelemetryError("wave metrics require a closed dispatch ledger")
     usage = wave_usage(ledger, clock)
     capability = ledger_usage_capability(ledger)
     if capability.get("status") != "available" and not allow_partial:
-        raise DispatchTelemetryError(
-            "wave metrics require host-observed token usage")
+        raise DispatchTelemetryError("wave metrics require host-observed token usage")
 
     def optional_tokens(value: int | None, label: str) -> int | None:
         if value is None:
@@ -2024,26 +2283,32 @@ def closed_wave_metrics_source(
         return _nonnegative_integer(value, label)
 
     dispatch_receipts = [
-        str(row.get("fingerprint") or "")
-        for row in ledger.get("dispatches") or []
+        str(row.get("fingerprint") or "") for row in ledger.get("dispatches") or []
     ]
-    session_pseudonyms = sorted({
-        content_fingerprint({"thread_id": str(row.get("thread_id") or "")})
-        for row in ledger.get("dispatches") or []
-        if str(row.get("thread_id") or "")
-    })
+    session_pseudonyms = sorted(
+        {
+            content_fingerprint({"thread_id": str(row.get("thread_id") or "")})
+            for row in ledger.get("dispatches") or []
+            if str(row.get("thread_id") or "")
+        }
+    )
     material = {
         "schema": WAVE_METRICS_SOURCE_SCHEMA,
         "candidate_fingerprint": candidate_fingerprint,
         "source_sha_digest": content_fingerprint(identity["source_sha"]),
-        "interval": {"opened_at": ledger["started_at"],
-                     "closed_at": clock.wall_time(), "status": "closed"},
+        "interval": {
+            "opened_at": ledger["started_at"],
+            "closed_at": clock.wall_time(),
+            "status": "closed",
+        },
         "digests": {
             "dispatch": content_fingerprint(dispatch_receipts),
-            "token_usage": content_fingerprint({
-                "dispatch_receipts": dispatch_receipts,
-                "usage_capability": capability,
-            }),
+            "token_usage": content_fingerprint(
+                {
+                    "dispatch_receipts": dispatch_receipts,
+                    "usage_capability": capability,
+                }
+            ),
             "sessions": content_fingerprint(session_pseudonyms),
         },
         "observed": {
@@ -2053,25 +2318,21 @@ def closed_wave_metrics_source(
             "elapsed_seconds": usage["elapsed_seconds"],
         },
         "billing": {
-            "status": ("available" if billing_total_tokens is not None
-                       else "unavailable"),
-            "total_tokens": optional_tokens(
-                billing_total_tokens, "billing total tokens"),
+            "status": ("available" if billing_total_tokens is not None else "unavailable"),
+            "total_tokens": optional_tokens(billing_total_tokens, "billing total tokens"),
         },
         "archive_upper_bound": {
-            "status": ("available" if archive_upper_bound_tokens is not None
-                       else "unavailable"),
+            "status": ("available" if archive_upper_bound_tokens is not None else "unavailable"),
             "total_tokens": optional_tokens(
-                archive_upper_bound_tokens, "archive upper-bound tokens"),
+                archive_upper_bound_tokens, "archive upper-bound tokens"
+            ),
             "relation": "upper-bound-not-billing",
         },
         "ceilings": {
-            "active_delivery_hours":
-                WAVE_BUDGET_CEILINGS["elapsed_seconds"] / 3600,
+            "active_delivery_hours": WAVE_BUDGET_CEILINGS["elapsed_seconds"] / 3600,
             "sessions": WAVE_BUDGET_CEILINGS["sessions"],
             "total_tokens": WAVE_BUDGET_CEILINGS["total_tokens"],
-            "uncached_input_tokens":
-                WAVE_BUDGET_CEILINGS["uncached_input_tokens"],
+            "uncached_input_tokens": WAVE_BUDGET_CEILINGS["uncached_input_tokens"],
         },
     }
     material["fingerprint"] = content_fingerprint(material)
@@ -2079,10 +2340,13 @@ def closed_wave_metrics_source(
 
 
 def terminal_metrics_source(
-        ledger: Mapping[str, Any], clock: Clock, *,
-        candidate_fingerprint: str,
-        billing_total_tokens: int | None = None,
-        archive_upper_bound_tokens: int | None = None) -> dict[str, Any]:
+    ledger: Mapping[str, Any],
+    clock: Clock,
+    *,
+    candidate_fingerprint: str,
+    billing_total_tokens: int | None = None,
+    archive_upper_bound_tokens: int | None = None,
+) -> dict[str, Any]:
     """Close real dispatch usage into one terminal metrics source.
 
     This is the production-facing bridge between the live dispatch ledger and
@@ -2098,31 +2362,36 @@ def terminal_metrics_source(
     """
     attempts = terminal_attempt_attribution(ledger)
     source = closed_wave_metrics_source(
-        ledger, clock, candidate_fingerprint=candidate_fingerprint,
+        ledger,
+        clock,
+        candidate_fingerprint=candidate_fingerprint,
         billing_total_tokens=billing_total_tokens,
-        archive_upper_bound_tokens=archive_upper_bound_tokens, allow_partial=True)
+        archive_upper_bound_tokens=archive_upper_bound_tokens,
+        allow_partial=True,
+    )
     sealed = validate_ledger(ledger)
     measured = [row for row in attempts if row["usage_status"] == "measured"]
     if not measured:
-        raise DispatchTelemetryError(
-            "terminal metrics require at least one host-observed dispatch")
+        raise DispatchTelemetryError("terminal metrics require at least one host-observed dispatch")
     material = {
-        **{key: value for key, value in source.items()
-           if key != "fingerprint"},
+        **{key: value for key, value in source.items() if key != "fingerprint"},
         "schema": TERMINAL_METRICS_SOURCE_SCHEMA,
         "ledger_fingerprint": content_fingerprint(sealed),
-        "observed": {**source["observed"],
-                     **{field: sum(row[field] for row in measured) for field in
-                        ("total_tokens", "uncached_input_tokens", "effective_tokens")},
-                     "dispatches": len(attempts)},
+        "observed": {
+            **source["observed"],
+            **{
+                field: sum(row[field] for row in measured)
+                for field in ("total_tokens", "uncached_input_tokens", "effective_tokens")
+            },
+            "dispatches": len(attempts),
+        },
         "attempts": attempts,
     }
     material["fingerprint"] = content_fingerprint(material)
     return material
 
 
-def terminal_attempt_attribution(
-        ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
+def terminal_attempt_attribution(ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Attribute every native attempt without exposing host identifiers.
 
     A bound attempt remains present even when provider usage or its terminal
@@ -2132,19 +2401,18 @@ def terminal_attempt_attribution(
     and later retry outcomes remain independently visible.
     """
     sealed = validate_ledger(ledger)
-    receipts = {
-        str(row.get("dispatch_id") or ""): row
-        for row in sealed.get("dispatches") or []
-    }
+    receipts = {str(row.get("dispatch_id") or ""): row for row in sealed.get("dispatches") or []}
     bindings = list(sealed.get("bindings") or [])
     bound_ids = {str(row.get("dispatch_id") or "") for row in bindings}
     # Legacy admitted receipts are retained as attributable unavailable
     # rather than silently treated as provider-sourced measurements.
     rows = bindings + [
-        {**receipt, "usage": {
-            field: receipt.get(field) for field in _USAGE_FIELDS},
-         "usage_source_fingerprint": None,
-         "finalized_receipt_fingerprint": receipt.get("fingerprint")}
+        {
+            **receipt,
+            "usage": {field: receipt.get(field) for field in _USAGE_FIELDS},
+            "usage_source_fingerprint": None,
+            "finalized_receipt_fingerprint": receipt.get("fingerprint"),
+        }
         for dispatch_id, receipt in receipts.items()
         if dispatch_id not in bound_ids
     ]
@@ -2153,20 +2421,27 @@ def terminal_attempt_attribution(
         dispatch_id = str(binding.get("dispatch_id") or "")
         receipt = receipts.get(dispatch_id)
         events = list((receipt or binding).get("events") or [])
-        terminal = [event for event in events
-                    if event.get("kind") in TERMINAL_EVENT_KINDS]
+        terminal = [event for event in events if event.get("kind") in TERMINAL_EVENT_KINDS]
         outcome = str(terminal[-1]["kind"]) if terminal else None
         source = binding.get("usage_source_fingerprint")
         usage = binding.get("usage")
-        measured = receipt is not None and isinstance(usage, Mapping) and \
-            isinstance(source, str) and outcome is not None
-        receipt_fingerprint = receipt.get("fingerprint") \
-            if receipt is not None else None
+        measured = (
+            receipt is not None
+            and isinstance(usage, Mapping)
+            and isinstance(source, str)
+            and outcome is not None
+        )
+        receipt_fingerprint = receipt.get("fingerprint") if receipt is not None else None
         reason = None
         if not isinstance(usage, Mapping):
-            reason = str(((terminal[-1].get("payload") or {}).get(
-                "unavailable_reason") if terminal else None) or
-                "provider-usage-unavailable")
+            reason = str(
+                (
+                    (terminal[-1].get("payload") or {}).get("unavailable_reason")
+                    if terminal
+                    else None
+                )
+                or "provider-usage-unavailable"
+            )
         elif receipt is None:
             reason = "terminal-receipt-unavailable"
         elif not isinstance(source, str):
@@ -2176,50 +2451,63 @@ def terminal_attempt_attribution(
         normalized = _usage(usage) if isinstance(usage, Mapping) else None
         effective = None
         if normalized is not None:
-            cache_creation = normalized["total_tokens"] - \
-                normalized["input_tokens"] - normalized["output_tokens"]
+            cache_creation = (
+                normalized["total_tokens"]
+                - normalized["input_tokens"]
+                - normalized["output_tokens"]
+            )
             effective = int(
                 normalized["uncached_input_tokens"] * WEIGHTS["input"]
                 + normalized["cached_input_tokens"] * WEIGHTS["cache_read"]
                 + cache_creation * WEIGHTS["cache_write"]
-                + normalized["output_tokens"] * WEIGHTS["output"])
+                + normalized["output_tokens"] * WEIGHTS["output"]
+            )
         identity = {
             "schema": "taskplane.dispatch-attempt-identity/v1",
-            "run_id": sealed["run_id"], "dispatch_id": dispatch_id,
+            "run_id": sealed["run_id"],
+            "dispatch_id": dispatch_id,
             "thread_id": str(binding.get("thread_id") or ""),
             "task_id": str(binding.get("task_id") or ""),
         }
-        attributed.append({
-            "attempt_fingerprint": content_fingerprint(identity),
-            "worker_fingerprint": content_fingerprint({
-                "run_id": sealed["run_id"],
-                "thread_id": str(binding.get("thread_id") or ""),
-            }),
-            "task_fingerprint": content_fingerprint({
-                "run_id": sealed["run_id"],
-                "task_id": str(binding.get("task_id") or ""),
-            }),
-            "thread_type": str(binding.get("thread_type") or ""),
-            "outcome": outcome,
-            "correction_count": int(binding.get("correction_count") or 0),
-            "usage_status": "measured" if measured else "unavailable",
-            "unavailable_reason": None if measured else reason,
-            "total_tokens": (normalized["total_tokens"]
-                             if measured and normalized is not None else None),
-            "uncached_input_tokens": (
-                normalized["uncached_input_tokens"]
-                if measured and normalized is not None else None),
-            "effective_tokens": effective if measured else None,
-            "receipt_fingerprint": receipt_fingerprint if measured else None,
-            "usage_source_fingerprint": source if measured else None,
-        })
+        attributed.append(
+            {
+                "attempt_fingerprint": content_fingerprint(identity),
+                "worker_fingerprint": content_fingerprint(
+                    {
+                        "run_id": sealed["run_id"],
+                        "thread_id": str(binding.get("thread_id") or ""),
+                    }
+                ),
+                "task_fingerprint": content_fingerprint(
+                    {
+                        "run_id": sealed["run_id"],
+                        "task_id": str(binding.get("task_id") or ""),
+                    }
+                ),
+                "thread_type": str(binding.get("thread_type") or ""),
+                "outcome": outcome,
+                "correction_count": int(binding.get("correction_count") or 0),
+                "usage_status": "measured" if measured else "unavailable",
+                "unavailable_reason": None if measured else reason,
+                "total_tokens": (
+                    normalized["total_tokens"] if measured and normalized is not None else None
+                ),
+                "uncached_input_tokens": (
+                    normalized["uncached_input_tokens"]
+                    if measured and normalized is not None
+                    else None
+                ),
+                "effective_tokens": effective if measured else None,
+                "receipt_fingerprint": receipt_fingerprint if measured else None,
+                "usage_source_fingerprint": source if measured else None,
+            }
+        )
     return attributed
 
 
-
-def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
-                      overrides: Mapping[str, int | float] | None = None) \
-        -> dict[str, Any]:
+def budget_projection(
+    ledger: Mapping[str, Any], clock: Clock, *, overrides: Mapping[str, int | float] | None = None
+) -> dict[str, Any]:
     """Project binding totals; equality at any ceiling stops new dispatch.
 
     ``overrides`` are conservative observation floors for deterministic tests
@@ -2232,8 +2520,7 @@ def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
             raise DispatchTelemetryError("budget overrides must be a mapping")
         unknown = set(overrides).difference(WAVE_BUDGET_CEILINGS)
         if unknown:
-            raise DispatchTelemetryError(
-                f"unknown budget override fields: {sorted(unknown)}")
+            raise DispatchTelemetryError(f"unknown budget override fields: {sorted(unknown)}")
         for field, value in overrides.items():
             floor = _nonnegative_number(value, f"budget.{field}")
             usage[field] = max(usage[field], floor)
@@ -2257,11 +2544,15 @@ def budget_projection(ledger: Mapping[str, Any], clock: Clock, *,
 
 
 def _scope_review_checkpoint(
-        *, reason: str, source_sha: str, current_stage: str,
-        outstanding_set_fingerprint: str,
-        observed_usage_fingerprint: str,
-        preserved_context_fingerprint: str,
-        triggered: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    *,
+    reason: str,
+    source_sha: str,
+    current_stage: str,
+    outstanding_set_fingerprint: str,
+    observed_usage_fingerprint: str,
+    preserved_context_fingerprint: str,
+    triggered: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
     rows = [dict(row) for row in triggered]
     first = rows[0] if rows else {"observed": None, "ceiling": None}
     checkpoint = {
@@ -2276,12 +2567,18 @@ def _scope_review_checkpoint(
         "preserved_context_fingerprint": str(preserved_context_fingerprint),
         "triggered": rows,
         "actions": [
-            {"id": "reduce-scope", "consequence":
-             "close this dispatch set and authorize a separate successor wave"},
-            {"id": "end-wave", "consequence":
-             "record the current wave as stopped with immutable evidence"},
-            {"id": "architecture-review", "consequence":
-             "return to an attributed architecture or scope decision"},
+            {
+                "id": "reduce-scope",
+                "consequence": "close this dispatch set and authorize a separate successor wave",
+            },
+            {
+                "id": "end-wave",
+                "consequence": "record the current wave as stopped with immutable evidence",
+            },
+            {
+                "id": "architecture-review",
+                "consequence": "return to an attributed architecture or scope decision",
+            },
         ],
         "resume_allowed": False,
     }
@@ -2290,12 +2587,16 @@ def _scope_review_checkpoint(
 
 
 def _screen_dispatch_projection(
-        ledger: Mapping[str, Any], clock: Clock, *, current_stage: str,
-        outstanding_set_fingerprint: str,
-        preserved_context_fingerprint: str,
-        observation_authority: bytes | None = None,
-        overrides: Mapping[str, int | float] | None = None,
-        resource_limits_advisory: bool = False) -> dict[str, Any]:
+    ledger: Mapping[str, Any],
+    clock: Clock,
+    *,
+    current_stage: str,
+    outstanding_set_fingerprint: str,
+    preserved_context_fingerprint: str,
+    observation_authority: bytes | None = None,
+    overrides: Mapping[str, int | float] | None = None,
+    resource_limits_advisory: bool = False,
+) -> dict[str, Any]:
     """Return the one fail-closed decision consumed before a native start."""
     identity = validate_ledger(ledger)
     required = {
@@ -2305,9 +2606,9 @@ def _screen_dispatch_projection(
     }
     if any(not str(value or "").strip() for value in required.values()):
         raise DispatchTelemetryError(
-            "dispatch budget screen requires stage, outstanding set, and context")
-    root_admission = _root_admission_projection(
-        ledger, observation_authority=observation_authority)
+            "dispatch budget screen requires stage, outstanding set, and context"
+        )
+    root_admission = _root_admission_projection(ledger, observation_authority=observation_authority)
     try:
         budget = budget_projection(ledger, clock, overrides=overrides)
         observed = dict(budget["usage"])
@@ -2327,15 +2628,19 @@ def _screen_dispatch_projection(
             "measurement_status": "unavailable",
             "usage_capability": capability,
             "ceilings": dict(WAVE_BUDGET_CEILINGS),
-            "triggered": [{"field": "observed_usage", "observed": None,
-                           "ceiling": "finite non-null host observation"}],
+            "triggered": [
+                {
+                    "field": "observed_usage",
+                    "observed": None,
+                    "ceiling": "finite non-null host observation",
+                }
+            ],
         }
         reason = "Native usage is missing or malformed; no new task was started."
 
     terminal_unavailable = any(
-        binding.get("usage") is None and any(
-            event.get("kind") in TERMINAL_EVENT_KINDS
-            for event in binding.get("events") or [])
+        binding.get("usage") is None
+        and any(event.get("kind") in TERMINAL_EVENT_KINDS for event in binding.get("events") or [])
         for binding in ledger.get("bindings") or []
     )
     if terminal_unavailable:
@@ -2348,21 +2653,19 @@ def _screen_dispatch_projection(
             **budget,
             "status": "human_scope_review",
             "dispatch_allowed": False,
-            "triggered": [*list(budget.get("triggered") or []),
-                          unavailable_trigger],
+            "triggered": [*list(budget.get("triggered") or []), unavailable_trigger],
         }
         reason = (
             "A terminal attempt has unavailable required usage; release and "
-            "new dispatch remain blocked until reconciliation.")
+            "new dispatch remain blocked until reconciliation."
+        )
 
-    if root_admission is not None and not root_admission[
-            "dispatch_allowed"]:
+    if root_admission is not None and not root_admission["dispatch_allowed"]:
         reason_code = str(root_admission["reason_code"])
         root_trigger = {
             "field": "root_total_tokens",
             "observed": root_admission["root_total_tokens"],
-            "ceiling": (ledger["root_admission"]["policy"]
-                        ["root_budget_tokens"]),
+            "ceiling": (ledger["root_admission"]["policy"]["root_budget_tokens"]),
             "reason_code": reason_code,
         }
         budget = {
@@ -2373,31 +2676,34 @@ def _screen_dispatch_projection(
         }
         reason = (
             "Required root usage is unavailable; no new task was started."
-            if reason_code == "root_usage_unavailable" else
-            "The root-session admission boundary is closed; active workers "
-            "may terminalize but no new task was started.")
+            if reason_code == "root_usage_unavailable"
+            else "The root-session admission boundary is closed; active workers "
+            "may terminalize but no new task was started."
+        )
         if isinstance(ledger, MutableMapping) and not resource_limits_advisory:
             state = ledger.get("root_admission")
             if isinstance(state, MutableMapping) and not state.get("sticky"):
                 state["sticky"] = True
                 state["reason_code"] = reason_code
-                state["refusal_fingerprint"] = content_fingerprint({
-                    "schema": ROOT_ADMISSION_SCHEMA,
-                    "configuration_fingerprint": state[
-                        "configuration_fingerprint"],
-                    "reason_code": reason_code,
-                    "meter_fingerprint": root_admission[
-                        "meter_fingerprint"],
-                })
+                state["refusal_fingerprint"] = content_fingerprint(
+                    {
+                        "schema": ROOT_ADMISSION_SCHEMA,
+                        "configuration_fingerprint": state["configuration_fingerprint"],
+                        "reason_code": reason_code,
+                        "meter_fingerprint": root_admission["meter_fingerprint"],
+                    }
+                )
                 ledger["revision"] = int(ledger["revision"]) + 1
                 root_admission = _root_admission_projection(
-                    ledger, observation_authority=observation_authority)
+                    ledger, observation_authority=observation_authority
+                )
 
     root_usage, worker_usage = _partitioned_usage(ledger)
-    reconciled_wave_usage = None if root_usage is None else {
-        field: root_usage[field] + worker_usage[field]
-        for field in _USAGE_FIELDS
-    }
+    reconciled_wave_usage = (
+        None
+        if root_usage is None
+        else {field: root_usage[field] + worker_usage[field] for field in _USAGE_FIELDS}
+    )
 
     result = {
         "schema": DISPATCH_SCREEN_SCHEMA,
@@ -2416,15 +2722,19 @@ def _screen_dispatch_projection(
         "wave_usage": reconciled_wave_usage,
         "checkpoint": None,
     }
-    if resource_limits_advisory and (root_admission is None or root_admission["reason_code"] in {
-            None, "root_usage_unavailable", "root_budget_reached", "root_seed_budget_exceeded"}):
+    if resource_limits_advisory and (
+        root_admission is None
+        or root_admission["reason_code"]
+        in {None, "root_usage_unavailable", "root_budget_reached", "root_seed_budget_exceeded"}
+    ):
         # Authenticated ledger/root admission was validated above. Keep every
         # measurement, triggered ceiling and budget claim; only its enforcement
         # is advisory. Session/identity/custody refusals are not resource limits.
         result.update(status="advisory", dispatch_allowed=True)
     if not result["dispatch_allowed"]:
         result["checkpoint"] = _scope_review_checkpoint(
-            reason=reason, source_sha=identity["source_sha"],
+            reason=reason,
+            source_sha=identity["source_sha"],
             current_stage=str(current_stage),
             outstanding_set_fingerprint=str(outstanding_set_fingerprint),
             observed_usage_fingerprint=observed_fingerprint,
@@ -2436,16 +2746,20 @@ def _screen_dispatch_projection(
 
 
 def screen_dispatch(
-        ledger: Mapping[str, Any], clock: Clock, *, current_stage: str,
-        outstanding_set_fingerprint: str,
-        preserved_context_fingerprint: str,
-        observation_authority: bytes | None = None,
-        overrides: Mapping[str, int | float] | None = None,
-        admission_operation_id: str | None = None,
-        dispatch: Mapping[str, Any] | None = None,
-        usage: Mapping[str, Any] | None = None,
-        source_fingerprint: str | None = None,
-        resource_limits_advisory: bool = False) -> dict[str, Any]:
+    ledger: Mapping[str, Any],
+    clock: Clock,
+    *,
+    current_stage: str,
+    outstanding_set_fingerprint: str,
+    preserved_context_fingerprint: str,
+    observation_authority: bytes | None = None,
+    overrides: Mapping[str, int | float] | None = None,
+    admission_operation_id: str | None = None,
+    dispatch: Mapping[str, Any] | None = None,
+    usage: Mapping[str, Any] | None = None,
+    source_fingerprint: str | None = None,
+    resource_limits_advisory: bool = False,
+) -> dict[str, Any]:
     """Screen and, when requested, bind one dispatch as one operation.
 
     A projection-only call remains useful for status.  Once root admission is
@@ -2455,87 +2769,106 @@ def screen_dispatch(
     return the already-bound attempt without another revision.
     """
     if dispatch is None:
-        if admission_operation_id is not None or usage is not None or \
-                source_fingerprint is not None:
-            raise DispatchTelemetryError(
-                "atomic admission arguments require a dispatch")
+        if (
+            admission_operation_id is not None
+            or usage is not None
+            or source_fingerprint is not None
+        ):
+            raise DispatchTelemetryError("atomic admission arguments require a dispatch")
         return _screen_dispatch_projection(
-            ledger, clock, current_stage=current_stage,
+            ledger,
+            clock,
+            current_stage=current_stage,
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
             observation_authority=observation_authority,
-            overrides=overrides, resource_limits_advisory=resource_limits_advisory)
+            overrides=overrides,
+            resource_limits_advisory=resource_limits_advisory,
+        )
     if not isinstance(ledger, MutableMapping):
-        raise DispatchTelemetryError(
-            "atomic screen_dispatch admission requires a mutable ledger")
+        raise DispatchTelemetryError("atomic screen_dispatch admission requires a mutable ledger")
     operation_id = str(admission_operation_id or "").strip()
-    if not operation_id or operation_id != str(
-            dispatch.get("dispatch_id") or ""):
-        raise DispatchTelemetryError(
-            "admission operation id must equal the dispatch id")
+    if not operation_id or operation_id != str(dispatch.get("dispatch_id") or ""):
+        raise DispatchTelemetryError("admission operation id must equal the dispatch id")
 
     validate_ledger(ledger)
-    existing = next((row for row in ledger.get("bindings", [])
-                     if row.get("dispatch_id") == operation_id), None)
+    existing = next(
+        (row for row in ledger.get("bindings", []) if row.get("dispatch_id") == operation_id), None
+    )
     if existing is not None:
         expected_usage = _usage(usage) if usage is not None else None
-        expected_source = (_sha256_fingerprint(
-            source_fingerprint, "usage source fingerprint")
-            if usage is not None else None)
-        if any(existing.get(field) != dispatch.get(field)
-               for field in _DISPATCH_FIELDS) or \
-                existing.get("usage") != expected_usage or \
-                existing.get("usage_source_fingerprint") != expected_source:
-            raise DispatchTelemetryError(
-                "admission operation id has conflicting evidence")
+        expected_source = (
+            _sha256_fingerprint(source_fingerprint, "usage source fingerprint")
+            if usage is not None
+            else None
+        )
+        if (
+            any(existing.get(field) != dispatch.get(field) for field in _DISPATCH_FIELDS)
+            or existing.get("usage") != expected_usage
+            or existing.get("usage_source_fingerprint") != expected_source
+        ):
+            raise DispatchTelemetryError("admission operation id has conflicting evidence")
         projected = _screen_dispatch_projection(
-            ledger, clock, current_stage=current_stage,
+            ledger,
+            clock,
+            current_stage=current_stage,
             outstanding_set_fingerprint=outstanding_set_fingerprint,
             preserved_context_fingerprint=preserved_context_fingerprint,
             observation_authority=observation_authority,
-            overrides=overrides, resource_limits_advisory=resource_limits_advisory)
+            overrides=overrides,
+            resource_limits_advisory=resource_limits_advisory,
+        )
         projected.pop("fingerprint", None)
-        projected.update({
-            "admission_operation_id": operation_id,
-            "operation_status": "duplicate",
-            "binding": dict(existing),
-        })
+        projected.update(
+            {
+                "admission_operation_id": operation_id,
+                "operation_status": "duplicate",
+                "binding": dict(existing),
+            }
+        )
         projected["fingerprint"] = content_fingerprint(projected)
         return projected
 
     projected = _screen_dispatch_projection(
-        ledger, clock, current_stage=current_stage,
+        ledger,
+        clock,
+        current_stage=current_stage,
         outstanding_set_fingerprint=outstanding_set_fingerprint,
         preserved_context_fingerprint=preserved_context_fingerprint,
         observation_authority=observation_authority,
-        overrides=overrides, resource_limits_advisory=resource_limits_advisory)
+        overrides=overrides,
+        resource_limits_advisory=resource_limits_advisory,
+    )
     binding = None
     operation_status = "refused"
     if projected["dispatch_allowed"]:
         binding = _bind_dispatch(
-            ledger, dispatch, usage=usage,
+            ledger,
+            dispatch,
+            usage=usage,
             source_fingerprint=source_fingerprint,
-            allow_root_admission=True)
+            allow_root_admission=True,
+        )
         operation_status = "admitted"
     projected.pop("fingerprint", None)
-    projected.update({
-        "admission_operation_id": operation_id,
-        "operation_status": operation_status,
-        "binding": binding,
-    })
+    projected.update(
+        {
+            "admission_operation_id": operation_id,
+            "operation_status": operation_status,
+            "binding": binding,
+        }
+    )
     projected["fingerprint"] = content_fingerprint(projected)
     return projected
 
 
 def fix_evaluate_cycle_decision(
-        failed_cycles: int, *, source_sha: str, task_id: str,
-        current_stage: str) -> dict[str, Any]:
+    failed_cycles: int, *, source_sha: str, task_id: str, current_stage: str
+) -> dict[str, Any]:
     """Stop the second failed Fix/Evaluate cycle for a human decision."""
     count = _nonnegative_integer(failed_cycles, "failed_cycles")
-    if not all(str(value or "").strip() for value in
-               (source_sha, task_id, current_stage)):
-        raise DispatchTelemetryError(
-            "cycle decision requires source SHA, task, and current stage")
+    if not all(str(value or "").strip() for value in (source_sha, task_id, current_stage)):
+        raise DispatchTelemetryError("cycle decision requires source SHA, task, and current stage")
     stopped = count >= 2
     result = {
         "schema": CYCLE_DECISION_SCHEMA,
@@ -2546,19 +2879,24 @@ def fix_evaluate_cycle_decision(
         "source_sha": str(source_sha),
         "task_id": str(task_id),
         "current_stage": str(current_stage),
-        "decision_required": (
-            "human architecture or scope decision" if stopped else None),
-        "actions": (["architecture-review", "reduce-scope", "end-wave"]
-                    if stopped else []),
+        "decision_required": ("human architecture or scope decision" if stopped else None),
+        "actions": (["architecture-review", "reduce-scope", "end-wave"] if stopped else []),
     }
     result["fingerprint"] = content_fingerprint(result)
     return result
 
 
-def dispatch_event(*, dispatch_id: str, thread_id: str, thread_type: str,
-                   task_id: str, sequence: int, kind: str,
-                   at: int | float, payload: Mapping[str, Any] | None = None) \
-        -> dict[str, Any]:
+def dispatch_event(
+    *,
+    dispatch_id: str,
+    thread_id: str,
+    thread_type: str,
+    task_id: str,
+    sequence: int,
+    kind: str,
+    at: int | float,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Create one bounded, content-addressed worker/runtime event."""
     strings = {
         "dispatch_id": str(dispatch_id or "").strip(),
@@ -2622,17 +2960,18 @@ def _receipt(dispatch: Mapping[str, Any], usage: Mapping[str, Any]) -> dict[str,
             f"usage_missing={sorted(missing_usage)} "
             f"usage_unknown={sorted(unknown_usage)}"
         )
-    strings = {field: str(dispatch.get(field) or "").strip()
-               for field in ("dispatch_id", "thread_id", "thread_type",
-                             "task_id")}
+    strings = {
+        field: str(dispatch.get(field) or "").strip()
+        for field in ("dispatch_id", "thread_id", "thread_type", "task_id")
+    }
     if any(not value for value in strings.values()):
         raise DispatchTelemetryError("dispatch identity is required")
     if strings["thread_type"] not in THREAD_TYPES:
-        raise DispatchTelemetryError(
-            f"unknown dispatch thread type: {strings['thread_type']}")
+        raise DispatchTelemetryError(f"unknown dispatch thread type: {strings['thread_type']}")
     dependencies = dispatch.get("dependencies")
     if not isinstance(dependencies, list) or any(
-            not str(value or "").strip() for value in dependencies):
+        not str(value or "").strip() for value in dependencies
+    ):
         raise DispatchTelemetryError("dispatch dependencies must be task ids")
     shared_owner = dispatch.get("shared_owner")
     if shared_owner is not None and not str(shared_owner).strip():
@@ -2652,35 +2991,45 @@ def _receipt(dispatch: Mapping[str, Any], usage: Mapping[str, Any]) -> dict[str,
         "ended_at": ended,
         "duration_seconds": ended - started,
         "wait_duration_seconds": _nonnegative_number(
-            dispatch.get("wait_duration_seconds"), "wait_duration_seconds"),
+            dispatch.get("wait_duration_seconds"), "wait_duration_seconds"
+        ),
         "correction_count": _nonnegative_integer(
-            dispatch.get("correction_count"), "correction_count"),
+            dispatch.get("correction_count"), "correction_count"
+        ),
         "events": _normalized_events(dispatch),
     }
     material["fingerprint"] = content_fingerprint(material)
     return material
 
 
-def admit(ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any],
-          usage: Mapping[str, Any], clock: Clock, evidence_store: Any = None) \
-        -> dict[str, Any]:
+def admit(
+    ledger: MutableMapping[str, Any],
+    dispatch: Mapping[str, Any],
+    usage: Mapping[str, Any],
+    clock: Clock,
+    evidence_store: Any = None,
+) -> dict[str, Any]:
     """Record observed usage; the resulting budget governs the next spawn."""
     validate_ledger(ledger)
     receipt = _receipt(dispatch, usage)
-    existing = next((row for row in ledger["dispatches"]
-                     if row["dispatch_id"] == receipt["dispatch_id"]), None)
+    existing = next(
+        (row for row in ledger["dispatches"] if row["dispatch_id"] == receipt["dispatch_id"]), None
+    )
     if existing is not None:
         if existing != receipt:
             raise DispatchTelemetryError("dispatch id collision")
         return {
             "schema": "taskplane.dispatch-telemetry-admission/v1",
-            "status": "duplicate", "receipt": dict(existing),
+            "status": "duplicate",
+            "receipt": dict(existing),
             "budget": _post_admission_budget(ledger, clock),
         }
     evidence_fingerprint = None
     if evidence_store is not None:
         prepared = evidence_store.prepare(
-            "telemetry", f"dispatch-{receipt['fingerprint']}", receipt,
+            "telemetry",
+            f"dispatch-{receipt['fingerprint']}",
+            receipt,
             expected_head=ledger.get("evidence_head"),
         )
         committed = json.loads(evidence_store.commit(prepared))
@@ -2692,13 +3041,13 @@ def admit(ledger: MutableMapping[str, Any], dispatch: Mapping[str, Any],
     ledger["revision"] = int(ledger["revision"]) + 1
     return {
         "schema": "taskplane.dispatch-telemetry-admission/v1",
-        "status": "admitted", "receipt": dict(receipt),
+        "status": "admitted",
+        "receipt": dict(receipt),
         "budget": _post_admission_budget(ledger, clock),
     }
 
 
-def _post_admission_budget(ledger: Mapping[str, Any], clock: Clock) \
-        -> dict[str, Any]:
+def _post_admission_budget(ledger: Mapping[str, Any], clock: Clock) -> dict[str, Any]:
     """Never roll back a terminal receipt because a sibling is still live."""
     try:
         return budget_projection(ledger, clock)

@@ -1,6 +1,7 @@
 """Public amendment producers over isolated real runs; host facts are simulated."""
 import copy
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -60,6 +61,86 @@ def test_product_amendment_rebinds_scope_and_preserves_history_idempotently(run)
     assert review_evidence.ArtifactStore(ws).read(amendment["previous_workflow"]) == old["workflow"]
     handoff = loop._verified_stage_handoff(context["lifecycle"], store, context["manifest"], context["stage"])
     assert handoff["requirement"] == context["stage"]["requirement"]
+
+
+def _commit_source_change(ws, path):
+    source = Path(ws) / path
+    source.write_text(source.read_text() + "\n# Current approved implementation revision\n")
+    for args in (("add", path), ("-c", "user.name=Fixture", "-c",
+            "user.email=fixture@example.invalid", "commit", "-qm", "approved source change")):
+        subprocess.run(["git", *args], cwd=ws, check=True, capture_output=True)
+    return loop.tp.git_head(ws)
+
+
+def test_design_amendment_binds_real_committed_revision_with_strict_parent_authority(collected_lens_design):
+    ws, store, run_id, artifacts, _ = collected_lens_design
+    state = loop.load(ws)
+    parent = loop._phase_bridge_context(ws, state)
+    old_stage = copy.deepcopy(parent["stage"])
+    old_records = phase_records.phase_records(store.load(run_id))
+    args = proposal(ws, "design")
+    revision = _commit_source_change(ws, "app.py")
+    assert revision != old_stage["authority"]["worktree_revision"]
+    # The ordinary phase path remains strict. Only the explicit human
+    # amendment can propose the observed new revision to that same validator.
+    with pytest.raises(RuntimeError, match="binding changed: worktree_revision"):
+        loop._phase_bridge_authorize(ws, parent, store.load(run_id))
+    result = phase_amendment.amend(loop, ws, **args)
+    assert not result.get("error"), result
+    current = loop._phase_bridge_context(ws, loop.load(ws))
+    assert current["stage"]["authority"]["worktree_revision"] == revision
+    loop._phase_bridge_authorize(ws, current, store.load(run_id))
+    for field in ("actor", "repository_id", "repository_key", "worktree_id",
+                  "run_id", "target_revision"):
+        assert current["stage"]["authority"][field] == old_stage["authority"][field]
+    decision = phase_amendment.current(loop, ws, loop.load(ws))
+    assert decision["authority"] == current["stage"]["authority"]
+    assert artifacts.read(decision["previous_workflow"]) == state
+    assert phase_records.phase_records(store.load(run_id)) == old_records
+    retired = loop._indexed_stage(store, store.load(run_id), run_id, old_stage["stage_id"])
+    assert retired["authority"] == old_stage["authority"]
+    assert retired["outcome"] == "closed" and retired["terminal"]["completed_deliverables"] == []
+    before = store.load(run_id)
+    assert phase_amendment.amend(loop, ws, **args).get("replay") is True
+    assert store.load(run_id) == before
+    assert loop.load(ws)["step"] == "design_approval"
+
+
+@pytest.mark.parametrize("field,foreign", [
+    ("repository_id", "github.com/foreign/repository"),
+    ("run_id", "foreign-run"),
+    ("authority_fingerprint", "f" * 64),
+])
+def test_revision_amendment_refuses_foreign_live_identity(run, monkeypatch, field, foreign):
+    ws, store, run_id, _ = run
+    args = proposal(ws)
+    _commit_source_change(ws, "README.md")
+    resolve = loop._current_stage_authority
+    def foreign_fact(*values, **kwargs):
+        observed = resolve(*values, **kwargs)
+        return {**observed, field: foreign}
+    # Substitute one observed fact, never the real strict authority validator.
+    monkeypatch.setattr(loop, "_current_stage_authority", foreign_fact)
+    before = store.load(run_id)
+    result = phase_amendment.amend(loop, ws, **args)
+    assert "binding changed: " + field in result["error"], result
+    assert store.load(run_id) == before
+
+
+def test_revision_amendment_refuses_commit_movement_inside_transaction(run, monkeypatch):
+    ws, store, run_id, _ = run
+    args = proposal(ws)
+    approved_revision = _commit_source_change(ws, "README.md")
+    scan = phase_amendment._workers
+    def commit_after_authorization(*values, **kwargs):
+        workers = scan(*values, **kwargs)
+        assert _commit_source_change(ws, "README.md") != approved_revision
+        return workers
+    monkeypatch.setattr(phase_amendment, "_workers", commit_after_authorization)
+    before = store.load(run_id)
+    result = phase_amendment.amend(loop, ws, **args)
+    assert "source revision changed during amendment" in result["error"], result
+    assert store.load(run_id) == before
 
 
 @pytest.mark.parametrize("changed", ["actor", "candidate", "stage", "requirement", "worker"])
@@ -391,3 +472,26 @@ def test_late_amendment_preserves_worktree_results_and_invalidates_approvals(run
     receipt = phase_amendment.current(loop, ws, current)
     assert review_evidence.ArtifactStore(ws).read(receipt["previous_workflow"])["tasks"] == old["tasks"]
     assert code.read_text() == "user_work = 'keep me'\n"
+
+
+@pytest.mark.parametrize("malformed", ["lifecycle", "tasks"])
+def test_amendment_refuses_malformed_boundary_without_writes(run, monkeypatch, malformed):
+    ws, store, run_id, _ = run
+    args = proposal(ws)
+    before = store.load(run_id)
+    if malformed == "lifecycle":
+        resolve = loop._stage_loop_context
+        def invalid_context(*values, **kwargs):
+            return {**resolve(*values, **kwargs), "lifecycle": object()}
+        monkeypatch.setattr(loop, "_stage_loop_context", invalid_context)
+        expected = "stage lifecycle owner"
+    else:
+        load = loop.load
+        def invalid_workflow(*values, **kwargs):
+            return {**load(*values, **kwargs), "tasks": ["not a task object"]}
+        monkeypatch.setattr(loop, "load", invalid_workflow)
+        expected = "tasks must be an object"
+    result = phase_amendment.amend(loop, ws, **args)
+    assert expected in result["error"], result
+    assert result["dispatch_allowed"] is False
+    assert store.load(run_id) == before

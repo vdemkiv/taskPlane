@@ -1,4 +1,5 @@
 """Resumable repository preconditions that finish before governance starts."""
+
 from __future__ import annotations
 
 if __package__:
@@ -27,8 +28,7 @@ class PreflightError(RuntimeError):
 
 
 _BOOTSTRAP_SCHEMA = "taskplane.preflight-bootstrap/v1"
-_KNOWLEDGE_MANIFEST_SCHEMA = \
-    "taskplane.knowledge-preservation-manifest/v1"
+_KNOWLEDGE_MANIFEST_SCHEMA = "taskplane.knowledge-preservation-manifest/v1"
 _GOVERNANCE_BASELINE_SCHEMA = "taskplane.governance-baseline/v1"
 _ATOMIC_STARTUP_SCHEMA = "taskplane.atomic-governed-startup/v1"
 
@@ -41,39 +41,63 @@ def workspace_readiness(workspace: str) -> dict:
         if locator is None:
             return {"ready": True, "status": "unbound", "run_id": None}
         identity = storage.resolve_repository_identity(workspace)
-        manifest = run_store.RunStore(home=locator["home"]).inspect(
-            locator.get("run_id"))
-        layout = storage.resolve_layout(
-            identity, home=locator["home"], run_id=locator["run_id"])
-        paths = {"state": layout.state_root, "graph": layout.graph_root,
-                 "evidence": layout.evidence_root, "lenses": layout.lens_root,
-                 "artifacts": layout.artifact_root}
+        manifest = run_store.RunStore(home=locator["home"]).inspect(locator.get("run_id"))
+        layout = storage.resolve_layout(identity, home=locator["home"], run_id=locator["run_id"])
+        paths = {
+            "state": layout.state_root,
+            "graph": layout.graph_root,
+            "evidence": layout.evidence_root,
+            "lenses": layout.lens_root,
+            "artifacts": layout.artifact_root,
+        }
         owner = manifest.get("repository") or {}
-        if locator.get("repo_id") != identity.repo_id or \
-                locator.get("repository_key") != identity.key or \
-                owner.get("repo_id") != identity.repo_id or \
-                owner.get("checkout") != locator["primary_checkout"] or \
-                manifest.get("paths") != paths or locator["paths"] != paths:
-            return {"ready": False, "status": "binding_mismatch",
-                    "run_id": locator.get("run_id"),
-                    "detail": "declared run belongs to another binding"}
-        return {"ready": True, "status": "bound",
-                "run_id": locator["run_id"], "schema": manifest["schema"]}
+        if (
+            locator.get("repo_id") != identity.repo_id
+            or locator.get("repository_key") != identity.key
+            or owner.get("repo_id") != identity.repo_id
+            or owner.get("checkout") != locator["primary_checkout"]
+            or manifest.get("paths") != paths
+            or locator["paths"] != paths
+        ):
+            return {
+                "ready": False,
+                "status": "binding_mismatch",
+                "run_id": locator.get("run_id"),
+                "detail": "declared run belongs to another binding",
+            }
+        return {
+            "ready": True,
+            "status": "bound",
+            "run_id": locator["run_id"],
+            "schema": manifest["schema"],
+        }
     except run_store.UnsupportedRunSchemaError as exc:
-        return {"ready": False, "status": "unsupported_run_schema",
-                "run_id": (locator or {}).get("run_id"), "detail": str(exc)}
-    except (storage.StorageIdentityError, run_store.RunStoreError,
-            OSError, ValueError) as exc:
+        return {
+            "ready": False,
+            "status": "unsupported_run_schema",
+            "run_id": (locator or {}).get("run_id"),
+            "detail": str(exc),
+        }
+    except (storage.StorageIdentityError, run_store.RunStoreError, OSError, ValueError) as exc:
         cause = exc.__cause__ or exc.__context__ or exc
-        status = ("missing_manifest" if isinstance(cause, FileNotFoundError)
-                  else "permission_denied" if isinstance(cause, PermissionError)
-                  else "invalid_manifest" if locator else "invalid_locator")
-        return {"ready": False, "status": status,
-                "run_id": (locator or {}).get("run_id"), "detail": str(exc)}
+        status = (
+            "missing_manifest"
+            if isinstance(cause, FileNotFoundError)
+            else "permission_denied"
+            if isinstance(cause, PermissionError)
+            else "invalid_manifest"
+            if locator
+            else "invalid_locator"
+        )
+        return {
+            "ready": False,
+            "status": status,
+            "run_id": (locator or {}).get("run_id"),
+            "detail": str(exc),
+        }
 
 
-def atomic_governed_startup(*, workspace: str, worker_workspace: str,
-                            task_id: str) -> dict:
+def atomic_governed_startup(*, workspace: str, worker_workspace: str, task_id: str) -> dict:
     """Prove every alternate-worktree startup input without side effects.
 
     The caller may create/bind a worker contract only after this complete
@@ -82,22 +106,21 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str,
     """
     primary = os.path.realpath(os.path.abspath(workspace))
     worker = os.path.realpath(os.path.abspath(worker_workspace))
-    if not os.path.isdir(primary) or not os.path.isdir(worker) or \
-            primary == worker:
-        raise PreflightError(
-            "alternate-worktree startup needs two existing canonical roots")
+    if not os.path.isdir(primary) or not os.path.isdir(worker) or primary == worker:
+        raise PreflightError("alternate-worktree startup needs two existing canonical roots")
     try:
         primary_identity = storage.resolve_repository_identity(primary)
         worker_identity = storage.resolve_repository_identity(worker)
     except Exception as exc:
-        raise PreflightError(
-            f"workspace identity is unavailable: {exc}") from exc
+        raise PreflightError(f"workspace identity is unavailable: {exc}") from exc
     if primary_identity.repo_id != worker_identity.repo_id:
         raise PreflightError("worker workspace belongs to another repository")
     session_id = str(
-        os.environ.get("TASKPLANE_SESSION_ID") or
-        os.environ.get("CODEX_THREAD_ID") or
-        os.environ.get("CLAUDE_SESSION_ID") or "").strip()
+        os.environ.get("TASKPLANE_SESSION_ID")
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
+        or ""
+    ).strip()
     if not session_id or len(session_id.encode("utf-8")) > 256:
         raise PreflightError("stable host session identity is unavailable")
     try:
@@ -107,8 +130,7 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str,
             import settings as settings_module
         effective = settings_module.load_settings(workspace=primary)
     except Exception as exc:
-        raise PreflightError(
-            f"operational settings validation failed: {exc}") from exc
+        raise PreflightError(f"operational settings validation failed: {exc}") from exc
     try:
         locator = storage.load_workspace_locator(primary)
     except Exception as exc:
@@ -126,8 +148,10 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str,
     if error := storage.worker_locator_error(primary, worker, task_id):
         raise PreflightError(error)
     store_identity = {
-        "mode": "v4", "run_id": locator["run_id"],
-        "repository_key": locator["repository_key"], "repo_id": locator["repo_id"],
+        "mode": "v4",
+        "run_id": locator["run_id"],
+        "repository_key": locator["repository_key"],
+        "repo_id": locator["repo_id"],
     }
     material = {
         "schema": _ATOMIC_STARTUP_SCHEMA,
@@ -167,25 +191,21 @@ def _closed_knowledge_entries(root: str) -> list[dict]:
         for name in names:
             path = os.path.join(directory, name)
             if os.path.islink(path):
-                raise PreflightError(
-                    "canonical knowledge root contains an unsafe symlink")
+                raise PreflightError("canonical knowledge root contains an unsafe symlink")
         for name in filenames:
             path = os.path.join(directory, name)
             if os.path.islink(path) or not os.path.isfile(path):
-                raise PreflightError(
-                    "canonical knowledge root contains a non-regular entry")
+                raise PreflightError("canonical knowledge root contains a non-regular entry")
             if name.endswith(".lock"):
                 continue
             size, digest = _sha256_file(path)
             relative = os.path.relpath(path, root).replace(os.sep, "/")
-            entries.append({"path": relative, "bytes": size,
-                            "sha256": digest})
+            entries.append({"path": relative, "bytes": size, "sha256": digest})
     return sorted(entries, key=lambda row: row["path"])
 
 
 def _verify_knowledge_manifest(locator: dict, trusted: dict) -> dict:
-    if not isinstance(trusted, dict) or trusted.get("schema") != \
-            _KNOWLEDGE_MANIFEST_SCHEMA:
+    if not isinstance(trusted, dict) or trusted.get("schema") != _KNOWLEDGE_MANIFEST_SCHEMA:
         raise PreflightError("trusted pre-cleanup knowledge manifest is absent")
     home = os.path.realpath(str(locator.get("home") or ""))
     key = str(locator.get("repository_key") or "")
@@ -196,12 +216,13 @@ def _verify_knowledge_manifest(locator: dict, trusted: dict) -> dict:
     if os.path.commonpath((project, root)) != project:
         raise PreflightError("canonical knowledge root escapes the project")
     root_fingerprint = hashlib.sha256(root.encode("utf-8")).hexdigest()
-    if (os.path.realpath(str(trusted.get("root") or "")) != root
-            or trusted.get("root_fingerprint") != root_fingerprint
-            or trusted.get("repo_id") != locator.get("repo_id")
-            or trusted.get("repository_key") != key):
-        raise PreflightError(
-            "trusted manifest does not name the canonical knowledge root")
+    if (
+        os.path.realpath(str(trusted.get("root") or "")) != root
+        or trusted.get("root_fingerprint") != root_fingerprint
+        or trusted.get("repo_id") != locator.get("repo_id")
+        or trusted.get("repository_key") != key
+    ):
+        raise PreflightError("trusted manifest does not name the canonical knowledge root")
     if trusted.get("exclusions") != ["*.lock"]:
         raise PreflightError("knowledge manifest exclusions must be locks only")
     signed = dict(trusted)
@@ -216,51 +237,72 @@ def _verify_knowledge_manifest(locator: dict, trusted: dict) -> dict:
     current = _closed_knowledge_entries(root)
     if current != expected:
         raise PreflightError("knowledge preservation mismatch")
-    return {"root": root, "root_fingerprint": root_fingerprint,
-            "manifest_digest": supplied_digest, "entry_count": len(current),
-            "preserved": True}
+    return {
+        "root": root,
+        "root_fingerprint": root_fingerprint,
+        "manifest_digest": supplied_digest,
+        "entry_count": len(current),
+        "preserved": True,
+    }
 
 
 def _git_output(workspace: str, *args: str, binary: bool = False):
     try:
         result = subprocess.run(
-            ["git", *args], cwd=workspace, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=not binary,
+            ["git", *args],
+            cwd=workspace,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=not binary,
             encoding=None if binary else "utf-8",
-            errors=None if binary else "replace", timeout=20, check=False)
+            errors=None if binary else "replace",
+            timeout=20,
+            check=False,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise PreflightError(f"Git baseline evidence is unavailable: {exc}") \
-            from exc
+        raise PreflightError(f"Git baseline evidence is unavailable: {exc}") from exc
     if result.returncode != 0:
-        error = (result.stderr.decode("utf-8", errors="replace")
-                 if binary else result.stderr)
-        raise PreflightError(
-            f"Git baseline evidence is unavailable: {str(error).strip()}")
+        error = result.stderr.decode("utf-8", errors="replace") if binary else result.stderr
+        raise PreflightError(f"Git baseline evidence is unavailable: {str(error).strip()}")
     return result.stdout if binary else result.stdout.strip()
 
 
 def _verify_prior_design(workspace: str, entries: list[dict]) -> list[dict]:
     if not isinstance(entries, list) or not entries:
         raise PreflightError("prior Design evidence is absent")
-    supplied_paths = ({str(row.get("path") or "") for row in entries}
-                      if all(isinstance(row, dict) for row in entries)
-                      else set())
+    supplied_paths = (
+        {str(row.get("path") or "") for row in entries}
+        if all(isinstance(row, dict) for row in entries)
+        else set()
+    )
     revisions = {str(row.get("revision") or "") for row in entries}
     if len(revisions) != 1 or not next(iter(revisions), ""):
         raise PreflightError("prior Design evidence is not one committed view")
     prior_revision = next(iter(revisions))
-    expected_paths = set(filter(None, _git_output(
-        workspace, "ls-tree", "-r", "--name-only", prior_revision,
-        "--", "design").splitlines()))
+    expected_paths = set(
+        filter(
+            None,
+            _git_output(
+                workspace, "ls-tree", "-r", "--name-only", prior_revision, "--", "design"
+            ).splitlines(),
+        )
+    )
     current_revision = _git_output(workspace, "rev-parse", "HEAD")
-    current_paths = set(filter(None, _git_output(
-        workspace, "ls-tree", "-r", "--name-only", current_revision,
-        "--", "design").splitlines()))
-    if (not expected_paths or supplied_paths != expected_paths
-            or len(entries) != len(expected_paths)
-            or current_paths != expected_paths
-            or set(_closed_checkout_paths(
-                workspace, "design")) != expected_paths):
+    current_paths = set(
+        filter(
+            None,
+            _git_output(
+                workspace, "ls-tree", "-r", "--name-only", current_revision, "--", "design"
+            ).splitlines(),
+        )
+    )
+    if (
+        not expected_paths
+        or supplied_paths != expected_paths
+        or len(entries) != len(expected_paths)
+        or current_paths != expected_paths
+        or set(_closed_checkout_paths(workspace, "design")) != expected_paths
+    ):
         raise PreflightError("prior Design evidence is incomplete")
     verified: list[dict] = []
     for raw in entries:
@@ -269,26 +311,27 @@ def _verify_prior_design(workspace: str, entries: list[dict]) -> list[dict]:
         revision = str(raw.get("revision") or "")
         path = str(raw.get("path") or "")
         expected = str(raw.get("sha256") or "")
-        if not revision or not path.startswith("design/") or ".." in \
-                path.split("/"):
+        if not revision or not path.startswith("design/") or ".." in path.split("/"):
             raise PreflightError("prior Design evidence is malformed")
-        data = _git_output(
-            workspace, "show", f"{revision}:{path}", binary=True)
+        data = _git_output(workspace, "show", f"{revision}:{path}", binary=True)
         digest = hashlib.sha256(data).hexdigest()
         if digest != expected:
             raise PreflightError(f"prior Design drift detected for {path}")
-        current = _git_output(
-            workspace, "show", f"{current_revision}:{path}", binary=True)
+        current = _git_output(workspace, "show", f"{current_revision}:{path}", binary=True)
         checkout_path = os.path.join(workspace, *path.split("/"))
         checkout_size, checkout_digest = _sha256_file(checkout_path)
-        if (current != data or checkout_size != len(data)
-                or checkout_digest != digest):
+        if current != data or checkout_size != len(data) or checkout_digest != digest:
             raise PreflightError(f"prior Design drift detected for {path}")
-        object_id = _git_output(
-            workspace, "rev-parse", f"{revision}:{path}")
-        verified.append({"revision": revision, "path": path,
-                         "object_id": object_id, "bytes": len(data),
-                         "sha256": digest})
+        object_id = _git_output(workspace, "rev-parse", f"{revision}:{path}")
+        verified.append(
+            {
+                "revision": revision,
+                "path": path,
+                "object_id": object_id,
+                "bytes": len(data),
+                "sha256": digest,
+            }
+        )
     return verified
 
 
@@ -298,37 +341,39 @@ def _closed_checkout_paths(root: str, relative_root: str) -> list[str]:
     if not os.path.isdir(absolute_root) or os.path.islink(absolute_root):
         raise PreflightError(f"canonical {relative_root}/ payload is absent")
     paths: list[str] = []
-    for directory, names, filenames in os.walk(
-            absolute_root, followlinks=False):
+    for directory, names, filenames in os.walk(absolute_root, followlinks=False):
         names.sort()
         filenames.sort()
         for name in names:
             if os.path.islink(os.path.join(directory, name)):
-                raise PreflightError(
-                    f"canonical {relative_root}/ payload contains a symlink")
+                raise PreflightError(f"canonical {relative_root}/ payload contains a symlink")
         for name in filenames:
             path = os.path.join(directory, name)
             if os.path.islink(path) or not os.path.isfile(path):
-                raise PreflightError(
-                    f"canonical {relative_root}/ payload is not regular")
+                raise PreflightError(f"canonical {relative_root}/ payload is not regular")
             paths.append(os.path.relpath(path, root).replace(os.sep, "/"))
     return sorted(paths)
 
 
-def _verify_active_plan(workspace: str, revision: str, run_id: str,
-                        active_plan: dict) -> dict:
+def _verify_active_plan(workspace: str, revision: str, run_id: str, active_plan: dict) -> dict:
     """Bind approved Plan metadata to the complete committed Plan payload."""
     plan = active_plan if isinstance(active_plan, dict) else {}
     supplied_paths = plan.get("paths")
     approved_revision = str(plan.get("revision") or "")
     approved_entries = plan.get("entries")
     approval_fingerprint = str(plan.get("fingerprint") or "")
-    if (plan.get("run_id") != run_id or plan.get("status") != "approved"
-            or not approved_revision
-            or not isinstance(supplied_paths, list) or not supplied_paths
-            or not isinstance(approved_entries, list)
-            or any(not isinstance(path, str) or not path.startswith("plan/")
-                   or ".." in path.split("/") for path in supplied_paths)):
+    if (
+        plan.get("run_id") != run_id
+        or plan.get("status") != "approved"
+        or not approved_revision
+        or not isinstance(supplied_paths, list)
+        or not supplied_paths
+        or not isinstance(approved_entries, list)
+        or any(
+            not isinstance(path, str) or not path.startswith("plan/") or ".." in path.split("/")
+            for path in supplied_paths
+        )
+    ):
         raise PreflightError("stale Plan authority is active")
 
     approval = {
@@ -342,64 +387,69 @@ def _verify_active_plan(workspace: str, revision: str, run_id: str,
         raise PreflightError("stale Plan approval fingerprint is active")
 
     approved_output = _git_output(
-        workspace, "ls-tree", "-r", "--name-only", approved_revision,
-        "--", "plan")
-    approved_paths = sorted(
-        path for path in approved_output.splitlines() if path)
-    entry_paths = ([str(row.get("path") or "")
-                    for row in approved_entries]
-                   if all(isinstance(row, dict) for row in approved_entries)
-                   else [])
-    if (not approved_paths or sorted(supplied_paths) != approved_paths
-            or len(set(supplied_paths)) != len(supplied_paths)
-            or sorted(entry_paths) != approved_paths
-            or len(set(entry_paths)) != len(entry_paths)):
+        workspace, "ls-tree", "-r", "--name-only", approved_revision, "--", "plan"
+    )
+    approved_paths = sorted(path for path in approved_output.splitlines() if path)
+    entry_paths = (
+        [str(row.get("path") or "") for row in approved_entries]
+        if all(isinstance(row, dict) for row in approved_entries)
+        else []
+    )
+    if (
+        not approved_paths
+        or sorted(supplied_paths) != approved_paths
+        or len(set(supplied_paths)) != len(supplied_paths)
+        or sorted(entry_paths) != approved_paths
+        or len(set(entry_paths)) != len(entry_paths)
+    ):
         raise PreflightError("stale Plan authority is active")
 
     approved_by_path = {row["path"]: row for row in approved_entries}
     for path in approved_paths:
         row = approved_by_path[path]
-        committed = _git_output(
-            workspace, "show", f"{approved_revision}:{path}", binary=True)
-        if (row.get("object_id") != _git_output(
-                workspace, "rev-parse", f"{approved_revision}:{path}")
-                or row.get("bytes") != len(committed)
-                or row.get("sha256") != hashlib.sha256(
-                    committed).hexdigest()):
-            raise PreflightError(
-                f"stale Plan approval evidence is active for {path}")
+        committed = _git_output(workspace, "show", f"{approved_revision}:{path}", binary=True)
+        if (
+            row.get("object_id")
+            != _git_output(workspace, "rev-parse", f"{approved_revision}:{path}")
+            or row.get("bytes") != len(committed)
+            or row.get("sha256") != hashlib.sha256(committed).hexdigest()
+        ):
+            raise PreflightError(f"stale Plan approval evidence is active for {path}")
 
     committed_output = _git_output(
-        workspace, "ls-tree", "-r", "--name-only", revision, "--", "plan")
-    committed_paths = sorted(
-        path for path in committed_output.splitlines() if path)
-    if (not committed_paths
-            or approved_paths != committed_paths
-            or _closed_checkout_paths(workspace, "plan") != committed_paths):
+        workspace, "ls-tree", "-r", "--name-only", revision, "--", "plan"
+    )
+    committed_paths = sorted(path for path in committed_output.splitlines() if path)
+    if (
+        not committed_paths
+        or approved_paths != committed_paths
+        or _closed_checkout_paths(workspace, "plan") != committed_paths
+    ):
         raise PreflightError("stale Plan authority is active")
 
     entries: list[dict] = []
     for path in committed_paths:
-        committed = _git_output(
-            workspace, "show", f"{revision}:{path}", binary=True)
+        committed = _git_output(workspace, "show", f"{revision}:{path}", binary=True)
         checkout_path = os.path.join(workspace, *path.split("/"))
         size, digest = _sha256_file(checkout_path)
         approved_row = approved_by_path[path]
-        if (size != len(committed)
-                or digest != hashlib.sha256(committed).hexdigest()
-                or digest != approved_row["sha256"]
-                or len(committed) != approved_row["bytes"]
-                or _git_output(
-                    workspace, "rev-parse", f"{revision}:{path}") !=
-                approved_row["object_id"]):
+        if (
+            size != len(committed)
+            or digest != hashlib.sha256(committed).hexdigest()
+            or digest != approved_row["sha256"]
+            or len(committed) != approved_row["bytes"]
+            or _git_output(workspace, "rev-parse", f"{revision}:{path}")
+            != approved_row["object_id"]
+        ):
             raise PreflightError(f"stale Plan payload is active for {path}")
-        entries.append({
-            "path": path,
-            "object_id": _git_output(
-                workspace, "rev-parse", f"{revision}:{path}"),
-            "bytes": size,
-            "sha256": digest,
-        })
+        entries.append(
+            {
+                "path": path,
+                "object_id": _git_output(workspace, "rev-parse", f"{revision}:{path}"),
+                "bytes": size,
+                "sha256": digest,
+            }
+        )
     authority = {
         "run_id": run_id,
         "status": "approved",
@@ -414,10 +464,8 @@ def _verify_active_plan(workspace: str, revision: str, run_id: str,
     return authority
 
 
-def _baseline_enforcement(value: dict,
-                          advisory_authorization: dict | None) -> dict:
-    if not isinstance(value, dict) or value.get("schema") != \
-            "taskplane.enforcement-status/v1":
+def _baseline_enforcement(value: dict, advisory_authorization: dict | None) -> dict:
+    if not isinstance(value, dict) or value.get("schema") != "taskplane.enforcement-status/v1":
         raise PreflightError("enforcement evidence is absent")
     status = value.get("status")
     if status == "unproven":
@@ -427,69 +475,77 @@ def _baseline_enforcement(value: dict,
     evidence_id = str(value.get("evidence_id") or "")
     session_id = str(value.get("session_fingerprint") or "")
     receipt = value.get("receipt_evidence")
-    receipt_fields = ("effective_path", "loaded_path", "content_fingerprint",
-                      "host_observation", "observed_at",
-                      "session_fingerprint")
-    if not evidence_id or not session_id or not isinstance(receipt, dict) or \
-            any(not receipt.get(field) for field in receipt_fields):
+    receipt_fields = (
+        "effective_path",
+        "loaded_path",
+        "content_fingerprint",
+        "host_observation",
+        "observed_at",
+        "session_fingerprint",
+    )
+    if (
+        not evidence_id
+        or not session_id
+        or not isinstance(receipt, dict)
+        or any(not receipt.get(field) for field in receipt_fields)
+    ):
         raise PreflightError("enforcement hook-path receipt is incomplete")
     if receipt.get("session_fingerprint") != session_id:
         raise PreflightError("enforcement receipt belongs to another session")
     receipt_fingerprint = str(receipt.get("content_fingerprint") or "")
-    if (len(receipt_fingerprint) != 64
-            or any(character not in "0123456789abcdef"
-                   for character in receipt_fingerprint.lower())):
+    if len(receipt_fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in receipt_fingerprint.lower()
+    ):
         raise PreflightError("enforcement hook-path receipt is incomplete")
     authorization = None
     if status == "advisory":
-        required = ("actor", "reason", "scope", "expires_at",
-                    "accepted_limitations")
-        if (not isinstance(advisory_authorization, dict)
-                or any(not advisory_authorization.get(key)
-                       for key in required)
-                or not isinstance(
-                    advisory_authorization.get("accepted_limitations"), list)):
+        required = ("actor", "reason", "scope", "expires_at", "accepted_limitations")
+        if (
+            not isinstance(advisory_authorization, dict)
+            or any(not advisory_authorization.get(key) for key in required)
+            or not isinstance(advisory_authorization.get("accepted_limitations"), list)
+        ):
             raise PreflightError(
-                "advisory enforcement needs bounded attributable advisory "
-                "authorization")
+                "advisory enforcement needs bounded attributable advisory authorization"
+            )
         recorded_actor = str((value.get("advisory") or {}).get("actor") or "")
         if recorded_actor != str(advisory_authorization.get("actor") or ""):
             raise PreflightError(
-                "advisory enforcement needs bounded attributable advisory "
-                "authorization")
+                "advisory enforcement needs bounded attributable advisory authorization"
+            )
         expires_at = str(advisory_authorization.get("expires_at") or "")
         try:
             expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise PreflightError(
-                "advisory enforcement authorization expiry is invalid") \
-                from exc
-        if (expiry.tzinfo is None
-                or expiry.astimezone(timezone.utc) <= datetime.now(
-                    timezone.utc)):
-            raise PreflightError(
-                "advisory enforcement authorization is expired")
+            raise PreflightError("advisory enforcement authorization expiry is invalid") from exc
+        if expiry.tzinfo is None or expiry.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+            raise PreflightError("advisory enforcement authorization is expired")
         authorization = dict(advisory_authorization)
     elif advisory_authorization is not None:
         raise PreflightError("live enforcement must not carry advisory authority")
-    host_observation = " ".join(str(
-        receipt.get("host_observation") or "").lower().split())
-    denies_live_receipt = any(phrase in host_observation for phrase in (
-        "no compatible live receipt",
-        "no session-compatible hook receipt",
-        "live receipt unavailable",
-    ))
-    if (status == "live" and (
-            receipt.get("effective_path") not in {
-                "native_effective", "bridge_effective"}
-            or denies_live_receipt)):
-        raise PreflightError(
-            "live enforcement contradicts the hook-path receipt")
-    return {"status": status, "label": ("enforced" if status == "live"
-                                         else "advisory"),
-            "enforced": status == "live", "evidence_id": evidence_id,
-            "session_id": session_id, "hook_path_receipt": dict(receipt),
-            "advisory_authorization": authorization}
+    host_observation = " ".join(str(receipt.get("host_observation") or "").lower().split())
+    denies_live_receipt = any(
+        phrase in host_observation
+        for phrase in (
+            "no compatible live receipt",
+            "no session-compatible hook receipt",
+            "live receipt unavailable",
+        )
+    )
+    if status == "live" and (
+        receipt.get("effective_path") not in {"native_effective", "bridge_effective"}
+        or denies_live_receipt
+    ):
+        raise PreflightError("live enforcement contradicts the hook-path receipt")
+    return {
+        "status": status,
+        "label": ("enforced" if status == "live" else "advisory"),
+        "enforced": status == "live",
+        "evidence_id": evidence_id,
+        "session_id": session_id,
+        "hook_path_receipt": dict(receipt),
+        "advisory_authorization": authorization,
+    }
 
 
 def _graph_content_fingerprint(graph: dict) -> str:
@@ -497,28 +553,30 @@ def _graph_content_fingerprint(graph: dict) -> str:
     try:
         graph_material = {
             "files": {
-                path: row.get("hash", "")
-                for path, row in (graph.get("files") or {}).items()
+                path: row.get("hash", "") for path, row in (graph.get("files") or {}).items()
             },
-            "edges": sorted((
-                edge["from"], edge["to"], edge["kind"],
-                edge.get("source"), edge.get("confidence"))
-                for edge in (graph.get("edges") or [])),
+            "edges": sorted(
+                (edge["from"], edge["to"], edge["kind"], edge.get("source"), edge.get("confidence"))
+                for edge in (graph.get("edges") or [])
+            ),
         }
-        payload = json.dumps(
-            graph_material, sort_keys=True,
-            separators=(",", ":")).encode("utf-8")
+        payload = json.dumps(graph_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise PreflightError("graph content fingerprint is malformed") from exc
     return hashlib.sha256(payload).hexdigest()
 
 
 def verify_governance_baseline(
-        workspace: str, *, expected_run_id: str,
-        trusted_knowledge_manifest: dict, prior_design: list[dict],
-        enforcement: dict, active_plan: dict,
-        obsolete_run_ids=(), advisory_authorization: dict | None = None) \
-        -> dict:
+    workspace: str,
+    *,
+    expected_run_id: str,
+    trusted_knowledge_manifest: dict,
+    prior_design: list[dict],
+    enforcement: dict,
+    active_plan: dict,
+    obsolete_run_ids=(),
+    advisory_authorization: dict | None = None,
+) -> dict:
     """Verify and emit the closed R-0006 governance baseline.
 
     All authority-bearing inputs are checked against canonical Git, locator,
@@ -538,49 +596,49 @@ def verify_governance_baseline(
     if not root or not os.path.isabs(root):
         raise PreflightError("workspace locator has no primary checkout")
     primary_locator = storage.load_workspace_locator(root)
-    if (not isinstance(primary_locator, dict)
-            or primary_locator.get("run_id") != run_id
-            or primary_locator.get("repo_id") != locator.get("repo_id")):
+    if (
+        not isinstance(primary_locator, dict)
+        or primary_locator.get("run_id") != run_id
+        or primary_locator.get("repo_id") != locator.get("repo_id")
+    ):
         raise PreflightError("primary checkout has an obsolete run pointer")
     locator = primary_locator
     revision = _git_output(root, "rev-parse", "HEAD")
     branch = _git_output(root, "branch", "--show-current") or None
     if branch != "main":
         raise PreflightError("governance baseline must record the main revision")
-    plan_authority = _verify_active_plan(
-        root, revision, run_id, active_plan)
+    plan_authority = _verify_active_plan(root, revision, run_id, active_plan)
     paths = locator.get("paths") or {}
     graph_path = os.path.join(str(paths.get("graph") or ""), "graph.json")
     try:
         with open(graph_path, encoding="utf-8") as handle:
             graph = json.load(handle)
     except (OSError, ValueError) as exc:
-        raise PreflightError(f"refreshed graph evidence is unavailable: {exc}") \
-            from exc
+        raise PreflightError(f"refreshed graph evidence is unavailable: {exc}") from exc
     graph_meta = graph.get("meta") if isinstance(graph, dict) else None
     fingerprint = str((graph_meta or {}).get("content_fingerprint") or "")
     scanned_revision = str((graph_meta or {}).get("scanned_head") or "")
-    if (len(fingerprint) != 64
-            or any(character not in "0123456789abcdef" for character in
-                   fingerprint.lower())
-            or fingerprint != _graph_content_fingerprint(graph)
-            or scanned_revision != revision):
+    if (
+        len(fingerprint) != 64
+        or any(character not in "0123456789abcdef" for character in fingerprint.lower())
+        or fingerprint != _graph_content_fingerprint(graph)
+        or scanned_revision != revision
+    ):
         raise PreflightError("graph is not refreshed at the baseline revision")
 
-    knowledge = _verify_knowledge_manifest(
-        locator, trusted_knowledge_manifest)
+    knowledge = _verify_knowledge_manifest(locator, trusted_knowledge_manifest)
     design = _verify_prior_design(root, prior_design)
-    enforcement_record = _baseline_enforcement(
-        enforcement, advisory_authorization)
+    enforcement_record = _baseline_enforcement(enforcement, advisory_authorization)
     record = {
         "schema": _GOVERNANCE_BASELINE_SCHEMA,
-        "repository": {"repo_id": locator.get("repo_id"),
-                       "repository_key": locator.get("repository_key"),
-                       "branch": branch, "revision": revision},
-        "run": {"id": run_id, "locator_schema": locator.get("schema"),
-                "obsolete_pointer": False},
-        "graph": {"fingerprint": fingerprint,
-                  "scanned_revision": scanned_revision},
+        "repository": {
+            "repo_id": locator.get("repo_id"),
+            "repository_key": locator.get("repository_key"),
+            "branch": branch,
+            "revision": revision,
+        },
+        "run": {"id": run_id, "locator_schema": locator.get("schema"), "obsolete_pointer": False},
+        "graph": {"fingerprint": fingerprint, "scanned_revision": scanned_revision},
         "plan_authority": plan_authority,
         "prior_design": design,
         "knowledge": knowledge,
@@ -591,14 +649,12 @@ def verify_governance_baseline(
     home = os.path.realpath(str(locator.get("home") or ""))
     if not artifact_root or os.path.commonpath((home, artifact_root)) != home:
         raise PreflightError("baseline artifact path escapes canonical storage")
-    artifact = os.path.join(
-        artifact_root, "baseline", "governance-baseline.json")
+    artifact = os.path.join(artifact_root, "baseline", "governance-baseline.json")
     tp.atomic_write_json(artifact, record, sort_keys=True)
     return record
 
 
-def reconcile_onboarding_checks(checks: list[dict], *, repair,
-                                prior_prompt_ids=()) -> dict:
+def reconcile_onboarding_checks(checks: list[dict], *, repair, prior_prompt_ids=()) -> dict:
     """Apply the canonical setup matrix without creating prompt loops.
 
     The caller supplies the actual repair boundary.  Host-policy and external
@@ -616,19 +672,19 @@ def reconcile_onboarding_checks(checks: list[dict], *, repair,
             try:
                 repaired = repair(dict(check)) is True
             except (OSError, RuntimeError, ValueError) as exc:
-                rows.append({**check, "status": "repair_failed",
-                             "reason": str(exc)[:400]})
+                rows.append({**check, "status": "repair_failed", "reason": str(exc)[:400]})
             else:
-                rows.append({**check, "status": "repaired" if repaired else
-                             "repair_failed"})
+                rows.append({**check, "status": "repaired" if repaired else "repair_failed"})
         elif classification == "authority-required":
             rows.append({**check, "status": "needs_authority"})
             if check_id not in prompted:
-                actions.append({
-                    "schema": "taskplane.setup-authority-action/v1",
-                    "id": check_id,
-                    "authority": check.get("detail") or check_id,
-                })
+                actions.append(
+                    {
+                        "schema": "taskplane.setup-authority-action/v1",
+                        "id": check_id,
+                        "authority": check.get("detail") or check_id,
+                    }
+                )
                 prompted.add(check_id)
         elif classification == "host-policy":
             rows.append({**check, "status": "waiting_host_policy"})
@@ -636,9 +692,11 @@ def reconcile_onboarding_checks(checks: list[dict], *, repair,
             rows.append({**check, "status": "waiting_external"})
     if actions:
         status = "needs_user"
-    elif any(row["status"] in {"repair_failed", "waiting_host_policy",
-                               "waiting_external", "needs_authority"}
-             for row in rows):
+    elif any(
+        row["status"]
+        in {"repair_failed", "waiting_host_policy", "waiting_external", "needs_authority"}
+        for row in rows
+    ):
         status = "waiting"
     else:
         status = "ready"
@@ -661,19 +719,26 @@ def _bootstrap_key(workspace: str, spec: str) -> str:
 
 
 def _bootstrap_path(workspace: str, spec: str) -> str:
-    return os.path.join(tp.tp_dir(os.path.realpath(workspace)), "preflight",
-                        _bootstrap_key(workspace, spec) + ".json")
+    return os.path.join(
+        tp.tp_dir(os.path.realpath(workspace)),
+        "preflight",
+        _bootstrap_key(workspace, spec) + ".json",
+    )
 
 
 def bootstrap_response(row: dict) -> dict:
-    return {"schema": "taskplane.preflight/v1",
-            "run_id": row["run_id"], "status": "needs_user",
-            "action": dict(row["action"]),
-            "reason": str(row.get("reason") or "")}
+    return {
+        "schema": "taskplane.preflight/v1",
+        "run_id": row["run_id"],
+        "status": "needs_user",
+        "action": dict(row["action"]),
+        "reason": str(row.get("reason") or ""),
+    }
 
 
-def find_bootstrap(workspace: str, *, spec: str | None = None,
-                   run_id: str | None = None) -> dict | None:
+def find_bootstrap(
+    workspace: str, *, spec: str | None = None, run_id: str | None = None
+) -> dict | None:
     """Find the pre-store user gate that survives denied external storage.
 
     This record lives in the caller workspace because the canonical RunStore
@@ -681,9 +746,15 @@ def find_bootstrap(workspace: str, *, spec: str | None = None,
     credentials, only the sealed retry identity and user action.
     """
     root = os.path.join(tp.tp_dir(os.path.realpath(workspace)), "preflight")
-    paths = ([_bootstrap_path(workspace, spec)] if spec is not None else
-             [os.path.join(root, name) for name in sorted(os.listdir(root))
-              if name.endswith(".json")] if os.path.isdir(root) else [])
+    paths = (
+        [_bootstrap_path(workspace, spec)]
+        if spec is not None
+        else [
+            os.path.join(root, name) for name in sorted(os.listdir(root)) if name.endswith(".json")
+        ]
+        if os.path.isdir(root)
+        else []
+    )
     for path in paths:
         row = tp.load_json(path, default=None, what="preflight bootstrap")
         if not isinstance(row, dict) or row.get("schema") != _BOOTSTRAP_SCHEMA:
@@ -693,24 +764,37 @@ def find_bootstrap(workspace: str, *, spec: str | None = None,
     return None
 
 
-def persist_storage_pause(workspace: str, *, spec: str, host: dict,
-                          run_id: str, detail: str) -> dict:
+def persist_storage_pause(
+    workspace: str, *, spec: str, host: dict, run_id: str, detail: str
+) -> dict:
     action = RepositoryPreflight._action(
-        run_id, kind="authorize_storage_root",
-        prompt=("taskPlane needs access to its selected repository/run "
-                "storage. Approve access and resume this review; a repeated "
-                "review start will remain paused."),
-        detail=detail, choices=("approve", "retry", "cancel"))
-    row = {"schema": _BOOTSTRAP_SCHEMA, "run_id": str(run_id),
-           "status": "needs_user", "workspace": os.path.realpath(workspace),
-           "spec": str(spec), "host": dict(host), "reason": detail,
-           "action": action}
+        run_id,
+        kind="authorize_storage_root",
+        prompt=(
+            "taskPlane needs access to its selected repository/run "
+            "storage. Approve access and resume this review; a repeated "
+            "review start will remain paused."
+        ),
+        detail=detail,
+        choices=("approve", "retry", "cancel"),
+    )
+    row = {
+        "schema": _BOOTSTRAP_SCHEMA,
+        "run_id": str(run_id),
+        "status": "needs_user",
+        "workspace": os.path.realpath(workspace),
+        "spec": str(spec),
+        "host": dict(host),
+        "reason": detail,
+        "action": action,
+    }
     tp.atomic_write_json(_bootstrap_path(workspace, spec), row, sort_keys=True)
     return bootstrap_response(row)
 
 
-def authorize_bootstrap(workspace: str, *, run_id: str, action_id: str,
-                        response: str, approved_by: str) -> dict:
+def authorize_bootstrap(
+    workspace: str, *, run_id: str, action_id: str, response: str, approved_by: str
+) -> dict:
     row = find_bootstrap(workspace, run_id=run_id)
     if not row:
         raise PreflightError("no pending storage authorization matches run")
@@ -721,8 +805,7 @@ def authorize_bootstrap(workspace: str, *, run_id: str, action_id: str,
         raise PreflightError(f"response is not allowed: {response}")
     if response == "cancel":
         tp.safe_remove(row["_path"])
-        return {"schema": "taskplane.preflight/v1", "run_id": run_id,
-                "status": "cancelled"}
+        return {"schema": "taskplane.preflight/v1", "run_id": run_id, "status": "cancelled"}
     durable = {key: value for key, value in row.items() if key != "_path"}
     durable["status"] = "authorized"
     durable["authorization"] = {"response": response, "by": approved_by}
@@ -739,77 +822,102 @@ def clear_bootstrap(row: dict) -> None:
 class RepositoryPreflight:
     """Prepare local/remote source and persist actionable user pauses."""
 
-    def __init__(self, *, home: str | None = None, workspace: str | None = None,
-                 tools_provider=None, acquirer=None, action_runner=None):
+    def __init__(
+        self,
+        *,
+        home: str | None = None,
+        workspace: str | None = None,
+        tools_provider=None,
+        acquirer=None,
+        action_runner=None,
+    ):
         self._configured_home = home or os.environ.get("TASKPLANE_HOME")
         self._owns_acquirer = acquirer is None
         self._prepared_storage = False
         self._initial_workspace = workspace
-        self._store = (run_store.RunStore(home=home, workspace=workspace)
-                       if self._configured_home or workspace else None)
+        self._store = (
+            run_store.RunStore(home=home, workspace=workspace)
+            if self._configured_home or workspace
+            else None
+        )
         self.tools_provider = tools_provider or target_module.tools
         self.acquirer = acquirer
         self.action_runner = action_runner or self._run_action
 
     @property
-    def store(self):
+    def store(self) -> run_store.RunStore:
         if self._store is None:
             self._store = run_store.RunStore(
-                home=self._configured_home, workspace=self._initial_workspace)
+                home=self._configured_home, workspace=self._initial_workspace
+            )
         return self._store
 
     @store.setter
-    def store(self, value):
+    def store(self, value: run_store.RunStore) -> None:
         self._store = value
 
     @staticmethod
     def _run_action(argv: list[str]) -> dict:
-        if not argv or not all(isinstance(value, str) and value
-                               for value in argv):
+        if not argv or not all(isinstance(value, str) and value for value in argv):
             return {"returncode": 2, "output": "approved action is empty"}
         try:
             completed = subprocess.run(
-                list(argv), stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                errors="replace", timeout=900, check=False)
+                list(argv),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=900,
+                check=False,
+            )
         except subprocess.TimeoutExpired:
-            return {"returncode": 124,
-                    "output": "approved action timed out after 900 seconds"}
+            return {"returncode": 124, "output": "approved action timed out after 900 seconds"}
         except OSError as exc:
-            return {"returncode": 127,
-                    "output": f"approved action could not start: {exc}"}
-        return {"returncode": int(completed.returncode),
-                "output": str(completed.stdout or "")[-1600:]}
+            return {"returncode": 127, "output": f"approved action could not start: {exc}"}
+        return {
+            "returncode": int(completed.returncode),
+            "output": str(completed.stdout or "")[-1600:],
+        }
 
     @staticmethod
     def _pr_identity(parsed: dict) -> storage.RepositoryIdentity:
         if not all(parsed.get(key) for key in ("host", "owner", "repo")):
-            raise PreflightError(
-                "a numeric pull-request target needs a repository context")
-        remote = (f"https://{parsed['host']}/{parsed['owner']}/"
-                  f"{parsed['repo']}.git")
+            raise PreflightError("a numeric pull-request target needs a repository context")
+        remote = f"https://{parsed['host']}/{parsed['owner']}/{parsed['repo']}.git"
         return storage.identity_from_remote(remote)
 
-    def _load_or_create(self, identity: storage.RepositoryIdentity, *,
-                        run_id: str, checkout: str, host: dict,
-                        target: dict) -> dict:
+    def _load_or_create(
+        self,
+        identity: storage.RepositoryIdentity,
+        *,
+        run_id: str,
+        checkout: str,
+        host: dict,
+        target: dict,
+    ) -> dict:
         try:
             current = self.store.load(run_id)
         except run_store.RunStoreError:
             return self.store.create(
-                identity, run_id=run_id, checkout=checkout, host=host,
-                target=target)
+                identity, run_id=run_id, checkout=checkout, host=host, target=target
+            )
         recorded = (current.get("repository") or {}).get("repo_id")
         if recorded != identity.repo_id:
-            raise PreflightError(
-                f"run {run_id} belongs to {recorded}, not {identity.repo_id}")
+            raise PreflightError(f"run {run_id} belongs to {recorded}, not {identity.repo_id}")
         return current
 
     @staticmethod
-    def _action(run_id: str, *, kind: str, prompt: str, detail: str,
-                command_argv: list[str] | None = None,
-                command_argv_sequence: list[list[str]] | None = None,
-                choices: tuple[str, ...] = ("approve", "cancel")) -> dict:
+    def _action(
+        run_id: str,
+        *,
+        kind: str,
+        prompt: str,
+        detail: str,
+        command_argv: list[str] | None = None,
+        command_argv_sequence: list[list[str]] | None = None,
+        choices: tuple[str, ...] = ("approve", "cancel"),
+    ) -> dict:
         material = f"{run_id}\0{kind}\0{detail}".encode("utf-8")
         return {
             "schema": "taskplane.user-action/v1",
@@ -818,49 +926,69 @@ class RepositoryPreflight:
             "prompt": prompt,
             "detail": detail,
             "command_argv": list(command_argv or []),
-            "command_argv_sequence": [list(argv) for argv in
-                                      (command_argv_sequence or [])],
+            "command_argv_sequence": [list(argv) for argv in (command_argv_sequence or [])],
             "choices": list(choices),
         }
 
-    def _needs_user(self, run_id: str, manifest: dict, action: dict, *,
-                    preparation_result: dict | None = None) -> dict:
-        preflight_state = {"status": "needs_user",
-                           "pending_action": action}
+    def _needs_user(
+        self, run_id: str, manifest: dict, action: dict, *, preparation_result: dict | None = None
+    ) -> dict:
+        preflight_state = {"status": "needs_user", "pending_action": action}
         if preparation_result is not None:
-            preflight_state["repository_preparation"] = dict(
-                preparation_result)
+            preflight_state["repository_preparation"] = dict(preparation_result)
         updated = self.store.commit(
-            run_id, expected_revision=int(manifest["revision"]),
-            changes={"status": "awaiting_user",
-                     "preflight": preflight_state})
-        return {"schema": "taskplane.preflight/v1", "run_id": run_id,
-                "status": "needs_user", "action": action,
-                "revision": updated["revision"]}
+            run_id,
+            expected_revision=int(manifest["revision"]),
+            changes={"status": "awaiting_user", "preflight": preflight_state},
+        )
+        return {
+            "schema": "taskplane.preflight/v1",
+            "run_id": run_id,
+            "status": "needs_user",
+            "action": action,
+            "revision": updated["revision"],
+        }
 
-    def _waiting(self, run_id: str, manifest: dict, *, reason: str,
-                 detail: str, recovery_record: dict | None = None) -> dict:
-        preflight_state = {"status": "waiting", "reason": str(reason),
-                           "detail": str(detail)[:1600],
-                           "pending_action": None}
+    def _waiting(
+        self,
+        run_id: str,
+        manifest: dict,
+        *,
+        reason: str,
+        detail: str,
+        recovery_record: dict | None = None,
+    ) -> dict:
+        preflight_state = {
+            "status": "waiting",
+            "reason": str(reason),
+            "detail": str(detail)[:1600],
+            "pending_action": None,
+        }
         if recovery_record is not None:
             preflight_state["recovery"] = dict(recovery_record)
         updated = self.store.commit(
-            run_id, expected_revision=int(manifest["revision"]),
-            changes={"status": "waiting_external",
-                     "preflight": preflight_state})
-        return {"schema": "taskplane.preflight/v1", "run_id": run_id,
-                "status": "waiting", "reason": str(reason),
-                "detail": str(detail)[:1600],
-                "revision": updated["revision"]}
+            run_id,
+            expected_revision=int(manifest["revision"]),
+            changes={"status": "waiting_external", "preflight": preflight_state},
+        )
+        return {
+            "schema": "taskplane.preflight/v1",
+            "run_id": run_id,
+            "status": "waiting",
+            "reason": str(reason),
+            "detail": str(detail)[:1600],
+            "revision": updated["revision"],
+        }
 
-    def prepare(self, spec: str, *, workspace: str, host: dict,
-                run_id: str | None = None) -> dict:
+    def prepare(self, spec: str, *, workspace: str, host: dict, run_id: str | None = None) -> dict:
         run = str(run_id or uuid.uuid4().hex)
         parsed = target_module.parse(spec)
         source_workspace = workspace
-        candidate = os.path.realpath(os.path.abspath(os.path.expanduser(
-            str(spec or "")))) if str(spec or "").strip() else None
+        candidate = (
+            os.path.realpath(os.path.abspath(os.path.expanduser(str(spec or ""))))
+            if str(spec or "").strip()
+            else None
+        )
         if candidate and os.path.isdir(candidate):
             source_workspace = candidate
             parsed = {"kind": "local", "spec": candidate}
@@ -879,7 +1007,8 @@ class RepositoryPreflight:
                 remote_identity = None
             if remote_identity is not None:
                 parsed = {
-                    "kind": "repository", "spec": str(spec),
+                    "kind": "repository",
+                    "spec": str(spec),
                     "host": remote_identity.host,
                     "owner": remote_identity.owner,
                     "repo": remote_identity.name,
@@ -887,59 +1016,82 @@ class RepositoryPreflight:
         tools = self.tools_provider()
         if parsed.get("kind") in {"pr", "repository"}:
             identity = remote_identity or self._pr_identity(parsed)
-            layout = storage.resolve_layout(identity, home=self.store.home,
-                                            run_id=run)
+            layout = storage.resolve_layout(identity, home=self.store.home, run_id=run)
             manifest = self._load_or_create(
-                identity, run_id=run, checkout=layout.worktree_root,
-                host=host, target=parsed)
+                identity, run_id=run, checkout=layout.worktree_root, host=host, target=parsed
+            )
             persisted_target = manifest.get("target") or {}
-            persisted_checkout = str(
-                (manifest.get("repository") or {}).get("checkout") or "")
-            if manifest.get("status") == "ready" and \
-                    (manifest.get("preflight") or {}).get("status") == \
-                    "ready" and persisted_target.get("ok") is True and \
-                    os.path.isdir(persisted_checkout):
+            persisted_checkout = str((manifest.get("repository") or {}).get("checkout") or "")
+            if (
+                manifest.get("status") == "ready"
+                and (manifest.get("preflight") or {}).get("status") == "ready"
+                and persisted_target.get("ok") is True
+                and os.path.isdir(persisted_checkout)
+            ):
                 # A ready run is pinned evidence, not a request to contact
                 # GitHub again. The downstream target preflight re-verifies
                 # the local head/diff before governance starts.
                 return {
-                    "schema": "taskplane.preflight/v1", "run_id": run,
-                    "status": "ready", "checkout": persisted_checkout,
+                    "schema": "taskplane.preflight/v1",
+                    "run_id": run,
+                    "status": "ready",
+                    "checkout": persisted_checkout,
                     "target": persisted_target,
                     "revision": int(manifest["revision"]),
                 }
             if not (tools.get("git") or {}).get("present"):
-                return self._needs_user(run, manifest, self._action(
-                    run, kind="install_git",
-                    prompt="Git is required. Install it, then continue this run.",
-                    detail="git executable is unavailable",
-                    choices=("retry", "cancel")))
+                return self._needs_user(
+                    run,
+                    manifest,
+                    self._action(
+                        run,
+                        kind="install_git",
+                        prompt="Git is required. Install it, then continue this run.",
+                        detail="git executable is unavailable",
+                        choices=("retry", "cancel"),
+                    ),
+                )
             gh = tools.get("gh") or {}
             if parsed.get("kind") == "pr" and not gh.get("present"):
                 command = shlex.split(target_module.install_hint())
-                return self._needs_user(run, manifest, self._action(
-                    run, kind="install_gh",
-                    prompt=("GitHub CLI is required for authenticated PR "
-                            "metadata. Approve installation and continue."),
-                    detail="gh executable is unavailable",
-                    command_argv=command))
-            if parsed.get("kind") == "pr" and \
-                    gh.get("authenticated") is not True:
-                return self._needs_user(run, manifest, self._action(
-                    run, kind="authenticate_gh",
-                    prompt=("GitHub authentication is required. Sign in, then "
-                            "taskPlane will resume this same run."),
-                    detail="gh is not authenticated",
-                    command_argv=["gh", "auth", "login", "--web"]))
+                return self._needs_user(
+                    run,
+                    manifest,
+                    self._action(
+                        run,
+                        kind="install_gh",
+                        prompt=(
+                            "GitHub CLI is required for authenticated PR "
+                            "metadata. Approve installation and continue."
+                        ),
+                        detail="gh executable is unavailable",
+                        command_argv=command,
+                    ),
+                )
+            if parsed.get("kind") == "pr" and gh.get("authenticated") is not True:
+                return self._needs_user(
+                    run,
+                    manifest,
+                    self._action(
+                        run,
+                        kind="authenticate_gh",
+                        prompt=(
+                            "GitHub authentication is required. Sign in, then "
+                            "taskPlane will resume this same run."
+                        ),
+                        detail="gh is not authenticated",
+                        command_argv=["gh", "auth", "login", "--web"],
+                    ),
+                )
             preflight_record = manifest.get("preflight") or {}
-            preparation_prior = preflight_record.get(
-                "repository_preparation")
+            preparation_prior = preflight_record.get("repository_preparation")
             if preparation_prior is None:
                 recovery_record = preflight_record.get("recovery")
-                if isinstance(recovery_record, dict) and \
-                        recovery_record.get("schema") == \
-                        "taskplane.repository-preparation/v1" and \
-                        "reason_code" in recovery_record:
+                if (
+                    isinstance(recovery_record, dict)
+                    and recovery_record.get("schema") == "taskplane.repository-preparation/v1"
+                    and "reason_code" in recovery_record
+                ):
                     preparation_prior = recovery_record
 
             def acquire():
@@ -949,21 +1101,20 @@ class RepositoryPreflight:
                 if isinstance(self.acquirer, repository.RepositoryManager):
                     kwargs = {"run_id": run}
                     if preparation_prior is not None:
-                        kwargs.update({
-                            "attempt": int(preparation_prior["attempt"]) + 1,
-                            "predecessor_result_fingerprint":
-                                preparation_prior["fingerprint"],
-                            "prior_result": preparation_prior,
-                        })
+                        kwargs.update(
+                            {
+                                "attempt": int(preparation_prior["attempt"]) + 1,
+                                "predecessor_result_fingerprint": preparation_prior["fingerprint"],
+                                "prior_result": preparation_prior,
+                            }
+                        )
                     try:
-                        acquired = self.acquirer.acquire_repository(
-                            identity, parsed, **kwargs)
+                        acquired = self.acquirer.acquire_repository(identity, parsed, **kwargs)
                     except repository.RepositoryAcquisitionError as exc:
                         if exc.preparation_result is not None:
                             preparation_prior = exc.preparation_result
                         raise
-                    preparation_prior = (acquired.metadata or {}).get(
-                        "repository_preparation")
+                    preparation_prior = (acquired.metadata or {}).get("repository_preparation")
                     return acquired
                 return self.acquirer.acquire_repository(identity, parsed)
 
@@ -973,139 +1124,242 @@ class RepositoryPreflight:
                 acquired = acquire()
             except repository.RepositoryAcquisitionError as exc:
                 preparation_result = exc.preparation_result
-                if preparation_result is not None and \
-                        preparation_result.get("status") == "refused":
-                    return self._needs_user(run, manifest, self._action(
-                        run, kind="correct_repository_default",
-                        prompt=("The hosted repository default branch could not "
+                if preparation_result is not None and preparation_result.get("status") == "refused":
+                    return self._needs_user(
+                        run,
+                        manifest,
+                        self._action(
+                            run,
+                            kind="correct_repository_default",
+                            prompt=(
+                                "The hosted repository default branch could not "
                                 "be verified. Correct the remote default or "
-                                "target, then retry this same run."),
-                        detail=str(preparation_result["reason_code"]),
-                        choices=("retry", "cancel")),
-                        preparation_result=preparation_result)
+                                "target, then retry this same run."
+                            ),
+                            detail=str(preparation_result["reason_code"]),
+                            choices=("retry", "cancel"),
+                        ),
+                        preparation_result=preparation_result,
+                    )
                 if exc.kind == "authentication":
-                    command = (["gh", "auth", "login", "--web"]
-                               if gh.get("present") else [])
-                    return self._needs_user(run, manifest, self._action(
-                        run, kind="authenticate_repository",
-                        prompt=("Repository authentication is required. "
+                    command = ["gh", "auth", "login", "--web"] if gh.get("present") else []
+                    return self._needs_user(
+                        run,
+                        manifest,
+                        self._action(
+                            run,
+                            kind="authenticate_repository",
+                            prompt=(
+                                "Repository authentication is required. "
                                 "Sign in or authorize access, then taskPlane "
-                                "will resume this same run."),
-                        detail=exc.detail, command_argv=command,
-                        choices=("approve", "retry", "cancel")),
-                        preparation_result=preparation_result)
+                                "will resume this same run."
+                            ),
+                            detail=exc.detail,
+                            command_argv=command,
+                            choices=("approve", "retry", "cancel"),
+                        ),
+                        preparation_result=preparation_result,
+                    )
                 if exc.kind == "network":
-                    return self._needs_user(run, manifest, self._action(
-                        run, kind="retry_acquisition",
-                        prompt=("Repository transfer failed. taskPlane "
+                    return self._needs_user(
+                        run,
+                        manifest,
+                        self._action(
+                            run,
+                            kind="retry_acquisition",
+                            prompt=(
+                                "Repository transfer failed. taskPlane "
                                 "already limited the fetch to the requested "
                                 "target and tried its compatible transport; "
-                                "retry or cancel."),
-                        detail=exc.detail, choices=("retry", "cancel")),
-                        preparation_result=preparation_result)
-                return self._needs_user(run, manifest, self._action(
-                    run, kind="retry_acquisition",
-                    prompt=("Repository checkout failed. Retry or cancel."),
-                    detail=exc.detail,
-                    choices=("retry", "cancel")),
-                    preparation_result=preparation_result)
+                                "retry or cancel."
+                            ),
+                            detail=exc.detail,
+                            choices=("retry", "cancel"),
+                        ),
+                        preparation_result=preparation_result,
+                    )
+                return self._needs_user(
+                    run,
+                    manifest,
+                    self._action(
+                        run,
+                        kind="retry_acquisition",
+                        prompt=("Repository checkout failed. Retry or cancel."),
+                        detail=exc.detail,
+                        choices=("retry", "cancel"),
+                    ),
+                    preparation_result=preparation_result,
+                )
             target = {
-                "ok": True, "root": acquired.checkout,
-                "origin": identity.remote or
-                f"https://{identity.repo_id}.git",
-                "head": acquired.head, "branch": None, "dirty": [],
-                "shallow": False, "target": parsed,
-                "base_ref": acquired.base_ref, "base": acquired.base,
+                "ok": True,
+                "root": acquired.checkout,
+                "origin": identity.remote or f"https://{identity.repo_id}.git",
+                "head": acquired.head,
+                "branch": None,
+                "dirty": [],
+                "shallow": False,
+                "target": parsed,
+                "base_ref": acquired.base_ref,
+                "base": acquired.base,
                 "merge_base": acquired.merge_base,
                 "changed_files": list(acquired.changed_files),
                 "metadata": dict(acquired.metadata),
             }
             target["fingerprint"] = target_module.fingerprint(target)
-            layout = storage.resolve_layout(
-                identity, home=self.store.home, run_id=run)
+            layout = storage.resolve_layout(identity, home=self.store.home, run_id=run)
             try:
                 storage.write_workspace_locator(
-                    acquired.checkout, identity=identity, layout=layout,
-                    run_id=run)
+                    acquired.checkout, identity=identity, layout=layout, run_id=run
+                )
             except (OSError, storage.StorageIdentityError) as exc:
-                return self._needs_user(run, manifest, self._action(
-                    run, kind="authorize_storage_root",
-                    prompt=("taskPlane needs permission to bind the managed "
+                return self._needs_user(
+                    run,
+                    manifest,
+                    self._action(
+                        run,
+                        kind="authorize_storage_root",
+                        prompt=(
+                            "taskPlane needs permission to bind the managed "
                             "checkout to its selected run storage. Approve "
-                            "access, then retry this run."),
-                    detail=f"{exc.__class__.__name__}: {exc}",
-                    choices=("retry", "cancel")))
+                            "access, then retry this run."
+                        ),
+                        detail=f"{exc.__class__.__name__}: {exc}",
+                        choices=("retry", "cancel"),
+                    ),
+                )
             updated = self.store.commit(
-                run, expected_revision=int(manifest["revision"]),
+                run,
+                expected_revision=int(manifest["revision"]),
                 changes={
                     "status": "ready",
                     "repository": {"checkout": acquired.checkout},
                     "target": target,
                     "preflight": {
-                        "status": "ready", "pending_action": None,
+                        "status": "ready",
+                        "pending_action": None,
                         "completed_steps": [
-                            "resolve", "authenticate", "acquire", "fetch",
-                            "checkout", "verify"]}})
-            return {"schema": "taskplane.preflight/v1", "run_id": run,
-                    "status": "ready", "checkout": acquired.checkout,
-                    "target": target, "revision": updated["revision"]}
+                            "resolve",
+                            "authenticate",
+                            "acquire",
+                            "fetch",
+                            "checkout",
+                            "verify",
+                        ],
+                    },
+                },
+            )
+            return {
+                "schema": "taskplane.preflight/v1",
+                "run_id": run,
+                "status": "ready",
+                "checkout": acquired.checkout,
+                "target": target,
+                "revision": updated["revision"],
+            }
 
         identity = storage.resolve_repository_identity(source_workspace)
         manifest = self._load_or_create(
-            identity, run_id=run, checkout=source_workspace, host=host,
-            target=parsed)
+            identity, run_id=run, checkout=source_workspace, host=host, target=parsed
+        )
         if not (tools.get("git") or {}).get("present"):
-            return self._needs_user(run, manifest, self._action(
-                run, kind="install_git",
-                prompt="Git is required. Install it, then continue this run.",
-                detail="git executable is unavailable",
-                choices=("retry", "cancel")))
+            return self._needs_user(
+                run,
+                manifest,
+                self._action(
+                    run,
+                    kind="install_git",
+                    prompt="Git is required. Install it, then continue this run.",
+                    detail="git executable is unavailable",
+                    choices=("retry", "cancel"),
+                ),
+            )
         pinned = target_module.pin(source_workspace, target=parsed)
         if not pinned.get("ok"):
-            return self._needs_user(run, manifest, self._action(
-                run, kind="initialize_or_commit_git",
-                prompt=("This folder needs a Git repository and baseline "
+            return self._needs_user(
+                run,
+                manifest,
+                self._action(
+                    run,
+                    kind="initialize_or_commit_git",
+                    prompt=(
+                        "This folder needs a Git repository and baseline "
                         "commit. Approve taskPlane to initialize and commit "
-                        "the current files, or cancel."),
-                detail=str(pinned.get("reason") or "Git baseline missing"),
-                command_argv_sequence=[
-                    ["git", "-C", source_workspace, "init"],
-                    ["git", "-C", source_workspace, "add", "-A", "--", ".",
-                     ":(exclude).taskplane"],
-                    ["git", "-C", source_workspace, "-c",
-                     "user.name=taskPlane", "-c",
-                     "user.email=taskplane@local", "commit", "--allow-empty",
-                     "-m", "Initialize repository for taskPlane"],
-                ],
-                choices=("initialize", "cancel")))
+                        "the current files, or cancel."
+                    ),
+                    detail=str(pinned.get("reason") or "Git baseline missing"),
+                    command_argv_sequence=[
+                        ["git", "-C", source_workspace, "init"],
+                        [
+                            "git",
+                            "-C",
+                            source_workspace,
+                            "add",
+                            "-A",
+                            "--",
+                            ".",
+                            ":(exclude).taskplane",
+                        ],
+                        [
+                            "git",
+                            "-C",
+                            source_workspace,
+                            "-c",
+                            "user.name=taskPlane",
+                            "-c",
+                            "user.email=taskplane@local",
+                            "commit",
+                            "--allow-empty",
+                            "-m",
+                            "Initialize repository for taskPlane",
+                        ],
+                    ],
+                    choices=("initialize", "cancel"),
+                ),
+            )
         checkout = os.path.realpath(source_workspace)
-        layout = storage.resolve_layout(
-            identity, home=self.store.home, run_id=run)
+        layout = storage.resolve_layout(identity, home=self.store.home, run_id=run)
         try:
-            storage.write_workspace_locator(
-                checkout, identity=identity, layout=layout, run_id=run)
+            storage.write_workspace_locator(checkout, identity=identity, layout=layout, run_id=run)
         except (OSError, storage.StorageIdentityError) as exc:
-            return self._needs_user(run, manifest, self._action(
-                run, kind="authorize_storage_root",
-                prompt=("taskPlane needs permission to bind this checkout "
+            return self._needs_user(
+                run,
+                manifest,
+                self._action(
+                    run,
+                    kind="authorize_storage_root",
+                    prompt=(
+                        "taskPlane needs permission to bind this checkout "
                         "to its selected run storage. Approve access, then "
-                        "retry this run."),
-                detail=f"{exc.__class__.__name__}: {exc}",
-                choices=("retry", "cancel")))
+                        "retry this run."
+                    ),
+                    detail=f"{exc.__class__.__name__}: {exc}",
+                    choices=("retry", "cancel"),
+                ),
+            )
         updated = self.store.commit(
-            run, expected_revision=int(manifest["revision"]),
-            changes={"status": "ready", "repository": {"checkout": checkout},
-                     "target": pinned,
-                     "preflight": {"status": "ready",
-                                   "pending_action": None,
-                                   "completed_steps": [
-                                       "resolve", "checkout", "verify"]}})
-        return {"schema": "taskplane.preflight/v1", "run_id": run,
-                "status": "ready", "checkout": checkout,
-                "target": pinned, "revision": updated["revision"]}
+            run,
+            expected_revision=int(manifest["revision"]),
+            changes={
+                "status": "ready",
+                "repository": {"checkout": checkout},
+                "target": pinned,
+                "preflight": {
+                    "status": "ready",
+                    "pending_action": None,
+                    "completed_steps": ["resolve", "checkout", "verify"],
+                },
+            },
+        )
+        return {
+            "schema": "taskplane.preflight/v1",
+            "run_id": run,
+            "status": "ready",
+            "checkout": checkout,
+            "target": pinned,
+            "revision": updated["revision"],
+        }
 
-    def authorize(self, run_id: str, *, action_id: str, response: str,
-                  approved_by: str) -> dict:
+    def authorize(self, run_id: str, *, action_id: str, response: str, approved_by: str) -> dict:
         manifest = self.store.load(run_id)
         action = (manifest.get("preflight") or {}).get("pending_action")
         if not isinstance(action, dict) or action.get("action_id") != action_id:
@@ -1114,34 +1368,49 @@ class RepositoryPreflight:
             raise PreflightError(f"response is not allowed: {response}")
         if response == "cancel":
             updated = self.store.commit(
-                run_id, expected_revision=int(manifest["revision"]),
-                changes={"status": "cancelled",
-                         "preflight": {"status": "cancelled",
-                                       "pending_action": None,
-                                       "authorization": {
-                                           "response": response,
-                                           "by": approved_by}}})
-            return {"schema": "taskplane.preflight/v1", "run_id": run_id,
-                    "status": "cancelled", "revision": updated["revision"]}
+                run_id,
+                expected_revision=int(manifest["revision"]),
+                changes={
+                    "status": "cancelled",
+                    "preflight": {
+                        "status": "cancelled",
+                        "pending_action": None,
+                        "authorization": {"response": response, "by": approved_by},
+                    },
+                },
+            )
+            return {
+                "schema": "taskplane.preflight/v1",
+                "run_id": run_id,
+                "status": "cancelled",
+                "revision": updated["revision"],
+            }
         updated = self.store.commit(
-            run_id, expected_revision=int(manifest["revision"]),
-            changes={"status": "preflight",
-                     "preflight": {"status": "authorized",
-                                   "authorization": {"response": response,
-                                                     "by": approved_by}}})
-        return {"schema": "taskplane.preflight/v1", "run_id": run_id,
-                "status": "authorized",
-                "next": "execute_action_then_retry",
-                "command_argv": (list(action.get("command_argv") or [])
-                                 if response != "retry" else []),
-                "command_argv_sequence": (
-                    [list(argv) for argv in (action.get(
-                        "command_argv_sequence") or [])]
-                    if response != "retry" else []),
-                "revision": updated["revision"]}
+            run_id,
+            expected_revision=int(manifest["revision"]),
+            changes={
+                "status": "preflight",
+                "preflight": {
+                    "status": "authorized",
+                    "authorization": {"response": response, "by": approved_by},
+                },
+            },
+        )
+        return {
+            "schema": "taskplane.preflight/v1",
+            "run_id": run_id,
+            "status": "authorized",
+            "next": "execute_action_then_retry",
+            "command_argv": (list(action.get("command_argv") or []) if response != "retry" else []),
+            "command_argv_sequence": (
+                [list(argv) for argv in (action.get("command_argv_sequence") or [])]
+                if response != "retry"
+                else []
+            ),
+            "revision": updated["revision"],
+        }
 
-    def resume(self, run_id: str, *, action_id: str, response: str,
-               approved_by: str) -> dict:
+    def resume(self, run_id: str, *, action_id: str, response: str, approved_by: str) -> dict:
         """Apply one explicit human decision and resume the same run.
 
         The command is stored by the engine before the pause and is executed
@@ -1150,40 +1419,37 @@ class RepositoryPreflight:
         activate a governance contract.
         """
         authorized = self.authorize(
-            run_id, action_id=action_id, response=response,
-            approved_by=approved_by)
+            run_id, action_id=action_id, response=response, approved_by=approved_by
+        )
         if authorized["status"] == "cancelled":
             return authorized
         command = list(authorized.get("command_argv") or [])
-        commands = [list(argv) for argv in
-                    (authorized.get("command_argv_sequence") or [])]
+        commands = [list(argv) for argv in (authorized.get("command_argv_sequence") or [])]
         if command:
             commands.insert(0, command)
         for current_command in commands:
             outcome = self.action_runner(current_command)
             if int(outcome.get("returncode", 1)) != 0:
                 current = self.store.load(run_id)
-                prior = (current.get("preflight") or {}).get(
-                    "pending_action") or {}
-                detail = str(outcome.get("output") or
-                             "approved action failed")[-1200:]
+                prior = (current.get("preflight") or {}).get("pending_action") or {}
+                detail = str(outcome.get("output") or "approved action failed")[-1200:]
                 action = self._action(
-                    run_id, kind=str(prior.get("kind") or "retry_action"),
-                    prompt=(str(prior.get("prompt") or
-                                "The prerequisite still needs your input.")),
-                    detail=detail, command_argv=current_command,
-                    choices=tuple(prior.get("choices") or
-                                  ("approve", "cancel")))
+                    run_id,
+                    kind=str(prior.get("kind") or "retry_action"),
+                    prompt=(str(prior.get("prompt") or "The prerequisite still needs your input.")),
+                    detail=detail,
+                    command_argv=current_command,
+                    choices=tuple(prior.get("choices") or ("approve", "cancel")),
+                )
                 return self._needs_user(run_id, current, action)
         manifest = self.store.load(run_id)
         target = manifest.get("target") or {}
         spec = str(target.get("spec") or "")
-        checkout = str((manifest.get("repository") or {}).get("checkout")
-                       or os.getcwd())
+        checkout = str((manifest.get("repository") or {}).get("checkout") or os.getcwd())
         # The selected RunStore already owns this retry. A remote target's
         # persisted checkout lives inside its acquisition tree and must not
         # become another project home on resume.
         self._prepared_storage = True
         return self.prepare(
-            spec, workspace=checkout, host=dict(manifest.get("host") or {}),
-            run_id=run_id)
+            spec, workspace=checkout, host=dict(manifest.get("host") or {}), run_id=run_id
+        )

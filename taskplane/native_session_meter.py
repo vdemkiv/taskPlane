@@ -36,21 +36,45 @@ MAX_RECORD_BYTES = 2 * 1024 * 1024
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 MAX_ROOT_OBSERVATIONS = 256
 MAX_ROOT_WATERMARK_BYTES = 16 * 1024
-_ROOT_WATERMARK_FIELDS = frozenset({
-    "schema", "session_role", "session_pseudonym",
-    "source_identity_fingerprint", "status_receipt_fingerprint",
-    "last_sequence", "last_observation_fingerprint", "turns",
-    "first_observed_input_tokens", "peak_context_tokens", "usage",
-    "context_rent_tokens", "resumed", "terminal_reason", "fingerprint",
-    "authenticator",
-})
-_AVAILABLE_ROOT_METER_FIELDS = frozenset({
-    "schema", "status", "reason_code", "session_role",
-    "session_pseudonym", "turns", "first_observed_input_tokens",
-    "peak_context_tokens", "usage", "context_rent_tokens", "resumed",
-    "status_receipt_fingerprint", "terminal_reason", "watermark",
-    "fingerprint",
-})
+_ROOT_WATERMARK_FIELDS = frozenset(
+    {
+        "schema",
+        "session_role",
+        "session_pseudonym",
+        "source_identity_fingerprint",
+        "status_receipt_fingerprint",
+        "last_sequence",
+        "last_observation_fingerprint",
+        "turns",
+        "first_observed_input_tokens",
+        "peak_context_tokens",
+        "usage",
+        "context_rent_tokens",
+        "resumed",
+        "terminal_reason",
+        "fingerprint",
+        "authenticator",
+    }
+)
+_AVAILABLE_ROOT_METER_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "reason_code",
+        "session_role",
+        "session_pseudonym",
+        "turns",
+        "first_observed_input_tokens",
+        "peak_context_tokens",
+        "usage",
+        "context_rent_tokens",
+        "resumed",
+        "status_receipt_fingerprint",
+        "terminal_reason",
+        "watermark",
+        "fingerprint",
+    }
+)
 
 
 class NativeSessionMeterError(ValueError):
@@ -102,24 +126,25 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
         if not session_id or not root_id:
             raise NativeSessionMeterError("native session identity is missing")
         history = payload.get("history_base")
-        if history is not None and (not isinstance(history, Mapping) or
-                history.get("thread_id") != session_id or any(
-                    type(history.get(field)) is not int or history[field] < 0
-                    for field in ("end_ordinal_exclusive", "end_byte_offset"))):
+        if history is not None and (
+            not isinstance(history, Mapping)
+            or history.get("thread_id") != session_id
+            or any(
+                type(history.get(field)) is not int or history[field] < 0
+                for field in ("end_ordinal_exclusive", "end_byte_offset")
+            )
+        ):
             raise NativeSessionMeterError("native restart identity is invalid")
-        parent = str(
-            payload.get("forked_from_id")
-            or payload.get("parent_thread_id")
-            or ""
-        ).strip() or None
+        parent = (
+            str(payload.get("forked_from_id") or payload.get("parent_thread_id") or "").strip()
+            or None
+        )
         source = payload.get("source")
         thread_source = str(payload.get("thread_source") or "").strip()
         agent_path = None
         if isinstance(source, Mapping):
             subagent = source.get("subagent")
-            spawn = subagent.get("thread_spawn") if isinstance(
-                subagent, Mapping
-            ) else None
+            spawn = subagent.get("thread_spawn") if isinstance(subagent, Mapping) else None
             if isinstance(spawn, Mapping):
                 agent_path = str(spawn.get("agent_path") or "").strip() or None
         metadata = {
@@ -128,8 +153,7 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
             "parent_session_id": parent,
             "thread_source": thread_source or "unknown",
             "agent_path": agent_path,
-            "started_at": str(payload.get("timestamp") or row.get(
-                "timestamp") or ""),
+            "started_at": str(payload.get("timestamp") or row.get("timestamp") or ""),
             "resumed": isinstance(payload.get("history_base"), Mapping),
         }
         return metadata, raw
@@ -150,19 +174,14 @@ def _latest_counter(tail: bytes) -> tuple[dict[str, Any], bytes]:
         if not isinstance(row, Mapping) or row.get("type") != "event_msg":
             continue
         payload = row.get("payload")
-        if not isinstance(payload, Mapping) or payload.get("type") != \
-                "token_count":
+        if not isinstance(payload, Mapping) or payload.get("type") != "token_count":
             continue
         info = payload.get("info")
-        total = info.get("total_token_usage") if isinstance(
-            info, Mapping
-        ) else None
+        total = info.get("total_token_usage") if isinstance(info, Mapping) else None
         if not isinstance(total, Mapping):
             continue
         input_tokens = _nonnegative(total.get("input_tokens"), "input_tokens")
-        cached = _nonnegative(
-            total.get("cached_input_tokens"), "cached_input_tokens"
-        )
+        cached = _nonnegative(total.get("cached_input_tokens"), "cached_input_tokens")
         output = _nonnegative(total.get("output_tokens"), "output_tokens")
         reasoning = _nonnegative(
             total.get("reasoning_output_tokens", 0),
@@ -170,13 +189,9 @@ def _latest_counter(tail: bytes) -> tuple[dict[str, Any], bytes]:
         )
         total_tokens = _nonnegative(total.get("total_tokens"), "total_tokens")
         if cached > input_tokens:
-            raise NativeSessionMeterError(
-                "cached input exceeds native input tokens"
-            )
+            raise NativeSessionMeterError("cached input exceeds native input tokens")
         if total_tokens != input_tokens + output:
-            raise NativeSessionMeterError(
-                "native total tokens do not reconcile"
-            )
+            raise NativeSessionMeterError("native total tokens do not reconcile")
         ordinal = row.get("ordinal")
         if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
             raise NativeSessionMeterError("native counter ordinal is invalid")
@@ -202,9 +217,7 @@ def read_snapshot(path: str) -> dict[str, Any]:
         with open(selected, "rb") as stream:
             before = os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode):
-                raise NativeSessionMeterError(
-                    "native session source is not a regular file"
-                )
+                raise NativeSessionMeterError("native session source is not a regular file")
             prefix = stream.read(min(before.st_size, MAX_METADATA_BYTES))
             tail_offset = max(0, before.st_size - MAX_COUNTER_TAIL_BYTES)
             stream.seek(tail_offset)
@@ -224,14 +237,11 @@ def read_snapshot(path: str) -> dict[str, Any]:
         # authenticate a parseable nested JSON fragment as a complete event.
         _partial, separator, tail = tail.partition(b"\n")
         if not separator:
-            raise NativeSessionMeterError(
-                "native counter tail contains no complete record")
+            raise NativeSessionMeterError("native counter tail contains no complete record")
     metadata, metadata_record = _session_metadata(prefix)
     counter, counter_record = _latest_counter(tail)
     source = {
-        "path_fingerprint": hashlib.sha256(
-            selected.encode("utf-8")
-        ).hexdigest(),
+        "path_fingerprint": hashlib.sha256(selected.encode("utf-8")).hexdigest(),
         "device": int(before.st_dev),
         "inode": int(before.st_ino),
         "size": int(before.st_size),
@@ -244,13 +254,15 @@ def read_snapshot(path: str) -> dict[str, Any]:
         **counter,
         "source": source,
     }
-    snapshot["source_identity_fingerprint"] = _fingerprint({
-        "session_id": metadata["session_id"],
-        "path_fingerprint": source["path_fingerprint"],
-        "device": source["device"],
-        "inode": source["inode"],
-        "metadata_record_sha256": source["metadata_record_sha256"],
-    })
+    snapshot["source_identity_fingerprint"] = _fingerprint(
+        {
+            "session_id": metadata["session_id"],
+            "path_fingerprint": source["path_fingerprint"],
+            "device": source["device"],
+            "inode": source["inode"],
+            "metadata_record_sha256": source["metadata_record_sha256"],
+        }
+    )
     snapshot["fingerprint"] = _fingerprint(snapshot)
     return snapshot
 
@@ -261,33 +273,38 @@ def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
         raise NativeSessionMeterError("native session snapshot schema is invalid")
     snapshot = dict(value)
     fingerprint = snapshot.pop("fingerprint", None)
-    if not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(
-        fingerprint
-    ) or fingerprint != _fingerprint(snapshot):
-        raise NativeSessionMeterError(
-            "native session snapshot fingerprint is invalid"
-        )
+    if (
+        not isinstance(fingerprint, str)
+        or not _FINGERPRINT.fullmatch(fingerprint)
+        or fingerprint != _fingerprint(snapshot)
+    ):
+        raise NativeSessionMeterError("native session snapshot fingerprint is invalid")
     if not str(snapshot.get("session_id") or "").strip():
         raise NativeSessionMeterError("native session identity is missing")
-    if not isinstance(snapshot.get("source_identity_fingerprint"), str) or \
-            _FINGERPRINT.fullmatch(
-                snapshot["source_identity_fingerprint"]) is None:
-        raise NativeSessionMeterError(
-            "native session source identity is invalid")
+    if (
+        not isinstance(snapshot.get("source_identity_fingerprint"), str)
+        or _FINGERPRINT.fullmatch(snapshot["source_identity_fingerprint"]) is None
+    ):
+        raise NativeSessionMeterError("native session source identity is invalid")
     usage = snapshot.get("usage")
     if not isinstance(usage, Mapping):
         raise NativeSessionMeterError("native session usage is missing")
     normalized = {
         key: _nonnegative(usage.get(key), key)
         for key in (
-            "input_tokens", "cached_input_tokens", "uncached_input_tokens",
-            "output_tokens", "reasoning_tokens", "total_tokens",
+            "input_tokens",
+            "cached_input_tokens",
+            "uncached_input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "total_tokens",
         )
     }
-    if normalized["cached_input_tokens"] + normalized[
-        "uncached_input_tokens"
-    ] != normalized["input_tokens"] or normalized["total_tokens"] != \
-            normalized["input_tokens"] + normalized["output_tokens"]:
+    if (
+        normalized["cached_input_tokens"] + normalized["uncached_input_tokens"]
+        != normalized["input_tokens"]
+        or normalized["total_tokens"] != normalized["input_tokens"] + normalized["output_tokens"]
+    ):
         raise NativeSessionMeterError("native session usage does not reconcile")
     return dict(value)
 
@@ -307,8 +324,7 @@ def derive_session_role(snapshot: Mapping[str, Any]) -> str:
     if parent is not None or agent_path is not None or child_source:
         return "worker"
     if source in {"", "unknown"}:
-        raise NativeSessionMeterError(
-            "native session lineage cannot prove a root role")
+        raise NativeSessionMeterError("native session lineage cannot prove a root role")
     return "root"
 
 
@@ -326,38 +342,43 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             latest_by_source[source_id] = row
             continue
         if prior["session_id"] != session_id:
-            raise NativeSessionMeterError(
-                "native session source identity changed owners")
+            raise NativeSessionMeterError("native session source identity changed owners")
         prior_usage = prior["usage"]
         usage = row["usage"]
         prior_key = (str(prior.get("observed_at") or ""), int(prior["ordinal"]))
         row_key = (str(row.get("observed_at") or ""), int(row["ordinal"]))
         if row_key >= prior_key:
             if any(int(usage[key]) < int(prior_usage[key]) for key in usage):
-                raise NativeSessionMeterError(
-                    "native physical-segment counter moved backwards"
-                )
+                raise NativeSessionMeterError("native physical-segment counter moved backwards")
             latest_by_source[source_id] = row
-    ordered_segments = [latest_by_source[key]
-                        for key in sorted(latest_by_source)]
+    ordered_segments = [latest_by_source[key] for key in sorted(latest_by_source)]
     sessions: dict[str, list[dict[str, Any]]] = {}
     for row in ordered_segments:
         sessions.setdefault(str(row["session_id"]), []).append(row)
     for rows in sessions.values():
-        rows.sort(key=lambda row: (str(row.get("observed_at") or ""), row["ordinal"], bool(row.get("resumed"))))
+        rows.sort(
+            key=lambda row: (
+                str(row.get("observed_at") or ""),
+                row["ordinal"],
+                bool(row.get("resumed")),
+            )
+        )
         if any(not row.get("resumed") for row in rows[1:]):
             raise NativeSessionMeterError("native source replacement has no restart evidence")
     usage_keys = (
-        "input_tokens", "cached_input_tokens", "uncached_input_tokens",
-        "output_tokens", "reasoning_tokens", "total_tokens",
+        "input_tokens",
+        "cached_input_tokens",
+        "uncached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "total_tokens",
     )
     result = {
         "schema": AGGREGATE_SCHEMA,
         "logical_sessions": len(sessions),
         "physical_segments": len(ordered_segments),
         "usage": {
-            key: sum(int(row["usage"][key]) for row in ordered_segments)
-            for key in usage_keys
+            key: sum(int(row["usage"][key]) for row in ordered_segments) for key in usage_keys
         },
         "sessions": [
             {
@@ -365,10 +386,8 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "parent_session_id": rows[-1].get("parent_session_id"),
                 "root_session_id": rows[-1].get("root_session_id"),
                 "segments": len(rows),
-                "counter_fingerprints": sorted(
-                    row["fingerprint"] for row in rows),
-                "total_tokens": sum(
-                    int(row["usage"]["total_tokens"]) for row in rows),
+                "counter_fingerprints": sorted(row["fingerprint"] for row in rows),
+                "total_tokens": sum(int(row["usage"]["total_tokens"]) for row in rows),
             }
             for session_id, rows in sorted(sessions.items())
         ],
@@ -379,8 +398,7 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def _observation_authority(authority: bytes) -> bytes:
     if not isinstance(authority, bytes) or len(authority) < 16:
-        raise NativeSessionMeterError(
-            "root observation authority must contain at least 16 bytes")
+        raise NativeSessionMeterError("root observation authority must contain at least 16 bytes")
     return authority
 
 
@@ -393,9 +411,14 @@ def _authenticator(schema: str, digest: str, authority: bytes) -> str:
 
 
 def seal_root_observation(
-        snapshot: Mapping[str, Any], *, sequence: int, session_role: str,
-        status_receipt_fingerprint: str, authority: bytes,
-        terminal_reason: str | None = None) -> dict[str, Any]:
+    snapshot: Mapping[str, Any],
+    *,
+    sequence: int,
+    session_role: str,
+    status_receipt_fingerprint: str,
+    authority: bytes,
+    terminal_reason: str | None = None,
+) -> dict[str, Any]:
     """Seal one host-issued cumulative observation for the root meter.
 
     The observation carries only the already-bounded native counter snapshot
@@ -405,24 +428,19 @@ def seal_root_observation(
     checked = validate_snapshot(snapshot)
     derived_role = derive_session_role(checked)
     if derived_role != "root":
-        raise NativeSessionMeterError(
-            "native session lineage is not root")
+        raise NativeSessionMeterError("native session lineage is not root")
     if session_role != derived_role:
-        raise NativeSessionMeterError(
-            "root meter observation role disagrees with native lineage")
-    if isinstance(sequence, bool) or not isinstance(sequence, int) or \
-            sequence < 1:
-        raise NativeSessionMeterError(
-            "root observation sequence must be a positive integer")
-    if not isinstance(status_receipt_fingerprint, str) or \
-            _FINGERPRINT.fullmatch(status_receipt_fingerprint) is None:
-        raise NativeSessionMeterError(
-            "root observation status receipt fingerprint is invalid")
-    reason = None if terminal_reason is None else str(
-        terminal_reason).strip()
+        raise NativeSessionMeterError("root meter observation role disagrees with native lineage")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise NativeSessionMeterError("root observation sequence must be a positive integer")
+    if (
+        not isinstance(status_receipt_fingerprint, str)
+        or _FINGERPRINT.fullmatch(status_receipt_fingerprint) is None
+    ):
+        raise NativeSessionMeterError("root observation status receipt fingerprint is invalid")
+    reason = None if terminal_reason is None else str(terminal_reason).strip()
     if reason == "" or (reason is not None and len(reason.encode("utf-8")) > 128):
-        raise NativeSessionMeterError(
-            "root observation terminal reason is invalid")
+        raise NativeSessionMeterError("root observation terminal reason is invalid")
     material = {
         "schema": ROOT_OBSERVATION_SCHEMA,
         "session_role": "root",
@@ -435,125 +453,131 @@ def seal_root_observation(
     return {
         **material,
         "content_sha256": digest,
-        "authenticator": _authenticator(
-            ROOT_OBSERVATION_SCHEMA, digest, authority),
+        "authenticator": _authenticator(ROOT_OBSERVATION_SCHEMA, digest, authority),
     }
 
 
-def _validate_root_observation(
-        value: Mapping[str, Any], authority: bytes) -> dict[str, Any]:
+def _validate_root_observation(value: Mapping[str, Any], authority: bytes) -> dict[str, Any]:
     expected = {
-        "schema", "session_role", "sequence",
-        "status_receipt_fingerprint", "terminal_reason", "snapshot",
-        "content_sha256", "authenticator",
+        "schema",
+        "session_role",
+        "sequence",
+        "status_receipt_fingerprint",
+        "terminal_reason",
+        "snapshot",
+        "content_sha256",
+        "authenticator",
     }
-    if not isinstance(value, Mapping) or set(value) != expected or \
-            value.get("schema") != ROOT_OBSERVATION_SCHEMA:
-        raise _RootObservationError(
-            "authentication_failed", "root observation schema is invalid")
-    material = {key: value[key] for key in expected
-                if key not in {"content_sha256", "authenticator"}}
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != expected
+        or value.get("schema") != ROOT_OBSERVATION_SCHEMA
+    ):
+        raise _RootObservationError("authentication_failed", "root observation schema is invalid")
+    material = {
+        key: value[key] for key in expected if key not in {"content_sha256", "authenticator"}
+    }
     digest = value.get("content_sha256")
     authenticator = value.get("authenticator")
-    if not isinstance(digest, str) or _FINGERPRINT.fullmatch(digest) is None \
-            or digest != _fingerprint(material) or \
-            not isinstance(authenticator, str) or \
-            _FINGERPRINT.fullmatch(authenticator) is None or \
-            not hmac.compare_digest(
-                authenticator, _authenticator(
-                    ROOT_OBSERVATION_SCHEMA, digest, authority)):
+    if (
+        not isinstance(digest, str)
+        or _FINGERPRINT.fullmatch(digest) is None
+        or digest != _fingerprint(material)
+        or not isinstance(authenticator, str)
+        or _FINGERPRINT.fullmatch(authenticator) is None
+        or not hmac.compare_digest(
+            authenticator, _authenticator(ROOT_OBSERVATION_SCHEMA, digest, authority)
+        )
+    ):
         raise _RootObservationError(
-            "authentication_failed",
-            "root observation authentication is invalid")
+            "authentication_failed", "root observation authentication is invalid"
+        )
     if value.get("session_role") != "root":
-        raise _RootObservationError(
-            "role_mismatch", "root observation has the wrong role")
+        raise _RootObservationError("role_mismatch", "root observation has the wrong role")
     sequence = value.get("sequence")
-    if isinstance(sequence, bool) or not isinstance(sequence, int) or \
-            sequence < 1:
-        raise _RootObservationError(
-            "observation_ambiguous", "root observation sequence is invalid")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        raise _RootObservationError("observation_ambiguous", "root observation sequence is invalid")
     status = value.get("status_receipt_fingerprint")
     if not isinstance(status, str) or _FINGERPRINT.fullmatch(status) is None:
-        raise _RootObservationError(
-            "authentication_failed", "root status receipt is invalid")
+        raise _RootObservationError("authentication_failed", "root status receipt is invalid")
     snapshot_value = value.get("snapshot")
     if not isinstance(snapshot_value, Mapping):
-        raise _RootObservationError(
-            "counter_unreconciled", "root observation snapshot is invalid")
+        raise _RootObservationError("counter_unreconciled", "root observation snapshot is invalid")
     try:
         snapshot = validate_snapshot(snapshot_value)
     except NativeSessionMeterError as exc:
-        raise _RootObservationError(
-            "counter_unreconciled", str(exc)) from exc
+        raise _RootObservationError("counter_unreconciled", str(exc)) from exc
     try:
         if derive_session_role(snapshot) != "root":
-            raise _RootObservationError(
-                "role_mismatch", "native session lineage is not root")
+            raise _RootObservationError("role_mismatch", "native session lineage is not root")
     except NativeSessionMeterError as exc:
         raise _RootObservationError("role_mismatch", str(exc)) from exc
     return {**dict(value), "snapshot": snapshot}
 
 
 def _validate_watermark_shape(value: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or value.get("schema") != \
-            ROOT_WATERMARK_SCHEMA or set(value) != _ROOT_WATERMARK_FIELDS:
-        raise _RootObservationError(
-            "watermark_invalid", "root meter watermark schema is invalid")
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema") != ROOT_WATERMARK_SCHEMA
+        or set(value) != _ROOT_WATERMARK_FIELDS
+    ):
+        raise _RootObservationError("watermark_invalid", "root meter watermark schema is invalid")
     material = dict(value)
     digest = material.pop("fingerprint", None)
     authenticator = material.pop("authenticator", None)
-    if not isinstance(digest, str) or _FINGERPRINT.fullmatch(digest) is None \
-            or digest != _fingerprint(material) or \
-            not isinstance(authenticator, str) or \
-            _FINGERPRINT.fullmatch(authenticator) is None:
-        raise _RootObservationError(
-            "watermark_invalid", "root meter watermark shape is invalid")
+    if (
+        not isinstance(digest, str)
+        or _FINGERPRINT.fullmatch(digest) is None
+        or digest != _fingerprint(material)
+        or not isinstance(authenticator, str)
+        or _FINGERPRINT.fullmatch(authenticator) is None
+    ):
+        raise _RootObservationError("watermark_invalid", "root meter watermark shape is invalid")
     if material.get("session_role") != "root" or any(
-            not isinstance(material.get(field), str) or
-            _FINGERPRINT.fullmatch(str(material[field])) is None
-            for field in (
-                "session_pseudonym", "source_identity_fingerprint",
-                "status_receipt_fingerprint",
-                "last_observation_fingerprint")):
-        raise _RootObservationError(
-            "watermark_invalid", "root meter watermark identity is invalid")
-    for field in ("last_sequence", "turns", "first_observed_input_tokens",
-                  "peak_context_tokens"):
+        not isinstance(material.get(field), str)
+        or _FINGERPRINT.fullmatch(str(material[field])) is None
+        for field in (
+            "session_pseudonym",
+            "source_identity_fingerprint",
+            "status_receipt_fingerprint",
+            "last_observation_fingerprint",
+        )
+    ):
+        raise _RootObservationError("watermark_invalid", "root meter watermark identity is invalid")
+    for field in ("last_sequence", "turns", "first_observed_input_tokens", "peak_context_tokens"):
         _nonnegative(material.get(field), field)
     usage = material.get("usage")
     if not isinstance(usage, Mapping):
-        raise _RootObservationError(
-            "watermark_invalid", "root meter watermark usage is missing")
+        raise _RootObservationError("watermark_invalid", "root meter watermark usage is missing")
     normalized = {
         key: _nonnegative(usage.get(key), key)
         for key in (
-            "input_tokens", "cached_input_tokens", "uncached_input_tokens",
-            "output_tokens", "reasoning_tokens", "total_tokens",
+            "input_tokens",
+            "cached_input_tokens",
+            "uncached_input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "total_tokens",
         )
     }
-    if normalized["cached_input_tokens"] + normalized[
-            "uncached_input_tokens"] != normalized["input_tokens"] or \
-            normalized["total_tokens"] != normalized["input_tokens"] + \
-            normalized["output_tokens"]:
-        raise _RootObservationError(
-            "watermark_invalid", "root meter watermark does not reconcile")
+    if (
+        normalized["cached_input_tokens"] + normalized["uncached_input_tokens"]
+        != normalized["input_tokens"]
+        or normalized["total_tokens"] != normalized["input_tokens"] + normalized["output_tokens"]
+    ):
+        raise _RootObservationError("watermark_invalid", "root meter watermark does not reconcile")
     if len(_canonical(value)) > MAX_ROOT_WATERMARK_BYTES:
-        raise _RootObservationError(
-            "watermark_invalid", "root meter watermark exceeds 16 KiB")
+        raise _RootObservationError("watermark_invalid", "root meter watermark exceeds 16 KiB")
     return dict(value)
 
 
-def _validate_watermark(
-        value: Mapping[str, Any], authority: bytes) -> dict[str, Any]:
+def _validate_watermark(value: Mapping[str, Any], authority: bytes) -> dict[str, Any]:
     checked = _validate_watermark_shape(value)
     if not hmac.compare_digest(
-            str(checked["authenticator"]),
-            _authenticator(
-                ROOT_WATERMARK_SCHEMA, str(checked["fingerprint"]),
-                authority)):
-        raise _RootObservationError(
-            "watermark_invalid", "root meter watermark is not authentic")
+        str(checked["authenticator"]),
+        _authenticator(ROOT_WATERMARK_SCHEMA, str(checked["fingerprint"]), authority),
+    ):
+        raise _RootObservationError("watermark_invalid", "root meter watermark is not authentic")
     return checked
 
 
@@ -576,14 +600,12 @@ def _meter_from_watermark(watermark: Mapping[str, Any]) -> dict[str, Any]:
         "session_role": "root",
         "session_pseudonym": watermark["session_pseudonym"],
         "turns": watermark["turns"],
-        "first_observed_input_tokens": watermark[
-            "first_observed_input_tokens"],
+        "first_observed_input_tokens": watermark["first_observed_input_tokens"],
         "peak_context_tokens": watermark["peak_context_tokens"],
         "usage": dict(watermark["usage"]),
         "context_rent_tokens": watermark["context_rent_tokens"],
         "resumed": watermark["resumed"],
-        "status_receipt_fingerprint": watermark[
-            "status_receipt_fingerprint"],
+        "status_receipt_fingerprint": watermark["status_receipt_fingerprint"],
         "terminal_reason": watermark["terminal_reason"],
         "watermark": dict(watermark),
     }
@@ -593,22 +615,21 @@ def _meter_from_watermark(watermark: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_root_meter_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate public meter fields against the retained watermark."""
-    if not isinstance(value, Mapping) or value.get("schema") != \
-            ROOT_METER_SCHEMA:
+    if not isinstance(value, Mapping) or value.get("schema") != ROOT_METER_SCHEMA:
         raise NativeSessionMeterError("root meter schema is invalid")
     material = dict(value)
     digest = material.pop("fingerprint", None)
-    if not isinstance(digest, str) or _FINGERPRINT.fullmatch(digest) is None \
-            or digest != _fingerprint(material):
+    if (
+        not isinstance(digest, str)
+        or _FINGERPRINT.fullmatch(digest) is None
+        or digest != _fingerprint(material)
+    ):
         raise NativeSessionMeterError("root meter fingerprint is invalid")
     if value.get("status") == "unavailable":
-        if set(value) != {"schema", "status", "reason_code", "reason",
-                          "fingerprint"}:
-            raise NativeSessionMeterError(
-                "unavailable root meter schema is not closed")
+        if set(value) != {"schema", "status", "reason_code", "reason", "fingerprint"}:
+            raise NativeSessionMeterError("unavailable root meter schema is not closed")
         if not str(value.get("reason_code") or "").strip():
-            raise NativeSessionMeterError(
-                "unavailable root meter requires a reason code")
+            raise NativeSessionMeterError("unavailable root meter requires a reason code")
         return dict(value)
     if value.get("status") != "available":
         raise NativeSessionMeterError("root meter status is invalid")
@@ -622,13 +643,11 @@ def validate_root_meter_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     except _RootObservationError as exc:
         raise NativeSessionMeterError(str(exc)) from exc
     if _meter_from_watermark(watermark) != dict(value):
-        raise NativeSessionMeterError(
-            "root meter disagrees with its authenticated watermark")
+        raise NativeSessionMeterError("root meter disagrees with its authenticated watermark")
     return dict(value)
 
 
-def validate_root_meter(
-        value: Mapping[str, Any], *, authority: bytes) -> dict[str, Any]:
+def validate_root_meter(value: Mapping[str, Any], *, authority: bytes) -> dict[str, Any]:
     """Validate a meter at its consumer boundary, including its HMAC state."""
     _observation_authority(authority)
     checked = validate_root_meter_projection(value)
@@ -641,73 +660,95 @@ def validate_root_meter(
 
 
 def fold_root_observations(
-        observations: Sequence[Mapping[str, Any]], *, authority: bytes,
-        prior: Mapping[str, Any] | None = None,
-        max_observations: int = MAX_ROOT_OBSERVATIONS) -> dict[str, Any]:
+    observations: Sequence[Mapping[str, Any]],
+    *,
+    authority: bytes,
+    prior: Mapping[str, Any] | None = None,
+    max_observations: int = MAX_ROOT_OBSERVATIONS,
+) -> dict[str, Any]:
     """Reduce one bounded authenticated interval to an O(1) watermark.
 
     Exact replay of the last accepted observation is idempotent. Any gap,
     truncation/backwards movement, source replacement, ambiguity, oversized
     interval, or unreconciled counter becomes a typed unavailable result.
     """
-    return _fold_root_observations(observations, authority=authority,
-        prior=prior, max_observations=max_observations)
+    return _fold_root_observations(
+        observations, authority=authority, prior=prior, max_observations=max_observations
+    )
 
 
 def open_root_generation(
-        observation: Mapping[str, Any], *, prior: Mapping[str, Any],
-        authority: bytes) -> dict[str, Any]:
+    observation: Mapping[str, Any], *, prior: Mapping[str, Any], authority: bytes
+) -> dict[str, Any]:
     """Continue one authenticated provider counter at a verified seed opening.
 
     The caller verifies the new seed/start receipt. Only its status binding
     changes; source, sequence, first input and cumulative counters continue.
     """
     checked = validate_root_meter(prior, authority=authority)
-    if checked.get("status") != "available" or checked.get("resumed") is not False or \
-            checked.get("terminal_reason") is not None:
+    if (
+        checked.get("status") != "available"
+        or checked.get("resumed") is not False
+        or checked.get("terminal_reason") is not None
+    ):
         raise NativeSessionMeterError("root generation requires a live authenticated prior meter")
     next_status = observation.get("status_receipt_fingerprint")
     if next_status == checked.get("status_receipt_fingerprint"):
         raise NativeSessionMeterError("root generation requires a new start receipt")
-    return _fold_root_observations([observation], authority=authority,
-        prior=checked["watermark"], generation_status=next_status)
+    return _fold_root_observations(
+        [observation],
+        authority=authority,
+        prior=checked["watermark"],
+        generation_status=next_status,
+    )
 
 
 def _fold_root_observations(
-        observations: Sequence[Mapping[str, Any]], *, authority: bytes,
-        prior: Mapping[str, Any] | None = None,
-        max_observations: int = MAX_ROOT_OBSERVATIONS,
-        generation_status: str | None = None) -> dict[str, Any]:
+    observations: Sequence[Mapping[str, Any]],
+    *,
+    authority: bytes,
+    prior: Mapping[str, Any] | None = None,
+    max_observations: int = MAX_ROOT_OBSERVATIONS,
+    generation_status: str | None = None,
+) -> dict[str, Any]:
     try:
         _observation_authority(authority)
-        if isinstance(max_observations, bool) or not isinstance(
-                max_observations, int) or max_observations < 1 or \
-                max_observations > MAX_ROOT_OBSERVATIONS:
-            raise _RootObservationError(
-                "observation_overflow", "root observation bound is invalid")
-        if not isinstance(observations, Sequence) or isinstance(
-                observations, (str, bytes)):
-            raise _RootObservationError(
-                "observation_ambiguous", "root observations are invalid")
+        if (
+            isinstance(max_observations, bool)
+            or not isinstance(max_observations, int)
+            or max_observations < 1
+            or max_observations > MAX_ROOT_OBSERVATIONS
+        ):
+            raise _RootObservationError("observation_overflow", "root observation bound is invalid")
+        if not isinstance(observations, Sequence) or isinstance(observations, (str, bytes)):
+            raise _RootObservationError("observation_ambiguous", "root observations are invalid")
         if len(observations) > max_observations:
             raise _RootObservationError(
-                "observation_overflow", "root observation interval overflowed")
-        watermark = _validate_watermark(prior, authority) if prior is not None \
-            else None
+                "observation_overflow", "root observation interval overflowed"
+            )
+        watermark = _validate_watermark(prior, authority) if prior is not None else None
         if not observations:
             if watermark is None:
                 raise _RootObservationError(
-                    "observation_truncated", "root observation interval is empty")
+                    "observation_truncated", "root observation interval is empty"
+                )
             return _meter_from_watermark(watermark)
 
         state = dict(watermark or {})
-        previous_usage = dict(state.get("usage") or {
-            key: 0 for key in (
-                "input_tokens", "cached_input_tokens",
-                "uncached_input_tokens", "output_tokens",
-                "reasoning_tokens", "total_tokens",
-            )
-        })
+        previous_usage = dict(
+            state.get("usage")
+            or {
+                key: 0
+                for key in (
+                    "input_tokens",
+                    "cached_input_tokens",
+                    "uncached_input_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                    "total_tokens",
+                )
+            }
+        )
         last_sequence = int(state.get("last_sequence") or 0)
         last_observation = state.get("last_observation_fingerprint")
         turns = int(state.get("turns") or 0)
@@ -727,54 +768,55 @@ def _fold_root_observations(
                 if observation_fingerprint == last_observation:
                     continue
                 raise _RootObservationError(
-                    "observation_ambiguous",
-                    "root observation sequence has conflicting evidence")
+                    "observation_ambiguous", "root observation sequence has conflicting evidence"
+                )
             if sequence < last_sequence:
                 raise _RootObservationError(
-                    "observation_backwards",
-                    "root observation sequence moved backwards")
+                    "observation_backwards", "root observation sequence moved backwards"
+                )
             if sequence != last_sequence + 1:
                 raise _RootObservationError(
-                    "observation_gap", "root observation sequence has a gap")
+                    "observation_gap", "root observation sequence has a gap"
+                )
 
             snapshot = row["snapshot"]
             current_source = snapshot["source_identity_fingerprint"]
             current_session = hmac.new(
                 authority,
-                ("root-session\0" + str(snapshot["session_id"])).encode(
-                    "utf-8"),
+                ("root-session\0" + str(snapshot["session_id"])).encode("utf-8"),
                 hashlib.sha256,
             ).hexdigest()
-            if source_identity not in (None, current_source) or \
-                    session_pseudonym not in (None, current_session):
+            if source_identity not in (None, current_source) or session_pseudonym not in (
+                None,
+                current_session,
+            ):
                 raise _RootObservationError(
-                    "source_replaced", "root observation source was replaced")
-            if status_fingerprint not in (
-                    None, row["status_receipt_fingerprint"]) and \
-                    generation_status != row["status_receipt_fingerprint"]:
-                raise _RootObservationError(
-                    "source_replaced", "root status receipt changed")
+                    "source_replaced", "root observation source was replaced"
+                )
+            if (
+                status_fingerprint not in (None, row["status_receipt_fingerprint"])
+                and generation_status != row["status_receipt_fingerprint"]
+            ):
+                raise _RootObservationError("source_replaced", "root status receipt changed")
             if resumed not in (None, snapshot["resumed"]):
-                raise _RootObservationError(
-                    "observation_ambiguous", "root resume status changed")
+                raise _RootObservationError("observation_ambiguous", "root resume status changed")
             usage = snapshot["usage"]
-            if any(int(usage[key]) < int(previous_usage[key])
-                   for key in previous_usage):
+            if any(int(usage[key]) < int(previous_usage[key]) for key in previous_usage):
                 raise _RootObservationError(
-                    "counter_backwards", "root cumulative counter moved backwards")
-            delta = {key: int(usage[key]) - int(previous_usage[key])
-                     for key in previous_usage}
-            if delta["total_tokens"] <= 0 or \
-                    delta["total_tokens"] != delta["input_tokens"] + \
-                    delta["output_tokens"] or delta[
-                        "cached_input_tokens"] + delta[
-                        "uncached_input_tokens"] != delta["input_tokens"]:
+                    "counter_backwards", "root cumulative counter moved backwards"
+                )
+            delta = {key: int(usage[key]) - int(previous_usage[key]) for key in previous_usage}
+            if (
+                delta["total_tokens"] <= 0
+                or delta["total_tokens"] != delta["input_tokens"] + delta["output_tokens"]
+                or delta["cached_input_tokens"] + delta["uncached_input_tokens"]
+                != delta["input_tokens"]
+            ):
                 raise _RootObservationError(
-                    "counter_unreconciled",
-                    "root observation delta is null or unreconciled")
+                    "counter_unreconciled", "root observation delta is null or unreconciled"
+                )
             turns += 1
-            first_input = delta["input_tokens"] if first_input is None \
-                else first_input
+            first_input = delta["input_tokens"] if first_input is None else first_input
             peak = max(peak, delta["input_tokens"])
             previous_usage = dict(usage)
             last_sequence = sequence
@@ -787,11 +829,11 @@ def _fold_root_observations(
 
         if turns < 1 or not isinstance(first_input, int) or first_input <= 0:
             raise _RootObservationError(
-                "counter_unreconciled", "root meter has no positive first input")
+                "counter_unreconciled", "root meter has no positive first input"
+            )
         rent = previous_usage["cached_input_tokens"] / turns
         if not math.isfinite(rent) or rent < 0:
-            raise _RootObservationError(
-                "counter_unreconciled", "root context rent is invalid")
+            raise _RootObservationError("counter_unreconciled", "root context rent is invalid")
         material = {
             "schema": ROOT_WATERMARK_SCHEMA,
             "session_role": "root",
@@ -812,12 +854,12 @@ def _fold_root_observations(
         watermark = {
             **material,
             "fingerprint": digest,
-            "authenticator": _authenticator(
-                ROOT_WATERMARK_SCHEMA, digest, authority),
+            "authenticator": _authenticator(ROOT_WATERMARK_SCHEMA, digest, authority),
         }
         if len(_canonical(watermark)) > MAX_ROOT_WATERMARK_BYTES:
             raise _RootObservationError(
-                "observation_overflow", "root meter watermark exceeds 16 KiB")
+                "observation_overflow", "root meter watermark exceeds 16 KiB"
+            )
         return _meter_from_watermark(watermark)
     except _RootObservationError as exc:
         return _unavailable(exc.reason_code, str(exc))
