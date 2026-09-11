@@ -89,6 +89,147 @@ def _workspace(tmp_path):
     return str(workspace)
 
 
+def _build_collection_signing_fixture(tmp_path, *, advisory, original_admission=True):
+    """Real runtime result, artifact custody and signer; simulated host/time inputs."""
+    from types import SimpleNamespace
+    from taskplane import design_host_transport, phase_harness, review_evidence
+    from taskplane.tests.test_r0001_agent_runtime import _setup
+
+    runtime, dispatch, calls = _setup(tmp_path)
+    result = runtime.run(dispatch)
+    assert result["status"] == "accepted", result
+    assert calls == ["launch", "observe"]
+    ws = str(tmp_path / "artifacts")
+    artifacts = review_evidence.ArtifactStore(ws)
+    impact = {"policy": {"depth": 1}, "nodes": ["app.py"]}
+    original_freshness = {"candidate_sha": "a" * 40, "source_tree": "b" * 40,
+        "impact_manifest_fingerprint": review_evidence.content_fingerprint(impact)}
+    original = {"bindings": dict(dispatch.bindings), "signing_scope": ["app.py"],
+        "freshness": original_freshness, "impact_reference": artifacts.put("phase-impact", impact)}
+    original_ref = artifacts.put("phase-preparation", original)
+    current_freshness = {**original_freshness, "candidate_sha": "c" * 40, "source_tree": "d" * 40}
+    material = {**original, "freshness": current_freshness, "original_preparation": original_ref}
+    manifest = {"revision": 2, "phase_records": {}}
+    if advisory:
+        decision = {"schema": "taskplane.resource-policy/v1", "run_id": "run-1",
+            "mode": "advisory", "actor": "human:simulated", "authority_fingerprint": "f" * 64,
+            "decided_at": 100}
+        fingerprint = review_evidence.content_fingerprint(decision)
+        manifest["phase_records"]["run-resource-limits"] = {
+            "schema": "taskplane.phase-operation-receipt/v1", "operation_id": "run-resource-limits",
+            "operation": "resource_policy", "request_fingerprint": fingerprint,
+            "result": decision, "result_fingerprint": fingerprint, "committed_revision": 2}
+    authority = None
+    if original_admission:
+        authority = design_host_transport.runtime_receipt_authority(loop.tp, ws,
+            bindings=dispatch.bindings, freshness=original_freshness, now=100,
+            admit=True, authorize=lambda: True)
+    # The original admission uses preparation time. Advisory runs may defer
+    # admission entirely until collection, after the duration limit.
+    runtime.clock.advance(201)
+    ports = SimpleNamespace(tp=loop.tp, phase_harness=phase_harness,
+        design_host_transport=design_host_transport, SystemClock=lambda: runtime.clock,
+        _phase_bridge_freshness=lambda workspace, scopes: (dict(current_freshness), impact),
+        _stage_store=lambda workspace, run_id: SimpleNamespace(load=lambda requested: manifest),
+        stage_loop=SimpleNamespace(authorized_run_revision=lambda *args: True))
+    path = Path(loop.tp.tp_dir(ws)) / "runtime-receipt-authority.json"
+    return SimpleNamespace(ws=ws, runtime=runtime, result=result, artifacts=artifacts,
+        original=original, material=material, manifest=manifest, ports=ports, path=path,
+        authority=authority, before=json.loads(path.read_text()) if path.exists() else None,
+        before_bytes=path.read_bytes() if path.exists() else None)
+
+
+@pytest.mark.parametrize("advisory,original_admission", [(False, True), (True, True), (True, False)],
+    ids=["strict", "human-advisory", "human-advisory-before-preparation"])
+def test_build_collection_signing_honors_explicit_advisory_policy(tmp_path, advisory, original_admission):
+    from taskplane import design_host_transport, phase_harness, review_evidence
+
+    fixture = _build_collection_signing_fixture(tmp_path, advisory=advisory,
+        original_admission=original_admission)
+    checked = []
+    def authorize():
+        checked.append("current-host-authority")
+        return True
+    if not advisory:
+        with pytest.raises(design_host_transport.NativeEntryError, match="signing admission is stale"):
+            phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+                admit=True, authorize=authorize)
+        assert fixture.path.read_bytes() == fixture.before_bytes
+        assert checked
+        return
+    signer = phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+        admit=True, authorize=authorize)
+    signed = signer.sign(fixture.result, store=fixture.artifacts)
+    assert signer.verify(signed, store=fixture.artifacts)["payload"] == fixture.result
+    assert signer.expires_at == 301 + 86400
+    assert signer.bindings == fixture.original["bindings"]
+    assert checked
+    after = json.loads(fixture.path.read_text())
+    original_operation = fixture.original["bindings"]["operation_id"]
+    if original_admission:
+        assert after["admissions"][original_operation] == fixture.before["admissions"][original_operation]
+        assert after["keys"][fixture.authority.key_id] == fixture.before["keys"][fixture.authority.key_id]
+    policy = phase_records.resource_policy(fixture.manifest, "run-1")
+    collection = review_evidence.content_fingerprint({"kind": "approved-build-output",
+        "preparation": fixture.material["original_preparation"], "freshness": fixture.material["freshness"],
+        "scope": fixture.material["signing_scope"], "resource_policy": policy["fingerprint"]})
+    expected_operations = {original_operation + "-collection-" + collection}
+    if original_admission:
+        expected_operations.add(original_operation)
+    assert set(after["admissions"]) == expected_operations
+    saved = fixture.path.read_bytes()
+    fixture.runtime.clock.advance(7)
+    retry = phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+        admit=True, authorize=authorize)
+    assert retry.key_id == signer.key_id
+    assert retry.expires_at == signer.expires_at
+    retry.verify(signed, store=fixture.artifacts)
+    assert fixture.path.read_bytes() == saved
+    fixture.runtime.clock.advance(86400)
+    expired = phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+        admit=True, authorize=authorize)
+    with pytest.raises(design_host_transport.NativeEntryError, match="key is disabled, not yet valid or stale"):
+        expired.sign(fixture.result, store=fixture.artifacts)
+    assert fixture.path.read_bytes() == saved  # A retry cannot renew its signing window.
+
+
+@pytest.mark.parametrize("case", ["original-bindings", "original-freshness", "current-source",
+    "current-authority", "revoked", "invalid-policy"])
+def test_build_collection_signing_rejects_changed_authority(tmp_path, case):
+    from taskplane import design_host_transport, phase_harness, review_evidence
+
+    fixture = _build_collection_signing_fixture(tmp_path, advisory=True)
+    if case in {"original-bindings", "original-freshness"}:
+        original = copy.deepcopy(fixture.original)
+        if case == "original-bindings":
+            original["bindings"]["authority_fingerprint"] = "e" * 64
+        else:
+            original["freshness"]["candidate_sha"] = "e" * 40
+        fixture.material = {**original, "freshness": fixture.material["freshness"],
+            "original_preparation": fixture.artifacts.put("phase-preparation", original)}
+        message = "original runtime signing authority changed"
+    elif case == "current-source":
+        fixture.material["freshness"] = {**fixture.material["freshness"], "candidate_sha": "e" * 40}
+        message = "current validation source changed"
+    elif case == "current-authority":
+        message = "host authority refused admission"
+    elif case == "revoked":
+        design_host_transport.disable_runtime_receipt_authority(loop.tp, fixture.ws,
+            bindings=fixture.original["bindings"], freshness=fixture.original["freshness"],
+            now=101, authorize=lambda: True, status="revoked", changed_at=101)
+        message = "original runtime signing authority changed or is disabled"
+    else:
+        row = fixture.manifest["phase_records"]["run-resource-limits"]
+        row["result"]["actor"] = "worker:foreign"
+        row["request_fingerprint"] = row["result_fingerprint"] = review_evidence.content_fingerprint(row["result"])
+        message = "run resource policy does not verify"
+    before = fixture.path.read_bytes()
+    with pytest.raises(ValueError, match=message):
+        phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+            admit=True, authorize=lambda: case != "current-authority")
+    assert fixture.path.read_bytes() == before
+
+
 def test_stage_native_first_worker_identity_is_run_scoped_and_replay_stable(tmp_path, monkeypatch):
     """Real init/next producers; simulated host metadata, no native J1 claim."""
     from taskplane import requirements, review_evidence, run_store, storage

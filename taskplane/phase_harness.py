@@ -1642,6 +1642,7 @@ def _phase_bridge_signing(
                     "preparation": material["original_preparation"],
                     "freshness": material["freshness"],
                     "scope": material["signing_scope"],
+                    **({"resource_policy": policy["fingerprint"]} if policy is not None else {}),
                 }
             )
             if build_collection
@@ -1656,6 +1657,9 @@ def _phase_bridge_signing(
                     "preparation": material["original_preparation"],
                 }
             )
+        ),
+        resource_policy_fingerprint=(
+            policy["fingerprint"] if build_collection and policy is not None else None
         ),
         original_freshness=None if original is None else original["freshness"],
     )

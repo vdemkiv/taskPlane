@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 from types import ModuleType
 from collections.abc import Iterator
+from typing import cast
 
 Json = dict[str, object]
 
@@ -66,9 +67,12 @@ def _table(value: object, label: str) -> dict[str, Json]:
 
 def _lifecycle(context: Json) -> stage_entities.StageLifecycle:
     value = context["lifecycle"]
-    if not isinstance(value, stage_entities.StageLifecycle):
+    owner = context["stage_entities"]
+    if not isinstance(owner, ModuleType) or not isinstance(value, owner.StageLifecycle):
         raise ValueError("amendment requires the stage lifecycle owner")
-    return value
+    # Flat and package imports expose the same API through distinct classes;
+    # the selected owner's runtime check above precedes this static annotation.
+    return cast(stage_entities.StageLifecycle, value)
 
 
 def _objects(value: object, label: str) -> list[Json]:
@@ -417,10 +421,8 @@ def _amend(runtime: ModuleType, ws: str, **request: object) -> Json:
     state = _object(snapshot["state"], "workflow")
     context = _object(snapshot["context"], "stage context")
     stage = _object(context["stage"], "stage")
-    from taskplane import run_store
-
     store = context["store"]
-    if not isinstance(store, run_store.RunStore):
+    if not isinstance(store, runtime.run_store_engine.RunStore):
         raise ValueError("amendment requires the run store owner")
     manifest = _object(context["manifest"], "manifest")
     actor = str(request["by"] or "").strip()

@@ -63,6 +63,44 @@ def test_product_amendment_rebinds_scope_and_preserves_history_idempotently(run)
     assert handoff["requirement"] == context["stage"]["requirement"]
 
 
+@pytest.mark.parametrize("foreign_owner", ["store", "lifecycle"])
+def test_amendment_uses_the_actual_flat_launcher_store_owner(run, monkeypatch, foreign_owner):
+    import loop as launcher_loop
+
+    ws, store, run_id, _ = run
+    assert not launcher_loop.__package__
+    assert launcher_loop.run_store_engine.RunStore is not loop.run_store_engine.RunStore
+    context = launcher_loop._stage_loop_context(ws, launcher_loop.load(ws))
+    assert isinstance(context["store"], launcher_loop.run_store_engine.RunStore)
+    assert not isinstance(context["store"], loop.run_store_engine.RunStore)
+    packaged = loop._stage_loop_context(ws, loop.load(ws))
+    assert type(context["lifecycle"]) is context["stage_entities"].StageLifecycle
+    assert type(context["lifecycle"]) is not type(packaged["lifecycle"])
+    args = proposal(ws)
+    before = store.load(run_id)
+    snapshot = phase_amendment._snapshot
+
+    def foreign_context(*values, **kwargs):
+        selected = snapshot(*values, **kwargs)
+        # The other module's real owner is still foreign to this runtime.
+        selected["context"][foreign_owner] = packaged[foreign_owner]
+        return selected
+
+    with monkeypatch.context() as patch:
+        patch.setattr(phase_amendment, "_snapshot", foreign_context)
+        refused = phase_amendment.amend(launcher_loop, ws, **args)
+    expected = "run store" if foreign_owner == "store" else "stage lifecycle"
+    assert refused["error"] == f"amendment requires the {expected} owner", refused
+    assert store.load(run_id) == before
+    result = phase_amendment.amend(launcher_loop, ws, **args)
+    assert not result.get("error"), result
+    assert launcher_loop.load(ws)["step"] == "design"
+    saved = store.load(run_id)
+    assert phase_amendment.amend(launcher_loop, ws, **args).get("replay") is True
+    assert store.load(run_id) == saved
+    assert phase_records.phase_records(saved) == phase_records.phase_records(before)
+
+
 def _commit_source_change(ws, path):
     source = Path(ws) / path
     source.write_text(source.read_text() + "\n# Current approved implementation revision\n")

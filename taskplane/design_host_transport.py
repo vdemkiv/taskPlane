@@ -5,6 +5,7 @@ dispatch queue, and durable JSON primitives.  This module owns the Design
 protocol: portable role references, exact-set dispatch authority, lifecycle
 activity publication, replay resistance, and completion conservation.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -69,12 +70,20 @@ class RuntimeReceiptAuthority:
 
     def require_current(self) -> None:
         key = self.keys[self.key_id]
-        if key.status != "active" or not key.not_before <= self.now < min(key.not_after, self.expires_at):
+        if key.status != "active" or not key.not_before <= self.now < min(
+            key.not_after, self.expires_at
+        ):
             raise NativeEntryError("runtime signing key is disabled, not yet valid or stale")
 
-    def verify(self, receipt: JsonDict, *, store: review_evidence.ArtifactStore | None = None,
-               historical: bool = False) -> JsonDict:
+    def verify(
+        self,
+        receipt: JsonDict,
+        *,
+        store: review_evidence.ArtifactStore | None = None,
+        historical: bool = False,
+    ) -> JsonDict:
         from taskplane import stage_handoff
+
         key = self.keys.get(cast(str, receipt.get("key_id")))
         if key is None or receipt.get("key_id") != self.key_id:
             raise NativeEntryError("runtime signing key is not admitted for this attempt")
@@ -82,34 +91,59 @@ class RuntimeReceiptAuthority:
             raise NativeEntryError("runtime signing key is disabled")
         if self.durable_evidence and receipt.get("issued_at", self.now + 1) > self.now:
             raise NativeEntryError("runtime receipt is from the future")
-        checked = stage_handoff.verify_contract(receipt, trusted_keys=self.keys,
+        checked = stage_handoff.verify_contract(
+            receipt,
+            trusted_keys=self.keys,
             expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
-            expected_freshness=self.freshness, now=self.now,
-            store=store, historical=historical or self.durable_evidence)
+            expected_freshness=self.freshness,
+            now=self.now,
+            store=store,
+            historical=historical or self.durable_evidence,
+        )
         result = cast(JsonDict, checked["payload"])
-        if result["status"] != "accepted" or any(result.get(k) != v for k, v in self.bindings.items()):
+        if result["status"] != "accepted" or any(
+            result.get(k) != v for k, v in self.bindings.items()
+        ):
             raise NativeEntryError("runtime receipt differs from admitted attempt bindings")
         if receipt["expires_at"] > self.expires_at:
             raise NativeEntryError("runtime receipt exceeds admitted freshness interval")
         return checked
 
-    def sign(self, result: Mapping[str, object], *,
-             store: review_evidence.ArtifactStore | None = None) -> JsonDict:
+    def sign(
+        self, result: Mapping[str, object], *, store: review_evidence.ArtifactStore | None = None
+    ) -> JsonDict:
         from taskplane import stage_handoff
+
         self.require_current()
-        if result.get("status") != "accepted" or any(result.get(k) != v for k, v in self.bindings.items()):
+        if result.get("status") != "accepted" or any(
+            result.get(k) != v for k, v in self.bindings.items()
+        ):
             raise NativeEntryError("runtime signing requires the exact accepted output")
-        receipt = stage_handoff.sign_contract(result, key=self.keys[self.key_id],
-            issued_at=self.now, expires_at=self.expires_at, freshness=self.freshness, store=store)
+        receipt = stage_handoff.sign_contract(
+            result,
+            key=self.keys[self.key_id],
+            issued_at=self.now,
+            expires_at=self.expires_at,
+            freshness=self.freshness,
+            store=store,
+        )
         self.verify(receipt, store=store)
         return receipt
 
 
-def runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[str, object],
-                              freshness: Mapping[str, object], now: int, admit: bool = False,
-                              authorize: Callable[[], object] | None = None,
-                              collection_policy: str | None = None,
-                              original_freshness: Mapping[str, object] | None = None) -> RuntimeReceiptAuthority:
+def runtime_receipt_authority(
+    kernel: Any,
+    workspace: str,
+    *,
+    bindings: Mapping[str, object],
+    freshness: Mapping[str, object],
+    now: int,
+    admit: bool = False,
+    authorize: Callable[[], object] | None = None,
+    collection_policy: str | None = None,
+    resource_policy_fingerprint: str | None = None,
+    original_freshness: Mapping[str, object] | None = None,
+) -> RuntimeReceiptAuthority:
     """Admit a purpose-limited key only through the incumbent host owner.
 
     The private policy is separate from worker lifecycle and nonce secrets.
@@ -119,10 +153,18 @@ def runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[
     """
     from taskplane import stage_handoff
     from datetime import datetime
+
     fresh = stage_handoff._freshness(freshness)
-    original_fresh = fresh if original_freshness is None else stage_handoff._freshness(original_freshness)
-    if original_freshness is not None and (collection_policy is None or (bindings.get("phase_id") != "build" and any(
-            fresh[key] != original_fresh[key] for key in ("candidate_sha", "source_tree")))):
+    original_fresh = (
+        fresh if original_freshness is None else stage_handoff._freshness(original_freshness)
+    )
+    if original_freshness is not None and (
+        collection_policy is None
+        or (
+            bindings.get("phase_id") != "build"
+            and any(fresh[key] != original_fresh[key] for key in ("candidate_sha", "source_tree"))
+        )
+    ):
         raise NativeEntryError("current validation changed original source authority")
     operation = bindings.get("operation_id")
     if not isinstance(operation, str) or not operation:
@@ -131,14 +173,24 @@ def runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[
         raise NativeEntryError("runtime signing time invalid")
     if collection_policy is not None and not re.fullmatch(r"[a-f0-9]{64}", collection_policy):
         raise NativeEntryError("runtime collection policy invalid")
+    if resource_policy_fingerprint is not None and (
+        collection_policy is None
+        or bindings.get("phase_id") != "build"
+        or not re.fullmatch(r"[a-f0-9]{64}", resource_policy_fingerprint)
+    ):
+        raise NativeEntryError("runtime Build collection resource policy invalid")
     original_operation = operation
     if collection_policy is not None:
         operation += "-collection-" + collection_policy
     path = Path(kernel.tp_dir(workspace)) / "runtime-receipt-authority.json"
     identity = hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest()
     with kernel.file_lock(str(path)):
-        if path.exists() and (path.is_symlink() or not stat.S_ISREG(path.stat().st_mode)
-                or path.stat().st_mode & 0o077 or path.stat().st_uid != os.getuid()):
+        if path.exists() and (
+            path.is_symlink()
+            or not stat.S_ISREG(path.stat().st_mode)
+            or path.stat().st_mode & 0o077
+            or path.stat().st_uid != os.getuid()
+        ):
             raise NativeEntryError("runtime signing custody is not private")
         policy = kernel.load_json(str(path), default=None, what="runtime receipt signing policy")
         if policy is None:
@@ -148,19 +200,33 @@ def runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[
                 raise NativeEntryError("runtime signing admission requires current host authority")
             if authorize() is False:
                 raise NativeEntryError("runtime signing host authority refused admission")
-            policy = {"schema": _RUNTIME_POLICY_SCHEMA, "purpose": _RUNTIME_PURPOSE,
-                "workspace": identity, "keys": {}, "admissions": {}}
-        if not isinstance(policy, dict) or set(policy) != {
-                "schema", "purpose", "workspace", "keys", "admissions"} or \
-                policy["schema"] != _RUNTIME_POLICY_SCHEMA or policy["purpose"] != _RUNTIME_PURPOSE or \
-                policy["workspace"] != identity:
+            policy = {
+                "schema": _RUNTIME_POLICY_SCHEMA,
+                "purpose": _RUNTIME_PURPOSE,
+                "workspace": identity,
+                "keys": {},
+                "admissions": {},
+            }
+        if (
+            not isinstance(policy, dict)
+            or set(policy) != {"schema", "purpose", "workspace", "keys", "admissions"}
+            or policy["schema"] != _RUNTIME_POLICY_SCHEMA
+            or policy["purpose"] != _RUNTIME_PURPOSE
+            or policy["workspace"] != identity
+        ):
             raise NativeEntryError("runtime signing purpose or owner mismatch")
         if not isinstance(policy["keys"], dict) or not isinstance(policy["admissions"], dict):
             raise NativeEntryError("runtime signing key admission policy malformed")
         original = policy["admissions"].get(original_operation)
-        if collection_policy is not None and original is not None and (
-                original.get("bindings") != dict(bindings) or original.get("freshness") != original_fresh or
-                policy["keys"].get(original.get("key_id"), {}).get("status") != "active"):
+        if (
+            collection_policy is not None
+            and original is not None
+            and (
+                original.get("bindings") != dict(bindings)
+                or original.get("freshness") != original_fresh
+                or policy["keys"].get(original.get("key_id"), {}).get("status") != "active"
+            )
+        ):
             raise NativeEntryError("original runtime signing authority changed or is disabled")
         admission = policy["admissions"].get(operation)
         if admission is None and admit:
@@ -168,8 +234,12 @@ def runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[
                 raise NativeEntryError("runtime signing admission requires current host authority")
             if authorize() is False:
                 raise NativeEntryError("runtime signing host authority refused admission")
-            expires = int(datetime.fromisoformat(str(bindings["deadline"]).replace("Z", "+00:00")).timestamp())
-            if collection_policy is not None and bindings.get("phase_id") != "build":
+            expires = int(
+                datetime.fromisoformat(str(bindings["deadline"]).replace("Z", "+00:00")).timestamp()
+            )
+            if collection_policy is not None and (
+                bindings.get("phase_id") != "build" or resource_policy_fingerprint is not None
+            ):
                 # Resource duration is not an authorization expiry. This new,
                 # exact-operation signing admission is authorized by the run's
                 # explicit human policy; original admissions remain immutable.
@@ -179,52 +249,95 @@ def runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[
                 raise NativeEntryError("runtime signing admission is stale")
             secret = secrets.token_bytes(32)
             key_id = "runtime-" + secrets.token_hex(16)
-            policy["keys"][key_id] = {"key_id": key_id,
+            policy["keys"][key_id] = {
+                "key_id": key_id,
                 "secret": base64.b64encode(secret).decode("ascii"),
-                "not_before": now, "not_after": expires, "status": "active", "changed_at": None}
-            admission = {"bindings": dict(bindings), "freshness": fresh,
-                "key_id": key_id, "expires_at": expires}
+                "not_before": now,
+                "not_after": expires,
+                "status": "active",
+                "changed_at": None,
+            }
+            admission = {
+                "bindings": dict(bindings),
+                "freshness": fresh,
+                "key_id": key_id,
+                "expires_at": expires,
+            }
             policy["admissions"][operation] = admission
             kernel.atomic_write_json(str(path), policy, sort_keys=True, private=True)
-        if not isinstance(admission, dict) or set(admission) != {
-                "bindings", "freshness", "key_id", "expires_at"} or \
-                admission["bindings"] != dict(bindings) or admission["freshness"] != fresh:
+        if (
+            not isinstance(admission, dict)
+            or set(admission) != {"bindings", "freshness", "key_id", "expires_at"}
+            or admission["bindings"] != dict(bindings)
+            or admission["freshness"] != fresh
+        ):
             raise NativeEntryError("runtime signing attempt is missing or changed")
         keys = {}
         for key_id, raw in policy["keys"].items():
             if not isinstance(raw, dict) or set(raw) != {
-                    "key_id", "secret", "not_before", "not_after", "status", "changed_at"}:
+                "key_id",
+                "secret",
+                "not_before",
+                "not_after",
+                "status",
+                "changed_at",
+            }:
                 raise NativeEntryError("runtime signing key policy malformed")
-            key = stage_handoff.SigningKey(**{**raw,
-                "secret": base64.b64decode(raw["secret"], validate=True)})
+            key = stage_handoff.SigningKey(
+                **{**raw, "secret": base64.b64decode(raw["secret"], validate=True)}
+            )
             if key.key_id != key_id:
                 raise NativeEntryError("runtime signing key identity mismatch")
             keys[key_id] = key
         if admission["key_id"] not in keys:
             raise NativeEntryError("runtime signing key is unadmitted")
-        return RuntimeReceiptAuthority(dict(bindings), fresh, keys,
-            admission["key_id"], now, admission["expires_at"], collection_policy is not None)
+        return RuntimeReceiptAuthority(
+            dict(bindings),
+            fresh,
+            keys,
+            admission["key_id"],
+            now,
+            admission["expires_at"],
+            collection_policy is not None,
+        )
 
 
-def disable_runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: Mapping[str, object],
-        freshness: Mapping[str, object], now: int, authorize: Callable[[], object] | None,
-        status: str, changed_at: int) -> None:
+def disable_runtime_receipt_authority(
+    kernel: Any,
+    workspace: str,
+    *,
+    bindings: Mapping[str, object],
+    freshness: Mapping[str, object],
+    now: int,
+    authorize: Callable[[], object] | None,
+    status: str,
+    changed_at: int,
+) -> None:
     """Host-only monotone retirement/revocation; retain historical key bytes.
 
     New operations receive separate keys through normal admission. Neither
     rotation nor disabling rewrites an old admission or grants a new attempt.
     """
-    if status not in {"retired", "revoked", "compromised"} or type(changed_at) is not int or changed_at < now:
+    if (
+        status not in {"retired", "revoked", "compromised"}
+        or type(changed_at) is not int
+        or changed_at < now
+    ):
         raise NativeEntryError("runtime signing disable policy invalid")
-    current = runtime_receipt_authority(kernel, workspace, bindings=bindings,
-        freshness=freshness, now=now)
+    current = runtime_receipt_authority(
+        kernel, workspace, bindings=bindings, freshness=freshness, now=now
+    )
     path = Path(kernel.tp_dir(workspace)) / "runtime-receipt-authority.json"
     with kernel.file_lock(str(path)):
         if authorize is None or authorize() is False:
             raise NativeEntryError("runtime signing host authority refused disabling")
         policy = kernel.load_json(str(path), what="runtime receipt signing policy")
         admission = policy["admissions"].get(bindings["operation_id"])
-        if admission is None or admission["key_id"] != current.key_id or admission["bindings"] != dict(bindings):
+        if (
+            admission is None
+            or admission["key_id"] != current.key_id
+            or admission["bindings"] != dict(bindings)
+        ):
             raise NativeEntryError("runtime signing admission changed before disabling")
         raw = policy["keys"][current.key_id]
         if raw["status"] != "active":
@@ -237,31 +350,41 @@ def disable_runtime_receipt_authority(kernel: Any, workspace: str, *, bindings: 
         kernel.atomic_write_json(str(path), policy, sort_keys=True, private=True)
 
 
-def phase_nonce_source(kernel: Any, workspace: str, run_id: str, *,
-                       existing_only: bool = False) -> producer_observation.AttemptNonceSource:
+def phase_nonce_source(
+    kernel: Any, workspace: str, run_id: str, *, existing_only: bool = False
+) -> producer_observation.AttemptNonceSource:
     """Compose existing private worker-key custody with the nonce owner.
 
     This opens no new authority or observation source and makes no native
     readiness claim. Admission remains with the current stage authority.
     """
     from taskplane import delivery_ports, producer_observation
+
     authority = kernel._worker_contract_authority(workspace, create=not existing_only)
     root = kernel.external_store_root(workspace)
     workspace_key = hashlib.sha256(os.path.realpath(workspace).encode()).hexdigest()
     if existing_only:
-        domain = Path(root) / ".taskplane-evidence" / workspace_key / run_id / "producer_observation"
+        domain = (
+            Path(root) / ".taskplane-evidence" / workspace_key / run_id / "producer_observation"
+        )
         if not (domain / "nonce-state.json").is_file() or any(
-                not (domain / child).is_dir() for child in ("intents", "receipts")):
+            not (domain / child).is_dir() for child in ("intents", "receipts")
+        ):
             raise NativeEntryError("existing phase nonce custody is unavailable")
-    evidence = delivery_ports.LocatorEvidenceStore(root,
-        workspace_key, run_id)
+    evidence = delivery_ports.LocatorEvidenceStore(root, workspace_key, run_id)
     return producer_observation.AttemptNonceSource(evidence, key=authority["secret"])
 
 
-def observe_phase_hook(kernel: Any, workspace: str, contract: Mapping[str, object],
-                       event: Mapping[str, object], *, nonce: producer_observation.AttemptNonceSource,
-                       bindings: Mapping[str, object],
-                       outputs: list[dict[str, object]] | None = None) -> dict[str, object]:
+def observe_phase_hook(
+    kernel: Any,
+    workspace: str,
+    contract: Mapping[str, object],
+    event: Mapping[str, object],
+    *,
+    nonce: producer_observation.AttemptNonceSource,
+    bindings: Mapping[str, object],
+    outputs: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     """Bind a claimed child hook to the existing enforced worker slot."""
     lifecycle = contract.get("worker_lifecycle")
     if not isinstance(lifecycle, Mapping) or contract.get("worker_scoped") is not True:
@@ -271,8 +394,14 @@ def observe_phase_hook(kernel: Any, workspace: str, contract: Mapping[str, objec
     if lifecycle.get("owner") != kernel._worker_event_owner(dict(event)):
         raise NativeEntryError("phase hook owner mismatch")
     issued = nonce.recover(bindings)
-    return nonce.record_phase_hook(issued, bindings, workspace=workspace,
-        task_name=str(lifecycle["expected_task_name"]), event=event, outputs=outputs)
+    return nonce.record_phase_hook(
+        issued,
+        bindings,
+        workspace=workspace,
+        task_name=str(lifecycle["expected_task_name"]),
+        event=event,
+        outputs=outputs,
+    )
 
 
 def _entry_text(value: object) -> str:
@@ -510,9 +639,11 @@ _prepare_native_entry = prepare_native_entry
 
 
 def _fp(value: object) -> str:
-    return hashlib.sha256(json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        allow_nan=False).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def portable_role_reference(agent: str) -> JsonDict:
@@ -528,21 +659,30 @@ def portable_role_reference(agent: str) -> JsonDict:
         payload = path.read_bytes()
     except OSError as exc:
         raise ValueError("role reference is unavailable") from exc
-    material = {"schema": ROLE_REFERENCE_SCHEMA, "path": relative,
-                "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest()}
+    material = {
+        "schema": ROLE_REFERENCE_SCHEMA,
+        "path": relative,
+        "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
     return {**material, "fingerprint": _fp(material)}
 
 
 def validate_role_reference(value: object, *, expected_agent: str) -> JsonDict:
-    if not isinstance(value, dict) or set(value) != {
-            "schema", "path", "bytes", "sha256", "fingerprint"} or \
-            value.get("schema") != ROLE_REFERENCE_SCHEMA:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema", "path", "bytes", "sha256", "fingerprint"}
+        or value.get("schema") != ROLE_REFERENCE_SCHEMA
+    ):
         raise ValueError("role reference shape is invalid")
     relative = str(value.get("path") or "")
     expected = f"agents/{str(expected_agent or '').strip()}.md"
-    if (relative != expected or os.path.isabs(relative) or "\\" in relative
-            or any(part in {"", ".", ".."} for part in relative.split("/"))):
+    if (
+        relative != expected
+        or os.path.isabs(relative)
+        or "\\" in relative
+        or any(part in {"", ".", ".."} for part in relative.split("/"))
+    ):
         raise ValueError("role reference is absolute, foreign, or unsafe")
     current = portable_role_reference(expected_agent)
     if value != current:
