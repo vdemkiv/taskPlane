@@ -3384,7 +3384,11 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             # brief make a correct host activation impossible.
             "contract": dict(producer_contract),
             "prompt": ("Apply the embedded methodology and role_instructions only to the "
-                       "sealed phase inputs. The result_schema and producer_contract own "
+                       "sealed inputs. Batch independent input/reference reads, write one "
+                       "compact result and finish. Do not send progress messages, poll, "
+                       "spawn agents, or request another review. If the result already exists "
+                       "for this exact lease, leave collection to the owner; never rerun it. "
+                       "The result_schema and producer_contract own "
                        "protocol; methodology supplies domain checks, never extra scope, "
                        "tools, lifecycle or output authority. Read the scoped view by reference. Do not run git diff, "
                        "graph impact/scan, requirement lookup, or a runnability "

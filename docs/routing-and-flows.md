@@ -16,6 +16,24 @@ transport-only, and
 no gate is reachable only via workflows. Do not look here for a way to
 disable a guardrail — there isn't one, by design.
 
+## Human amendments during delivery
+
+The human may amend Product requirements or the Design approach during planning,
+Build, Evaluate, or Review. The approved amendment becomes the current scope.
+Record it with `loop amend --phase product|design --req R-XXXX`; `--preview`
+first returns the exact current stage, requirement and candidate fingerprints
+to pass when applying the human's `--by` and `--reason`.
+
+If affected workers are running, the operation identifies the work to stop.
+Apply the amendment after their terminal state is verified. Prior scope,
+attempts, code, worktrees and evidence remain in history. The amendment
+invalidates downstream acceptance for the changed scope and returns work to
+Design using the approved Product scope or revised Design candidate. A revised
+Design is presented for human approval; amendment approval alone does not
+authorize Build or final sign-off.
+Human-directed review is recorded explicitly and never represented as an
+automated lens pass. A later change can amend the same run again.
+
 ## Repository precondition — before graph and routing
 
 Every flow that names a local path, repository URL, ref, or PR begins with

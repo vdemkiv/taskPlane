@@ -73,7 +73,7 @@ def test_h13_standalone_review_has_finite_default_token_ceiling(
     assert budget == {
         "max_cost_usd": 3.0,
         "max_cost_usd_mode": "advisory",
-        "max_tokens": 25_000_000,
+        "max_tokens": 1_000_000,
         "token_usage_required": True,
     }
     assert tp._standalone_review_budget(123)["max_tokens"] == 123

@@ -81,8 +81,8 @@ def test_missing_or_malformed_host_usage_fails_closed_before_next_dispatch() -> 
     advisory = dispatch_telemetry.screen_dispatch(ledger, FakeClock(wall_time=10),
         current_stage="build", outstanding_set_fingerprint="b" * 64,
         preserved_context_fingerprint="c" * 64, resource_limits_advisory=True)
-    assert advisory["dispatch_allowed"] is True
-    assert advisory["status"] == "advisory"
+    assert advisory["dispatch_allowed"] is False
+    assert advisory["status"] == "human_scope_review"
     assert advisory["observed_usage"] == stopped["observed_usage"]
     assert advisory["budget"]["budget_claim"] is False
     assert advisory["budget"]["triggered"] == stopped["budget"]["triggered"]
@@ -126,6 +126,21 @@ def test_breach_stops_before_any_next_spawn() -> None:
         assert stopped["checkpoint"]["observed_usage_fingerprint"] == \
             stopped["observed_usage_fingerprint"]
         assert stopped["fingerprint"]
+
+
+
+def test_budget_approval_relaxes_measured_cap_only():
+    ledger = _ledger()
+    dispatch_telemetry.bind_dispatch(ledger, _dispatch("measured"), usage=_usage(),
+        source_fingerprint="d" * 64)
+    screen = dispatch_telemetry.screen_dispatch(
+        ledger, FakeClock(wall_time=10), current_stage="build",
+        outstanding_set_fingerprint="b" * 64, preserved_context_fingerprint="c" * 64,
+        overrides={"sessions": dispatch_telemetry.WAVE_BUDGET_CEILINGS["sessions"]},
+        resource_limits_advisory=True)
+    assert screen["budget"]["triggered"]
+    assert screen["status"] == "advisory"
+    assert screen["dispatch_allowed"] is True
 
 
 def test_aggregate_token_observation_is_preserved_without_program_stop() -> None:

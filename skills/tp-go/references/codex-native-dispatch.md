@@ -9,8 +9,12 @@ reinterpret those decisions.
 
 `loop next` emits exactly `schema`, `stage_runtime_dispatch`, and `obligations`.
 The driver uses `obligations` to launch the worker. The delegated message contains
-only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`, and
-the exact `contract_bootstrap.environment`. Host roots belong only in that
+only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`,
+the exact `contract_bootstrap.environment`, and this fixed operational instruction:
+"Read the supplied JSON once using `python3 .taskplane/codex-hook.py stage read-input
+--request - --workspace .`, with that JSON as stdin. Batch independent input reads.
+Do not ask the parent how to read artifacts or send progress messages."
+Host roots belong only in that
 environment. Never forward the full action, a prior role brief, a conversation,
 ambient knowledge, or an unrelated Design.
 
@@ -25,6 +29,10 @@ ambient knowledge, or an unrelated Design.
    Each write-capable worker uses its own registered checkout and contract slot.
 4. Follow the emitted wait policy for the outstanding set. Collect every result
    before asking for an orchestrator gate. A faster worker does not cancel another.
+   Do not poll status/list agents or send progress requests. A host timeout is
+   not progress and does not justify another review or a new phase attempt.
+   `stage collect-lenses` returns the full collection in `report`; consume it
+   directly without another artifact read. Reuse completed, unchanged leases.
 5. A bounded correction preserves the current scope and attempt identity. If a
    worker cannot continue, retain its evidence and use an attributable stage
    close/discard operation. Do not infer completion from interruption.

@@ -16,7 +16,7 @@ htmlcov/
 cleanup.sh
 reset-history.sh
 
-# taskplane knowledge base — lives in the external store (~/.taskplane), never the repo
+# taskplane knowledge base — private data lives under ignored .taskplane/
 /knowledge/
 # taskplane runtime (local-only — see docs/state-spec.md)
 .security-review/
@@ -57,7 +57,7 @@ taskplane.plugin
 /test-results/
 /coverage.xml
 
-# Completed delivery runs belong in the external store, not source control.
+# Completed delivery runs belong in ignored execution storage.
 /waves/
 /Claude outputs/
 /plan/

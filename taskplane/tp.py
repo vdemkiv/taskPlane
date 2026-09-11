@@ -605,22 +605,13 @@ def _host_capability_snapshot(
 
 
 def _screen_enforcement_mode(host: str) -> str:
-    """Resolve the rollback lever without guessing an undeclared host."""
+    """Harness enforcement cannot be disabled by host defaults or environment."""
     raw = os.environ.get("TASKPLANE_ENFORCE_SCREEN")
-    if raw is not None:
-        mode = str(raw).strip().lower()
-        if mode not in enforcement_kernel.MODES:
-            raise enforcement_kernel.EnforcementError(
-                "TASKPLANE_ENFORCE_SCREEN must be strict, warn, or off"
-            )
-        return mode
-    declared_claude = host == "claude" and bool(
-        os.environ.get("CLAUDE_SESSION_ID")
-        or os.environ.get("CLAUDE_CODE_VERSION")
-        or str(os.environ.get("TASKPLANE_HOST") or "").lower()
-        in {"claude", "claude-code", "cowork", "chat"}
-    )
-    return "strict" if declared_claude else "warn"
+    if raw is not None and str(raw).strip().lower() != "strict":
+        raise enforcement_kernel.EnforcementError(
+            "harness bypass is disabled; TASKPLANE_ENFORCE_SCREEN must be strict"
+        )
+    return "strict"
 
 
 def _saved_enforcement(value) -> dict | None:
@@ -649,23 +640,8 @@ def _enforcement_check(
     workspace_fp = hashlib.sha256(
         os.path.normcase(os.path.realpath(os.path.abspath(ws))).encode("utf-8")
     ).hexdigest()
-    if (
-        prior
-        and prior.get("status") == "advisory"
-        and prior.get("workspace_fingerprint") == workspace_fp
-    ):
-        return prior, None
     snapshot = _host_capability_snapshot(ws)
     mode = _screen_enforcement_mode(snapshot.host)
-    if (
-        os.environ.get("TASKPLANE_ENFORCE_SCREEN") is None
-        and prior
-        and prior.get("workspace_fingerprint") == workspace_fp
-        and (run_id is None or prior.get("run_id") == run_id)
-    ):
-        # Policy belongs to the durable run, not the process that resumes it.
-        # Reprobe liveness below; retained policy is not retained live proof.
-        mode = prior["mode"]
     # A named slot does not exist until ``new`` activates it.  Loading that
     # slot to calculate pre-activation liveness would fail closed whenever a
     # sibling contract already exists, making a second slot impossible to
@@ -696,26 +672,21 @@ def _enforcement_check(
         # because the wall clock advanced between invocations.
         decision = prior
     if advisory:
-        try:
-            decision = enforcement_kernel.acknowledge_advisory(decision, actor=str(actor or ""))
-        except enforcement_kernel.EnforcementError as exc:
-            return decision, {
-                "schema": "taskplane.enforcement-refusal/v1",
-                "error": str(exc),
-                "enforcement": decision,
-                "recovery": ["repeat with --advisory --by <human>"],
-            }
+        return decision, {
+            "schema": "taskplane.enforcement-refusal/v1",
+            "error": "harness bypass is disabled; --advisory cannot waive screen enforcement",
+            "enforcement": decision,
+            "recovery": ["restore live plugin hooks and retry without --advisory"],
+        }
     if require_live and mode == "strict" and decision["status"] == "unproven":
         recovery = (
             [
                 "run /reload-plugins, then retry this exact command",
-                "or repeat with --advisory --by <human>",
             ]
             if snapshot.host == "claude"
             and (os.environ.get("CLAUDE_CODE_VERSION") or os.environ.get("CLAUDE_SESSION_ID"))
             else [
                 "start a new host conversation and retry",
-                "or repeat with --advisory --by <human>",
             ]
         )
         return decision, {
@@ -1431,7 +1402,8 @@ def _onboard_report(ws: str) -> dict:
 # Not a harness invariant (Cowork can't intercept spend) — a stop signal for
 # `tp budget`. The kernel's action budget is the enforced ceiling.
 DEFAULT_MAX_COST_USD = 3.0
-DEFAULT_STANDALONE_REVIEW_MAX_TOKENS = 25_000_000
+DEFAULT_STANDALONE_REVIEW_MAX_TOKENS = 1_000_000
+DEFAULT_LENS_MAX_TOKENS = 100_000
 
 
 def _standalone_review_budget(max_tokens: int | None) -> dict:
@@ -1678,6 +1650,10 @@ def cmd_session_verify(a) -> int:
         event = event if isinstance(event, dict) else {}
     except Exception:
         event = {}
+    ws = _workspace(getattr(a, "workspace", None) or event.get("cwd"))
+    if reason := _budget_stop_reason(ws, tp.load_active_for_event(ws, event), event):
+        _emit_budget_stop(reason)
+        return 0
     submission = _submission_stop_check(event, workspace=getattr(a, "workspace", None))
     if submission and submission.get("block"):
         _emit_submission_stop_block("Stop", submission)
@@ -2630,6 +2606,9 @@ def cmd_subagent_stop(a) -> int:
                 print("{}")
                 return 0
         except Exception as exc:
+            if reason := _budget_stop_reason(ws, lifecycle_contract, event):
+                _emit_budget_stop(reason)
+                return 0
             _emit_submission_stop_block(
                 "SubagentStop",
                 {
@@ -2640,6 +2619,9 @@ def cmd_subagent_stop(a) -> int:
                 },
             )
             return 2
+    if reason := _budget_stop_reason(ws, lifecycle_contract, event):
+        _emit_budget_stop(reason)
+        return 0
     try:
         import loop as _loop_runtime
 
@@ -3467,6 +3449,66 @@ def _hook_usage_provider(event: dict) -> str:
     return "codex" if str(event.get("task_name") or "").strip() else "claude"
 
 
+def _budget_provider(event: dict) -> str:
+    if any(event.get(key) for key in ("provider", "host", "task_name")):
+        return _hook_usage_provider(event)
+    return "codex" if "turn_id" in event else "claude"
+
+
+def _budget_transcript(ws: str, contract: dict, event: dict, provider: str) -> str | None:
+    """Use the bound worker's counter, never a parent transcript fallback."""
+    if provider == "codex" and contract.get("worker_scoped"):
+        from taskplane import codex_identity
+
+        return codex_identity.active_transcript(ws, contract, event)
+    import spend
+
+    return spend.event_transcript(event)
+
+
+def _budget_stop_reason(ws: str, contract: dict | None, event: dict) -> str | None:
+    """A spent worker must be allowed to stop, even with unfinished output."""
+    if not contract or not (contract.get("budget") or {}).get("token_usage_required"):
+        return None
+    if event.get("agent_id") and not (
+        contract.get("worker_scoped") or contract.get("bootstrap_action_id")
+    ):
+        # An unrelated child's Stop must not consume the root's budget.
+        return None
+    import spend
+
+    try:
+        provider = _budget_provider(event)
+        path = _budget_transcript(ws, contract, event, provider)
+        projection = _bounded_transcript_projection(ws, path, provider) if path else {}
+        if projection.get("status") != "available":
+            return (
+                "Token usage unavailable; pause for human review. Do not retry or launch workers."
+            )
+        ok, reason = spend.status(contract, int(projection["usage"]["total_tokens"]))
+        if not ok:
+            return reason
+        used = _meter_load(ws, strict=True).get(contract["task_id"], {}).get("actions", 0)
+        ok, reason = tp.budget_status(contract, used, reserve=0, closing=True)
+        return None if ok else reason
+    except Exception as exc:
+        return f"Budget meter unavailable ({type(exc).__name__}); pause for human review."
+
+
+def _emit_budget_stop(reason: str) -> None:
+    # Stop decision:block/exit 2 means "continue generating" in Codex.
+    # Preserve the failed gate without requesting another model turn.
+    print(
+        json.dumps(
+            {
+                "continue": False,
+                "stopReason": reason,
+                "systemMessage": "TaskPlane paused: " + reason,
+            }
+        )
+    )
+
+
 def _seal_terminal_dispatch_telemetry(
     ws: str, contract: dict, event: dict, *, outcome: str
 ) -> dict:
@@ -3917,6 +3959,14 @@ def _screen(a) -> int:
             return 0
         bootstrap = None
     if bootstrap is not None:
+        # Bootstrap is an action by the existing owner too. A signed child
+        # lease must not provide an escape from an exhausted parent budget.
+        parent = tp.load_active_for_event(ws, event)
+        if reason := _budget_stop_reason(ws, parent, event):
+            print(json.dumps({"decision": "block", "reason": reason}))
+            return 0
+        if parent:
+            _meter_bump(ws, parent["task_id"], "actions")
         ws = str(bootstrap.pop("workspace", ws))
         contract = _activate_visible_review_bootstrap(ws, **bootstrap)
         tp.trace(
@@ -4063,11 +4113,90 @@ def _screen(a) -> int:
             )
         )
         return 0
-    # INSPECTION MUST NOT COST. A stuck agent should still be able to say why
-    # it is stuck. These commands read and print; none of them changes a
-    # contract, a budget, or a ledger, so neither the ceiling nor the meter
-    # has anything to protect against them. `clear` is NOT among them — see
-    # _RELEASE_VERBS for why.
+    # TOKEN CEILING — one selected, incremental transcript projection feeds
+    # both contract enforcement and native telemetry.  It is never parsed
+    # twice and never reads more than the 64 MiB design bound per action.
+    _tpath = None
+    _token_denial = None
+    _projection = None
+    _budget = contract.get("budget") or {}
+    _token_ceiling = _budget.get("max_tokens") is not None
+    _telemetry_task_id = _contract_dispatch_task_id(contract)
+    _telemetry_consumer = _dispatch_usage_observation_required(ws, _telemetry_task_id)
+    if _token_ceiling or _telemetry_consumer:
+        try:
+            import spend as _spend
+
+            _provider = _budget_provider(event)
+            _tpath = _budget_transcript(ws, contract, event, _provider)
+            _projection = (
+                _bounded_transcript_projection(ws, _tpath, _provider)
+                if _tpath
+                else {
+                    "status": "unavailable",
+                    "reason": "host transcript path is unavailable",
+                }
+            )
+            if _projection.get("status") == "available":
+                _observed_tokens = int((_projection.get("usage") or {})["total_tokens"])
+                _tok_ok, _tok_why = _spend.status(contract, _observed_tokens)
+                if not _tok_ok:
+                    _token_denial = (_tok_why, _observed_tokens)
+            elif bool(_budget.get("token_usage_required")):
+                _token_denial = (
+                    "TOKEN BUDGET telemetry unavailable — "
+                    + str(_projection.get("reason") or "host token totals are unavailable"),
+                    None,
+                )
+        except Exception as exc:
+            if bool(_budget.get("token_usage_required")):
+                _token_denial = (
+                    "TOKEN BUDGET telemetry unavailable — " + f"{type(exc).__name__}: {exc}",
+                    None,
+                )
+    # Dispatch telemetry consumes the exact same normalized projection.
+    # Its absence never creates a positive budget claim.
+    if (
+        _telemetry_consumer
+        and _tpath
+        and isinstance(_projection, dict)
+        and _projection.get("status") == "available"
+    ):
+        try:
+            import loop as _loop_runtime
+
+            _native_task_name = str(
+                ((contract.get("worker_lifecycle") or {}).get("expected_task_name") or "")
+            ).strip()
+            _loop_runtime.record_observed_dispatch_usage(
+                ws,
+                task_id=_telemetry_task_id,
+                normalized_usage=_normalized_dispatch_projection(_projection),
+                source_fingerprint=str(_projection["source_fingerprint"]),
+                native_task_name=_native_task_name,
+                dispatch_id=(_contract_dispatch_intent_id(contract) or None),
+            )
+        except Exception:
+            pass
+    from taskplane import run_context
+
+    if _token_denial is not None and (
+        bool(_budget.get("token_usage_required")) or not run_context.resource_limits_advisory(ws)
+    ):
+        _tok_why, _effective = _token_denial
+        # A broken meter must fail closed, but it must not hide a more
+        # specific authority boundary.  Preserve the contract's direct
+        # tool/command refusal when both checks deny the same action.
+        _contract_allows, _contract_why = tp.screen_tool(contract, tool_name, tool_input, ws)
+        if not _contract_allows:
+            _tok_why = _contract_why
+        _meter_bump(ws, tid, "denies")
+        tp.trace(ws, "token_budget_deny", tool=tool_name, effective=_effective)
+        print(json.dumps({"decision": "block", "reason": f"taskplane contract {tid}: {_tok_why}"}))
+        return 0
+
+    # Recovery/inspection remain exempt from the action quota, but never
+    # from the token ceiling: reading status still triggers model inference.
     if _is_release_command(command):
         # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
         #
@@ -4091,95 +4220,15 @@ def _screen(a) -> int:
             pass
         return 0  # abstain: not metered, not denied
 
-    # TOKEN CEILING — one selected, incremental transcript projection feeds
-    # both contract enforcement and native telemetry.  It is never parsed
-    # twice and never reads more than the 64 MiB design bound per action.
-    if not _is_release_command(command):
-        _tpath = None
-        _token_denial = None
-        _projection = None
-        _budget = contract.get("budget") or {}
-        _token_ceiling = _budget.get("max_tokens") is not None
-        _telemetry_task_id = _contract_dispatch_task_id(contract)
-        _telemetry_consumer = _dispatch_usage_observation_required(ws, _telemetry_task_id)
-        if _token_ceiling or _telemetry_consumer:
-            try:
-                import spend as _spend
-
-                _tpath = _spend.event_transcript(event)
-                _provider = "codex" if "turn_id" in event else "claude"
-                _projection = (
-                    _bounded_transcript_projection(ws, _tpath, _provider)
-                    if _tpath
-                    else {
-                        "status": "unavailable",
-                        "reason": "host transcript path is unavailable",
-                    }
-                )
-                if _projection.get("status") == "available":
-                    _observed_tokens = int((_projection.get("usage") or {})["total_tokens"])
-                    _tok_ok, _tok_why = _spend.status(contract, _observed_tokens)
-                    if not _tok_ok:
-                        _token_denial = (_tok_why, _observed_tokens)
-                elif bool(_budget.get("token_usage_required")):
-                    _token_denial = (
-                        "TOKEN BUDGET telemetry unavailable — "
-                        + str(_projection.get("reason") or "host token totals are unavailable"),
-                        None,
-                    )
-            except Exception as exc:
-                if bool(_budget.get("token_usage_required")):
-                    _token_denial = (
-                        "TOKEN BUDGET telemetry unavailable — " + f"{type(exc).__name__}: {exc}",
-                        None,
-                    )
-        # Dispatch telemetry consumes the exact same normalized projection.
-        # Its absence never creates a positive budget claim.
-        if (
-            _telemetry_consumer
-            and _tpath
-            and isinstance(_projection, dict)
-            and _projection.get("status") == "available"
-        ):
-            try:
-                import loop as _loop_runtime
-
-                _native_task_name = str(
-                    ((contract.get("worker_lifecycle") or {}).get("expected_task_name") or "")
-                ).strip()
-                _loop_runtime.record_observed_dispatch_usage(
-                    ws,
-                    task_id=_telemetry_task_id,
-                    normalized_usage=_normalized_dispatch_projection(_projection),
-                    source_fingerprint=str(_projection["source_fingerprint"]),
-                    native_task_name=_native_task_name,
-                    dispatch_id=(_contract_dispatch_intent_id(contract) or None),
-                )
-            except Exception:
-                pass
-        from taskplane import run_context
-
-        if _token_denial is not None and not run_context.resource_limits_advisory(ws):
-            _tok_why, _effective = _token_denial
-            # A broken meter must fail closed, but it must not hide a more
-            # specific authority boundary.  Preserve the contract's direct
-            # tool/command refusal when both checks deny the same action.
-            _contract_allows, _contract_why = tp.screen_tool(contract, tool_name, tool_input, ws)
-            if not _contract_allows:
-                _tok_why = _contract_why
-            _meter_bump(ws, tid, "denies")
-            tp.trace(ws, "token_budget_deny", tool=tool_name, effective=_effective)
-            print(
-                json.dumps({"decision": "block", "reason": f"taskplane contract {tid}: {_tok_why}"})
-            )
-            return 0
-
     ok, reason = tp.budget_status(
         contract, used, reserve=_CLOSING_RESERVE, closing=_is_closing_command(command)
     )
     from taskplane import run_context
 
-    if not ok and not run_context.resource_limits_advisory(ws):
+    if not ok and (
+        bool((contract.get("budget") or {}).get("token_usage_required"))
+        or not run_context.resource_limits_advisory(ws)
+    ):
         _meter_bump(ws, tid, "denies")
         tp.trace(
             ws,
@@ -4196,6 +4245,32 @@ def _screen(a) -> int:
                 }
             )
         )
+        return 0
+
+    native_tool = tool_name.rsplit(".", 1)[-1].rsplit("__", 1)[-1]
+    if native_tool in {
+        "wait_agent",
+        "wait_threads",
+        "list_agents",
+        "send_message",
+        "followup_task",
+        "spawn_agent",
+        "interrupt_agent",
+    }:
+        reason = None
+        if contract.get("read_only"):
+            reason = "lens workers must read their scoped input, write the result and finish; no coordination"
+        elif native_tool == "wait_agent" and int(tool_input.get("timeout_ms", 30000)) < 60000:
+            reason = (
+                "short polling is disabled; wait for completion/attention with timeout_ms=60000"
+            )
+        elif native_tool == "list_agents":
+            reason = "progress polling is disabled; use the completion/attention event wait"
+        if reason:
+            _meter_bump(ws, tid, "denies")
+            print(json.dumps({"decision": "block", "reason": "taskplane: " + reason}))
+        else:
+            _meter_bump(ws, tid, "actions")
         return 0
 
     # OBLIGATION → PROHIBITION. A hook can deny an action; it cannot compel
@@ -6460,13 +6535,13 @@ def cmd_context(a) -> int:
 
     ws = _workspace(a.workspace)
     print(
-        "[taskplane] On the first TaskPlane request in this session, and "
-        "after installation or update, run onboard and present its setup "
-        "dashboard before routing any intent (including review, status, "
-        "and help). Existing repository context is not completed onboarding. "
-        "Keep the requested goal and continue it when setup is ready. "
-        "Internal stage workers consume their sealed startup without "
-        "repeating this user-entry setup."
+        "[taskplane] On the first TaskPlane request, check readiness with onboard --json. "
+        "Present setup once at initial onboarding. A ready workspace continues directly; "
+        "do not repeat its onboarding visualization for new tasks, phases, resumed "
+        "sessions or plugin updates. Check readiness silently after an update and "
+        "reopen setup only for missing prerequisites or an explicit setup/settings "
+        "request. Preserve the requested goal and current run. Internal stage workers "
+        "consume their sealed startup without repeating user-entry setup."
     )
     lifecycle_released = []
     terminal_recovery = None
@@ -6608,6 +6683,8 @@ def _hook_response_class(command: str, output: str, returncode: int) -> str:
         return "advisory"
     hook_output = payload.get("hookSpecificOutput")
     hook_output = hook_output if isinstance(hook_output, dict) else {}
+    if command in {"subagent-stop", "session-verify"} and payload.get("continue") is False:
+        return "stop"
     if payload.get("decision") == "block" or hook_output.get("permissionDecision") == "deny":
         return "block"
     if "additionalContext" in hook_output:
@@ -6621,6 +6698,9 @@ def _hook_response_class(command: str, output: str, returncode: int) -> str:
 
 def _replay_hook_response(command: str, response_class: str) -> int:
     """Replay protocol semantics without replaying a hook's side effects."""
+    if response_class == "stop" and command in {"subagent-stop", "session-verify"}:
+        _emit_budget_stop("The original budget stop remains in effect; human approval is required.")
+        return 0
     if response_class in {"block", "error"}:
         reason = (
             "taskplane already processed this lifecycle event; the "
@@ -7454,14 +7534,18 @@ def _activate_visible_review_bootstrap(
         parent_budget = ((parent or {}).get("budget") if isinstance(parent, dict) else {}) or {}
         inherited = parent_budget.get("max_tokens")
         producer_budget = _standalone_review_budget(
-            int(inherited)
+            min(int(inherited), DEFAULT_LENS_MAX_TOKENS)
             if isinstance(inherited, int) and not isinstance(inherited, bool)
-            else None
+            else DEFAULT_LENS_MAX_TOKENS
         )
         contract = tp.activate_review_contract_action(workspace, action, **expected)
         active_path = tp.active_contract_path(workspace, task_slot)
         try:
             contract["budget"].update(producer_budget)
+            _apply_contract_token_ceiling(contract, producer_budget["max_tokens"])
+            contract["budget"]["max_actions"] = min(
+                int(contract["budget"].get("max_actions", 8)), 8
+            )
             tp.atomic_write_json(active_path, contract, sort_keys=True)
         except Exception:
             # Never leave the just-created producer active without the token
@@ -10076,7 +10160,7 @@ def main(argv=None) -> int:
         "the PR's title, body and discussion)",
     )
     n.add_argument(
-        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     n.add_argument(
         "--by",
@@ -10315,7 +10399,7 @@ def main(argv=None) -> int:
         "archived first — without this flag re-init refuses)",
     )
     li.add_argument(
-        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     li.add_argument(
         "--by",
@@ -10342,7 +10426,7 @@ def main(argv=None) -> int:
         "workflow_available() (default)",
     )
     ln.add_argument(
-        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     ln.add_argument("--by", default=None, help="human identity required with --advisory")
     lw = lsub.add_parser("wave", help="print the EXECUTE wave: one brief per scope-disjoint task")
@@ -10358,7 +10442,7 @@ def main(argv=None) -> int:
         "'auto' consults workflow_available() (default)",
     )
     lw.add_argument(
-        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     lw.add_argument("--by", default=None, help="human identity required with --advisory")
     lc = lsub.add_parser("claim", help="a worker claims one wave task into its own worktree")
@@ -10369,7 +10453,7 @@ def main(argv=None) -> int:
         help="the worker's worktree — its contract activates there",
     )
     lc.add_argument(
-        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     lc.add_argument("--by", default=None, help="human identity required with --advisory")
     lg = lsub.add_parser("gate", help="orchestrator-only: judge the evidence and advance the loop")
@@ -10380,7 +10464,7 @@ def main(argv=None) -> int:
         "--req", help="attach requirement R-id to the loop before DoR evaluation (design anchor)"
     )
     lg.add_argument(
-        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     lg.add_argument("--by", default=None, help="human identity required with --advisory")
     lsu = lsub.add_parser(
@@ -10405,7 +10489,7 @@ def main(argv=None) -> int:
     la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     la.add_argument("--force", action="store_true", help="pass a BLOCKED refinement gate anyway")
     la.add_argument(
-        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     lr = lsub.add_parser(
         "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort"
@@ -11117,7 +11201,7 @@ def main(argv=None) -> int:
         help="resume or deterministically name the repository preflight run",
     )
     rvs.add_argument(
-        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     rvs.add_argument("--by", default=None, help="human identity required with --advisory")
     rvs.set_defaults(fn=cmd_review)
@@ -11138,7 +11222,7 @@ def main(argv=None) -> int:
     )
     rvr.add_argument("--by", required=True, help="the user's approving/cancelling chat identity")
     rvr.add_argument(
-        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     rvr.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvr.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
@@ -11235,7 +11319,7 @@ def main(argv=None) -> int:
     rvsg.add_argument("--run-id", default=None, help="select the collected review run")
     rvsg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvsg.add_argument(
-        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
+        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
     )
     rvsg.set_defaults(fn=cmd_review)
     rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)

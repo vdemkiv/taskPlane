@@ -149,10 +149,11 @@ At a human gate, STOP after showing the widget or dashboard artifact. Widget
 buttons can drive the next prompt where supported; otherwise ask for the same
 explicit approval in conversation. Never run the loop silently.
 
-0. **Onboarding:** Follow the facade's onboarding sequence before the first
-   TaskPlane request in a host session and after every install or update,
-   including in an existing repository. FIRST run `$TP onboard --json` and
-   present `$TP onboard`; retain the user's request and continue it when ready.
+0. **Onboarding:** Follow the facade's one-time setup sequence. Check readiness
+   with `$TP onboard --json`; a ready workspace continues without another setup
+   visualization. Present `$TP onboard` only for initial setup, a missing
+   prerequisite, or an explicit setup/settings request. Tasks, phases, resumed
+   sessions, and updates do not reset completed setup. Retain the user's goal.
    For an existing run, use `$TP loop resume` first. It reads durable scope
    without dispatch, lifecycle effects, an advisory waiver or a session receipt.
    Follow `resume_run` even when `ready` is false; `loop next` separately

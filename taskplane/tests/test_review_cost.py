@@ -68,6 +68,13 @@ class _WS(unittest.TestCase):
         self._codex_home = os.environ.get("CODEX_HOME")
         self._codex_thread = os.environ.get("CODEX_THREAD_ID")
         self._canonical_host_root = rv._canonical_host_root
+        # These CLI-cost fixtures exercise a host with confirmed hooks.
+        # Unproven/bypass refusal is covered by enforcement integration tests.
+        from taskplane.tests.test_enforcement_integration import _snapshot
+        capability = mock.patch.object(cli, "_host_capability_snapshot",
+            side_effect=lambda ws, install_context=None: _snapshot(ws, live=True))
+        capability.start()
+        self.addCleanup(capability.stop)
 
     def tearDown(self):
         if self._home is None:
@@ -476,11 +483,11 @@ class TokenBudget(unittest.TestCase):
         ok, why = spend.status({"budget": {"max_tokens": 100}}, 100)
         self.assertFalse(ok)
         self.assertIn("TOKEN BUDGET exhausted", why)
-        self.assertIn("--grant-tokens", why)
-        self.assertIn("OUTSIDE this workspace", why)
+        self.assertIn("Ask the user to approve", why)
+        self.assertIn("do not retry", why)
 
-    def test_an_unreadable_ceiling_is_ignored_not_enforced(self):
-        self.assertTrue(spend.status({"budget": {"max_tokens": "lots"}},
+    def test_an_unreadable_ceiling_fails_closed(self):
+        self.assertFalse(spend.status({"budget": {"max_tokens": "lots"}},
                                      10 ** 9)[0])
 
     def test_it_names_what_an_action_actually_cost(self):
@@ -543,13 +550,12 @@ class TokenCeilingThroughTheScreener(_WS):
         self.assertIn("every shell command tool is blocked", why)
         self.assertNotIn("TOKEN BUDGET exhausted", why)
 
-    def test_inspection_is_still_free_even_over_the_ceiling(self):
-        """A run that cannot report why it stopped is worse than one that
-        overspends by one status call."""
+    def test_inspection_cannot_bypass_the_token_ceiling(self):
+        """Status is action-exempt but its model round trip still costs tokens."""
         tr = self._contract_with(1)
         for cmd in ("tp status", "tp contracts", "tp ack --status"):
             with self.subTest(cmd):
-                self.assertEqual(self._screen(cmd, tr)[0], "abstain")
+                self.assertEqual(self._screen(cmd, tr)[0], "block")
 
 
 if __name__ == "__main__":

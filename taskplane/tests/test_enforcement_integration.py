@@ -1,6 +1,7 @@
 """R-0003 t03: entry, stage, gate, status, and projection integration."""
 from __future__ import annotations
 
+import pytest
 import json
 import os
 import subprocess
@@ -99,32 +100,37 @@ def test_live_entry_uses_one_snapshot_and_projects_same_evidence(
         contract["enforcement"]["evidence_id"]
 
 
-def test_advisory_requires_by_and_is_persisted_on_loop_and_dashboard(
-        monkeypatch, tmp_path, capsys):
+def test_advisory_cannot_bypass_hook_evidence(monkeypatch, tmp_path, capsys):
     workspace = _strict(monkeypatch, tmp_path, live=False)
     args = ["loop", "--workspace", workspace, "init", "goal",
             "--req", "R-0001", "--advisory"]
-
-    assert cli.main(args) == 1
-    assert loop.load(workspace) is None
-    capsys.readouterr()
-    assert cli.main(args + ["--by", "Dana"] ) == 0
-    payload = json.loads(capsys.readouterr().out)
-    state = loop.load(workspace)
-    decision = state["enforcement"]["current"]
-
-    assert payload["enforcement"]["evidence_id"] == decision["evidence_id"]
-    assert decision["status"] == "advisory"
-    assert decision["advisory"]["actor"] == "Dana"
-    status = loop.status(workspace)
-    assert status["enforcement"]["current"]["evidence_id"] == \
-        decision["evidence_id"]
-    rendered = dashboard.widget(workspace)
-    assert "screen enforcement: advisory" in rendered
-    assert "acknowledged by Dana" in rendered
+    for identity in ([], ["--by", "Dana"]):
+        assert cli.main(args + identity) == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert "harness bypass is disabled" in payload["error"]
+        assert loop.load(workspace) is None
 
 
-def test_mid_run_loss_blocks_gate_until_explicit_advisory(
+def test_saved_advisory_cannot_bypass_fresh_hook_check(monkeypatch, tmp_path):
+    workspace = _strict(monkeypatch, tmp_path, live=False)
+    base, _ = cli._enforcement_check(workspace)
+    saved = cli.enforcement_kernel.acknowledge_advisory(base, actor="Dana")
+    decision, refusal = cli._enforcement_check(workspace, saved=saved)
+    assert refusal and decision["status"] == "unproven"
+    assert decision["mode"] == "strict"
+
+
+def test_every_host_requires_strict_enforcement(monkeypatch):
+    monkeypatch.delenv("TASKPLANE_ENFORCE_SCREEN", raising=False)
+    for host in ("codex", "claude", "unknown"):
+        assert cli._screen_enforcement_mode(host) == "strict"
+    for mode in ("off", "warn"):
+        monkeypatch.setenv("TASKPLANE_ENFORCE_SCREEN", mode)
+        with pytest.raises(cli.enforcement_kernel.EnforcementError, match="bypass is disabled"):
+            cli._screen_enforcement_mode("codex")
+
+
+def test_mid_run_loss_still_blocks_gate_with_explicit_advisory(
         monkeypatch, tmp_path, capsys):
     workspace = _strict(monkeypatch, tmp_path, live=True)
     initialized = loop.init(workspace, "goal", requirement_id="R-0001", by="Dana")
@@ -150,12 +156,10 @@ def test_mid_run_loss_blocks_gate_until_explicit_advisory(
     assert refused["enforcement"]["status"] == "unproven"
     assert called["gate"] == 0
 
-    assert cli.main(base + ["--advisory", "--by", "Dana"]) == 0
-    accepted = json.loads(capsys.readouterr().out)
-    assert called["gate"] == 1
-    assert accepted["enforcement"]["status"] == "advisory"
-    assert loop.load(workspace)["enforcement"]["current"]["advisory"][
-        "actor"] == "Dana"
+    assert cli.main(base + ["--advisory", "--by", "Dana"]) == 1
+    refused = json.loads(capsys.readouterr().out)
+    assert called["gate"] == 0
+    assert "harness bypass is disabled" in refused["error"]
 
 
 def test_runtime_projection_retains_exact_authority_identity(

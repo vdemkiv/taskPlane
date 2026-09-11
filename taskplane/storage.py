@@ -615,8 +615,9 @@ def load_workspace_locator(checkout: str) -> dict | None:
         with open(path, encoding="utf-8") as handle:
             value = json.load(handle)
     except FileNotFoundError:
-        if selection and selection.get("previous_binding"):
-            raise StorageIdentityError("selected storage's previous locator is missing")
+        # The selection's archived preflight and original manifest were verified
+        # above. Archiving a later run may remove the active locator without
+        # removing that history guard or granting any successor stage authority.
         return None
     except (OSError, ValueError) as exc:
         raise StorageIdentityError(f"workspace locator is unreadable: {exc}")

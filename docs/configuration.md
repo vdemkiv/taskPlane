@@ -51,17 +51,18 @@ been imported yet.
 
 ## Store and state
 
-The default external home uses the hybrid layout documented in
+The default project home is `<project>/.taskplane/`, using the layout documented in
 [`storage-and-repositories.md`](storage-and-repositories.md): repository
 identity/mirrors/worktrees, per-repository knowledge, per-run private state and
 artifacts, and content-addressed graph cache are distinct roots. The source
-checkout is never an artifact directory. Team/enterprise knowledge may still
+checkout's runtime data stays in that ignored subtree, with separate roots for
+source worktrees, run state, and evidence. Team/enterprise knowledge may still
 be deliberately shared under `.taskplane-kb/knowledge/`.
 
 | Variable | Default | Effect | Enforcement-relevant |
 | --- | --- | --- | --- |
-| `TASKPLANE_STORE` | *(unset)* | Highest-precedence store override: `repo` forces the in-repo shared store (`.taskplane-kb/` — used by Claude Tag so state survives the ephemeral sandbox), `external` forces the external store. Overrides plan, private mode, and shared config (see `docs/state-spec.md`, "Store resolution"). | **Yes** — silently redirects the entire knowledge store, including loop state and worker-submission evidence, into (or out of) the committed repo. |
-| `TASKPLANE_HOME` | `~/.taskplane` | Moves the external store root (all per-project knowledge on a personal plan). `tp kb where` shows the resolved path. | **Yes** — a wrong value redirects the whole knowledge store; the KB, decisions, and loop state follow it. |
+| `TASKPLANE_STORE` | *(unset)* | Highest-precedence sharing override: `repo` forces the shared `.taskplane-kb/` store; the compatibility value `external` selects the private store beneath the resolved execution home, which defaults to the project's ignored `.taskplane/`. Overrides plan, private mode, and shared config. | **Yes** — changes where knowledge and coordination state are stored; it does not relocate an existing run's execution binding. |
+| `TASKPLANE_HOME` | `<project>/.taskplane` | Explicit storage-root override. A bound run retains its recorded home and rejects conflicting settings. `tp kb where` shows the resolved path. | **Yes** — the KB, decisions, evidence, and loop state must retain one validated storage binding. |
 | `TASKPLANE_LOCALE` | *(unset; then `LC_ALL`, `LC_MESSAGES`, `LANG`, finally English)* | Selects the deterministic BCP 47 locale used for dashboard messages, plural rules, and grapheme-safe visible text. Values such as `fr-CA` fall back through `fr` to English when a catalog is absent; malformed values and `C`/`POSIX` resolve to English. | No — it changes presentation only; stored evidence, identifiers, gates, and authority remain unchanged. |
 
 ## Contract lifecycle (the hook's wall)

@@ -2182,20 +2182,20 @@ def _root_admission_projection(
     meter = checked.get("meter")
     reason_code = None
     total = None
-    if checked["sticky"]:
+    if checked["sticky"] and checked["reason_code"] != "root_budget_reached":
         reason_code = str(checked["reason_code"])
     elif not isinstance(meter, Mapping) or meter.get("status") != "available":
         reason_code = "root_usage_unavailable"
     else:
         total = int(meter["usage"]["total_tokens"])
-        if total >= int(checked["policy"]["root_budget_tokens"]):
-            reason_code = "root_budget_reached"
-        elif checked["policy"]["resume"] == "forbidden" and meter.get("resumed") is not False:
+        if checked["policy"]["resume"] == "forbidden" and meter.get("resumed") is not False:
             reason_code = "root_resume_forbidden"
         elif int(meter["first_observed_input_tokens"]) > int(
             checked["policy"]["seed_budget_tokens"]
         ):
             reason_code = "root_seed_budget_exceeded"
+        elif checked["sticky"] or total >= int(checked["policy"]["root_budget_tokens"]):
+            reason_code = "root_budget_reached"
     projection = {
         "schema": ROOT_ADMISSION_PROJECTION_SCHEMA,
         "dispatch_allowed": reason_code is None,
@@ -2680,7 +2680,9 @@ def _screen_dispatch_projection(
             else "The root-session admission boundary is closed; active workers "
             "may terminalize but no new task was started."
         )
-        if isinstance(ledger, MutableMapping) and not resource_limits_advisory:
+        if isinstance(ledger, MutableMapping) and (
+            not resource_limits_advisory or reason_code != "root_budget_reached"
+        ):
             state = ledger.get("root_admission")
             if isinstance(state, MutableMapping) and not state.get("sticky"):
                 state["sticky"] = True
@@ -2722,14 +2724,16 @@ def _screen_dispatch_projection(
         "wave_usage": reconciled_wave_usage,
         "checkpoint": None,
     }
-    if resource_limits_advisory and (
-        root_admission is None
-        or root_admission["reason_code"]
-        in {None, "root_usage_unavailable", "root_budget_reached", "root_seed_budget_exceeded"}
+    if (
+        resource_limits_advisory
+        and budget.get("measurement_status") != "unavailable"
+        and not terminal_unavailable
+        and (
+            root_admission is None or root_admission["reason_code"] in {None, "root_budget_reached"}
+        )
     ):
-        # Authenticated ledger/root admission was validated above. Keep every
-        # measurement, triggered ceiling and budget claim; only its enforcement
-        # is advisory. Session/identity/custody refusals are not resource limits.
+        # Budget approval relaxes measured spending caps only. Missing usage,
+        # context hygiene and native identity still require valid evidence.
         result.update(status="advisory", dispatch_allowed=True)
     if not result["dispatch_allowed"]:
         result["checkpoint"] = _scope_review_checkpoint(

@@ -218,7 +218,7 @@ def test_actual_root_hook_opens_next_seed_with_continuous_sequence(
 
 
 
-def test_resumed_unknown_over_seed_or_binding_mismatch_refuses_and_override_is_attributed_nonconformance(
+def test_resumed_or_foreign_root_refuses_and_explicit_override_cannot_bypass(
         tmp_path: Path) -> None:
     _, prepared, _ = _prepared(tmp_path)
     settings = load_settings()
@@ -241,17 +241,13 @@ def test_resumed_unknown_over_seed_or_binding_mismatch_refuses_and_override_is_a
             str(tmp_path), host_start_receipt=start,
             first_observation=resumed, observation_authority=AUTHORITY)
 
-    overridden = loop.open_delivery_wave(
-        str(tmp_path), host_start_receipt=start,
-        first_observation=resumed, observation_authority=AUTHORITY,
-        override={"by": "human:operator", "reason": "diagnostic only"})
-    assert overridden["conformance"] == "overridden"
-    assert overridden["canary_eligible"] is False
-    assert overridden["override"]["by"] == "human:operator"
+    with pytest.raises(ValueError, match="overrides are disabled"):
+        loop.open_delivery_wave(
+            str(tmp_path), host_start_receipt=start,
+            first_observation=resumed, observation_authority=AUTHORITY,
+            override={"by": "human:operator", "reason": "diagnostic only"})
+    assert loop.load(str(tmp_path))["root_hygiene"] == prepared_state
 
-    state = loop.load(str(tmp_path))
-    state["root_hygiene"] = prepared_state
-    save_component_workflow(str(tmp_path), state)
     foreign = dict(start, wave_id="W2")
     with pytest.raises(ValueError, match="unauthentic|binding"):
         loop.open_delivery_wave(
@@ -326,3 +322,50 @@ def test_missing_zero_malformed_foreign_or_resumed_native_evidence_refuses_befor
     root = loop.load(str(tmp_path))["root_hygiene"]
     assert root["status"] == "prepared"
     assert "meter" not in root
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("missing", "root_usage_unavailable"),
+    ("resumed", "root_resume_forbidden"),
+    ("oversized", "root_seed_budget_exceeded"),
+    ("oversized-and-over-budget", "root_seed_budget_exceeded"),
+    ("measured-budget", "root_budget_reached"),
+])
+def test_budget_approval_cannot_override_root_integrity(tmp_path, case, reason):
+    from taskplane.delivery_ports import FakeClock
+    policy = load_settings().workflow.root_session.to_dict()
+    ledger = dispatch_telemetry.new_ledger(
+        run_id="run-root-public", source_sha="a" * 40,
+        design_fingerprint="b" * 64, plan_fingerprint="c" * 64, started_at=0)
+    if case == "measured-budget":
+        # The actual root hook also records the native binding's measured usage.
+        from taskplane.tests.test_r0013_native_budget import _dispatch, _usage
+        dispatch_telemetry.bind_dispatch(ledger, _dispatch("measured-root"),
+            usage=_usage(), source_fingerprint="d" * 64)
+    dispatch_telemetry.configure_root_admission(
+        ledger, root_session_settings=policy, settings_digest=load_settings().digest)
+    if case != "missing":
+        total = (policy["root_budget_tokens"] + 1 if case == "oversized-and-over-budget"
+                 else policy["seed_budget_tokens"] + 2 if case == "oversized" else 12)
+        first = native_session_meter.seal_root_observation(
+            _write_root(tmp_path / "root.jsonl", total=total, sequence=1,
+                        resumed=case == "resumed"),
+            sequence=1, session_role="root", status_receipt_fingerprint="a" * 64,
+            authority=AUTHORITY)
+        observations = [first]
+        if case == "measured-budget":
+            observations.append(native_session_meter.seal_root_observation(
+                _write_root(tmp_path / "root.jsonl", total=policy["root_budget_tokens"] + 1,
+                            sequence=2), sequence=2, session_role="root",
+                status_receipt_fingerprint="a" * 64, authority=AUTHORITY))
+        meter = native_session_meter.fold_root_observations(observations, authority=AUTHORITY)
+        dispatch_telemetry.record_root_meter(ledger, meter, observation_authority=AUTHORITY)
+    screen = dispatch_telemetry.screen_dispatch(
+        ledger, FakeClock(wall_time=10), current_stage="build",
+        outstanding_set_fingerprint="b" * 64, preserved_context_fingerprint="c" * 64,
+        observation_authority=AUTHORITY, resource_limits_advisory=True)
+    assert screen["root_admission"]["reason_code"] == reason
+    assert screen["dispatch_allowed"] is (case == "measured-budget")
+    if case != "measured-budget":
+        assert screen["checkpoint"] is not None
+        assert ledger["root_admission"]["sticky"] is True

@@ -2,7 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|str_replace|Bash|BashOutput|apply_patch|.*(write|edit|patch|delete|remove|rename|move|create|upload|execute|run|shell|command).*",
+        "matcher": ".*",
         "hooks": [
           {
             "type": "command",

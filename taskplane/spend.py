@@ -449,18 +449,16 @@ def status(contract: dict, spent: int) -> tuple:
     try:
         cap = int(cap)
     except (TypeError, ValueError):
-        return True, "unreadable token ceiling — ignored"
+        return False, "TOKEN BUDGET ceiling is unreadable; human review required"
     if cap <= 0:
-        return True, "no token ceiling set"
+        return False, "TOKEN BUDGET ceiling must be positive; human review required"
     if spent >= cap:
         return False, (
             f"TOKEN BUDGET exhausted ({spent:,}/{cap:,} native tokens) — "
             f"STOP. This per-pickup ceiling uses the host's cumulative native "
-            f"counter rather than a reconstructed estimate. A "
-            f"human raises it from OUTSIDE this workspace: `tp.py budget "
-            f"--grant-tokens N --workspace <ws>`, or ends the task with "
-            f"`tp.py clear --workspace <ws>`. You cannot grant yourself "
-            f"budget; do not retry.")
+            f"counter including cached input. Ask the user to approve a "
+            f"specific additional budget or stop. Preserve current evidence; "
+            f"do not retry, relaunch, or grant yourself budget.")
     return True, f"{spent:,}/{cap:,} native tokens"
 
 

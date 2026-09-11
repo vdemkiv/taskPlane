@@ -1,6 +1,20 @@
 # taskplane changelog
 
-## Unreleased — project-local execution and inline setup
+## 2.23.2 — 2026-09-11 — budget enforcement and inline setup
+
+- Phase token limits now reach the live hook contract before launch. Cached
+  input counts toward the cap, and missing required usage fails closed.
+- Quick lenses are limited to 100,000 tokens and eight actions. All tools are
+  metered; status and coordination cannot bypass the token ceiling. Budget
+  exhaustion pauses for human approval without automatically retrying Stop.
+- Completed reviews are reused; scoped reads, inline collection reports and
+  fewer progress calls reduce repeated context. The updated plugin hooks must
+  be loaded for the all-tools matcher to apply.
+- Harness bypass settings and admission overrides are refused. Onboarding is
+  shown once at initial setup and reopens only when needed or requested.
+- Archived project-local runs no longer prevent the next run from starting.
+  Existing runs, settings snapshots and historical artifacts remain intact.
+
 
 - Human-approved Product and Design amendments can be recorded during delivery,
   including Build and Review, with superseded scope, work and evidence retained.
@@ -50,10 +64,10 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.1, not released. Historical
+> v2.23.2, not yet published to a Marketplace. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.23.1 to an isolated PR branch is not a tag, upload,
+> Building the 2.23.2 packages and pushing source to main is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -70,7 +84,8 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.23.1** | **Onboarding readiness repair.** Uses the shared hook claim guard for event identity, checks the current launcher after reinstall, and follows the same Git-family path as hook execution. The dashboard keeps incomplete setup visibly incomplete. Every session's first request and every installation/update presents onboarding and preserves the original goal. Prompts hook trust before reload, reports failed acknowledgment writes, and bounds Stop reminders without releasing completion gates. Includes focused regression coverage; a fresh-host check remains separate from CI. |
+| **v2.23.2** | **Budget and harness enforcement, simpler onboarding.** Applies phase caps during execution, limits each quick lens to 100,000 native tokens and eight actions, meters every tool, and stops budget-triggered continuation loops. Reuses completed reviews, returns findings inline, and keeps onboarding to initial setup. Includes project-local storage recovery and disables harness bypass. Marketplace packages require loading the updated plugin hooks. |
+| **v2.23.1** | **Superseded untagged onboarding candidate.** Uses the shared hook claim guard for event identity, checks the current launcher after reinstall, and follows the same Git-family path as hook execution. The dashboard keeps incomplete setup visibly incomplete. Every session's first request and every installation/update presents onboarding and preserves the original goal. Prompts hook trust before reload, reports failed acknowledgment writes, and bounds Stop reminders without releasing completion gates. Includes focused regression coverage; a fresh-host check remains separate from CI. |
 | **v2.23.0** | **Superseded untagged harness marketplace candidate.** Gives the refactor integrated in [PR #22](https://github.com/vdemkiv/taskPlane/pull/22) a distinct version from the earlier 2.20.0 development builds. Includes stateless phases through Retro, unified lens routing and collection, evolving dependency graphs, dashboard/settings/onboarding wiring, and the cleaned test suite. Package preparation does not claim Marketplace publication. |
 | **v2.20.0** | **Superseded local development version.** Product, Design, Plan, Build, Evaluate, EM review and Retro use the v4 run aggregate and verified artifact handoffs. Independent task phases run in isolated worktrees and join at EM review. Dependency graphs can evolve between phases. Singleton execution, cutover switches and unreleased-state migration are removed; prior v3 runs must be archived. Human plan approval and final sign-off remain. |
 | **v2.19.1** | **Reverted unreleased candidate.** PR #15 declared this version; [PR #18](https://github.com/vdemkiv/taskPlane/pull/18) restored the exact 2.19.0 baseline without rewriting history. No v2.19.1 tag exists; this candidate is not reused for 2.20.0. |

@@ -84,6 +84,12 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.23.1": {
+        "reason": "superseded untagged onboarding source candidate. Its fixes "
+                  "are included in the 2.23.2 budget and harness package; "
+                  "local installation did not establish a tagged release.",
+        "superseded_by": "2.23.2",
+    },
     "2.23.0": {
         "reason": "superseded untagged Marketplace source candidate. PR #23 "
                   "declared the post-refactor version on main, but no "

@@ -124,6 +124,24 @@ def terminal_transcript(workspace: str, contract: dict[str, Any], event: dict[st
     return matched[1], matched[2]
 
 
+def active_transcript(workspace: str, contract: dict[str, Any], event: dict[str, Any] | None = None) -> str:
+    """Resolve the authenticated active slot's child for a live budget check.
+
+    The caller loads the slot through load_active_for_event. Discovery reads
+    only exact child metadata and cannot fall back to the parent's counter.
+    """
+    lifecycle = contract.get("worker_lifecycle") or {}
+    owner = lifecycle.get("owner")
+    if not isinstance(owner, dict) or lifecycle.get("status") != "active":
+        raise ValueError("live usage requires a bound active child")
+    supplied = (event or {}).get("agent_transcript_path") or (event or {}).get("transcript_path")
+    matched = _matching_child({**owner, "cwd": workspace,
+        **({"agent_transcript_path": supplied} if supplied else {})})
+    if matched is None or matched[0] != lifecycle.get("expected_task_name"):
+        raise ValueError("live usage has no exact bound child transcript")
+    return matched[1]
+
+
 def observed_usage(workspace: str, terminal: dict[str, Any], *,
                    codex_home: str | None = None) -> dict[str, Any]:
     """Read the exact child's counter at an authenticated Start or Stop.

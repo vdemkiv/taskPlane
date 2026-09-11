@@ -256,7 +256,8 @@ def test_fresh_session_reads_original_run_and_emits_valid_context(onboarded):
     assert saved["run_id"] in context["additionalContext"]
     assert "loop next" in context["additionalContext"]
     assert "first TaskPlane request" in context["additionalContext"]
-    assert "Existing repository context is not completed onboarding" in context["additionalContext"]
+    assert "Present setup once at initial onboarding" in context["additionalContext"]
+    assert "do not repeat its onboarding visualization" in context["additionalContext"]
     assert caps.runtime_hook_observations(
         str(home), session_id="fresh-session", workspace=str(workspace))[
             "repository_bridge_loaded"].status == "supported"

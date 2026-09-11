@@ -3741,59 +3741,15 @@ def open_delivery_wave(
         reasons.append("first observed input is missing or zero")
     elif first > seed_budget:
         reasons.append("first observed input exceeds seed budget")
-    resource_policy = None
-    if (
-        override is None
-        and reasons == ["first observed input exceeds seed budget"]
-        and run_context.selected(state)
-    ):
-        # A long-lived root keeps its full cumulative counter. The existing
-        # human resource decision overrides only this numeric seed check,
-        # never host identity, available usage, or resume evidence.
-        resource_store = _stage_store(ws, str(state["run_id"]))
-        resource_policy = phase_harness.resource_policy(
-            resource_store.load(str(state["run_id"])), str(state["run_id"])
-        )
-        if resource_policy is not None:
-            if resource_policy["actor"] != (state.get("_stage_native_root_authority") or {}).get(
-                "actor"
-            ):
-                raise ValueError("root resource policy actor differs from run authority")
-            override = {
-                "by": resource_policy["actor"],
-                "reason": "Saved advisory resource policy " + resource_policy["fingerprint"],
-            }
-    attributed_override = None
+    if override is not None:
+        raise ValueError("root-session harness overrides are disabled")
     if reasons:
-        if override is None:
-            raise ValueError("; ".join(reasons))
-        if (
-            not isinstance(override, Mapping)
-            or set(override) != {"by", "reason"}
-            or not str(override.get("by") or "").strip()
-            or not str(override.get("reason") or "").strip()
-        ):
-            raise ValueError("root-session override must be attributable")
-        attributed_override = {
-            "by": str(override["by"]),
-            "reason": str(override["reason"]),
-            "failed_checks": reasons,
-        }
+        raise ValueError("; ".join(reasons))
     with mutate(ws) as locked:
         if locked is None or locked.get("root_hygiene") != root:
             raise ValueError("root preparation changed before wave open")
         if locked.get("dispatch_telemetry") != prior_ledger:
             raise ValueError("root admission changed before wave open")
-        if resource_policy is not None and (
-            locked.get("run_id") != state["run_id"]
-            or locked.get("_stage_native_root_authority")
-            != state.get("_stage_native_root_authority")
-            or phase_harness.resource_policy(
-                resource_store.load(str(state["run_id"])), str(state["run_id"])
-            )
-            != resource_policy
-        ):
-            raise ValueError("root resource policy changed before wave open")
         ledger = locked.get("dispatch_telemetry")
         if ledger is None:
             ledger = dispatch_telemetry.new_ledger(
@@ -3830,9 +3786,9 @@ def open_delivery_wave(
             "session_pseudonym": start["session_pseudonym"],
             "meter": meter,
             "observation_authority_fingerprint": hashlib.sha256(observation_authority).hexdigest(),
-            "conformance": "overridden" if reasons else "pass",
-            "canary_eligible": not reasons,
-            "override": attributed_override,
+            "conformance": "pass",
+            "canary_eligible": True,
+            "override": None,
         }
         locked["root_hygiene"] = opened
     return opened

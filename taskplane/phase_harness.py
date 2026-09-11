@@ -679,6 +679,14 @@ def collect_lenses(
     candidates = phase_candidates(runtime, workspace, material)
     plan = prepare_lenses(runtime, context, material, inputs, candidates)
     if prepare:
+        collected = review.collect_lens_plan(context["artifacts"], plan)
+        if collected["status"] == "complete":
+            return {
+                "plan": plan,
+                "dispatch": [],
+                "wait_invocation": None,
+                "report": context["artifacts"].read(collected["collection"]),
+            }
         bound = runtime._bind_stateless_review_contract_actions(
             workspace,
             {
@@ -693,7 +701,10 @@ def collect_lenses(
             "dispatch": bound["slots"],
             "wait_invocation": bound.get("wait_invocation"),
         }
-    return review.collect_lens_plan(context["artifacts"], plan)
+    collected = review.collect_lens_plan(context["artifacts"], plan)
+    # The phase needs these findings now. Returning only an opaque reference
+    # forced another model/tool round trip to discover and read the same result.
+    return {**collected, "report": context["artifacts"].read(collected["collection"])}
 
 
 def lens_evidence(store: Any, material: dict[str, Any]) -> dict[str, Any]:
@@ -2056,6 +2067,14 @@ def _phase_bridge_prepare(
     if context is None:
         return None
     config, stage, definition = context["configuration"], context["stage"], context["definition"]
+    # Bind the immutable phase limit to the *live* hook contract before
+    # activation. Checking only the terminal result permits unlimited spend.
+    ceiling = min(int(definition["budget"]["tokens"]), int(contract["budget"]["max_tokens"]))
+    contract["budget"].update(
+        max_tokens=ceiling,
+        target_tokens=max(1, min(int(contract["budget"]["target_tokens"]), ceiling - 1)),
+        token_usage_required=True,
+    )
     retro_domain = None
     if stage["stage_kind"] == "retro":
         retro_domain, _ = _ports._phase_bridge_retro_inputs(ws, context)
@@ -2337,8 +2356,10 @@ def _phase_bridge_prepare(
         worker_input["instruction"] += (
             " After authoring the draft, call tp stage prepare-lenses with this same startup "
             "request. Dispatch each returned brief once as an isolated tp-lens worker. "
-            "Wait, then call tp stage collect-lenses with that startup and consume the full "
-            "collection, including findings, notes and coverage. Changed drafts require a "
+            "Use one event wait for the outstanding set; never poll status or message workers "
+            "for progress. On completion call tp stage collect-lenses with that startup; "
+            "its report contains the full collection, including findings, notes and coverage. "
+            "Do not fetch it again or prepare another plan for unchanged drafts. Changed drafts require a "
             "fresh candidate-bound plan; never reuse stale results. Empty dispatch lists "
             "start no workers. Consume every inherited lens-evidence collection by reference. "
             "Do not author a lens-evidence output or old Design/Plan lens receipt yourself."

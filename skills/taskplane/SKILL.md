@@ -83,16 +83,16 @@ an active external run must use its named migration/recovery action.
 - Status or “what needs me?”: follow `../tp-status/SKILL.md` and run
   `$TP summary` first.
 
-Before routing the first TaskPlane request in every host session, and after
-installation, reinstallation, or update, run `$TP onboard --json` and present
-the canonical onboarding dashboard (`$TP onboard`). This applies to every
-intent, including Review, Status, and Help, even in an initialized repository.
-Existing context, knowledge, and run artifacts do not prove this installation
-is ready. Retain the user's original request; once setup is ready, continue it
-without asking them to repeat their goal. Resolve only the missing prerequisite
-the report names. Do not dump setup mechanics unless the user asks.
-This is the user-entry sequence. Internal stage and lens workers consume their
-sealed startup envelopes without repeating onboarding or inheriting its state.
+On the first TaskPlane request, run `$TP onboard --json` to check readiness.
+Present the canonical onboarding dashboard once at initial setup. When setup is
+already ready, continue the requested task without displaying onboarding again.
+New tasks, phases, resumed sessions, and plugin updates do not reset completed
+setup. After an update, check readiness silently; reopen the form only when a
+required prerequisite is missing or the user explicitly requests setup/settings.
+Retain the user's original request and current run. Resolve only the missing
+prerequisite the report names, then continue without asking them to repeat their
+goal. Internal stage and lens workers consume their sealed startup envelopes
+without repeating onboarding or inheriting its state.
 When the goal names a local path, repository URL, ref, or pull request, source
 acquisition is an engine-owned precondition, not a manual setup task. Run
 `$TP repository prepare <target>` before the specialist flow (standalone

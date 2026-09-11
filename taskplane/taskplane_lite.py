@@ -7059,7 +7059,7 @@ HOOK_CLAIM_SCHEMA = "taskplane.hook-claims/v1"
 HOOK_CLAIM_CAP = 512
 HOOK_CLAIM_TTL_SECONDS = 24 * 60 * 60
 HOOK_CLAIM_WAIT_SECONDS = 2.0
-_HOOK_RESPONSE_CLASSES = frozenset(("allow", "block", "advisory", "context", "empty", "error"))
+_HOOK_RESPONSE_CLASSES = frozenset(("allow", "block", "advisory", "context", "empty", "error", "stop"))
 
 
 def hook_claim_journal_path(workspace: str) -> str:
