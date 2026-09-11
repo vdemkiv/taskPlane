@@ -329,8 +329,11 @@ def review_comparison(runtime: ModuleType, ws: str, state: Json) -> str | None:
         stage = runtime._indexed_stage(context["store"], manifest, context["run_id"], sid)
         predecessors = stage["predecessor_stage_ids"]
         if predecessors:
-            rows = [row for row in _objects(manifest["lineage"], "lineage")
-                    if row["child_stage_id"] == sid]
+            rows = [
+                row
+                for row in _objects(manifest["lineage"], "lineage")
+                if row["child_stage_id"] == sid
+            ]
             if len(rows) != 1 or rows[0]["predecessor_stage_ids"] != predecessors:
                 raise ValueError("review comparison lineage changed")
             if rows[0]["handoff_fingerprint"] != stage["input_manifest_ref"]["fingerprint"]:
@@ -344,11 +347,18 @@ def review_comparison(runtime: ModuleType, ws: str, state: Json) -> str | None:
     comparison = None
     for ref, value in inherited:
         selected = _object(projection, "review comparison projection")
-        if selected.get("receipt") != ref or selected.get("stage_id") != value["successor_stage_id"]:
+        if (
+            selected.get("receipt") != ref
+            or selected.get("stage_id") != value["successor_stage_id"]
+        ):
             raise ValueError("review comparison is foreign or stale")
-        previous = _object(artifacts.read(_object(value["previous_workflow"], "previous workflow")),
-                           "previous workflow")
-        if previous.get("run_id") != state.get("run_id") or previous.get("requirement_id") != state.get("requirement_id"):
+        previous = _object(
+            artifacts.read(_object(value["previous_workflow"], "previous workflow")),
+            "previous workflow",
+        )
+        if previous.get("run_id") != state.get("run_id") or previous.get(
+            "requirement_id"
+        ) != state.get("requirement_id"):
             raise ValueError("review comparison workflow identity changed")
         if value["from_step"] in {"execute", "fix", "evaluate", "em", "signoff", "plan_approval"}:
             comparison = _text(previous["baseline"], "review comparison baseline")

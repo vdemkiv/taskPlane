@@ -1699,9 +1699,20 @@ def _verified_handoff_for_dispatch(stage: dict, handoff: dict, selected_artifact
         except ValueError as exc:
             raise StageDispatchError("verified v2 handoff is invalid") from exc
         result = handoff["phase_result"]
+        producer_outcome = handoff["producer"]["outcome"]
+        reuse = handoff["authorization"].get("nonconsumable_reuse")
+        consumable = producer_outcome == "done" or (
+            producer_outcome in {"closed", "discarded"}
+            and reuse
+            == {
+                "schema": "taskplane.nonconsumable-reuse-authorization/v1",
+                "producer_outcome": producer_outcome,
+                "authority_fingerprint": stage["authority"]["authority_fingerprint"],
+            }
+        )
         if (
             result["status"] != "accepted"
-            or handoff["producer"]["outcome"] != "done"
+            or not consumable
             or result["run_id"] != stage["run_id"]
             or result["authority_fingerprint"] != stage["authority"]["authority_fingerprint"]
         ):

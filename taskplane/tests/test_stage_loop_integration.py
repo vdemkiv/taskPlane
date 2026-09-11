@@ -89,6 +89,88 @@ def _workspace(tmp_path):
     return str(workspace)
 
 
+@pytest.mark.parametrize("damage", [None, "plan", "baseline", "scope", "history", "new-tasks"])
+def test_unstarted_replan_preserves_only_exact_archived_build_scope(tmp_path, monkeypatch, damage):
+    """Real commit ancestry/scope; delivery authorization is a simulated fixture."""
+    from taskplane import stage_loop
+
+    ws = Path(_workspace(tmp_path))
+    baseline = loop.tp.git_head(str(ws))
+    (ws / "README.md").write_text("completed build\n")
+    subprocess.run(["git", "add", "README.md"], cwd=ws, check=True)
+    subprocess.run(["git", "-c", "user.name=Taskplane", "-c",
+        "user.email=taskplane@example.invalid", "commit", "-qm", "build"], cwd=ws, check=True)
+    current = loop.tp.git_head(str(ws))
+    (ws / "plan").mkdir()
+    plan = ws / "plan/tasks.json"
+    plan.write_text('{"tasks": []}\n')
+    state = {"step": "plan", "tasks": None,
+        "plan_fingerprint": hashlib.sha256(plan.read_bytes()).hexdigest(),
+        "replan_history": [{"from_step": "evaluate", "baseline": baseline,
+            "tasks": [{"id": "T-01", "scope": ["README.md"]}]}]}
+    if damage == "plan":
+        plan.write_text("changed plan\n")
+    elif damage == "baseline":
+        state["replan_history"][-1]["baseline"] = current
+    elif damage == "scope":
+        state["replan_history"][-1]["tasks"][0]["scope"] = ["other.py"]
+    elif damage == "history":
+        state["replan_history"] = []
+    elif damage == "new-tasks":
+        state["tasks"] = [{"id": "replacement", "scope": ["README.md"]}]
+    monkeypatch.setattr(loop, "_validated_delivery_mode", lambda value: {"mode": "build"})
+    assert stage_loop.authorized_run_revision(
+        loop, str(ws), {"workflow": state}, baseline, current) is (damage is None)
+
+
+@pytest.mark.parametrize("outcome,damage", [
+    ("closed", None), ("discarded", None),
+    ("discarded", "missing"), ("discarded", "authority"), ("closed", "outcome")])
+def test_v2_dispatch_reuses_closed_inputs_only_with_exact_authorization(tmp_path, outcome, damage):
+    """Actual runtime collection and serializer; host observations are simulated."""
+    from taskplane import review_evidence, stage_handoff
+    from taskplane.tests.test_r0001_agent_runtime import _setup
+    from taskplane.tests.test_stage_entities import _authority, _stage
+
+    runtime, dispatch, _ = _setup(tmp_path)
+    result = runtime.run(dispatch)
+    assert result["status"] == "accepted"
+    store = review_evidence.ArtifactStore(str(tmp_path / "artifacts"))
+    stage = _stage(run_id="run-1", authority=_authority(run_id="run-1"))
+    stage["authority"]["authority_fingerprint"] = result["authority_fingerprint"]
+    stage["authority"]["authority_revision"] = 1
+    stage["predecessor_stage_ids"] = ["stage-recovery"]
+    handoff = stage_handoff.create_v2_manifest(store, phase_result=result,
+        produced_artifacts=[{"artifact_class":"stage", "artifact_schema_version":"taskplane.stage/v1",
+            "reference": ref} for ref in result["collected_output_references"]],
+        inherited_artifacts=[], producer_stage_id="stage-recovery", producer_outcome=outcome,
+        requirement=stage["requirement"], design=stage["design"], target=None, commit=None,
+        contracts={"provided":[], "consumed":[], "changed":[]}, deliverables=["retained-input"],
+        evidence_references=result["collected_output_references"],
+        exclusions=sorted(stage_handoff.REQUIRED_EXCLUSIONS),
+        authorization={"actor":stage["authority"]["actor"], "session_id":stage["authority"]["session_id"],
+            "authorized_at":"2026-09-11T13:00:00Z", "operation_id":"authorized-recovery",
+            "authority_record":{"schema":"taskplane.authority-record-reference/v1",
+                "authority_schema":"taskplane.consolidated-authorization/v1", "revision":1,
+                "fingerprint":result["authority_fingerprint"]}}, allow_nonconsumable_reuse=True)
+    if damage == "missing":
+        handoff["authorization"]["nonconsumable_reuse"] = None
+    elif damage == "authority":
+        handoff["authorization"]["nonconsumable_reuse"]["authority_fingerprint"] = "0" * 64
+    elif damage == "outcome":
+        handoff["authorization"]["nonconsumable_reuse"]["producer_outcome"] = "discarded"
+    handoff["fingerprint"] = stage_handoff.manifest_fingerprint(handoff)
+    stage["input_manifest_ref"] = review_evidence.portable_artifact_reference(
+        store, stage_handoff.store_v2_manifest(store, handoff)) if not damage else {}
+    stage["selected_artifacts"] = handoff["selected_artifacts"]
+    if damage:
+        with pytest.raises(ValueError, match="v2 result binding"):
+            stage_handoff._verified_handoff_for_dispatch(stage, handoff, handoff["selected_artifacts"])
+    else:
+        assert stage_handoff._verified_handoff_for_dispatch(
+            stage, handoff, handoff["selected_artifacts"]) == handoff
+
+
 def _build_collection_signing_fixture(tmp_path, *, advisory, original_admission=True):
     """Real runtime result, artifact custody and signer; simulated host/time inputs."""
     from types import SimpleNamespace

@@ -103,7 +103,38 @@ def _stage_store(_ports, ws: str, run_id: str):
 def authorized_run_revision(_ports, ws, manifest, baseline, current):
     """Prove that a changed commit is an effect of the approved Build scope."""
     state = manifest.get("workflow") or {}
-    if state.get("step") not in {"execute", "fix", "evaluate", "em", "signoff", "retro", "done"}:
+    tasks_state = state
+    if state.get("step") == "plan" and not state.get("tasks"):
+        # An unused recovery Plan still owns the completed Build's input
+        # revision. Reuse only its exact archived scope and unchanged plan;
+        # this proves source ancestry, never Plan completion or approval.
+        history = state.get("replan_history") or []
+        archived = history[-1] if history else {}
+        if (
+            not isinstance(archived, dict)
+            or archived.get("from_step") not in {"execute", "fix", "evaluate", "escalated"}
+            or archived.get("baseline") != baseline
+            or not archived.get("tasks")
+        ):
+            return False
+        try:
+            with open(_ports.os.path.join(ws, "plan", "tasks.json"), "rb") as handle:
+                plan_fingerprint = _ports.hashlib.sha256(handle.read()).hexdigest()
+        except OSError:
+            return False
+        if plan_fingerprint != state.get("plan_fingerprint"):
+            return False
+        tasks_state = {**state, "step": archived["from_step"], "tasks": archived["tasks"]}
+    if tasks_state.get("step") not in {
+        "execute",
+        "fix",
+        "evaluate",
+        "escalated",
+        "em",
+        "signoff",
+        "retro",
+        "done",
+    }:
         return False
     receipt = _ports._validated_delivery_mode(state)
     if receipt is None or receipt["mode"] != "build":
@@ -111,7 +142,9 @@ def authorized_run_revision(_ports, ws, manifest, baseline, current):
     locator = _ports.runtime_storage.load_workspace_locator(ws) or {}
     task_id = locator.get("task_id")
     tasks = [
-        task for task in state.get("tasks") or [] if task_id is None or task.get("id") == task_id
+        task
+        for task in tasks_state.get("tasks") or []
+        if task_id is None or task.get("id") == task_id
     ]
     scopes = sorted({path for task in tasks for path in task.get("scope") or []})
     if (
