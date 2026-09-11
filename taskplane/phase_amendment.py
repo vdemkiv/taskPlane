@@ -300,6 +300,64 @@ def current(
     return value
 
 
+def review_comparison(runtime: ModuleType, ws: str, state: Json) -> str | None:
+    """Resolve retained review scope from committed amendments on this stage's lineage."""
+    projection = state.get("phase_amendment")
+    if not projection:
+        return None
+    context = runtime._stage_loop_context(ws, state)
+    if not context or context["run_id"] != state.get("run_id"):
+        raise ValueError("review comparison requires its current run and stage")
+    manifest = _object(context["manifest"], "manifest")
+    artifacts = review_evidence.ArtifactStore(ws)
+    amendments = {}
+    for row in _table(manifest.get("stage_operations") or {}, "stage operations").values():
+        if row.get("operation") == "amend_phase":
+            ref = _object(_object(row["result"], "result")["amendment"], "amendment")
+            value = _read(artifacts, manifest, ref)
+            amendments[_text(value["successor_stage_id"], "successor")] = (ref, value)
+    # The indexed stages and their committed lineage, not a mutable workflow
+    # baseline or history list, establish which amendment can supply the comparison.
+    pending = [_text(_object(context["stage"], "stage")["stage_id"], "stage id")]
+    seen: set[str] = set()
+    inherited = []
+    while pending:
+        sid = pending.pop(0)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        stage = runtime._indexed_stage(context["store"], manifest, context["run_id"], sid)
+        predecessors = stage["predecessor_stage_ids"]
+        if predecessors:
+            rows = [row for row in _objects(manifest["lineage"], "lineage")
+                    if row["child_stage_id"] == sid]
+            if len(rows) != 1 or rows[0]["predecessor_stage_ids"] != predecessors:
+                raise ValueError("review comparison lineage changed")
+            if rows[0]["handoff_fingerprint"] != stage["input_manifest_ref"]["fingerprint"]:
+                raise ValueError("review comparison input changed")
+        if sid in amendments:
+            ref, value = amendments[sid]
+            if value["authority"] != stage["authority"]:
+                raise ValueError("review comparison authority changed")
+            inherited.append((ref, value))
+        pending.extend(predecessors)
+    comparison = None
+    for ref, value in inherited:
+        selected = _object(projection, "review comparison projection")
+        if selected.get("receipt") != ref or selected.get("stage_id") != value["successor_stage_id"]:
+            raise ValueError("review comparison is foreign or stale")
+        previous = _object(artifacts.read(_object(value["previous_workflow"], "previous workflow")),
+                           "previous workflow")
+        if previous.get("run_id") != state.get("run_id") or previous.get("requirement_id") != state.get("requirement_id"):
+            raise ValueError("review comparison workflow identity changed")
+        if value["from_step"] in {"execute", "fix", "evaluate", "em", "signoff", "plan_approval"}:
+            comparison = _text(previous["baseline"], "review comparison baseline")
+        projection = previous.get("phase_amendment")
+    if not inherited or projection:
+        raise ValueError("review comparison has no complete amendment lineage")
+    return comparison
+
+
 def _cleanup(runtime: ModuleType, ws: str, value: Json, *, contracts_locked: bool = False) -> None:
     artifacts = review_evidence.ArtifactStore(ws)
     if not contracts_locked:

@@ -4125,7 +4125,7 @@ def _prepare_public_evaluate_evidence(
         raise ValueError("Evaluate evidence owner lacks candidate revision/source tree")
     changed = [
         path
-        for path in _diff_files(act_ws, state.get("baseline") or "HEAD")
+        for path in _diff_files(act_ws, _review_baseline(ws, state, "evaluate") or "HEAD")
         if not path.startswith(lens_router.LOOP_OWNED)
         and tp.match_any(path, task.get("scope") or [])
     ]
@@ -5791,12 +5791,15 @@ def _first_unsettled_task_index(state: Mapping) -> int | None:
 
 
 def _review_baseline(ws: str, state: Mapping, step: str) -> str | None:
-    return state.get("baseline")
+    from taskplane import phase_amendment
+
+    comparison = phase_amendment.review_comparison(sys.modules[__name__], ws, dict(state))
+    return comparison or state.get("baseline")
 
 
 def _task_graph_dod(ws: str, state: dict, task: dict) -> dict:
     """As-built dependency proof in the caller's exact task or merged tree."""
-    baseline = state.get("baseline") or tp.snapshot_ref(ws)
+    baseline = _review_baseline(ws, state, "evaluate") or tp.snapshot_ref(ws)
     changed = [
         f for f in _diff_files(ws, baseline or "HEAD") if not f.startswith(lens_router.LOOP_OWNED)
     ]
@@ -7368,12 +7371,14 @@ def gate(*args, **kwargs):
     return gates.gate(sys.modules[__name__], *args, **kwargs)
 
 
-def _compute_signoff_dod(*args, **kwargs):
-    return gates._compute_signoff_dod(sys.modules[__name__], *args, **kwargs)
+def _compute_signoff_dod(ws, state, **kwargs):
+    review = dict(state, baseline=_review_baseline(ws, state, "signoff"))
+    return gates._compute_signoff_dod(sys.modules[__name__], ws, review, **kwargs)
 
 
-def _signoff_evidence_binding(*args, **kwargs):
-    return gates._signoff_evidence_binding(sys.modules[__name__], *args, **kwargs)
+def _signoff_evidence_binding(ws, state, **kwargs):
+    review = dict(state, baseline=_review_baseline(ws, state, "signoff"))
+    return gates._signoff_evidence_binding(sys.modules[__name__], ws, review, **kwargs)
 
 
 def _signoff_dod(*args, **kwargs):
@@ -8569,7 +8574,7 @@ def _true_up_graph(ws: str, state: dict) -> None:
     """Pre-EM graph work: realize requirements, then scan the final tree."""
     changed = [
         f
-        for f in _diff_files(ws, state.get("baseline") or "HEAD")
+        for f in _diff_files(ws, _review_baseline(ws, state, "em") or "HEAD")
         if not f.startswith(lens_router.LOOP_OWNED)
     ]
     if not changed:

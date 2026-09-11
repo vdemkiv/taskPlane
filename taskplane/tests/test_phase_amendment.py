@@ -488,7 +488,7 @@ def test_plan_mode_projection_preserves_explicit_declarations(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("step", ["execute", "evaluate", "em", "signoff", "plan_approval"])
-def test_late_amendment_preserves_worktree_results_and_invalidates_approvals(run, step):
+def test_late_amendment_preserves_worktree_results_and_invalidates_approvals(run, step, monkeypatch):
     ws, store, run_id, _ = run
     # The isolated test seeds a workflow origin only; it claims no Build/review success.
     worktree = Path(ws).parent / "retained-worktree"
@@ -500,6 +500,14 @@ def test_late_amendment_preserves_worktree_results_and_invalidates_approvals(run
                      "evaluation": {"verdict": "simulated-old-result"}}],
                      design_approved_by="human:simulated", design_fingerprint="d" * 64,
                      plan_fingerprint="e" * 64, signoff_evidence={"stale": True})
+    baseline = loop.tp.git_head(ws)
+    source = Path(ws) / "work.py"
+    source.write_text("built = True\n")
+    subprocess.run(["git", "add", "work.py"], cwd=ws, check=True)
+    subprocess.run(["git", "commit", "-qm", "Simulated built source"], cwd=ws, check=True)
+    built = loop.tp.git_head(ws)
+    with loop.mutate(ws) as state:
+        state["baseline"] = baseline
     old = loop.load(ws)
     result = phase_amendment.amend(loop, ws, **proposal(ws))
     assert not result.get("error"), result
@@ -510,6 +518,47 @@ def test_late_amendment_preserves_worktree_results_and_invalidates_approvals(run
     receipt = phase_amendment.current(loop, ws, current)
     assert review_evidence.ArtifactStore(ws).read(receipt["previous_workflow"])["tasks"] == old["tasks"]
     assert code.read_text() == "user_work = 'keep me'\n"
+    # Simulate renewed Plan's execution snapshot, without changing source again.
+    # Review must retain the original comparison, not hide the built file.
+    current["baseline"] = built
+    current["tasks"] = [{"id": "T1", "req": current["requirement_id"], "scope": ["work.py"]}]
+    for consumer in ("evaluate", "em", "signoff"):
+        assert loop._review_baseline(ws, current, consumer) == baseline
+    assert "work.py" in loop._diff_files(ws, loop._review_baseline(ws, current, "evaluate"))
+    observed = []
+    monkeypatch.setattr(loop.depgraph, "scope_modules", lambda *args: [])
+    monkeypatch.setattr(loop.depgraph, "completion", lambda workspace, files, **kw: observed.append(files) or {})
+    loop._task_graph_dod(ws, current, current["tasks"][0])
+    assert observed == [["work.py"]]
+    links = []
+    monkeypatch.setattr(loop.depgraph, "link_requirement", lambda workspace, rid, files, **kw: links.append(files))
+    monkeypatch.setattr(loop.depgraph, "scan", lambda *args: {})
+    loop._true_up_graph(ws, current)
+    assert links == [["work.py"]]
+    monkeypatch.setattr(loop, "_engineering_review_errors", lambda *args, **kw: [])
+    monkeypatch.setattr(loop.kb, "lint", lambda *args: [])
+    terminal = loop._compute_signoff_dod(ws, current)
+    assert terminal["baseline"] == baseline
+    assert not any(error.startswith("diff_scope:") for error in terminal["errors"])
+    excluded = copy.deepcopy(current)
+    excluded["tasks"][0]["scope"] = ["other.py"]
+    refused = loop._compute_signoff_dod(ws, excluded)
+    assert any(error.startswith("diff_scope:") and "work.py" in error for error in refused["errors"])
+    assert current["baseline"] == built  # Execution authority stays current.
+    foreign = copy.deepcopy(current)
+    foreign["phase_amendment"]["stage_id"] = "foreign-stage"
+    with pytest.raises(ValueError, match="comparison"):
+        loop._review_baseline(ws, foreign, "evaluate")
+    # A new unchanged-source amendment makes the old projection stale.
+    with loop.mutate(ws) as state:
+        state["baseline"] = built
+    assert not phase_amendment.amend(loop, ws, **proposal(ws)).get("error")
+    latest = loop.load(ws)
+    assert loop._review_baseline(ws, latest, "signoff") == baseline
+    stale = copy.deepcopy(latest)
+    stale["phase_amendment"] = current["phase_amendment"]
+    with pytest.raises(ValueError, match="comparison"):
+        loop._review_baseline(ws, stale, "evaluate")
 
 
 @pytest.mark.parametrize("malformed", ["lifecycle", "tasks"])
