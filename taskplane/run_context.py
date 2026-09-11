@@ -46,7 +46,11 @@ def resource_limits_advisory(workspace: str) -> bool:
     if not locator or not locator.get("run_id"):
         return False
     run_id = locator["run_id"]
-    manifest = run_store.RunStore(home=locator["home"]).inspect(run_id)
+    try:
+        manifest = run_store.RunStore(home=locator["home"]).inspect(run_id)
+    except run_store.RunStoreError:
+        # An unavailable decision cannot relax limits, including in read-only UI.
+        return False
     return phase_records.resource_policy(manifest, run_id) is not None
 
 

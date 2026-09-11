@@ -27,6 +27,39 @@ def run(tmp_path, monkeypatch):
     return _supporting_pristine_phase_run(tmp_path, monkeypatch)
 
 
+@pytest.mark.parametrize("terminal_step", ["done", "failed"])
+def test_retro_accepts_closed_run_with_retained_amendment(run, terminal_step):
+    ws, store, run_id, _ = run
+    assert not phase_amendment.amend(loop, ws, **proposal(ws)).get("error")
+    context = loop._stage_loop_context(ws, loop.load(ws))
+    stage = context["stage"]
+    context["lifecycle"].terminalize(
+        run_id, stage_id=stage["stage_id"],
+        expected_head_fingerprint=stage["fingerprint"],
+        expected_revision=context["manifest"]["revision"],
+        operation_id="human-manual-completion", outcome="closed",
+        actor="human:simulated", terminalized_at="2026-09-11T13:00:00Z",
+        reason_code="human_manual_completion", reason="Finish outside governed stages",
+    )
+    with loop.mutate(ws) as state:
+        state["step"] = terminal_step
+    before = store.load(run_id)
+    state = loop.load(ws)
+    assert state["phase_amendment"]
+    assert loop._stage_loop_context(ws, state)["stage"] is None
+    assert phase_amendment.current(loop, ws, state) is None
+    assert loop._phase_bridge_pending(ws, state) is None
+    assert loop._phase_bridge_retro_completion(ws, state) is None
+    assert store.load(run_id) == before
+    report = loop.retro(ws)
+    assert not report.get("error"), report
+    assert loop.load(ws)["step"] == terminal_step
+    assert loop.load(ws)["phase_amendment"] == state["phase_amendment"]
+    assert store.load(run_id)["stage_heads"] == before["stage_heads"]
+    assert loop.retro(ws).get("replayed") is True
+    assert loop.load(ws)["step"] == terminal_step
+
+
 def test_product_amendment_rebinds_scope_and_preserves_history_idempotently(run):
     ws, store, run_id, requirement = run
     old = store.load(run_id)

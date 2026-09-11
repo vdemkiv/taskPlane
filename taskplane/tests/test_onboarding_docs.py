@@ -203,7 +203,8 @@ class TestOnboardInstallTruth(_TmpRepo):
         self.assertEqual(report["phase_configuration"]["status"], "ready")
         self.assertEqual(report["phase_configuration"]["phases"],
             ["product", "design", "plan", "build", "evaluate", "engineering", "retro"])
-        self.assertEqual(report["settings"]["digest"], report["phase_configuration"]["settings_digest"])
+        self.assertEqual(report["settings"]["effective_digest"],
+                         report["phase_configuration"]["settings_digest"])
 
     def test_onboarding_refuses_broken_phase_links_before_dispatch(self):
         from unittest.mock import patch

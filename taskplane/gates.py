@@ -1672,14 +1672,20 @@ def retro(_ports, ws: str) -> dict:
                              f"{exc.__class__.__name__}: {exc}",
                     "step": "retro", "retro": result}
     try:
-        transition_kwargs = {"from_step": "retro", "to_step": target_step}
-        if final.get("_retro_terminal_step"):
-            completion = _ports._stage_loop_gate_completion(
-                ws, final, step="retro", outcome=target_step)
-            completion["retro"] = result
-            completion["_stage_output"]["values"]["retro"] = result
-            transition_kwargs["completion"] = completion
-        transition = _ports._stage_loop_transition(ws, final, **transition_kwargs)
+        context = _ports._stage_loop_context(ws, final)
+        already_terminal = (
+            context is not None and context.get("stage") is None
+            and (final.get("retro") or {}).get("prior_step") in {"done", "failed"})
+        transition = None
+        if not already_terminal:
+            transition_kwargs = {"from_step": "retro", "to_step": target_step}
+            if final.get("_retro_terminal_step"):
+                completion = _ports._stage_loop_gate_completion(
+                    ws, final, step="retro", outcome=target_step)
+                completion["retro"] = result
+                completion["_stage_output"]["values"]["retro"] = result
+                transition_kwargs["completion"] = completion
+            transition = _ports._stage_loop_transition(ws, final, **transition_kwargs)
     except Exception as exc:
         # Keep the sealed report and its terminal target as a durable replay
         # marker.  ``retro_engine.run`` returns that same sealed report on the

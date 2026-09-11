@@ -63,6 +63,7 @@ not repeated in the tables.
 | `tp.py lens route` | decide which lenses a change needs |
 | `tp.py lens show` | the full brief for one lens |
 | `tp.py loop` | drive the Evaluate-Loop engine |
+| `tp.py loop amend` | apply a human-approved Product or Design amendment while preserving phase history |
 | `tp.py loop approve` | record a human approval at a checkpoint gate |
 | `tp.py loop archive` | detach a run and retain its evidence |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
@@ -621,6 +622,23 @@ drive the Evaluate-Loop engine
 | --- | --- | --- |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py loop amend`
+
+apply a human-approved Product or Design amendment while preserving phase history
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--by` | BY | the run's accountable human approving this amendment |
+| `--candidate-fingerprint` | CANDIDATE_FINGERPRINT | exact amended candidate fingerprint returned by --preview |
+| `--expected-stage-fingerprint` | EXPECTED_STAGE_FINGERPRINT | exact prior stage fingerprint returned by --preview |
+| `--phase` | one of: product, design (required) | phase whose current scope or candidate the human is amending |
+| `--preview` | flag | read the exact current fingerprints without applying an amendment |
+| `--reason` | REASON | the human-approved scope change; distinct from final Design approval |
+| `--req` | REQ (required) | the existing requirement containing the approved scope |
+| `--requirement-fingerprint` | REQUIREMENT_FINGERPRINT | exact amended requirement fingerprint returned by --preview |
+| `--worker-stopped` | flag | confirm the former worker is stopped; the engine also verifies its lifecycle |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py loop approve`
 
 record a human approval at a checkpoint gate
@@ -952,7 +970,10 @@ cold-start readiness — folder + git snapshot + init; renders the onboarding da
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--install-codex-hooks` | flag | install/refresh the repo-local Codex lifecycle hook bridge before reporting readiness |
+| `--apply-setup` | JSON_FILE_OR_DASH | apply validated inline setup values from a JSON file or stdin (-) |
+| `--execution-storage` | one of: project | explicitly select project .taskplane execution storage; active runs refuse migration |
+| `--install-codex-hooks` | flag | deprecated alias for --install-launcher; hooks are supplied only by the plugin |
+| `--install-launcher` | flag | install/refresh the ignored CLI launcher without registering project hooks |
 | `--json` | flag | print the readiness report instead of the widget |
 | `--out` | OUT | also write the fragment to this path |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |

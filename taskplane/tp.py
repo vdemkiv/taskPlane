@@ -1220,10 +1220,10 @@ def _onboard_report(ws: str) -> dict:
     )
     from taskplane import loop as phase_runtime
 
-    effective = _effective_settings_snapshot()
+    onboarding_settings = _onboarding_settings(ws)
     phase_configuration = {
         "source": "agents/spec-phase-definitions.json",
-        "settings_digest": effective.digest,
+        "settings_digest": onboarding_settings["effective_digest"],
     }
     try:
         registry, _ = phase_runtime._phase_bridge_registry(
@@ -1407,7 +1407,7 @@ def _onboard_report(ws: str) -> dict:
         "next_action": nxt,
         "run_readiness": run_readiness,
         "phase_configuration": phase_configuration,
-        "settings": _onboarding_settings(ws),
+        "settings": onboarding_settings,
         "recovery": (
             {"command_argv": recovery_command, "preserve_existing_state": True}
             if not run_readiness["ready"]

@@ -273,7 +273,11 @@ def current(
         return None
     projection = _object(projection, "amendment projection")
     context = runtime._stage_loop_context(ws, state)
-    if not context or context["stage"]["stage_id"] != projection.get("stage_id"):
+    if (
+        not context
+        or not isinstance(context.get("stage"), dict)
+        or context["stage"]["stage_id"] != projection.get("stage_id")
+    ):
         return None
     artifacts = review_evidence.ArtifactStore(ws)
     value = _read(
@@ -944,12 +948,12 @@ def verified_handoff(
     runtime: ModuleType, lifecycle: stage_entities.StageLifecycle, manifest: Json, stage: Json
 ) -> Json | None:
     """The explicit amendment boundary permits the recorded revision change."""
-    artifacts = lifecycle._artifact_store()
     for row in _table(manifest.get("stage_operations") or {}, "stage operations").values():
         if row.get("operation") != "amend_phase" or stage["stage_id"] not in _list(
             row["stage_ids"], "stage ids"
         ):
             continue
+        artifacts = lifecycle._artifact_store()
         value = _read(
             artifacts,
             manifest,

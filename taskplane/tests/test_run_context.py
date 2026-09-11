@@ -18,6 +18,18 @@ from taskplane.tests.phase_fixture import _supporting_pristine_phase_run, phase_
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("contents", [None, "{invalid json"])
+def test_unavailable_run_manifest_cannot_enable_advisory_limits(tmp_path, contents):
+    from taskplane.tests.test_worktree_cleanup import _fixture
+
+    primary, _, _, layout = _fixture(tmp_path)
+    if contents is not None:
+        manifest = Path(layout.home) / "runs" / "run-1" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(contents)
+    assert run_context.resource_limits_advisory(str(primary)) is False
+
+
 def _state(configuration=None):
     value = configuration or settings.load_settings(environment={})
     return {"run_id": "isolated-run", "_stage_native_root_authority": {"actor": "human:test"},
