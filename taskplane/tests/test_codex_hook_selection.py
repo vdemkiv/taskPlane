@@ -193,7 +193,7 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertNotIn("/taskplane/tp.py", result.stderr)
 
 
-    def test_onboarding_preserves_bridge_identity_on_both_shells(self):
+    def test_onboarding_keeps_plugin_hooks_and_no_project_registrations(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-") as ws:
             Path(ws, ".codex").mkdir()
             Path(ws, ".codex", "hooks.json").write_text(
@@ -214,21 +214,7 @@ class TestHookPathManifests(unittest.TestCase):
             for row in rows
             for hook in row.get("hooks") or []
         ]
-        self.assertTrue(hooks)
-        self.assertTrue(all("TASKPLANE_HOOK_PATH=bridge" in
-                            hook.get("command", "") for hook in hooks))
-        self.assertTrue(all('TASKPLANE_HOOK_PATH=bridge' in
-                            hook.get("commandWindows", "")
-                            for hook in hooks))
-        governed_hooks = [
-            hook for hook in hooks
-            if "host-native-check" not in hook.get("command", "")
-        ]
-        self.assertTrue(all('TASKPLANE_LAUNCHER=.taskplane\\codex-hook.py' in
-                            hook.get("commandWindows", "")
-                            for hook in governed_hooks))
-        self.assertTrue(all("--git-common-dir" in hook.get("command", "")
-                            for hook in hooks))
+        self.assertEqual(hooks, [])
         native = json.loads((ROOT / "hooks" / "hooks.json").read_text(
             encoding="utf-8"))
         native_hooks = [
@@ -287,7 +273,7 @@ class TestHookPathManifests(unittest.TestCase):
                              primary / ".taskplane" / "codex-hook.py")
             self.assertFalse((linked / ".taskplane" / "codex-hook.py").exists())
 
-    def test_onboarding_leaves_runner_when_required_config_write_is_denied(self):
+    def test_onboarding_never_writes_protected_project_hook_config(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-denied-") as ws:
             Path(ws, ".codex").mkdir()
             Path(ws, ".codex", "hooks.json").write_text(
@@ -302,12 +288,11 @@ class TestHookPathManifests(unittest.TestCase):
                     mock.patch.object(
                         tp, "atomic_write_json",
                         side_effect=PermissionError("protected config")):
-                with self.assertRaises(PermissionError):
-                    cli._install_codex_hooks(ws)
+                self.assertTrue(cli._install_codex_hooks(ws)["ok"])
             self.assertTrue(Path(
                 ws, ".taskplane", "codex-hook.py").is_file())
 
-    def test_generated_workspace_hook_config_is_git_local_only(self):
+    def test_onboarding_does_not_generate_or_ignore_project_hook_config(self):
         with tempfile.TemporaryDirectory(prefix="tp-codex-hooks-git-") as ws:
             subprocess.run(["git", "init", "-q"], cwd=ws, check=True)
             with mock.patch.dict(
@@ -322,7 +307,8 @@ class TestHookPathManifests(unittest.TestCase):
             ignored = subprocess.run(
                 ["git", "check-ignore", "-q", ".codex/hooks.json"],
                 cwd=ws)
-            self.assertEqual(ignored.returncode, 0)
+            self.assertNotEqual(ignored.returncode, 0)
+            self.assertFalse(Path(ws, ".codex", "hooks.json").exists())
 
 
 class TestHookEventClaims(unittest.TestCase):

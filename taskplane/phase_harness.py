@@ -301,6 +301,59 @@ def admit_lens_plan(context: dict[str, Any]) -> None:
         raise ValueError("this phase consumes lens evidence and cannot dispatch workers")
 
 
+def _prepared_plan(runtime: Any, context: Any, material: dict[str, Any],
+                   planned: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+    """Keep a fixed Plan candidate's reviewed topology, never its verdict.
+
+    The saved graph is the admitted source snapshot. Reading it does not scan
+    the repair/runtime checkout again or turn elapsed scan time into new scope.
+    """
+    from taskplane import review_evidence, stage_artifacts
+    store = context["artifacts"]
+    binding = {key: material["bindings"][key] for key in
+        ("run_id", "phase_id", "operation_id", "candidate_fingerprint", "authority_fingerprint")}
+    graph = runtime.depgraph.load(context.get("workspace", store.workspace))
+    expected = {key: value for key, value in planned.items() if key != "dependency_outputs"}
+    matches = []
+    for reference in store.references("lens-plan"):
+        plan = store.read(reference)
+        if plan.get("phase") != "plan" or plan.get("binding") != binding:
+            continue
+        envelope = review_evidence._load_complete_envelope(store, plan["envelope"])
+        candidates = envelope["diff"]["phase_inputs"]["candidate"]
+        previous = candidates["plan-task"]
+        if {key: value for key, value in previous.items() if key != "dependency_outputs"} != expected:
+            continue
+        # This incumbent comparison removes only validated coverage elapsed_ms
+        # and graph timestamps. Source hashes, edge/content fingerprints,
+        # scanner quality, policy, completeness and limits remain exact.
+        previous_graph = envelope["impact"]["graph"]
+        if runtime.depgraph._scan_volatile_stripped({"meta": previous_graph}) != \
+                runtime.depgraph._scan_volatile_stripped({"meta": graph["meta"]}):
+            continue
+        for name, value in candidates.items():
+            stage_artifacts.validate(name, value)
+        topology = previous["dependency_outputs"]
+        if topology != {name: candidates[name] for name in
+                ("source-coverage", "decomposition", "seam-manifest")} or \
+                topology["source-coverage"] != previous_graph["source_coverage"] or \
+                topology["decomposition"]["source_tree"] != previous_graph["source_tree"]:
+            raise ValueError("prepared Plan topology differs from its reviewed source snapshot")
+        matches.append((reference, plan, envelope))
+    if len(matches) > 1:
+        # Older runtimes could prepare duplicate contexts from timing alone.
+        # File presence identifies the submitted lease, irrespective of pass,
+        # fail, malformed output or signature. Normal ingestion verifies all
+        # provenance after selection; it never copies results across leases.
+        submitted = [row for row in matches if any(os.path.isfile(
+            slot["result_path"] if os.path.isabs(slot["result_path"]) else
+            os.path.join(store.workspace, slot["result_path"])) for slot in row[1]["slots"])]
+        if len(submitted) != 1:
+            raise ValueError("multiple prepared Plan snapshots need an exact submitted lease selection")
+        matches = submitted
+    return matches[0] if matches else None
+
+
 def prepare_lenses(runtime: Any, context: Any, material: dict[str, Any], worker_input: dict[str, Any],
                    candidates: dict[str, Any]) -> dict[str, Any]:
     """Select only this attempt's immutable input, then use the shared kernel."""
@@ -314,6 +367,7 @@ def prepare_lenses(runtime: Any, context: Any, material: dict[str, Any], worker_
     inputs["candidate"] = candidates
     files = sorted(set(requirement.get("context_files") or []) | set(material["output_paths"].values()))
     impact, graph_quality = {}, {}
+    prepared = None
     if definition["id"] == "plan":
         # The shared candidate reader has already run the Plan producer. These
         # exact bytes are reviewed and subsequently sealed, with no second
@@ -326,10 +380,15 @@ def prepare_lenses(runtime: Any, context: Any, material: dict[str, Any], worker_
             raise ValueError("Plan lens graph differs from its produced source topology")
         planned = candidates["plan-task"]
         tasks = planned["plan"]["tasks"] if "plan" in planned else [planned["task"]]
-        impact = runtime.depgraph.impact(workspace,
-            [path for task in tasks for path in task["scope"]],
-            policy=runtime.depgraph.aggregate_impact_policy(tasks))
-        graph_quality = runtime.depgraph.scan_quality(graph)
+        prepared = _prepared_plan(runtime, context, material, planned)
+        if prepared is None:
+            impact = runtime.depgraph.impact(workspace,
+                [path for task in tasks for path in task["scope"]],
+                policy=runtime.depgraph.aggregate_impact_policy(tasks))
+            graph_quality = runtime.depgraph.scan_quality(graph)
+        else:
+            impact = prepared[2]["impact"]
+            graph_quality = prepared[2]["graph_quality"]
         files = sorted(set(files) | {path for component in candidates["decomposition"]["components"]
             for path in component["files"]})
     selected = definition["working_lenses"] + definition["evaluation_lenses"]
@@ -356,6 +415,9 @@ def prepare_lenses(runtime: Any, context: Any, material: dict[str, Any], worker_
         runnability={}, requirement=requirement,
         acceptance=requirement.get("acceptance_criteria") or requirement.get("acceptance") or [],
         contracts=[])
+    if prepared is not None and envelope == prepared[1]["envelope"] and \
+            review._routing_decision(routing, lens.load_catalog()) == prepared[1]["decision"]:
+        return prepared[0]
     return review.prepare_lens_plan(store, envelope, routing,
         phase=definition["id"], binding=binding)
 
@@ -371,8 +433,13 @@ def phase_candidates(runtime: Any, workspace: str, material: dict[str, Any]) -> 
     if material["bindings"]["phase_id"] == "plan":
         state = runtime.load(workspace)
         context = runtime._phase_bridge_context(workspace, state)
+        package = input_package(runtime, context)
+        planned = runtime.seal_phase_plan_task(context["artifacts"], package, state, authored["plan-task"])
+        prepared = _prepared_plan(runtime, context, material, planned)
+        if prepared is not None:
+            return cast(dict[str, Any], copy.deepcopy(prepared[2]["diff"]["phase_inputs"]["candidate"]))
         authored = runtime.produce_spec_phase_candidates(context["artifacts"], context["definition"],
-            authored, package=input_package(runtime, context), state=state, workspace=workspace)
+            authored, package=package, state=state, workspace=workspace)
     return authored
 
 
@@ -401,6 +468,7 @@ def lens_evidence(store: Any, material: dict[str, Any]) -> dict[str, Any]:
     """Retain full collections across transformations, including zero-lens phases."""
     from taskplane import review, review_evidence, stage_artifacts
     by_plan: dict[str, dict[str, Any]] = {}
+    human_amendments: dict[str, dict[str, Any]] = {}
     references = [artifact["reference"] for artifact in material["package"]
                   if artifact["artifact_class"] == "lens-evidence"]
     if material["bindings"]["phase_id"] == "engineering" and "worker_input_reference" in material:
@@ -408,6 +476,11 @@ def lens_evidence(store: Any, material: dict[str, Any]) -> dict[str, Any]:
         references.extend(row["lens_evidence"] for row in inputs["accepted_evaluations"])
     for reference in references:
         packet = stage_artifacts.read(store, reference, "lens-evidence")
+        from taskplane import phase_amendment
+        phase_amendment.verify_human_evidence(store, packet.get("human_amendments", []),
+                                              material["bindings"]["run_id"])
+        for decision in packet.get("human_amendments", []):
+            human_amendments[decision["fingerprint"]] = decision
         for entry in packet["entries"]:
             plan = store.read(entry["plan"])
             collection = store.read(entry["collection"])
@@ -422,11 +495,17 @@ def lens_evidence(store: Any, material: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("phase lens results are incomplete: " + str(collected["collection"]))
     entries = list(by_plan.values()) + [collected]
     value = {"schema": "taskplane.lens-evidence/v1", "entries": entries}
+    if human_amendments:
+        value["human_amendments"] = list(human_amendments.values())
     return {**value, "fingerprint": review_evidence.content_fingerprint(value)}
 
 
 def lens_gate(runtime: Any, workspace: str, state: dict[str, Any]) -> dict[str, Any] | None:
     """Consume canonical verdicts without reclassifying or losing their evidence."""
+    from taskplane import phase_amendment
+    amendment = phase_amendment.current(runtime, workspace, state)
+    if amendment is not None and amendment["phase"] == "design":
+        return None  # Explicit human amendment, never an automated lens pass.
     pending = runtime._phase_bridge_pending(workspace, state)
     completion = ((pending or {}).get("phase_runtime") or {}).get("completion")
     if completion is None:
@@ -784,6 +863,10 @@ def resolve_retry(runtime: Any, ws: str, state: dict[str, Any], *, operation: st
 
 def pending(runtime: Any, ws: str, state: Mapping[str, Any]) -> dict[str, Any] | None:
     # Even after rollback, a prepared current stage remains pinned to v2.
+    from taskplane import phase_amendment
+    amended = phase_amendment.current(runtime, ws, dict(state), verify_candidate=False)
+    if amended is not None:
+        phase_amendment.require_cleanup(runtime, ws, amended)
     context = runtime._stage_loop_context(ws, state)
     if context is None or not isinstance(context.get("stage"), dict):
         return None
@@ -1482,6 +1565,48 @@ def observe_phase_runtime_hook(_ports: Any, ws: str, contract: Mapping[str, Any]
     return reconcile(_ports, ws, _ports.load(ws), operation)
 
 
+def _reconcile_build_effects(_ports: Any, ws: str, attempt: Any,
+                             start: dict[str, Any], terminal: dict[str, Any]) -> Any:
+    """Retire an authenticated stopped writer independently of output acceptance."""
+    requested, material, context, _, runtime, _ = attempt
+    from taskplane import delivery_ports
+    owner, lease = _ports._phase_bridge_build_owner(ws, context, runtime, material)
+    slot = material["contract_slot"]
+    path = _ports.tp.active_contract_path(ws, slot)
+    with _ports.tp.file_lock(path):
+        contract = _ports.tp.load_json(path, default=None, what="Build terminal contract")
+        if contract is None:
+            contract = _ports.tp.released_worker_contract(ws, slot)
+        lifecycle = contract["worker_lifecycle"]
+        if lease.owner != slot or lifecycle["dispatch_intent_id"] != lease.attempt_id or \
+                contract.get("phase_runtime") != requested or any(lifecycle["owner"] != {
+                    key: observed["owner"][key] for key in ("session_id", "agent_id", "task_name")}
+                    for observed in (start, terminal)) or set(lease.effect_scope) != {
+                    "workspace:" + item for item in contract["coding"]["scope_paths"]}:
+            raise ValueError("Build terminal differs from its bound effect owner")
+        with _ports.mutate(ws) as current:
+            owner._record(current, lease)
+        submission = _ports.tp.stop_submission_decision(ws, contract, loop_state=_ports.load(ws))
+        if submission.get("block"):
+            raise ValueError("Build terminal submission: " + submission["status"])
+        if any(other_slot != slot and _ports._scopes_overlap(contract["coding"]["scope_paths"],
+                (other.get("coding") or {}).get("scope_paths")) for other_slot, other in _ports.tp._active_worker_contracts(ws)):
+            raise ValueError("Build effect observation overlaps another worker")
+        if lifecycle["status"] != "released":
+            receipt = lifecycle.get("terminal") or _ports.tp.record_worker_terminal(ws, slot, event=None,
+                outcome=terminal["outcome"], submission_status="phase-terminal:" + terminal["claim"],
+                authority="phase-observation")
+            _ports.tp.release_worker_contract(ws, slot, action=lifecycle["release_action"], terminal_receipt=receipt)
+        _ports.tp.released_worker_contract(ws, slot)
+    # Only the existing signed release proves the writer is gone. Current
+    # scoped effects were observed above, not reported committed by a worker.
+    lease_terminal = delivery_ports.observe_lease_terminal(lease,
+        lambda bound: {"released": True, "effects": {scope:"observed" for scope in bound.effect_scope},
+            "terminal_identity": terminal["claim"]})
+    owner.reconcile(lease, lease_terminal)
+    return owner, lease, lease_terminal
+
+
 def _collect_phase_attempt(_ports: Any, ws: Any, attempt: Any, *, completed_worker: Any=None) -> Any:
     """Validate current candidates under saved scope; never replay host events."""
     from taskplane import review_evidence
@@ -1509,6 +1634,11 @@ def _collect_phase_attempt(_ports: Any, ws: Any, attempt: Any, *, completed_work
         return {"status": "collected", "receipt": prior, "replay": True, "native_readiness_claimed": False}
     if terminal["outcome"] not in {"success", "complete"}:
         return {"status": "pending", "operation_id": operation, "reason_code": "terminal_not_successful"}
+    # Native Stop and signed effect release are facts even when a candidate
+    # fails validation. Keeping them behind successful output collection traps
+    # human recovery behind the very invalid artifact it needs to replace.
+    build_effects = _reconcile_build_effects(_ports, ws, attempt, start, terminal) \
+        if stage["stage_kind"] == "build" else None
     authored = phase_candidates(_ports, ws, material)
     lens_plan = None
     if any(row["artifact_class"] == "lens-evidence" for row in definition["produces"]):
@@ -1548,40 +1678,8 @@ def _collect_phase_attempt(_ports: Any, ws: Any, attempt: Any, *, completed_work
             for row in output_rows))
     retro_receipt = None
     if stage["stage_kind"] == "build":
-        from taskplane import delivery_ports
-        owner, lease = _ports._phase_bridge_build_owner(ws, context, runtime, material)
-        slot = material["contract_slot"]
-        path = _ports.tp.active_contract_path(ws, slot)
-        with _ports.tp.file_lock(path):
-            contract = _ports.tp.load_json(path, default=None, what="Build terminal contract")
-            if contract is None:
-                contract = _ports.tp.released_worker_contract(ws, slot)
-            lifecycle = contract["worker_lifecycle"]
-            if lease.owner != slot or lifecycle["dispatch_intent_id"] != lease.attempt_id or \
-                    contract.get("phase_runtime") != requested or any(lifecycle["owner"] != {
-                        key: observed["owner"][key] for key in ("session_id", "agent_id", "task_name")}
-                        for observed in (start, terminal)) or set(lease.effect_scope) != {
-                        "workspace:" + item for item in contract["coding"]["scope_paths"]}:
-                raise ValueError("Build terminal differs from its bound effect owner")
-            with _ports.mutate(ws) as current:
-                owner._record(current, lease)
-            submission = _ports.tp.stop_submission_decision(ws, contract, loop_state=_ports.load(ws))
-            if submission.get("block"):
-                raise ValueError("Build terminal submission: " + submission["status"])
-            if any(other_slot != slot and _ports._scopes_overlap(contract["coding"]["scope_paths"],
-                    (other.get("coding") or {}).get("scope_paths")) for other_slot, other in _ports.tp._active_worker_contracts(ws)):
-                raise ValueError("Build effect observation overlaps another worker")
-            if lifecycle["status"] != "released":
-                receipt = lifecycle.get("terminal") or _ports.tp.record_worker_terminal(ws, slot, event=None,
-                    outcome=terminal["outcome"], submission_status="phase-terminal:" + terminal["claim"],
-                    authority="phase-observation")
-                _ports.tp.release_worker_contract(ws, slot, action=lifecycle["release_action"], terminal_receipt=receipt)
-            _ports.tp.released_worker_contract(ws, slot)
-        # Only the existing signed release proves the writer is gone. Current
-        # scoped effects were observed above, not reported committed by a worker.
-        lease_terminal = delivery_ports.observe_lease_terminal(lease,
-            lambda bound: {"released": True, "effects": {scope:"observed" for scope in bound.effect_scope},
-                "terminal_identity": terminal["claim"]})
+        assert build_effects is not None
+        owner, lease, lease_terminal = build_effects
         result = _ports.build_c.complete_build_phase(runtime, dispatch, observation,
             lease_owner=owner, lease=lease, terminal=lease_terminal)
     elif stage["stage_kind"] in {"evaluate", "engineering"}:
@@ -1643,6 +1741,10 @@ def _collect_phase_attempt(_ports: Any, ws: Any, attempt: Any, *, completed_work
 
 def _phase_bridge_gate_check(_ports: Any, ws: str, state: Mapping[str, Any]) -> None:
     """Require authentic collection before the existing substantive gate runs."""
+    from taskplane import phase_amendment
+    amendment = phase_amendment.current(_ports, ws, dict(state))
+    if amendment is not None and amendment["phase"] == "design":
+        return  # The separate human amendment receipt is the review basis.
     from taskplane import review_evidence, stage_entities, stage_handoff
     pending = _ports._phase_bridge_pending(ws, state)
     context = _ports._phase_bridge_context(ws, state)

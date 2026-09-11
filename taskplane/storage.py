@@ -43,6 +43,10 @@ class StorageIdentityError(RuntimeError):
     pass
 
 
+class _NoGitLocator(StorageIdentityError):
+    pass
+
+
 def resolve_repository_family(workspace: str) -> dict:
     """Locate the exact current worktree and its repository-family launcher.
 
@@ -197,10 +201,40 @@ def resolve_repository_identity(workspace: str, *, remote: str | None = None) \
         owner=None, name=name, remote=value, workspace=root)
 
 
-def taskplane_home(home: str | None = None) -> str:
-    configured = home or os.environ.get("TASKPLANE_HOME") or \
-        os.path.join(os.path.expanduser("~"), ".taskplane")
-    return os.path.realpath(os.path.abspath(os.path.expanduser(configured)))
+def project_taskplane_home(workspace: str) -> str:
+    """Return the project's execution directory without following its links."""
+    root = os.path.realpath(os.path.abspath(os.path.expanduser(workspace)))
+    path = os.path.join(root, ".taskplane")
+    if os.path.lexists(path):
+        mode = os.lstat(path).st_mode
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise StorageIdentityError(
+                "project execution storage must be a directory without symlinks")
+    return path
+
+
+def taskplane_home(home: str | None = None, *,
+                   workspace: str | None = None) -> str:
+    """Resolve explicit storage, an existing run binding, or project storage.
+
+    Existing locators remain authoritative until a deliberate storage
+    selection. No old user-home state is searched, copied, or migrated.
+    """
+    if home:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(home)))
+    configured = os.environ.get("TASKPLANE_HOME")
+    root = os.path.realpath(os.path.abspath(workspace or os.getcwd()))
+    if configured:
+        canonical = os.path.realpath(os.path.abspath(os.path.expanduser(configured)))
+        selection = _load_storage_selection(root) if workspace else None
+        if selection and canonical != selection["home"]:
+            raise StorageIdentityError(
+                "TASKPLANE_HOME does not match selected project execution storage")
+        return canonical
+    locator = load_workspace_locator(root)
+    if locator:
+        return str(locator["home"])
+    return project_taskplane_home(root)
 
 
 @dataclass(frozen=True)
@@ -224,20 +258,21 @@ class StorageLayout:
     def graph_cache_path(self, head: str, scanner_version: str) -> str:
         revision = _SAFE.sub("-", str(head)).strip("-.") or "unknown"
         scanner = _SAFE.sub("-", str(scanner_version)).strip("-.") or "unknown"
-        return os.path.join(self.cache_root, "graphs", self.repository_key,
-                            revision, f"{scanner}.json")
+        return _confined_stage_path(
+            self.home, "cache", "graphs", self.repository_key,
+            revision, f"{scanner}.json", leaf_kind="file")
 
 
 def resolve_layout(identity: RepositoryIdentity, *, run_id: str,
                    home: str | None = None) -> StorageLayout:
     """Return every canonical root for one repository/run without writing."""
-    root = taskplane_home(home)
+    root = taskplane_home(home, workspace=identity.workspace)
     key = identity.key
     run = validate_stage_path_id(run_id, "run id")
     run_root = os.path.join(root, "runs", run)
     checkout_root = os.path.join(root, "checkouts", key)
     project_root = os.path.join(root, "projects", key)
-    return StorageLayout(
+    layout = StorageLayout(
         home=root,
         repository_key=key,
         repository_record=os.path.join(root, "repositories", f"{key}.json"),
@@ -254,6 +289,13 @@ def resolve_layout(identity: RepositoryIdentity, *, run_id: str,
         artifact_root=os.path.join(run_root, "artifacts"),
         cache_root=os.path.join(root, "cache"),
     )
+    for name in ("checkout_root", "worktree_root", "project_root", "knowledge_root",
+                 "run_root", "state_root", "graph_root", "evidence_root", "lens_root",
+                 "artifact_root", "cache_root"):
+        relative = os.path.relpath(getattr(layout, name), root)
+        _confined_stage_path(root, *relative.split(os.sep), leaf_kind="directory")
+    _confined_stage_path(root, "repositories", f"{key}.json", leaf_kind="file")
+    return layout
 
 
 
@@ -364,6 +406,22 @@ def _storage_file_lock(path: str, *, timeout: float = 10.0):
                 f"could not release dashboard storage lock: {exc}") from exc
 
 
+def _checked_binding_path(path: str) -> str:
+    """Keep binding authority in Git metadata and reject redirected nodes."""
+    absolute = os.path.abspath(path)
+    for candidate in (os.path.dirname(absolute), absolute):
+        try:
+            mode = os.lstat(candidate).st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(mode):
+            raise StorageIdentityError("workspace binding uses an unsafe symlink")
+        expected = stat.S_ISDIR if candidate != absolute else stat.S_ISREG
+        if not expected(mode):
+            raise StorageIdentityError("workspace binding has an unsafe file type")
+    return absolute
+
+
 def _locator_path(checkout: str) -> str:
     # Run locators belong to the selected checkout's private Git directory.
     # Read that explicit marker directly on the hot path; invoking Git for
@@ -381,19 +439,86 @@ def _locator_path(checkout: str) -> str:
             raise StorageIdentityError("workspace Git marker is invalid")
         directory = os.path.join(checkout, line[len("gitdir: "):])
     if directory is not None and os.path.isfile(os.path.join(directory, "HEAD")):
-        return os.path.realpath(os.path.join(directory, LOCATOR))
+        return _checked_binding_path(os.path.join(
+            os.path.realpath(directory), LOCATOR))
     relative = _git_value(checkout, "rev-parse", "--git-path", LOCATOR)
     if not relative:
-        raise StorageIdentityError(
+        raise _NoGitLocator(
             "workspace locator requires a valid Git checkout")
-    return os.path.realpath(
-        relative if os.path.isabs(relative) else os.path.join(
-            checkout, relative))
+    return _checked_binding_path(
+        relative if os.path.isabs(relative) else os.path.join(checkout, relative))
+
+
+def _selection_path(checkout: str) -> str:
+    return _checked_binding_path(os.path.join(
+        os.path.dirname(_locator_path(checkout)), "execution-storage.json"))
+
+
+def _binding_fingerprint(value: object) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _load_storage_selection(checkout: str) -> dict | None:
+    try:
+        path = _selection_path(checkout)
+    except _NoGitLocator:
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise StorageIdentityError("execution storage selection is unreadable") from exc
+    root = os.path.realpath(os.path.abspath(checkout))
+    if not isinstance(value, dict) or set(value) != {
+            "schema", "checkout", "home", "previous_binding"} or \
+            value.get("schema") != "taskplane.execution-storage-selection/v1" or \
+            value.get("checkout") != root or \
+            value.get("home") != project_taskplane_home(root):
+        raise StorageIdentityError("execution storage selection identity is invalid")
+    previous = value.get("previous_binding")
+    if previous is not None:
+        if not isinstance(previous, dict) or set(previous) != {
+                "run_id", "home", "locator_path", "locator_fingerprint",
+                "manifest_fingerprint", "archive_path"} or \
+                not _FINGERPRINT.fullmatch(str(previous.get("locator_fingerprint"))) or \
+                not _FINGERPRINT.fullmatch(str(previous.get("manifest_fingerprint"))) or \
+                previous.get("locator_path") != _locator_path(root):
+            raise StorageIdentityError("execution storage previous binding is invalid")
+        validate_stage_path_id(previous.get("run_id"), "previous run id")
+        expected = _selection_archive_path(
+            value["home"], previous["locator_fingerprint"])
+        if previous.get("archive_path") != expected:
+            raise StorageIdentityError("execution storage archive path is invalid")
+        try:
+            with open(expected, encoding="utf-8") as handle:
+                archive = json.load(handle)
+        except (OSError, ValueError) as exc:
+            raise StorageIdentityError("execution storage archive is unavailable") from exc
+        if not isinstance(archive, dict) or \
+                _binding_fingerprint(archive.get("locator")) != previous["locator_fingerprint"] or \
+                _binding_fingerprint(archive.get("manifest")) != previous["manifest_fingerprint"]:
+            raise StorageIdentityError("execution storage archive fingerprint mismatch")
+        manifest = _unused_preflight_manifest(root, archive["locator"])
+        if _binding_fingerprint(manifest) != previous["manifest_fingerprint"]:
+            raise StorageIdentityError(
+                "execution_storage_migration_required: preserved prior manifest changed; "
+                "explicit migration is required to clear the read-only history guard")
+    return value
+
+
+def _selection_archive_path(home: str, fingerprint: str) -> str:
+    digest = _path_component(fingerprint, _FINGERPRINT, "binding fingerprint")
+    return _confined_stage_path(
+        home, "storage-selections", digest + ".json", leaf_kind="file")
 
 
 def write_workspace_locator(checkout: str, *, identity: RepositoryIdentity,
                             layout: StorageLayout, run_id: str) -> str:
-    """Write the only run-owned byte allowed in a managed checkout."""
+    """Bind the checkout's private Git metadata to one canonical run."""
     root = os.path.realpath(os.path.abspath(checkout))
     home = os.path.realpath(layout.home)
     paths = {
@@ -411,6 +536,9 @@ def write_workspace_locator(checkout: str, *, identity: RepositoryIdentity,
         "home": home, "paths": paths,
     }
     path = _locator_path(root)
+    selection = _load_storage_selection(root)
+    if selection and home != selection["home"]:
+        raise StorageIdentityError("workspace locator differs from selected execution storage")
     _atomic_json(path, value)
     return path
 
@@ -420,12 +548,15 @@ def load_workspace_locator(checkout: str) -> dict | None:
     root = os.path.realpath(os.path.abspath(checkout))
     try:
         path = _locator_path(root)
-    except StorageIdentityError:
+    except _NoGitLocator:
         return None
+    selection = _load_storage_selection(root)
     try:
         with open(path, encoding="utf-8") as handle:
             value = json.load(handle)
     except FileNotFoundError:
+        if selection and selection.get("previous_binding"):
+            raise StorageIdentityError("selected storage's previous locator is missing")
         return None
     except (OSError, ValueError) as exc:
         raise StorageIdentityError(f"workspace locator is unreadable: {exc}")
@@ -453,6 +584,12 @@ def load_workspace_locator(checkout: str) -> dict | None:
         if not isinstance(item, str) or not os.path.isabs(item) or \
                 os.path.commonpath((home, os.path.realpath(item))) != home:
             raise StorageIdentityError("workspace locator path escapes its home")
+    if selection:
+        previous = selection.get("previous_binding")
+        if previous and _binding_fingerprint(value) == previous["locator_fingerprint"]:
+            return None
+        if home != selection["home"]:
+            raise StorageIdentityError("workspace locator differs from selected execution storage")
     return value
 
 
@@ -460,11 +597,191 @@ def bind_workspace_taskplane_home(
         checkout: str, environment: MutableMapping[str, str]) -> str | None:
     """Recover the storage selection for CLI and hook processes alike."""
     locator = load_workspace_locator(checkout)
-    expected = str(locator["home"]) if locator else None
+    selection = _load_storage_selection(checkout) if locator is None else None
+    expected = (str(locator["home"]) if locator else
+                str(selection["home"]) if selection else None)
     if expected is None:
         return None
     _bind_taskplane_home(environment, expected)
     return expected
+
+
+def _unused_preflight_manifest(checkout: str, locator: dict) -> dict:
+    """Prove that rebinding cannot detach any governed execution authority."""
+    refusal = "execution_storage_migration_required"
+    if locator.get("task_id") or locator.get("primary_checkout") != checkout:
+        raise StorageIdentityError(f"{refusal}: worker bindings cannot be reselected")
+    # This read is intentionally inspect(), never load(): even a read lock or
+    # journal relay would write to storage the user is no longer authorizing.
+    if __package__:
+        from . import run_store as run_store_module
+    else:
+        import run_store as run_store_module
+    try:
+        _confined_stage_path(locator["home"], "runs", locator["run_id"],
+                             "manifest.json", leaf_kind="file")
+        manifest = run_store_module.RunStore(home=locator["home"]).inspect(
+            locator["run_id"])
+    except (OSError, ValueError, StorageIdentityError, run_store_module.RunStoreError) as exc:
+        raise StorageIdentityError(
+            f"{refusal}: prior run could not be inspected") from exc
+    identity = resolve_repository_identity(checkout)
+    repository = manifest.get("repository") or {}
+    allowed = {
+        "schema", "run_id", "revision", "status", "repository", "target",
+        "host", "preflight", "contract", "paths", "run_artifacts",
+        "stage_heads", "lineage", "stage_operations", "stage_journal_outbox",
+        "active_stage_projection",
+    }
+    if set(manifest) - allowed or \
+            manifest.get("status") not in {"preflight", "ready", "awaiting_user", "waiting_external"} or \
+            manifest.get("contract") != {"status": "inactive", "task_id": None} or \
+            any(manifest.get(key) for key in (
+                "stage_heads", "lineage", "stage_operations", "stage_journal_outbox")) or \
+            manifest.get("paths") != locator.get("paths") or \
+            repository.get("checkout") != checkout or \
+            repository.get("repo_id") != identity.repo_id or \
+            locator.get("repo_id") != identity.repo_id or \
+            locator.get("repository_key") != identity.key:
+        raise StorageIdentityError(
+            f"{refusal}: existing run is not an unused repository preflight")
+    layout = resolve_layout(identity, home=locator["home"], run_id=locator["run_id"])
+    expected_paths = {
+        "state": layout.state_root, "graph": layout.graph_root,
+        "evidence": layout.evidence_root, "lenses": layout.lens_root,
+        "artifacts": layout.artifact_root,
+    }
+    if locator.get("paths") != expected_paths:
+        raise StorageIdentityError(f"{refusal}: prior run paths are not canonical")
+    roots = [layout.run_root]
+    def unreadable(error: OSError) -> None:
+        raise StorageIdentityError(f"{refusal}: prior run state is unreadable") from error
+
+    for root in roots:
+        if os.path.islink(root):
+            raise StorageIdentityError(f"{refusal}: prior run state uses an unsafe symlink")
+        if not os.path.exists(root):
+            continue
+        for directory, names, filenames in os.walk(
+                root, followlinks=False, onerror=unreadable):
+            for name in names + filenames:
+                path = os.path.join(directory, name)
+                if os.path.islink(path):
+                    raise StorageIdentityError(f"{refusal}: prior run contains an unsafe symlink")
+                relative = os.path.relpath(path, root).split(os.sep)
+                if name in {"loop.json", "tracks.json", STAGE_EXECUTION_ROOT_CLAIM,
+                            STAGE_EXECUTION_ATTEMPT_CLAIM} or \
+                        "submission" in name.lower() or \
+                        (relative[0] == "stages" and os.path.isfile(path)):
+                    raise StorageIdentityError(
+                        f"{refusal}: prior run has execution or submission state")
+    # The shared knowledge tree contains retained histories from other runs.
+    # v4 execution is owned by the bound manifest, never the track catalog.
+    # Only a singleton/current-run legacy loop can make this binding's
+    # unused-preflight status ambiguous; unrelated histories stay untouched.
+    history_root = os.path.join(layout.knowledge_root, "state")
+    if os.path.isdir(history_root):
+        active_history = None
+        tracks_path = os.path.join(history_root, "tracks.json")
+        if os.path.lexists(tracks_path):
+            if os.path.islink(tracks_path):
+                raise StorageIdentityError(f"{refusal}: active track catalog uses an unsafe symlink")
+            try:
+                with open(tracks_path, encoding="utf-8") as handle:
+                    tracks = json.load(handle)
+            except (OSError, ValueError) as exc:
+                raise StorageIdentityError(f"{refusal}: active track catalog is unreadable") from exc
+            if not isinstance(tracks, dict):
+                raise StorageIdentityError(f"{refusal}: active track catalog is invalid")
+            active = tracks.get("active")
+            if active:
+                token = validate_stage_path_id(active, "active track id")
+                active_history = _confined_stage_path(
+                    locator["home"], "projects", identity.key, "knowledge", "state",
+                    "tracks", token, "loop.json", leaf_kind="file")
+        for directory, names, filenames in os.walk(
+                history_root, followlinks=False, onerror=unreadable):
+            names[:] = [name for name in names
+                        if not os.path.islink(os.path.join(directory, name))]
+            if "loop.json" not in filenames:
+                continue
+            path = os.path.join(directory, "loop.json")
+            if os.path.islink(path):
+                raise StorageIdentityError(f"{refusal}: historical loop is not safely inspectable")
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    history = json.load(handle)
+            except (OSError, ValueError) as exc:
+                raise StorageIdentityError(f"{refusal}: historical loop is unreadable") from exc
+            if not isinstance(history, dict):
+                raise StorageIdentityError(f"{refusal}: historical loop identity is ambiguous")
+            history_run = history.get("run_id")
+            if history_run == locator["run_id"] or \
+                    ((directory == history_root or path == active_history)
+                     and history and not history_run):
+                raise StorageIdentityError(
+                    f"{refusal}: current binding has legacy execution state")
+    return manifest
+
+
+def select_project_execution_storage(
+        workspace: str, *, environment: MutableMapping[str, str] | None = None) -> dict:
+    """Explicitly choose local execution without creating or migrating a run.
+
+    The only supersedable binding is an unused preflight. The old manifest
+    and locator are archived locally before a trusted Git selection marker
+    is written. The original locator and external run remain untouched.
+    """
+    root = os.path.realpath(os.path.abspath(workspace))
+    home = project_taskplane_home(root)
+    locator_path = _locator_path(root)
+    existing_selection = _load_storage_selection(root)
+    locator = load_workspace_locator(root)
+    if existing_selection:
+        if environment is not None:
+            environment["TASKPLANE_HOME"] = home
+        return {**existing_selection, "status": "already_selected",
+                "prior_history_guard": bool(existing_selection["previous_binding"])}
+    if locator and locator["home"] == home:
+        if environment is not None:
+            environment["TASKPLANE_HOME"] = home
+        return {"schema": "taskplane.execution-storage-selection/v1",
+                "status": "already_selected", "checkout": root,
+                "home": home, "previous_binding": None, "prior_history_guard": False}
+    manifest = _unused_preflight_manifest(root, locator) if locator else None
+    previous = None
+    if locator:
+        fingerprint = _binding_fingerprint(locator)
+        archive_path = _selection_archive_path(home, fingerprint)
+        previous = {
+            "run_id": locator["run_id"], "home": locator["home"],
+            "locator_path": locator_path, "locator_fingerprint": fingerprint,
+            "manifest_fingerprint": _binding_fingerprint(manifest),
+            "archive_path": archive_path,
+        }
+        os.makedirs(home, mode=0o700, exist_ok=True)
+        project_taskplane_home(root)
+        _ensure_confined_directories(home, os.path.dirname(archive_path))
+        archive = {"schema": "taskplane.execution-storage-archive/v1",
+                   "locator": locator, "manifest": manifest}
+        if os.path.exists(archive_path):
+            with open(archive_path, encoding="utf-8") as handle:
+                if json.load(handle) != archive:
+                    raise StorageIdentityError("execution storage archive already differs")
+        else:
+            _atomic_json(archive_path, archive)
+        # Re-prove the old manifest after archiving and before changing which
+        # run future invocations may use. No authority is silently discarded.
+        if _binding_fingerprint(_unused_preflight_manifest(root, locator)) != \
+                previous["manifest_fingerprint"] or \
+                _binding_fingerprint(load_workspace_locator(root)) != fingerprint:
+            raise StorageIdentityError("execution storage previous binding changed")
+    value = {"schema": "taskplane.execution-storage-selection/v1",
+             "checkout": root, "home": home, "previous_binding": previous}
+    _atomic_json(_selection_path(root), value)
+    if environment is not None:
+        environment["TASKPLANE_HOME"] = home
+    return {**value, "status": "selected", "prior_history_guard": bool(previous)}
 
 
 def _bind_taskplane_home(environment: MutableMapping[str, str], expected: str) -> None:
@@ -486,7 +803,7 @@ def bind_hook_taskplane_home(
 
     Calling this function declares that the invocation is a Taskplane hook.
     A governed checkout binds to its locator. Before governance exists,
-    both installed hook paths use the canonical user-default receipt home.
+    both installed hook paths use the canonical project receipt home.
     Run initialization is independent of hook readiness and produces the
     locator before dispatch. Hooks never create a competing run binding.
     """
@@ -494,12 +811,13 @@ def bind_hook_taskplane_home(
     if expected is None:
         # Installation precedes run initialization. Native and repository
         # hooks share this receipt-only bootstrap home; neither creates or
-        # selects a run. Explicit custom homes still fail the binding below.
+        # selects a run. Explicit configured homes are deliberate opt-ins.
         if str(hook_path or "").strip().lower() not in {"native", "bridge"}:
             raise StorageIdentityError(
                 "Taskplane hook requires a governed workspace locator")
-        expected = taskplane_home(os.path.join(
-            os.path.expanduser("~"), ".taskplane"))
+        configured = str(environment.get("TASKPLANE_HOME") or "")
+        expected = (taskplane_home(configured) if configured else
+                    project_taskplane_home(checkout))
     _bind_taskplane_home(environment, expected)
     return expected
 
@@ -553,7 +871,11 @@ def _confined_stage_path(home: str, *parts: str,
     are inspected with ``lstat`` so a symlink is never silently resolved into
     stage authority, even when its destination remains beneath Taskplane home.
     """
-    root = taskplane_home(home)
+    root = os.path.abspath(os.path.expanduser(home))
+    if os.path.realpath(root) != root:
+        raise StorageIdentityError("taskPlane home uses an unsafe symlink")
+    if os.path.lexists(root) and not stat.S_ISDIR(os.lstat(root).st_mode):
+        raise StorageIdentityError("taskPlane home is not a directory")
     path = os.path.abspath(os.path.join(root, *parts))
     if os.path.commonpath((root, path)) != root:
         raise StorageIdentityError("stage path escapes taskPlane home")
@@ -585,7 +907,7 @@ def _confined_stage_path(home: str, *parts: str,
 
 def stage_object_path_for_run(home: str, run_id: str, stage_id: str,
                               fingerprint: str) -> str:
-    """Canonical immutable stage-object path for an external run store."""
+    """Canonical immutable stage-object path for the selected run store."""
     run = validate_stage_path_id(run_id, "run id")
     stage = validate_stage_path_id(stage_id, "stage id")
     digest = _path_component(fingerprint, _FINGERPRINT, "stage fingerprint")
@@ -596,7 +918,7 @@ def stage_object_path_for_run(home: str, run_id: str, stage_id: str,
 
 def _confined_directory_components(home: str,
                                    directory: str) -> tuple[str, list[str]]:
-    root = taskplane_home(home)
+    root = _confined_stage_path(home, leaf_kind="directory")
     target = os.path.abspath(directory)
     if os.path.commonpath((root, target)) != root:
         raise StorageIdentityError("stage directory escapes taskPlane home")
@@ -878,8 +1200,19 @@ def _stage_locator(checkout: str) -> tuple[dict, str]:
     locator = load_workspace_locator(root)
     if locator is None:
         raise StorageIdentityError(
-            "stage storage requires a canonical external run locator")
+            "stage storage requires a canonical run locator")
     return locator, root
+
+
+def _validate_stage_source_separation(locator: dict, checkout: str,
+                                      path: str) -> None:
+    if os.path.commonpath((checkout, path)) != checkout:
+        return
+    primary = str(locator["primary_checkout"])
+    home = project_taskplane_home(primary)
+    if locator["home"] != home or \
+            os.path.commonpath((home, path)) != home or path == home:
+        raise StorageIdentityError("stage path is inside source checkout")
 
 
 def stage_object_path(checkout: str, stage_id: str, fingerprint: str) -> str:
@@ -887,8 +1220,7 @@ def stage_object_path(checkout: str, stage_id: str, fingerprint: str) -> str:
     locator, checkout_root = _stage_locator(checkout)
     path = stage_object_path_for_run(
         str(locator["home"]), str(locator["run_id"]), stage_id, fingerprint)
-    if os.path.commonpath((checkout_root, path)) == checkout_root:
-        raise StorageIdentityError("stage object path is inside source checkout")
+    _validate_stage_source_separation(locator, checkout_root, path)
     return path
 
 
@@ -898,9 +1230,7 @@ def stage_execution_root(checkout: str, stage_id: str,
     locator, checkout_root = _stage_locator(checkout)
     path = stage_execution_root_for_run(
         str(locator["home"]), str(locator["run_id"]), stage_id, attempt_id)
-    if os.path.commonpath((checkout_root, path)) == checkout_root:
-        raise StorageIdentityError(
-            "stage execution root is inside source checkout")
+    _validate_stage_source_separation(locator, checkout_root, path)
     return path
 
 
@@ -1221,7 +1551,7 @@ def worker_locator_error(primary: str, worker: str, task_id: str) -> str | None:
 
 
 def managed_write_allow(checkout: str) -> list[str] | None:
-    """Exact external run roots a managed read-only worker may populate."""
+    """Exact isolated run roots a managed read-only worker may populate."""
     locator = load_workspace_locator(checkout)
     if locator is None:
         return None
@@ -1279,15 +1609,12 @@ def tp_dir(workspace: str) -> str:
     locator = load_workspace_locator(workspace)
     if locator:
         return os.path.join(locator["paths"]["state"], "control")
-    return os.path.join(workspace, ".taskplane")
+    return project_taskplane_home(workspace)
 
 
-def store_home() -> str:
-    """Root of the taskplane store — holds every project's KB, out of any
-    repo. Defaults to ~/.taskplane; TASKPLANE_HOME overrides it (tests, or a
-    synced/shared drive)."""
-    return (os.environ.get("TASKPLANE_HOME")
-            or os.path.join(os.path.expanduser("~"), ".taskplane"))
+def store_home(workspace: str | None = None) -> str:
+    """Private knowledge and execution share the same canonical home."""
+    return taskplane_home(workspace=workspace)
 
 
 def _workspace_identity(workspace: str) -> str:
@@ -1328,12 +1655,15 @@ def store_env() -> str:
 
 
 def external_store_root(workspace: str) -> str:
-    """The classic PRIVATE external store (~/.taskplane/projects/<key>/),
-    resolved unconditionally — mode config never redirects this. It is the
-    private side of `tp share push` and the home of mode.json itself."""
+    """The private store, separate from an explicitly shared knowledge tree.
+
+    The historic name is retained for callers; its default home is now the
+    active project's .taskplane directory.
+    """
     locator = load_workspace_locator(workspace)
-    home = str(locator["home"]) if locator else store_home()
-    root = os.path.join(home, "projects", project_key(workspace))
+    home = str(locator["home"]) if locator else store_home(workspace)
+    root = _confined_stage_path(home, "projects", project_key(workspace),
+                                leaf_kind="directory")
     return root
 
 
@@ -1363,7 +1693,7 @@ def _remote_mode_file(workspace: str) -> str | None:
     if not url:
         return None
     h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
-    return os.path.join(store_home(), "modes", f"{h}.json")
+    return os.path.join(store_home(workspace), "modes", f"{h}.json")
 
 
 def _read_personal_mode(workspace: str) -> tuple[dict, bool]:
@@ -1396,7 +1726,7 @@ def _persistent_mode(workspace: str) -> dict:
 
     A committed shared config expresses the repository owner's preference;
     it is not consent from a newly arrived user.  Until that user records a
-    local choice, keep writes in the external store and make the one-command
+    local choice, keep writes in the private store and make the one-command
     shared opt-in explicit.  Managed hosts that deliberately force
     ``TASKPLANE_STORE=repo`` still take the environment-override path in
     :func:`get_mode`.
@@ -1424,7 +1754,7 @@ def _persistent_mode(workspace: str) -> dict:
                 "notice": (
                     "this repo offers a SHARED in-repo store "
                     "(.taskplane-kb/ — committed with the code), but this "
-                    "new local user remains PRIVATE in the external store "
+                    "new local user remains PRIVATE in the selected project store "
                     "until sharing is explicitly confirmed. Run `tp share "
                     "set shared` to opt in; `tp share set private` keeps "
                     "knowledge local."
@@ -1462,7 +1792,7 @@ def get_mode(workspace: str) -> dict:
 def set_mode(workspace: str, plan: str | None = None,
              private: bool | None = None) -> dict:
     """Update the plan and/or private flag (both changeable any time).
-    Personal settings persist in the external store's mode.json AND a
+    Personal settings persist in the private store's mode.json AND a
     remote-keyed copy (so they follow the repo across checkouts). The
     committed shared config (<ws>/.taskplane-kb/config.json) is written
     ONLY from the env-independent resolution, and ONLY for an explicit
@@ -1510,7 +1840,7 @@ def set_mode(workspace: str, plan: str | None = None,
 
 
 def store_root(workspace: str) -> str:
-    """This project's store dir — external (private, ~/.taskplane) or
+    """This project's store dir — private (selected home, default .taskplane) or
     in-repo (<ws>/.taskplane-kb, the Claude Tag / team-shared mode),
     resolved by get_mode(): TASKPLANE_STORE env wins, then the user's
     private setting, then a committed shared config, then the plan
@@ -1522,18 +1852,20 @@ def store_root(workspace: str) -> str:
 
 def kb_root(workspace: str) -> str:
     """Resolve only the explicitly selected project store."""
-    return os.path.join(store_root(workspace), "knowledge")
+    return _confined_stage_path(store_root(workspace), "knowledge",
+                                leaf_kind="directory")
 
 
 def store_meta_path(workspace: str) -> str:
     return os.path.join(store_root(workspace), "meta.json")
 
 
-def _quarantine_shared_store_meta(path: str) -> str | None:
+def _quarantine_shared_store_meta(path: str, workspace: str | None = None) -> str | None:
     """Move a stale shared locator into private recovery storage."""
     if not os.path.lexists(path):
         return None
-    quarantine = os.path.join(store_home(), "privacy-quarantine")
+    quarantine = _confined_stage_path(store_home(workspace), "privacy-quarantine",
+                                      leaf_kind="directory")
     _durable_makedirs(quarantine)
     identity = hashlib.sha256(os.path.abspath(path).encode("utf-8")).hexdigest()
     destination = os.path.join(quarantine, f"store-meta-{identity}.json")
@@ -1548,7 +1880,7 @@ def _quarantine_shared_store_meta(path: str) -> str | None:
 def write_store_meta(workspace: str) -> dict:
     """Record the store owner without publishing workstation identity.
 
-    The private external store retains the exact checkout locator needed by
+    The private store retains the exact checkout locator needed by
     legacy adoption and local recovery.  A repository store is committed and
     shared, so it carries only stable pseudonyms and a repository fingerprint;
     neither an absolute path nor a credential-bearing remote URL crosses that
@@ -1583,7 +1915,7 @@ def write_store_meta(workspace: str) -> dict:
     except OSError as exc:
         if shared:
             try:
-                quarantined = _quarantine_shared_store_meta(path)
+                quarantined = _quarantine_shared_store_meta(path, workspace)
             except OSError as quarantine_error:
                 raise StateError(
                     path, "shared store metadata write failed and stale raw "

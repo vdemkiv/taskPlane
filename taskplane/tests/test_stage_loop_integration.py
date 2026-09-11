@@ -428,7 +428,7 @@ def test_phase_plan_consumes_top_level_design_strategy_and_distinct_approval_dom
 
 
 
-@pytest.mark.parametrize("case", ["one-owner", "missing-cross-task-contract", "ambiguous-owner", "undeclared-addition", "approved-seam", "undeclared-seam"])
+@pytest.mark.parametrize("case", ["one-owner", "root-docs", "future-existing-file", "missing-cross-task-contract", "ambiguous-owner", "undeclared-addition", "approved-seam", "undeclared-seam"])
 def test_dependency_plan_uses_actual_scoped_ownership(tmp_path, case):
     from taskplane import plan_topology
     tmp_path = tmp_path / "repo"
@@ -438,9 +438,17 @@ def test_dependency_plan_uses_actual_scoped_ownership(tmp_path, case):
         destination = tmp_path / folder / "value.py"
         destination.parent.mkdir()
         destination.write_text(text)
+    root_docs = ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "PRIVACY.md"]
+    if case == "root-docs":
+        for name in root_docs:
+            (tmp_path / name).write_text("Existing documentation\n")
     for arguments in (("init",), ("add", "."), ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "source")):
         subprocess.run(["git", *arguments], cwd=tmp_path, check=True, capture_output=True)
     tasks = [{"id":"T1", "scope":["provider/value.py", "consumer/value.py"], "modules":["*"], "deps":[]}]
+    if case == "root-docs":
+        tasks[0]["scope"].extend(root_docs)
+    if case == "future-existing-file":
+        tasks[0]["scope"].append("unrelated/future.py")
     if case == "missing-cross-task-contract":
         tasks[0]["scope"] = ["provider/value.py"]
         tasks.append({"id":"T2", "scope":["consumer/value.py"], "deps":["T1"]})
@@ -465,9 +473,47 @@ def test_dependency_plan_uses_actual_scoped_ownership(tmp_path, case):
                 plan_topology.produce_dependency_plan(str(tmp_path), binding=binding, seam_contracts=seams, plan={"tasks":tasks})
             return
     result = plan_topology.produce_dependency_plan(str(tmp_path), binding=binding, seam_contracts=seams, plan={"tasks":tasks})
-    assert result["decomposition"]["tasks"] == [{"id":"T1", "nodes":["consumer", "provider"], "deps":[]}]
+    expected_nodes = ["consumer", "provider", "unrelated"] if case == "future-existing-file" else ["consumer", "provider"]
+    assert result["decomposition"]["tasks"] == [{"id":"T1", "nodes":expected_nodes, "deps":[]}]
     assert len(result["seam-manifest"]["seams"]) == len(seams)
     assert result["source-coverage"]["complete"] is True
+    if case == "root-docs":
+        from taskplane import wiring_closure
+        ws = str(tmp_path)
+        assert loop.depgraph.readiness(ws, tasks)["passed"]
+        assert "(root)" not in loop.depgraph.load(ws)["modules"]
+        assert loop.depgraph.modules_for_scope(root_docs) == []
+        assert loop.depgraph.scope_modules(ws, root_docs) == []
+        assert loop.depgraph.impact(ws, root_docs)["touched"] == []
+        assert loop.depgraph.completion(ws, root_docs, planned_modules=expected_nodes)["passed"]
+        (tmp_path / "README.md").write_text("Updated documentation\n")
+        realized = plan_topology.dependency_plan_projection(loop.depgraph.scan(ws, decompose=True), {"tasks":tasks})
+        assert wiring_closure.realized_seam_conformance(result["seam-manifest"], realized)["status"] == "conformant"
+        coding = {"scope_paths": tasks[0]["scope"], "dod": {"require_clean_scope_diff": True}}
+        assert taskplane_lite.dod_check({"coding": coding}, ws, taskplane_lite.git_head(ws)) == []
+        (tmp_path / "OUTSIDE.md").write_text("An undeclared file is still a scope violation\n")
+        errors = taskplane_lite.dod_check({"coding": coding}, ws, taskplane_lite.git_head(ws))
+        assert any("diff_scope:" in error and "OUTSIDE.md" in error for error in errors)
+        # A source file that happens to contain '.md' in its name remains code.
+        tasks[0]["scope"].append("README.md.py")
+        readiness = loop.depgraph.readiness(ws, tasks)
+        assert not readiness["passed"]
+        assert any("(root)" in error for error in readiness["errors"])
+        assert loop.depgraph.impact(ws, ["README.md.py"])["unknown"] == ["(root)"]
+        assert not loop.depgraph.completion(ws, ["README.md.py"], planned_modules=expected_nodes)["passed"]
+        (tmp_path / "README.md.py").write_text("VALUE = 3\n")
+        realized = plan_topology.dependency_plan_projection(loop.depgraph.scan(ws, decompose=True), {"tasks":tasks})
+        with pytest.raises(ValueError, match="unexpected source nodes"):
+            wiring_closure.realized_seam_conformance(result["seam-manifest"], realized)
+    if case == "future-existing-file":
+        from taskplane import wiring_closure
+        assert not (tmp_path / "unrelated/future.py").exists()
+        (tmp_path / "unrelated/future.py").write_text("VALUE = 3\n")
+        realized = plan_topology.dependency_plan_projection(
+            loop.depgraph.scan(str(tmp_path), decompose=True), {"tasks":tasks})
+        assert "unrelated/future.py" in {path for row in realized["components"] for path in row["files"]}
+        assert wiring_closure.realized_seam_conformance(
+            result["seam-manifest"], realized)["status"] == "conformant"
     if "addition" in case or seams:
         from taskplane import wiring_closure
         (tmp_path / "added").mkdir()
@@ -630,7 +676,8 @@ def _cli(ws, *arguments):
     return value
 
 
-def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeypatch):
+@pytest.mark.parametrize("invalid_collection", [False, True], ids=["accepted", "invalid-conformance"])
+def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeypatch, invalid_collection):
     """Public entry points with real local effects and simulated host events."""
     from taskplane.tests.phase_fixture import _emit_host_hook
     ws, store, run_id, artifacts, _ = collected_lens_design
@@ -670,6 +717,55 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
     with monkeypatch.context() as worker:
         worker.setenv("TASKPLANE_TASK", slot)
         assert _cli(ws, "submit", "pass")["submitted"] is True
+    if invalid_collection:
+        from taskplane import phase_amendment
+        prior_state = loop.load(ws)
+        prior_context = loop._phase_bridge_context(ws, prior_state)
+        stage_id = prior_context["stage"]["stage_id"]
+        prior_records = phase_records.phase_records(store.load(run_id))
+        code = target.read_bytes()
+        def invalid_output(*args, **kwargs):
+            # Exact native terminal/lease reconciliation must precede even a
+            # rejected producer artifact. This is failure injection, never a
+            # claimed Build acceptance or fabricated conformance receipt.
+            lease = loop.load(ws)["attempt_leases"][stage_id]
+            assert lease["released"] is True and lease["terminal_identity"]
+            assert set(lease["effects"].values()) == {"observed"}
+            raise ValueError("realized seam conformance: missing or unexpected source nodes")
+        with monkeypatch.context() as broken_candidate:
+            broken_candidate.setattr(loop, "seal_phase_build_conformance", invalid_output)
+            assert _emit_host_hook(ws, build, "SubagentStop", monkeypatch) == 2
+        released = loop.tp.released_worker_contract(ws, slot)
+        assert released["worker_lifecycle"]["terminal"]["authority"] == "phase-observation"
+        assert phase_pending(ws)["completion"] is None
+        with pytest.raises(ValueError, match="matching terminal and collected output"):
+            loop._phase_bridge_gate_check(ws, loop.load(ws))
+        assert phase_records.phase_records(store.load(run_id)) == prior_records
+        assert loop.load(ws)["step"] == "execute"
+        proposal = phase_amendment.candidate(loop, ws, "design", requirement["id"])
+        actor = prior_context["stage"]["authority"]["actor"]
+        amended = phase_amendment.amend(loop, ws, phase="design", by=actor,
+            reason="Reaffirm unchanged Design to correct Plan ownership for an already-approved path",
+            requirement_id=requirement["id"], expected_stage_fingerprint=proposal["stage_fingerprint"],
+            requirement_fingerprint=proposal["requirement_fingerprint"],
+            candidate_fingerprint=proposal["candidate_fingerprint"], worker_stopped=True)
+        assert not amended.get("error"), amended
+        assert amended["step"] == "design_approval"
+        decision = phase_amendment.current(loop, ws, loop.load(ws))
+        previous = artifacts.read(decision["previous_workflow"])
+        assert previous["tasks"] == prior_state["tasks"]
+        assert previous["attempt_leases"][stage_id]["released"] is True
+        retired = loop._indexed_stage(store, store.load(run_id), run_id, stage_id)
+        assert retired["outcome"] == "closed" and retired["terminal"]["completed_deliverables"] == []
+        assert phase_records.phase_records(store.load(run_id)) == prior_records
+        assert target.read_bytes() == code
+        assert loop.approve(ws, by=actor)["step"] == "plan"
+        replacement = loop._phase_bridge_context(ws, loop.load(ws))
+        package = loop.phase_harness.input_package(loop, replacement)
+        assert package.read("design")["requirement"] == requirement["id"]
+        assert package.read("test-strategy") == _strategy()
+        assert loop.load(ws)["tasks"] == []
+        return
     assert _emit_host_hook(ws, build, "SubagentStop", monkeypatch) == 0
     assert phase_pending(ws)["status"] == "collected"
     assert _cli(ws, "gate", "pass")["step"] == "evaluate"
@@ -680,6 +776,81 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
     verdict = _complete_evaluation(ws, monkeypatch, evaluate, run_id, requirement, "T1")
     assert _cli(ws, "gate", "pass")["step"] == "em"
     _complete_engineering(ws, monkeypatch, authority, artifacts, verdict, ["T1"])
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure"])
+def test_rejected_evaluate_stop_releases_only_authenticated_child(
+        collected_lens_design, monkeypatch, outcome):
+    """Real phase/slot owners with explicitly simulated native test events."""
+    import sys
+    from taskplane import run_artifacts
+    from taskplane.tests.phase_fixture import _emit_host_hook
+
+    class BoundaryChecked(Exception):
+        pass
+
+    def reject_children(ws, patch, evaluate, run_id, requirement, task_id):
+        import loop as hook_loop
+        children = evaluate["obligations"]["children"]
+        assert len(children) == 2
+        for child in children:
+            assert _emit_host_hook(ws, child, "SubagentStart", patch) == 0
+        state = loop.load(ws)
+        route = state["evaluate_child_evidence"]
+        records = phase_records.phase_records(collected_lens_design[1].load(run_id))
+        validation = copy.deepcopy(run_artifacts.load_manifest(
+            route["artifact_root"])["classes"]["validation"])
+        collection_calls = []
+        collect = hook_loop.complete_observed_evaluate_evidence_child
+
+        def observe_collection(*args, **kwargs):
+            collection_calls.append(args[1].get("last_assistant_message"))
+            return collect(*args, **kwargs)
+
+        patch.setattr(hook_loop, "complete_observed_evaluate_evidence_child", observe_collection)
+        slots = [child["obligations"]["contract_bootstrap"]["task_slot"] for child in children]
+        first = children[0]
+        before_slots = {slot: Path(taskplane_lite.active_contract_path(ws, slot)).read_bytes()
+                        for slot in slots}
+        # Matching task_name alone never authorizes a foreign child or an
+        # event whose native transcript cannot be authenticated.
+        assert _emit_host_hook(ws, first, "SubagentStop", patch,
+            agent_id="foreign-child", last_assistant_message="{}") == 2
+        assert _emit_host_hook(ws, first, "SubagentStop", patch,
+            agent_transcript_path=str(Path(ws).parent / "absent-native-transcript.jsonl"),
+            last_assistant_message="{}") == 2
+        assert collection_calls == []
+        assert {slot: Path(taskplane_lite.active_contract_path(ws, slot)).read_bytes()
+                for slot in slots} == before_slots
+
+        # Missing JSON and a real substantive-schema rejection must both
+        # release their own stopped slot without accepting child evidence.
+        for index, (child, raw) in enumerate(zip(children, (None, '{"schema":"blocked"}'))):
+            assert _emit_host_hook(ws, child, "SubagentStop", patch,
+                last_assistant_message=raw, outcome=outcome) == 2
+            slot = slots[index]
+            assert not Path(taskplane_lite.active_contract_path(ws, slot)).exists()
+            released = taskplane_lite.released_worker_contract(ws, slot)
+            receipt = released["worker_lifecycle"]["terminal"]
+            assert receipt["authority"] == "host-lifecycle"
+            assert receipt["submission_status"] == "evidence-rejected"
+            assert receipt["outcome"] == outcome
+            assert receipt["owner"] == released["worker_lifecycle"]["owner"]
+            if index == 0:
+                assert Path(taskplane_lite.active_contract_path(ws, slots[1])).read_bytes() == before_slots[slots[1]]
+        assert collection_calls == ([None, '{"schema":"blocked"}'] if outcome == "success" else [])
+        assert run_artifacts.load_manifest(route["artifact_root"])["classes"]["validation"] == validation
+        assert phase_records.phase_records(collected_lens_design[1].load(run_id)) == records
+        assert loop.load(ws)["step"] == "evaluate"
+        assert phase_pending(ws)["completion"] is None
+        with pytest.raises(ValueError, match="matching terminal and collected output"):
+            loop._phase_bridge_gate_check(ws, loop.load(ws))
+        raise BoundaryChecked
+
+    monkeypatch.setattr(sys.modules[__name__], "_complete_evaluation", reject_children)
+    with pytest.raises(BoundaryChecked):
+        test_public_plan_build_collects_scoped_commit(
+            collected_lens_design, monkeypatch, False)
 
 
 def _complete_evaluation(ws, monkeypatch, evaluate, run_id, requirement, task_id):

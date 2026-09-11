@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 
 import pytest
 
@@ -176,6 +177,57 @@ def test_prepare_existing_seed_accepts_only_exact_valid_idempotent_bytes(
         conflicting, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     with pytest.raises(root_seed.RootSeedError, match="other data"):
         root_seed.prepare_root_seed(tmp_path, seed_ref, context, inputs)
+
+
+@pytest.mark.parametrize("change", ["source", "plan"])
+def test_reapproved_plan_uses_private_immutable_seed_generation(tmp_path, monkeypatch, change):
+    from pathlib import Path
+    from taskplane import loop
+    source = tmp_path / "app.py"
+    source.write_text("VALUE = 1\n")
+    for args in (("init",), ("add", "app.py"),
+                 ("-c", "user.name=Fixture", "-c", "user.email=f@example.invalid", "commit", "-qm", "source")):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    task = {"id": "T1", "scope": ["app.py"], "tests": "python3 -m pytest"}
+    plan = tmp_path / "plan/tasks.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps({"tasks": [task]}))
+    state = {"run_id": "same-run", "baseline": loop.tp.git_head(str(tmp_path)),
+        "design_fingerprint": "d" * 64, "settings_digest": load_settings().digest,
+        "tasks": [task]}
+    legacy = tmp_path / "waves/execute/root-seed.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"retained historical seed, never this approval's target")
+    old_legacy = legacy.read_bytes()
+    original_state = copy.deepcopy(state)
+    first = loop._prepare_approved_plan_root(str(tmp_path), state)
+    first_ref = first["prepared"]["seed_ref"]
+    assert Path(first_ref).parts[:2] == (".taskplane", "root-seeds")
+    first_bytes = (tmp_path / first_ref).read_bytes()
+    monkeypatch.setattr(loop.time, "strftime", lambda *args: "2026-09-11T12:30:00Z")
+    assert loop._prepare_approved_plan_root(str(tmp_path), state) == first
+    assert state == original_state
+    if change == "source":
+        source.write_text("VALUE = 2\n")
+        subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=f@example.invalid",
+                        "commit", "-qm", "changed source"], cwd=tmp_path, check=True)
+        state["baseline"] = loop.tp.git_head(str(tmp_path))
+    else:
+        plan.write_text(json.dumps({"tasks": [task], "notes": "Correct the approved dependency projection"}))
+    changed_bytes = plan.read_bytes()
+    second = loop._prepare_approved_plan_root(str(tmp_path), state)
+    second_ref = second["prepared"]["seed_ref"]
+    assert second_ref != first_ref
+    assert loop._prepare_approved_plan_root(str(tmp_path), state) == second
+    assert (tmp_path / first_ref).read_bytes() == first_bytes
+    assert legacy.read_bytes() == old_legacy and plan.read_bytes() == changed_bytes
+    foreign = b"foreign target data"
+    (tmp_path / second_ref).write_bytes(foreign)
+    with pytest.raises(root_seed.RootSeedError, match="unreadable|other data"):
+        loop._prepare_approved_plan_root(str(tmp_path), state)
+    assert (tmp_path / second_ref).read_bytes() == foreign
+    assert (tmp_path / first_ref).read_bytes() == first_bytes
 
 
 @pytest.mark.parametrize("kind, error", [

@@ -1404,7 +1404,7 @@ def _v4_dashboard_source(
             "design_decomposition_receipt", "design_control_plane_binding", "delivery_mode_receipt",
             "plan_fingerprint", "graph_dor", "graph_dod", "wave_metrics_receipt",
             "wave_metrics_unavailable", "run_artifact_binding", "root_hygiene_receipt",
-            "_stage_native_root_authority", "signoff_evidence")
+            "_stage_native_root_authority", "signoff_evidence", "phase_amendment")
         state = {key: copy.deepcopy(workflow[key]) for key in fields if key in workflow}
         state.update({
             "step": (workflow.get("step") or (summary or {}).get("stage_kind") or
@@ -1492,6 +1492,8 @@ def _bounded_loop_values(
         "current_task": state.get("current_task"), "tasks": tasks,
         **({"stage_view": copy.deepcopy(state["stage_view"])}
            if isinstance(state.get("stage_view"), dict) else {}),
+        **({"phase_amendment": copy.deepcopy(state["phase_amendment"])}
+           if isinstance(state.get("phase_amendment"), dict) else {}),
     }
 
 

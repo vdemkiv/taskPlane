@@ -2498,6 +2498,12 @@ def _file_refs(src: str, relpath: str, file_index, artifact_only: bool) -> set:
     return out
 
 
+def _unscanned_root_artifact(relpath: str) -> bool:
+    """Root documentation/configuration has no scanner-owned source module."""
+    rel = str(relpath or "").replace("\\", "/")
+    return not posixpath.dirname(rel) and rel.endswith(ARTIFACT_EXT)
+
+
 def _is_artifact(relpath: str) -> bool:
     """A non-code file that is itself product surface (D-0016).
 
@@ -2508,7 +2514,7 @@ def _is_artifact(relpath: str) -> bool:
     a rule about which NEW files are admitted, not a change to old ids.
     """
     rel = str(relpath or "").replace("\\", "/")
-    return bool(posixpath.dirname(rel)) and rel.endswith(ARTIFACT_EXT)
+    return rel.endswith(ARTIFACT_EXT) and not _unscanned_root_artifact(rel)
 
 
 def _graph_scan_quality(
@@ -3391,6 +3397,8 @@ def modules_for_scope(scope_globs, manifests: dict | None = None) -> list:
     """
     mods = set()
     for g in scope_globs or []:
+        if _unscanned_root_artifact(g) and not any(token in g for token in ("*", "?", "[")):
+            continue
         prefix = g.split("*", 1)[0].rstrip("/")
         if not prefix:
             continue
@@ -3692,7 +3700,8 @@ def completion(ws: str, changed_files, planned_modules=None, policy: dict | None
     """Graph Definition of Done read model for one realized change."""
     graph = load(ws)
     files = list(changed_files or [])
-    actual = sorted({module_of(f, declared_module_ids(graph)) for f in files})
+    actual = sorted({module_of(f, declared_module_ids(graph)) for f in files
+                     if not _unscanned_root_artifact(f)})
     planned = sorted(set(planned_modules or []))
     imp = impact(ws, files, policy=policy)
     contract_files = sorted(
@@ -3881,7 +3890,8 @@ def impact(ws: str, changed_files, max_depth: int = 3, policy: dict | None = Non
     # their blast radius.
     _ids = declared_module_ids(g)
     touched = sorted(
-        {f if f in g["modules"] else module_of(f, _ids) for f in (changed_files or [])}
+        {f if f in g["modules"] else module_of(f, _ids) for f in (changed_files or [])
+         if f in g["modules"] or not _unscanned_root_artifact(f)}
     )
     seen = {m: 0 for m in touched}
     # frontier state carries the number of explicit contract/resource and

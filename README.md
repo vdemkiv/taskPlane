@@ -254,11 +254,12 @@ codex
 # inside Codex: /plugins, verify taskplane is enabled, then start a new session
 ```
 
-On first repository setup, taskplane installs a portable repo-local
-`.codex/hooks.json` and an ignored machine-local bridge, then asks you to start
-one more task so Codex loads the lifecycle hooks. After that first load, the
-bridge resolves the newest valid installed taskplane engine on every call, so
-plugin version updates do not require a Codex restart for hook execution.
+Taskplane uses the lifecycle hooks supplied by the enabled plugin. Repository
+setup creates an ignored `.taskplane/codex-hook.py` launcher when needed; it
+does not register a second set in `.codex/hooks.json`. Review and enable the
+plugin hooks in Codex settings. A new task is needed only if their initial
+loading still requires it. The launcher resolves the newest valid installed
+taskplane engine on every call.
 Codex still loads newly changed skill or MCP definitions at a task boundary.
 Repository URLs, refs, and pull requests do not require opening a new task:
 taskplane acquires them into a managed checkout, inherits the current host
@@ -327,11 +328,13 @@ It also checks `tp init`, which scaffolds the four context docs,
 scans the dependency graph, and creates the knowledge base. On a brownfield
 project, fill `current-state.md` first: it grounds every design review in as-built
 reality, and reinventing an existing component is a blocker-class finding.
-Onboarding then asks one question — keep taskplane knowledge private/local
-(`personal`, `~/.taskplane/projects/<repository-key>/knowledge`) or shared
+Onboarding presents editable setup controls inline in the Dashboard style.
+Choose whether taskplane knowledge stays private/local
+(`personal`, `.taskplane/projects/<repository-key>/knowledge`) or shared
 in-repo (`team`/`enterprise`, `.taskplane-kb/knowledge`) — and reports the
 resolved model-tier map. Source checkout, private run state, graph/evidence,
-and artifacts use separate roots under `~/.taskplane`; see
+and artifacts use separate roots under the project's ignored `.taskplane/`;
+existing bound runs retain their recorded location. See
 [repository preconditions and hybrid storage](docs/storage-and-repositories.md).
 Claude Code users
 reload plugins after installation; Chat/Cowork and Codex users start a new
@@ -376,7 +379,7 @@ taskplane/
 ├── scripts/                # generators (e.g. the lens-catalog doc)
 ├── discipline/             # TDD, debugging, worktrees — the operating disciplines
 ├── docs/                   # state spec + design notes + feature deep-dives
-# note: the knowledge base is NOT here — personal plans keep it in ~/.taskplane/projects/<key>/; Team/Enterprise keeps it in-repo at .taskplane-kb/
+# note: private runtime/knowledge stays ignored in .taskplane/; shared Team/Enterprise knowledge uses .taskplane-kb/
 ├── PRIVACY.md              # privacy policy (local-only, no telemetry)
 └── LICENSE                 # Apache License 2.0
 ```
@@ -406,5 +409,6 @@ taskplane/
 personally or at work, commercially or not, no strings. See `LICENSE`.
 **Privacy:** taskplane runs locally, collects nothing, and sends nothing — no
 telemetry, no accounts, no network calls of its own; all state stays on your disk,
-in an external store (`~/.taskplane`, personal plan) or in-repo (`.taskplane-kb/`,
-Team/Enterprise). See `PRIVACY.md`.
+in the project's ignored `.taskplane/` by default, or deliberately shared in
+`.taskplane-kb/` on Team/Enterprise. Explicit storage selections and existing
+bound runs retain their recorded locations. See `PRIVACY.md`.

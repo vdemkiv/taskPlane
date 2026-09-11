@@ -1162,6 +1162,13 @@ def consume_phase_handoff(store: object, reference: Mapping[str, object], *,
         expected_authority_fingerprint: str, expected_run_id: str,
         expected_candidate_fingerprint: str) -> PhasePackage:
     """Explicit package route; no active lifecycle selector is changed here."""
+    from taskplane import phase_amendment
+    amended = phase_amendment.package(store, dict(reference), registry=registry, phase_id=phase_id,
+        expected_authority_revision=expected_authority_revision,
+        expected_authority_fingerprint=expected_authority_fingerprint,
+        expected_run_id=expected_run_id, expected_candidate_fingerprint=expected_candidate_fingerprint)
+    if amended is not None:
+        return amended
     package = PhasePackage(store, registry, copy.deepcopy(dict(reference)), phase_id,
         expected_authority_revision, expected_authority_fingerprint,
         expected_run_id, expected_candidate_fingerprint)

@@ -105,7 +105,7 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str,
             from . import settings as settings_module
         else:
             import settings as settings_module
-        effective = settings_module.load_settings()
+        effective = settings_module.load_settings(workspace=primary)
     except Exception as exc:
         raise PreflightError(
             f"operational settings validation failed: {exc}") from exc
@@ -697,7 +697,7 @@ def persist_storage_pause(workspace: str, *, spec: str, host: dict,
                           run_id: str, detail: str) -> dict:
     action = RepositoryPreflight._action(
         run_id, kind="authorize_storage_root",
-        prompt=("taskPlane needs access to its external repository/run "
+        prompt=("taskPlane needs access to its selected repository/run "
                 "storage. Approve access and resume this review; a repeated "
                 "review start will remain paused."),
         detail=detail, choices=("approve", "retry", "cancel"))
@@ -739,12 +739,28 @@ def clear_bootstrap(row: dict) -> None:
 class RepositoryPreflight:
     """Prepare local/remote source and persist actionable user pauses."""
 
-    def __init__(self, *, home: str | None = None, tools_provider=None,
-                 acquirer=None, action_runner=None):
-        self.store = run_store.RunStore(home=home)
+    def __init__(self, *, home: str | None = None, workspace: str | None = None,
+                 tools_provider=None, acquirer=None, action_runner=None):
+        self._configured_home = home or os.environ.get("TASKPLANE_HOME")
+        self._owns_acquirer = acquirer is None
+        self._prepared_storage = False
+        self._initial_workspace = workspace
+        self._store = (run_store.RunStore(home=home, workspace=workspace)
+                       if self._configured_home or workspace else None)
         self.tools_provider = tools_provider or target_module.tools
-        self.acquirer = acquirer or repository.RepositoryManager(home=home)
+        self.acquirer = acquirer
         self.action_runner = action_runner or self._run_action
+
+    @property
+    def store(self):
+        if self._store is None:
+            self._store = run_store.RunStore(
+                home=self._configured_home, workspace=self._initial_workspace)
+        return self._store
+
+    @store.setter
+    def store(self, value):
+        self._store = value
 
     @staticmethod
     def _run_action(argv: list[str]) -> dict:
@@ -848,6 +864,13 @@ class RepositoryPreflight:
         if candidate and os.path.isdir(candidate):
             source_workspace = candidate
             parsed = {"kind": "local", "spec": candidate}
+        if not self._configured_home and not self._prepared_storage:
+            self.store = run_store.RunStore(workspace=source_workspace)
+            if self._owns_acquirer:
+                self.acquirer = repository.RepositoryManager(home=self.store.home)
+        if self.acquirer is None:
+            self.acquirer = repository.RepositoryManager(home=self.store.home)
+        self._prepared_storage = True
         remote_identity = None
         if parsed.get("kind") != "pr":
             try:
@@ -1008,7 +1031,7 @@ class RepositoryPreflight:
                 return self._needs_user(run, manifest, self._action(
                     run, kind="authorize_storage_root",
                     prompt=("taskPlane needs permission to bind the managed "
-                            "checkout to its external run storage. Approve "
+                            "checkout to its selected run storage. Approve "
                             "access, then retry this run."),
                     detail=f"{exc.__class__.__name__}: {exc}",
                     choices=("retry", "cancel")))
@@ -1047,7 +1070,8 @@ class RepositoryPreflight:
                 detail=str(pinned.get("reason") or "Git baseline missing"),
                 command_argv_sequence=[
                     ["git", "-C", source_workspace, "init"],
-                    ["git", "-C", source_workspace, "add", "-A"],
+                    ["git", "-C", source_workspace, "add", "-A", "--", ".",
+                     ":(exclude).taskplane"],
                     ["git", "-C", source_workspace, "-c",
                      "user.name=taskPlane", "-c",
                      "user.email=taskplane@local", "commit", "--allow-empty",
@@ -1064,7 +1088,7 @@ class RepositoryPreflight:
             return self._needs_user(run, manifest, self._action(
                 run, kind="authorize_storage_root",
                 prompt=("taskPlane needs permission to bind this checkout "
-                        "to its external run storage. Approve access, then "
+                        "to its selected run storage. Approve access, then "
                         "retry this run."),
                 detail=f"{exc.__class__.__name__}: {exc}",
                 choices=("retry", "cancel")))
@@ -1156,6 +1180,10 @@ class RepositoryPreflight:
         spec = str(target.get("spec") or "")
         checkout = str((manifest.get("repository") or {}).get("checkout")
                        or os.getcwd())
+        # The selected RunStore already owns this retry. A remote target's
+        # persisted checkout lives inside its acquisition tree and must not
+        # become another project home on resume.
+        self._prepared_storage = True
         return self.prepare(
             spec, workspace=checkout, host=dict(manifest.get("host") or {}),
             run_id=run_id)

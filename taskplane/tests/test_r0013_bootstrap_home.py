@@ -59,11 +59,13 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
         launcher.read_text(encoding="utf-8")
 
     native_manifest = ROOT / "hooks" / "hooks.json"
-    bridge_manifest = checkout / ".codex" / "hooks.json"
+    assert not (checkout / ".codex" / "hooks.json").exists()
+    # Exercise the retained bridge transport as an explicit synthetic event;
+    # onboarding now installs the launcher while the plugin owns hook setup.
     commands = {
-        (hook_path, event_name): _manifest_command(manifest, event_name)
-        for hook_path, manifest in (
-            ("native", native_manifest), ("bridge", bridge_manifest))
+        (hook_path, event_name): _manifest_command(native_manifest, event_name).replace(
+            "TASKPLANE_HOOK_PATH=native", "TASKPLANE_HOOK_PATH=" + hook_path)
+        for hook_path in ("native", "bridge")
         for event_name in ("SubagentStart", "SubagentStop")
     }
     assert all('.taskplane/codex-hook.py' in command
@@ -176,7 +178,7 @@ def test_hook_home_binding_rejects_noncanonical_and_accepts_secure_default_home(
             str(default_checkout), {"HOME": str(user_home)})
 
 
-def test_native_session_bootstrap_uses_only_canonical_default_without_locator(
+def test_native_session_bootstrap_uses_project_default_or_explicit_canonical_home(
         tmp_path, monkeypatch):
     checkout = tmp_path / "fresh-checkout"
     checkout.mkdir()
@@ -184,7 +186,7 @@ def test_native_session_bootstrap_uses_only_canonical_default_without_locator(
     user_home = tmp_path / "user-home"
     user_home.mkdir()
     monkeypatch.setenv("HOME", str(user_home))
-    canonical = user_home / ".taskplane"
+    canonical = checkout / ".taskplane"
 
     for hook_path in ("native", "bridge"):
         environment = {"HOME": str(user_home)}
@@ -192,9 +194,14 @@ def test_native_session_bootstrap_uses_only_canonical_default_without_locator(
             str(checkout), environment, hook_path=hook_path) == str(canonical)
         assert environment["TASKPLANE_HOME"] == str(canonical)
         assert storage.load_workspace_locator(str(checkout)) is None
-        with pytest.raises(storage.StorageIdentityError, match="does not match"):
+        configured = tmp_path / "unbound-custom-home"
+        assert storage.bind_hook_taskplane_home(
+            str(checkout), {"TASKPLANE_HOME": str(configured)},
+            hook_path=hook_path) == str(configured)
+        with pytest.raises(storage.StorageIdentityError, match="not canonical"):
             storage.bind_hook_taskplane_home(
                 str(checkout), {
                     "HOME": str(user_home),
-                    "TASKPLANE_HOME": str(tmp_path / "unbound-custom-home"),
+                    "TASKPLANE_HOME": str(configured / ".." / configured.name),
                 }, hook_path=hook_path)
+    assert not (user_home / ".taskplane").exists()

@@ -7,6 +7,7 @@ the next dispatch when a delivery budget is reached.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
 import json
@@ -1814,6 +1815,21 @@ def record_root_meter(
         ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *,
         observation_authority: bytes) -> dict[str, Any]:
     """Attach one fresh monotonic root meter without reopening a refusal."""
+    return _record_root_meter(ledger, meter,
+        observation_authority=observation_authority)
+
+
+def open_root_generation(
+        ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *,
+        observation_authority: bytes) -> dict[str, Any]:
+    """Retain the previous admission while opening a verified seed generation."""
+    return _record_root_meter(ledger, meter,
+        observation_authority=observation_authority, generation=True)
+
+
+def _record_root_meter(
+        ledger: MutableMapping[str, Any], meter: Mapping[str, Any], *,
+        observation_authority: bytes, generation: bool = False) -> dict[str, Any]:
     validate_ledger(ledger)
     admission = ledger.get("root_admission")
     if not isinstance(admission, MutableMapping):
@@ -1830,6 +1846,10 @@ def record_root_meter(
     authority_fingerprint = hashlib.sha256(
         observation_authority).hexdigest()
     prior = admission.get("meter")
+    if generation and (not isinstance(prior, Mapping) or prior.get("status") != "available" or
+            checked_meter.get("status") != "available" or prior.get("status_receipt_fingerprint") ==
+            checked_meter.get("status_receipt_fingerprint")):
+        raise DispatchTelemetryError("root generation requires a new authenticated start binding")
     prior_authority = admission.get("observation_authority_fingerprint")
     if prior_authority is not None and prior_authority != \
             authority_fingerprint:
@@ -1848,11 +1868,13 @@ def record_root_meter(
         if next_sequence < prior_sequence:
             raise DispatchTelemetryError(
                 "root meter watermark moved backwards")
-        identity_fields = (
+        identity_fields: tuple[str, ...] = (
             "session_pseudonym", "source_identity_fingerprint",
-            "status_receipt_fingerprint", "resumed",
+            "resumed",
             "first_observed_input_tokens",
         )
+        if not generation:
+            identity_fields += ("status_receipt_fingerprint",)
         if any(prior_watermark.get(field) != next_watermark.get(field)
                for field in identity_fields):
             raise DispatchTelemetryError(
@@ -1875,6 +1897,8 @@ def record_root_meter(
     _validate_root_admission(
         candidate, observation_authority=observation_authority,
         require_authenticated_meter=True)
+    if generation:
+        ledger.setdefault("root_admission_history", []).append(copy.deepcopy(admission))
     admission.update(candidate)
     ledger["revision"] = int(ledger["revision"]) + 1
     return dict(admission)

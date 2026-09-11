@@ -212,7 +212,12 @@ def judgment(value: Any) -> None:
 
 
 def lens_evidence(value: Any) -> None:
-    _object(value, {"schema": str, "entries": list, "fingerprint": str}, label="lens evidence")
+    _object(value, {"schema": str, "entries": list, "fingerprint": str},
+            {"human_amendments": list}, label="lens evidence")
+    human = value.get("human_amendments", [])
+    if any(not isinstance(row, dict) or row.get("kind") != "phase-amendment-decision"
+           or not row.get("fingerprint") for row in human):
+        raise ValueError("human amendment evidence needs exact decision references")
     identities = []
     for entry in value["entries"]:
         _object(entry, {"plan": dict, "collection": dict, "validations": list, "status": str},
@@ -220,7 +225,7 @@ def lens_evidence(value: Any) -> None:
         if entry["status"] != "complete":
             raise ValueError("only complete lens collections can enter a phase handoff")
         identities.append(entry["plan"].get("fingerprint"))
-    if not identities or None in identities or len(identities) != len(set(identities)):
+    if (not identities and not human) or None in identities or len(identities) != len(set(identities)):
         raise ValueError("lens evidence needs distinct saved phase plans")
     _seal(value)
 

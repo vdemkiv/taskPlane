@@ -13,6 +13,8 @@ from taskplane.dashboard import (
     _widget_detail_panels,
     _widget_tabs,
     native_dashboard_projection,
+    render_findings,
+    render_findings_paged,
     render_native_dashboard_surface,
 )
 from taskplane.host_native import HostSurfaceSnapshot
@@ -106,6 +108,49 @@ def _run_node(source):
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
+def test_review_controls_and_paged_gate_start_without_foreign_functions():
+    """Execute real emitted scripts; never stub TaskPlane's own functions."""
+    findings = [{"severity": "high", "title": "First finding"},
+                {"severity": "low", "title": "Second finding"}]
+    meta = {"gate": True, "gate_buttons": [
+        {"label": "Request changes", "prompt": "request changes"}]}
+    full = render_findings(findings, meta)
+    pages = render_findings_paged(findings * 20, meta)
+    assert len(pages) > 1
+    harness = r'''
+const vm=require("vm"), assert=require("assert");
+function target(dataset={}) {return {dataset,style:{display:"none"},attrs:{},
+  setAttribute(k,v){this.attrs[k]=v;},closest(){return this;}};}
+const listeners=[],sent=[],high=target({sev:"high"}),low=target({sev:"low"});
+const allChip=target({sev:"all"}),highChip=target({sev:"high"});
+const detail=target(),toggle=target({tpfToggle:"0"}),label=target();
+label.parentNode=toggle;
+const root={dataset:{},contains(){return true;},
+  addEventListener(name,callback){listeners.push(callback);}};
+const document={...root,getElementById(id){return {
+  "tp-inline-review-root":root,"tpf-d0":detail,"tpf-t0":label}[id]||null;},
+  querySelectorAll(s){return s===".tpf-card"?[high,low]:[allChip,highChip];}};
+const context=vm.createContext({document,window:{openai:{
+  sendFollowUpMessage(message){sent.push(message.prompt);}}},Promise});
+function click(b){listeners.forEach(fn=>fn({target:b}));}
+'''
+    _run_node(harness + f'vm.runInContext({json.dumps(_controller(full))},context);' + r'''
+assert.equal(high.style.display,"block");assert.equal(low.style.display,"block");
+click(highChip);
+assert.equal(high.style.display,"block");assert.equal(low.style.display,"none");
+assert.equal(highChip.attrs["aria-pressed"],"true");
+click(toggle);assert.equal(detail.style.display,"block");
+click(toggle);assert.equal(detail.style.display,"none");
+click(target({tpPrompt:"request changes"}));
+assert.deepEqual(sent,["request changes"]);
+''')
+    _run_node(harness + f'vm.runInContext({json.dumps(_controller(pages[0]["html"]))},context);' + r'''
+assert.equal(typeof context.tpFilter,"undefined");
+click(target({tpPrompt:"request changes"}));
+assert.deepEqual(sent,["request changes"]);
+''')
+
+
 def _contrast(foreground, background):
     def luminance(color):
         channels = [int(color[offset:offset + 2], 16) / 255
@@ -149,10 +194,8 @@ class Target {
 const elements={}; ["tp-simple","tp-detail","tp-vb-simple","tp-vb-detail",
   "tp-detail-tabs","tp-panel-loop","tp-panel-map","tp-tab-loop","tp-tab-map"].forEach(
   function(id){elements[id]=new Target();});
-const reviewRoot={dataset:{},addEventListener(){},contains(){return true;}};
-global.tpFilter=function(){};
 global.document={activeElement:null,createElement(){return new Target();},
-  getElementById(id){return id==="tp-inline-review-root"?reviewRoot:(elements[id]||null);},
+  addEventListener(){},getElementById(id){return elements[id]||null;},
   getElementsByClassName(){return [];}};
 global.window={};
 ''' + controller + r'''
@@ -254,10 +297,8 @@ first.parentNode=parent; second.parentNode=parent;
 const elements={}; ["tp-simple","tp-detail","tp-vb-simple","tp-vb-detail",
   "tp-panel-loop","tp-panel-map","tp-tab-loop","tp-tab-map"].forEach(
   function(id){elements[id]=new Target();});
-const reviewRoot={dataset:{},addEventListener(){},contains(){return true;}};
-global.tpFilter=function(){};
 global.document={activeElement:null,createElement(){return new Target();},
-  getElementById(id){return id==="tp-inline-review-root"?reviewRoot:(elements[id]||null);},
+  addEventListener(){},getElementById(id){return elements[id]||null;},
   getElementsByClassName(){return [];}};
 let rejectSend;
 global.window={openai:{sendFollowUpMessage(){return new Promise(function(resolve,reject){rejectSend=reject;});}}};

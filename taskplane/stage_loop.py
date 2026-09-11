@@ -212,6 +212,10 @@ def _verified_stage_handoff(_ports, lifecycle: object, store: object,
                             manifest: Mapping[str, object], stage: dict) \
         -> dict | None:
     """Resolve only the successor's selected, authority-bound handoff."""
+    from taskplane import phase_amendment
+    amended = phase_amendment.verified_handoff(_ports, lifecycle, manifest, stage)
+    if amended is not None:
+        return amended
     predecessors = list(stage.get("predecessor_stage_ids") or [])
     parents = list(stage.get("parent_stage_ids") or [])
     if not predecessors and parents:
@@ -1189,8 +1193,22 @@ def _stage_loop_transition(_ports,
     if not evidence:
         raise ValueError(
             "stage-native successor transition lacks stage-owned evidence")
+    from taskplane import phase_amendment
+    amended = phase_amendment.current(_ports, ws, dict(source_state))
     phase_attempt = _ports._phase_bridge_pending(ws, source_state)
-    if phase_attempt is not None or _ports._phase_bridge_context(ws, source_state) is not None:
+    if amended is not None and amended["phase"] == "design":
+        if from_kind != "design" or to_kind != "plan" or not state.get("design_approved_by"):
+            raise ValueError("amended Design requires separate human approval before Plan")
+        selected_artifacts = [row["reference"] for row in amended["artifacts"]]
+        evidence.append(state["phase_amendment"]["receipt"])
+        next_handoff = stage_handoff.create_manifest(artifact_store,
+            producer_stage_id=str(stage["stage_id"]), producer_outcome="done",
+            requirement=stage["requirement"], design=stage.get("design"), target=target, commit=commit,
+            contracts={"provided": list(stage.get("contracts") or []), "consumed": [], "changed": []},
+            deliverables=completed, evidence_references=evidence, selected_artifacts=selected_artifacts,
+            exclusions=sorted(stage_handoff.REQUIRED_EXCLUSIONS), authorization=authorization)
+        native_ref = stage_handoff.store_manifest(artifact_store, next_handoff)
+    elif phase_attempt is not None or _ports._phase_bridge_context(ws, source_state) is not None:
         _ports._phase_bridge_gate_check(ws, source_state)
         if terminal_outcome != "done":
             raise ValueError("phase collection cannot authorize a non-successor transition")

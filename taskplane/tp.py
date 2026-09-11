@@ -354,14 +354,75 @@ _PLUGIN_SEMVER_RE = re.compile(
     r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
 
 
-def _codex_hooks_report(ws: str) -> dict:
-    """Mechanical configuration state of the repo-local Codex hook bridge.
+def _project_hook_duplicates(ws: str, *, remove: bool = False) -> int:
+    """Recognize only the old generated project-launcher command entries."""
+    import shlex
+    path = os.path.join(ws, _CODEX_HOOK_CONFIG)
+    if not os.path.lexists(path):
+        return 0
+    if os.path.realpath(path) != os.path.abspath(path):
+        raise ValueError("project hooks must not traverse symbolic links")
+    with open(path, encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict) or not isinstance(value.get("hooks", {}), dict):
+        raise ValueError("project hooks configuration is invalid")
+    count = 0
+    generated = _codex_hook_rows()
+    commands = {"screen", "context", "subagent-start", "subagent-stop",
+                "screen-dispatch", "screen-skill", "screen-render", "session-verify"}
+    for event, groups in value.get("hooks", {}).items():
+        if not isinstance(groups, list):
+            raise ValueError("project hook groups must be a list")
+        kept_groups = []
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                # Unknown extension rows carry no recognized owned commands.
+                kept_groups.append(group)
+                continue
+            kept = []
+            for hook in group["hooks"]:
+                command = hook.get("command") if isinstance(hook, dict) else None
+                try:
+                    argv = shlex.split(command) if isinstance(command, str) else []
+                except ValueError:
+                    argv = []
+                owned = (isinstance(hook, dict) and hook.get("type") == "command"
+                    and "commandWindows" not in hook
+                    and len(argv) == 3 and argv[0] in {"python", "python3"}
+                    and argv[1] in {_CODEX_HOOK_RUNNER, "./" + _CODEX_HOOK_RUNNER,
+                                   os.path.join(ws, _CODEX_HOOK_RUNNER)}
+                    and argv[2] in commands)
+                if isinstance(hook, dict) and hook.get("type") == "command":
+                    # Match the full generated platform pair. A foreign
+                    # alternative command must never disappear with it.
+                    owned = owned or any(
+                        all(hook.get(key) == template.get(key)
+                            for key in ("command", "commandWindows"))
+                        for row in generated.get(event, [])
+                        for template in row.get("hooks", []))
+                if owned:
+                    count += 1
+                if not (owned and remove):
+                    kept.append(hook)
+            if kept or not group["hooks"] or set(group) - {"matcher", "hooks"}:
+                kept_groups.append({**group, "hooks": kept})
+        if remove:
+            value["hooks"][event] = kept_groups
+    if remove and count:
+        tp.atomic_write_bytes(path, (json.dumps(value, indent=2) + "\n").encode())
+    return count
 
-    A matching file and runner prove configuration, not that the current host
-    session loaded either.  `_onboard_report` obtains runtime truth from the
-    separate HostCapabilitySnapshot authority.
+
+def _codex_hooks_report(ws: str) -> dict:
+    """Plugin installation and optional CLI launcher, never runtime truth.
+
+    Codex registers the plugin's manifest. Project hook registrations are
+    neither installed nor required. The ignored launcher is only a stable
+    entry point into that plugin, including from linked checkouts.
     """
     config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
+    manifest = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "hooks", "hooks.json")
     runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
     if not os.path.isfile(runner_path):
         # Match the hook commands' explicit Git-family fallback. Never search
@@ -377,30 +438,32 @@ def _codex_hooks_report(ws: str) -> dict:
             runner_path = os.path.join(primary, _CODEX_HOOK_RUNNER)
             config_path = os.path.join(primary, _CODEX_HOOK_CONFIG)
     try:
-        config = tp.load_json(config_path, default=None,
-                              what="Codex hook configuration")
-        encoded = json.dumps(config, sort_keys=True) if isinstance(config, dict) else ""
         with open(runner_path, encoding="utf-8") as handle:
             runner_body = handle.read()
-    except Exception as exc:
-        return {"ok": False, "status": "missing", "path": config_path,
-                "reason": str(exc)}
-    configured = _CODEX_HOOK_MARKER in encoded
+    except OSError:
+        runner_body = ""
     family = _codex_runner_family(runner_body)
     if family:
         installed_engine = _resolve_taskplane_engine(family)
     else:
         installed_engine = None
     runner = bool(installed_engine and os.path.isfile(installed_engine))
+    installed = os.path.isfile(manifest)
+    duplicates = _project_hook_duplicates(ws)
     return {
-        "ok": bool(configured and runner),
-        "status": "ready" if configured and runner else "stale",
+        "ok": installed and runner and not duplicates,
+        "duplicate_project_hooks": duplicates,
+        "installed": installed,
+        "status": "ready" if installed and runner and not duplicates else "stale" if installed else "missing",
+        "registration": "plugin", "manifest": manifest,
+        "project_hooks_required": False, "launcher_ready": runner,
         "config": config_path, "runner": runner_path,
         "resolved_engine": installed_engine,
-        "hint": (None if configured and runner else
-                 "Run `tp onboard --install-codex-hooks --json`. A new "
-                 "Codex task is needed only when workspace hooks have not "
-                 "been loaded before; version refreshes use the stable runner."),
+        "hint": ("Run onboard --install-launcher to prepare the project entry point."
+                 if installed and (not runner or duplicates) else
+                 "Enable the installed TaskPlane plugin in Codex; readiness "
+                 "requires a host-observed native hook receipt." if installed
+                 else "Install the TaskPlane plugin with its native hooks."),
     }
 
 
@@ -456,7 +519,6 @@ def _host_capability_snapshot(ws: str, install_context: str | None = None, *,
                               session_id: str | None = None, host: str | None = None):
     """Use verified hook context when supplied; CLI defaults stay ambient."""
     context = install_context or _install_context()
-    bridge = _codex_hooks_report(ws)
     plugin_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     native_manifest = os.path.join(plugin_root, "hooks", "hooks.json")
     if host is None:
@@ -468,14 +530,14 @@ def _host_capability_snapshot(ws: str, install_context: str | None = None, *,
         session_id = (os.environ.get("CODEX_THREAD_ID")
                       or os.environ.get("CLAUDE_SESSION_ID"))
     observations = host_caps.runtime_hook_observations(
-        tp.store_home(), session_id=session_id, workspace=ws)
+        tp.store_home(ws), session_id=session_id, workspace=ws)
     # Explicit adapter-owned environment receipts take precedence over the
     # short-lived runtime receipt when both exist.
     observations.update(host_caps.observations_from_environment(os.environ))
     return host_caps.probe_snapshot(
         ws, host=host, host_version=version, session_id=session_id,
         install_context=context, native_installed=os.path.isfile(
-            native_manifest), bridge_configured=bool(bridge.get("ok")),
+        native_manifest), bridge_configured=False,
         observations=observations,
         now=_time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()))
 
@@ -678,64 +740,11 @@ def _codex_hook_rows() -> dict:
     return generated
 
 
-def _taskplane_only_codex_config(value: dict) -> bool:
-    """True only for an untracked config composed entirely by Taskplane."""
-    if not isinstance(value, dict) or set(value) != {"hooks"} or not \
-            isinstance(value.get("hooks"), dict):
-        return False
-    commands = [str(hook.get("command") or "")
-                for rows in value["hooks"].values()
-                for row in rows for hook in row.get("hooks") or []]
-    return bool(commands) and all(
-        _CODEX_HOOK_MARKER in command
-        or "host_native_runtime.py" in command
-        for command in commands)
-
-
-def _exclude_generated_codex_config(ws: str, value: dict) -> None:
-    """Keep Taskplane's local bridge out of the repository's review diff."""
-    if not _taskplane_only_codex_config(value):
-        return
-    tracked = tp._run(
-        ["git", "ls-files", "--error-unmatch", "--", _CODEX_HOOK_CONFIG],
-        cwd=ws)
-    if tracked.returncode == 0:
-        return
-    location = tp._run(
-        ["git", "rev-parse", "--git-path", "info/exclude"], cwd=ws)
-    if location.returncode:
-        return
-    path = location.stdout.strip()
-    if not os.path.isabs(path):
-        path = os.path.join(ws, path)
-    pattern = "/.codex/hooks.json"
-    try:
-        with open(path, encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-    except FileNotFoundError:
-        lines = []
-    if pattern in lines:
-        return
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    temporary = path + f".tmp.{os.getpid()}"
-    try:
-        with open(temporary, "w", encoding="utf-8", newline="") as handle:
-            if lines:
-                handle.write("\n".join(lines) + "\n")
-            handle.write(pattern + "\n")
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
 def _install_codex_hooks(ws: str) -> dict:
-    """Install the portable workspace config and ignored local engine bridge.
+    """Install only the ignored CLI launcher; hooks belong to the plugin.
 
-    Native plugin hooks and the workspace bridge share the same event guard.
-    The workspace configuration stays portable; the
-    ignored runner holds a stable installation-family path and resolves the
-    newest valid engine on every invocation.
+    Remove only recognized generated project duplicates; preserve unrelated
+    hooks and settings. Never register another project hook set.
     """
     # Managed policy is an authority boundary, not a setup inconvenience.
     # Refuse before opening the workspace config and never edit a managed
@@ -754,63 +763,30 @@ def _install_codex_hooks(ws: str) -> dict:
                     "settings were not changed.",
         }
 
-    config_path = os.path.join(ws, _CODEX_HOOK_CONFIG)
-    prior = tp.load_json(config_path, default={"hooks": {}},
-                         what="Codex hook configuration")
-    if not isinstance(prior, dict) or not isinstance(prior.get("hooks"), dict):
-        raise RuntimeError("existing .codex/hooks.json is not a hook object")
-    original = json.loads(json.dumps(prior))
-    hooks = prior["hooks"]
-
-    def owned_hook(hook):
-        if not isinstance(hook, dict):
-            return False
-        for field in ("command", "commandWindows"):
-            command = hook.get(field)
-            if isinstance(command, str) and (
-                    _CODEX_HOOK_MARKER in command.replace("\\", "/")
-                    or "host_native_runtime.py" in command):
-                return True
-        return False
-
-    for event, rows in _codex_hook_rows().items():
-        existing = []
-        for row in hooks.get(event, []):
-            row_hooks = row.get("hooks") if isinstance(row, dict) else None
-            if not isinstance(row_hooks, list):
-                existing.append(row)
-                continue
-            foreign = [hook for hook in row_hooks if not owned_hook(hook)]
-            if len(foreign) == len(row_hooks):
-                existing.append(row)
-                continue
-            # Regenerate exact current rows without accumulating empty shells.
-            # Equality is considered only after every hook is known to be ours.
-            if not foreign and row in rows:
-                continue
-            if foreign or any(key != "hooks" for key in row):
-                existing.append({**row, "hooks": foreign})
-        hooks[event] = existing + rows
-    # Install the ignored launcher first. A tracked or host-protected hook
-    # configuration may already be correct while this checkout-local bridge
-    # is absent (notably in a newly-created linked worktree). Leaving the
-    # launcher behind if a genuinely required config update is denied makes
-    # the next hook invocation recoverable without weakening that denial.
-    runner_path = os.path.join(ws, _CODEX_HOOK_RUNNER)
-    os.makedirs(os.path.dirname(runner_path), exist_ok=True)
+    # Validate the project path independently of any accepted external run
+    # binding. The launcher always belongs to this checkout.
+    launcher_home = runtime_storage.project_taskplane_home(ws)
+    os.makedirs(launcher_home, exist_ok=True)
+    runtime_storage.project_taskplane_home(ws)
+    runner_path = os.path.join(launcher_home, "codex-hook.py")
     family = _plugin_family_for_engine(os.path.abspath(__file__))
     body = _codex_runner_body(family)
-    tmp = runner_path + f".tmp.{os.getpid()}"
+    import tempfile
+    # mkstemp creates a unique file exclusively; an existing temporary-file
+    # symlink can never redirect the write. Replace the final directory entry.
+    descriptor, tmp = tempfile.mkstemp(prefix=".codex-hook-", suffix=".tmp", dir=launcher_home)
     try:
-        with open(tmp, "w", encoding="utf-8", newline="") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
             handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        runtime_storage.project_taskplane_home(ws)
         os.replace(tmp, runner_path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    if prior != original:
-        tp.atomic_write_json(config_path, prior, indent=2, sort_keys=False)
-    _exclude_generated_codex_config(ws, prior)
+    _project_hook_duplicates(ws, remove=True)
+    tp._ensure_self_ignored(launcher_home)
     return _codex_hooks_report(ws)
 
 
@@ -823,6 +799,177 @@ def _tool_report() -> dict:
         return rep
     except Exception:
         return {"ok": None}
+
+
+_SETUP_CONTEXT_FILES = {
+    "current_state": ("current-state.md", "Current state"),
+    "product": ("product.md", "Product"),
+    "tech_stack": ("tech-stack.md", "Tech stack"),
+    "workflow": ("workflow.md", "Workflow"),
+}
+_SETUP_SCHEMA = "taskplane.onboarding-setup/v1"
+
+
+def _onboarding_settings(ws: str) -> dict:
+    from taskplane import settings
+    _, digest = settings.read_project_settings(ws)
+    effective = settings.load_settings(workspace=ws, environment=os.environ,
+                                       use_run_snapshot=False)
+    return {"source": str(settings.project_settings_path(ws)), "digest": digest,
+            "effective_digest": effective.digest,
+            "stages": {name: {"model": row.model or "inherit",
+                              "reasoning": row.reasoning or "inherit"}
+                       for name, row in effective.stages.items()},
+            "reasoning_choices": sorted(settings.REASONING),
+            "environment_overrides": effective.receipt.get("environment"),
+            "applies_to": "new runs"}
+
+
+def _save_onboarding_settings(ws: str, value: dict) -> dict:
+    from taskplane import settings
+    path = settings.project_settings_path(ws)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tp._ensure_self_ignored(str(path.parent))
+    with runtime_storage._storage_file_lock(str(path) + ".lock"):
+        current, digest = settings.read_project_settings(ws)
+        if value["expected_digest"] != digest:
+            raise ValueError("Settings changed. Check readiness, then reapply your edits.")
+        stages = settings.validate_project_stages(value["stages"])
+        updated = settings._merge(current, {"stages": stages})
+        settings.load_settings(workspace=ws, overlay=updated, use_run_snapshot=False)
+        settings.project_settings_path(ws)
+        tp.atomic_write_bytes(str(path), (json.dumps(updated, indent=2) + "\n").encode())
+        saved_digest = settings.read_project_settings(ws)[1]
+    return {"path": str(path), "digest": saved_digest, "applies_to": "new runs"}
+
+
+def _onboarding_configuration(ws: str) -> dict:
+    """Inspectable locations and bounded editable context from their owner."""
+    import hashlib
+    result = {"hook_registration": "plugin", "context": {}}
+    try:
+        result.update(execution_home=runtime_storage.taskplane_home(workspace=ws),
+                      project_execution_home=runtime_storage.project_taskplane_home(ws))
+        result.update(knowledge_home=tp.kb_root(ws), knowledge_plan=tp.get_mode(ws)["plan"])
+        for key, (name, label) in _SETUP_CONTEXT_FILES.items():
+            path = os.path.join(result["knowledge_home"], "context", name)
+            if os.path.realpath(path) != os.path.abspath(path):
+                raise ValueError("project context path must not traverse symbolic links")
+            try:
+                with open(path, "rb") as handle:
+                    raw = handle.read(48001)
+                text = raw.decode("utf-8")
+            except FileNotFoundError:
+                raw, text = None, ""
+            editable = (raw is None or len(raw) <= 48000) and len(text) <= 12000
+            result["context"][key] = {
+                "label": label, "path": path, "text": text if editable else "",
+                "editable": editable,
+                "digest": hashlib.sha256(raw).hexdigest() if raw is not None else None,
+            }
+    except (OSError, UnicodeError, ValueError, runtime_storage.StorageIdentityError) as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def _read_onboarding_setup(source: str, ws: str) -> dict:
+    """Decode a closed data protocol. No shell, environment or authority fields."""
+    if source == "-":
+        raw = sys.stdin.read(100001)
+    else:
+        with open(source, encoding="utf-8") as handle:
+            raw = handle.read(100001)
+    if len(raw) > 100000:
+        raise ValueError("setup submission exceeds 100000 characters")
+    return _read_onboarding_setup_value(json.loads(raw), ws)
+
+
+def _read_onboarding_setup_value(value: object, ws: str) -> dict:
+    fields = {"schema", "workspace", "execution_storage", "knowledge_plan",
+              "install_launcher", "initialize", "context", "settings"}
+    if not isinstance(value, dict) or set(value) - fields or \
+            value.get("schema") != _SETUP_SCHEMA:
+        raise ValueError("unsupported setup submission fields or schema")
+    if not isinstance(value.get("workspace"), str) or \
+            os.path.realpath(value["workspace"]) != os.path.realpath(ws):
+        raise ValueError("setup submission belongs to a different workspace")
+    if value.get("execution_storage", "keep-existing") not in {"project", "keep-existing"}:
+        raise ValueError("unsupported execution storage choice")
+    if value.get("knowledge_plan", "keep-existing") not in {
+            "keep-existing", "personal", "team", "enterprise"}:
+        raise ValueError("unsupported knowledge plan")
+    for name in ("install_launcher", "initialize"):
+        if name in value and type(value[name]) is not bool:
+            raise ValueError(name + " must be a boolean")
+    if "settings" in value:
+        row = value["settings"]
+        if not isinstance(row, dict) or set(row) != {"stages", "expected_digest"} or not isinstance(row["expected_digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", row["expected_digest"]):
+            raise ValueError("invalid settings submission")
+        from taskplane import settings
+        settings.validate_project_stages(row["stages"])
+    context = value.get("context", {})
+    if not isinstance(context, dict) or set(context) - set(_SETUP_CONTEXT_FILES):
+        raise ValueError("unsupported project context field")
+    for name, row in context.items():
+        if not isinstance(row, dict) or set(row) != {"text", "expected_digest"} \
+                or not isinstance(row["text"], str) or len(row["text"]) > 12000 \
+                or "\x00" in row["text"] or not (row["expected_digest"] is None or
+                    isinstance(row["expected_digest"], str) and
+                    re.fullmatch(r"[a-f0-9]{64}", row["expected_digest"])):
+            raise ValueError("invalid project context field: " + name)
+    return value
+
+
+def _apply_onboarding_setup(ws: str, value: dict) -> dict:
+    """Apply explicit setup values without initializing or approving a run."""
+    import hashlib
+    # Validate every submitted field before applying any setup effect.
+    checked = _read_onboarding_setup_value(value, ws)
+    value = checked
+    config = _onboarding_configuration(ws)
+    knowledge = os.path.abspath(tp.kb_root(ws))
+    if value.get("context") and os.path.realpath(knowledge) != knowledge:
+        raise ValueError("project knowledge path must not traverse symbolic links")
+    plan = value.get("knowledge_plan", "keep-existing")
+    initialized = os.path.isdir(os.path.join(tp.kb_root(ws), "context"))
+    if plan != "keep-existing" and plan != config.get("knowledge_plan") and initialized:
+        raise ValueError("knowledge is already initialized; preserve its store and use share plan explicitly")
+    pending = []
+    for key, row in value.get("context", {}).items():
+        current = config["context"].get(key)
+        if not current or not current["editable"] or current["digest"] != row["expected_digest"]:
+            raise ValueError("project context changed; refresh setup before saving " + key)
+        path = current["path"]
+        if os.path.islink(path) or os.path.islink(os.path.dirname(path)):
+            raise ValueError("project context must not be a symbolic link")
+        if current["text"] != row["text"]:
+            pending.append((key, row["text"]))
+    receipt = {"schema": "taskplane.onboarding-setup-result/v1", "status": "applied",
+               "context_saved": [], "run_preserved": True}
+    if value.get("settings"):
+        receipt["settings_saved"] = _save_onboarding_settings(ws, value["settings"])
+    if value.get("install_launcher"):
+        launcher = _install_codex_hooks(ws)
+        receipt["launcher"] = launcher
+        if launcher.get("status") == "blocked":
+            receipt["status"] = "blocked"
+            return receipt
+    if value.get("initialize"):
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_init(argparse.Namespace(workspace=ws,
+                plan=None if plan == "keep-existing" else plan))
+    elif plan != "keep-existing" and plan != config.get("knowledge_plan"):
+        tp.set_mode(ws, plan=plan)
+    # Resolve again after an explicitly selected initial knowledge plan.
+    ctx = os.path.join(tp.kb_root(ws), "context")
+    for key, body in pending:
+        path = os.path.join(ctx, _SETUP_CONTEXT_FILES[key][0])
+        if os.path.realpath(path) != os.path.abspath(path):
+            raise ValueError("project context must not traverse symbolic links")
+        tp.atomic_write_bytes(path, body.encode("utf-8"))
+        receipt["context_saved"].append({"field": key, "path": path,
+            "digest": hashlib.sha256(body.encode("utf-8")).hexdigest()})
+    return receipt
 
 
 def _onboard_report(ws: str) -> dict:
@@ -934,13 +1081,19 @@ def _onboard_report(ws: str) -> dict:
                 "continue in the current Codex task.")
         checks.extend((
             {
-                "id": "hook_install", "label": "Hook installation",
+                "id": "hook_install", "label": "Plugin hooks installed",
                 "ok": (host_capabilities["install"]["status"] == "supported"
-                       and codex_hooks["ok"]),
+                       and codex_hooks["installed"]),
                 "detail": (host_capabilities["install"]["status"] if
                            codex_hooks["ok"] else codex_hooks["status"]),
                 "hint": codex_hooks.get("hint") or (
                     "Run onboarding's hook setup before governed work."),
+            },
+            {
+                "id": "workspace_launcher", "label": "Project launcher",
+                "ok": codex_hooks["launcher_ready"],
+                "detail": codex_hooks["runner"],
+                "hint": "Run onboard --install-launcher; project hook registrations remain unnecessary.",
             },
             {
                 "id": "repository_trust", "label": "Repository trust",
@@ -949,8 +1102,8 @@ def _onboard_report(ws: str) -> dict:
                 "detail": ("not required for native hooks" if
                            native_effective else
                            host_capabilities["trust"]["status"]),
-                "hint": "Review the repository trust decision in Codex when "
-                        "the workspace bridge is required.",
+                "hint": "Review the plugin permission in Codex; project hook "
+                        "registrations are not required.",
             },
             {
                 "id": "managed_policy", "label": "Managed hook policy",
@@ -977,7 +1130,7 @@ def _onboard_report(ws: str) -> dict:
             },
             {
                 "id": "effective_hook_path", "label": "Effective hook path",
-                "ok": host_capabilities["ready"],
+                "ok": host_capabilities["ready"] and native_effective,
                 "detail": host_capabilities["effective_path"]["value"],
                 "hint": host_capabilities["effective_path"]["reason"],
             },
@@ -985,7 +1138,7 @@ def _onboard_report(ws: str) -> dict:
     base_ready = (looks_like_project and inside_git and has_commit and has_context
                   and run_readiness["ready"] and phase_ready)
     ready = base_ready and (host_capabilities is None
-                            or (bool(host_capabilities["ready"])
+                            or (bool(host_capabilities["ready"]) and native_effective
                                 and bool(codex_hooks["ok"])))
     if not looks_like_project:
         nxt = "attach_folder"
@@ -1002,9 +1155,11 @@ def _onboard_report(ws: str) -> dict:
     elif (codex_hooks is not None and not codex_hooks["ok"]
           and host_capabilities["next_action"] not in {
               "contact_administrator", "review_repository_trust"}):
-        nxt = "install_codex_hooks"
-    elif host_capabilities is not None and not host_capabilities["ready"]:
-        nxt = host_capabilities["next_action"]
+        nxt = "install_codex_hooks" if codex_hooks["installed"] else "install_or_enable_hooks"
+    elif host_capabilities is not None and (
+            not host_capabilities["ready"] or not native_effective):
+        nxt = (host_capabilities["next_action"] if not host_capabilities["ready"]
+               else "install_or_enable_hooks")
     else:
         nxt = "ready"
     # Readiness is not input selection. Historical snapshots enter a new
@@ -1018,6 +1173,7 @@ def _onboard_report(ws: str) -> dict:
     if foreign_state:
         collision_kernel.persist(ws, roots=foreign_state)
     return {"workspace": ws, "host": host, "artifacts": artifacts,
+            "configuration": _onboarding_configuration(ws),
             "codex_hooks": codex_hooks,
             "host_capabilities": host_capabilities,
             # R-0005 install truth: the account-type install/update paths,
@@ -1042,10 +1198,7 @@ def _onboard_report(ws: str) -> dict:
             "checks": checks, "next_action": nxt,
             "run_readiness": run_readiness,
             "phase_configuration": phase_configuration,
-            "settings": {"source": str(effective.receipt.get("source") or
-                          "taskplane/operational-settings.json"),
-                         "digest": effective.digest,
-                         "stages": {name: value.to_dict() for name, value in effective.stages.items()}},
+            "settings": _onboarding_settings(ws),
             "recovery": ({"command_argv": recovery_command,
                           "preserve_existing_state": True}
                          if not run_readiness["ready"] else None),
@@ -2018,16 +2171,8 @@ def cmd_subagent_stop(a) -> int:
         state = _loop_runtime.load(ws) or {}
         native_task_name = str(event.get("task_name") or event.get("agent_type") or "")
         route, evidence_child = _loop_runtime.observed_evaluate_evidence_child(state, native_task_name)
+        child_result = None
         if isinstance(evidence_child, dict):
-            raw_result = event.get("last_assistant_message")
-            if not isinstance(raw_result, str) or not raw_result.strip():
-                raise ValueError(
-                    "Evaluate evidence child returned no JSON result")
-            try:
-                json.loads(raw_result)
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    "Evaluate evidence child result is not exact JSON") from exc
             assignment = evidence_child.get("assignment") or {}
             binding = (assignment.get("binding")
                        if isinstance(assignment, dict) else {}) or {}
@@ -2097,21 +2242,28 @@ def cmd_subagent_stop(a) -> int:
                 raise ValueError(
                     "Evaluate evidence child terminal telemetry is not "
                     "bound to its current evidence authority")
-            if (normalized_outcome != "success" or
-                    telemetry_receipt.get("events") != [{
-                        "kind": "complete", "sequence": 1}]):
-                raise ValueError(
-                    "Evaluate evidence child artifact requires a successful "
-                    "exact terminal outcome")
-        child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
-            ws, event)
-        if child_result is not None:
             terminal_event = {**event, "usage_reference": {
                 "schema": "taskplane.native-dispatch-usage-reference/v1",
                 "dispatch_receipt": telemetry_receipt,
                 "native_session": telemetry.get("native_session")}}
-            tp.terminalize_worker_contract(ws, terminal_event,
-                outcome=normalized_outcome, submission_status="evidence-collected")
+            submission_status = "evidence-rejected"
+            try:
+                if (normalized_outcome != "success" or
+                        telemetry_receipt.get("events") != [{
+                            "kind": "complete", "sequence": 1}]):
+                    raise ValueError(
+                        "Evaluate evidence child artifact requires a successful "
+                        "exact terminal outcome")
+                child_result = _loop_runtime.complete_observed_evaluate_evidence_child(
+                    ws, event)
+                if child_result is None:
+                    raise ValueError("Evaluate evidence child route changed before collection")
+                submission_status = "evidence-collected"
+            finally:
+                # Exact native Stop and persisted usage are already verified.
+                # Rejected output cannot keep that stopped worker's slot live.
+                tp.terminalize_worker_contract(ws, terminal_event,
+                    outcome=normalized_outcome, submission_status=submission_status)
     except Exception as exc:
         reason = (
             "taskplane blocked Evaluate evidence-child completion because "
@@ -2984,8 +3136,11 @@ def _observe_active_loop_orchestrator(ws: str, event: dict) -> None:
                         "%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
                     issuer_sequence=1, authority=authority)
                 stage = "observation_seal"
+                prior_meter = ((state.get("dispatch_telemetry") or {}).get("root_admission") or {}).get("meter") or {}
+                prior_watermark = prior_meter.get("watermark") or {}
                 observation = _native_meter.seal_root_observation(
-                    snapshot, sequence=1, session_role="root",
+                    snapshot, sequence=int(prior_watermark.get("last_sequence") or 0) + 1,
+                    session_role="root",
                     status_receipt_fingerprint=start["fingerprint"],
                     authority=authority)
                 stage = "open"
@@ -3904,6 +4059,28 @@ def cmd_loop(a) -> int:
     elif action == "restore-settings":
         from taskplane import run_context
         out = run_context.restore_settings(loopmod, ws, a.settings_from)
+    elif action == "amend":
+        from taskplane import phase_amendment
+        try:
+            if a.preview:
+                out = {**phase_amendment.candidate(loopmod, ws, a.phase, a.req),
+                       "read_only": True}
+            else:
+                # Amendments are human recovery decisions. Reuse the saved
+                # resolve lifecycle event, including publication replay, so
+                # existing runs need no lifecycle-settings migration.
+                def resolve(workspace):
+                    return phase_amendment.amend(
+                        loopmod, workspace, phase=a.phase, by=a.by, reason=a.reason,
+                        requirement_id=a.req,
+                        expected_stage_fingerprint=a.expected_stage_fingerprint,
+                        requirement_fingerprint=a.requirement_fingerprint,
+                        candidate_fingerprint=a.candidate_fingerprint,
+                        worker_stopped=a.worker_stopped)
+                out = loopmod.loop_status.with_dashboard(resolve)(ws)
+        except (ValueError, OSError) as exc:
+            out = {"error": "phase amendment refused: " + str(exc),
+                   "dispatch_allowed": False}
     elif action == "resolve":
         out = loopmod.resolve(
             ws, a.decision, by=getattr(a, "by", None),
@@ -5208,16 +5385,16 @@ def cmd_init(a) -> int:
             "ASK THE HUMAN: keep taskplane knowledge private/local, or "
             "share it with the team in the repository? Set private/local "
             "with `tp share plan personal`; set shared with `tp share plan "
-            "team|enterprise`. Private keeps knowledge outside the repo "
-            "(~/.taskplane); shared keeps it in-repo (.taskplane-kb/). "
+            "team|enterprise`. Private keeps knowledge in the selected "
+            "ignored store (.taskplane/ by default); shared uses .taskplane-kb/. "
             "On a team plan, `tp share set private` works privately and "
             "`tp share push` publishes selected decisions later.",
         "context_docs_created": wrote or "(already present)",
         "graph": {"modules": len(g["modules"]), "edges": len(g["edges"])},
         "gitignored_runtime": missing or "(already present)",
         "committed_state": (
-            "NONE — the knowledge base is external (~/.taskplane); the repo "
-            "carries no taskplane artifacts" if mode["store"] == "external"
+            "PRIVATE — the knowledge base stays in the selected ignored store "
+            "(.taskplane/ by default)" if mode["store"] == "external"
             else "SHARED — the knowledge base lives in-repo (.taskplane-kb/) "
                  "and is committed with the code (team/enterprise plan)"),
         "git": head[:12] if head else
@@ -5480,7 +5657,7 @@ def _invoke_run_command(a, workspace: str) -> int:
                 a.cmd == "loop" and getattr(a, "loop_action", None) == "init"):
             state = loopmod._load_raw(workspace)
         with run_context.bind(workspace, state):
-            _set_effective_settings_snapshot(settings.load_settings(environment=os.environ))
+            _set_effective_settings_snapshot(settings.load_settings(environment=os.environ, workspace=workspace))
             return a.fn(a)
     except (run_context.RunContextError, run_store.RunStoreError,
             settings.SettingsError, ValueError) as exc:
@@ -5505,6 +5682,19 @@ def _run_hook_command(a) -> int:
     if a.cmd not in _HOOK_COMMANDS or (a.cmd in {"context", "host-native-check"}
             and hook_path not in {"native", "bridge"}):
         workspace = _workspace(getattr(a, "workspace", None))
+        if a.cmd == "onboard":
+            try:
+                if getattr(a, "apply_setup", None):
+                    a.setup_values = _read_onboarding_setup(a.apply_setup, workspace)
+                selection = getattr(a, "execution_storage", None)
+                if getattr(a, "setup_values", {}).get("execution_storage") == "project":
+                    selection = "project"
+                if selection == "project":
+                    a.storage_selection = runtime_storage.select_project_execution_storage(
+                        workspace, environment=os.environ)
+            except (OSError, ValueError, TypeError, runtime_storage.StorageIdentityError) as exc:
+                a.setup_error = str(exc)
+                return cmd_onboard(a)
         if a.cmd == "onboard" or (a.cmd == "repository" and
                 getattr(a, "repository_action", None) == "prepare"):
             try:
@@ -5515,6 +5705,8 @@ def _run_hook_command(a) -> int:
                 return a.fn(a)
         # An explicit home conflicting with a valid locator is not repair.
         runtime_storage.bind_workspace_taskplane_home(workspace, os.environ)
+        if not str(os.environ.get("TASKPLANE_HOME") or "").strip():
+            os.environ["TASKPLANE_HOME"] = runtime_storage.taskplane_home(workspace=workspace)
         return _invoke_run_command(a, workspace)
 
     raw = sys.stdin.read()
@@ -5636,7 +5828,7 @@ def _contracts_elsewhere(ws: str, limit: int = 4) -> list:
     directories the session has been governing."""
     out = []
     here = os.path.realpath(os.path.abspath(ws))
-    projects = os.path.join(tp.store_home(), "projects")
+    projects = os.path.join(tp.store_home(ws), "projects")
     for name in sorted(os.listdir(projects)) if os.path.isdir(projects) else []:
         meta_path = os.path.join(projects, name, "meta.json")
         try:
@@ -6988,12 +7180,32 @@ def cmd_onboard(a) -> int:
     --json prints the readiness report instead (for the driver to branch on)."""
     import dashboard
     ws = _workspace(a.workspace)
-    if getattr(a, "install_codex_hooks", False):
-        _install_codex_hooks(ws)
+    result = None
+    values = getattr(a, "setup_values", None)
+    try:
+        if getattr(a, "setup_error", None):
+            raise ValueError(a.setup_error)
+        values = getattr(a, "setup_values", None)
+        if values is None and getattr(a, "apply_setup", None):
+            values = _read_onboarding_setup(a.apply_setup, ws)
+        if values is not None:
+            result = _apply_onboarding_setup(ws, values)
+        elif getattr(a, "install_codex_hooks", False) or getattr(a, "install_launcher", False):
+            result = {"launcher": _install_codex_hooks(ws)}
+    except (OSError, ValueError, TypeError, runtime_storage.StorageIdentityError) as exc:
+        result = {"schema": "taskplane.onboarding-setup-result/v1",
+                  "status": "refused", "error": str(exc), "run_preserved": True}
     report = _onboard_report(ws)
+    failed = bool(result and result.get("status") in {"refused", "blocked"})
+    if failed and isinstance(values, dict):
+        report["submitted_values"] = values
+    if result is not None:
+        report["setup_result"] = result
+    if getattr(a, "storage_selection", None):
+        report["storage_selection"] = a.storage_selection
     if a.json:
         print(json.dumps(report, indent=2))
-        return 0
+        return 2 if failed else 0
     # Render contract (v1.5.3/4): the HEADLINE is the never-skippable carrier
     # — on hosts without inline widgets (Codex) it is the primary channel.
     print("HEADLINE: " + dashboard.headline_onboarding(report))
@@ -7008,7 +7220,7 @@ def cmd_onboard(a) -> int:
               + str(row.get("root")) + " — "
               + str(row.get("remediation") or ""))
     print(dashboard.render_onboarding(report, out=a.out))
-    return 0
+    return 2 if failed else 0
 
 
 def _inline_max() -> int:
@@ -8545,6 +8757,25 @@ def main(argv=None) -> int:
         help="original complete settings JSON matching the saved run digest")
     lr.add_argument("--worker-stopped", action="store_true",
                     help="attest the expired unbound worker is stopped; not a completion or pass")
+    lam = lsub.add_parser(
+        "amend", help="apply a human-approved Product or Design amendment while preserving phase history")
+    lam.add_argument("--phase", choices=["product", "design"], required=True,
+                     help="phase whose current scope or candidate the human is amending")
+    lam.add_argument("--req", required=True,
+                     help="the existing requirement containing the approved scope")
+    lam.add_argument("--preview", action="store_true",
+                     help="read the exact current fingerprints without applying an amendment")
+    lam.add_argument("--by", help="the run's accountable human approving this amendment")
+    lam.add_argument("--reason", help="the human-approved scope change; distinct from final Design approval")
+    lam.add_argument("--expected-stage-fingerprint",
+                     help="exact prior stage fingerprint returned by --preview")
+    lam.add_argument("--requirement-fingerprint",
+                     help="exact amended requirement fingerprint returned by --preview")
+    lam.add_argument("--candidate-fingerprint",
+                     help="exact amended candidate fingerprint returned by --preview")
+    lam.add_argument("--worker-stopped", action="store_true",
+                     help="confirm the former worker is stopped; the engine also verifies its lifecycle")
+    lam.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lr.add_argument(
         "--accept-producer-receipt-outage", action="store_true",
         help="accept only the exact fingerprint supplied alongside --by")
@@ -8876,8 +9107,13 @@ def main(argv=None) -> int:
                     help="print the readiness report instead of the widget")
     op.add_argument("--out", help="also write the fragment to this path")
     op.add_argument("--install-codex-hooks", action="store_true",
-                    help="install/refresh the repo-local Codex lifecycle hook "
-                         "bridge before reporting readiness")
+                    help="deprecated alias for --install-launcher; hooks are supplied only by the plugin")
+    op.add_argument("--install-launcher", action="store_true",
+                    help="install/refresh the ignored CLI launcher without registering project hooks")
+    op.add_argument("--execution-storage", choices=["project"],
+                    help="explicitly select project .taskplane execution storage; active runs refuse migration")
+    op.add_argument("--apply-setup", metavar="JSON_FILE_OR_DASH",
+                    help="apply validated inline setup values from a JSON file or stdin (-)")
     op.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     op.set_defaults(fn=cmd_onboard)
 

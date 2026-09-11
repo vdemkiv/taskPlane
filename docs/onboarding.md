@@ -27,11 +27,12 @@ checkout and then applies these checks there:
    and commit it, then resumes the same run.
 3. **`tp init`** — scaffolds the four context docs
    (`product.md` / `tech-stack.md` / `workflow.md` / `current-state.md`),
-   scans the dependency graph, and creates the external knowledge base.
+   scans the dependency graph, and creates the knowledge base under the
+   project's ignored `.taskplane/` by default.
 
    **Before authorizing `tp init` in a brownfield repository, check for a
    tracked legacy `knowledge/` directory.** On a personal plan, initialization
-   moves that directory into the external project store, runs `git rm --cached`
+   moves that directory into the ignored private project store, runs `git rm --cached`
    to untrack its contents, and adds `knowledge/` to `.gitignore`. On a Team or
    Enterprise plan, the shared store remains in-repo under
    `.taskplane-kb/knowledge/`. Review the full
@@ -90,17 +91,23 @@ permissions and sandbox controls enabled.
    managed checkout automatically inside the current environment.
 3. Prompt **"set up taskplane"** or **"use taskplane for …"**. The plugin runs
    `tp onboard --json` and presents the onboarding dashboard before routing
-   the request. On first use it installs the
-   portable `.codex/hooks.json` workspace configuration plus an ignored local
-   `.taskplane/codex-hook.py` bridge. A new task is required only for this
-   one-time initial host hook load, never for checkout/auth/storage recovery.
+   the request. Use the inline form to configure the project, private or shared
+   knowledge, and project context. Execution storage is the project's ignored
+   `.taskplane/` folder. Setup can restore the ignored local
+   `.taskplane/codex-hook.py` launcher. The enabled plugin supplies the hooks;
+   setup never adds another set to `.codex/hooks.json`. A new task is required
+   only if the plugin's initial host hook loading still requires it, never for
+   checkout/auth/storage recovery.
    A linked Codex worktree reuses the primary checkout's validated bridge via
    Git's common directory until onboarding creates its own ignored local copy;
    it does not depend on plugin-root environment variables being inherited.
    Reinstallation restores a missing launcher before trusting an earlier session
    receipt. Onboarding checks the same Git-family launcher path the hooks use.
-4. Answer any prerequisite prompt in chat. taskplane runs only its stored
-   bounded action after approval and resumes the same run.
+4. Submit the inline setup form. The controls send the selected values to the
+   current conversation; the engine validates and applies them, then refreshes
+   actual readiness. Sending the form is not proof that setup succeeded. If the
+   host cannot submit it, the same structured request is available in chat.
+   Host permission decisions remain in the host's own controls.
 5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
    is **shared in the repository** (`team`/`enterprise`). This is a storage
    choice; it is not tied to the name of your ChatGPT or Codex subscription.
@@ -116,7 +123,7 @@ pinned phase definition and selected immutable artifacts. It does not inherit
 predecessor conversations, mutable execution state or sibling workspaces.
 Parallel Build, Fix and Evaluate tasks retain separate bindings and evidence;
 EM receives all accepted evaluations at the join, and sign-off leads to Retro.
-Repo-local `SubagentStart`/`SubagentStop` hooks bind exact child contracts and
+Plugin `SubagentStart`/`SubagentStop` hooks bind exact child contracts and
 terminalize/quarantine them while adding bounded context and lifecycle traces; the
 PreToolUse screen and evidence gates remain authoritative. For a long run you
 may start Goal mode with `/goal`; it changes neither permissions nor gates.
@@ -126,13 +133,12 @@ When inline HTML widgets are unavailable, Codex still relays the plain-text
 unmanaged workspaces use `.taskplane/dashboard.html`). The governance state
 and human gates do not depend on widget support.
 
-Both native and repository hooks pass through the same event-claim guard, which
-executes an event once and replays its result for duplicates. Onboarding consumes
-that guard's receipt; the two paths do not need to have identical latest events.
-Hook delivery order, a late repository hook, and concurrent checkouts must not
-make readiness oscillate. An event without a valid identity cannot establish
-this capability. Records remain isolated by host session and, for repository
-hooks, by checkout.
+The plugin's hooks pass through an event-claim guard, which executes an event
+once and replays its result for duplicates. Onboarding consumes actual hook
+receipts; a plugin manifest or a launcher file alone does not prove execution.
+Legacy repository-hook receipts remain readable, but setup does not create
+duplicate registrations. Launcher setup removes only recognized generated
+TaskPlane project-hook commands and preserves unrelated hook entries. Records remain isolated by host session and checkout.
 
 The dashboard and plain-text headline use the same setup actions. A missing or
 unrecognized action stays incomplete. When execution is missing, review, trust,
@@ -164,7 +170,7 @@ remain enforced, and clearing a contract preserves the review's history.
 Onboarding asks one question first: *keep taskplane knowledge private/local,
 or share it with the team in the repository?* (`tp share plan
 personal|team|enterprise` — or `tp init --plan …`). `personal` keeps every
-decision, requirement and loop state in your private store (`~/.taskplane`).
+decision, requirement and loop state in your ignored project store (`.taskplane/`).
 `team`/`enterprise` moves the store into the repo (`.taskplane-kb/`,
 committed — also compatible with Claude Tag), so the whole team shares one
 registry and a fresh clone inherits it with zero setup. Both are changeable
@@ -210,18 +216,53 @@ Fill all **four context docs** with your project's reality:
 - `workflow.md` records how the team builds, tests, reviews, and releases.
 
 From then on decisions, requirements, tracked debt, and the dependency graph
-accumulate in an **external per-project store**
-(`~/.taskplane/projects/<key>/` — `tp kb where` shows the path). That
-location is deliberate resource economics: every loop step recalls only the
+accumulate in an **ignored per-project store**
+(`.taskplane/projects/<key>/` — `tp kb where` shows the resolved path).
+Every loop step recalls only the
 few records *relevant to the task at hand* instead of re-reading the repo or
 replaying history, so context stays small and the token bill goes down as
 the project's memory grows. Where that store lives is plan-aware: on a
-personal plan it stays external (`~/.taskplane`) and never touches your repo
-(nothing to commit or push); on a Team/Enterprise plan it lives in-repo at
+personal plan it stays under ignored `.taskplane/` (nothing to commit or push);
+on a Team/Enterprise plan shared knowledge lives at
 `.taskplane-kb/` and is committed deliberately so the team shares one
 registry. Either way `kb lint` — a marker scan enforced fail-closed at the
 DoD and engineering-review gates — keeps prompt text and pricing out of it,
 and the zero-token dependency graph answers blast-radius questions without
 spending model calls at all.
+
+Existing runs retain their recorded storage location. Selecting project-local
+execution does not move or reset an active run. An unused preflight binding may
+be explicitly replaced after the engine verifies that no execution has started;
+the previous binding is retained for audit. An active run requires its named
+recovery or migration action.
+
+For explicit setup, `tp onboard --execution-storage project --json` selects the
+project's `.taskplane/` home. `tp onboard --install-launcher --json` restores
+only the local launcher. `--install-codex-hooks` remains a compatibility alias
+for that same operation; it never registers a project hook copy. Inline form
+submissions use `tp onboard --apply-setup - --json` with the structured JSON on
+stdin. Context edits carry the previously observed digest, so stale forms cannot
+silently overwrite newer project context. Effective phase model and reasoning
+settings are editable: use common choices for all phases, or open Advanced for
+individual overrides. Preferences are saved in ignored `.taskplane/settings.json`
+and apply to new runs. Existing runs retain their exact sealed settings.
+Environment overrides still take priority and are disclosed in the form.
+Use `inherit` or a model ID available in the current host; dispatch checks host
+availability. Reasoning choices come from the existing settings validator.
+
+A failed save retains the entered values in the returned report and offers
+Retry save. Render that report directly so its error and edits remain visible;
+a fresh readiness check intentionally reloads the saved values. If another
+save changed the settings, refresh and reapply your edits.
+
+The existing action-budget gate displays used/allowed actions and asks for an
+explicit grant before work continues. The existing `loop resolve limits-advisory`
+continuation requires human approval and is labelled **Ignore limits for this
+run only — advisory**. It is never persisted as a setup preference or a default
+for future runs. An unavailable continuation stays paused.
+
+The T-01 implementation owner must correct or revert the affected changes if
+any core journey fails before delivery acceptance. Use the focused onboarding
+checks and existing phase gates; earlier drafts are not completion evidence.
 
 Then you're governed from the first task.

@@ -923,11 +923,49 @@ def _read_lens_catalog() -> tuple[frozenset[str], str]:
     return frozenset(ids), _digest(catalog)
 
 
+def project_settings_path(workspace: str | Path) -> Path:
+    """The ignored project-owned stage preferences, separate from sealed runs."""
+    from taskplane import storage
+    path = Path(storage.project_taskplane_home(str(workspace))) / "settings.json"
+    if path.is_symlink():
+        raise SettingsError("project settings must not be a symbolic link")
+    return path
+
+
+def validate_project_stages(value: object) -> dict[str, Any]:
+    """Only the existing model/reasoning fields are editable in setup."""
+    rows = _plain_mapping(value, "phase settings")
+    if set(rows) - set(STAGES):
+        raise SettingsError("unsupported phase setting")
+    for name, row in rows.items():
+        row = _plain_mapping(row, name)
+        if not row or set(row) - {"model", "reasoning"}:
+            raise SettingsError("unsupported phase setting: " + name)
+        if "model" in row and (not isinstance(row["model"], str) or
+                not row["model"].strip() or len(row["model"]) > 128 or
+                any(c.isspace() for c in row["model"].strip())):
+            raise SettingsError(name + " model must be inherit or a host model ID")
+        if "reasoning" in row and row["reasoning"] not in REASONING:
+            raise SettingsError(name + " reasoning is unsupported")
+    return rows
+
+
+def read_project_settings(workspace: str | Path) -> tuple[dict[str, Any], str]:
+    path = project_settings_path(workspace)
+    raw = _read_json(path) if path.exists() else {"stages": {}}
+    if set(raw) != {"stages"}:
+        raise SettingsError("project setup supports phase model and reasoning only")
+    validate_project_stages(raw["stages"])
+    return raw, _digest(raw)
+
+
 def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
                   overlay: Mapping[str, Any] | None = None,
                   environment: Mapping[str, str] | None = None,
                   authority: Mapping[str, Any] | None = None,
-                  host_capabilities: object | None = None) -> OperationalSettings:
+                  host_capabilities: object | None = None,
+                  workspace: str | Path | None = None,
+                  use_run_snapshot: bool = True) -> OperationalSettings:
     """Load defaults < file < environment < receipted overlay.
 
     ``host_capabilities`` is accepted to make the boundary explicit, but does
@@ -941,7 +979,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     # deliberately separate from configuration selection.
     from taskplane import run_context
     bound = run_context.current_settings()
-    if bound is not None and Path(path) == DEFAULT_SETTINGS_PATH:
+    if use_run_snapshot and bound is not None and Path(path) == DEFAULT_SETTINGS_PATH:
         if overlay is not None:
             raise SettingsError("a bound run cannot replace settings through a transient overlay")
         return from_snapshot(bound[0], expected_digest=bound[1])
@@ -957,6 +995,13 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
     _validate_keys(raw)
     effective = _merge(defaults, raw)
     precedence = ["defaults", "file"]
+    project_receipt = None
+    if Path(path) == DEFAULT_SETTINGS_PATH:
+        project, project_digest = read_project_settings(workspace or Path.cwd())
+        if project["stages"]:
+            effective = _merge(effective, project)
+            precedence.append("project")
+            project_receipt = {"digest": project_digest}
     environment_receipt: dict[str, Any] | None = None
     if environment is not None:
         environment_overlay: dict[str, Any] = {"stages": {}, "tests": {}}
@@ -1119,7 +1164,7 @@ def load_settings(path: str | Path = DEFAULT_SETTINGS_PATH, *,
         "precedence": precedence,
         "migration": migration,
         "environment": environment_receipt,
-        "overlay": overlay_receipt,
+        "overlay": overlay_receipt, "project": project_receipt,
     }
     catalog_ids, catalog_digest = _read_lens_catalog()
     receipt["lens_catalog_digest"] = catalog_digest

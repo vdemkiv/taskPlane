@@ -564,6 +564,9 @@ def _lock(path: str):
     if os.path.abspath(path) in _TRANSACTIONS.get():
         yield
         return
+    for candidate in (path, path + ".lock"):
+        if os.path.realpath(candidate) != os.path.abspath(candidate):
+            raise RunStoreError("run storage lock uses an unsafe symlink")
     try:
         with file_lock(path, timeout=10.0):
             yield
@@ -585,15 +588,18 @@ def _merge(current: dict, changes: dict) -> dict:
 class RunStore:
     """Persist canonical run identity, state, and artifact ownership."""
 
-    def __init__(self, *, home: str | None = None):
+    def __init__(self, *, home: str | None = None,
+                 workspace: str | None = None):
         ensure_stage_compatibility()
-        self.home = storage.taskplane_home(home)
+        self.home = storage.taskplane_home(home, workspace=workspace)
 
     def _knowledge_path(self, workspace: str) -> str:
         # Use the incumbent knowledge-root resolution, including migration.
         identity = storage.resolve_repository_identity(workspace)
         layout = storage.resolve_layout(identity, home=self.home, run_id="knowledge")
-        return os.path.join(layout.knowledge_root, "governed-updates.json")
+        return storage._confined_stage_path(
+            self.home, "projects", identity.key, "knowledge",
+            "governed-updates.json", leaf_kind="file")
 
     def _load_knowledge(self, path: str) -> dict:
         try:
@@ -753,12 +759,12 @@ class RunStore:
             return receipt
 
     def _manifest_path(self, run_id: str) -> str:
-        return os.path.join(self.home, "runs", _run_id(run_id),
-                            "manifest.json")
+        return storage._confined_stage_path(
+            self.home, "runs", _run_id(run_id), "manifest.json", leaf_kind="file")
 
     def _journal_path(self, run_id: str) -> str:
-        return os.path.join(self.home, "runs", _run_id(run_id),
-                            "journal.jsonl")
+        return storage._confined_stage_path(
+            self.home, "runs", _run_id(run_id), "journal.jsonl", leaf_kind="file")
 
     def _append_journal(self, run_id: str, event: dict) -> None:
         pending = _TRANSACTIONS.get().get(self._manifest_path(run_id))
@@ -900,7 +906,11 @@ class RunStore:
         layout = storage.resolve_layout(identity, home=self.home,
                                         run_id=run_id)
         path = self._manifest_path(run_id)
-        os.makedirs(layout.run_root, exist_ok=True)
+        repository_record = storage._confined_stage_path(
+            self.home, "repositories", f"{identity.key}.json", leaf_kind="file")
+        os.makedirs(self.home, mode=0o700, exist_ok=True)
+        storage._ensure_confined_directories(self.home, layout.run_root)
+        storage._ensure_confined_directories(self.home, os.path.dirname(repository_record))
         with _lock(path):
             if os.path.exists(path):
                 raise RunStoreError(f"run already exists: {run_id}")
@@ -930,7 +940,7 @@ class RunStore:
                 "active_stage_projection": _canonical_active_projection({}),
             }
             _atomic_write_json(path, manifest)
-            _atomic_write_json(layout.repository_record, {
+            _atomic_write_json(repository_record, {
                 "schema": "taskplane.repository/v1",
                 "repository": identity.to_dict(),
                 "repository_key": identity.key,

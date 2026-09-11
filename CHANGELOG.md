@@ -1,5 +1,26 @@
 # taskplane changelog
 
+## Unreleased — project-local execution and inline setup
+
+- Human-approved Product and Design amendments can be recorded during delivery,
+  including Build and Review, with superseded scope, work and evidence retained.
+  Revised Design requires fresh human approval before downstream work resumes.
+- Dashboard startup no longer calls review-only filters. Review controls are
+  initialized only on findings pages; executable regression checks cover
+  Dashboard navigation, approval delivery, review filtering, and paged gates.
+- New execution defaults to the project's ignored `.taskplane/`, including
+  private knowledge, hook receipts, run state, evidence, and managed workspaces.
+  Existing bindings remain authoritative; explicit project selection preserves
+  unused preflight history and refuses to reset active runs.
+- Codex setup uses plugin-provided hooks and restores only the ignored local
+  launcher. It no longer registers a duplicate project hook set or requires
+  that duplicate for readiness.
+- Onboarding uses a Dashboard-style inline form for storage, knowledge sharing,
+  and project context. Submissions carry actual values and stale-write checks;
+  progress changes only when the engine returns verified readiness. Common
+  model and reasoning controls save supported preferences for new runs;
+  Advanced exposes individual phase overrides.
+
 The most recent releases are summarized in the README's "What's new" table;
 this file is the authoritative, complete history — if the two ever disagree,
 this file wins.

@@ -382,8 +382,7 @@ def _plan_delivery_mode_from_file(
     except (OSError, ValueError) as exc:
         raise delivery_policy.DeliveryPolicyError("current Plan declaration is unavailable") from exc
     source_plan = plan
-    if isinstance(plan, dict) and (
-            "automatic_lenses" not in plan or "plan_authority" not in plan):
+    if isinstance(plan, dict) and not required_declaration.issubset(plan):
         context = _phase_bridge_context(ws, state)
         if context is not None and context["stage"]["stage_kind"] == "plan":
             _phase_bridge_gate_check(ws, state)
@@ -393,6 +392,7 @@ def _plan_delivery_mode_from_file(
             # These are a projection of current authenticated authority, not
             # worker-authored permission and not a rewrite of the Plan file.
             plan = dict(plan)
+            plan.setdefault("delivery_mode", "build")
             plan.setdefault("automatic_lenses", [])
             plan.setdefault("plan_authority", "phase:" + context["run_id"] + ":" +
                 context["stage"]["stage_id"] + ":" + context["stage"]["authority"]["authority_fingerprint"])
@@ -3013,6 +3013,7 @@ def prepare_delivery_root(
 
 def _prepare_approved_plan_root(ws: str, state: Mapping[str, object]) -> dict:
     """Prepare only the first approved delivery wave before its state CAS."""
+    from taskplane.primitives import content_fingerprint
     tasks = [dict(task) for task in state.get("tasks") or []
              if isinstance(task, Mapping)]
     if not tasks:
@@ -3025,21 +3026,31 @@ def _prepare_approved_plan_root(ws: str, state: Mapping[str, object]) -> dict:
         plan_fingerprint = hashlib.sha256(stream.read()).hexdigest()
     design_fingerprint = str(
         state.get("design_fingerprint") or _design_evidence_fingerprint(ws))
+    pickups = [{
+        "id": str(task["id"]),
+        "write_scopes": list(task.get("scope") or []),
+        "disjointness_receipt_fingerprint": hashlib.sha256(json.dumps(
+            {"task": task["id"], "scope": task.get("scope") or []},
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    } for task in wave_tasks]
+    # Reaffirming a changed Plan/source in the same run needs a new immutable
+    # seed. Exact approval retries keep the same identity and timestamp; prior
+    # generations (including legacy waves/... seeds) remain untouched.
+    generation = content_fingerprint({"run_id": state["run_id"], "wave_id": wave_id,
+        "candidate_sha": state.get("baseline"), "design_fingerprint": design_fingerprint,
+        "plan_fingerprint": plan_fingerprint, "settings_digest": state.get("settings_digest"),
+        "pickups": pickups})
+    seed_ref = os.path.relpath(os.path.join(runtime_storage.project_taskplane_home(ws),
+        "root-seeds", generation + ".json"), os.path.realpath(ws)).replace(os.sep, "/")
     _, prepared, settings = _build_delivery_root_preparation(
-        ws, state, seed_ref=f"waves/{wave_id}/root-seed.json",
+        ws, state, seed_ref=seed_ref,
         wave_id=wave_id, prepared_at=time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        operation_id="prepare-" + str(state["run_id"]) + "-" + wave_id,
+        operation_id="prepare-" + generation,
         design={"path": "design/contract.json",
                 "fingerprint": design_fingerprint},
         plan={"path": "plan/tasks.json", "fingerprint": plan_fingerprint},
-        pickups=[{
-            "id": str(task["id"]),
-            "write_scopes": list(task.get("scope") or []),
-            "disjointness_receipt_fingerprint": hashlib.sha256(json.dumps(
-                {"task": task["id"], "scope": task.get("scope") or []},
-                sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-        } for task in wave_tasks],
+        pickups=pickups,
         outstanding_human_gates=[],
         predecessor_terminal_projection={"status": "none"})
     return {"prepared": prepared, "settings_digest": settings.digest,
@@ -3060,7 +3071,7 @@ def open_delivery_wave(
     if state is None:
         raise ValueError("wave open requires an active loop")
     root = state.get("root_hygiene")
-    if not isinstance(root, Mapping) or root.get("status") != "prepared":
+    if not isinstance(root, Mapping) or root.get("status") not in {"prepared", "open"}:
         raise ValueError("wave open requires a prepared root seed")
     settings = operational_settings.load_settings(environment=os.environ)
     if state.get("settings_digest") != settings.digest:
@@ -3071,8 +3082,23 @@ def open_delivery_wave(
         expected_seed_ref=str(root.get("seed_ref") or ""))
     start = host_native.validate_root_session_start(
         host_start_receipt, authority=observation_authority, seed=seed)
-    meter = native_session_meter.fold_root_observations(
-        [first_observation], authority=observation_authority)
+    if root.get("status") == "open":
+        if root.get("host_start_receipt") == start and root.get("first_observation") == first_observation and \
+                root.get("observation_authority_fingerprint") == hashlib.sha256(observation_authority).hexdigest():
+            return copy.deepcopy(dict(root))
+        raise ValueError("root generation is already open with different evidence")
+    prior_ledger = state.get("dispatch_telemetry")
+    prior_admission = (prior_ledger or {}).get("root_admission") or {}
+    prior_meter = prior_admission.get("meter")
+    generation = prior_meter is not None
+    if generation:
+        meter = native_session_meter.open_root_generation(
+            first_observation, prior=prior_meter, authority=observation_authority)
+        if meter.get("status") != "available":
+            raise ValueError("root generation observation refused: " + str(meter.get("reason_code")))
+    else:
+        meter = native_session_meter.fold_root_observations(
+            [first_observation], authority=observation_authority)
     watermark = meter.get("watermark") if isinstance(meter, Mapping) else None
     if not isinstance(watermark, Mapping) or watermark.get(
             "status_receipt_fingerprint") != start["fingerprint"]:
@@ -3120,6 +3146,8 @@ def open_delivery_wave(
     with mutate(ws) as locked:
         if locked is None or locked.get("root_hygiene") != root:
             raise ValueError("root preparation changed before wave open")
+        if locked.get("dispatch_telemetry") != prior_ledger:
+            raise ValueError("root admission changed before wave open")
         if resource_policy is not None and (locked.get("run_id") != state["run_id"] or
                 locked.get("_stage_native_root_authority") != state.get("_stage_native_root_authority") or
                 phase_harness.resource_policy(resource_store.load(str(state["run_id"])),
@@ -3138,11 +3166,20 @@ def open_delivery_wave(
         dispatch_telemetry.configure_root_admission(
             ledger, root_session_settings=policy,
             settings_digest=settings.digest)
-        dispatch_telemetry.record_root_meter(
+        record_meter = (dispatch_telemetry.open_root_generation if generation
+                        else dispatch_telemetry.record_root_meter)
+        record_meter(
             ledger, meter, observation_authority=observation_authority)
+        ledger.setdefault("root_openings", []).append({
+            "seed_ref": root["seed_ref"],
+            "host_start_receipt": copy.deepcopy(start),
+            "first_observation": copy.deepcopy(dict(first_observation)),
+        })
         opened = {
             **dict(root), "status": "open",
             "host_start_fingerprint": start["fingerprint"],
+            "host_start_receipt": copy.deepcopy(start),
+            "first_observation": copy.deepcopy(dict(first_observation)),
             "host": {"adapter": start["host"],
                      "runtime": start.get("host_version")},
             "session_pseudonym": start["session_pseudonym"],
@@ -4112,6 +4149,13 @@ _design_review_notices = _dc.design_review_notices
 
 def _design_dod_errors(ws: str, state: dict) -> list:
     """Join the Design artifact DoD with its mandatory runtime inputs."""
+    from taskplane import phase_amendment
+    try:
+        amendment = phase_amendment.current(sys.modules[__name__], ws, state)
+        if amendment is not None and amendment["phase"] == "design":
+            return _base_design_dod_errors(ws, state)
+    except (ValueError, OSError) as exc:
+        return ["Design amendment refused: " + str(exc)]
     try:
         phase = _phase_bridge_context(ws, state)
         if phase is None or phase["stage"]["stage_kind"] != "design":
@@ -5768,6 +5812,19 @@ def _seal_task_test_strategy_authority(
         if design_reference is not None and design_reference != design["test_strategy_reference"]:
             raise ValueError("sealed Design strategy references conflict")
         design_reference = design["test_strategy_reference"]
+    strategy = test_strategy.validate_strategy(design_package.read("test-strategy"))
+    if isinstance(design_settings, Mapping) and design_settings.get("schema") == test_strategy.SCHEMA:
+        # Inline Design carries the strategy itself. Its separately sealed
+        # artifact must be exactly the same approved strategy before the
+        # incumbent Plan receipt producer can use the canonical output path.
+        if test_strategy.validate_strategy(design_settings) != strategy:
+            raise ValueError("embedded Design strategy differs from its sealed artifact")
+        if design_reference is None:
+            design_reference = {
+                "schema": _DESIGN_TEST_STRATEGY_REFERENCE_SCHEMA,
+                "path": "design/test-strategy.json",
+                "strategy_fingerprint": strategy["contract_fingerprint_sha256"],
+            }
     plan_reference = task.get("test_strategy_authority")
     if not isinstance(design_reference, Mapping) or set(design_reference) != \
             _DESIGN_STRATEGY_REFERENCE_FIELDS or design_reference.get(
@@ -5783,7 +5840,6 @@ def _seal_task_test_strategy_authority(
            for field in ("path", "strategy_fingerprint")):
         raise ValueError(
             "Plan test strategy differs from the approved Design artifact")
-    strategy = test_strategy.validate_strategy(design_package.read("test-strategy"))
     rel = design_reference["path"]
     if strategy["contract_fingerprint_sha256"] != design_reference["strategy_fingerprint"]:
         raise ValueError("sealed Design strategy fingerprint differs")

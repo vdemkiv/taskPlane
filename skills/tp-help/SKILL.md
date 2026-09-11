@@ -67,7 +67,10 @@ something you could tune.
 local path, repository URL, ref, or PR into a verified managed checkout before
 any contract, graph, or lens dispatch. `review start` calls it automatically.
 Source, private runtime state, cached graphs, and report artifacts use distinct
-roots; `.taskplane-kb/` is reserved for deliberately shared knowledge. Missing
+roots under the project's ignored `.taskplane/` by default. Existing runs retain
+their recorded storage binding; `.taskplane-kb/` is reserved for deliberately
+shared knowledge. Codex uses plugin-provided hooks without registering project
+duplicates. Missing
 GitHub auth, tools, or storage permission becomes one structured human prompt
 and `repository resume` continues the same run in the same task.
 

@@ -650,6 +650,34 @@ def fold_root_observations(
     truncation/backwards movement, source replacement, ambiguity, oversized
     interval, or unreconciled counter becomes a typed unavailable result.
     """
+    return _fold_root_observations(observations, authority=authority,
+        prior=prior, max_observations=max_observations)
+
+
+def open_root_generation(
+        observation: Mapping[str, Any], *, prior: Mapping[str, Any],
+        authority: bytes) -> dict[str, Any]:
+    """Continue one authenticated provider counter at a verified seed opening.
+
+    The caller verifies the new seed/start receipt. Only its status binding
+    changes; source, sequence, first input and cumulative counters continue.
+    """
+    checked = validate_root_meter(prior, authority=authority)
+    if checked.get("status") != "available" or checked.get("resumed") is not False or \
+            checked.get("terminal_reason") is not None:
+        raise NativeSessionMeterError("root generation requires a live authenticated prior meter")
+    next_status = observation.get("status_receipt_fingerprint")
+    if next_status == checked.get("status_receipt_fingerprint"):
+        raise NativeSessionMeterError("root generation requires a new start receipt")
+    return _fold_root_observations([observation], authority=authority,
+        prior=checked["watermark"], generation_status=next_status)
+
+
+def _fold_root_observations(
+        observations: Sequence[Mapping[str, Any]], *, authority: bytes,
+        prior: Mapping[str, Any] | None = None,
+        max_observations: int = MAX_ROOT_OBSERVATIONS,
+        generation_status: str | None = None) -> dict[str, Any]:
     try:
         _observation_authority(authority)
         if isinstance(max_observations, bool) or not isinstance(
@@ -722,7 +750,8 @@ def fold_root_observations(
                 raise _RootObservationError(
                     "source_replaced", "root observation source was replaced")
             if status_fingerprint not in (
-                    None, row["status_receipt_fingerprint"]):
+                    None, row["status_receipt_fingerprint"]) and \
+                    generation_status != row["status_receipt_fingerprint"]:
                 raise _RootObservationError(
                     "source_replaced", "root status receipt changed")
             if resumed not in (None, snapshot["resumed"]):

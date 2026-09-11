@@ -22,14 +22,16 @@ taskplane writes only to your own machine, under your control:
 - **Knowledge store** (decisions, requirements, tracked debt, the dependency
   graph, context docs, and loop coordination state). Where it lives is
   plan-aware:
-  - **Personal plan (default):** an external store at
-    `~/.taskplane/projects/<key>/`, one folder per project. It lives OUTSIDE
-    your git repo, so on a personal plan taskplane's knowledge is never
-    committed or pushed with your code.
+  - **Personal plan (default):** an ignored store at
+    `<project>/.taskplane/projects/<key>/`. Run execution, evidence, and
+    temporary working copies use separate subdirectories of the same
+    `.taskplane/` home. This runtime directory is not committed or pushed
+    with your code. Existing bound runs and explicit storage selections keep
+    their recorded locations.
   - **Team/Enterprise plan:** an in-repo store at `.taskplane-kb/`, committed
     *deliberately* alongside your code so the whole team shares one registry
     and a fresh clone can discover that sharing is available. A new local user
-    still starts in the private external store; `tp share set shared` is the
+    still starts in the private ignored store; `tp share set shared` is the
     explicit opt-in before their writes use `.taskplane-kb/`. On a team plan,
     shared knowledge IS in your repo and IS committed — by design, not by
     accident.

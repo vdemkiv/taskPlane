@@ -2472,8 +2472,13 @@ def _suite_cache_key(workspace: str, command, env: dict) -> "str | None":
     return h.hexdigest()
 
 
-def _suite_cache_path(key: str) -> str:
-    return os.path.join(store_home(), "suite-cache", key + ".json")
+def _suite_cache_path(key: str, workspace: str | None = None) -> str:
+    if __package__:
+        from . import storage as runtime_storage
+    else:
+        import storage as runtime_storage
+    return runtime_storage._confined_stage_path(
+        store_home(workspace), "suite-cache", key + ".json", leaf_kind="file")
 
 
 def suite_cache_enabled() -> bool:
@@ -2510,7 +2515,7 @@ def suite_cache_lookup(workspace: str, command, env: dict) -> "dict | None":
     if not key:
         return None
     try:
-        with open(_suite_cache_path(key), encoding="utf-8") as f:
+        with open(_suite_cache_path(key, workspace), encoding="utf-8") as f:
             rec = json.load(f)
     except Exception:
         return None
@@ -2542,7 +2547,7 @@ def suite_cache_store(workspace: str, command, env: dict, *,
     if not key:
         return
     try:
-        atomic_write_json(_suite_cache_path(key), {
+        atomic_write_json(_suite_cache_path(key, workspace), {
             "key": key, "command": str(command),
             "returncode": int(returncode), "tail": tail,
             "duration_s": round(float(duration_s), 3), "ts": _time.time(),

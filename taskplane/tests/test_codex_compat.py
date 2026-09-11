@@ -59,10 +59,10 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
             "extension": {"labels": ["one", "two"], "enabled": True},
             "hooks": [foreign[0],
                       {"type": "command", "command":
-                       "python3 .taskplane/codex-hook.py obsolete-one"},
+                       "python3 .taskplane/codex-hook.py screen"},
                       foreign[1],
                       {"type": "command", "command":
-                       "python3 /old/host_native_runtime.py obsolete-two"},
+                       "python3 ./.taskplane/codex-hook.py context"},
                       foreign[2]],
         }
         return row, foreign
@@ -80,14 +80,14 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
         installed = tp.load_json(path)["hooks"]["SessionStart"]
 
         self.assertEqual(installed[1].get("hooks"), foreign,
-                         "mixed row must retain every foreign hook in order")
+                         "remove only owned duplicates and preserve foreign hooks")
         self.assertEqual({k: v for k, v in installed[1].items() if k != "hooks"},
                          {k: v for k, v in mixed.items() if k != "hooks"})
         self.assertEqual(installed[0], before)
         self.assertEqual(installed[2], after)
-        self.assertEqual(installed[3:], cli._codex_hook_rows()["SessionStart"])
+        self.assertEqual(installed[3:], [])
 
-    def test_install_preserves_foreign_content_and_replaces_platform_commands(self):
+    def test_install_preserves_all_project_content_and_platform_commands(self):
         generated = cli._codex_hook_rows()
         variants = [
             {"command": "python3 .taskplane/codex-hook.py obsolete"},
@@ -136,14 +136,15 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
                 ws, path = self._workspace_config(initial)
                 self.assertTrue(cli._install_codex_hooks(ws)["ok"])
                 installed = tp.load_json(path)
-                expected_rows = [foreign_row, metadata_row,
-                                 {**owned_row, "hooks": []},
-                                 {**custom_generated, "hooks": []}]
-                self.assertEqual(installed, {
-                    **initial,
-                    "hooks": {**generated, "SessionStart": expected_rows +
-                              generated["SessionStart"], "ForeignEvent": foreign_event},
-                })
+                expected = json.loads(json.dumps(initial))
+                rows = expected["hooks"]["SessionStart"]
+                # Exact generated commands are owned; similar-looking paths,
+                # unknown command shapes and custom platform commands are not.
+                rows[-1]["hooks"] = []
+                if variant == generated["SessionStart"][0]["hooks"][0]:
+                    rows[2]["hooks"] = []
+                    rows.pop(3)
+                self.assertEqual(installed, expected)
 
     def test_install_full_configuration_is_idempotent(self):
         generated = cli._codex_hook_rows()
@@ -166,19 +167,14 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
                     snapshots.append(tp.load_json(path))
                 self.assertEqual(snapshots[0], snapshots[1])
                 self.assertEqual(snapshots[0], snapshots[2])
-                for event, rows in generated.items():
-                    installed = snapshots[0]["hooks"][event]
-                    self.assertEqual(installed[-len(rows):], rows)
-                    for row in rows:
-                        self.assertEqual(installed.count(row), rows.count(row))
-                if name == "mixed-and-platform":
-                    rows = snapshots[0]["hooks"]["SessionStart"]
-                    self.assertEqual(rows[:-len(generated["SessionStart"])],
-                                     [{**mixed, "hooks": foreign},
-                                      {**owned_only, "hooks": []}])
-                    hooks = [hook for row in rows for hook in row["hooks"]]
-                    for hook in foreign:
-                        self.assertEqual(hooks.count(hook), 1)
+                if name == "clean":
+                    expected = config
+                elif name == "current":
+                    expected = {"hooks": {event: [] for event in generated}}
+                else:
+                    expected = {"extension": [1, 2], "hooks": {"SessionStart": [
+                        {**mixed, "hooks": foreign}, owned_only]}}
+                self.assertEqual(snapshots[0], expected)
 
     def test_install_managed_policy_blocks_before_any_mutation(self):
         for status, context in (("unsupported", "user-local"),
@@ -209,8 +205,7 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
                                       (tp, "load_json"), (cli, "_codex_hook_rows"),
                                       (os, "makedirs"), (os, "replace"),
                                       (tp, "atomic_write_json"),
-                                      (cli, "_codex_runner_body"),
-                                      (cli, "_exclude_generated_codex_config"))]
+                                      (cli, "_codex_runner_body"))]
                         opened = stack.enter_context(mock.patch("builtins.open"))
                         result = cli._install_codex_hooks(ws)
                         self.assertFalse(result["ok"])
@@ -224,7 +219,7 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
                         else:
                             self.assertFalse(os.path.exists(os.path.dirname(path)))
 
-    def test_onboarding_preserves_other_hooks_and_installs_local_bridge(self):
+    def test_onboarding_preserves_other_hooks_and_installs_only_cli_launcher(self):
         ws = tempfile.mkdtemp()
         os.makedirs(os.path.join(ws, ".codex"))
         custom = {"matcher": "custom", "hooks": [{
@@ -240,19 +235,7 @@ class TestCodexWorkspaceHookInstall(unittest.TestCase):
         self.assertTrue(second["ok"])
         config = tp.load_json(os.path.join(ws, ".codex", "hooks.json"))
         self.assertIn(custom, config["hooks"]["SessionStart"])
-        self.assertIn(".taskplane/codex-hook.py", json.dumps(config))
-        native_checks = [
-            hook
-            for row in config["hooks"]["SessionStart"]
-            for hook in row.get("hooks", [])
-            if "host-native-check" in hook.get("command", "")
-        ]
-        self.assertEqual(len(native_checks), 1)
-        self.assertIn("host-native-check --host codex",
-                      native_checks[0]["command"])
-        self.assertIn("host-native-check --host codex",
-                      native_checks[0]["commandWindows"])
-        self.assertNotIn("--host claude", json.dumps(native_checks[0]))
+        self.assertEqual(config, {"hooks": {"SessionStart": [custom]}})
         runner = os.path.join(ws, ".taskplane", "codex-hook.py")
         self.assertTrue(os.path.isfile(runner))
         with open(runner, encoding="utf-8") as handle:

@@ -79,7 +79,7 @@ runtime policies. Do not force-add release bundles, `build/`, `dist/`, `exports/
 `.em-review/`, `waves/`, backlog/analysis/report folders, completed `plan/`
 outputs, or generated Design reports. Keep local copies for later analysis;
 removing already-committed data from tracking does not require deleting it.
-Run evidence belongs in the external Taskplane store or CI artifacts. Historical
+Run evidence belongs in the project's ignored `.taskplane/` store or CI artifacts. Historical
 inputs needed by tests belong under `taskplane/tests/fixtures/`, explicitly labeled
 as fixtures rather than current delivery evidence. A `.gitignore` rule does not
 untrack a file already committed; check `git ls-files -ci --exclude-standard`

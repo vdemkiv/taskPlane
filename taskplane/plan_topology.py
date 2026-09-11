@@ -68,10 +68,16 @@ def dependency_plan_projection(graph: dict, plan: Mapping[str, Any] | None = Non
     owners = None
     if plan is not None:
         tasks = plan["tasks"]
+        scoped_modules = {task["id"]: set(_depgraph.modules_for_scope(
+            task["scope"], _depgraph.declared_module_ids(graph))) for task in tasks}
         owners = {}
         for component in graph.get("components", []):
             for task in tasks:
-                if any(_scope_matches(scope, path) for scope in task["scope"] for path in component["files"]):
+                # An approved future file already belongs to its existing
+                # module. Only scanned components qualify; a genuinely new
+                # module still requires the Plan's explicit new_modules.
+                if component["module"] in scoped_modules[task["id"]] or any(
+                        _scope_matches(scope, path) for scope in task["scope"] for path in component["files"]):
                     module = component["module"]
                     if module in owners and owners[module] != task["id"]:
                         raise ValueError("source module has ambiguous Plan task ownership")
