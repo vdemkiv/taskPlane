@@ -306,6 +306,13 @@ def test_subagent_stop_quarantines_missing_submission_instead_of_stranding(
     start = _event(tmp_path, name="tp_step_executor_t1_deadbeef")
     tp.bind_worker_contract_event(str(tmp_path), start, now=11)
     event = {**start, "hook_event_name": "SubagentStop", "outcome": "failed"}
+    # This test concerns missing submission cleanup, with usage available.
+    # Missing usage is independently required to hold the contract closed.
+    transcript = tmp_path / "claude-usage.jsonl"
+    transcript.write_text(json.dumps({"message": {"id": "terminal", "usage": {
+        "input_tokens": 1, "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0, "output_tokens": 1}}}) + "\n")
+    event.update(provider="claude", transcript_path=str(transcript))
     monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(
         read=lambda: json.dumps(event)))
     monkeypatch.setattr(cli, "_submission_stop_check", lambda *a, **k: {

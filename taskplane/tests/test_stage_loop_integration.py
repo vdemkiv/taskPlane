@@ -878,8 +878,9 @@ def _cli(ws, *arguments):
     import contextlib
     import io
     from taskplane import tp as cli
+    from taskplane.tests.host_screen_support import confirmed_cli_hooks
     output = io.StringIO()
-    with contextlib.redirect_stdout(output):
+    with confirmed_cli_hooks(cli), contextlib.redirect_stdout(output):
         code = cli.main(["loop", "--workspace", ws, *arguments])
     value = json.loads(output.getvalue())
     assert code == 0, json.dumps(value, indent=2)
