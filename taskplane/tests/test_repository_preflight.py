@@ -339,6 +339,12 @@ class TestLocalRepositoryPreflight(unittest.TestCase):
 
 
 class TestReviewCliPreflightBoundary(unittest.TestCase):
+    def setUp(self):
+        from taskplane.tests.host_screen_support import confirmed_cli_hooks
+        hooks = confirmed_cli_hooks(cli)
+        hooks.start()
+        self.addCleanup(hooks.stop)
+
     def test_storage_pause_persists_until_explicit_review_resume(self):
         ws = tempfile.mkdtemp(prefix="tp-cli-storage-pause-")
         outputs = []

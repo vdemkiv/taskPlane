@@ -35,8 +35,9 @@ from taskplane.tests.native_meter_support import attach_native_counter  # noqa: 
 
 
 def _run(*args):
+    from taskplane.tests.host_screen_support import confirmed_cli_hooks
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    with confirmed_cli_hooks(cli), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             rc = cli.main(list(args))
         except SystemExit as e:

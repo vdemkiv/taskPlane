@@ -753,7 +753,12 @@ class TestSelectiveReviewKernel(unittest.TestCase):
             quality["changed_symbol_caller_coverage"]["ratio"], 1.0)
 
     def test_managed_pr_flow_collects_leased_artifacts_from_parent(self):
-        """The marketplace PR journey does not depend on host receipt timing."""
+        """The marketplace PR journey uses an explicitly live host fixture."""
+        from taskplane.tests.host_screen_support import confirmed_cli_hooks
+        import tp as cli
+        hooks = confirmed_cli_hooks(cli)
+        hooks.start()
+        self.addCleanup(hooks.stop)
         home = tempfile.mkdtemp(prefix="tp-managed-review-home-")
         checkout = tempfile.mkdtemp(prefix="tp-managed-review-checkout-")
         parent = tempfile.mkdtemp(prefix="tp-managed-review-parent-")

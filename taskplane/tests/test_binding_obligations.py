@@ -34,6 +34,8 @@ import obligations                                            # noqa: E402
 import taskplane_lite as tp                                    # noqa: E402
 from taskplane.authority import DECISION_SCHEMA               # noqa: E402
 from taskplane.settings import SettingsError                  # noqa: E402
+from taskplane.tests.host_screen_support import record_simulated_hook
+from taskplane.tests.native_meter_support import attach_native_counter
 TP = os.path.join(ROOT, "taskplane", "tp.py")
 
 
@@ -208,6 +210,7 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         shutil.rmtree(self.home, ignore_errors=True)
 
     def new(self, *extra):
+        record_simulated_hook(self.ws)
         return subprocess.run(
             [sys.executable, TP, "new", "--read-only", *extra, "goal",
              "--workspace", self.ws], capture_output=True, text=True,
@@ -284,6 +287,7 @@ class TheStopHookReportsWhatWasNeverShown(_Ws):
         tp.activate(self.ws, self.contract, snapshot=None)
 
     def run_verify(self, event=None):
+        event = attach_native_counter(event or {}, self.ws, label="obligation-stop")
         return subprocess.run(
             [sys.executable, TP, "session-verify", "--workspace", self.ws],
             input=json.dumps(event or {}), capture_output=True, text=True, encoding="utf-8",
