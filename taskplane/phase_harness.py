@@ -2067,14 +2067,6 @@ def _phase_bridge_prepare(
     if context is None:
         return None
     config, stage, definition = context["configuration"], context["stage"], context["definition"]
-    # Bind the immutable phase limit to the *live* hook contract before
-    # activation. Checking only the terminal result permits unlimited spend.
-    ceiling = min(int(definition["budget"]["tokens"]), int(contract["budget"]["max_tokens"]))
-    contract["budget"].update(
-        max_tokens=ceiling,
-        target_tokens=max(1, min(int(contract["budget"]["target_tokens"]), ceiling - 1)),
-        token_usage_required=True,
-    )
     retro_domain = None
     if stage["stage_kind"] == "retro":
         retro_domain, _ = _ports._phase_bridge_retro_inputs(ws, context)
@@ -2097,6 +2089,14 @@ def _phase_bridge_prepare(
     paths = config["output_paths"].get(stage["stage_kind"], {} if not worker_outputs else None)
     if not isinstance(paths, dict) or set(paths) != worker_outputs:
         raise ValueError("phase output paths do not match declared outputs")
+    # Validate declared outputs before mutating the live contract. Bind the
+    # phase ceiling before activation so hooks enforce it during execution.
+    ceiling = min(int(definition["budget"]["tokens"]), int(contract["budget"]["max_tokens"]))
+    contract["budget"].update(
+        max_tokens=ceiling,
+        target_tokens=max(1, min(int(contract["budget"]["target_tokens"]), ceiling - 1)),
+        token_usage_required=True,
+    )
     predecessor = _phase_predecessor(_ports, context)
     consumed = input_package(_ports, context)
     package = () if consumed is None else consumed.artifacts

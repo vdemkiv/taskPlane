@@ -804,8 +804,11 @@ def test_phase_output_mapping_refuses_before_nonce_or_worker_effects(monkeypatch
         "run_id":"preflight-only", "store":SimpleNamespace(load=lambda run_id: {})}
     monkeypatch.setattr(loop, "_phase_bridge_context", lambda *args: context)
     monkeypatch.setattr(loop, "_phase_bridge_authorize", lambda *args: None)
+    contract = {"budget": {"max_tokens": 10_000_000, "target_tokens": 9_000_000}}
+    before = copy.deepcopy(contract)
     with pytest.raises(ValueError, match="phase output paths do not match declared outputs"):
-        loop._phase_bridge_prepare("unused", {}, {}, {})
+        loop._phase_bridge_prepare("unused", {}, contract, {})
+    assert contract == before, "invalid output settings must not mutate the live budget"
 
 
 @pytest.mark.parametrize("case", ["uncanceled", "different-reason", "foreign-run", "foreign-candidate",
@@ -1030,7 +1033,7 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
 
 @pytest.mark.parametrize("outcome", ["success", "failure"])
 def test_rejected_evaluate_stop_releases_only_authenticated_child(
-        collected_lens_design, monkeypatch, outcome):
+        collected_lens_design, monkeypatch, outcome, capsys):
     """Real phase/slot owners with explicitly simulated native test events."""
     import sys
     from taskplane import run_artifacts
@@ -1066,9 +1069,15 @@ def test_rejected_evaluate_stop_releases_only_authenticated_child(
         # event whose native transcript cannot be authenticated.
         assert _emit_host_hook(ws, first, "SubagentStop", patch,
             agent_id="foreign-child", last_assistant_message="{}") == 2
+        capsys.readouterr()
+        # Missing usage must pause the worker; exit 2 requests another model
+        # turn and would spend more tokens without an authenticated meter.
         assert _emit_host_hook(ws, first, "SubagentStop", patch,
             agent_transcript_path=str(Path(ws).parent / "absent-native-transcript.jsonl"),
-            last_assistant_message="{}") == 2
+            last_assistant_message="{}") == 0
+        paused = json.loads(capsys.readouterr().out)
+        assert paused["continue"] is False
+        assert "Budget meter unavailable" in paused["stopReason"]
         assert collection_calls == []
         assert {slot: Path(taskplane_lite.active_contract_path(ws, slot)).read_bytes()
                 for slot in slots} == before_slots

@@ -486,8 +486,16 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
         "PATH": os.environ.get("PATH", ""),
         "TASKPLANE_HOME": str(case / "private-store"),
         "TASKPLANE_SESSION_ID": "isolated-installed-fixture",
+        "CLAUDE_SESSION_ID": "isolated-installed-fixture",
     }
     cli = package_root / "taskplane/tp.py"
+    setup = subprocess.run([
+        sys.executable, str(cli), "onboard", "--workspace", str(workspace),
+        "--install-launcher", "--json",
+    ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
+       env=environment)
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    assert (workspace / ".taskplane/codex-hook.py").is_file()
     requirement_result = subprocess.run([
         sys.executable, str(cli), "req", "--workspace", str(workspace),
         "new", "Installed package remains governable",
@@ -504,7 +512,7 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     initialized = subprocess.run([
         sys.executable, str(cli), "loop", "--workspace", str(workspace),
         "init", "--spec", str(spec), "--req", requirement_id,
-        "--design", "--parallel", "--advisory", "--by", "human:fixture",
+        "--design", "--parallel", "--by", "human:fixture",
         "installed package journey",
     ], cwd=case, text=True, encoding="utf-8", capture_output=True,
        env=environment)
@@ -513,11 +521,41 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     assert state["initialized"] is True
     assert state["step"] == "pm"
 
-    next_action = subprocess.run([
-        sys.executable, str(cli), "loop", "--workspace", str(workspace),
-        "next", "--advisory", "--by", "human:fixture",
-    ], cwd=case, text=True, encoding="utf-8", capture_output=True,
-       env=environment)
+    def next_stage(*extra):
+        return subprocess.run([
+            sys.executable, str(cli), "loop", "--workspace", str(workspace),
+            "next", "--by", "human:fixture", *extra,
+        ], cwd=case, text=True, encoding="utf-8", capture_output=True,
+           env=environment)
+
+    def assert_unproven():
+        refused = next_stage()
+        assert refused.returncode == 1, refused.stdout + refused.stderr
+        payload = json.loads(refused.stdout)
+        assert payload["schema"] == "taskplane.enforcement-refusal/v1"
+        assert payload["enforcement"]["status"] == "unproven"
+
+    def observe_hook(session):
+        # Real installed entry point; only the external host event is simulated.
+        hook = subprocess.run([
+            sys.executable, str(cli), "screen",
+        ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
+           input=json.dumps({"hook_event_name": "PreToolUse", "cwd": str(workspace),
+                             "session_id": session, "tool_use_id": f"read-{session}",
+                             "tool_name": "Read", "tool_input": {"file_path": str(spec)}}),
+           env={**environment, "TASKPLANE_HOOK_PATH": "native"})
+        assert hook.returncode == 0, hook.stdout + hook.stderr
+
+    # No capability mock or advisory waiver: prove the public readiness
+    # boundary rejects missing/foreign receipts before accepting this session.
+    assert_unproven()
+    observe_hook("unrelated-session")
+    assert_unproven()
+    observe_hook(environment["CLAUDE_SESSION_ID"])
+    advisory = next_stage("--advisory")
+    assert advisory.returncode == 1, advisory.stdout + advisory.stderr
+    assert "harness bypass is disabled" in json.loads(advisory.stdout)["error"]
+    next_action = next_stage()
     assert next_action.returncode == 0, next_action.stdout + next_action.stderr
     action = json.loads(next_action.stdout)
     assert set(action) == {"schema", "stage_runtime_dispatch", "obligations"}
