@@ -150,6 +150,7 @@
         "WINDIR",
         "TASKPLANE_BARE_ROOT",
         "TASKPLANE_HOME",
+        "TASKPLANE_HOST_HOME",
         "TASKPLANE_HOOK_PATH",
         "TASKPLANE_LOCALE",
         "TASKPLANE_TASK",
