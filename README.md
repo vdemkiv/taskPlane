@@ -150,15 +150,16 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.2, not yet published to a Marketplace. Historical
+> v2.23.3. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Building the 2.23.2 packages and pushing source to main is not a tag, upload,
+> Building the current packages and pushing source to main is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.23.3** | **Model-led orchestration, strict harness controls.** Blocks worker gate and escalation bypasses, removes budget waivers, and checks fresh hooks on control commands. Exact-operation collection safely retries interrupted serial and parallel transitions through the existing gate. Canonical CI stays independent of project onboarding settings. |
 | **v2.23.2** | **Budget and harness enforcement, simpler onboarding.** Applies phase caps during execution, limits each quick lens to 100,000 native tokens and eight actions, meters every tool, and stops budget-triggered continuation loops. Reuses completed reviews, returns findings inline, and keeps onboarding to initial setup. Includes project-local storage recovery and disables harness bypass. Marketplace packages require loading the updated plugin hooks. |
 | **v2.23.1** | **Superseded untagged onboarding candidate.** Uses the shared hook claim guard for event identity, checks the current launcher after reinstall, and follows the same Git-family path as hook execution. The dashboard keeps incomplete setup visibly incomplete. Every session's first request and every installation/update presents onboarding and preserves the original goal. Prompts hook trust before reload, reports failed acknowledgment writes, and bounds Stop reminders without releasing completion gates. Includes focused regression coverage; a fresh-host check remains separate from CI. |
 | **v2.23.0** | **Superseded untagged harness marketplace candidate.** Gives the refactor integrated in [PR #22](https://github.com/vdemkiv/taskPlane/pull/22) a distinct version from the earlier 2.20.0 development builds. Includes stateless phases through Retro, unified lens routing and collection, evolving dependency graphs, dashboard/settings/onboarding wiring, and the cleaned test suite. Package preparation does not claim Marketplace publication. |

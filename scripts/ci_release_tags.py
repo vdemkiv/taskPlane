@@ -84,6 +84,12 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.23.2": {
+        "reason": "untagged budget and onboarding candidate on main; its changes "
+                  "are retained by the 2.23.3 harness release. No release tag or "
+                  "GitHub release was published for 2.23.2.",
+        "superseded_by": "2.23.3",
+    },
     "2.23.1": {
         "reason": "superseded untagged onboarding source candidate. Its fixes "
                   "are included in the 2.23.2 budget and harness package; "

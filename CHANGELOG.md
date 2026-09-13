@@ -1,5 +1,18 @@
 # taskplane changelog
 
+## 2.23.3 — 2026-09-13 — model-led orchestration with strict harness controls
+
+- Workers cannot advance their own gates or resolve their own escalation. Additional
+  control commands require fresh installed hook receipts.
+- Run-wide budget waivers are disabled, including historical waiver records and
+  legacy advisory arguments. Missing usage and exhausted limits remain visible.
+- Exact-operation collection uses the existing gate and commits its replay marker
+  with the transition. Interrupted serial and parallel collection can be retried
+  without advancing twice.
+- Model orchestration remains in place; no duplicate controller or policy engine
+  is included. Progress dashboards do not stop admitted work.
+- Canonical CI ignores project onboarding settings and active-run snapshots.
+
 ## 2.23.2 — 2026-09-11 — budget enforcement and inline setup
 
 - Phase token limits now reach the live hook contract before launch. Cached
@@ -64,10 +77,10 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.2, not yet published to a Marketplace. Historical
+> v2.23.3. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Building the 2.23.2 packages and pushing source to main is not a tag, upload,
+> Building the current packages and pushing source to main is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
