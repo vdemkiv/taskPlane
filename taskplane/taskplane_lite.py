@@ -4246,9 +4246,14 @@ def _leased_review_result_path(workspace: str, value: object, lease_fingerprint:
             and _same_path(os.path.realpath(path), os.path.realpath(expected))
             and writable_target(path, [path], workspace)
         )
-    return bool(
-        re.fullmatch(r"\.(?:eval|em-review)/kernel-v2/results/[0-9a-f]{64}\.json", path)
-    ) and writable_target(path, [path], workspace)
+    import storage as _runtime_storage
+
+    expected_paths = {
+        os.path.join(_runtime_storage.session_path(root), "kernel-v2", "results",
+                     f"{fingerprint}.json").replace(os.sep, "/")
+        for root in (".eval", ".em-review")
+    }
+    return path in expected_paths and writable_target(path, [path], workspace)
 
 
 def issue_review_contract_action(

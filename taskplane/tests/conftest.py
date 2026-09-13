@@ -94,6 +94,7 @@ def pytest_runtest_logreport(report):
 @pytest.fixture(autouse=True)
 def _isolated_taskplane_home(tmp_path, monkeypatch):
     monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "tp-store"))
+    monkeypatch.setenv("TASKPLANE_HOST_HOME", str(tmp_path / "host-store"))
     yield
     # monkeypatch restores the prior value automatically on teardown.
 

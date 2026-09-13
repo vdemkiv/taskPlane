@@ -1,5 +1,34 @@
 # State specification — where taskplane's state lives, and why
 
+## Host session ownership (2.23.5)
+
+Identified host conversations partition execution storage by the SHA-256 of
+their host session ID. The default home is
+`<checkout>/.taskplane/sessions/<fingerprint>/`; an explicit `TASKPLANE_HOME`
+is partitioned the same way. Each checkout's private Git directory stores its
+locator at `taskplane/sessions/<fingerprint>/workspace.json`. Contracts, meters,
+review signing authority and run state resolve through that session's home and
+locator. Local review and evaluation outputs also have session subdirectories.
+
+A process restart with the same host session ID can recover its own run. A new
+conversation does not adopt any legacy shared state or another conversation's
+run. `clear` operates on the calling session only; operator commands must carry
+that session's host identity. CLI use without a host identity remains in the
+legacy local namespace and cannot implicitly select an identified session.
+
+Native hooks record bounded observations in a private temporary host cache,
+keyed by exact session ID; `TASKPLANE_HOST_HOME` can select that cache's location.
+The cache contains no contracts, execution results or findings. It lets the same
+session verify readiness in a fresh checkout with a different execution home.
+Repository bridge observations remain workspace-bound. Missing session identity,
+a different session, or explicit denied host policy cannot use native proof.
+
+A standalone review records its active checkout in that session's host cache.
+Later screen and lifecycle hooks resolve that checkout while preserving the
+original meaning of relative tool paths. Clearing the owning contract makes the
+binding inactive. The shared `.taskplane/codex-hook.py` launcher is stateless;
+its presence alone never proves hook readiness or selects another session.
+
 taskplane separates source, durable knowledge, and private run data. The rule
 that decides every case:
 

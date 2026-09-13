@@ -586,7 +586,8 @@ def _host_capability_snapshot(
     if session_id is None:
         session_id = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
     observations = host_caps.runtime_hook_observations(
-        tp.store_home(ws), session_id=session_id, workspace=ws
+        tp.store_home(ws), session_id=session_id, workspace=ws,
+        native_home=runtime_storage.host_runtime_home(),
     )
     # Explicit adapter-owned environment receipts take precedence over the
     # short-lived runtime receipt when both exist.
@@ -824,9 +825,9 @@ def _install_codex_hooks(ws: str, *, remove_project_duplicates: bool = True) -> 
 
     # Validate the project path independently of any accepted external run
     # binding. The launcher always belongs to this checkout.
-    launcher_home = runtime_storage.project_taskplane_home(ws)
+    launcher_home = runtime_storage.project_taskplane_home(ws, session_scoped=False)
     os.makedirs(launcher_home, exist_ok=True)
-    runtime_storage.project_taskplane_home(ws)
+    runtime_storage.project_taskplane_home(ws, session_scoped=False)
     runner_path = os.path.join(launcher_home, "codex-hook.py")
     family = _plugin_family_for_engine(os.path.abspath(__file__))
     body = _codex_runner_body(family)
@@ -840,7 +841,7 @@ def _install_codex_hooks(ws: str, *, remove_project_duplicates: bool = True) -> 
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
-        runtime_storage.project_taskplane_home(ws)
+        runtime_storage.project_taskplane_home(ws, session_scoped=False)
         os.replace(tmp, runner_path)
     finally:
         if os.path.exists(tmp):
@@ -6874,10 +6875,46 @@ def _run_hook_command(a) -> int:
 
         event = codex_identity.normalize_lifecycle(event)
         raw = json.dumps(event, separators=(",", ":"))
+    with runtime_storage.hook_session(event):
+        return _run_session_hook_command(a, raw, event, hook_path)
+
+
+def _run_session_hook_command(a, raw: str, event: dict, hook_path: str) -> int:
+    """Hook state and contracts belong to the event's host conversation."""
+    receipt_event = event
     event_cwd = event.get("cwd")
     workspace = _workspace(
         event_cwd if isinstance(event_cwd, str) and event_cwd else getattr(a, "workspace", None)
     )
+    review_workspace = runtime_storage.review_session_workspace()
+    if review_workspace and review_workspace != workspace:
+        event = dict(event)
+        inputs = event.get("tool_input")
+        if isinstance(inputs, dict):
+            inputs = dict(inputs)
+            # Paths remain relative to the host's actual cwd, never silently
+            # reinterpreted as paths in the review checkout.
+            for key in ("file_path", "path", "notebook_path", "cwd", "workdir"):
+                value = inputs.get(key)
+                if isinstance(value, str) and value and not os.path.isabs(value):
+                    inputs[key] = os.path.abspath(os.path.join(workspace, value))
+            if event.get("tool_name", event.get("tool")) == "apply_patch":
+                def absolute_patch_target(match):
+                    path = match.group("path")
+                    if os.path.isabs(path):
+                        return match.group(0)
+                    start = match.start("path") - match.start()
+                    return match.group(0)[:start] + os.path.abspath(os.path.join(workspace, path))
+
+                inputs["command"] = tp._PATCH_TARGET_RE.sub(
+                    absolute_patch_target, str(inputs.get("command") or ""))
+            event["tool_input"] = inputs
+        event["cwd"] = review_workspace
+        workspace = review_workspace
+        raw = json.dumps(event, separators=(",", ":"))
+        # The invocation may inherit the session cwd's project home. Resolve
+        # the selected checkout's own locator instead of carrying it across.
+        os.environ.pop("TASKPLANE_HOME", None)
     a.workspace = workspace
     if hook_path not in {"native", "bridge"}:
         # Direct hook invocations still belong to the event's checkout.
@@ -6895,7 +6932,8 @@ def _run_hook_command(a) -> int:
     claim = tp.claim_hook_event(workspace, a.cmd, event, hook_path=hook_path)
     if claim.get("claim_id"):
         host_caps.record_runtime_hook_receipt(
-            receipt_home, hook_path=hook_path, event=event, claim=claim
+            receipt_home, hook_path=hook_path, event=receipt_event, claim=claim,
+            native_home=runtime_storage.host_runtime_home(),
         )
     context_replay = (
         not claim.get("execute")
@@ -7005,8 +7043,9 @@ def _contracts_elsewhere(ws: str, limit: int = 4) -> list:
         owner = os.path.realpath(os.path.abspath(owner))
         if owner == here or not os.path.isdir(owner):
             continue
-        active = os.path.join(owner, ".taskplane", "active")
-        has = os.path.isfile(os.path.join(owner, ".taskplane", "active_contract.json")) or (
+        control = tp.tp_dir(owner)
+        active = os.path.join(control, "active")
+        has = os.path.isfile(os.path.join(control, "active_contract.json")) or (
             os.path.isdir(active) and any(n.endswith(".json") for n in os.listdir(active))
         )
         if has:
@@ -7689,6 +7728,7 @@ def cmd_review(a) -> int:
     """
     import target as tgt
     import review as rv
+    import storage as runtime_storage
 
     ws = _workspace(a.workspace)
     review_action = getattr(a, "review_action", None)
@@ -7728,6 +7768,11 @@ def cmd_review(a) -> int:
         )
         if refusal:
             print(json.dumps(refusal, sort_keys=True, separators=(",", ":")))
+            return 1
+        current_review = runtime_storage.review_session_workspace()
+        if review_action == "start" and current_review and current_review != os.path.realpath(ws):
+            print(json.dumps({"status": "start_failed", "reason":
+                "finish or clear this session's existing review before starting another"}))
             return 1
     if getattr(a, "review_action", None) == "option":
         try:
@@ -8241,7 +8286,7 @@ def cmd_review(a) -> int:
     import storage as runtime_storage
 
     locator = runtime_storage.load_workspace_locator(ws)
-    write_allow = [".em-review/**"]
+    write_allow = [os.path.join(runtime_storage.review_public_root(ws), "**")]
     if locator:
         write_allow = [os.path.join(path, "**") for path in locator["paths"].values()]
     c = tp.build_contract(
@@ -8415,6 +8460,7 @@ def cmd_review(a) -> int:
             print(json.dumps(rv._manifest(manifest), sort_keys=True, separators=(",", ":")))
             return 1
         tp.activate(ws, c, snapshot=tp.git_head(ws))
+        runtime_storage.bind_review_session(ws, c["task_id"])
         step("contract", True, task_id=c["task_id"])
         try:
             out["owes"] = _seed_owed(ws, "review", c["task_id"])
@@ -10099,6 +10145,8 @@ def _unbound_global_hook(argv=None) -> bool:
         return False
     if os.environ.get("TASKPLANE_HOOK_PATH") not in ("native", "bridge"):
         return False
+    if runtime_storage.review_session_workspace():
+        return False
     workspace = os.getcwd()
     if os.path.isfile(os.path.join(workspace, ".taskplane", "codex-hook.py")):
         return False
@@ -10123,6 +10171,30 @@ def _unbound_global_hook(argv=None) -> bool:
 
 
 def main(argv=None) -> int:
+    """Select host identity before even compatibility and fast-path reads."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    hook_path = os.environ.get("TASKPLANE_HOOK_PATH")
+    is_hook = bool(args and args[0] in _HOOK_COMMANDS and (
+        args[0] not in {"context", "host-native-check"} or hook_path in {"native", "bridge"}))
+    if not is_hook or any(flag in args for flag in ("-h", "--help")):
+        return _main(argv)
+    raw = sys.stdin.read()
+    try:
+        event = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        event = {}
+    if not isinstance(event, dict):
+        event = {}
+    original_stdin = sys.stdin
+    try:
+        sys.stdin = io.StringIO(raw)
+        with runtime_storage.hook_session(event):
+            return _main(argv)
+    finally:
+        sys.stdin = original_stdin
+
+
+def _main(argv=None) -> int:
     _utf8_streams()
     # Plugin hooks are registered globally by the host.  They must be inert
     # until the workspace has been explicitly onboarded with its local

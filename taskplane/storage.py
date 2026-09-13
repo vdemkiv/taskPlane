@@ -49,6 +49,117 @@ class _NoGitLocator(StorageIdentityError):
     pass
 
 
+def host_session_id() -> str | None:
+    """Current host conversation; worker task names are not session identity."""
+    value = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+    return (str(value).strip() or None) if value is not None else None
+
+
+def session_path(root: str) -> str:
+    """Partition execution authority without adopting legacy or sibling state."""
+    session = host_session_id()
+    if not session:
+        return root
+    fingerprint = hashlib.sha256(session.encode("utf-8")).hexdigest()
+    suffix = os.path.join("sessions", fingerprint)
+    parent, leaf = os.path.split(root)
+    if os.path.basename(parent) == "sessions" and _FINGERPRINT.fullmatch(leaf):
+        root = os.path.dirname(parent)
+    return os.path.join(root, suffix)
+
+
+@contextmanager
+def hook_session(event: dict):
+    """Bind every imported storage adapter to the host event for this call."""
+    identity = event.get("session_id") or event.get("thread_id") or event.get("conversation_id")
+    if not isinstance(identity, str) or not identity.strip():
+        yield
+        return
+    names = ("CODEX_THREAD_ID", "CLAUDE_SESSION_ID", "TASKPLANE_HOME")
+    previous = {name: os.environ.get(name) for name in names}
+    host_key = "CODEX_THREAD_ID" if "turn_id" in event or os.environ.get("CODEX_THREAD_ID") else "CLAUDE_SESSION_ID"
+    try:
+        os.environ.pop("CODEX_THREAD_ID", None)
+        os.environ.pop("CLAUDE_SESSION_ID", None)
+        os.environ[host_key] = identity.strip()
+        # A home inherited from a different host session is not authority.
+        configured = previous["TASKPLANE_HOME"]
+        if configured:
+            parent, leaf = os.path.split(configured)
+            if os.path.basename(parent) == "sessions" and _FINGERPRINT.fullmatch(leaf):
+                os.environ["TASKPLANE_HOME"] = session_path(os.path.dirname(parent))
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def host_runtime_home() -> str:
+    """Private, ephemeral host observations shared only by exact session id.
+
+    Keep this outside project execution homes so a fresh checkout can observe
+    its own native hook. tempfile also keeps both test runners off real state.
+    Losing this cache requires a fresh hook; it never authorizes a run itself.
+    """
+    owner = hashlib.sha256(os.path.realpath(os.path.expanduser("~")).encode()).hexdigest()
+    configured = os.environ.get("TASKPLANE_HOST_HOME")
+    root = os.path.abspath(os.path.expanduser(configured)) if configured else os.path.join(
+        tempfile.gettempdir(), "taskplane-host-" + owner)
+    if os.path.lexists(root) and (os.path.islink(root) or not os.path.isdir(root)):
+        raise StorageIdentityError("host runtime storage must be a directory without symlinks")
+    return root
+
+
+def review_session_workspace() -> str | None:
+    """Resolve this conversation's active review, never another session's."""
+    if not host_session_id():
+        return None
+    path = os.path.join(session_path(host_runtime_home()), "review-workspace.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            record = json.load(handle)
+    except FileNotFoundError:
+        return None
+    if not isinstance(record, dict) or record.get("schema") != "taskplane.session-review/v1":
+        raise StorageIdentityError("session review binding is invalid")
+    workspace = record.get("workspace")
+    if not isinstance(workspace, str) or not os.path.isabs(workspace):
+        raise StorageIdentityError("session review workspace is invalid")
+    locator = load_workspace_locator(workspace)
+    if (locator or {}).get("run_id") != record.get("run_id"):
+        return None
+    try:
+        with open(os.path.join(control_root(workspace), "active_contract.json"), encoding="utf-8") as handle:
+            contract = json.load(handle)
+    except FileNotFoundError:
+        return None  # clearing a review also detaches its session routing
+    if not isinstance(contract, dict):
+        raise StorageIdentityError("session review contract is invalid")
+    if contract.get("task_id") != record.get("task_id"):
+        return None
+    return workspace
+
+
+def bind_review_session(workspace: str, task_id: str) -> None:
+    """Route later host lifecycle/screen events to this session's checkout."""
+    if not host_session_id():
+        return
+    workspace = os.path.realpath(workspace)
+    current = review_session_workspace()
+    if current and current != workspace:
+        raise StorageIdentityError("finish or clear this session's existing review before starting another")
+    locator = load_workspace_locator(workspace)
+    root = session_path(host_runtime_home())
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    _atomic_json(os.path.join(root, "review-workspace.json"), {
+        "schema": "taskplane.session-review/v1", "workspace": workspace,
+        "task_id": task_id, "run_id": (locator or {}).get("run_id"),
+    })
+
+
 def resolve_repository_family(workspace: str) -> dict:
     """Locate the exact current worktree and its repository-family launcher.
 
@@ -228,7 +339,7 @@ def resolve_repository_identity(workspace: str, *, remote: str | None = None) ->
     )
 
 
-def project_taskplane_home(workspace: str) -> str:
+def project_taskplane_home(workspace: str, *, session_scoped: bool = True) -> str:
     """Return the project's execution directory without following its links."""
     root = os.path.realpath(os.path.abspath(os.path.expanduser(workspace)))
     path = os.path.join(root, ".taskplane")
@@ -238,7 +349,11 @@ def project_taskplane_home(workspace: str) -> str:
             raise StorageIdentityError(
                 "project execution storage must be a directory without symlinks"
             )
-    return path
+    scoped = session_path(path) if session_scoped else path
+    for candidate in (os.path.dirname(scoped), scoped):
+        if os.path.lexists(candidate) and (os.path.islink(candidate) or not os.path.isdir(candidate)):
+            raise StorageIdentityError("session execution storage must be a directory without symlinks")
+    return scoped
 
 
 def taskplane_home(home: str | None = None, *, workspace: str | None = None) -> str:
@@ -252,7 +367,7 @@ def taskplane_home(home: str | None = None, *, workspace: str | None = None) -> 
     configured = os.environ.get("TASKPLANE_HOME")
     root = os.path.realpath(os.path.abspath(workspace or os.getcwd()))
     if configured:
-        canonical = os.path.realpath(os.path.abspath(os.path.expanduser(configured)))
+        canonical = session_path(os.path.realpath(os.path.abspath(os.path.expanduser(configured))))
         selection = _load_storage_selection(root) if workspace else None
         if selection and canonical != selection["home"]:
             raise StorageIdentityError(
@@ -466,6 +581,7 @@ def _locator_path(checkout: str) -> str:
     # Read that explicit marker directly on the hot path; invoking Git for
     # every state/trace read made a phase perform thousands of subprocesses.
     # This resolves metadata only, never another checkout's run or artifacts.
+    relative_locator = os.path.join(session_path("taskplane"), "workspace.json")
     marker = os.path.join(checkout, ".git")
     directory = marker if os.path.isdir(marker) else None
     if directory is None and os.path.isfile(marker):
@@ -478,8 +594,8 @@ def _locator_path(checkout: str) -> str:
             raise StorageIdentityError("workspace Git marker is invalid")
         directory = os.path.join(checkout, line[len("gitdir: ") :])
     if directory is not None and os.path.isfile(os.path.join(directory, "HEAD")):
-        return _checked_binding_path(os.path.join(os.path.realpath(directory), LOCATOR))
-    relative = _git_value(checkout, "rev-parse", "--git-path", LOCATOR)
+        return _checked_binding_path(os.path.join(os.path.realpath(directory), relative_locator))
+    relative = _git_value(checkout, "rev-parse", "--git-path", relative_locator)
     if not relative:
         raise _NoGitLocator("workspace locator requires a valid Git checkout")
     return _checked_binding_path(
@@ -914,8 +1030,8 @@ def select_project_execution_storage(
 def _bind_taskplane_home(environment: MutableMapping[str, str], expected: str) -> None:
     configured = str(environment.get("TASKPLANE_HOME") or "")
     if configured:
-        canonical = taskplane_home(configured)
-        if os.path.normcase(configured) != os.path.normcase(canonical):
+        canonical = session_path(taskplane_home(configured))
+        if os.path.normcase(configured) != os.path.normcase(taskplane_home(configured)):
             raise StorageIdentityError("hook TASKPLANE_HOME is not canonical")
         if os.path.normcase(canonical) != os.path.normcase(expected):
             raise StorageIdentityError("hook TASKPLANE_HOME does not match the workspace locator")
@@ -941,7 +1057,7 @@ def bind_hook_taskplane_home(
         if str(hook_path or "").strip().lower() not in {"native", "bridge"}:
             raise StorageIdentityError("Taskplane hook requires a governed workspace locator")
         configured = str(environment.get("TASKPLANE_HOME") or "")
-        expected = taskplane_home(configured) if configured else project_taskplane_home(checkout)
+        expected = session_path(taskplane_home(configured)) if configured else project_taskplane_home(checkout)
     _bind_taskplane_home(environment, expected)
     return expected
 
@@ -1352,8 +1468,8 @@ def stage_execution_root(checkout: str, stage_id: str, attempt_id: str | None = 
 
 def evaluation_root(checkout: str) -> str:
     """Canonical evaluator-artifact root for managed and legacy workspaces."""
-    return managed_path(checkout, "evidence", "evaluation") or os.path.join(
-        os.path.realpath(checkout), ".eval"
+    return managed_path(checkout, "evidence", "evaluation") or (
+        session_path(os.path.join(os.path.realpath(checkout), ".eval"))
     )
 
 
@@ -1364,13 +1480,13 @@ def evaluation_path(checkout: str, name: str = "verdict.json") -> str:
 def evaluator_contract_path(checkout: str) -> str:
     """Portable legacy path or canonical absolute managed result path."""
     managed = managed_path(checkout, "evidence", "evaluation", "verdict.json")
-    return managed or ".eval/verdict.json"
+    return managed or (evaluation_path(checkout) if host_session_id() else ".eval/verdict.json")
 
 
 def review_public_root(checkout: str) -> str:
     """Canonical final-review projection root."""
-    return managed_path(checkout, "artifacts", "public") or os.path.join(
-        os.path.realpath(checkout), ".em-review"
+    return managed_path(checkout, "artifacts", "public") or (
+        session_path(os.path.join(os.path.realpath(checkout), ".em-review"))
     )
 
 
@@ -1380,22 +1496,20 @@ def review_public_path(checkout: str, name: str) -> str:
 
 def dashboard_path(checkout: str) -> str:
     return managed_path(checkout, "artifacts", "mission-control", "dashboard.html") or os.path.join(
-        os.path.realpath(checkout), ".taskplane", "dashboard.html"
+        project_taskplane_home(checkout), "dashboard.html"
     )
 
 
 def dependency_graph_visual_path(checkout: str) -> str:
     return managed_path(checkout, "artifacts", "dependency-graph.html") or os.path.join(
-        os.path.realpath(checkout), ".taskplane", "depgraph.html"
+        project_taskplane_home(checkout), "depgraph.html"
     )
 
 
 def lane_findings_path(checkout: str, lens_id: str) -> str:
     """Compatibility lane evidence without checkout-local model output."""
     managed = managed_path(checkout, "lenses", "legacy", f"lens-{lens_id}", "findings.json")
-    return managed or os.path.join(
-        os.path.realpath(checkout), ".em-review", f"lens-{lens_id}", "findings.json"
-    )
+    return managed or os.path.join(review_public_root(checkout), f"lens-{lens_id}", "findings.json")
 
 
 def _worktree_token(task_id: str) -> str:
@@ -1407,7 +1521,7 @@ def _worktree_token(task_id: str) -> str:
 def task_worktree_path(checkout: str, task_id: str) -> str:
     locator = load_workspace_locator(checkout)
     if locator is None:
-        return os.path.join(os.path.realpath(checkout), ".tp-work", task_id)
+        return os.path.join(session_path(os.path.join(os.path.realpath(checkout), ".tp-work")), task_id)
     return os.path.join(
         locator["home"],
         "checkouts",
@@ -1741,7 +1855,7 @@ def control_root(workspace: str) -> str:
     return (
         os.path.join(locator["paths"]["state"], "control")
         if locator
-        else os.path.join(workspace, ".taskplane")
+        else project_taskplane_home(workspace)
     )
 
 

@@ -22,6 +22,25 @@ or duplicate phase/budget policy engine is installed.
 - Model dispatch instructions use the canonical bounded startup and event wait
   policy. Showing a dashboard is not a reason to stop admitted work.
 
+## 2.23.5 session isolation and fresh-checkout readiness
+
+Execution homes, Git run locators, contracts, meters, review state and local
+review outputs are partitioned by host conversation. A hook's event identity is
+selected before compatibility checks and state discovery, so another session
+cannot inherit or clear the owning session's contracts. Process restarts retain
+state only when their host session identity remains the same.
+
+A native hook observation can prove readiness across fresh checkouts in that
+same session. Bridge trust remains workspace-bound. A standalone review binds
+later screen and lifecycle events to its checkout; path normalization preserves
+the tool's actual working directory. Clearing the review detaches its routing.
+The shared launcher contains no execution state.
+
+Validation uses fresh temporary test stores and simulated host events. Native
+installed end-to-end review remains unverified because the plugin was removed
+before this repair. The upload archive and its checksum/provenance are build
+artifacts, not evidence of Marketplace publication or live-host sign-off.
+
 ## 2.23.4 standalone Review startup repair
 
 Standalone Review now prepares its own signed native worker contracts and the

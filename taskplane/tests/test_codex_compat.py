@@ -578,7 +578,8 @@ class TestCodexHookProtocol(unittest.TestCase):
                 {"session_id": "claude-session"},
                 {"turn_id": "codex-turn"}):
             host_event = dict(host_seed)
-            with self.subTest(host=next(iter(host_event))):
+            with self.subTest(host=next(iter(host_event))), mock.patch.dict(
+                    os.environ, {"CLAUDE_SESSION_ID": host_event.get("session_id", "")}):
                 ws = _repo()
                 host_event["transcript_path"] = _hook_usage_transcript(
                     ws, codex="turn_id" in host_event,
@@ -1065,11 +1066,12 @@ class TestReviewManifestHostParity(unittest.TestCase):
         # The test runner itself may be a Codex process.  Clear every marker
         # used by the shared host seam so the first capture is true Claude,
         # then make the second true Codex independently of ambient state.
-        marker_names = ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_STORE")
+        marker_names = ("CODEX_HOME", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID", "TASKPLANE_STORE")
         prior = {key: os.environ.get(key) for key in marker_names}
         try:
             for key in marker_names:
                 os.environ.pop(key, None)
+            os.environ["CLAUDE_SESSION_ID"] = "transport-only"
             self.assertEqual(tp.host(), "claude")
             claude = review.start_review(ws, **args)
             store = review_evidence.ArtifactStore(ws)

@@ -187,9 +187,9 @@ def test_new_seed_opens_without_resetting_native_counter(tmp_path: Path, case: s
 def test_actual_root_hook_opens_next_seed_with_continuous_sequence(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
     _prepared(tmp_path)
     monkeypatch.setattr(tp_cli, "_workspace", lambda _value: str(tmp_path))
-    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
     monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
     monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
     transcript = tmp_path / "root-generation-hook.jsonl"
@@ -270,9 +270,9 @@ def test_codex_history_base_is_a_resume_marker_not_a_retained_or_sized_payload(
 def test_repeated_pretooluse_events_for_one_native_counter_count_once(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
     _prepared(tmp_path)
     monkeypatch.setattr(tp_cli, "_workspace", lambda _value: str(tmp_path))
-    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
     monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
     monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
     transcript = tmp_path / "root-replay.jsonl"
@@ -295,9 +295,9 @@ def test_repeated_pretooluse_events_for_one_native_counter_count_once(
 def test_missing_zero_malformed_foreign_or_resumed_native_evidence_refuses_before_dispatch(
         case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
     _prepared(tmp_path)
     monkeypatch.setattr(tp_cli, "_workspace", lambda _value: str(tmp_path))
-    monkeypatch.setenv("CODEX_THREAD_ID", "root-session")
     monkeypatch.setenv("TASKPLANE_NATIVE_HOOKS_LOADED", "supported")
     monkeypatch.setenv("TASKPLANE_MANAGED_HOOK_POLICY", "supported")
     transcript = tmp_path / f"root-{case}.jsonl"

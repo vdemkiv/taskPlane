@@ -41,6 +41,7 @@ def opened_cli_review(tmp_path, monkeypatch):
 
     rc, stdout, stderr = _run("review", "start", "HEAD", "--base", base,
                               "--workspace", str(workspace))
+    assert stdout, (rc, stderr)
     opened = json.loads(stdout)
     assert rc == 2, (stdout, stderr)
     assert opened["status"] == "needs_user"
@@ -106,8 +107,8 @@ def test_cli_review_emits_usable_signed_worker_startup(
         # Simulate only the native Start event, with no inherited slot env.
         # The actual hook must select the signed child and register its lease.
         event = {
-            "hook_event_name": "SubagentStart", "cwd": str(workspace),
-            "session_id": "review-test-session", "turn_id": "review-test-turn",
+            "hook_event_name": "SubagentStart", "cwd": str(tmp_path),
+            "session_id": "review-fixture-session", "turn_id": "review-test-turn",
             "agent_id": "child-" + slot["slot_id"],
             "task_name": bootstrap["expected"]["worker_identity"],
             "agent_type": bootstrap["expected"]["worker_identity"],

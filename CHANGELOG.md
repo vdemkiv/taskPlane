@@ -1,5 +1,21 @@
 # taskplane changelog
 
+## 2.23.5 — 2026-09-13 — isolated host sessions and checkout readiness
+
+- Each identified host conversation gets separate execution storage, run
+  locators, contracts, meters and review state. Hooks select the event's session;
+  old shared contracts and other sessions' contracts are never adopted. Clearing
+  one session leaves other sessions intact.
+- Native hook observations can prove readiness for a fresh checkout in the same
+  session without copying contracts, runs or findings. Unknown and foreign
+  sessions cannot use that proof; repository bridge trust remains local.
+- Standalone review binds its session's subsequent hook and worker lifecycle
+  events to the reviewed checkout. Original tool paths retain their original
+  working-directory meaning. Clearing the review detaches this routing.
+- The ignored launcher remains a shared stateless entry point. Execution state
+  and review outputs remain session-owned. Installed live review validation is
+  still separate from the simulated-host regression suite and package checks.
+
 ## 2.23.4 — 2026-09-13 — automatic standalone review startup
 
 - Standalone review now includes the existing signed worker activation in each
@@ -99,7 +115,7 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.4. Historical
+> v2.23.5. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -119,6 +135,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.23.5** | **Session isolation and fresh-checkout readiness.** Each host conversation owns its contracts, run bindings, meters and review state. Native hook proof follows only the same session across checkouts; clearing a review leaves other sessions intact. |
 | **v2.23.4** | **Automatic standalone review startup.** Prepares the actual checkout launcher and signed native worker contracts; retries preserve leases and evidence. Fresh installed end-to-end validation remains pending. |
 | **v2.23.3** | **Model-led orchestration with strict harness controls.** Disables budget waivers, denies worker control calls, checks fresh hooks on mutations, and safely replays exact phase collection through the existing gate. |
 | **v2.23.2** | **Budget and harness enforcement, simpler onboarding.** Applies phase caps during execution, limits each quick lens to 100,000 native tokens and eight actions, meters every tool, and stops budget-triggered continuation loops. Reuses completed reviews, returns findings inline, and keeps onboarding to initial setup. Includes project-local storage recovery and disables harness bypass. Marketplace packages require loading the updated plugin hooks. |

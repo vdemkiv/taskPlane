@@ -2185,7 +2185,7 @@ def _kernel_root(ws: str) -> str:
     locator = runtime_storage.load_workspace_locator(ws)
     if locator:
         return os.path.join(locator["paths"]["state"], "review-kernel-v2")
-    return os.path.join(ws, ".em-review", "kernel-v2")
+    return os.path.join(runtime_storage.review_public_root(ws), "kernel-v2")
 
 
 def _public_root(ws: str) -> str:
@@ -2197,8 +2197,13 @@ def _result_path(ws: str, stage: str, fingerprint: str) -> str:
     if locator:
         return os.path.join(locator["paths"]["lenses"], "results",
                             f"{fingerprint}.json")
+    root = ".eval" if stage == "build" else ".em-review"
+    if runtime_storage.host_session_id():
+        root = os.path.relpath(
+            runtime_storage.evaluation_root(ws) if stage == "build"
+            else runtime_storage.review_public_root(ws), ws)
     return os.path.join(
-        ".eval" if stage == "build" else ".em-review", "kernel-v2",
+        root, "kernel-v2",
         "results", f"{fingerprint}.json").replace(os.sep, "/")
 
 
@@ -6765,7 +6770,7 @@ def signoff_review(ws: str, *, decision: str, by: str, note: str = "",
 
 
 def context_dir(ws: str) -> str:
-    return os.path.join(ws, CONTEXT_DIR)
+    return os.path.join(runtime_storage.review_public_root(ws), "context")
 
 
 def _record(ws: str, paths: dict, status: str) -> None:
@@ -6826,7 +6831,7 @@ def write_context(ws: str, *, diff: str = "", impact: dict | None = None,
             # These paths cross the host boundary inside immutable briefs.
             # Keep filesystem construction host-native, but emit portable
             # POSIX references so Claude/Codex payload bytes match on Windows.
-            out[name] = tp.to_posix(os.path.join(CONTEXT_DIR, name))
+            out[name] = tp.to_posix(os.path.relpath(p, ws))
         except OSError:
             continue
     _record(ws, out, "written" if out else "empty")

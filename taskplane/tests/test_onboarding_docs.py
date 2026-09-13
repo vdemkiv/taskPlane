@@ -107,7 +107,7 @@ class TestOnboardInstallTruth(_TmpRepo):
             self.assertTrue(cli._install_codex_hooks(self.ws)["ok"])
             os.makedirs(os.path.join(cli.tp.kb_root(self.ws), "context"))
             host_capabilities.record_runtime_hook_receipt(
-                env["TASKPLANE_HOME"], hook_path="native", event={
+                cli.tp.store_home(self.ws), hook_path="native", event={
                     "session_id": env["CODEX_THREAD_ID"],
                     "hook_event_name": "PreToolUse", "tool_use_id": "before-removal",
                     "cwd": self.ws})
@@ -125,7 +125,7 @@ class TestOnboardInstallTruth(_TmpRepo):
             os.environ["CODEX_THREAD_ID"] = "new-session-without-hook"
             fresh = cli._onboard_report(self.ws)
             self.assertFalse(fresh["ready"])
-            self.assertEqual(fresh["next_action"], "start_new_session")
+            self.assertEqual(fresh["next_action"], "tp_init")
 
     def test_install_context_org_managed_via_host_marker(self):
         with tempfile.NamedTemporaryFile(suffix=".json") as marker:

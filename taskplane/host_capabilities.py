@@ -345,13 +345,15 @@ def _fingerprint_text(value: object) -> str | None:
 def record_runtime_hook_receipt(
         home: str, *, hook_path: str, event: Mapping[str, Any],
         claim: Mapping[str, Any] | None = None,
+        native_home: str | None = None,
         observed_at: float | None = None) -> dict[str, Any]:
     """Persist proof that a configured hook actually executed.
 
     Hook execution is the runtime receipt onboarding needs. It is global to
-    the Codex task, not to the repository currently being reviewed: the hook
-    receives the tool/event cwd and can govern a prepared checkout without
-    forcing the user to open another task there. Only fingerprints and
+    the Codex task, not to the repository currently being reviewed. Codex
+    reports the session cwd even when a tool targets a prepared checkout.
+    An optional host cache carries native proof across execution homes, but
+    only for an exact session. Repository bridge proof stays local. Only fingerprints and
     bounded event metadata are retained; no prompt or tool input is stored.
     """
     path_name = str(hook_path or "").strip().lower()
@@ -385,11 +387,13 @@ def record_runtime_hook_receipt(
             os.path.normcase(os.path.realpath(cwd))) if cwd else None,
         "event_name": _bounded(event.get("hook_event_name"), 64),
     }
-    targets = (_receipt_path(home, path_name, receipt["session_fingerprint"],
-                             receipt["workspace_fingerprint"]),)
+    targets = [_receipt_path(home, path_name, receipt["session_fingerprint"],
+                             receipt["workspace_fingerprint"])]
+    if path_name == "native" and native_home and receipt["session_fingerprint"]:
+        targets.append(_receipt_path(native_home, path_name, receipt["session_fingerprint"]))
     for target in targets:
         directory = os.path.dirname(target)
-        os.makedirs(directory, exist_ok=True)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
         # Only an exact repeated event is a no-op. Freezing the first event
         # forever prevents a bridge loaded later from converging with native.
         try:
@@ -408,6 +412,7 @@ def record_runtime_hook_receipt(
 def runtime_hook_observations(
         home: str, *, session_id: str | None = None,
         workspace: str | None = None,
+        native_home: str | None = None,
         now: float | None = None) -> dict[str, Observation]:
     """Return fresh, session-compatible observations from hook execution."""
     current = float(now if now is not None else time.time())
@@ -419,6 +424,10 @@ def runtime_hook_observations(
         try:
             target = _receipt_path(home, hook_path, expected_session,
                                    expected_workspace)
+            if hook_path == "native" and native_home and expected_session:
+                shared = _receipt_path(native_home, hook_path, expected_session)
+                if os.path.lexists(shared):
+                    target = shared
             with open(target, encoding="utf-8") as f:
                 row = json.load(f)
             if not isinstance(row, dict) or row.get("schema") != \
