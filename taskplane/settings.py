@@ -1074,8 +1074,12 @@ def load_settings(
     host_capabilities: object | None = None,
     workspace: str | Path | None = None,
     use_run_snapshot: bool = True,
+    use_project_settings: bool = True,
 ) -> OperationalSettings:
-    """Load defaults < file < environment < receipted overlay.
+    """Load defaults < file < project < environment < receipted overlay.
+
+    Canonical repository consumers such as CI disable both project settings
+    and run snapshots; invocation consumers retain them by default.
 
     ``host_capabilities`` is accepted to make the boundary explicit, but does
     not alter settings or receipts. Host support is negotiated later by the
@@ -1105,7 +1109,7 @@ def load_settings(
     effective = _merge(defaults, raw)
     precedence = ["defaults", "file"]
     project_receipt = None
-    if Path(path) == DEFAULT_SETTINGS_PATH:
+    if use_project_settings and Path(path) == DEFAULT_SETTINGS_PATH:
         project, project_digest = read_project_settings(workspace or Path.cwd())
         if project["stages"]:
             effective = _merge(effective, project)

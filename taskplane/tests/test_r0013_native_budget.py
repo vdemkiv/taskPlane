@@ -129,7 +129,7 @@ def test_breach_stops_before_any_next_spawn() -> None:
 
 
 
-def test_budget_approval_relaxes_measured_cap_only():
+def test_legacy_waiver_cannot_relax_measured_cap():
     ledger = _ledger()
     dispatch_telemetry.bind_dispatch(ledger, _dispatch("measured"), usage=_usage(),
         source_fingerprint="d" * 64)
@@ -139,8 +139,8 @@ def test_budget_approval_relaxes_measured_cap_only():
         overrides={"sessions": dispatch_telemetry.WAVE_BUDGET_CEILINGS["sessions"]},
         resource_limits_advisory=True)
     assert screen["budget"]["triggered"]
-    assert screen["status"] == "advisory"
-    assert screen["dispatch_allowed"] is True
+    assert screen["status"] == "human_scope_review"
+    assert screen["dispatch_allowed"] is False
 
 
 def test_aggregate_token_observation_is_preserved_without_program_stop() -> None:

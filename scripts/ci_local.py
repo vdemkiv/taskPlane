@@ -219,7 +219,10 @@ def _ci_settings(
     settings_path: str | Path = DEFAULT_SETTINGS_PATH,
 ) -> OperationalSettings:
     try:
-        settings = load_settings(settings_path, environment={})
+        settings = load_settings(
+            settings_path, environment={}, use_run_snapshot=False,
+            use_project_settings=False,
+        )
     except SettingsError as exc:
         raise RunnerError(f"authoritative CI settings were rejected: {exc}") from exc
     if (
@@ -416,9 +419,7 @@ def build_authoritative_ci_runtime(
     return {**payload, "fingerprint": _sha256_json(payload)}
 
 
-PYTEST_SHARD_COUNT = load_settings(
-    DEFAULT_SETTINGS_PATH, environment={},
-).tests.shards
+PYTEST_SHARD_COUNT = _ci_settings().tests.shards
 PYTEST_CHECK_IDS = tuple(
     f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
 )

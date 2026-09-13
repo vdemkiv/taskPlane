@@ -299,27 +299,26 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
     else:
         import stage_handoff
         import stage_entities
-    if inputs.resource_limits_advisory:
-        key_id = inputs.runtime_receipt.get("key_id")
-        issued_at = inputs.runtime_receipt.get("issued_at")
-        if not isinstance(key_id, str) or type(issued_at) is not int:
-            raise DispatchTelemetryError("telemetry runtime signing identity is malformed")
-        key = inputs.trusted_keys.get(key_id)
-        if key is None or key.status != "active" or issued_at > inputs.now:
-            raise DispatchTelemetryError(
-                "telemetry runtime signing authority is disabled or from the future"
-            )
+    key_id = inputs.runtime_receipt.get("key_id")
+    issued_at = inputs.runtime_receipt.get("issued_at")
+    if not isinstance(key_id, str) or type(issued_at) is not int:
+        raise DispatchTelemetryError("telemetry runtime signing identity is malformed")
+    key = inputs.trusted_keys.get(key_id)
+    if key is None or key.status != "active" or issued_at > inputs.now:
+        raise DispatchTelemetryError(
+            "telemetry runtime signing authority is disabled or from the future"
+        )
     verified = stage_handoff.verify_contract(
         inputs.runtime_receipt,
         trusted_keys=inputs.trusted_keys,
         expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
         expected_freshness=inputs.freshness,
         now=inputs.now,
-        historical=inputs.resource_limits_advisory,
+        historical=False,
     )
     result = _telemetry_object(verified["payload"])
     nonce = inputs.nonce_source.validate(
-        inputs.nonce, inputs.nonce_bindings, enforce_deadline=not inputs.resource_limits_advisory
+        inputs.nonce, inputs.nonce_bindings, enforce_deadline=True
     )
     for field in (
         "run_id",
@@ -2680,9 +2679,7 @@ def _screen_dispatch_projection(
             else "The root-session admission boundary is closed; active workers "
             "may terminalize but no new task was started."
         )
-        if isinstance(ledger, MutableMapping) and (
-            not resource_limits_advisory or reason_code != "root_budget_reached"
-        ):
+        if isinstance(ledger, MutableMapping):
             state = ledger.get("root_admission")
             if isinstance(state, MutableMapping) and not state.get("sticky"):
                 state["sticky"] = True
@@ -2724,17 +2721,6 @@ def _screen_dispatch_projection(
         "wave_usage": reconciled_wave_usage,
         "checkpoint": None,
     }
-    if (
-        resource_limits_advisory
-        and budget.get("measurement_status") != "unavailable"
-        and not terminal_unavailable
-        and (
-            root_admission is None or root_admission["reason_code"] in {None, "root_budget_reached"}
-        )
-    ):
-        # Budget approval relaxes measured spending caps only. Missing usage,
-        # context hygiene and native identity still require valid evidence.
-        result.update(status="advisory", dispatch_allowed=True)
     if not result["dispatch_allowed"]:
         result["checkpoint"] = _scope_review_checkpoint(
             reason=reason,

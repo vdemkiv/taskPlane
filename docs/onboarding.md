@@ -255,11 +255,11 @@ Retry save. Render that report directly so its error and edits remain visible;
 a fresh readiness check intentionally reloads the saved values. If another
 save changed the settings, refresh and reapply your edits.
 
-The existing action-budget gate displays used/allowed actions and asks for an
-explicit grant before work continues. The existing `loop resolve limits-advisory`
-continuation requires human approval and is labelled **Ignore limits for this
-run only — advisory**. It is never persisted as a setup preference or a default
-for future runs. An unavailable continuation stays paused.
+The action-budget gate displays used/allowed actions and asks for an explicit
+grant before work continues. `loop resolve limits-advisory` now returns a refusal;
+old run-wide waivers are retained only as history. Setup cannot disable limits.
+Missing required usage or expired authority requires reconciliation or bounded
+recovery through the existing harness, never an unlimited continuation.
 
 The T-01 implementation owner must correct or revert the affected changes if
 any core journey fails before delivery acceptance. Use the focused onboarding

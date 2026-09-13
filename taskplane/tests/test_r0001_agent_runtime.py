@@ -235,6 +235,6 @@ def test_advisory_resources_do_not_waive_authority_or_output(tmp_path: Path, cas
     elif case == "foreign-package":
         prepared = runtime.PreparedDispatch(replace(dispatch, knowledge=b"foreign"))
     result = facade.complete(prepared, observed)
-    assert (result["status"] == "accepted") == (case in {"over", "unknown"})
+    assert result["status"] == "refused"
     assert calls == ["observe"]  # Recovery never launches.
     assert result["budget"] == dispatch.bindings["budget"]

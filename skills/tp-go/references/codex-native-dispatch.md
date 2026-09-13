@@ -8,7 +8,7 @@ reinterpret those decisions.
 ## One bounded startup, one exact task
 
 `loop next` emits exactly `schema`, `stage_runtime_dispatch`, and `obligations`.
-The driver uses `obligations` to launch the worker. The delegated message contains
+The model orchestrator uses `obligations` to launch the worker. The delegated message contains
 only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`,
 the exact `contract_bootstrap.environment`, and this fixed operational instruction:
 "Read the supplied JSON once using `python3 .taskplane/codex-hook.py stage read-input
@@ -39,7 +39,13 @@ ambient knowledge, or an unrelated Design.
 
 `SubagentStart` binds the pending slot to the worker. `SubagentStop` records its
 actual terminal outcome and releases the slot. These observations do not grant
-human approval. The driver alone requests the declared gate.
+human approval. The model orchestrator requests collection using
+`loop collect --operation <obligations.phase_operation>` (and `--task <id>` for
+a parallel phase). The harness derives the outcome from accepted evidence and
+owns the existing gate. Retrying that exact operation after a lost response is
+safe; it cannot advance another phase. A returned dashboard is a progress
+update: continue the admitted work until an actual human gate or refusal.
+Never invent a gate outcome or use a resource waiver to continue.
 
 Standalone Review has its own scoped brief protocol; it does not replace phase
 startup or inject a lens route into Evaluate or Engineering.

@@ -68,6 +68,7 @@ not repeated in the tables.
 | `tp.py loop archive` | detach a run and retain its evidence |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
+| `tp.py loop collect` | validate and collect the exact phase evidence without supplying a gate outcome |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
 | `tp.py loop command launch` | launch direct argv through the durable command runtime |
@@ -680,6 +681,15 @@ Positional arguments:
 | `--advisory` | flag | removed: harness enforcement cannot be waived |
 | `--agent-workspace` | AGENT_WORKSPACE (required) | the worker's worktree — its contract activates there |
 | `--by` | BY | human identity required with --advisory |
+
+## `tp.py loop collect`
+
+validate and collect the exact phase evidence without supplying a gate outcome
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--operation` | OPERATION (required) | exact phase operation from the canonical report |
+| `--task` | TASK | exact task id for a parallel phase |
 
 ## `tp.py loop command`
 

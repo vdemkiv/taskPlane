@@ -159,7 +159,7 @@ class AgentRuntime:
     usage: Callable[[], Mapping[str, int | None]]
     continuation: Callable[[str | None], Mapping[str, object]]
     capability: delivery_ports.TaskDispatchCapability | None = None
-    resource_limits_advisory: bool = False
+    resource_limits_advisory: bool = False  # Compatibility only; waivers have no effect.
 
     def _budget(self, bindings: Mapping[str, object]) -> None:
         limits = _object(bindings["budget"])
@@ -169,21 +169,17 @@ class AgentRuntime:
         for name, maximum in limits.items():
             used = consumed[name]
             if used is None:
-                if self.resource_limits_advisory:
-                    continue
                 raise RuntimeRefusal("observation_unavailable")
             if type(maximum) is not int or type(used) is not int:
                 raise RuntimeRefusal("budget_exhausted")
             if not isinstance(maximum, int) or not isinstance(used, int) or used < 0:
                 raise RuntimeRefusal("budget_exhausted")
-            if self.resource_limits_advisory:
-                continue
             if used > maximum:
                 raise RuntimeRefusal("budget_exhausted")
             if name in {"tokens", "wall_ms", "attempts"} and used >= maximum:
                 raise RuntimeRefusal("budget_exhausted")
         deadline = datetime.fromisoformat(str(bindings["deadline"]).replace("Z", "+00:00"))
-        if not self.resource_limits_advisory and self.clock.wall_time() >= deadline.timestamp():
+        if self.clock.wall_time() >= deadline.timestamp():
             raise RuntimeRefusal("budget_exhausted")
 
     def _artifacts(self, artifacts: tuple[Artifact, ...], declared: object,
@@ -284,7 +280,7 @@ class AgentRuntime:
             if bindings["sealed_package_fingerprint"] != package_fingerprint(dispatch.package, dispatch.knowledge, dispatch.envelope):
                 raise RuntimeRefusal("package_mismatch")
             nonce = self.nonce.validate(dispatch.issued, dispatch.nonce_bindings,
-                enforce_deadline=not self.resource_limits_advisory)
+                enforce_deadline=True)
             for key, value in dispatch.nonce_bindings.items():
                 if key in bindings and key != "deadline" and bindings[key] != value:
                     raise RuntimeRefusal("package_mismatch")

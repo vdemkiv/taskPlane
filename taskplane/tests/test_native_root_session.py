@@ -365,7 +365,6 @@ def test_budget_approval_cannot_override_root_integrity(tmp_path, case, reason):
         outstanding_set_fingerprint="b" * 64, preserved_context_fingerprint="c" * 64,
         observation_authority=AUTHORITY, resource_limits_advisory=True)
     assert screen["root_admission"]["reason_code"] == reason
-    assert screen["dispatch_allowed"] is (case == "measured-budget")
-    if case != "measured-budget":
-        assert screen["checkpoint"] is not None
-        assert ledger["root_admission"]["sticky"] is True
+    assert screen["dispatch_allowed"] is False
+    assert screen["checkpoint"] is not None
+    assert ledger["root_admission"]["sticky"] is True

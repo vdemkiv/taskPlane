@@ -103,6 +103,24 @@ def test_runner_plan_has_one_unsharded_suite_and_no_pytest_replays():
                             if cell["id"] == "quality-package"), Path("/owned")))
 
 
+def test_authoritative_ci_ignores_local_onboarding_settings(tmp_path, monkeypatch):
+    import json
+    from taskplane.settings import load_settings
+
+    folder = tmp_path / ".taskplane"
+    folder.mkdir()
+    (folder / "settings.json").write_text(json.dumps({
+        "stages": {"product": {"model": "local-model", "reasoning": "low"}},
+    }))
+    monkeypatch.chdir(tmp_path)
+    assert "project" in load_settings().receipt["precedence"]
+    runner = _runner()
+    settings = runner._ci_settings()
+    assert settings.receipt["precedence"] == ["defaults", "file"]
+    assert settings.stages["product"].model is None  # The typed form of inherit.
+    assert settings.stages["product"].reasoning == "high"
+
+
 def test_direct_topology_is_disjoint_and_names_only_justified_serialization():
     runner = _runner()
     plan = _runtime(runner)["plan"]

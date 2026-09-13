@@ -4805,7 +4805,7 @@ def cmd_loop(a) -> int:
         if prepared.get("status") != "ready":
             print(json.dumps(prepared, sort_keys=True))
             return 2
-    if action in {"next", "gate"}:
+    if action in {"next", "gate", "collect"}:
         refusal = _graph_quality_refusal(ws, "Design/Plan/Review/DoD")
         if refusal:
             print(json.dumps(refusal, indent=2))
@@ -4813,7 +4813,10 @@ def cmd_loop(a) -> int:
     # Defining or reading a run launches no worker. Its durable scope must
     # exist before a transport can be admitted, including after a fresh
     # session. Enforcement belongs at the effect/dispatch boundary.
-    guarded_actions = {"next", "wave", "claim", "gate", "approve"}
+    guarded_actions = {"next", "wave", "claim", "gate", "collect", "approve",
+                       "select", "resolve", "replan", "restore-settings", "terminal"}
+    if action == "amend" and not getattr(a, "preview", False):
+        guarded_actions.add("amend")
     if action in guarded_actions or action == "init":
         current = loopmod.load(ws)
         locator = runtime_storage.load_workspace_locator(ws)
@@ -4921,6 +4924,10 @@ def cmd_loop(a) -> int:
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":
         out = loopmod.approve(ws, force=a.force, by=getattr(a, "by", None))
+    elif action == "collect":
+        from taskplane import gates
+
+        out = gates.collect_phase(loopmod, ws, a.operation, task_id=a.task)
     elif action == "select":
         out = loopmod.select(ws, a.choice, note=a.note or "")
     elif action == "restore-settings":
@@ -10355,6 +10362,9 @@ def main(argv=None) -> int:
     la.add_argument("--by", required=True, help="human identity authorizing archival")
     la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lsub.add_parser("resume", help="read durable run scope and continuation without dispatch")
+    lcollect = lsub.add_parser("collect", help="validate and collect the exact phase evidence without supplying a gate outcome")
+    lcollect.add_argument("--operation", required=True, help="exact phase operation from the canonical report")
+    lcollect.add_argument("--task", help="exact task id for a parallel phase")
     li = lsub.add_parser("init", help="start an Evaluate-Loop for a goal")
     li.add_argument("goal", nargs="*")
     li.add_argument("--spec", help="path to an existing spec (skips PM)")

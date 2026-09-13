@@ -896,47 +896,9 @@ def usage_evidence(
 
 
 def advise_resource_limits(runtime: Any, ws: str, state: dict[str, Any], by: str) -> dict[str, Any]:
-    """Explicit human policy, not a settings rewrite, retry or scope approval."""
-    from taskplane import review_evidence
-
-    if runtime.tp.task_slot() is not None:
-        raise ValueError("resource policy is orchestrator-only")
-    context = runtime._phase_bridge_context(ws, state)
-    if (
-        context is None
-        or not by
-        or by != (state.get("_stage_native_root_authority") or {}).get("actor")
-    ):
-        raise ValueError("resource policy requires the existing run's human --by")
-    runtime._phase_bridge_authorize(ws, context, context["manifest"])
-    prior = resource_policy(context["manifest"], context["run_id"])
-    if prior is not None:
-        return {"resource_policy": prior, "replay": True, "dispatch_allowed": False}
-    value = {
-        "schema": "taskplane.resource-policy/v1",
-        "run_id": context["run_id"],
-        "mode": "advisory",
-        "actor": by,
-        "decided_at": int(time.time()),
-        "authority_fingerprint": context["stage"]["authority"]["authority_fingerprint"],
-    }
-    phase_records.commit_phase_record(
-        context["store"],
-        context["run_id"],
-        expected_revision=context["manifest"]["revision"],
-        operation_id="run-resource-limits",
-        operation="resource_policy",
-        request_fingerprint=review_evidence.content_fingerprint(value),
-        result=value,
-        validate_authority=lambda current: runtime._phase_bridge_authorize(ws, context, current),
-    )
-    return {
-        "resource_policy": resource_policy(
-            context["store"].load(context["run_id"]), context["run_id"]
-        ),
-        "replay": False,
-        "dispatch_allowed": False,
-    }
+    """Retain the removed API as an explicit refusal, including direct calls."""
+    return {"error": "resource-limit bypass is disabled; approve a specific budget increase or stop",
+            "dispatch_allowed": False}
 
 
 def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> dict[str, Any]:

@@ -104,7 +104,7 @@ def change_phase_routing(store: Any, run_id: str, *,
         result=request, validate_authority=authorize)
 
 
-def resource_policy(manifest: Mapping[str, Any], run_id: str) -> dict[str, Any] | None:
+def historical_resource_policy(manifest: Mapping[str, Any], run_id: str) -> dict[str, Any] | None:
     """Read the human's run-wide resource decision from the existing journal."""
     row = phase_records(manifest).get("run-resource-limits")
     if row is None:
@@ -119,3 +119,9 @@ def resource_policy(manifest: Mapping[str, Any], run_id: str) -> dict[str, Any] 
             row["request_fingerprint"] != _fingerprint(value):
         raise ValueError("run resource policy does not verify")
     return {**value, "fingerprint": row["request_fingerprint"]}
+
+
+def resource_policy(manifest: Mapping[str, Any], run_id: str) -> dict[str, Any] | None:
+    """Historical waivers remain auditable but cannot relax execution limits."""
+    historical_resource_policy(manifest, run_id)
+    return None

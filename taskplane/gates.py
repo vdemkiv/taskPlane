@@ -650,17 +650,26 @@ def _gate_state(_ports, ws, task_id):
 
 
 def gate(_ports, ws: str, outcome: str, note: str = "", task_id: str | None = None,
-         rid: str | None = None) -> dict:
+         rid: str | None = None, collection_operation: str | None = None) -> dict:
     """Record the current step's outcome, transition, and clear its contract."""
+    if _ports.tp.task_slot() is not None:
+        return {"error": "workers submit evidence; only the orchestrator may collect or gate it"}
     if refusal := _ports._run_schema_refusal(ws):
         return refusal
     state = _ports.load(ws)
     if state is None:
         return {"error": "no active loop"}
+    if collection_operation and collection_operation in (state.get("phase_collections") or {}):
+        return {"status": "collected", "replay": True,
+                "outcome": state["phase_collections"][collection_operation]}
     state = _ports.stage_loop.task_phase_state(_ports, ws, state, task_id)
     phase_workspace = ((_ports._current_task(state) or {}).get("workspace") or ws
                        if state.get("parallel") and task_id else ws)
     try:
+        if collection_operation:
+            context = _ports._phase_bridge_context(phase_workspace, state)
+            if context is None or _ports.phase_harness.operation_id(context) != collection_operation:
+                return {"error": "phase collection names a foreign phase operation"}
         _ports._phase_bridge_gate_check(phase_workspace, state)
         if outcome == "pass":
             lens_refusal = _ports.phase_harness.lens_gate(_ports, phase_workspace, state)
@@ -738,7 +747,7 @@ def gate(_ports, ws: str, outcome: str, note: str = "", task_id: str | None = No
     # can't clobber the first's status update (which would revert a gated task
     # to running and stall the wave).
     if step == "execute" and state.get("parallel"):
-        return _gate_parallel_build(_ports, note, outcome, state, step, submission, task_id, ws)
+        return _gate_parallel_build(_ports, note, outcome, state, step, submission, task_id, ws, collection_operation=collection_operation)
 
     # H4 (v2.2.1): the pm gate was the one fail-open step — it advanced with
     # no spec and no submission. Symmetric minimal DoD: the authored
@@ -819,7 +828,7 @@ def gate(_ports, ws: str, outcome: str, note: str = "", task_id: str | None = No
     # DoR) are carried over explicitly.
     _validated = state
     stage_transition = None
-    refusal, state, stage_transition = _commit_gate_transition(_ports, _validated, act_ws, em_request_changes, evaluation_progress, failure_decision, failure_verdict, note, outcome, signoff_evidence, step, submission, task_id, unavailable_verdict, ws)
+    refusal, state, stage_transition = _commit_gate_transition(_ports, _validated, act_ws, em_request_changes, evaluation_progress, failure_decision, failure_verdict, note, outcome, signoff_evidence, step, submission, task_id, unavailable_verdict, ws, collection_operation=collection_operation)
     if refusal is not None:
         return refusal
     return _finish_gate(_ports, state, _validated, act_ws, gate_worker_task, gated_task_id, note, outcome, reanchor_receipt, stage_transition, step, task, task_id, unavailable_verdict, ws)
@@ -1166,6 +1175,8 @@ def select(_ports, ws: str, choice: str, note: str = "") -> dict:
     step variants never have: a winner goes to the engineering review; a
     hybrid goes back to plan for the graft (both variants kept as
     reference). Recorded to the KB — the WHY outlives the losing branch."""
+    if _ports.tp.task_slot() is not None:
+        return {"error": "selection requires a human decision outside a worker slot"}
     if refusal := _ports._run_schema_refusal(ws):
         return refusal
     _ports.reconcile_authority_effects(ws)
@@ -1343,13 +1354,14 @@ def resolve(_ports,
         outage_fingerprint: str | None = None, phase_operation: str | None = None,
         candidate_fingerprint: str | None = None, worker_stopped: bool = False) -> dict:
     """Resolve a task escalation or retry the current failed EM review."""
+    if _ports.tp.task_slot() is not None:
+        return {"error": "workers cannot resolve their own escalation or resource limits"}
     if refusal := _ports._run_schema_refusal(ws):
         return refusal
     state = _ports.load(ws)
     if decision == "limits-advisory":
-        if state is None or phase_operation or candidate_fingerprint or worker_stopped:
-            return {"error": "limits-advisory requires only the existing run and human --by"}
-        return _ports.phase_harness.advise_resource_limits(_ports, ws, state, by or "")
+        return {"error": "resource-limit bypass is disabled; approve a specific budget increase or stop",
+                "dispatch_allowed": False}
     if decision == "reconcile":
         if state is None or candidate_fingerprint or worker_stopped:
             return {"error": "reconcile requires the exact existing phase operation"}
@@ -1770,7 +1782,7 @@ def evaluation_approval_errors(state: Mapping[str, object]) -> list[str]:
     return errors
 
 
-def _gate_parallel_build(_ports, note, outcome, state, step, submission, task_id, ws):
+def _gate_parallel_build(_ports, note, outcome, state, step, submission, task_id, ws, *, collection_operation=None):
     wt_precheck = next((x for x in state.get("tasks") or []
                         if x["id"] == task_id), None)
     if wt_precheck is None:
@@ -1803,6 +1815,11 @@ def _gate_parallel_build(_ports, note, outcome, state, step, submission, task_id
         if t is None:
             return {"error": "parallel gate needs --task <id> of a wave "
                              "member"}
+        if collection_operation:
+            current_state = _ports.stage_loop.task_phase_state(_ports, ws, locked, task_id)
+            current_phase = _ports._phase_bridge_context(wt or ws, current_state)
+            if current_phase is None or _ports.phase_harness.operation_id(current_phase) != collection_operation:
+                return {"error": "phase operation changed during gate validation"}
         # v2.3.0: the final staleness re-attest runs INSIDE the lock,
         # immediately before the status commits — no TOCTOU window
         # between the attest and the transition.
@@ -1861,6 +1878,8 @@ def _gate_parallel_build(_ports, note, outcome, state, step, submission, task_id
                  note=note)
         running = [x["id"] for x in locked["tasks"]
                    if x.get("status") == "running"]
+        if collection_operation:
+            locked.setdefault("phase_collections", {})[collection_operation] = outcome
     return {"step": "execute", "task": task_id, "built": True,
             "still_running": running, "status": _ports.status(ws)}
 
@@ -2162,7 +2181,7 @@ def _copy_validated_plan(_ports, _validated, state, step):
             state[field] = _ports.json.loads(_ports.json.dumps(_validated[field]))
 
 
-def _commit_gate_transition(_ports, _validated, act_ws, em_request_changes, evaluation_progress, failure_decision, failure_verdict, note, outcome, signoff_evidence, step, submission, task_id, unavailable_verdict, ws):
+def _commit_gate_transition(_ports, _validated, act_ws, em_request_changes, evaluation_progress, failure_decision, failure_verdict, note, outcome, signoff_evidence, step, submission, task_id, unavailable_verdict, ws, *, collection_operation=None):
     with _gate_state(_ports, ws, task_id) as state:
         if state is None:
             return ({"error": "no active loop"}, None, None)
@@ -2171,6 +2190,10 @@ def _commit_gate_transition(_ports, _validated, act_ws, em_request_changes, eval
                              "this gate was validating — run loop next and "
                              "gate again", "step": state.get("step")}, None, None)
         stage_state_before = _ports.json.loads(_ports.json.dumps(state))
+        if collection_operation:
+            current_phase = _ports._phase_bridge_context(act_ws, state)
+            if current_phase is None or _ports.phase_harness.operation_id(current_phase) != collection_operation:
+                return ({"error": "phase operation changed during gate validation"}, None, None)
         product_successor = None
         if step == "pm":
             try:
@@ -2341,6 +2364,8 @@ def _commit_gate_transition(_ports, _validated, act_ws, em_request_changes, eval
             state.update(stage_state_before)
             return ({"error": "stage-native loop transition failed closed: "
                     f"{exc.__class__.__name__}: {exc}", "step": step}, None, None)
+        if collection_operation:
+            state.setdefault("phase_collections", {})[collection_operation] = outcome
     return (None, state, stage_transition)
 
 
@@ -2661,3 +2686,44 @@ def _accept_evaluation_outage(_ports, accept_producer_receipt_outage, by, outage
             state["step"] = "execute"
         else:
             state["step"] = after_last
+
+
+def collect_phase(_ports, ws: str, operation: str, *, task_id: str | None = None) -> dict:
+    """Collect exact evidence through the existing gate's atomic transition.
+
+    The gate owns the replay marker. Projection runs outside its lock, and
+    neither the model nor host event text supplies the substantive outcome.
+    """
+    if _ports.tp.task_slot() is not None:
+        return {"error": "workers submit evidence; only the orchestrator may collect or gate it"}
+    state = _ports.load(ws)
+    if not state:
+        return {"error": "no active loop"}
+    previous = (state.get("phase_collections") or {}).get(operation)
+    if previous is not None:
+        return {"status": "collected", "replay": True, "outcome": previous}
+    try:
+        state = _ports.stage_loop.task_phase_state(_ports, ws, state, task_id)
+        phase_ws = ((_ports._current_task(state) or {}).get("workspace") or ws
+                    if state.get("parallel") and task_id else ws)
+        context = _ports._phase_bridge_context(phase_ws, state)
+        if context is None or _ports.phase_harness.operation_id(context) != operation:
+            return {"error": "phase collection names a foreign phase operation"}
+        collected = _ports.phase_harness.reconcile(_ports, phase_ws, state, operation)
+        if collected.get("status") != "collected":
+            return {"error": "phase evidence has not been accepted", "collection": collected}
+        state = _ports.stage_loop.task_phase_state(_ports, ws, _ports.load(ws), task_id)
+        _ports._phase_bridge_gate_check(phase_ws, state)
+        submission = state.get("_submission") or (_ports._current_task(state) or {}).get("_submission")
+        outcome = submission.get("outcome") if submission else None
+        if outcome is None and state.get("step") in {"pm", "design", "plan", "retro"}:
+            outcome = "pass"  # Authentic collection precedes substantive gate checks.
+        if outcome not in {"pass", "fail", "unavailable"}:
+            return {"error": "no authenticated canonical outcome for the current phase"}
+        task = _ports._current_task(state) or {}
+        result = _ports.gate(ws, outcome, task_id=task_id or task.get("id"), collection_operation=operation)
+    except (ValueError, OSError) as exc:
+        return {"error": "phase collection refused: " + str(exc)}
+    if result.get("error"):
+        return result
+    return {"status": "collected", "outcome": outcome, "gate": result}
