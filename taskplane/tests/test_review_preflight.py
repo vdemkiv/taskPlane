@@ -1,3 +1,4 @@
+import base64
 import datetime
 import io
 import json
@@ -5,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +18,221 @@ import review  # noqa: E402
 import review_evidence  # noqa: E402
 import tp as taskplane_cli  # noqa: E402
 from taskplane.tests.native_meter_support import attach_native_counter  # noqa: E402
+from taskplane.tests.test_review_refusals import _run  # noqa: E402
+
+
+@pytest.fixture
+def opened_cli_review(tmp_path, monkeypatch):
+    """Open a real CLI review; only host readiness is simulated by _run."""
+    monkeypatch.setenv("CODEX_THREAD_ID", "review-fixture-session")
+    workspace = tmp_path / "source"
+    workspace.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "test@example.com"],
+                 ["config", "user.name", "Test"]):
+        subprocess.run(["git", *args], cwd=workspace, check=True)
+    source = workspace / "service.py"
+    source.write_text("def value():\n    return 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "service.py"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=workspace, check=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace,
+                                   text=True).strip()
+    source.write_text("def value():\n    return 2\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "change"], cwd=workspace, check=True)
+
+    rc, stdout, stderr = _run("review", "start", "HEAD", "--base", base,
+                              "--workspace", str(workspace))
+    opened = json.loads(stdout)
+    assert rc == 2, (stdout, stderr)
+    assert opened["status"] == "needs_user"
+    assert opened["slots"] == []
+    return workspace, opened
+
+
+@pytest.mark.parametrize("selection", ["static", "dynamic", "dynamic-render"])
+def test_cli_review_emits_usable_signed_worker_startup(
+        tmp_path, opened_cli_review, selection, monkeypatch):
+    workspace, opened = opened_cli_review
+    monkeypatch.delenv("TASKPLANE_TASK", raising=False)
+    parent = Path(taskplane_cli.tp.active_contract_path(str(workspace)))
+    parent_before = parent.read_bytes()
+
+    rc, stdout, stderr = _run("review", "option", selection, "--run-id",
+                              opened["run_id"], "--workspace", str(workspace))
+    ready = json.loads(stdout)
+    assert rc == 0, (stdout, stderr)
+    assert ready["status"] == "ready"
+    assert len(ready["slots"]) in {4, 5}
+    state = review._load_state(str(workspace), opened["run_id"])
+    assert state["manifest"]["slots"] == ready["slots"]
+
+    # Retrying the same choice re-emits startup for the same leases, so an
+    # interrupted or previously unbound review can continue without restarting.
+    rc, stdout, stderr = _run("review", "option", selection, "--run-id",
+                              opened["run_id"], "--workspace", str(workspace))
+    assert rc == 0, (stdout, stderr)
+    retried = json.loads(stdout)
+    assert retried["review_execution"] == ready["review_execution"]
+    for original, current in zip(ready["slots"], retried["slots"], strict=True):
+        assert current["lease"] == original["lease"]
+        assert current["brief"] == original["brief"]
+        assert current["contract_bootstrap"]["expected"] == \
+            original["contract_bootstrap"]["expected"]
+
+    for slot in ready["slots"]:
+        bootstrap = slot["contract_bootstrap"]
+        assert bootstrap["activation_order"] == "orchestrator_before_subagent_start"
+        assert bootstrap["workspace"] == str(workspace.resolve())
+        assert bootstrap["expected"]["run_id"] == opened["run_id"]
+        assert bootstrap["expected"]["task_id"] == opened["contract"]["task_id"]
+        result = subprocess.run(bootstrap["command_argv"], cwd=tmp_path,
+                                capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        activated = json.loads(result.stdout)
+        assert activated["task_slot"] == bootstrap["task_slot"]
+        assert activated["lease_fingerprint"] == slot["lease"]["fingerprint"]
+        active_path = Path(taskplane_cli.tp.active_contract_path(
+            str(workspace), bootstrap["task_slot"]))
+        active = json.loads(active_path.read_text())
+        assert active["read_only"] is True
+        assert active["write_allow"] == [slot["result_path"]]
+        assert active["budget"]["max_tokens"] <= 100_000
+        assert active["worker_scoped"] is True
+        assert active["worker_lifecycle"]["status"] == "pending"
+        assert activated["worker_binding"] == {
+            "event": "SubagentStart", "status": "pending",
+            "task_name": bootstrap["expected"]["worker_identity"],
+        }
+
+        # Simulate only the native Start event, with no inherited slot env.
+        # The actual hook must select the signed child and register its lease.
+        event = {
+            "hook_event_name": "SubagentStart", "cwd": str(workspace),
+            "session_id": "review-test-session", "turn_id": "review-test-turn",
+            "agent_id": "child-" + slot["slot_id"],
+            "task_name": bootstrap["expected"]["worker_identity"],
+            "agent_type": bootstrap["expected"]["worker_identity"],
+        }
+        with monkeypatch.context() as native:
+            native.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
+            rc, stdout, stderr = _run("subagent-start")
+        assert rc == 0, (stdout, stderr)
+        bound = taskplane_cli.tp.load_active_for_event(str(workspace), event)
+        assert bound["task_slot"] == bootstrap["task_slot"]
+        assert bound["worker_lifecycle"]["owner"]["agent_id"] == event["agent_id"]
+        assignment = json.loads(Path(review._producer_assignment_path(
+            str(workspace), slot["lease"]["fingerprint"])).read_text())
+        assert assignment["producer_child_id"] == event["agent_id"]
+        assert assignment["contract_task_slot"] == bootstrap["task_slot"]
+        assert taskplane_cli.tp.load_active(str(workspace))["task_id"] == \
+            opened["contract"]["task_id"]
+
+        # A replay cannot reset an already-bound native child to pending.
+        replay = subprocess.run(bootstrap["command_argv"], cwd=tmp_path,
+                                capture_output=True, text=True, check=False)
+        assert replay.returncode == 0, replay.stdout + replay.stderr
+        assert json.loads(active_path.read_text()) == bound
+
+    # Child activation must not replace the parent or manufacture results.
+    assert parent.read_bytes() == parent_before
+    assert all(not Path(slot["result_path"]).exists() for slot in ready["slots"])
+
+
+def test_review_prepares_checkout_launcher_and_repairs_missing_one(
+        opened_cli_review):
+    workspace, opened = opened_cli_review
+    launcher = workspace / ".taskplane" / "codex-hook.py"
+    assert launcher.is_file()
+    original = launcher.read_bytes()
+    launcher.unlink()
+    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
+                              opened["run_id"], "--workspace", str(workspace))
+    assert rc == 0, (stdout, stderr)
+    assert launcher.read_bytes() == original
+    assert not (workspace / ".codex" / "hooks.json").exists()
+    assert subprocess.check_output(["git", "status", "--porcelain", "--",
+                                    ".taskplane", ".codex", "service.py"],
+                                   cwd=workspace, text=True) == ""
+
+
+def test_review_launcher_preparation_preserves_project_hook_bytes(
+        opened_cli_review):
+    workspace, _ = opened_cli_review
+    (workspace / ".taskplane" / "codex-hook.py").unlink()
+    hooks = workspace / ".codex" / "hooks.json"
+    hooks.parent.mkdir()
+    hooks.write_text(json.dumps({"hooks": taskplane_cli._codex_hook_rows()}), encoding="utf-8")
+    original = hooks.read_bytes()
+    taskplane_cli._prepare_standalone_review_launcher(str(workspace))
+    assert hooks.read_bytes() == original
+    assert (workspace / ".taskplane" / "codex-hook.py").is_file()
+
+
+@pytest.mark.parametrize("mutation,reason", [
+    ("signature", "signature is invalid"),
+    ("worker_identity", "worker_identity identity mismatches worker"),
+    ("lease_fingerprint", "lease_fingerprint identity mismatches lease"),
+    ("workspace", "authority"),
+])
+def test_cli_review_rejects_altered_startup(
+        tmp_path, opened_cli_review, mutation, reason):
+    workspace, opened = opened_cli_review
+    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
+                              opened["run_id"], "--workspace", str(workspace))
+    assert rc == 0, (stdout, stderr)
+    slot = json.loads(stdout)["slots"][0]
+    bootstrap = slot["contract_bootstrap"]
+    command = list(bootstrap["command_argv"])
+    other_workspace = tmp_path / "other"
+    other_workspace.mkdir()
+    if mutation == "workspace":
+        command[command.index("--workspace") + 1] = str(other_workspace)
+    else:
+        flag = "--signed-action" if mutation == "signature" else "--expected-identity"
+        index = command.index(flag) + 1
+        value = json.loads(base64.urlsafe_b64decode(command[index] + "=" * (-len(command[index]) % 4)))
+        value[mutation] = "0" * 64
+        command[index] = base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True,
+                            text=True, check=False)
+    assert result.returncode != 0
+    assert reason in result.stdout + result.stderr
+    for root in (workspace, other_workspace):
+        assert not Path(taskplane_cli.tp.active_contract_path(
+            str(root), bootstrap["task_slot"])).exists()
+    assert not Path(slot["result_path"]).exists()
+
+
+def test_cli_review_refuses_missing_parent_before_recording_choice(opened_cli_review):
+    workspace, opened = opened_cli_review
+    Path(taskplane_cli.tp.active_contract_path(str(workspace))).unlink()
+    before = review._load_state(str(workspace), opened["run_id"])
+    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
+                              opened["run_id"], "--workspace", str(workspace))
+    assert rc == 1, (stdout, stderr)
+    assert "requires its read-only parent contract" in stdout
+    assert review._load_state(str(workspace), opened["run_id"]) == before
+
+
+def test_review_choice_retry_preserves_evidence_and_rejects_different_consent():
+    workspace, opened = _start_review_without_execution_choice()
+    review.configure_review_execution(
+        workspace, selection="dynamic", run_id=opened["run_id"])
+    review.record_review_execution(
+        workspace, kind="dynamic_validation", status="failed",
+        detail="fixture process failure", run_id=opened["run_id"])
+    before = review._load_state(workspace, opened["run_id"])
+    retried = review.configure_review_execution(
+        workspace, selection="dynamic", run_id=opened["run_id"])
+    assert retried == before["manifest"]
+    assert retried["review_execution"]["dynamic_validation"]["status"] == "failed"
+    for kwargs in ({"selection": "static"},
+                   {"selection": "dynamic", "by": "another-human"},
+                   {"selection": "dynamic", "approval_receipt":
+                    before["review_execution"]["approval_receipt"]}):
+        with pytest.raises(review.ReviewKernelError):
+            review.configure_review_execution(
+                workspace, run_id=opened["run_id"], **kwargs)
+    assert review._load_state(workspace, opened["run_id"]) == before
 
 
 def _host_receipt(*, action_id, response, actor="human", run_id="run-1"):
@@ -176,7 +393,7 @@ def _start_review_without_execution_choice():
 
 
 def test_review_preflight_exposes_one_structured_choice_without_side_effects(
-        monkeypatch):
+        monkeypatch, opened_cli_review):
     run_id = "b" * 32
     row = review.review_execution_preflight(run_id=run_id)
     assert row["schema"] == "taskplane.review-execution-preflight/v1"
@@ -229,7 +446,8 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
         windows_launcher + "static --run-id " + run_id,
     ]
 
-    workspace, opened = _start_review_without_execution_choice()
+    workspace, opened = opened_cli_review
+    workspace = str(workspace)
     static_command = next(
         choice["command"] for choice in
         opened["review_execution"]["action"]["choices"]

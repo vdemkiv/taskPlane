@@ -798,7 +798,7 @@ def _codex_hook_rows() -> dict:
     return generated
 
 
-def _install_codex_hooks(ws: str) -> dict:
+def _install_codex_hooks(ws: str, *, remove_project_duplicates: bool = True) -> dict:
     """Install only the ignored CLI launcher; hooks belong to the plugin.
 
     Remove only recognized generated project duplicates; preserve unrelated
@@ -845,7 +845,8 @@ def _install_codex_hooks(ws: str) -> dict:
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    _project_hook_duplicates(ws, remove=True)
+    if remove_project_duplicates:
+        _project_hook_duplicates(ws, remove=True)
     tp._ensure_self_ignored(launcher_home)
     return _codex_hooks_report(ws)
 
@@ -7628,6 +7629,48 @@ def _legacy_review_activation_command(command: str) -> bool:
     return False
 
 
+def _prepare_standalone_review_launcher(workspace: str) -> None:
+    """Prepare the target checkout's entry point before its contracts go live."""
+    if tp.host() != "codex" or _codex_hooks_report(workspace)["launcher_ready"]:
+        return
+    prepared = _install_codex_hooks(workspace, remove_project_duplicates=False)
+    if not prepared.get("launcher_ready"):
+        import review as review_kernel
+
+        raise review_kernel.ReviewKernelError(
+            "standalone review checkout launcher is unavailable: "
+            + str(prepared.get("reason") or prepared.get("hint") or "installation failed"))
+
+
+def _standalone_review_parent_task(workspace: str, manifest: dict) -> str:
+    """Require the review's own active parent before issuing worker startup."""
+    import review as review_kernel
+
+    parent = manifest.get("contract") or {}
+    active = tp.load_json(
+        os.path.join(tp.tp_dir(workspace), "active_contract.json"),
+        default=None, what="standalone review parent contract") or {}
+    if (parent.get("read_only") is not True or not parent.get("task_id")
+            or parent.get("status") != "active"
+            or active.get("task_id") != parent["task_id"]
+            or active.get("read_only") is not True):
+        raise review_kernel.ReviewKernelError(
+            "standalone review dispatch requires its read-only parent contract")
+    return parent["task_id"]
+
+
+def _bind_standalone_review_dispatch(workspace: str, manifest: dict) -> dict:
+    """Attach the existing signed slot activation to dispatchable Review output."""
+    if manifest.get("status") != "ready" or not manifest.get("slots"):
+        return manifest
+    import loop as loop_runtime
+
+    parent_task = _standalone_review_parent_task(workspace, manifest)
+    _prepare_standalone_review_launcher(workspace)
+    return loop_runtime._bind_stateless_review_contract_actions(
+        workspace, manifest, task_id=parent_task)
+
+
 def cmd_review(a) -> int:
     """Open a review in ONE call.
 
@@ -7662,6 +7705,11 @@ def cmd_review(a) -> int:
                     "lease_fingerprint": contract["bootstrap_lease_fingerprint"],
                     "read_only": contract["read_only"],
                     "write_allow": contract["write_allow"],
+                    "worker_binding": {
+                        "event": "SubagentStart",
+                        "status": contract["worker_lifecycle"]["status"],
+                        "task_name": contract["worker_lifecycle"]["expected_task_name"],
+                    },
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -7685,6 +7733,7 @@ def cmd_review(a) -> int:
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
             state = rv._load_state(ws, a.run_id)
+            _standalone_review_parent_task(ws, state.get("manifest") or {})
             pending = state.get("review_execution") or rv.review_execution_preflight(
                 run_id=state.get("run_id")
             )
@@ -7699,6 +7748,7 @@ def cmd_review(a) -> int:
                 approval_receipt=None,
                 run_id=a.run_id,
             )
+            result = _bind_standalone_review_dispatch(ws, result)
             visuals, owed = _review_visuals(ws, result, final=False)
             result = rv._manifest({**result, "visuals": visuals, "obligations": owed})
             kernel_state = rv._load_state(ws, result.get("run_id"))
@@ -8067,6 +8117,7 @@ def cmd_review(a) -> int:
         )
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
+    _prepare_standalone_review_launcher(ws)
     tgt.save(ws, rec)
     out["target"] = rec
     # The canonical PR patch starts at the pinned merge-base, not the moving
@@ -8388,6 +8439,7 @@ def cmd_review(a) -> int:
                 },
             )
         manifest["contract"] = {"task_id": c["task_id"], "read_only": True, "status": "active"}
+        manifest = _bind_standalone_review_dispatch(ws, manifest)
         if enforcement:
             manifest["enforcement"] = enforcement
         if repository_run:

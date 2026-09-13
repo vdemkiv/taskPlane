@@ -50,6 +50,33 @@ Never invent a gate outcome or use a resource waiver to continue.
 Standalone Review has its own scoped brief protocol; it does not replace phase
 startup or inject a lens route into Evaluate or Engineering.
 
+## Standalone Review startup
+
+`review option` returns each selected slot with its immutable brief reference
+and signed `contract_bootstrap`. Review opening prepares the native launcher
+in the actual review checkout automatically; continuation repairs it if missing.
+Readiness in the caller's checkout alone is not proof of hooks in a managed
+review checkout. Before dispatch, require both startup fields. Run the emitted
+`contract_bootstrap.host_command` unchanged when `activation_order` is
+`orchestrator_before_subagent_start`. Verify the activation response names
+the exact expected task in `worker_binding` with event `SubagentStart` and
+status `pending` (or the same already-bound worker on a retry). Then use the
+exact slot role, task name, model, reasoning effort, and workspace for the native child.
+Pass the complete bounded slot alongside its role instruction with
+`fork_turns="none"`; do not send only the brief path.
+
+Confirm that the host's child working directory is the declared workspace
+before launch. A path in message text does not set that directory. When
+`contract_bootstrap.environment_required` is false, the task-slot environment
+is optional: the existing native `SubagentStart` hook binds the signed pending
+contract to the exact native child identity before its first screened action.
+The host does not need an environment argument in this case. A worker name
+alone cannot create authority; the signed pending contract must already exist.
+If the workspace or lifecycle binding is unavailable, report that precise gap
+before spawning. Never substitute the current session's contract. A retry of the same
+execution choice returns the existing review leases and their signed startup;
+it does not restart the review or erase recorded validation evidence.
+
 ## Sealed phase continuation
 
 For the active phase runtime, `taskplane/loop.py` owns

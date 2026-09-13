@@ -22,7 +22,23 @@ or duplicate phase/budget policy engine is installed.
 - Model dispatch instructions use the canonical bounded startup and event wait
   policy. Showing a dashboard is not a reason to stop admitted work.
 
-## Validation
+## 2.23.4 standalone Review startup repair
+
+Standalone Review now prepares its own signed native worker contracts and the
+ignored launcher in the actual review checkout. Retrying the recorded execution
+choice preserves leases, native child identity and validation evidence. The
+existing lifecycle binds workers on `SubagentStart` without requiring a native
+per-child environment argument. Reviewed project hook files are preserved.
+
+The native-binding regression group passed 186 tests and 14 subtests. The final
+launcher group passed 111 tests and eight subtests; these groups overlap. The
+preceding live installed attempt exposed the missing checkout launcher, failed
+to enforce its budgets and refused nested process isolation before candidate
+tests started. It was stopped. The final launcher repair has not completed a
+fresh live review or human sign-off. The 2.23.4 OpenAI and Claude archives are
+prepared for upload; packaging and a source push do not assert those outcomes.
+
+## 2.23.3 validation history
 
 Focused checks on Python 3.13.9; these groups overlap:
 

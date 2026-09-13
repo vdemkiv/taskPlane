@@ -3286,11 +3286,12 @@ def _bind_stateless_review_contract_actions(
             "authority": "signed_action",
             "active_slot_semantics": "derived_cache_not_authority",
             "function": "taskplane_lite.activate_review_contract_action",
-            # Dispatch metadata, not an inline shell prefix. The orchestrator
-            # activates the signed contract first and injects this exact slot
-            # into the native child lifecycle so SubagentStart can bind the
-            # child to its lease before evidence is authored.
+            # Optional transport metadata, never an inline shell prefix.
+            # Native SubagentStart binds the signed pending worker by its
+            # exact task name when the host has no environment parameter.
             "environment": {"TASKPLANE_TASK": producer["task_slot"]},
+            "environment_required": False,
+            "binding_event": "SubagentStart",
             "command": "review activate-contract",
             "command_argv": command_argv,
             "host_command": shlex.join(command_argv),

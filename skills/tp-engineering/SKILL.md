@@ -190,6 +190,9 @@ py .taskplane/codex-hook.py review option static --run-id <run-id>
 Do not substitute `review resume` or a prose-only instruction. The opening
 canonical dashboard is `visuals.workflow_and_wave.inline.path`; after
 collection the canonical dashboard is `visuals.final_dashboard.inline.path`.
+Before launching standalone Review slots, consume their signed startup using
+`../tp-go/references/codex-native-dispatch.md#standalone-review-startup`.
+The immutable brief path alone does not bind a worker contract or workspace.
 
 If the host cannot verify or expose the sealed direct Evaluate evidence,
 return that specific evidence gap for a fresh zero-lens Evaluate judgment.

@@ -1,5 +1,27 @@
 # taskplane changelog
 
+## 2.23.4 — 2026-09-13 — automatic standalone review startup
+
+- Standalone review now includes the existing signed worker activation in each
+  dispatch slot and requires its own active read-only parent contract.
+  Retrying the same execution choice preserves the review's leases and
+  validation evidence while returning the startup commands again.
+- Signed review startup prepares the existing native child contract lifecycle,
+  so hosts without per-child environment arguments bind the exact worker on
+  `SubagentStart`. Replaying startup preserves an already-bound child.
+- Review opening prepares the ignored launcher in its actual checkout and
+  continuation repairs a missing launcher through the existing installer.
+  Reviewed project hook files are preserved.
+- Review dispatch guidance requires the complete slot and verified host
+  workspace binding before launch. Lens results may use the supported exact
+  single-file `apply_patch` add as well as `Write`.
+- Validation: the native-binding repair passed 186 tests and 14 subtests;
+  the final launcher repair passed 111 tests and eight subtests. These suites
+  overlap. The preceding installed live attempt failed because its managed
+  checkout lacked the launcher, exceeded budgets, and could not nest process
+  isolation. The final repair has not completed a fresh live review or human
+  sign-off; archive preparation does not establish those outcomes.
+
 ## 2.23.3 — 2026-09-13 — model-led orchestration with strict harness controls
 
 - Workers cannot advance their own gates or resolve their own escalation. Additional
@@ -77,7 +99,7 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.3. Historical
+> v2.23.4. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -97,6 +119,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.23.4** | **Automatic standalone review startup.** Prepares the actual checkout launcher and signed native worker contracts; retries preserve leases and evidence. Fresh installed end-to-end validation remains pending. |
 | **v2.23.3** | **Model-led orchestration with strict harness controls.** Disables budget waivers, denies worker control calls, checks fresh hooks on mutations, and safely replays exact phase collection through the existing gate. |
 | **v2.23.2** | **Budget and harness enforcement, simpler onboarding.** Applies phase caps during execution, limits each quick lens to 100,000 native tokens and eight actions, meters every tool, and stops budget-triggered continuation loops. Reuses completed reviews, returns findings inline, and keeps onboarding to initial setup. Includes project-local storage recovery and disables harness bypass. Marketplace packages require loading the updated plugin hooks. |
 | **v2.23.1** | **Superseded untagged onboarding candidate.** Uses the shared hook claim guard for event identity, checks the current launcher after reinstall, and follows the same Git-family path as hook execution. The dashboard keeps incomplete setup visibly incomplete. Every session's first request and every installation/update presents onboarding and preserves the original goal. Prompts hook trust before reload, reports failed acknowledgment writes, and bounds Stop reminders without releasing completion gates. Includes focused regression coverage; a fresh-host check remains separate from CI. |

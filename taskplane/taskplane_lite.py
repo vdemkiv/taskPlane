@@ -4435,7 +4435,32 @@ def activate_review_contract_action(
             "bootstrap_lease_fingerprint": str(lease_fingerprint),
         }
     )
-    return activate(workspace, contract, snapshot="auto", task_slot_override=slot)
+    path = active_contract_path(workspace, slot)
+    with file_lock(path):
+        existing = load_json(path, default=None, what="review worker contract")
+        if existing is not None:
+            lifecycle = existing.get("worker_lifecycle") or {}
+            if (existing.get("worker_scoped") is not True
+                    or any(existing.get(key) != contract.get(key) for key in (
+                        "task_id", "task", "task_slot", "read_only", "write_allow",
+                        "authority_source", "bootstrap_action_id", "bootstrap_key_id",
+                        "bootstrap_worker_identity", "bootstrap_lease_fingerprint"))
+                    or lifecycle.get("expected_task_name") != str(worker_identity)
+                    or lifecycle.get("expected_role_marker") != str(role_marker)
+                    or lifecycle.get("slot") != slot
+                    or lifecycle.get("stage") != "review"
+                    or lifecycle.get("task") != slot
+                    or lifecycle.get("status") not in {"pending", "active"}):
+                raise _review_bootstrap_error(
+                    workspace, "review worker slot already has a different binding")
+            _verify_worker_release_action(
+                workspace, slot, lifecycle.get("release_action"), existing)
+            return existing
+        contract = prepare_worker_contract(
+            workspace, contract, stage="review", task=slot,
+            task_name=str(worker_identity), role_marker=str(role_marker),
+            task_slot_override=slot, now=current)
+        return activate(workspace, contract, snapshot="auto", task_slot_override=slot)
 
 
 EXPANDED_LENS_ROUTE_REQUEST_SCHEMA = "taskplane.expanded-lens-route-provider-request/v1"
@@ -5227,6 +5252,7 @@ def prepare_worker_contract(
     task: str,
     task_name: str,
     role_marker: str,
+    task_slot_override: str | None = None,
     now: int | None = None,
 ) -> dict:
     """Make a contract child-scoped before it becomes an active slot.
@@ -5241,7 +5267,8 @@ def prepare_worker_contract(
     task = str(task or "").strip()
     task_name = str(task_name or "").strip()
     role_marker = str(role_marker or "").strip()
-    slot = str(contract.get("task_id") or "").strip()
+    slot = str((contract.get("task_id") or "") if task_slot_override is None
+               else task_slot_override).strip()
     if (
         not stage
         or not task

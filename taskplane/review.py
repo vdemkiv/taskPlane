@@ -3394,9 +3394,11 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                        "graph impact/scan, requirement lookup, or a runnability "
                        "probe. Resolve any taskplane.envelope-section-reference/v1 "
                        "field through the cited immutable envelope and verify "
-                       "its fingerprint and byte count. Activate "
-                       "producer_contract under its exact "
-                       "task_slot, then use the host Write tool to author the "
+                       "its fingerprint and byte count. The dispatch slot supplies "
+                       "contract_bootstrap alongside this immutable brief; honor "
+                       "its activation_order and exact workspace/task_slot. "
+                       "Never reconstruct a missing binding. Use the host Write "
+                       "tool or an exact single-file apply_patch add to author the "
                        "declared result_schema at result_path. Copy every "
                        "identity field exactly; authored_by is lens-slot. "
                        "For every pass verdict, include compact checked_evidence "
@@ -4805,16 +4807,18 @@ def configure_review_execution(ws: str, *, selection: str,
         raise ReviewKernelError("review execution choice requires an active review")
     prior = state.get("review_execution") or review_execution_preflight(
         run_id=state.get("run_id"))
-    if prior.get("status") == "configured":
-        supplied_id = getattr(approval_receipt, "receipt_id", None)
-        same = prior.get("selection") == selection and \
-            (prior.get("approval_receipt") or {}).get("receipt_id") == supplied_id
-        if same:
-            return state.get("manifest") or prior
-        raise ReviewKernelError("review execution choice is already recorded")
     configured = review_execution_preflight(
         selection=selection, decided_by=by, run_id=state.get("run_id"),
         approval_receipt=approval_receipt)
+    if prior.get("status") == "configured":
+        # The CLI derives a deterministic explicit-option receipt. Validate
+        # either receipt form before comparing it, and preserve any execution
+        # evidence already recorded when the same choice is retried.
+        same = prior.get("selection") == configured["selection"] and \
+            prior.get("approval_receipt") == configured["approval_receipt"]
+        if same:
+            return state.get("manifest") or prior
+        raise ReviewKernelError("review execution choice is already recorded")
     session = state.get("review_session")
     if isinstance(session, dict) and session.get("status") == "awaiting_consent":
         import review_session
