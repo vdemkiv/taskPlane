@@ -34,14 +34,17 @@ Focused checks on Python 3.13.9; these groups overlap:
 | Ruff | Passed |
 | Strict typing | 114 modules passed |
 | Source policy | 129 modules; zero violations |
-| Local OpenAI marketplace package | Built successfully; 2.23.2 unchanged; unpublished |
+| Release candidate | 2.23.3; OpenAI archive prepared after CI for manual upload |
 
 Integration checks use the actual harness with simulated host/model responses.
 They cover normal Product collection, serial/parallel Build and Evaluate,
 Engineering, human sign-off, Retro, foreign operations, lost-return replay,
 expired authority, unknown usage and attempted historical waivers. No live model
-phase or Hello World run was launched. The full repository suite was not rerun
-for this selection; earlier full-suite results belong to the stopped build.
+phase or Hello World run was launched. PR #26 runs the full repository suite
+against this selection; its checks are the release validation authority.
+Release checks retain strict hook admission for amendments and refuse historical
+resource waivers without retrying oversized review capture. Existing custody
+capacity and explicit action-budget grants remain covered independently.
 
 ## Preservation and boundary
 
