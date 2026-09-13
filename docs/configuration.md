@@ -62,8 +62,9 @@ be deliberately shared under `.taskplane-kb/knowledge/`.
 | Variable | Default | Effect | Enforcement-relevant |
 | --- | --- | --- | --- |
 | `TASKPLANE_STORE` | *(unset)* | Highest-precedence sharing override: `repo` forces the shared `.taskplane-kb/` store; the compatibility value `external` selects the private store beneath the resolved execution home, which defaults to the project's ignored `.taskplane/`. Overrides plan, private mode, and shared config. | **Yes** — changes where knowledge and coordination state are stored; it does not relocate an existing run's execution binding. |
-| `TASKPLANE_HOME` | `<project>/.taskplane` | Explicit storage-root override. A bound run retains its recorded home and rejects conflicting settings. `tp kb where` shows the resolved path. | **Yes** — the KB, decisions, evidence, and loop state must retain one validated storage binding. |
+| `TASKPLANE_HOME` | `<project>/.taskplane/sessions/<host-session-hash>` for identified sessions; `<project>/.taskplane` otherwise | Explicit storage-root override, partitioned by host session before use. A bound run retains its recorded home and rejects conflicting settings. `tp kb where` shows the resolved path. | **Yes** — the KB, decisions, evidence, and loop state must retain one validated storage binding. |
 | `TASKPLANE_LOCALE` | *(unset; then `LC_ALL`, `LC_MESSAGES`, `LANG`, finally English)* | Selects the deterministic BCP 47 locale used for dashboard messages, plural rules, and grapheme-safe visible text. Values such as `fr-CA` fall back through `fr` to English when a catalog is absent; malformed values and `C`/`POSIX` resolve to English. | No — it changes presentation only; stored evidence, identifiers, gates, and authority remain unchanged. |
+| `TASKPLANE_HOST_HOME` | Private `taskplane-host-<user-hash>` directory under the OS temporary directory | Selects the cache for session-scoped native-hook observations and the current session’s active review checkout. No contracts, run state or findings are copied into this cache. | **Yes** — only an exact session can use native proof; bridge trust remains workspace-bound. |
 
 ## Contract lifecycle (the hook's wall)
 

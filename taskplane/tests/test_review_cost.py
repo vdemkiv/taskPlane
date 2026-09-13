@@ -290,6 +290,7 @@ class RenderByReference(_WS):
 
 class OneCallOpening(_WS):
     def _start(self, *extra):
+        os.environ["CODEX_THREAD_ID"] = "review-cost-thread"
         # Positive fixture supplies actual complete scanner + symbol-index
         # evidence at the pinned head. It therefore earns a normal route;
         # the separate graph-quality tests keep partial evidence fail-closed.

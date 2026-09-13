@@ -47,6 +47,8 @@ def repos(tmp_path, monkeypatch):
                        cwd=parent, check=True)
     checkout = tmp_path / "checkout"
     subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(parent), str(checkout)], check=True)
+    assert cli._install_codex_hooks(str(parent))["ok"]
+    monkeypatch.chdir(parent)
     return parent, checkout
 
 
@@ -132,7 +134,7 @@ def test_other_session_cannot_read_meter_clear_or_block_owner(repos, monkeypatch
 def test_corrupt_legacy_and_other_session_contracts_do_not_block_new_session(repos, monkeypatch):
     parent, _ = repos
     legacy = parent / ".taskplane" / "active_contract.json"
-    legacy.parent.mkdir()
+    legacy.parent.mkdir(exist_ok=True)
     legacy.write_text("corrupt legacy contract")
     monkeypatch.setenv("CODEX_THREAD_ID", "session-a")
     own = Path(lite.active_contract_path(str(parent)))

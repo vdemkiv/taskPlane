@@ -275,9 +275,10 @@ def test_installed_openai_archive_onboards_and_bootstraps_a_fresh_linked_task(
     )
     assert hook.returncode == 0, hook.stdout + hook.stderr
     from taskplane import host_capabilities
+    session_fingerprint = host_capabilities._fingerprint_text("fresh-installed-task")
     receipt = json.loads(Path(host_capabilities._receipt_path(
-        str(linked / ".taskplane"), "native",
-        host_capabilities._fingerprint_text("fresh-installed-task"))).read_text(encoding="utf-8"))
+        str(linked / ".taskplane" / "sessions" / session_fingerprint), "native",
+        session_fingerprint)).read_text(encoding="utf-8"))
     assert receipt["hook_path"] == "native"
     assert receipt["event_name"] == "SessionStart"
     assert not (user_home / ".taskplane").exists()
@@ -485,6 +486,7 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     environment = {
         "PATH": os.environ.get("PATH", ""),
         "TASKPLANE_HOME": str(case / "private-store"),
+        "TASKPLANE_HOST_HOME": str(case / "host-cache"),
         "TASKPLANE_SESSION_ID": "isolated-installed-fixture",
         "CLAUDE_SESSION_ID": "isolated-installed-fixture",
     }

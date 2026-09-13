@@ -42,8 +42,14 @@ class _Ws(unittest.TestCase):
         self.home = tempfile.mkdtemp(prefix="tp-render-home-")
         self._prev = os.environ.get("TASKPLANE_HOME")
         os.environ["TASKPLANE_HOME"] = self.home
+        self._session = os.environ.get("CODEX_THREAD_ID")
+        os.environ["CODEX_THREAD_ID"] = "s1"
 
     def tearDown(self):
+        if self._session is None:
+            os.environ.pop("CODEX_THREAD_ID", None)
+        else:
+            os.environ["CODEX_THREAD_ID"] = self._session
         if self._prev is None:
             os.environ.pop("TASKPLANE_HOME", None)
         else:

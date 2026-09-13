@@ -1118,7 +1118,7 @@ def _complete_evaluation(ws, monkeypatch, evaluate, run_id, requirement, task_id
             completed = governed_commands.execute(ws, "wait", {
                 "authorization": authorization, "handle": launched["handle"],
                 "consumer": "evaluate:" + assignment["producer_kind"], "timeout": 30})
-            assert completed["event"]["state"] == "succeeded", completed
+            assert completed["event"]["state"] == "succeeded", json.dumps(completed["event"], indent=2)
         return {"authorization": authorization, "handle": launched["handle"]}
     results = authored_evidence_results(assignments, execute)
     for child, assignment in zip(children, assignments):
