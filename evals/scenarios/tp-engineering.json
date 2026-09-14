@@ -7,7 +7,7 @@
     "skills/tp-engineering/flow.json",
     "agents/tp-engineering.md"
   ],
-  "inputs_fingerprint": "c54da160d220d6231f7926b07f276b9a7af1db9c39df15ec3960caa71e16ac58",
+  "inputs_fingerprint": "5a77ae9d507e14526a4434a716746f5847bf6039112ef0465c6755a53f5af2f7",
   "expects_derivations": [
     "diff",
     "impact"

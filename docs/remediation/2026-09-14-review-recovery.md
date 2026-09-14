@@ -132,4 +132,6 @@ The larger affected review group produced 116 passes and two failures. The truth
 
 The documentation update initially exposed stale phase-definition hashes. Both affected definitions were regenerated with the existing contract producer; the 34 registry tests and final 99-test native group passed afterward.
 
+CI for `e7bd9ce` then exposed a second binding omitted from that update: `evals/scenarios/tp-engineering.json` still named the flow before the `--scope` and `--workspace` instructions were added. The recorder and scenario-validation checks failed; 4,401 tests and 524 subtests passed, and all seven other CI jobs passed. Both failures reproduced locally. Regenerating only the scenario's input fingerprint through `eval_scenario.fingerprint` fixed them; the complete recorder and scenario groups passed 108 tests and 203 subtests. Evaluation assertions and workflow checks remain unchanged.
+
 The remaining acceptance limit is a live installed-plugin journey. Local fixes and tests do not establish installation, release, host hook enablement, or EM sign-off. The original telemetry and failed runtime history were preserved; this implementation work is not added to the original review's reported token counters.
