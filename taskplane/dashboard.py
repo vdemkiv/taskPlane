@@ -3226,6 +3226,10 @@ _ONBOARDING_ACTIONS = {
         "use one consistent plugin build",
     ),
     "resume_run": ("Resume the saved run", "read the saved run; dispatch will recheck readiness"),
+    "review_file_tools_unavailable": (
+        "Review file access is unavailable",
+        "provide native file tools or supported isolated Codex inspection; workspace setup is complete",
+    ),
     "ready": ("Ready to go", "ready for governed work"),
 }
 

@@ -41,6 +41,15 @@ def _enforce_supported_python(version_info=None) -> None:
 
 _enforce_supported_python()
 
+# Keep bounded file inspection independent of repository discovery, Git,
+# run settings and their imports. The existing hook has already screened and
+# metered its exact invocation; source contents never enter an interpreter.
+if __name__ == "__main__" and sys.argv[1:2] == ["inspect"]:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import file_inspection
+
+    raise SystemExit(file_inspection.main(sys.argv[2:]))
+
 import argparse
 import ast
 import base64
@@ -8184,7 +8193,7 @@ def cmd_review(a) -> int:
         print(json.dumps(initialized, sort_keys=True))
         return 2
     if runtime_storage.host_session_id():
-        file_tools = tp.review_file_tool_readiness()
+        file_tools = tp.review_file_tool_readiness(workspace=ws)
         if not file_tools["ready"]:
             print(json.dumps({"status": "not_ready", "review_file_tools": file_tools}, sort_keys=True))
             return 2
@@ -8809,6 +8818,13 @@ def _initialize_entry(ws: str) -> dict:
     return report
 
 
+def cmd_inspect(a) -> int:
+    """Library entry; normal CLI inspection runs before repository discovery."""
+    import file_inspection
+
+    return file_inspection.main([a.request])
+
+
 def cmd_onboard(a) -> int:
     """Cold-start onboarding. Detects whether the workspace is ready for a
     governed run (folder + git snapshot + init) and, by default, prints the
@@ -8841,11 +8857,21 @@ def cmd_onboard(a) -> int:
         tp.record_entry_tools([name.strip() for name in available.split(",") if name.strip()])
     initialize = bool(getattr(a, "initialize", False))
     report = _initialize_entry(ws) if initialize else _onboard_report(ws)
-    if initialize and runtime_storage.host_session_id():
+    if runtime_storage.host_session_id():
         # Reset an omitted declaration; a prior entry's inventory is not current.
-        if available is None:
+        if initialize and available is None:
             tp.record_entry_tools([])
-        report["review_file_tools"] = tp.review_file_tool_readiness()
+        file_tools = tp.review_file_tool_readiness(workspace=ws)
+        report["review_file_tools"] = file_tools
+        report["workspace_ready"] = report["ready"]
+        report["review_ready"] = bool(report["ready"] and file_tools["ready"])
+        report["ready"] = report["review_ready"]
+        report.setdefault("checks", []).append({"id": "review_file_tools",
+            "label": "Review file access", "ok": file_tools["ready"],
+            "detail": file_tools["detail"],
+            "hint": "Use the declared native file tools or the isolated Codex inspect operation."})
+        if report["workspace_ready"] and not file_tools["ready"]:
+            report["next_action"] = "review_file_tools_unavailable"
     failed = bool(result and result.get("status") in {"refused", "blocked"})
     if failed and isinstance(values, dict):
         report["submitted_values"] = values
@@ -8855,7 +8881,7 @@ def cmd_onboard(a) -> int:
         report["storage_selection"] = a.storage_selection
     if a.json:
         print(json.dumps(report, indent=2))
-        return 2 if failed or (initialize and not report["ready"]) else 0
+        return 2 if failed or ((initialize or "review_file_tools" in report) and not report["ready"]) else 0
     # Render contract (v1.5.3/4): the HEADLINE is the never-skippable carrier
     # — on hosts without inline widgets (Codex) it is the primary channel.
     print("HEADLINE: " + dashboard.headline_onboarding(report))
@@ -8875,7 +8901,7 @@ def cmd_onboard(a) -> int:
             + str(row.get("remediation") or "")
         )
     print(dashboard.render_onboarding(report, out=a.out))
-    return 2 if failed else 0
+    return 2 if failed or ((initialize or "review_file_tools" in report) and not report["ready"]) else 0
 
 
 def _inline_max() -> int:
@@ -11170,6 +11196,10 @@ def _main(argv=None) -> int:
     )
     db.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     db.set_defaults(fn=cmd_dashboard)
+
+    fi = sub.add_parser("inspect", help="bounded read, directory listing or literal search; never executes source")
+    fi.add_argument("request", help="URL-safe base64 JSON: operation, path, optional start/limit/pattern")
+    fi.set_defaults(fn=cmd_inspect)
 
     op = sub.add_parser(
         "onboard",

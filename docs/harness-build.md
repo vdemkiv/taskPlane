@@ -24,6 +24,16 @@ or duplicate phase/budget policy engine is installed.
 
 ## 2.23.6 shared entry initialization
 
+The Codex file-access repair adds a bounded `inspect` data operation to the
+existing CLI. Its exact isolated installed-engine invocation is screened under
+the same Read/Grep/Glob permissions and action/token budgets. It reads regular
+files, lists directories, and performs literal searches without loading run
+configuration, executing Git, importing reviewed code, or writing source.
+General terminal commands remain denied. Native file tools and scoped artifact
+edits keep their existing behavior; no new server or approval system is added.
+Onboarding now carries `workspace_ready` and `review_ready` separately and
+includes incompatible file access in its effective readiness and exit status.
+
 All direct skills use `onboard --initialize --json --available-tools <names>`.
 Setup reuses the existing onboarding and launcher owners. The small session
 inventory reports compatibility and cannot grant execution or weaken a

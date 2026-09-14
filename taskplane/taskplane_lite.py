@@ -15,12 +15,12 @@ not enforced before spend. The PreToolUse hook screens a *cooperative* shell
 for build contracts: it makes wrappers (env/nohup/sudo/xargs/…) and nested
 `sh -c`/`$()` transparent, and blocks resolvable out-of-scope writes plus
 clearly destructive unscopeable verbs (`find -delete/-exec`,
-`git checkout/reset/…`). A read-only review never authorizes a shell command:
-an allow/deny hook cannot rewrite a host command into shell=False execution,
-scrub its process environment, or bind the bytes of the eventual executable.
-It admits only explicitly listed host-native Read/Grep/Glob calls and scoped
-host-native edits to review artifacts. A future host-owned direct-exec broker
-may add command access; caller-authored argv/receipt fields do not. Under a
+`git checkout/reset/…`). A read-only review does not authorize general shell
+commands. It admits explicitly listed host-native Read/Grep/Glob calls, scoped
+host-native edits to review artifacts, and the exact isolated installed-engine
+``inspect`` invocation on supported Codex hosts. That bounded data operation
+does not execute reviewed code or expose a command runner; caller-authored
+argv/receipt fields cannot authorize other commands. Under a
 *build* contract, `python -c "…"` can still write anywhere because a
 Turing-complete body cannot be screened from argv. For a hard build boundary,
 use a container or OS sandbox.
@@ -2693,6 +2693,20 @@ def screen_tool(
         return True, f"within every active contract ({len(members)}-way union)"
     if contract.get("read_only"):
         if tool_name in COMMAND_TOOLS:
+            try:
+                from . import file_inspection
+            except ImportError:
+                import file_inspection
+            inspection = file_inspection.invocation(
+                tool_name, tool_input, _TP_CLI_PATH, workspace or os.getcwd())
+            if inspection is not None:
+                denied = deny_violation(command_text(tool_name, tool_input),
+                    ((contract.get("coding") or {}).get("command_policy") or {}).get("deny") or [])
+                if denied:
+                    return False, f"command matches deny pattern '{denied}'"
+                native = file_inspection.OPERATIONS[inspection["operation"]]
+                return screen_tool(contract, native, {"file_path": inspection["path"],
+                    "path": inspection["path"], "pattern": inspection.get("pattern", "*")}, workspace)
             return False, (
                 "read-only review contract: every shell command tool is "
                 "blocked because this host hook cannot prove shell=False, a "
@@ -6518,7 +6532,7 @@ def _entry_engine_fingerprint() -> str:
     root = os.path.dirname(os.path.abspath(__file__))
     digest = hashlib.sha256()
     digest.update(os.path.realpath(root).encode())
-    for name in ("tp.py", "taskplane_lite.py"):
+    for name in ("tp.py", "taskplane_lite.py", "file_inspection.py"):
         with open(os.path.join(root, name), "rb") as stream:
             digest.update(stream.read())
     for directory in (".codex-plugin", ".claude-plugin"):
@@ -6542,7 +6556,7 @@ def record_entry_tools(names: list[str]) -> None:
         "tools": sorted(set(names)), "session": _entry_storage.host_session_id()})
 
 
-def review_file_tool_readiness(contract: dict | None = None) -> dict:
+def review_file_tool_readiness(contract: dict | None = None, *, workspace: str | None = None) -> dict:
     """Check compatibility without changing the contract's tool permissions."""
     record = load_json(_entry_tools_path(), default={}, what="entry tool inventory")
     valid = (record.get("engine") == _entry_engine_fingerprint()
@@ -6550,16 +6564,31 @@ def review_file_tool_readiness(contract: dict | None = None) -> dict:
     names = set(record.get("tools") or []) if valid else set()
     allowed = set(contract.get("allowed_tools") or []) if contract is not None else names
     usable = {name for name in names if any(alias in allowed for alias in tool_aliases(name))}
+    try:
+        from . import file_inspection
+    except ImportError:
+        import file_inspection
+    root = os.path.realpath(workspace or os.getcwd())
+    inspection = (bool(names & {"exec_command", "functions.exec_command"})
+                  and file_inspection.launch_supported()
+                  and os.path.commonpath((_TP_CLI_PATH, root)) != root
+                  and (contract is None or "Read" in allowed))
     missing = []
-    if "Read" not in usable:
-        missing.append("Read")
+    if "Read" not in usable and not inspection:
+        missing.append("Read or supported Codex file inspection")
     if (contract is None or contract.get("write_allow")) and not (usable & WRITE_TOOLS):
         missing.append("a scoped Write/Edit tool")
     return {"ready": not missing, "missing": missing,
+            "read_transport": "native" if "Read" in usable else "engine_inspection" if inspection else None,
+            "inspection": ({"engine": _TP_CLI_PATH,
+                "python": os.path.realpath(sys.executable), "shell": "/bin/sh", "login": False,
+                "operations": ["read", "list", "search"],
+                "instruction": "Use the exact isolated inspect invocation documented in entry-initialization.md."}
+                if inspection and "Read" not in usable else None),
             "source": "caller-declared tool inventory; not an enforcement receipt",
             "detail": ("compatible review file tools" if not missing else
                 "Read-only review cannot start with this tool set: missing " + ", ".join(missing)
-                + ". Use a host exposing the required file tools. No contract was activated.")}
+                + ". No contract was activated.")}
 
 
 def activate(
@@ -6575,7 +6604,7 @@ def activate(
     import collision
 
     if contract.get("read_only") and _entry_storage.host_session_id():
-        readiness = review_file_tool_readiness(contract)
+        readiness = review_file_tool_readiness(contract, workspace=workspace)
         if not readiness["ready"]:
             raise ValueError(readiness["detail"])
     apply_foreign_state_exclusions(

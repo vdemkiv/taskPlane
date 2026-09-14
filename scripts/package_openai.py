@@ -88,6 +88,7 @@ HOOK_FILES = (
 STAGE_RUNTIME_FILES = (
     "agents/spec-phase-definitions.json",
     "taskplane/taskplane_lite.py",
+    "taskplane/file_inspection.py",
     "taskplane/loop.py",
     "taskplane/tp.py",
     "taskplane/stage_entities.py",
