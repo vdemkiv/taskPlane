@@ -107,3 +107,12 @@ The actual reported Cowork session, its live environment, and its raw telemetry
 were not accessible. Local simulated events and extracted-package subprocesses are
 not described as live Cowork acceptance. The affected historical contract was not
 cleared or migrated. Source builds do not install or publish a Marketplace plugin.
+
+## CI follow-up
+
+The first 2.24.0 CI run (`34902130366`, commit `5ee9526`) passed 4,412 tests
+and failed two stale SessionStart assertions. Those tests still required setup
+text in an empty folder and a worker sweep without an active delivery. They now
+verify quiet ordinary entry and explicitly cover both inactive and active delivery
+sessions. The seven other CI jobs passed. The repair changes tests only; version
+2.24.0 and the native review implementation are retained.
