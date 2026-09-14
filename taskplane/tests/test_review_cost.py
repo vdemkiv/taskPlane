@@ -22,6 +22,7 @@ unseen.
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -555,9 +556,11 @@ class TokenCeilingThroughTheScreener(_WS):
     def test_inspection_remains_reachable_at_the_token_ceiling(self):
         """Recovery can inspect the limit without admitting productive work."""
         tr = self._contract_with(1)
-        for cmd in ("tp status", "tp contracts", "tp ack --status"):
+        for args in (("status",), ("contracts",), ("ack", "--status")):
+            cmd = shlex.join([sys.executable, os.path.join(ROOT, "taskplane", "tp.py"), *args])
             with self.subTest(cmd):
-                self.assertEqual(self._screen(cmd, tr)[0], "abstain")
+                decision, reason = self._screen(cmd, tr)
+                self.assertEqual(decision, "abstain", reason)
 
 
 if __name__ == "__main__":

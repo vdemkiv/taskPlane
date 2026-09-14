@@ -37,12 +37,13 @@ def test_setup_ready_is_not_hook_readiness(project, host, monkeypatch, host_name
     context = Path(kernel.kb_root(project), "context/product.md")
     before = context.read_bytes()
 
-    # Execute the native screen, with real claim/receipt code, then recheck.
+    # Run in the initialized project, as the host does. The repository running
+    # pytest may have no TaskPlane setup, so its global hooks are inert.
     event = {"cwd": project, "session_id": "entry-a", "hook_event_name": "PreToolUse",
              "tool_use_id": "read-a", "tool_name": "Read",
              "tool_input": {"file_path": str(context)}}
     result = subprocess.run([sys.executable, str(ROOT / "taskplane/tp.py"), "screen"],
-        input=json.dumps(event), text=True, capture_output=True,
+        input=json.dumps(event), text=True, capture_output=True, cwd=project,
         env={**os.environ, "TASKPLANE_HOOK_PATH": "native"})
     assert result.returncode == 0, result.stderr
     fresh = cli._initialize_entry(project)
