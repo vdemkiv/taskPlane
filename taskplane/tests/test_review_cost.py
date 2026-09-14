@@ -291,6 +291,7 @@ class RenderByReference(_WS):
 class OneCallOpening(_WS):
     def _start(self, *extra):
         os.environ["CODEX_THREAD_ID"] = "review-cost-thread"
+        tp.record_entry_tools(["Read", "Write"])
         # Positive fixture supplies actual complete scanner + symbol-index
         # evidence at the pinned head. It therefore earns a normal route;
         # the separate graph-quality tests keep partial evidence fail-closed.
@@ -551,12 +552,12 @@ class TokenCeilingThroughTheScreener(_WS):
         self.assertIn("every shell command tool is blocked", why)
         self.assertNotIn("TOKEN BUDGET exhausted", why)
 
-    def test_inspection_cannot_bypass_the_token_ceiling(self):
-        """Status is action-exempt but its model round trip still costs tokens."""
+    def test_inspection_remains_reachable_at_the_token_ceiling(self):
+        """Recovery can inspect the limit without admitting productive work."""
         tr = self._contract_with(1)
         for cmd in ("tp status", "tp contracts", "tp ack --status"):
             with self.subTest(cmd):
-                self.assertEqual(self._screen(cmd, tr)[0], "block")
+                self.assertEqual(self._screen(cmd, tr)[0], "abstain")
 
 
 if __name__ == "__main__":

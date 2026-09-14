@@ -25,6 +25,7 @@ from taskplane.tests.test_review_refusals import _run  # noqa: E402
 def opened_cli_review(tmp_path, monkeypatch):
     """Open a real CLI review; only host readiness is simulated by _run."""
     monkeypatch.setenv("CODEX_THREAD_ID", "review-fixture-session")
+    taskplane_cli.tp.record_entry_tools(["Read", "Grep", "Glob", "Write"])
     workspace = tmp_path / "source"
     workspace.mkdir()
     for args in (["init", "-q"], ["config", "user.email", "test@example.com"],
