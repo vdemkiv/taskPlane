@@ -20,6 +20,7 @@ def record_simulated_hook(workspace, *, environment=None):
     with mock.patch.dict(os.environ, environment, clear=True):
         return host_capabilities.record_runtime_hook_receipt(
             taskplane_lite.store_home(str(workspace)), hook_path="native",
+            engine_fingerprint=taskplane_lite._entry_engine_fingerprint(),
             event={"hook_event_name": "PreToolUse", "cwd": str(workspace),
                    "session_id": environment.get("CODEX_THREAD_ID") or
                                  environment.get("CLAUDE_SESSION_ID")})

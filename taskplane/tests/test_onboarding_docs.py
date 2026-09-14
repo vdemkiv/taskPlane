@@ -107,7 +107,8 @@ class TestOnboardInstallTruth(_TmpRepo):
             self.assertTrue(cli._install_codex_hooks(self.ws)["ok"])
             os.makedirs(os.path.join(cli.tp.kb_root(self.ws), "context"))
             host_capabilities.record_runtime_hook_receipt(
-                cli.tp.store_home(self.ws), hook_path="native", event={
+                cli.tp.store_home(self.ws), hook_path="native",
+                engine_fingerprint=cli.tp._entry_engine_fingerprint(), event={
                     "session_id": env["CODEX_THREAD_ID"],
                     "hook_event_name": "PreToolUse", "tool_use_id": "before-removal",
                     "cwd": self.ws})

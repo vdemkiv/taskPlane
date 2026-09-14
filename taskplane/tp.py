@@ -481,7 +481,8 @@ def _codex_hooks_report(ws: str) -> dict:
         installed_engine = _resolve_taskplane_engine(family)
     else:
         installed_engine = None
-    runner = bool(installed_engine and os.path.isfile(installed_engine))
+    runner_current = bool(family and runner_body == _codex_runner_body(family))
+    runner = bool(installed_engine and os.path.isfile(installed_engine) and runner_current)
     installed = os.path.isfile(manifest)
     duplicates = _project_hook_duplicates(ws)
     return {
@@ -497,13 +498,15 @@ def _codex_hooks_report(ws: str) -> dict:
         "manifest": manifest,
         "project_hooks_required": False,
         "launcher_ready": runner,
+        "launcher_present": bool(runner_body),
+        "launcher_current": runner_current,
         "config": config_path,
         "runner": runner_path,
         "resolved_engine": installed_engine,
         "hint": (
-            "Run onboard --install-launcher to prepare the project entry point."
+            "Run onboard --initialize to prepare the project entry point and preserve the run."
             if installed and (not runner or duplicates)
-            else "Enable the installed TaskPlane plugin in Codex; readiness "
+            else "Enable the installed TaskPlane plugin in the host; readiness "
             "requires a host-observed native hook receipt."
             if installed
             else "Install the TaskPlane plugin with its native hooks."
@@ -588,6 +591,7 @@ def _host_capability_snapshot(
     observations = host_caps.runtime_hook_observations(
         tp.store_home(ws), session_id=session_id, workspace=ws,
         native_home=runtime_storage.host_runtime_home(),
+        engine_fingerprint=tp._entry_engine_fingerprint(),
     )
     # Explicit adapter-owned environment receipts take precedence over the
     # short-lived runtime receipt when both exist.
@@ -623,6 +627,27 @@ def _saved_enforcement(value) -> dict | None:
     except (TypeError, ValueError):
         return None
     return checked
+
+
+def _hook_recovery(snapshot) -> list[str]:
+    """Recommend host loading, never infer a product from a session id."""
+    if snapshot.host == "claude" and os.environ.get("CLAUDE_CODE_VERSION"):
+        action = "In Claude Code, enable TaskPlane hooks and run /reload-plugins."
+    elif snapshot.host == "claude":
+        action = (
+            "Check that TaskPlane is enabled in this Claude/Cowork session and that "
+            "its native hooks execute. Use this host's plugin reload or reopen "
+            "control if available; /reload-plugins is a Claude Code command."
+        )
+    else:
+        action = (
+            "Enable TaskPlane native hooks in Codex; start a new task only if "
+            "the installed plugin needs initial loading."
+        )
+    return [action,
+            "Rerun onboard --json through the native host, then retry the exact "
+            "command with the same run and pinned scope when ready is true. "
+            "Keep completed setup; do not create receipts or waive enforcement."]
 
 
 def _enforcement_check(
@@ -680,21 +705,17 @@ def _enforcement_check(
             "recovery": ["restore live plugin hooks and retry without --advisory"],
         }
     if require_live and mode == "strict" and decision["status"] == "unproven":
-        recovery = (
-            [
-                "run /reload-plugins, then retry this exact command",
-            ]
-            if snapshot.host == "claude"
-            and (os.environ.get("CLAUDE_CODE_VERSION") or os.environ.get("CLAUDE_SESSION_ID"))
-            else [
-                "start a new host conversation and retry",
-            ]
-        )
         return decision, {
             "schema": "taskplane.enforcement-refusal/v1",
             "error": "governed action refused: screen enforcement is unproven",
             "enforcement": decision,
-            "recovery": recovery,
+            "recovery": _hook_recovery(snapshot),
+            "diagnostics": {
+                "host": snapshot.host,
+                "session_identity_available": bool(snapshot.session_fingerprint),
+                "engine": os.path.abspath(__file__),
+                "host_capabilities": host_caps.onboarding_projection(snapshot),
+            },
         }
     return decision, None
 
@@ -1220,88 +1241,87 @@ def _onboard_report(ws: str) -> dict:
         }
     )
     launcher = _codex_hooks_report(ws)
+    engine_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    engine_install = _valid_plugin_root(engine_root, engine_root)
     codex_hooks = launcher if is_codex else None
-    host_capabilities = None
-    if codex_hooks is not None:
-        snapshot = _host_capability_snapshot(ws)
-        host_capabilities = host_caps.onboarding_projection(snapshot)
-        host_capabilities = _prefer_existing_loop_resume(ws, host_capabilities)
-        native_effective = host_capabilities["effective_path"]["value"] == "native_effective"
-        resumable = host_capabilities.get("next_action") == "resume_run"
-        if native_effective:
-            checks[0]["hint"] = (
-                "The loaded native Taskplane hook governs this checkout; "
-                "continue in the current Codex task."
-            )
-        checks.extend(
-            (
-                {
-                    "id": "hook_install",
-                    "label": "Plugin hooks installed",
-                    "ok": (
-                        host_capabilities["install"]["status"] == "supported"
-                        and codex_hooks["installed"]
-                    ),
-                    "detail": (
-                        host_capabilities["install"]["status"]
-                        if codex_hooks["ok"]
-                        else codex_hooks["status"]
-                    ),
-                    "hint": codex_hooks.get("hint")
-                    or ("Run onboarding's hook setup before governed work."),
-                },
-                {
-                    "id": "workspace_launcher",
-                    "label": "Project launcher",
-                    "ok": native_effective or codex_hooks["launcher_ready"],
-                    "detail": codex_hooks["runner"],
-                    "hint": "Optional CLI convenience when native plugin hooks are effective.",
-                },
-                {
-                    "id": "repository_trust",
-                    "label": "Repository trust",
-                    "ok": (native_effective or host_capabilities["trust"]["status"] == "supported"),
-                    "detail": (
-                        "not required for native hooks"
-                        if native_effective
-                        else host_capabilities["trust"]["status"]
-                    ),
-                    "hint": "Review the plugin permission in Codex; project hook "
-                    "registrations are not required.",
-                },
-                {
-                    "id": "managed_policy",
-                    "label": "Managed hook policy",
-                    "ok": (host_capabilities["managed_policy"]["status"] == "supported"),
-                    "detail": host_capabilities["managed_policy"]["status"],
-                    "hint": "An organization-managed restriction requires "
-                    "administrator action; taskPlane will not change it.",
-                },
-                {
-                    "id": "loaded_session",
-                    "label": "Hooks loaded this session",
-                    "ok": (host_capabilities["loaded_session"]["status"] == "supported"),
-                    "detail": host_capabilities["loaded_session"]["status"],
-                    "hint": (
-                        "This Codex task already has an observed hook "
-                        "receipt; no restart is required."
-                        if host_capabilities["loaded_session"]["status"] == "supported"
-                        else "Read the existing run with loop resume; dispatch "
-                        "will check live enforcement separately."
-                        if resumable
-                        else "Start one new Codex task only after the initial "
-                        "hook installation or a host policy change."
-                    ),
-                },
-                {
-                    "id": "effective_hook_path",
-                    "label": "Effective hook path",
-                    "ok": host_capabilities["ready"] and native_effective,
-                    "detail": host_capabilities["effective_path"]["value"],
-                    "hint": host_capabilities["effective_path"]["reason"],
-                },
-            )
+    snapshot = _host_capability_snapshot(ws)
+    host_capabilities = host_caps.onboarding_projection(snapshot)
+    host_capabilities = _prefer_existing_loop_resume(ws, host_capabilities)
+    native_effective = host_capabilities["effective_path"]["value"] == "native_effective"
+    resumable = host_capabilities.get("next_action") == "resume_run"
+    if native_effective:
+        checks[0]["hint"] = (
+            "The loaded native Taskplane hook governs this checkout; "
+            f"continue in the current {'Codex' if is_codex else 'Claude'} task."
         )
+    checks.extend(
+        (
+            {
+                "id": "hook_install",
+                "label": "Plugin hooks installed",
+                "ok": (
+                    host_capabilities["install"]["status"] == "supported"
+                    and launcher["installed"]
+                ),
+                "detail": (
+                    host_capabilities["install"]["status"]
+                    if launcher["ok"]
+                    else launcher["status"]
+                ),
+                "hint": launcher.get("hint")
+                or ("Run onboarding's hook setup before governed work."),
+            },
+            {
+                "id": "workspace_launcher",
+                "label": "Project launcher",
+                "ok": native_effective or launcher["launcher_ready"],
+                "detail": launcher["runner"],
+                "hint": "Optional CLI convenience when native plugin hooks are effective.",
+            },
+            {
+                "id": "repository_trust",
+                "label": "Repository trust",
+                "ok": (native_effective or host_capabilities["trust"]["status"] == "supported"),
+                "detail": (
+                    "not required for native hooks"
+                    if native_effective
+                    else host_capabilities["trust"]["status"]
+                ),
+                "hint": "Review the plugin permission in the host; project hook "
+                "registrations are not required.",
+            },
+            {
+                "id": "managed_policy",
+                "label": "Managed hook policy",
+                "ok": (host_capabilities["managed_policy"]["status"] == "supported"),
+                "detail": host_capabilities["managed_policy"]["status"],
+                "hint": "An organization-managed restriction requires "
+                "administrator action; taskPlane will not change it.",
+            },
+            {
+                "id": "loaded_session",
+                "label": "Hooks loaded this session",
+                "ok": (host_capabilities["loaded_session"]["status"] == "supported"),
+                "detail": host_capabilities["loaded_session"]["status"],
+                "hint": (
+                    "This task already has an observed hook "
+                    "receipt; no restart is required."
+                    if host_capabilities["loaded_session"]["status"] == "supported"
+                    else "Read the existing run with loop resume; dispatch "
+                    "will check live enforcement separately."
+                    if resumable
+                    else " ".join(_hook_recovery(snapshot))
+                ),
+            },
+            {
+                "id": "effective_hook_path",
+                "label": "Effective hook path",
+                "ok": host_capabilities["ready"] and native_effective,
+                "detail": host_capabilities["effective_path"]["value"],
+                "hint": host_capabilities["effective_path"]["reason"],
+            },
+        )
+    )
     base_ready = (
         looks_like_project
         and inside_git
@@ -1310,10 +1330,7 @@ def _onboard_report(ws: str) -> dict:
         and run_readiness["ready"]
         and phase_ready
     )
-    ready = base_ready and (
-        host_capabilities is None
-        or (bool(host_capabilities["ready"]) and native_effective)
-    )
+    ready = base_ready and bool(host_capabilities["ready"]) and native_effective
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
@@ -1357,6 +1374,11 @@ def _onboard_report(ws: str) -> dict:
         "artifacts": artifacts,
         "configuration": _onboarding_configuration(ws),
         "launcher": launcher,
+        "engine": {
+            "path": os.path.abspath(__file__),
+            "version": engine_install[1] if engine_install else None,
+            "fingerprint": tp._entry_engine_fingerprint(),
+        },
         "codex_hooks": codex_hooks,
         "host_capabilities": host_capabilities,
         # R-0005 install truth: the account-type install/update paths,
@@ -1378,6 +1400,7 @@ def _onboard_report(ws: str) -> dict:
         "is_git": inside_git,
         "has_commit": has_commit,
         "has_context": has_context,
+        "setup_ready": base_ready,
         "ready": ready,
         "checks": checks,
         "next_action": nxt,
@@ -3106,6 +3129,7 @@ def _is_completion_command(command: str) -> bool:
 def _recovery_argv(command: str) -> list[str] | None:
     """One canonical CLI invocation; never exempt a compound shell command."""
     import re
+    import shutil
 
     if any(mark in command for mark in (";", "|", "&", ">", "<", "`", "$", "\n", "\r")):
         return None
@@ -3113,6 +3137,16 @@ def _recovery_argv(command: str) -> list[str] | None:
     if len(tokens) < 3:
         return None
     interpreter = os.path.basename(tokens[0]).lower()
+    if os.path.dirname(tokens[0]):
+        # An arbitrary repository script named python3 is not a trusted
+        # interpreter just because the second argument names our engine.
+        resolved = os.path.realpath(tokens[0])
+        candidates = {os.path.realpath(sys.executable)}
+        installed = shutil.which(interpreter)
+        if installed:
+            candidates.add(os.path.realpath(installed))
+        if resolved not in candidates:
+            return None
     if interpreter in {"py", "py.exe"} and tokens[1] == "-3":
         tokens.pop(1)
     if len(tokens) < 3 or not re.fullmatch(r"(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?", interpreter):
@@ -3155,7 +3189,33 @@ def _approved_budget_recovery(command: str) -> dict | None:
         return None
 
 
-def _is_release_command(command: str) -> bool:
+def _control_workspace_args(args: list[str], workspace: str | None) -> list[str] | None:
+    """Remove the single workspace selector after checking its authority."""
+    args = list(args)
+    options = args[:args.index("--")] if "--" in args else args
+    if any(arg.startswith("--") and arg.split("=", 1)[0] != "--workspace"
+           and "--workspace".startswith(arg.split("=", 1)[0]) for arg in options):
+        return None  # argparse abbreviations must not evade workspace screening
+    positions = [i for i, arg in enumerate(options)
+                 if arg == "--workspace" or arg.startswith("--workspace=")]
+    if len(positions) > 1:
+        return None
+    if positions:
+        i = positions[0]
+        if args[i] == "--workspace":
+            if i + 1 == len(args):
+                return None
+            value = args[i + 1]
+            del args[i:i + 2]
+        else:
+            value = args.pop(i).split("=", 1)[1]
+        if not value or (workspace and os.path.realpath(os.path.join(workspace, value))
+                         != os.path.realpath(workspace)):
+            return None
+    return args
+
+
+def _is_release_command(command: str, workspace: str | None = None) -> bool:
     """Unmetered control-plane commands, including explicit human recovery.
 
     Mutating recovery is accepted only when the argv carries the human's
@@ -3164,22 +3224,22 @@ def _is_release_command(command: str) -> bool:
     self-issued ``clear``/``budget --grant`` behind the wall.
     """
     recovery = _recovery_argv(command)
-    if recovery and (recovery in [["--help"], ["-h"]] or
-                     recovery[0] in {"budget", "clear"} and
-                     recovery[1:] in [["--help"], ["-h"]]):
+    if not recovery:
+        return False
+    recovery = _control_workspace_args(recovery, workspace)
+    if not recovery:
+        return False
+    if (len(recovery) <= 3 and "--" not in recovery and recovery[-1] in {"--help", "-h"}
+            or recovery in [["help"], ["help", "--md"]]):
         return True
     if recovery and recovery[0] == "budget":
         return _approved_budget_recovery(command) is not None
-    verb = tp.taskplane_verb(command)
+    verb = recovery[0]
     if verb in _RELEASE_VERBS:
         return True
-    tokens = tp._shsplit(" ".join(str(command or "").split()))
+    tokens = recovery
     if verb == "onboard":
-        if any(mark in command for mark in (";", "|", "&", ">", "<", "`", "$", "\n")):
-            return False
-        if len(tokens) < 3 or not tp._is_tp_cli(tokens[1]):
-            return False
-        args = tokens[3:]
+        args = tokens[1:]
         while args:
             flag = args.pop(0)
             if flag in {"--json", "--initialize"}:
@@ -3198,9 +3258,10 @@ def _is_release_command(command: str) -> bool:
         # live worker shed enforcement; a bare/general clear remains walled.
         return tokens.count("--slot") == 1 and tokens.count("--signed-action") == 1
     if verb == "review":
-        if all(token in tokens for token in ("collect", "--run-id")):
+        if tokens[1:2] == ["collect"] and "--run-id" in tokens:
             return True
-        return all(token in tokens for token in ("resume", "--run-id", "--action-id", "--by"))
+        return tokens[1:2] == ["resume"] and all(
+            token in tokens for token in ("--run-id", "--action-id", "--by"))
     return False
 
 
@@ -3209,6 +3270,166 @@ def _is_closing_command(command: str) -> bool:
     of it — the only spender of the closing reserve."""
     verb = tp.taskplane_verb(command)
     return verb in _CLOSING_VERBS if verb else False
+
+
+# These commands operate the incumbent engine's state machine. Their handlers
+# retain phase authority, signed input, human consent and evidence validation.
+# They are metered work, not budget-recovery exemptions. In particular, never
+# admit new/clear/budget or the hook entry points through this path.
+_READONLY_CONTROL_ACTIONS = {
+    "onboard": None,
+    "summary": None,
+    "dashboard": None,
+    "findings": None,
+    "north-star": None,
+    "dod": None,
+    "review": {"option", "evidence", "sandbox", "validate", "signoff", "collect"},
+    "repository": {"status", "prepare", "resume"},
+    "target": {"show", "pin"},
+    "loop": {"resume", "status", "next", "wave", "collect", "submit", "gate",
+             "approve", "resolve", "amend", "evidence", "retro", "reconcile",
+             "verify-dispatch", "command"},
+    "stage": {"read-input", "collect-lenses", "prepare-lenses", "start", "resume",
+              "terminalize", "terminalize-and-start", "split", "history", "reuse"},
+    "command": {"launch", "show", "wait", "cancel"},
+    "preview": None,
+    "lens": {"route", "collect", "list", "show", "dispatch"},
+    "graph": {"scan", "impact", "edge", "check", "locate", "html"},
+    "req": {"new", "amend", "score", "signoff", "mode", "debt", "list"},
+    "decision": {"new", "list", "show", "accept", "reject", "supersede"},
+    "kb": {"record", "retrieve", "list", "lint", "where"},
+}
+_HUMAN_INPUT_TOOLS = frozenset({
+    "AskUserQuestion", "request_user_input", "request_user_input_async",
+    "functions.request_user_input", "functions.request_user_input_async",
+})
+
+
+def _readonly_control_command(command: str, workspace: str, contract: dict) -> bool:
+    """Recognize one trusted CLI, preserving workspace and artifact scope."""
+    args = _recovery_argv(command)
+    if not args:
+        return False
+    args = _control_workspace_args(args, workspace)
+    if not args:
+        return False
+    options = args[:args.index("--")] if "--" in args else args
+    if any(arg.startswith("--") and arg.split("=", 1)[0] not in {"--out", "--output"}
+           and any(flag.startswith(arg.split("=", 1)[0]) for flag in ("--out", "--output"))
+           for arg in options):
+        return False
+    if args[0] == "onboard" and any(arg.startswith("--install") for arg in args):
+        return False
+    # The global and subparser workspace spellings have identical authority.
+    for flag in ("--out", "--output"):
+        options = args[:args.index("--")] if "--" in args else args
+        positions = [i for i, value in enumerate(options)
+                     if value == flag or value.startswith(flag + "=")]
+        if len(positions) > 1:
+            return False
+        if not positions:
+            continue
+        i = positions[0]
+        if args[i] == flag:
+            if i + 1 == len(args):
+                return False
+            value = args[i + 1]
+            del args[i:i + 2]
+        else:
+            value = args.pop(i).split("=", 1)[1]
+        if value != "-" and not tp.writable_target(
+                value, contract.get("write_allow") or [], workspace):
+            return False
+    if not args or args[0] not in _READONLY_CONTROL_ACTIONS:
+        return False
+    actions = _READONLY_CONTROL_ACTIONS[args[0]]
+    if actions is not None and (len(args) < 2 or args[1] not in actions):
+        return False
+    return True
+
+
+def _screen_contract_tool(contract: dict, tool_name: str, tool_input: dict,
+                          workspace: str) -> tuple[bool, str]:
+    """Screen engine control and native file access through one host-neutral path."""
+    members = contract.get("_union")
+    if members and tool_name not in tp.WRITE_TOOLS:
+        for member in members:
+            allowed, reason = _screen_contract_tool(member, tool_name, tool_input, workspace)
+            if not allowed:
+                return False, f"[{member.get('task_id', '?')}] {reason} (most-restrictive union)"
+        return True, "within every active contract"
+    command = tp.command_text(tool_name, tool_input)
+    if (contract.get("read_only") and tool_name in tp.COMMAND_TOOLS
+            and _readonly_control_command(command, workspace, contract)):
+        from taskplane import governed_commands
+
+        denial = governed_commands._raw_command_policy_denial(contract, command)
+        if denial:
+            return False, denial
+        return tp.screen_tool(contract, "Read", {"file_path": "."}, workspace)
+    if contract.get("read_only"):
+        if tool_name == "mcp__visualize__show_widget":
+            return tp.screen_tool(contract, "Read", {"file_path": "."}, workspace)
+        if tool_name in {"mcp__codex_app__open_in_codex", "open_in_codex", "SendUserFile"}:
+            path = _presentation_file(tool_name, tool_input)
+            if path and tp.writable_target(path, contract.get("write_allow") or [], workspace):
+                return tp.screen_tool(contract, "Read", {"file_path": path}, workspace)
+    return tp.screen_tool(contract, tool_name, tool_input, workspace)
+
+
+def _presentation_file(tool: str, payload: dict) -> str | None:
+    if tool in {"mcp__codex_app__open_in_codex", "open_in_codex"}:
+        target = payload.get("target") or {}
+        if (set(payload) - {"target", "placement"} or not isinstance(target, dict)
+                or set(target) - {"type", "path", "line"} or target.get("type") != "file"):
+            return None
+        path = target.get("path")
+    elif tool == "SendUserFile":
+        path = payload.get("path") or payload.get("file_path")
+    else:
+        return None
+    return path if isinstance(path, str) and path else None
+
+
+def _owed_artifact_delivery(workspace: str, contract: dict, tool: str, payload: dict) -> bool:
+    """Keep delivery of the current engine's exact artifacts reachable at the wall.
+
+    This only admits a host presentation request. It never acknowledges it,
+    invents a render receipt, opens an external URL or changes another task.
+    """
+    import obligations
+
+    paths = []
+    body = None
+    if tool in {"mcp__codex_app__open_in_codex", "open_in_codex", "SendUserFile"}:
+        path = _presentation_file(tool, payload)
+        if not path:
+            return False
+        paths = [path]
+    elif tool == "mcp__visualize__show_widget":
+        bodies = [value for key, value in payload.items()
+                  if key not in {"title", "name"} and isinstance(value, str)]
+        body = max(bodies, key=len, default="")
+    else:
+        return False
+    latest = {row["id"]: row for row in obligations.read(workspace)
+              if row.get("event") == "issued" and row.get("id")}
+    for row in latest.values():
+        if (row.get("kind") not in obligations.RENDER_KINDS
+                or row.get("session") != contract.get("task_id")):
+            continue
+        artifact = row.get("artifact")
+        if not isinstance(artifact, str):
+            continue
+        expected = os.path.realpath(os.path.join(workspace, artifact))
+        fingerprint = obligations.artifact_fingerprint(expected)
+        if not fingerprint or (row.get("fingerprint") and row["fingerprint"] != fingerprint):
+            continue
+        if paths and all(os.path.realpath(os.path.join(workspace, path)) == expected for path in paths):
+            return True
+        if body is not None and obligations.content_fingerprint(body) == fingerprint:
+            return True
+    return False
 
 
 def cmd_contracts(a) -> int:
@@ -4188,7 +4409,8 @@ def _screen(a) -> int:
 
     # Keep existing inspection/recovery commands reachable even if telemetry
     # disappears. They do not launch productive work or raise limits implicitly.
-    if _is_release_command(command):
+    if (_is_release_command(command, ws) or tool_name in _HUMAN_INPUT_TOOLS
+            or _owed_artifact_delivery(ws, contract, tool_name, tool_input)):
         recovery = _approved_budget_recovery(command)
         if recovery and "--grant-tokens" in recovery:
             _record_budget_counter(ws, contract, event)
@@ -4311,7 +4533,7 @@ def _screen(a) -> int:
         # A broken meter must fail closed, but it must not hide a more
         # specific authority boundary.  Preserve the contract's direct
         # tool/command refusal when both checks deny the same action.
-        _contract_allows, _contract_why = tp.screen_tool(contract, tool_name, tool_input, ws)
+        _contract_allows, _contract_why = _screen_contract_tool(contract, tool_name, tool_input, ws)
         if not _contract_allows:
             _tok_why = _contract_why
         _meter_bump(ws, tid, "denies")
@@ -4423,7 +4645,7 @@ def _screen(a) -> int:
             print(json.dumps({"decision": "block", "reason": "taskplane: " + _unbound}))
             return 0
 
-    allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
+    allow, reason = _screen_contract_tool(contract, tool_name, tool_input, ws)
     if allow:
         # A leased review result needs evidence stronger than the JSON's own
         # `authored_by` string.  The always-on write hook records the observed
@@ -6781,6 +7003,7 @@ def cmd_context(a) -> int:
 
 _HOOK_COMMANDS = frozenset(
     {
+        "host-native-check",
         "screen",
         "screen-skill",
         "screen-dispatch",
@@ -7002,6 +7225,28 @@ def _run_hook_command(a) -> int:
         return _run_session_hook_command(a, raw, event, hook_path)
 
 
+def _persist_claude_hook_session(event: dict) -> None:
+    """Carry host-observed identity into Bash via Claude's SessionStart API.
+
+    A hook subprocess cannot export into its parent. The host-owned env file
+    is the supported handoff; never infer the current session from a receipt
+    found on disk. This does not create enforcement evidence.
+    """
+    path = os.environ.get("CLAUDE_ENV_FILE")
+    session = event.get("session_id")
+    if (event.get("hook_event_name") != "SessionStart"
+            or os.environ.get("CODEX_THREAD_ID") or not path
+            or not isinstance(session, str) or not session.strip()
+            or any(char in session for char in ("\0", "\n", "\r"))):
+        return
+    line = "export CLAUDE_SESSION_ID=" + shlex.quote(session.strip()) + "\n"
+    with tp.file_lock(path):
+        with open(path, "a+", encoding="utf-8") as stream:
+            stream.seek(0)
+            if line not in stream.readlines():
+                stream.write("\n" + line)
+
+
 def _run_session_hook_command(a, raw: str, event: dict, hook_path: str) -> int:
     """Hook state and contracts belong to the event's host conversation."""
     receipt_event = event
@@ -7057,6 +7302,7 @@ def _run_session_hook_command(a, raw: str, event: dict, hook_path: str) -> int:
         host_caps.record_runtime_hook_receipt(
             receipt_home, hook_path=hook_path, event=receipt_event, claim=claim,
             native_home=runtime_storage.host_runtime_home(),
+            engine_fingerprint=tp._entry_engine_fingerprint(),
         )
     context_replay = (
         not claim.get("execute")
@@ -8892,7 +9138,8 @@ def _initialize_entry(ws: str) -> dict:
         native = ((report.get("host_capabilities") or {}).get("effective_path") or {}).get("value") == "native_effective"
         plugin_root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT")
         direct_plugin = bool(plugin_root and tp._is_tp_cli(os.path.join(plugin_root, "taskplane", "tp.py")))
-        if hooks and not hooks["launcher_ready"] and not (native or direct_plugin):
+        if hooks and not hooks["launcher_ready"] and (
+                hooks.get("launcher_present") or not (native or direct_plugin)):
             installed = _install_codex_hooks(ws, remove_project_duplicates=False)
             if installed.get("ok"):
                 repairs.append("install_launcher")
@@ -10368,6 +10615,11 @@ def main(argv=None) -> int:
     try:
         sys.stdin = io.StringIO(raw)
         with runtime_storage.hook_session(event):
+            if hook_path == "native" and args[0] in {"context", "host-native-check"}:
+                # Session identity must reach the first initialization command,
+                # including in an unbound project. No receipt or project state
+                # is created by this host-owned environment handoff.
+                _persist_claude_hook_session(event)
             return _main(argv)
     finally:
         sys.stdin = original_stdin

@@ -259,7 +259,8 @@ def test_native_observation_requires_no_project_hook_rows(workspace, monkeypatch
     cli._install_codex_hooks(workspace)
     Path(cli.tp.kb_root(workspace), "context").mkdir(parents=True)
     cli.host_caps.record_runtime_hook_receipt(
-        os.environ["TASKPLANE_HOME"], hook_path="native", event={
+        os.environ["TASKPLANE_HOME"], hook_path="native",
+        engine_fingerprint=cli.tp._entry_engine_fingerprint(), event={
             "session_id": "setup-session", "hook_event_name": "PreToolUse", "tool_use_id": "setup-call", "cwd": workspace})
     report = cli._onboard_report(workspace)
     assert report["host_capabilities"]["effective_path"]["value"] == "native_effective"

@@ -479,8 +479,11 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
         "--initialize", "--install-launcher", "--available-tools", "Read,Write", "--json",
     ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
        env=environment)
-    assert setup.returncode == 0, setup.stdout + setup.stderr
-    assert json.loads(setup.stdout)["workspace_ready"] is True
+    # Setup precedes the host observation exercised later in this journey.
+    # Keep that distinction identical for both extracted package layouts.
+    assert setup.returncode == 2, setup.stdout + setup.stderr
+    assert json.loads(setup.stdout)["setup_ready"] is True
+    assert json.loads(setup.stdout)["workspace_ready"] is False
     assert json.loads(setup.stdout)["setup_result"]["launcher"]["ok"] is True
     assert (workspace / ".taskplane/codex-hook.py").is_file()
     # Exercise the generated installed entry point, not only the engine that

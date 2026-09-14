@@ -298,6 +298,7 @@ class TestOnboardingProjection:
         home = tempfile.mkdtemp(prefix="tp-host-receipt-")
         hc.record_runtime_hook_receipt(
             home, hook_path="native",
+            engine_fingerprint=cli.tp._entry_engine_fingerprint(),
             event={"session_id": "session-1", "tool_use_id": "call-1",
                    "hook_event_name": "PreToolUse",
                    "cwd": tempfile.mkdtemp(prefix="tp-parent-")})

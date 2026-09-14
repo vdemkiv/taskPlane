@@ -22,8 +22,16 @@ work, and entry after an update. A specialist never assumes the facade ran.
    `onboard --json --workspace <checkout>` once through the native host so its
    hooks can observe the initialized project. Use that fresh report; do not
    manufacture a receipt or keep retrying when the host does not execute hooks.
-   Continue governed work only when `ready` is true. Help and status may still
-   explain an unmet prerequisite.
+   Continue governed work only when `ready` is true. `setup_ready` means the
+   checkout and project setup are complete; it does not mean hooks are live.
+   This distinction applies equally to Codex, Claude Code and Cowork. Help and
+   status may still explain an unmet prerequisite. Preserve completed setup
+   when hook readiness is false.
+   Inspect `engine.path`, `engine.version`, `engine.fingerprint` and the loaded
+   hook observation when an update appears ineffective. A cache directory name
+   is not proof of the installed UI version. A different or unrecorded hook
+   engine requires host reload and a fresh native observation, not editing
+   receipts or clearing the run.
 4. Before a read-only review, also require `review_file_tools.ready`. Codex
    may supply `exec_command` plus scoped `apply_patch`, with reads inside its
    installed native `codex sandbox --include-managed-config -P :read-only`. Other hosts need explicit
@@ -50,6 +58,41 @@ After explicit approval for additional tokens, run `$TP budget --grant-tokens N
 --approved-by USER --workspace <checkout>` once with that approved amount, then
 continue the existing task. `--grant N` increases actions only. Do not ask for
 the same approval again or reset the task's usage to bypass the ceiling.
+Use the approval already present in the conversation. An approved total ceiling
+and an additional grant are different: inspect current usage and the current
+ceiling before calculating the grant. Do not label an additional grant as a
+total ceiling. Use `budget --help` if the command syntax is uncertain.
+
+Review options, phase controls and evidence commands run through the same
+trusted installed engine on both hosts. Invoke one command with its resolved
+absolute path and the existing workspace/run; do not add shell chains or
+redirect output into source files. These controls remain metered. Human input,
+approved budget recovery and delivery of the exact owed artifact remain
+reachable at the budget ceiling. A display request is not proof of rendering:
+show the returned artifact, then acknowledge the actual obligation.
+
+## Claude startup and recovery
+
+Claude SessionStart passes its observed session identity to later Bash commands
+through the host-provided `CLAUDE_ENV_FILE`, including before project setup.
+This handoff creates no hook receipt. After setup, the next real native hook
+establishes readiness for that exact session and engine. Hosts that omit the
+handoff or do not execute hooks remain explicitly unproven.
+
+Use the returned host diagnostics. Recommend `/reload-plugins` as a command only
+when Claude Code is identified; a `CLAUDE_SESSION_ID` alone does not establish
+which Claude product is running. In Cowork, check that the plugin is enabled
+and use the host's available reload/reopen control, then recheck onboarding.
+Do not infer that cloud sessions cannot execute hooks from a missing receipt.
+Keep the same run, checkout and pinned scope on retry; propose a host change
+only after observing that the current host cannot supply the required hooks.
+
+Keep the user's review scope across repository transfer and recovery. A request
+for the last three commits must remain that exact comparison, not a root-commit
+or whole-codebase review. Track transfer artifacts created by this task and
+remove those disposable files when they are no longer needed under the existing
+task authorization; do not invent a separate approval requirement for routine
+cleanup. Preserve user files and retained review evidence.
 
 ## Native Codex calls
 

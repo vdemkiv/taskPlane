@@ -525,6 +525,7 @@ def record_runtime_hook_receipt(
         home: str, *, hook_path: str, event: Mapping[str, Any],
         claim: Mapping[str, Any] | None = None,
         native_home: str | None = None,
+        engine_fingerprint: str | None = None,
         observed_at: float | None = None) -> dict[str, Any]:
     """Persist proof that a configured hook actually executed.
 
@@ -566,6 +567,8 @@ def record_runtime_hook_receipt(
             os.path.normcase(os.path.realpath(cwd))) if cwd else None,
         "event_name": _bounded(event.get("hook_event_name"), 64),
     }
+    if engine_fingerprint is not None:
+        receipt["engine_fingerprint"] = engine_fingerprint
     targets = [_receipt_path(home, path_name, receipt["session_fingerprint"],
                              receipt["workspace_fingerprint"])]
     if path_name == "native" and native_home and receipt["session_fingerprint"]:
@@ -592,6 +595,7 @@ def runtime_hook_observations(
         home: str, *, session_id: str | None = None,
         workspace: str | None = None,
         native_home: str | None = None,
+        engine_fingerprint: str | None = None,
         now: float | None = None) -> dict[str, Observation]:
     """Return fresh, session-compatible observations from hook execution."""
     current = float(now if now is not None else time.time())
@@ -639,6 +643,17 @@ def runtime_hook_observations(
             ("native", "native_plugin_hooks_loaded"),
             ("bridge", "repository_bridge_loaded")):
         if hook_path in receipts:
+            observed_engine = receipts[hook_path].get("engine_fingerprint")
+            if engine_fingerprint and observed_engine != engine_fingerprint:
+                observations[capability] = Observation(
+                    status="changed", source=f"runtime-hook:{hook_path}",
+                    confidence="high", reason=(
+                        "the loaded hook engine differs from this command, or its "
+                        "version is unrecorded; reload the host-selected plugin "
+                        "and recheck onboarding"),
+                    value={"expected_engine": engine_fingerprint,
+                           "observed_engine": observed_engine})
+                continue
             observations[capability] = Observation(
                 status="supported", source=f"runtime-hook:{hook_path}",
                 confidence="high", reason=(

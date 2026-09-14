@@ -119,6 +119,7 @@
         "BASH_ENV",
         "CI",
         "CLAUDE_CONFIG_DIR",
+        "CLAUDE_ENV_FILE",
         "CLAUDE_PLUGIN_ROOT",
         "COMSPEC",
         "ENV",
