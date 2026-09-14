@@ -493,10 +493,11 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     cli = package_root / "taskplane/tp.py"
     setup = subprocess.run([
         sys.executable, str(cli), "onboard", "--workspace", str(workspace),
-        "--install-launcher", "--json",
+        "--initialize", "--install-launcher", "--available-tools", "Read,Write", "--json",
     ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
        env=environment)
     assert setup.returncode == 0, setup.stdout + setup.stderr
+    assert json.loads(setup.stdout)["workspace_ready"] is True
     assert (workspace / ".taskplane/codex-hook.py").is_file()
     requirement_result = subprocess.run([
         sys.executable, str(cli), "req", "--workspace", str(workspace),
@@ -556,7 +557,7 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     observe_hook(environment["CLAUDE_SESSION_ID"])
     entry = subprocess.run([
         sys.executable, str(cli), "onboard", "--workspace", str(workspace),
-        "--initialize", "--available-tools", "Read,Write", "--json",
+        "--available-tools", "Read,Write", "--json",
     ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
        env=environment)
     assert entry.returncode == 0, entry.stdout + entry.stderr

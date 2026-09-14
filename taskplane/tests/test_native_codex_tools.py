@@ -171,6 +171,10 @@ def test_native_readonly_session_can_only_be_polled_or_interrupted(native, monke
     args = {'session_id': 88, 'chars': ''}
     rows[:] = launched + native_records(host_native.native_tool_request('write_stdin', args), {}, call_id='wait')[:1]
     assert not host.is_codex_readonly_control('write_stdin', args, native)
+    for chars in ('', '\x03'):
+        args = {'session_id': 77, 'chars': chars}
+        rows[:] = launched + [completed_record(launch)] + native_records(host_native.native_tool_request('write_stdin', args), {}, call_id='wait')[:1]
+        assert not host.is_codex_readonly_control('write_stdin', args, native)
 
 
 def test_governed_codex_uses_native_tool_requests_and_observed_results(native, monkeypatch):

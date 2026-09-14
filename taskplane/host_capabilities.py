@@ -201,8 +201,13 @@ def is_codex_readonly_control(tool: str, payload: Mapping, workspace: str) -> bo
                 continue
             request = host_native.native_tool_request("exec_command", args)
             observed = host_native.native_tool_observations(records, request, after_ms=0)
-            if any(x["result"].get("session_id") == native["session_id"] for x in observed):
-                return True
+            for launch in reversed(observed):
+                if launch["result"].get("session_id") != native["session_id"]:
+                    continue
+                current = host_native.native_command_observation(
+                    records, request, after_ms=launch["started_at_ms"])
+                if current.get("state") == "running" and current.get("session_id") == native["session_id"]:
+                    return True
     except (OSError, ValueError, RuntimeError):
         pass
     return False
