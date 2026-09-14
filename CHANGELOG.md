@@ -1,5 +1,30 @@
 # taskplane changelog
 
+## 2.23.7 — 2026-09-14 — native Codex execution and review access
+
+- Codex review reads use the installed native permission profiles, including
+  managed restrictions. The projected hook command is checked against the
+  actual native invocation; source writes and wider profiles remain blocked.
+- General Codex commands use native execution sessions, polling and interruption.
+  TaskPlane retains exact assignment and evidence binding without launching a
+  second general command worker. Completed commands reject further controls.
+- Codex review and preview isolation use native sandbox profiles. Static
+  previews open through `open_in_codex`; queued panels remain pending until
+  the host reports them opened. Existing bounded validation and preview
+  resource limits retain their separate enforcement.
+- Normal public Codex launches no longer receive an implicit unsupported
+  deadline. Explicit hard deadlines are refused before launch; the retained
+  Claude command transport keeps its configured timeout.
+- Audited prior native-functionality replacements and removed the custom file
+  reader. Native usage counters and existing Codex checkouts remain the source
+  for their existing TaskPlane adapters.
+- Local validation: the full regression run passed 4,265 tests and 521 subtests,
+  with three skips and one startup-fixture failure subsequently corrected and
+  retested. Final command and entry rechecks passed 146 tests and 38 subtests;
+  both extracted-package journeys passed. Live native command, permission and
+  interruption checks are recorded in the audit. These results do not claim
+  completion of the original governed EM review or Marketplace installation.
+
 ## 2.23.6 — 2026-09-13 — common entry initialization
 
 - Every direct skill entry runs the existing onboarding sequence with
@@ -135,7 +160,7 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.6. Historical
+> v2.23.7. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -155,6 +180,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.23.7** | **Native Codex integration.** Native command sessions, permission profiles and preview panels with exact TaskPlane evidence binding. Removes the custom file reader and fixes public command launch defaults. |
 | **v2.23.6** | **Shared entry initialization.** Missing setup is repaired once; incompatible read-only file tools refuse activation before a session can be locked. Incident report included. |
 | **v2.23.5** | **Session isolation and fresh-checkout readiness.** Each host conversation owns its contracts, run bindings, meters and review state. Native hook proof follows only the same session across checkouts; clearing a review leaves other sessions intact. |
 | **v2.23.4** | **Automatic standalone review startup.** Prepares the actual checkout launcher and signed native worker contracts; retries preserve leases and evidence. Fresh installed end-to-end validation remains pending. |

@@ -84,6 +84,13 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.23.6": {
+        "reason": "shared-initialization source candidate with no version tag "
+                  "or GitHub archive release. The installed Marketplace copy "
+                  "is distinct from tagged source release authority; native "
+                  "Codex integration is prepared in 2.23.7.",
+        "superseded_by": "2.23.7",
+    },
     "2.23.5": {
         "reason": "locally installed session-isolation candidate; no version tag "
                   "or GitHub release was published. Shared entry initialization "
