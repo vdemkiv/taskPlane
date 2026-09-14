@@ -36,6 +36,9 @@ ROOT_SESSION_CAPABILITY_SCHEMA = \
     "taskplane.host-root-session-capability/v1"
 
 
+from taskplane.storage import host_session_id as _host_session_id
+
+
 def codex_readonly_runtime(workspace: str) -> str | None:
     """Resolve the installed native sandbox; never a checkout executable.
 
@@ -555,9 +558,7 @@ def record_runtime_hook_receipt(
     if not isinstance(event, Mapping):
         raise TypeError("hook event must be a mapping")
     session = (event.get("session_id") or event.get("thread_id")
-               or event.get("conversation_id") or
-               os.environ.get("CODEX_THREAD_ID") or
-               os.environ.get("CLAUDE_SESSION_ID"))
+               or event.get("conversation_id") or _host_session_id())
     # The shared claim kernel owns event identity and duplicate suppression.
     # Two paths' latest events need not match: they can execute sequentially,
     # observe different event types, or serve different checkouts.
@@ -727,7 +728,7 @@ def dispatch_snapshot_from_environment(
             env.get("TASKPLANE_INSTALL_CONTEXT") or "personal"),
         native_installed=None, bridge_configured=None, observations=rows,
         host_version=env.get("TASKPLANE_HOST_VERSION"),
-        session_id=env.get("CODEX_THREAD_ID") or env.get("CLAUDE_SESSION_ID"),
+        session_id=_host_session_id(env),
         now=str(env.get("TASKPLANE_HOST_RECEIPT_AT") or ""))
 
 

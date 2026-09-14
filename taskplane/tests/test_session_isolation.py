@@ -182,28 +182,24 @@ def test_routing_cannot_reinterpret_a_relative_write_as_checkout_permission(repo
     assert not output, (output, err)
 
 
-def test_real_review_start_keeps_two_sessions_runs_and_committed_scope_separate(repos, monkeypatch):
+def test_real_review_start_keeps_two_sessions_source_scope_separate(repos, monkeypatch):
+    import review
     parent, checkout = repos
     records = []
     for session in ("session-a", "session-b"):
         monkeypatch.setenv("CODEX_THREAD_ID", session)
         monkeypatch.delenv("TASKPLANE_HOME", raising=False)
-        rc, output, err = invoke(monkeypatch, "screen", event=hook(parent, session))
-        assert rc == 0 and not output, (output, err)
-        # Tool inventory is declared separately; only the hook is enforcement evidence.
-        lite.record_entry_tools(["Read", "Grep", "Glob", "Write"])
         rc, output, err = invoke(monkeypatch, "review", "start", "HEAD", "--base",
                                  "HEAD^", "--workspace", str(checkout))
-        assert rc == 2, (output, err)
+        assert rc == 0, (output, err)
         opened = json.loads(output)
-        assert opened.get("status") == "needs_user", (opened.get("next_action"), [row for row in opened.get("checks", []) if not row["ok"]], opened.get("initialization"))
-        assert opened["contract"]["status"] == "active"
-        assert opened["preflight"]["status"] == "ready"
-        records.append((Path(lite.active_contract_path(str(checkout))),
-                        storage.load_workspace_locator(str(checkout)), opened))
+        assert opened["status"] == "ready"
+        assert not lite.load_active(str(checkout))
+        records.append((Path(review._public_root(str(checkout))) / "source-review.json",
+                        review.load_source_review(str(checkout))))
     assert records[0][0] != records[1][0]
     assert records[0][0].exists() and records[1][0].exists()
-    assert records[0][2]["run_id"] != records[1][2]["run_id"]
-    # Local reviews use independent session control, without a managed locator.
-    assert records[0][1] is None and records[1][1] is None
+    assert records[0][1]["session_id"] == "session-a"
+    assert records[1][1]["session_id"] == "session-b"
+    assert storage.load_workspace_locator(str(checkout)) is None
     assert subprocess.check_output(["git", "diff", "HEAD", "--"], cwd=checkout, text=True) == ""

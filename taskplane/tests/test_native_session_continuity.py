@@ -257,9 +257,7 @@ def test_same_session_restart_reads_original_run_and_emits_valid_context(onboard
     assert "Repair the native harness with durable scope" in context["additionalContext"]
     assert saved["run_id"] in context["additionalContext"]
     assert "loop next" in context["additionalContext"]
-    assert "first TaskPlane request" in context["additionalContext"]
-    assert "Present setup once at initial onboarding" in context["additionalContext"]
-    assert "do not repeat its onboarding visualization" in context["additionalContext"]
+    assert "onboard" not in context["additionalContext"]
     assert caps.runtime_hook_observations(
         str(home), session_id="fresh-session", workspace=str(workspace))[
             "repository_bridge_loaded"].status == "supported"

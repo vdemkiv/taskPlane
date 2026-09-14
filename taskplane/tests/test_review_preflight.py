@@ -24,7 +24,7 @@ from taskplane.tests.test_review_refusals import _run  # noqa: E402
 
 @pytest.fixture
 def opened_cli_review(tmp_path, monkeypatch):
-    """Open a real CLI review; only host readiness is simulated by _run."""
+    """Explicitly reconstruct a legacy delivery review for recovery checks."""
     monkeypatch.setenv("CODEX_THREAD_ID", "review-fixture-session")
     taskplane_cli.tp.record_entry_tools(["Read", "Grep", "Glob", "Write"])
     workspace = tmp_path / "source"
@@ -41,13 +41,28 @@ def opened_cli_review(tmp_path, monkeypatch):
     source.write_text("def value():\n    return 2\n", encoding="utf-8")
     subprocess.run(["git", "commit", "-qam", "change"], cwd=workspace, check=True)
 
-    rc, stdout, stderr = _run("review", "start", "HEAD", "--base", base,
-                              "--workspace", str(workspace))
-    assert stdout, (rc, stderr)
-    opened = json.loads(stdout)
-    assert rc == 2, (stdout, stderr)
-    assert opened["status"] == "needs_user"
-    assert opened["slots"] == []
+    import depgraph
+    import target
+    import storage
+    ws = str(workspace)
+    rec = target.pin(ws, base=base)
+    target.save(ws, rec)
+    graph = depgraph.scan(ws)
+    files = ["service.py"]
+    patch = review.canonical_diff_patch(ws, base, paths=files)[1]
+    artifact = review_evidence.ArtifactStore(ws).put("diff", {"patch": patch})
+    opened = review.start_review(ws, target=rec, graph=graph,
+        impact=depgraph.impact(ws, files), diff={"files": files, "artifact": artifact},
+        runnability={"summary": "available"}, stage="review", task_type="review", base=base)
+    contract = taskplane_cli.tp.build_contract("legacy review fixture", read_only=True,
+        write_allow=[str(Path(storage.review_public_root(ws)) / "**")])
+    contract["target"] = rec
+    taskplane_cli.tp.activate(ws, contract, snapshot=rec["head"])
+    storage.bind_review_session(ws, contract["task_id"])
+    opened["contract"] = {"task_id": contract["task_id"], "read_only": True, "status": "active"}
+    state = review._load_state(ws, opened["run_id"])
+    review._save_state(ws, {**state, "manifest": opened})
+    assert opened["status"] == "needs_user" and not opened["slots"]
     return workspace, opened
 
 
@@ -417,8 +432,7 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     guidance_paths = [
-        "agents/tp-product.md", "agents/tp-engineering.md",
-        "skills/tp-product/SKILL.md", "skills/tp-engineering/SKILL.md",
+        "agents/tp-product.md", "skills/tp-product/SKILL.md",
         "docs/cli-reference.md",
     ]
     for relative in guidance_paths:

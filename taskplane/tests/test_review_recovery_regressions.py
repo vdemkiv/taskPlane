@@ -30,27 +30,18 @@ def snapshot(tmp_path, monkeypatch):
     return ws, git("rev-parse", "HEAD")
 
 
-def test_clean_repository_reaches_reviewers_with_explicit_source_scope(snapshot):
+def test_clean_repository_reaches_native_reads_with_explicit_source_scope(snapshot):
     ws, head = snapshot
     rc, output, err = _run("review", "start", "--scope", "repository", "--workspace", str(ws))
-    opened = json.loads(output)
-    assert rc == 2 and opened["status"] == "needs_user", (output, err)
-    rc, output, err = _run("review", "option", "static", "--run-id", opened["run_id"],
-        "--workspace", str(ws))
     ready = json.loads(output)
-    assert rc == 0 and ready["slots"], (output, err)
-    state = review._load_state(str(ws), opened["run_id"])
-    store = review_evidence.ArtifactStore(str(ws))
-    envelope = store.read(state["envelope"])
-    assert envelope["diff"]["scope_kind"] == "repository"
-    assert envelope["diff"]["revision"] == head
-    assert envelope["diff"]["files"] == ["café.py", "service.py"]
-    assert state["counters"]["dispatched_agent_count"] == 0
-    for slot in state["slots"]:
-        view = store.read(slot["view"])
-        assert view["relevance"]["files"] == ["café.py", "service.py"]
-        assert all((ws / path).read_text() for path in view["relevance"]["files"])
-        assert "native read tools" in store.read(slot["brief"])["prompt"]
+    assert rc == 0 and ready["status"] == "ready", (output, err)
+    source = review_evidence.ArtifactStore(str(ws)).read(ready["source"])
+    assert source["scope"] == "repository" and source["revision"] == head
+    assert source["files"] == ["café.py", "service.py"]
+    assert all((ws / path).read_text() for path in source["files"])
+    assert not cli.tp.load_active(str(ws))
+    assert not Path(review._kernel_root(str(ws))).exists()
+    assert len(output.encode()) < 2048
 
 
 def test_empty_diff_is_not_silently_reviewed_as_a_repository(snapshot):

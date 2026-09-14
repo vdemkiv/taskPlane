@@ -890,6 +890,7 @@ def project_transcript_usage(
         "messages": totals["messages"],
         "duplicates_removed": totals["duplicates_removed"],
         "effective_tokens": totals["effective_tokens"],
+        "cache_creation_tokens": totals["cache_creation_tokens"],
         "usage": usage,
         "source_fingerprint": source_fingerprint,
     }, checkpoint_row

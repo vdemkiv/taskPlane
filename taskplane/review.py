@@ -1,24 +1,7 @@
-"""Start a review in ONE call, and hand every lens agent ONE copy of the context.
+"""Native source inventory and explicit delivery-review evidence.
 
-Two measured costs, one cause: the review's opening sequence and its fan-out
-both re-derive things taskplane already holds.
-
-  * The opening. A review ran onboard, init, new, target, graph scan, graph
-    impact, lens route, lens dispatch and two dashboard renders before a
-    single lens looked at the diff — about ten shell calls, at a measured
-    ~11k effective tokens each, and every command AND its output stays in
-    the conversation to be re-read on every later turn. `tp loop evidence`
-    already proved the fix for the evaluate step in v2.6: return everything
-    the step needs in one payload, with the judgement slots empty.
-
-  * The fan-out. Four lens agents cost ~754k effective tokens, "each
-    carrying its own copy of the diff and the blast-radius brief". The diff
-    is identical for all of them. Writing it once and citing the path costs
-    one file; embedding it N times costs N copies at output weight.
-
-Neither changes what a review DECIDES. The briefs carry the same contract,
-the same lens, the same read-only harness; they just stop restating a
-document that is already on disk next to them.
+Ordinary review saves pinned source facts without acquiring execution authority.
+The retained ReviewKernel serves explicit delivery and historical recovery.
 """
 import copy
 import datetime
@@ -48,6 +31,75 @@ import storage as runtime_storage
 import taskplane_lite as tp
 import review_evidence as review_evidence_runtime
 import terminal_truth as terminal_truth_runtime
+
+
+def prepare_source_review(ws: str, *, target: dict, files: list[str], patch: str,
+                          scope: str, goal: str = "", max_tokens: int | None = None,
+                          max_actions: int | None = None,
+                          usage_start: dict | None = None) -> dict:
+    """Save selected source facts without acquiring native execution authority."""
+    for value in (max_tokens, max_actions):
+        if value is not None and (type(value) is not int or value < 1):
+            raise ValueError("explicit advisory review limits must be positive")
+    source = review_evidence_runtime.ArtifactStore(ws).put("source-review", {
+        "scope": scope, "revision": target["head"],
+        "base": None if scope == "repository" else target.get("merge_base") or target.get("base_ref"),
+        "files": files, "patch": patch, "goal": goal,
+    })
+    manifest = {
+        "schema": "taskplane.source-review/v1", "status": "ready",
+        "workspace": os.path.realpath(ws), "revision": target["head"],
+        "scope": scope, "file_count": len(files), "source": _portable_ref(source),
+        "budget": {"mode": "advisory", "max_tokens": max_tokens, "max_actions": max_actions},
+        "next": "Read the selected source with native tools and report findings with file locations.",
+    }
+    previous = load_source_review(ws)
+    if previous and previous.get("source") == manifest["source"]:
+        usage_start = previous.get("usage_start")
+        for key in ("max_tokens", "max_actions"):
+            if manifest["budget"][key] is None:
+                manifest["budget"][key] = previous["budget"].get(key)
+    tp.atomic_write_json(os.path.join(_public_root(ws), "source-review.json"), {
+        **manifest, "session_id": runtime_storage.host_session_id(),
+        "usage_start": usage_start or {"status": "unavailable"},
+    }, indent=2)
+    return manifest
+
+
+def load_source_review(ws: str) -> dict | None:
+    value = tp.load_json(os.path.join(_public_root(ws), "source-review.json"),
+                         default=None, what="source review")
+    if not isinstance(value, dict) or value.get("schema") != "taskplane.source-review/v1":
+        return None
+    if value.get("session_id") != runtime_storage.host_session_id():
+        return None
+    return value
+
+
+def source_review_usage(review: dict, current: dict) -> dict:
+    """Report the native observation delta; never turn it into a tool gate."""
+    result = {"budget": review["budget"], "status": "unavailable",
+              "note": "Advisory usage since the review's starting observation; native tools own execution."}
+    start = review.get("usage_start") or {}
+    if start.get("status") != "available" or current.get("status") != "available":
+        return {**result, "reason": "native start or current usage is unavailable"}
+    if any(start.get(key) != current.get(key) or not start.get(key)
+           for key in ("provider", "session_id")):
+        return {**result, "reason": "native usage belongs to a different session or provider"}
+    baseline, observed = start.get("usage") or {}, current.get("usage") or {}
+    delta = {}
+    for key in ("input_tokens", "cached_input_tokens", "uncached_input_tokens",
+                "cache_creation_tokens", "output_tokens", "reasoning_tokens", "total_tokens"):
+        if key not in baseline and key not in observed:
+            continue
+        old, new = baseline.get(key), observed.get(key)
+        if type(old) is not int or type(new) is not int or old < 0 or new < old:
+            return {**result, "reason": "native counters changed or are unavailable"}
+        delta[key] = new - old
+    if "total_tokens" not in delta:
+        return {**result, "reason": "native total is unavailable"}
+    return {**result, "status": "available", "usage": delta,
+            "provider": start["provider"], "session_id": start["session_id"]}
 
 # This value crosses host boundaries inside immutable briefs. Keep the
 # reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
@@ -935,8 +987,10 @@ def _host_review_transcripts(
     """Resolve exactly one indexed host transcript without walking history."""
     host_hint, session_hint, _ = _review_receipt_reference(receipt_ref)
     if session_hint is None and host_hint is None:
-        ambient = (("codex", os.environ.get("CODEX_THREAD_ID")),
-                   ("claude", os.environ.get("CLAUDE_SESSION_ID")))
+        from taskplane.storage import host_session_id
+
+        session = host_session_id()
+        ambient = (("codex" if os.environ.get("CODEX_THREAD_ID") else "claude", session),)
         resolved = []
         for ambient_host, ambient_session in ambient:
             value = str(ambient_session or "").strip()
@@ -2431,7 +2485,13 @@ def canonical_diff_files(ws: str, base: str) -> list[str]:
                                 text=True, encoding="utf-8", errors="strict", timeout=120)
         if result.returncode:
             raise ReviewKernelError("canonical diff file inventory failed: " + result.stderr.strip())
-        files.update(path for path in result.stdout.split("\0") if path)
+        paths = (path for path in result.stdout.split("\0") if path)
+        # Private runtime output is not source. Keep tracked changes even in
+        # these directories, and never modify the user's ignore rules.
+        if args[0] == "ls-files":
+            paths = (path for path in paths if path.split("/", 1)[0]
+                     not in {".taskplane", ".em-review", ".eval"})
+        files.update(paths)
     return sorted(files)
 
 

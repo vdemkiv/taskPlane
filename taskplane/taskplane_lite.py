@@ -312,6 +312,9 @@ _SHELL_KEYWORDS = frozenset(
 _SHELL_VALUE_FLAGS = frozenset({"-o", "+o", "--rcfile", "--init-file"})
 
 
+from taskplane.storage import host_session_id as _host_session_id
+
+
 def _strip_keywords(toks) -> list:
     """Drop leading shell syntax so the PROGRAM is identified.
 
@@ -5343,8 +5346,7 @@ def _worker_event_owner(event: dict) -> dict:
         "session_id": _bounded_hook_identity(
             event.get("session_id")
             or event.get("thread_id")
-            or os.environ.get("CODEX_THREAD_ID")
-            or os.environ.get("CLAUDE_SESSION_ID"),
+            or _host_session_id(),
             160,
         ).strip(),
         "agent_id": _bounded_hook_identity(

@@ -1,7 +1,8 @@
 # Common entry initialization
 
-Every direct user entry uses this sequence, including help/status, resumed
-work, and entry after an update. A specialist never assumes the facade ran.
+Use this procedure only for explicit setup/diagnostics or a delivery workflow that
+requires initialization. Ordinary source review, help, and status use native tools
+directly and do not load this procedure.
 
 1. Use the host-selected installed plugin's `taskplane/tp.py`: resolve its root
    from `PLUGIN_ROOT`, then `CLAUDE_PLUGIN_ROOT`, or this loaded skill's location.

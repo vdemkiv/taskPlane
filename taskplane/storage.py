@@ -13,7 +13,7 @@ if __package__:
 else:
     from primitives import atomic_json as _atomic_json
 
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import hashlib
@@ -49,10 +49,18 @@ class _NoGitLocator(StorageIdentityError):
     pass
 
 
-def host_session_id() -> str | None:
+def host_session_id(environment: Mapping[str, str] | None = None) -> str | None:
     """Current host conversation; worker task names are not session identity."""
-    value = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
-    return (str(value).strip() or None) if value is not None else None
+    env = os.environ if environment is None else environment
+    native = str(env.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    legacy = str(env.get("CLAUDE_SESSION_ID") or "").strip()
+    codex = str(env.get("CODEX_THREAD_ID") or "").strip()
+    if native and legacy and native != legacy:
+        raise StorageIdentityError("Claude native and legacy session identities disagree")
+    claude = native or legacy
+    if codex and claude and codex != claude:
+        raise StorageIdentityError("Codex and Claude session identities disagree")
+    return codex or claude or None
 
 
 def session_path(root: str) -> str:
@@ -78,13 +86,16 @@ def hook_session(event: dict):
     if not isinstance(identity, str) or not identity.strip():
         yield
         return
-    names = ("CODEX_THREAD_ID", "CLAUDE_SESSION_ID", "TASKPLANE_HOME")
+    names = ("CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "TASKPLANE_HOME")
     previous = {name: os.environ.get(name) for name in names}
     host_key = "CODEX_THREAD_ID" if "turn_id" in event or os.environ.get("CODEX_THREAD_ID") else "CLAUDE_SESSION_ID"
     try:
         os.environ.pop("CODEX_THREAD_ID", None)
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         os.environ.pop("CLAUDE_SESSION_ID", None)
         os.environ[host_key] = identity.strip()
+        if host_key == "CLAUDE_SESSION_ID":
+            os.environ["CLAUDE_CODE_SESSION_ID"] = identity.strip()
         # A home inherited from a different host session is not authority.
         configured = previous["TASKPLANE_HOME"]
         if configured:

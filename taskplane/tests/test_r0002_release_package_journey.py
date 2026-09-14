@@ -97,8 +97,11 @@ def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
         hook[field]
         for entry in manifest["hooks"]["SessionStart"]
         for hook in entry["hooks"]
-        for field in ("command", "commandWindows")
+        for field in (("command", "commandWindows") if kind == "openai" else ("command",))
     ]
+    if kind == "claude":
+        assert all("commandWindows" not in hook for rows in manifest["hooks"].values()
+                   for row in rows for hook in row["hooks"])
     assert any("host-native-check" in command for command in commands)
     for command in commands:
         if "host-native-check" not in command:
@@ -289,7 +292,7 @@ def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_
             manifest = _packaged_hook_manifest(archive)
             for entry in manifest["hooks"]["SessionStart"]:
                 for hook in entry["hooks"]:
-                    for field in ("command", "commandWindows"):
+                    for field in (("command", "commandWindows") if kind == "openai" else ("command",)):
                         hook[field] = hook[field].replace(old, new)
             _replace_packaged_hook_manifest(archive, manifest)
             with pytest.raises(AssertionError):
@@ -627,3 +630,35 @@ def test_extracted_marketplace_packages_execute_the_governed_journey(tmp_path):
         assert version.returncode == 0, version.stdout + version.stderr
         assert version.stdout.strip() == VERSION
         _run_minimal_installed_loop(package_root, case / "governed-loop")
+
+
+def test_extracted_claude_review_reaches_native_source_without_setup(tmp_path):
+    package = _extract(_run_package_entry_point("claude", tmp_path / "package"), tmp_path / "installed")
+    workspace = tmp_path / "checkout"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
+    (workspace / "source.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "."], cwd=workspace, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "source"], cwd=workspace, check=True)
+    environment = {"PATH": os.environ.get("PATH", ""), "CLAUDE_PLUGIN_ROOT": str(package),
+                   "CLAUDE_CODE_SESSION_ID": "extracted-native-review",
+                   "TASKPLANE_HOST_HOME": str(tmp_path / "host-state")}
+    result = subprocess.run([sys.executable, str(package / "taskplane/tp.py"), "review", "start",
+        "--scope", "repository", "--workspace", str(workspace)], cwd=workspace,
+        env=environment, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    manifest = json.loads(result.stdout)
+    assert manifest["status"] == "ready" and manifest["file_count"] == 1
+    assert "contract" not in manifest and len(result.stdout.encode()) < 2048
+    assert not list(workspace.rglob("active_contract.json"))
+    hook_manifest = json.loads((package / "hooks/hooks.json").read_text())
+    command = hook_manifest["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    event = {"session_id": "extracted-native-review", "cwd": str(workspace),
+             "hook_event_name": "PreToolUse", "tool_use_id": "first-read", "tool_name": "Read",
+             "tool_input": {"file_path": str(workspace / "source.py")}}
+    if os.name != "nt":
+        result = subprocess.run(command, shell=True, env=environment, cwd=workspace,
+            input=json.dumps(event), text=True, capture_output=True)
+        assert result.returncode == 0 and not result.stdout, result.stdout + result.stderr
+    assert (workspace / "source.py").read_text() == "VALUE = 1\n"

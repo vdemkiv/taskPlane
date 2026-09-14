@@ -15,6 +15,9 @@ import time
 from typing import Any, cast
 
 
+from taskplane.storage import host_session_id as _host_session_id
+
+
 def initialize(runtime: Any, workspace: str, state: dict[str, Any]) -> None:
     """Select the phase runtime for a newly initialized, attributable run."""
     from taskplane import review_evidence
@@ -1160,8 +1163,7 @@ def resolve_retry(
         )
     session = str(
         os.environ.get("TASKPLANE_SESSION_ID")
-        or os.environ.get("CODEX_THREAD_ID")
-        or os.environ.get("CLAUDE_SESSION_ID")
+        or _host_session_id()
         or ""
     ).strip()
     if not session or len(session.encode()) > 256 or any(ord(char) < 32 for char in session):

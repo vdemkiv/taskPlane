@@ -3,8 +3,8 @@
   "skill": "tp-engineering",
   "approval": {
     "status": "human-approved",
-    "scope": "all-10",
-    "date": "2026-08-14"
+    "scope": "native source review simplification",
+    "date": "2026-09-14"
   },
   "settings": {
     "source": "taskplane/operational-settings.json",
@@ -37,12 +37,13 @@
       "discarded"
     ],
     "implicit_build": false,
-    "default": "taskplane.run/v4"
+    "default": "taskplane.run/v4",
+    "applies_to": "explicit delivery only"
   },
   "nodes": [
     {
       "id": "manifest",
-      "label": "bounded stage manifest / legacy entry",
+      "label": "explicit delivery dispatch only",
       "kind": "input"
     },
     {
@@ -89,6 +90,21 @@
       "id": "terminal",
       "label": "stage terminal; no implicit child or cleanup",
       "kind": "stage"
+    },
+    {
+      "id": "request",
+      "label": "review request",
+      "kind": "input"
+    },
+    {
+      "id": "source",
+      "label": "selected source and native tools",
+      "kind": "stage"
+    },
+    {
+      "id": "findings",
+      "label": "findings, coverage and uncertainty",
+      "kind": "stage"
     }
   ],
   "edges": [
@@ -127,6 +143,18 @@
     [
       "signoff",
       "terminal"
+    ],
+    [
+      "request",
+      "source"
+    ],
+    [
+      "source",
+      "findings"
+    ],
+    [
+      "request",
+      "manifest"
     ]
   ]
 }

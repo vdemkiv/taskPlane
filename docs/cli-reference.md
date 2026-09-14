@@ -110,7 +110,7 @@ not repeated in the tables.
 | `tp.py req new` | record a requirement (or a change request) |
 | `tp.py req score` | score a requirement's refinement against the bar |
 | `tp.py req signoff` | record the human Product gate |
-| `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
+| `tp.py review` | pin source for native review or inspect existing delivery review evidence |
 | `tp.py review activate-contract` | verify one signed leased-review action and activate only its producer slot |
 | `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
 | `tp.py review evidence` | record approved dynamic validation or render evidence |
@@ -118,7 +118,7 @@ not repeated in the tables.
 | `tp.py review resume` | apply one explicit user decision and continue the same repository preflight and review |
 | `tp.py review sandbox` | create a disposable writable PR copy for validation-only build repair and dynamic checks |
 | `tp.py review signoff` | record the human decision for a collected standalone review |
-| `tp.py review start` | establish the facts and activate the read-only contract |
+| `tp.py review start` | pin source scope for native review without onboarding or a contract |
 | `tp.py review validate` | run one argv-only dynamic check inside the registered validation sandbox and record its evidence |
 | `tp.py root-seed` | prepare the reference-only seed before root start |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
@@ -1165,7 +1165,7 @@ Positional arguments:
 
 ## `tp.py review`
 
-open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload
+pin source for native review or inspect existing delivery review evidence
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1250,10 +1250,10 @@ apply one explicit user decision and continue the same repository preflight and 
 | `--action-id` | ACTION_ID (required) | exact pending user-action id |
 | `--advisory` | flag | removed: harness enforcement cannot be waived |
 | `--by` | BY (required) | the user's approving/cancelling chat identity |
-| `--goal` | GOAL | contract goal text after preflight resumes |
-| `--max-actions` | MAX_ACTIONS | action ceiling for the resumed review contract |
+| `--goal` | GOAL | review goal text after repository preflight resumes |
+| `--max-actions` | MAX_ACTIONS | optional advisory action limit for the resumed review |
 | `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
-| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the resumed review |
+| `--max-tokens` | MAX_TOKENS | optional advisory token limit since the resumed review starts |
 | `--paths` | PATHS | changed files, directories or globs to review |
 | `--response` | one of: approve, retry, initialize, cancel (required) | the user's decision for the pending action |
 | `--run-id` | RUN_ID (required) | run-id from the needs_user preflight response |
@@ -1286,7 +1286,7 @@ Positional arguments:
 
 ## `tp.py review start`
 
-establish the facts and activate the read-only contract
+pin source scope for native review without onboarding or a contract
 
 Positional arguments:
 
@@ -1298,10 +1298,10 @@ Positional arguments:
 | `--base` | BASE | diff base ref |
 | `--by` | BY | human identity required with --advisory |
 | `--fetch` | flag | fetch pull/N/head into this checkout first |
-| `--goal` | GOAL | contract goal text (default: derived) |
-| `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
+| `--goal` | GOAL | review goal text |
+| `--max-actions` | MAX_ACTIONS | optional advisory action limit; native tools own execution |
 | `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
-| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
+| `--max-tokens` | MAX_TOKENS | optional advisory token limit since review start; no per-tool gate |
 | `--paths` | PATHS | changed files, directories or globs to review |
 | `--run-id` | RUN_ID | resume or deterministically name the repository preflight run |
 | `--scope` | one of: diff, repository | review a comparison or the complete pinned source snapshot |
@@ -1436,7 +1436,7 @@ with `--by`; use stage identifier syntax such as
 `human:vdemkiv` (letters, digits, `.`, `_`, `:`, or `-`; no spaces).
 That value becomes the root stage `authority.actor`. A
 stable session identity must already be present in
-`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.
+`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_CODE_SESSION_ID` (legacy: `CLAUDE_SESSION_ID`).
 The workspace must already have a governed locator bound to an
 current v4 run with an exact target revision.
 

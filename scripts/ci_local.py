@@ -1844,7 +1844,9 @@ def native_entry_snapshot(
         if host == "codex"
         else os.environ.get("CLAUDE_CODE_VERSION")
     )
-    session = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+    from taskplane.storage import host_session_id
+
+    session = host_session_id()
     # No request field can manufacture a current host session or version.
     if (
         host != request.host_kind

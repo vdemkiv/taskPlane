@@ -1,5 +1,24 @@
 # taskplane changelog
 
+## v2.24.0 — 2026-09-14 — native source review simplification
+
+- Ordinary review, help, and status use native tools without delivery onboarding.
+  Source review pins a repository or diff inventory without creating a Taskplane
+  contract, dispatch, dashboard obligation, or automatic 1M token gate.
+- Claude CLI and retained hooks share `CLAUDE_CODE_SESSION_ID`, with explicit
+  legacy compatibility and conflicting-identity diagnostics. Native hosts need
+  no environment-file identity handoff. Existing contracts are preserved.
+- Optional review usage reports native counter deltas from the starting
+  observation, retaining cache categories and unknowns. Explicit limits are
+  advisory; retries preserve the original observation.
+- Review entry instructions are short and delivery details load only when
+  requested. Claude archives omit Windows command variants and repeated
+  launcher discovery chains.
+- RCA, approved Product → Design → Plan, implementation, and validation are
+  recorded in `docs/remediation/2026-09-14-claude-review-simplification.md`.
+  Extracted-package checks do not establish acceptance in the reported Cowork
+  session, which was not available locally.
+
 ## v2.23.10 — 2026-09-14 — native review and planning recovery
 
 - Authenticated native children can read their exact phase input through the
@@ -220,7 +239,7 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.10. Historical
+> v2.24.0. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -240,6 +259,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.24.0** | **Native source review.** Removes mandatory onboarding and automatic review contracts, recognizes Claude native session identity, reports review usage deltas, and ships compact Claude hook metadata. |
 | **v2.23.10** | **Native review and planning recovery.** Restores authenticated child input and failed-attempt retries, adds whole-repository scope, preserves validation failures and actual reviewer starts, and fixes dependency detection and tool cache recovery. |
 | **v2.23.9** | **Shared entry readiness and recovery.** Separates setup from runtime readiness on both hosts, carries Claude startup identity, diagnoses stale engines, and aligns installed-package journey checks. |
 | **v2.23.8** | **Native plugin startup and budget recovery.** Uses the host-selected plugin for hooks and review commands, fixes Claude-only packages and failed setup reporting, and resumes existing tasks after an approved token increase. |

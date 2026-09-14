@@ -2,31 +2,21 @@
 
 [![CI](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml/badge.svg)](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml)
 
-**Design, build, and review AI-generated software with evidence, not trust.** taskplane
-is the AI software-delivery control plane for people who ship and review code
-with Claude or Codex every day. You ask it to design, build, review, or show status;
-behind that simple request it checks whether the work is ready, keeps every
-agent inside an approved scope, and requires current implementation, test, and
-review evidence before anything can be called done.
+**Design, build, and review software with Claude or Codex.** Ask for the work
+you need. Ordinary source review uses native tools in the available checkout and
+returns findings with file locations. Review, help, and status require no Taskplane
+onboarding, execution contract, hook-readiness check, or fresh conversation.
 
-![taskplane 2.16 flow guide — an infographic overview plus the ten approved skill-flow contracts, each paired with the problem it solves, its evidence-backed outcome, human gates, and the combined benefits of taskplane](docs/assets/taskplane-cowork-flow.gif)
+A whole-repository review needs no diff. Optional `review start --scope repository`
+pins a clean tracked source inventory; `review start --base <ref>` selects a diff.
+Explicit review budgets are advisory, and available native usage is reported from
+the review's starting observation. Reuse applicable CI results and run additional
+checks when the review exposes a specific evidence gap.
 
-taskplane is not another prompt collection, review bot, or project tracker. It
-is the governed execution and assurance layer between your intent and
-agent-generated changes. Requirements, dependencies, contracts, implementation,
-and review stay connected from Definition of Ready through Definition of Done.
-A complete 26-lens disposition makes architecture, solution design, security,
-data, operability, UX, and other technical consequences explicit for engineers,
-EMs, PMs, and nontechnical decision-makers. Only evidence-selected
-`execute_deep` and `execute_light` rows dispatch; every remaining lens is
-disclosed as evidenced `covered_by` or `not_applicable` rather than silently
-omitted. Normal delivery is quick-only.
-
-**Simple for the user; strict for the agents.** State the goal, review the
-evidence, and make only the decisions that require human judgment. taskplane
-keeps the machinery — scoped contracts, dependency depth, independent
-submissions, lifecycle gates, durable memory, and the live dashboard — behind
-that interaction without weakening it.
+For an explicitly requested delivery workflow, Taskplane connects Product, Design,
+Plan, implementation, validation, and human decisions through saved evidence. Load
+its detailed setup and stage instructions when that workflow is selected. Native
+execution, tools, permissions, and waiting belong to the host.
 
 ## Four prompts are enough
 
@@ -53,22 +43,14 @@ transition and shows the richer dashboard when the host supports it.
 | `tp-design` | Architecture and contract choices otherwise emerge implicitly during implementation. | Alternatives, graph overlay, trade-offs, rollout, and validation are sealed in an approved Design Contract. |
 | `tp-build` | The first implementation wins while readiness, alternatives, and downstream impact stay implicit. | Product, Design, Plan, optional A/B selection, Evaluate, Review, sign-off, and Retro stay connected. |
 | `tp-go` | Agents drift scope, skip graph work, or report partial execution as done. | Scoped workers submit evidence; independent gates advance stages; humans retain approval and sign-off. |
-| `tp-engineering` | Broad reviews reread the same repository and still miss dependencies outside the diff. | One diff and graph blast radius route only applicable lenses into one canonical review and human decision. |
-| `tp-status` | Long runs hide the active stage, dependency risk, open gate, and next owner. | Mission control joins workflow, requirements, debt, and graph state with one explicit action banner. |
+| `tp-engineering` | Broad reviews reread the same repository and still miss dependencies outside the diff. | Native tools inspect the requested repository or diff and produce evidence-backed findings; delivery reviews consume their selected stage evidence. |
+| `tp-status` | Long runs hide the active stage, dependency risk, open gate, and next owner. | One concise status answer, with delivery dashboards and deeper details only when requested. |
 | `tp-northstar` | A locally sound idea can still consume time without serving product direction. | An advisory check exposes leverage, reversibility, opportunity cost, coherence, and the sharpest tension. |
-| `tp-help` | Setup mechanics and a large skill catalog delay the first governed result. | Readiness checks and a short mental model lead to one concrete next action. |
+| `tp-help` | Setup mechanics and a large skill catalog delay the first governed result. | Answer the question from relevant documentation; diagnose setup only when requested or needed. |
 | `tp-tag` | Team-chat decisions lose context, ownership, evidence, and durable state. | The conversation drives a repository-persisted loop with attributed approvals, dashboards, and resumable memory. |
 
-Together these flows reduce user complexity without reducing agent discipline:
-one dependency graph, one canonical review context, selective lenses, enforced
-contracts, independent evidence, and explicit human gates from idea to retro.
-
-This simplicity does **not** reduce agent work. A worker may only submit a
-result; it cannot advance its own stage. The orchestrator independently runs
-the engine gate, which recomputes source and review-artifact fingerprints and
-rejects missing, stale, out-of-scope, under-tested, or under-reviewed work.
-Human Design approval (when used), plan approval, and final sign-off remain
-explicit.
+The following capabilities belong to explicit delivery workflows. Their stage
+requirements do not apply to ordinary source review, help, or status.
 
 ## What taskplane does
 
@@ -80,7 +62,7 @@ explicit.
   remain only for named exceptional decisions such as A/B selection or material
   scope and authority changes.
   [docs/loop-design.md](docs/loop-design.md), [docs/authority-matrix.md](docs/authority-matrix.md).
-- **Enforced contracts.** Every agent runs inside a contract — file scope, action
+- **Delivery contracts.** Explicit delivery workers run inside a contract — file scope, action
   budget, denied commands, read-only for reviewers — screened by the PreToolUse
   hook before each tool call. Literal scope overrides carry provenance: only the
   human-approved plan's `plan_minted` mark authorizes them, never a CLI flag. [docs/state-spec.md](docs/state-spec.md).
@@ -99,7 +81,7 @@ explicit.
   per-component lens maps. Reviews re-evidence the union of touched components'
   proposals, `component_attribution` names which component proposed each routed
   lens, and incomplete routing evidence stops with zero dispatch. Same doc.
-- **Governed flows.** The review wave and the execute/evaluate/fix waves each
+- **Governed flows.** Explicit delivery waves
   dispatch as one journaled, resumable Dynamic Workflow on Claude; the Task-dispatch
   path stays mandatory and byte-identical everywhere — it is the only Codex path —
   and every human gate stays reachable with workflows off (`TASKPLANE_WORKFLOWS`).
@@ -119,7 +101,7 @@ explicit.
   against its 21-return baseline and two-return target. Dashboard, Retro,
   Engineering, and release consume the same redacted receipt without recounting
   traces or DOM state. [docs/wave-metrics.md](docs/wave-metrics.md).
-- **Audit cadence + router audits.** Every Nth review (`TASKPLANE_AUDIT_EVERY`) a
+- **Audit cadence + router audits.** Every Nth routed delivery review (`TASKPLANE_AUDIT_EVERY`) a
   full-catalog sweep diffs its findings against the routing; any finding from an
   `n/a`-routed lens is auto-filed as a router regression that blocks sign-off.
 - **A knowledge base that compounds.** Requirements (refinement-scored, with
@@ -133,7 +115,7 @@ explicit.
   the DoD compares planned vs realized modules and rejects a stale graph fingerprint.
 
 The moving parts: an enforcement kernel (contracts + lifecycle hook +
-orchestrator-only gates + audit trace), the loop engine, the Design Contract phase,
+delivery gates + audit trace), the loop engine, the Design Contract phase,
 a 26-lens catalog with complete dispositions and focused quick execution, the
 requirements/decisions/debt knowledge base, a deterministic dependency graph with a zero-token blast-radius map,
 and portable `cheap`/`standard`/`deep` model tiers routed per step, task, and lens —
@@ -150,7 +132,7 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.10. Historical
+> v2.24.0. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -159,6 +141,7 @@ authoritative, complete history — if the two ever disagree, the CHANGELOG wins
 
 | Version | Highlights |
 | --- | --- |
+| **v2.24.0** | **Native source review.** Removes mandatory onboarding and automatic review contracts, recognizes Claude native session identity, reports review usage deltas, and ships compact Claude hook metadata. |
 | **v2.23.10** | **Native review and planning recovery.** Restores authenticated child input and failed-attempt retries, adds whole-repository scope, preserves validation failures and actual reviewer starts, and fixes dependency detection and tool cache recovery. |
 | **v2.23.9** | **Shared entry readiness and recovery.** Separates setup from runtime readiness on both hosts, carries Claude startup identity, diagnoses stale engines, and aligns installed-package journey checks. |
 | **v2.23.8** | **Native plugin startup and budget recovery.** Uses the host-selected plugin for hooks and review commands, fixes Claude-only packages and failed setup reporting, and resumes existing tasks after an approved token increase. |

@@ -31,6 +31,7 @@ extract carries polarity per sentence rather than a bag of surfaces.
 Every assertion here was observed FAILING before it was kept.
 """
 import copy
+from pathlib import Path
 import hashlib
 import json
 import os
@@ -85,6 +86,19 @@ class _MutationCase(unittest.TestCase):
         self.root = tempfile.mkdtemp(prefix="tp-scenario-")
         self.addCleanup(shutil.rmtree, self.root, True)
         _mirror(self.root, self.sources)
+        # Parser mutations use a stable protocol fixture, independent of the
+        # current skill's deliberately reduced instructions.
+        fixture = Path(self.root, self.MAIN)
+        fixture.write_text(fixture.read_text() + """
+
+Graph quality is assessed before routing. The blast radius is scoped.
+
+**Every lens consumes a scoped view of the same context.**
+Use `$TP graph impact --files x`.
+
+Use `tp dod` and `tp ack` when requested.
+Do NOT pass `--all`.
+""")
         self.baseline = es.fingerprint(self.root, self.sources)
 
     def mutate(self, fn, rel=None):

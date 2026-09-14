@@ -164,8 +164,12 @@ def test_onboarding_carveout_does_not_admit_other_mutations():
 
 
 @pytest.mark.parametrize('name', ENTRIES)
-def test_all_direct_entries_share_initialization(name):
+def test_only_delivery_entries_require_initialization(name):
     body = (ROOT / 'skills' / name / 'SKILL.md').read_text()
-    assert 'entry-initialization.md' in body
-    assert f'entry point `{name}`' in body
+    if name in {'taskplane', 'tp-engineering', 'tp-help', 'tp-status'}:
+        assert f'entry point `{name}`' not in body
+        assert len(body.encode()) < 8192
+    else:
+        assert 'entry-initialization.md' in body
+        assert f'entry point `{name}`' in body
     assert not (ROOT / '.mcp.json').exists()

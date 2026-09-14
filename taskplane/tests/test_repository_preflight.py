@@ -447,7 +447,7 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
         self.assertEqual(prepare.call_count, 1)
         self.assertEqual(outputs[0]["action"], outputs[1]["action"])
 
-    def test_ready_kernel_activates_only_after_repository_and_route_ready(self):
+    def test_acquired_repository_pins_source_without_activating_a_contract(self):
         home = tempfile.mkdtemp(prefix="tp-ready-review-home-")
         checkout = os.path.join(home, "checkouts", "p", "worktrees", "pr")
         base, head = _review_checkout(checkout)
@@ -486,14 +486,16 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
                                "--workspace", tempfile.mkdtemp()])
             self.assertEqual(rc, 0)
             payload = json.loads(output.getvalue())
-            self.assertEqual(payload["contract"]["status"], "active")
-            self.assertEqual(start_review.call_args.kwargs["base"], base)
-            self.assertEqual(start_review.call_args.kwargs["diff"]["files"], ["a.py"])
-            self.assertGreater(start_review.call_args.kwargs["diff"]["artifact"]["bytes"], 0)
+            import review_evidence
+            start_review.assert_not_called()
+            source = review_evidence.ArtifactStore(checkout).read(payload["source"])
+            self.assertEqual(source["base"], base)
+            self.assertEqual(source["files"], ["a.py"])
+            self.assertTrue(source["patch"])
+            self.assertEqual(payload["repository_run_id"], "review-ready")
             manifest = run_store.RunStore(home=home).load("review-ready")
-            self.assertEqual(manifest["status"], "governed")
-            self.assertEqual(manifest["review"]["status"], "ready")
-            self.assertTrue(taskplane_lite.load_active(checkout))
+            self.assertEqual(manifest["status"], "ready")
+            self.assertFalse(taskplane_lite.load_active(checkout))
             self.assertFalse(os.path.exists(os.path.join(
                 checkout, ".em-review")))
         finally:
@@ -502,7 +504,7 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
             else:
                 os.environ["TASKPLANE_HOME"] = old
 
-    def test_sparse_kernel_leaves_repository_run_and_contract_inactive(self):
+    def test_source_review_does_not_require_the_legacy_kernel(self):
         home = tempfile.mkdtemp(prefix="tp-sparse-review-home-")
         checkout = os.path.join(home, "checkouts", "p", "worktrees", "pr")
         base, head = _review_checkout(checkout)
@@ -529,10 +531,9 @@ class TestReviewCliPreflightBoundary(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 rc = cli.main(["review", "start", PR,
                                "--workspace", tempfile.mkdtemp()])
-            self.assertEqual(rc, 1)
+            self.assertEqual(rc, 0)
             manifest = run_store.RunStore(home=home).load("review-sparse")
-            self.assertEqual(manifest["status"], "review_blocked")
-            self.assertEqual(manifest["contract"]["status"], "inactive")
+            self.assertEqual(manifest["status"], "ready")
             self.assertFalse(taskplane_lite.load_active(checkout))
         finally:
             if old is None:
@@ -657,14 +658,14 @@ class TestRepositoryFlowDocumentation(unittest.TestCase):
         with open(os.path.join(ROOT, relative), encoding="utf-8") as handle:
             return handle.read()
 
-    def test_every_code_or_repository_flow_uses_the_precondition(self):
-        for skill in ("taskplane", "tp-go", "tp-build", "tp-design",
-                      "tp-product", "tp-engineering", "tp-northstar",
+    def test_delivery_repository_preparation_is_conditional(self):
+        for skill in ("tp-go", "tp-build", "tp-design",
+                      "tp-product", "tp-northstar",
                       "tp-tag"):
             text = self._read(f"skills/{skill}/SKILL.md")
             self.assertIn("repository prepare", text, skill)
         self.assertIn("repository status", self._read(
-            "skills/tp-status/SKILL.md"))
+            "skills/tp-status/references/delivery-status.md"))
 
     def test_active_instructions_do_not_clone_source_into_review_artifacts(self):
         active = "\n".join(self._read(path) for path in (

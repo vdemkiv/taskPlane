@@ -110,6 +110,9 @@ REVIEW_RAW_DIFF_MAX_ARTIFACTS = 32
 REVIEW_RAW_DIFF_MAX_BYTES = 16 * 1024 * 1024
 
 
+from taskplane.storage import host_session_id as _host_session_id
+
+
 def _retained_review_diff_payload(
     *,
     base: str,
@@ -7775,8 +7778,7 @@ def _whole_run_terminal_authority(state: Mapping[str, object], *, by: str) -> di
         raise ValueError("whole-run terminal authority requires an attributable --by identifier")
     session_id = str(
         os.environ.get("TASKPLANE_SESSION_ID")
-        or os.environ.get("CODEX_THREAD_ID")
-        or os.environ.get("CLAUDE_SESSION_ID")
+        or _host_session_id()
         or ""
     ).strip()
     if (
@@ -7792,7 +7794,7 @@ def _whole_run_terminal_authority(state: Mapping[str, object], *, by: str) -> di
         "codex"
         if os.environ.get("CODEX_THREAD_ID")
         else "claude"
-        if os.environ.get("CLAUDE_SESSION_ID")
+        if _host_session_id()
         else "taskplane-host"
     )
     authority = {
