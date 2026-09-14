@@ -3,14 +3,25 @@
 Every direct user entry uses this sequence, including help/status, resumed
 work, and entry after an update. A specialist never assumes the facade ran.
 
-1. Resolve the currently installed engine. Use the stable workspace launcher
-   when present; otherwise use the installed plugin's `taskplane/tp.py`.
+1. Use the host-selected installed plugin's `taskplane/tp.py`: resolve its root
+   from `PLUGIN_ROOT`, then `CLAUDE_PLUGIN_ROOT`, or this loaded skill's location.
+   Quote the resolved absolute engine path and invoke it with Python. A valid
+   host-selected root takes precedence over any repository launcher. Only when
+   that installed root is unavailable, use `.taskplane/codex-hook.py` in the
+   current checkout or its Git common-directory parent. Never treat unset root
+   variables as `/taskplane/tp.py`. `$TP` denotes this resolved invocation, not
+   a shell string assembled from user content.
 2. Run `onboard --initialize --json --available-tools "<comma-separated names of tools actually available in this task>" --workspace <checkout>`.
    Use the current tool inventory, not examples from these instructions. This
    declaration is a compatibility check, not proof of host enforcement.
-3. Read the result. Initialization creates missing setup and the launcher,
-   preserves existing context/run state, and checks the committed checkout,
+3. Read the result. Initialization creates missing setup and, when needed,
+   an optional command-line launcher. Native plugin loading does not need it.
+   It preserves existing context/run state and checks the committed checkout,
    run binding, phase definitions, and live hooks through existing onboarding.
+   If setup was just initialized and hooks have not yet been observed, run
+   `onboard --json --workspace <checkout>` once through the native host so its
+   hooks can observe the initialized project. Use that fresh report; do not
+   manufacture a receipt or keep retrying when the host does not execute hooks.
    Continue governed work only when `ready` is true. Help and status may still
    explain an unmet prerequisite.
 4. Before a read-only review, also require `review_file_tools.ready`. Codex
@@ -35,6 +46,10 @@ reinitialize or replace the coordinator's run.
 If an existing read-only contract blocks reentry, invoke the installed engine's
 absolute `tp.py` path for the onboarding command above. Existing status and
 explicit recovery commands remain reachable when budget telemetry is missing.
+After explicit approval for additional tokens, run `$TP budget --grant-tokens N
+--approved-by USER --workspace <checkout>` once with that approved amount, then
+continue the existing task. `--grant N` increases actions only. Do not ask for
+the same approval again or reset the task's usage to bypass the ceiling.
 
 ## Native Codex calls
 

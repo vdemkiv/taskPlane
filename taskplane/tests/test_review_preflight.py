@@ -3,6 +3,7 @@ import datetime
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -139,34 +140,33 @@ def test_cli_review_emits_usable_signed_worker_startup(
     assert all(not Path(slot["result_path"]).exists() for slot in ready["slots"])
 
 
-def test_review_prepares_checkout_launcher_and_repairs_missing_one(
+def test_native_review_dispatch_does_not_require_a_checkout_launcher(
         opened_cli_review):
     workspace, opened = opened_cli_review
     launcher = workspace / ".taskplane" / "codex-hook.py"
-    assert launcher.is_file()
-    original = launcher.read_bytes()
-    launcher.unlink()
+    assert not launcher.exists()
     rc, stdout, stderr = _run("review", "option", "static", "--run-id",
                               opened["run_id"], "--workspace", str(workspace))
     assert rc == 0, (stdout, stderr)
-    assert launcher.read_bytes() == original
+    assert not launcher.exists()
     assert not (workspace / ".codex" / "hooks.json").exists()
     assert subprocess.check_output(["git", "status", "--porcelain", "--",
                                     ".taskplane", ".codex", "service.py"],
                                    cwd=workspace, text=True) == ""
 
 
-def test_review_launcher_preparation_preserves_project_hook_bytes(
+def test_native_review_dispatch_preserves_project_hook_bytes(
         opened_cli_review):
-    workspace, _ = opened_cli_review
-    (workspace / ".taskplane" / "codex-hook.py").unlink()
+    workspace, opened = opened_cli_review
     hooks = workspace / ".codex" / "hooks.json"
     hooks.parent.mkdir()
     hooks.write_text(json.dumps({"hooks": taskplane_cli._codex_hook_rows()}), encoding="utf-8")
     original = hooks.read_bytes()
-    taskplane_cli._prepare_standalone_review_launcher(str(workspace))
+    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
+                              opened["run_id"], "--workspace", str(workspace))
+    assert rc == 0, (stdout, stderr)
     assert hooks.read_bytes() == original
-    assert (workspace / ".taskplane" / "codex-hook.py").is_file()
+    assert not (workspace / ".taskplane" / "codex-hook.py").exists()
 
 
 @pytest.mark.parametrize("mutation,reason", [
@@ -409,13 +409,11 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
     assert row["action"]["choices"][1]["requires"] == [
         "dependency-install", "process-execution", "browser-access"]
     commands = [choice["command"] for choice in row["action"]["choices"]]
-    launcher = (("py" if os.name == "nt" else "python3") +
-                " .taskplane/codex-hook.py review option ")
-    assert commands == [
-        launcher + "dynamic --run-id " + run_id,
-        launcher + "dynamic-render --run-id " + run_id,
-        launcher + "static --run-id " + run_id,
-    ]
+    engine = os.path.realpath(os.path.join(os.path.dirname(review.__file__), "tp.py"))
+    command_args = [[sys.executable, engine, "review", "option", mode, "--run-id", run_id]
+                    for mode in ("dynamic", "dynamic-render", "static")]
+    quote = subprocess.list2cmdline if os.name == "nt" else shlex.join
+    assert commands == [quote(args) for args in command_args]
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     guidance_paths = [
@@ -442,11 +440,7 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
             choice["command"] for choice in
             review.review_execution_preflight(
                 run_id=run_id)["action"]["choices"]]
-    assert windows_commands == [
-        windows_launcher + "dynamic --run-id " + run_id,
-        windows_launcher + "dynamic-render --run-id " + run_id,
-        windows_launcher + "static --run-id " + run_id,
-    ]
+    assert windows_commands == [subprocess.list2cmdline(args) for args in command_args]
 
     workspace, opened = opened_cli_review
     workspace = str(workspace)
@@ -454,16 +448,16 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
         choice["command"] for choice in
         opened["review_execution"]["action"]["choices"]
         if choice["response"] == "static")
-    installed = taskplane_cli._install_codex_hooks(workspace)
-    assert installed["ok"], installed
+    assert not Path(workspace, ".taskplane/codex-hook.py").exists()
     executed = subprocess.run(
-        static_command.split(), cwd=workspace, text=True,
+        static_command if os.name == "nt" else shlex.split(static_command), cwd=workspace, text=True,
         encoding="utf-8", errors="replace",
         capture_output=True, check=False)
     assert executed.returncode == 0, executed.stderr
     continued = json.loads(executed.stdout)
     assert continued["run_id"] == opened["run_id"]
     assert continued["status"] == "ready"
+    assert not Path(workspace, ".taskplane/codex-hook.py").exists()
     assert continued["review_execution"]["selection"] == "static"
     assert continued["visuals"]["workflow_and_wave"]["inline"]["path"]
     assert review._load_state(workspace, opened["run_id"])["run_id"] == \

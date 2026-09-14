@@ -1,5 +1,26 @@
 # taskplane changelog
 
+## v2.23.8 — 2026-09-14 — native plugin startup and approved budget recovery
+
+- Native hooks use the installed plugin selected by Codex or Claude. Entry
+  skills and review choice commands use that engine directly; native review
+  dispatch no longer creates or requires a repository launcher. The optional
+  CLI launcher remains available for older integrations and explicit setup.
+- Claude-only archives resolve through their Claude manifest. Managed-checkout
+  and launcher resolution share the same validator and reject conflicting
+  manifests. Extracted-package tests now execute the generated launcher too.
+- Failed launcher setup is reported as a failure in the CLI and onboarding
+  screen. Native execution receipts and plugin trust remain separate checks;
+  package tests do not claim that a live Cowork hook has executed.
+- Approved token increases use `budget --grant-tokens N --approved-by USER`.
+  The grant restores N tokens of headroom above observed native usage or the
+  existing ceiling, preserves source permissions, and resumes the existing task.
+  Recovery help stays available after exhaustion; bare self-grants stay blocked.
+- Untracked scratch and older bundles were archived with verified checksums.
+  Root release bundles are ignored, and skill/phase evaluation bindings match
+  the corrected native entry instructions. The original EM review remains
+  incomplete; these repairs do not create a sign-off or Marketplace publication.
+
 ## 2.23.7 — 2026-09-14 — native Codex execution and review access
 
 - Codex review reads use the installed native permission profiles, including

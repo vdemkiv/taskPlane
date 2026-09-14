@@ -1056,8 +1056,8 @@ def _apply_onboarding_setup(ws: str, value: dict) -> dict:
     if value.get("install_launcher"):
         launcher = _install_codex_hooks(ws)
         receipt["launcher"] = launcher
-        if launcher.get("status") == "blocked":
-            receipt["status"] = "blocked"
+        if not launcher.get("ok"):
+            receipt["status"] = "blocked" if launcher.get("status") == "blocked" else "failed"
             return receipt
     if value.get("initialize"):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1219,7 +1219,8 @@ def _onboard_report(ws: str) -> dict:
             "hint": "Use one validated plugin build whose phase definitions match its skills; preserve the current run.",
         }
     )
-    codex_hooks = _codex_hooks_report(ws) if is_codex else None
+    launcher = _codex_hooks_report(ws)
+    codex_hooks = launcher if is_codex else None
     host_capabilities = None
     if codex_hooks is not None:
         snapshot = _host_capability_snapshot(ws)
@@ -1252,9 +1253,9 @@ def _onboard_report(ws: str) -> dict:
                 {
                     "id": "workspace_launcher",
                     "label": "Project launcher",
-                    "ok": codex_hooks["launcher_ready"],
+                    "ok": native_effective or codex_hooks["launcher_ready"],
                     "detail": codex_hooks["runner"],
-                    "hint": "Run onboard --install-launcher; project hook registrations remain unnecessary.",
+                    "hint": "Optional CLI convenience when native plugin hooks are effective.",
                 },
                 {
                     "id": "repository_trust",
@@ -1311,7 +1312,7 @@ def _onboard_report(ws: str) -> dict:
     )
     ready = base_ready and (
         host_capabilities is None
-        or (bool(host_capabilities["ready"]) and native_effective and bool(codex_hooks["ok"]))
+        or (bool(host_capabilities["ready"]) and native_effective)
     )
     if not looks_like_project:
         nxt = "attach_folder"
@@ -1328,6 +1329,7 @@ def _onboard_report(ws: str) -> dict:
     elif (
         codex_hooks is not None
         and not codex_hooks["ok"]
+        and not native_effective
         and host_capabilities["next_action"]
         not in {"contact_administrator", "review_repository_trust"}
     ):
@@ -1354,6 +1356,7 @@ def _onboard_report(ws: str) -> dict:
         "host": host,
         "artifacts": artifacts,
         "configuration": _onboarding_configuration(ws),
+        "launcher": launcher,
         "codex_hooks": codex_hooks,
         "host_capabilities": host_capabilities,
         # R-0005 install truth: the account-type install/update paths,
@@ -3100,6 +3103,58 @@ def _is_completion_command(command: str) -> bool:
     return any(_re.search(p, text) for p in _ob.COMPLETION_PATTERNS)
 
 
+def _recovery_argv(command: str) -> list[str] | None:
+    """One canonical CLI invocation; never exempt a compound shell command."""
+    import re
+
+    if any(mark in command for mark in (";", "|", "&", ">", "<", "`", "$", "\n", "\r")):
+        return None
+    tokens = tp._shsplit(command)
+    if len(tokens) < 3:
+        return None
+    interpreter = os.path.basename(tokens[0]).lower()
+    if interpreter in {"py", "py.exe"} and tokens[1] == "-3":
+        tokens.pop(1)
+    if len(tokens) < 3 or not re.fullmatch(r"(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?", interpreter):
+        return None
+    if not tp._is_tp_cli(tokens[1]):
+        # The optional workspace CLI must be an unchanged engine-generated
+        # launcher, not an arbitrary script with the same basename.
+        path = os.path.abspath(tokens[1])
+        if not path.endswith(os.path.join(".taskplane", "codex-hook.py")) or os.path.islink(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as stream:
+                body = stream.read(65537)
+                family = _codex_runner_family(body)
+                if (not family or body != _codex_runner_body(family)
+                        or not tp._is_tp_cli(_resolve_taskplane_engine(family) or "")):
+                    return None
+        except (OSError, UnicodeError):
+            return None
+    return tokens[2:]
+
+
+def _approved_budget_recovery(command: str) -> dict | None:
+    args = _recovery_argv(command)
+    if not args or args[0] != "budget":
+        return None
+    values = {}
+    args = args[1:]
+    while args:
+        flag = args.pop(0)
+        if flag not in {"--grant", "--grant-tokens", "--approved-by", "--workspace"} or flag in values or not args:
+            return None
+        values[flag] = args.pop(0)
+    grants = set(values) & {"--grant", "--grant-tokens"}
+    if len(grants) != 1 or not values.get("--approved-by", "").strip():
+        return None
+    try:
+        return values if int(values[next(iter(grants))]) > 0 else None
+    except ValueError:
+        return None
+
+
 def _is_release_command(command: str) -> bool:
     """Unmetered control-plane commands, including explicit human recovery.
 
@@ -3108,6 +3163,13 @@ def _is_release_command(command: str) -> bool:
     exhausted task from becoming an unrecoverable lock while keeping a bare
     self-issued ``clear``/``budget --grant`` behind the wall.
     """
+    recovery = _recovery_argv(command)
+    if recovery and (recovery in [["--help"], ["-h"]] or
+                     recovery[0] in {"budget", "clear"} and
+                     recovery[1:] in [["--help"], ["-h"]]):
+        return True
+    if recovery and recovery[0] == "budget":
+        return _approved_budget_recovery(command) is not None
     verb = tp.taskplane_verb(command)
     if verb in _RELEASE_VERBS:
         return True
@@ -3135,8 +3197,6 @@ def _is_release_command(command: str) -> bool:
         # receipt exists.  Making this narrow retry unmetered cannot let a
         # live worker shed enforcement; a bare/general clear remains walled.
         return tokens.count("--slot") == 1 and tokens.count("--signed-action") == 1
-    if verb == "budget":
-        return "--grant" in tokens and "--approved-by" in tokens
     if verb == "review":
         if all(token in tokens for token in ("collect", "--run-id")):
             return True
@@ -3699,6 +3759,24 @@ def _meter_bump(ws, task_id, key) -> dict:
     return e
 
 
+def _record_budget_counter(ws: str, contract: dict, event: dict) -> None:
+    """Retain the host-selected source for an approved CLI grant to re-read.
+
+    This is an observation only: the native permission flow still decides
+    whether the subsequent CLI command runs and changes the ceiling.
+    """
+    provider = _budget_provider(event)
+    source = _budget_transcript(ws, contract, event, provider)
+    path = os.path.join(tp.tp_dir(ws), "meter.json")
+    with tp.file_lock(path):
+        meter = _meter_load(ws, strict=True)
+        row = meter.setdefault(contract["task_id"], {"actions": 0, "denies": 0})
+        # Overwrite even a missing source: an older session is not a fallback.
+        row["native_counter"] = {"provider": provider, "path": source,
+                                 "activated_at": contract.get("activated_at")}
+        tp.atomic_write_json(path, meter, indent=None)
+
+
 # Per-process memo of `git rev-parse --show-toplevel` per cwd — see the
 # comment inside _governed_root. Never persisted.
 _GIT_TOP_CACHE: dict = {}
@@ -4111,6 +4189,9 @@ def _screen(a) -> int:
     # Keep existing inspection/recovery commands reachable even if telemetry
     # disappears. They do not launch productive work or raise limits implicitly.
     if _is_release_command(command):
+        recovery = _approved_budget_recovery(command)
+        if recovery and "--grant-tokens" in recovery:
+            _record_budget_counter(ws, contract, event)
         # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
         #
         # The abstain above happens LONG before the approve path where the
@@ -4226,6 +4307,7 @@ def _screen(a) -> int:
         bool(_budget.get("token_usage_required")) or not run_context.resource_limits_advisory(ws)
     ):
         _tok_why, _effective = _token_denial
+        _record_budget_counter(ws, contract, event)
         # A broken meter must fail closed, but it must not hide a more
         # specific authority boundary.  Preserve the contract's direct
         # tool/command refusal when both checks deny the same action.
@@ -4557,12 +4639,32 @@ def cmd_budget(a) -> int:
     if c is None:
         print("taskplane: no active contract.", file=sys.stderr)
         return 1
-    if getattr(a, "grant", None):
-        # The approval half of the budget gate: exhaustion blocks and asks
-        # the human; this records the human's YES. Meant for the HUMAN /
-        # the ungoverned main session — a governed agent's own `tp budget
-        # --grant` is still screened (and budget-blocked) like any other
-        # command; the wall is intentional.
+    extra_tokens = getattr(a, "grant_tokens", None)
+    if extra_tokens is not None:
+        approved_by = str(getattr(a, "approved_by", None) or "").strip()
+        if extra_tokens < 1 or not approved_by:
+            print("taskplane: --grant-tokens requires a positive count and --approved-by.", file=sys.stderr)
+            return 1
+        try:
+            counter = _meter_load(ws, strict=True).get(c["task_id"], {}).get("native_counter") or {}
+            if not counter.get("path") or counter.get("activated_at") != c.get("activated_at"):
+                raise ValueError("current host token counter unavailable; run the approved grant through the native hook")
+            projection = _bounded_transcript_projection(ws, counter["path"], counter["provider"])
+            if projection.get("status") != "available":
+                raise ValueError("current host token counter unavailable: " + str(projection.get("reason")))
+            observed = int(projection["usage"]["total_tokens"])
+            updated = tp.grant_token_budget(ws, extra_tokens, observed, approved_by,
+                                            expected_task_id=c["task_id"])
+        except (ValueError, KeyError, OSError, MeterCorrupt, tp.StateError) as exc:
+            print(f"taskplane: token grant refused — {exc}", file=sys.stderr)
+            return 1
+        print(f"taskplane: budget granted — +{extra_tokens:,} native tokens, ceiling now "
+              f"{updated['budget']['max_tokens']:,} ({observed:,} observed). "
+              "The existing task can resume within its remaining permissions and limits.")
+        return 0
+    if getattr(a, "grant", None) is not None:
+        # Explicit --approved-by recovery remains reachable inside a governed
+        # task. A bare self-issued grant still goes through normal screening.
         if a.grant < 1:
             print("taskplane: --grant must be a positive action count.", file=sys.stderr)
             return 1
@@ -4582,7 +4684,7 @@ def cmd_budget(a) -> int:
     if a.spent is None:
         print(
             "taskplane: pass --spent USD (cooperative estimate) or "
-            "--grant N (raise the action ceiling).",
+            "--grant N (actions) or --grant-tokens N --approved-by USER (native tokens).",
             file=sys.stderr,
         )
         return 1
@@ -7689,19 +7791,6 @@ def _legacy_review_activation_command(command: str) -> bool:
     return False
 
 
-def _prepare_standalone_review_launcher(workspace: str) -> None:
-    """Prepare the target checkout's entry point before its contracts go live."""
-    if tp.host() != "codex" or _codex_hooks_report(workspace)["launcher_ready"]:
-        return
-    prepared = _install_codex_hooks(workspace, remove_project_duplicates=False)
-    if not prepared.get("launcher_ready"):
-        import review as review_kernel
-
-        raise review_kernel.ReviewKernelError(
-            "standalone review checkout launcher is unavailable: "
-            + str(prepared.get("reason") or prepared.get("hint") or "installation failed"))
-
-
 def _standalone_review_parent_task(workspace: str, manifest: dict) -> str:
     """Require the review's own active parent before issuing worker startup."""
     import review as review_kernel
@@ -7726,7 +7815,6 @@ def _bind_standalone_review_dispatch(workspace: str, manifest: dict) -> dict:
     import loop as loop_runtime
 
     parent_task = _standalone_review_parent_task(workspace, manifest)
-    _prepare_standalone_review_launcher(workspace)
     return loop_runtime._bind_stateless_review_contract_actions(
         workspace, manifest, task_id=parent_task)
 
@@ -8797,19 +8885,29 @@ def _initialize_entry(ws: str) -> dict:
     """Reuse onboarding; repair missing setup without creating/replacing a run."""
     report = _onboard_report(ws)
     repairs = []
+    installed = None
     if (report["looks_like_project"] and report["is_git"] and report["has_commit"]
             and report["run_readiness"]["ready"]):
-        hooks = report.get("codex_hooks")
-        if hooks and not hooks["launcher_ready"]:
-            _install_codex_hooks(ws, remove_project_duplicates=False)
-            repairs.append("install_launcher")
+        hooks = report.get("launcher", report.get("codex_hooks"))
+        native = ((report.get("host_capabilities") or {}).get("effective_path") or {}).get("value") == "native_effective"
+        plugin_root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT")
+        direct_plugin = bool(plugin_root and tp._is_tp_cli(os.path.join(plugin_root, "taskplane", "tp.py")))
+        if hooks and not hooks["launcher_ready"] and not (native or direct_plugin):
+            installed = _install_codex_hooks(ws, remove_project_duplicates=False)
+            if installed.get("ok"):
+                repairs.append("install_launcher")
         if not report["has_context"]:
             with contextlib.redirect_stdout(io.StringIO()):
                 cmd_init(argparse.Namespace(workspace=ws, plan=None))
             repairs.append("initialize_project")
-    if repairs:
+    if repairs or installed is not None:
         report = _onboard_report(ws)
     report["initialization"] = {"repairs": repairs, "run_preserved": True}
+    if installed is not None:
+        report["initialization"]["launcher"] = installed
+        if not installed.get("ok"):
+            report["ready"] = False
+            report["next_action"] = "install_launcher"
     return report
 
 
@@ -8832,7 +8930,10 @@ def cmd_onboard(a) -> int:
         if values is not None:
             result = _apply_onboarding_setup(ws, values)
         elif getattr(a, "install_codex_hooks", False) or getattr(a, "install_launcher", False):
-            result = {"launcher": _install_codex_hooks(ws)}
+            launcher = _install_codex_hooks(ws)
+            result = {"launcher": launcher,
+                      "status": "applied" if launcher.get("ok") else
+                      "blocked" if launcher.get("status") == "blocked" else "failed"}
     except (OSError, ValueError, TypeError, runtime_storage.StorageIdentityError) as exc:
         result = {
             "schema": "taskplane.onboarding-setup-result/v1",
@@ -8860,7 +8961,14 @@ def cmd_onboard(a) -> int:
             "hint": "Use a host exposing compatible native review tools; completed workspace setup is preserved."})
         if report["workspace_ready"] and not file_tools["ready"]:
             report["next_action"] = "review_file_tools_unavailable"
-    failed = bool(result and result.get("status") in {"refused", "blocked"})
+    failed = bool(result and result.get("status") in {"refused", "blocked", "failed"})
+    if failed and result is not None:
+        report["ready"] = False
+        if "workspace_ready" in report:
+            report["workspace_ready"] = False
+            report["review_ready"] = False
+        if result.get("launcher") is not None:
+            report["next_action"] = "install_launcher"
     if failed and isinstance(values, dict):
         report["submitted_values"] = values
     if result is not None:
@@ -10216,7 +10324,8 @@ def _unbound_global_hook(argv=None) -> bool:
     if runtime_storage.review_session_workspace():
         return False
     workspace = os.getcwd()
-    if os.path.isfile(os.path.join(workspace, ".taskplane", "codex-hook.py")):
+    if (os.path.isfile(os.path.join(workspace, ".taskplane", "codex-hook.py"))
+            or os.path.isdir(os.path.join(tp.kb_root(workspace), "context"))):
         return False
     try:
         common = tp._run(
@@ -10235,7 +10344,9 @@ def _unbound_global_hook(argv=None) -> bool:
     launcher = os.path.realpath(
         os.path.join(common.stdout.strip(), "..", ".taskplane", "codex-hook.py")
     )
-    return not os.path.isfile(launcher)
+    primary = os.path.dirname(os.path.dirname(launcher))
+    return not (os.path.isfile(launcher)
+                or os.path.isdir(os.path.join(tp.kb_root(primary), "context")))
 
 
 def main(argv=None) -> int:
@@ -10265,8 +10376,8 @@ def main(argv=None) -> int:
 def _main(argv=None) -> int:
     _utf8_streams()
     # Plugin hooks are registered globally by the host.  They must be inert
-    # until the workspace has been explicitly onboarded with its local
-    # launcher; otherwise SessionStart contaminates unrelated Codex chats.
+    # until the workspace has been explicitly initialized; the optional
+    # launcher is also accepted for backward compatibility.
     if _unbound_global_hook(argv):
         return 0
     # Parse without today's settings. The selected run's saved policy is
@@ -10525,17 +10636,20 @@ def _main(argv=None) -> int:
     b = sub.add_parser(
         "budget",
         help="record a cooperative spend estimate, "
-        "or --grant N more actions (the budget approval gate)",
+        "or record an approved action/token budget increase",
     )
-    b.add_argument("--spent", type=float, help="cooperative $ estimate (advisory)")
-    b.add_argument(
+    budget_change = b.add_mutually_exclusive_group()
+    budget_change.add_argument("--spent", type=float, help="cooperative $ estimate (advisory)")
+    budget_change.add_argument(
         "--grant",
         type=int,
         metavar="N",
-        help="raise the enforced action ceiling by N — for the "
-        "human / ungoverned main session after approving "
-        "more budget (a governed agent cannot grant itself)",
+        help="raise the enforced action ceiling by N after human approval; "
+        "governed recovery requires --approved-by",
     )
+    budget_change.add_argument("--grant-tokens", type=int, metavar="N",
+        help="add N native tokens of headroom above the current counter or ceiling, "
+        "whichever is higher; requires --approved-by and a host-observed counter")
     b.add_argument("--approved-by", help="human chat identity authorizing this budget grant")
     b.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     b.set_defaults(fn=cmd_budget)

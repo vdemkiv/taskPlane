@@ -21,7 +21,7 @@ not repeated in the tables.
 | Command | What it does |
 | --- | --- |
 | `tp.py ack` | discharge an obligation the engine issued (WS-F evals); --status lists what is open |
-| `tp.py budget` | record a cooperative spend estimate, or --grant N more actions (the budget approval gate) |
+| `tp.py budget` | record a cooperative spend estimate, or record an approved action/token budget increase |
 | `tp.py clear` | deactivate the workspace contract |
 | `tp.py command` | durable governed host-command lifecycle |
 | `tp.py command cancel` | cancel a durable command |
@@ -180,12 +180,13 @@ Positional arguments:
 
 ## `tp.py budget`
 
-record a cooperative spend estimate, or --grant N more actions (the budget approval gate)
+record a cooperative spend estimate, or record an approved action/token budget increase
 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--approved-by` | APPROVED_BY | human chat identity authorizing this budget grant |
-| `--grant` | N | raise the enforced action ceiling by N — for the human / ungoverned main session after approving more budget (a governed agent cannot grant itself) |
+| `--grant` | N | raise the enforced action ceiling by N after human approval; governed recovery requires --approved-by |
+| `--grant-tokens` | N | add N native tokens of headroom above the current counter or ceiling, whichever is higher; requires --approved-by and a host-observed counter |
 | `--spent` | SPENT | cooperative $ estimate (advisory) |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 

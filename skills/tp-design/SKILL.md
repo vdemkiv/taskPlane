@@ -26,19 +26,7 @@ graph → alternatives/trade-offs → Design Contract → solution-design eviden
 → conditional technical visual → human Design approval**. Design never exits
 through a worker-authored verdict; the human gate is part of the contract.
 
-Prefer the stable workspace launcher on Codex; it resolves the newest valid
-installed taskplane engine on every call. Fall back to the loaded plugin root
-only during first setup or on another host:
-
-```bash
-if [ -f .taskplane/codex-hook.py ]; then
-  TP=".taskplane/codex-hook.py"
-else
-  TP="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"
-fi
-```
-
-If that path does not exist, locate this skill's plugin root and use its `taskplane/tp.py`. Do not ask the user to run commands.
+Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation.
 
 ## Responsibility boundary
 

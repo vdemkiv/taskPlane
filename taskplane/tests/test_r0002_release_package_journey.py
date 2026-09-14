@@ -90,21 +90,6 @@ def _replace_packaged_hook_manifest(archive: Path, replacement: dict) -> None:
     os.replace(temporary, archive)
 
 
-def _expected_installed_hook_manifest(kind: str) -> dict:
-    claude = json.loads((
-        ROOT / "hooks" / "hooks.json"
-    ).read_text(encoding="utf-8"))
-    if kind == "claude":
-        return claude
-    assert kind == "openai"
-    codex = json.loads((
-        ROOT / ".codex" / "hooks.json"
-    ).read_text(encoding="utf-8"))
-    expected = json.loads(json.dumps(claude))
-    expected["hooks"]["SessionStart"] = codex["hooks"]["SessionStart"]
-    return expected
-
-
 def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
     host = "codex" if kind == "openai" else "claude"
     hook_path = "native"
@@ -178,10 +163,8 @@ def test_installed_openai_archive_has_codex_session_start_host_path_and_claude_a
 def test_installed_openai_hooks_are_inert_in_an_unonboarded_chat(tmp_path):
     archive = _run_package_entry_point("openai", tmp_path / "package")
     package_root = _extract(archive, tmp_path / "extracted")
-    (package_root / "taskplane" / "tp.py").write_text(
-        "raise SystemExit('global hook started Taskplane')\n",
-        encoding="utf-8",
-    )
+    # Exercise the packaged engine's shared scope guard. Native hosts own
+    # plugin resolution; package generation must not substitute a local CLI.
     unrelated = tmp_path / "unrelated-chat"
     unrelated.mkdir()
     taskplane_home = tmp_path / "must-not-exist"
@@ -498,7 +481,15 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
        env=environment)
     assert setup.returncode == 0, setup.stdout + setup.stderr
     assert json.loads(setup.stdout)["workspace_ready"] is True
+    assert json.loads(setup.stdout)["setup_result"]["launcher"]["ok"] is True
     assert (workspace / ".taskplane/codex-hook.py").is_file()
+    # Exercise the generated installed entry point, not only the engine that
+    # created it. Claude archives deliberately contain no Codex manifest.
+    cli = workspace / ".taskplane/codex-hook.py"
+    launched = subprocess.run([sys.executable, str(cli), "version"],
+        cwd=workspace, text=True, capture_output=True, env=environment)
+    assert launched.returncode == 0, launched.stdout + launched.stderr
+    assert launched.stdout.strip() == VERSION
     requirement_result = subprocess.run([
         sys.executable, str(cli), "req", "--workspace", str(workspace),
         "new", "Installed package remains governable",

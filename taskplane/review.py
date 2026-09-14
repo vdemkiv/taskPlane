@@ -1295,7 +1295,7 @@ def review_execution_preflight(*, selection: str | None = None,
                       "dependency install"))
     choices = [{**row, "requires": list(row["requires"])}
                for row in _REVIEW_EXECUTION_CHOICES]
-    workspace_launcher = "py" if os.name == "nt" else "python3"
+    engine = os.path.realpath(os.path.join(os.path.dirname(__file__), "tp.py"))
     action_id = _review_execution_action_id(run_id, "review-execution-mode")
     for choice in choices:
         if choice["response"] != "static":
@@ -1307,10 +1307,9 @@ def review_execution_preflight(*, selection: str | None = None,
                 choice["description"] += " Dependencies must be installed first."
         choice["prompt"] = (f"{choice['label']} for review "
                             f"{str(run_id or '').strip()}".strip())
-        choice["command"] = (workspace_launcher +
-                             " .taskplane/codex-hook.py review option " +
-                             choice["response"] + " --run-id " +
-                             str(run_id or "").strip())
+        argv = [sys.executable, engine, "review", "option", choice["response"],
+                "--run-id", str(run_id or "").strip()]
+        choice["command"] = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
     if not selection:
         return {
             "schema": "taskplane.review-execution-preflight/v1",

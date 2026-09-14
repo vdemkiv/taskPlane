@@ -4,6 +4,12 @@ Audit date: 2026-09-14 UTC. Repository baseline: `07694b5`; the later
 `b171f24` file-reader repair is being removed. This is a targeted architecture
 audit, not a completed governed EM review or release sign-off.
 
+Follow-up: [Claude initialization and budget recovery](../incidents/2026-09-14-claude-launcher-budget-recovery.md)
+also identified launcher-first hook resolution as a duplicate of native plugin
+selection. Hooks and entry skills now prefer the host-selected plugin; the
+project launcher is optional. The findings below retain the original audit's
+baseline and installation observations.
+
 **Yes: earlier changes implemented capabilities that Codex already provides.**
 The clearest active overlaps are command execution, process lifecycle/waiting,
 OS sandbox policy, and opening preview surfaces. There is also a host-tool

@@ -28,16 +28,7 @@ Current workflow contract: **v2.17**. Review, Evaluate, and final Engineering
 all consume the same **canonical review context**; transport may differ by
 host, but the workflow and evidence contract do not.
 
-On Codex, resolve the stable launcher from the current checkout or its Git
-repository family:
-`TP_LAUNCHER="$(git rev-parse --path-format=absolute --git-common-dir
-2>/dev/null)/../.taskplane/codex-hook.py"`; prefer
-`.taskplane/codex-hook.py` when that current-checkout file exists. Every `$TP`
-below means `python3 "$TP_LAUNCHER"`. It resolves the newest valid installed
-taskplane engine on every call. Only when neither launcher exists use
-`python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`; if both
-variables are unset, stop with the bootstrap error rather than invoking
-`/taskplane/tp.py`. Drive the whole loop; pause ONLY at the human gates.
+Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. Drive the whole loop; pause ONLY at the human gates.
 Follow each step's returned `instruction`.
 
 `flow.json` is the approved end-to-end graph: **goal → Product → optional

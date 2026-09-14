@@ -7,8 +7,9 @@ review defaults to 1,000,000 tokens. These counts include cached input, uncached
 input and output; they are not account quota percentages or dollar estimates.
 
 The plugin's common PreToolUse screen covers every tool, including reads,
-status, messaging, dispatch and waits. Inspection is exempt from the action
-quota only. Missing required telemetry and malformed ceilings fail closed.
+status, messaging, dispatch and waits. Bounded inspection, recovery help and
+explicitly approved recovery remain accessible after exhaustion or missing
+telemetry. Productive work still fails closed without required telemetry.
 Bound phase workers use their own native transcript, never a parent counter.
 Required token budgets remain binding even under an older advisory policy.
 
@@ -18,6 +19,22 @@ Do not self-grant, relaunch a worker, restart earlier phases, or use an advisory
 waiver as automatic recovery. Stop hooks return `continue: false`; a Stop
 `decision: block` would request another model turn and must not be used to
 enforce a budget. Replayed Stop events preserve the stop decision.
+
+After the user approves a specific additional token amount, invoke the installed
+engine or the optional project CLI with `budget --grant-tokens N --approved-by
+USER --workspace <workspace>`. This records the existing chat approval; the
+attribution flag is not independent proof of a human message. Apply the grant
+once, inspect the result, and resume the existing task without requesting the
+same approval again. Native tool permissions still apply to the command.
+
+The hook retains the current host-selected counter source in the existing
+contract meter. The grant re-reads that native counter and sets the ceiling to
+`max(previous ceiling, observed usage) + approved additional tokens`. For
+example, a 1 million ceiling with 49 million observed tokens and approval for
+10 million additional tokens becomes a 59 million ceiling. No usage is erased,
+and the contract's source permissions and other limits remain unchanged.
+Missing current usage refuses the grant instead of assuming zero. Action-only
+approval continues to use `--grant N`; it does not raise a token ceiling.
 
 Hooks enforce tool boundaries. They cannot cancel inference already in flight
 or impose the host's generation limit, so one response can cross the ceiling

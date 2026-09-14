@@ -987,6 +987,8 @@ _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
 def _valid_engines(plugin_family: str) -> list[tuple[tuple[int, int, int], str]]:
+    from host_capabilities import valid_plugin_root
+
     family = os.path.realpath(os.path.expanduser(plugin_family))
     try:
         names = os.listdir(family)
@@ -998,27 +1000,12 @@ def _valid_engines(plugin_family: str) -> list[tuple[tuple[int, int, int], str]]
     roots = [family, *(os.path.join(family, name) for name in names)]
     candidates: list[tuple[tuple[int, int, int], str]] = []
     for root in roots:
-        real_root = os.path.realpath(root)
         try:
-            if os.path.commonpath((family, real_root)) != family:
-                continue
-            manifest = os.path.join(real_root, ".codex-plugin", "plugin.json")
-            engine = os.path.realpath(os.path.join(real_root, "taskplane", "tp.py"))
-            if os.path.commonpath((family, engine)) != family:
-                continue
-            with open(manifest, encoding="utf-8") as source:
-                data = json.load(source)
+            candidate = valid_plugin_root(root, family, strict_permissions=True)
         except PermissionError as exc:
             raise RepositoryAcquisitionError("host-policy", str(exc)) from exc
-        except (OSError, ValueError, TypeError):
-            continue
-        version = data.get("version") if isinstance(data, dict) else None
-        match = _VERSION.fullmatch(str(version or ""))
-        if not match or data.get("name") != "taskplane" or not os.path.isfile(engine):
-            continue
-        if real_root != family and os.path.basename(real_root) != str(version):
-            continue
-        candidates.append((tuple(int(value) for value in match.groups()), engine))
+        if candidate and _VERSION.fullmatch(candidate[1]):
+            candidates.append((candidate[0], candidate[2]))
     return candidates
 
 

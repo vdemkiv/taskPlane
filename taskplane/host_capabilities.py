@@ -1141,7 +1141,7 @@ def resolve_dispatch_route(
 
 
 def valid_plugin_root(
-        root: str, family: str
+        root: str, family: str, *, strict_permissions: bool = False
 ) -> tuple[tuple[int, int, int], str, str] | None:
     """Validate one contained taskplane installation candidate."""
     family_real = os.path.realpath(family)
@@ -1151,13 +1151,31 @@ def valid_plugin_root(
             return None
     except ValueError:
         return None
-    manifest = os.path.join(root_real, os.path.join(".codex-plugin", "plugin.json"))
     engine = os.path.realpath(os.path.join(root_real, "taskplane", "tp.py"))
     try:
         if os.path.commonpath((family_real, engine)) != family_real:
             return None
-        with open(manifest, encoding="utf-8") as handle:
-            data = json.load(handle)
+        manifests = []
+        for directory in (".codex-plugin", ".claude-plugin"):
+            manifest = os.path.join(root_real, directory, "plugin.json")
+            try:
+                if os.path.commonpath((family_real, os.path.realpath(manifest))) != family_real:
+                    return None
+                with open(manifest, encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except FileNotFoundError:
+                continue
+            if not isinstance(data, dict) or data.get("name") != "taskplane":
+                return None
+            manifests.append(data)
+        if not manifests or any(row.get("version") != manifests[0].get("version")
+                                for row in manifests):
+            return None
+        data = manifests[0]
+    except PermissionError:
+        if strict_permissions:
+            raise
+        return None
     except (OSError, ValueError, TypeError):
         return None
     version = data.get("version") if isinstance(data, dict) else None

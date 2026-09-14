@@ -21,10 +21,7 @@ in the loop EM stage. Evaluate creates no lens route, slots, ledger, lens verdic
 or invalidation, or expanded-route authority. Missing or invalid evidence
 returns to a fresh zero-lens Evaluate judgment.
 
-On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
-workspace launcher exists; it resolves the newest valid installed taskplane
-engine on every call. Otherwise set
-`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. tp-engineering owns
+Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. tp-engineering owns
 the HOW-judgment: is the work sound, what does it affect, what did we
 learn. The loop's `em` step is this persona. Its counterpart,
 `/tp-product`, owns the requirement — deliberately separate seats so the

@@ -6486,12 +6486,9 @@ def grant_budget(workspace: str, extra: int) -> dict | None:
     half of the budget gate. Returns the updated contract, or None if there is
     no active contract / no ceiling to raise.
 
-    This is a HUMAN action, run from an UNGOVERNED context. There is NO
-    screener exemption (the wall is intentional — a governed agent must not
-    grant itself budget): a `tp.py budget --grant` issued with cwd INSIDE
-    the exhausted workspace is itself screened and blocked. The human runs it
-    from a different directory (the hook keys governance on cwd), passing
-    `--workspace <ws>`."""
+    A governed caller must carry explicit human approval. The hook abstains
+    for that narrow recovery command so native permissions can still apply.
+    Bare self-issued grants remain screened."""
     c = load_active(workspace)
     if c is None:
         return None
@@ -6523,6 +6520,26 @@ def grant_budget(workspace: str, extra: int) -> dict | None:
         new=b["max_actions"],
         task_id=c.get("task_id"),
     )
+    return c
+
+
+def grant_token_budget(workspace: str, extra: int, observed: int, approved_by: str,
+                       *, expected_task_id: str) -> dict:
+    """Apply approved headroom without resetting the cumulative native counter."""
+    path = _active_contract_path(workspace)
+    with file_lock(path):
+        c = load_active(workspace)
+        if (not c or c.get("_union") or c.get("task_id") != expected_task_id
+                or (c.get("budget") or {}).get("max_tokens") is None):
+            raise ValueError("select one current contract with a token ceiling")
+        if type(extra) is not int or extra <= 0 or type(observed) is not int or observed < 0 or not approved_by.strip():
+            raise ValueError("positive additional tokens, native usage and human approval are required")
+        old = int(c["budget"]["max_tokens"])
+        c["budget"]["max_tokens"] = max(old, observed) + extra
+        atomic_write_json(path, c, indent=2)
+        trace(workspace, "token_budget_granted", task_id=c["task_id"],
+              approved_by=approved_by, extra_tokens=extra, observed_tokens=observed,
+              old=old, new=c["budget"]["max_tokens"])
     return c
 
 

@@ -3455,12 +3455,14 @@ def render_onboarding(report, out=None):
         for name, row in stages.items()
     )
     setup_result = report.get("setup_result") or {}
-    failed = setup_result.get("status") in {"refused", "blocked"}
+    failed = setup_result.get("status") in {"refused", "blocked", "failed"}
     save_message = (
         "Could not finish setup: "
         + str(
             setup_result.get("error")
             or (setup_result.get("launcher") or {}).get("reason")
+            or ("TaskPlane could not initialize its entry point. Check the installed plugin before retrying."
+                if setup_result.get("launcher") is not None else None)
             or "Please retry."
         )
         if failed

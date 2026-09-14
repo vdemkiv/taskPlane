@@ -44,7 +44,7 @@ class TestHookPathManifests(unittest.TestCase):
         self.assertTrue(all("TASKPLANE_HOOK_PATH=native" in command
                             for command in commands))
 
-    def test_native_manifest_prefers_version_independent_workspace_runner(self):
+    def test_native_manifest_retains_optional_workspace_fallback(self):
         commands = [command for command in self._commands("hooks/hooks.json")
                     if "host_native_runtime.py" not in command]
         self.assertTrue(all('.taskplane/codex-hook.py' in command
@@ -53,6 +53,32 @@ class TestHookPathManifests(unittest.TestCase):
                             for command in commands))
         self.assertTrue(all("--git-common-dir" in command
                             for command in commands))
+
+    def test_native_host_plugin_wins_over_a_broken_workspace_launcher(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("package_openai", ROOT / "scripts/package_openai.py")
+        package = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(package)
+        for manifest in (self._manifest("hooks/hooks.json"), package.load_hook_manifest()):
+            for variable in ("PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"):
+                with self.subTest(host=variable), tempfile.TemporaryDirectory() as ws:
+                    plugin = Path(ws, "installed plugin")
+                    (plugin / "taskplane").mkdir(parents=True)
+                    (plugin / "taskplane/tp.py").write_text("print('native-engine')\n")
+                    Path(ws, ".taskplane").mkdir()
+                    Path(ws, ".taskplane/codex-hook.py").write_text("raise SystemExit('stale launcher')\n")
+                    env = dict(os.environ)
+                    env.pop("PLUGIN_ROOT", None)
+                    env.pop("CLAUDE_PLUGIN_ROOT", None)
+                    env[variable] = str(plugin)
+                    for rows in manifest["hooks"].values():
+                        for row in rows:
+                            for hook in row["hooks"]:
+                                result = subprocess.run(hook["command"], shell=True, cwd=ws,
+                                                        env=env, capture_output=True, text=True)
+                                self.assertEqual(result.returncode, 0, result.stderr)
+                                self.assertEqual(result.stdout.strip(), "native-engine")
 
     def test_cached_native_hook_runs_bridge_when_old_plugin_root_is_gone(self):
         manifest = json.loads((ROOT / "hooks" / "hooks.json").read_text(

@@ -84,6 +84,13 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.23.7": {
+        "reason": "untagged native Codex integration source candidate; Claude "
+                  "initialization and approved budget recovery supersede it in "
+                  "2.23.8. Marketplace installation is separate from tagged "
+                  "source release authority.",
+        "superseded_by": "2.23.8",
+    },
     "2.23.6": {
         "reason": "shared-initialization source candidate with no version tag "
                   "or GitHub archive release. The installed Marketplace copy "

@@ -36,17 +36,7 @@ evidence, blockers, and decisions that materially need their judgment. This is
 a user-interface simplification only. Never remove, shorten, or self-waive an
 internal gate to make the interaction look simpler.
 
-On Codex, resolve the stable launcher from the current checkout or its Git
-repository family before using the command notation `$TP` below:
-`TP_LAUNCHER="$(git rev-parse --path-format=absolute --git-common-dir
-2>/dev/null)/../.taskplane/codex-hook.py"`; prefer
-`.taskplane/codex-hook.py` when that current-checkout file exists. Invoke it as
-`python3 "$TP_LAUNCHER"`; it resolves the newest valid installed taskplane
-engine on every call. Only when neither launcher exists, during first setup or
-on another host, use
-`python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. If both host
-variables are unset, stop with the bootstrap error; never collapse it to
-`/taskplane/tp.py`.
+Use the installed engine selected by [common entry initialization](references/entry-initialization.md); `$TP` below denotes that CLI invocation.
 
 ## Approved flow contract
 
@@ -122,8 +112,8 @@ hooks in Codex settings. Installation is not trust approval; changed hooks can
 require review again, and an earlier receipt does not prove they remain enabled.
 Ask the user to start a new Codex task only if the host still needs its initial
 hook load; an
-existing loaded hook and stable launcher govern managed checkouts and follow
-later plugin versions without a restart.
+existing native hook uses the installed plugin chosen by the host. The optional
+project launcher does not determine which plugin version the host has loaded.
 For an existing run, first use `$TP loop resume` to read its durable goal,
 requirement, scope, progress and next action. `next_action: resume_run` means
 this recovery is available even if dispatch readiness is false. It needs no

@@ -458,7 +458,9 @@ def status(contract: dict, spent: int) -> tuple:
             f"STOP. This per-pickup ceiling uses the host's cumulative native "
             f"counter including cached input. Ask the user to approve a "
             f"specific additional budget or stop. Preserve current evidence; "
-            f"do not retry, relaunch, or grant yourself budget.")
+            f"do not retry, relaunch, or grant yourself budget. After explicit approval, "
+            f"run the installed TaskPlane CLI: budget --grant-tokens N --approved-by USER "
+            f"--workspace <workspace>. Apply the approved amount once, then resume the existing task.")
     return True, f"{spent:,}/{cap:,} native tokens"
 
 

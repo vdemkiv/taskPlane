@@ -11,10 +11,7 @@ Before following this skill, apply [common entry initialization](../taskplane/re
 using entry point `tp-northstar`. Every direct invocation rechecks readiness;
 sealed stage and lens workers validate their supplied startup instead.
 
-On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
-workspace launcher exists; it resolves the newest valid installed taskplane
-engine on every call. Otherwise set
-`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Product owns the WHAT,
+Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. Product owns the WHAT,
 engineering owns whether it's SOUND — those seats run automatically, backed
 by the routed 26-lens review catalog. This is the third lens — **strategy** —
 outside that catalog, and it is **summoned, not automatic**. Point it at anything: an idea, a

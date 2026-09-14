@@ -11,10 +11,7 @@ Before following this skill, apply [common entry initialization](../taskplane/re
 using entry point `tp-status`. Every direct invocation rechecks readiness;
 sealed stage and lens workers validate their supplied startup instead.
 
-On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
-workspace launcher exists; it resolves the newest valid installed taskplane
-engine on every call. Otherwise set
-`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Gather compactly
+Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. Gather compactly
 (skip empty sections):
 
 `flow.json` is the approved read-only graph: one status request fans out to a

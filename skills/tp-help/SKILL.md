@@ -16,10 +16,7 @@ model → folder/git/init/hooks setup → route by intent → one concrete next
 action**. Help never starts parallel delivery or invents a human gate; it
 hands the user to the selected governed skill.
 
-On Codex, use `TP='python3 .taskplane/codex-hook.py'` when that stable
-workspace launcher exists; it resolves the newest valid installed taskplane
-engine on every call. Otherwise use
-`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`.
+Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation.
 
 **FIRST, always:** run `$TP onboard --json`
 for the current folder. If `ready` is **false**, do NOT open with the tour —

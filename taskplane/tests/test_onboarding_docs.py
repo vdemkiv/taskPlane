@@ -97,7 +97,7 @@ class _TmpRepo(unittest.TestCase):
         )
 
 class TestOnboardInstallTruth(_TmpRepo):
-    def test_reinstall_restores_launcher_before_reusing_current_session(self):
+    def test_native_session_remains_ready_without_optional_launcher(self):
         env = {"CODEX_HOME": os.path.join(self.ws, "codex-home"),
                "CODEX_THREAD_ID": "reinstall-session",
                "TASKPLANE_HOME": os.path.join(self.ws, "state-home"),
@@ -113,14 +113,12 @@ class TestOnboardInstallTruth(_TmpRepo):
                     "cwd": self.ws})
             os.unlink(os.path.join(self.ws, ".taskplane", "codex-hook.py"))
             report = cli._onboard_report(self.ws)
-            self.assertFalse(report["ready"])
-            self.assertEqual(report["next_action"], "install_codex_hooks")
-            self.assertNotIn("Ready to go", dashboard.render_onboarding(report))
-
-            cli._install_codex_hooks(self.ws)
-            restored = cli._onboard_report(self.ws)
+            self.assertTrue(report["ready"], report)
+            self.assertEqual(report["next_action"], "ready")
+            restored = cli._initialize_entry(self.ws)
             self.assertTrue(restored["ready"], restored)
-            self.assertEqual(restored["next_action"], "ready")
+            self.assertEqual(restored["initialization"]["repairs"], [])
+            self.assertFalse(os.path.exists(os.path.join(self.ws, ".taskplane", "codex-hook.py")))
             # Configuration alone must not bless a different host session.
             os.environ["CODEX_THREAD_ID"] = "new-session-without-hook"
             fresh = cli._onboard_report(self.ws)

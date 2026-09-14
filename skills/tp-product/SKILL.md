@@ -11,10 +11,7 @@ Before following this skill, apply [common entry initialization](../taskplane/re
 using entry point `tp-product`. Every direct invocation rechecks readiness;
 sealed stage and lens workers validate their supplied startup instead.
 
-On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
-workspace launcher exists; it resolves the newest valid installed taskplane
-engine on every call. Otherwise set
-`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. tp-product owns the
+Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. tp-product owns the
 requirement spine: what to build, for whom, done-when. The loop's `pm`
 step is this persona. Its counterpart, `/tp-engineering`, owns whether the
 built thing is sound — deliberately separate seats so definition is never
