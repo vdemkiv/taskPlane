@@ -8,7 +8,8 @@ reinterpret those decisions.
 ## One bounded startup, one exact task
 
 `loop next` emits exactly `schema`, `stage_runtime_dispatch`, and `obligations`.
-The model orchestrator uses `obligations` to launch the worker. The delegated message contains
+The coordinating model uses `obligations` to launch the worker through native tools.
+There is no separate Taskplane controller. The delegated message contains
 only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`,
 the exact `contract_bootstrap.environment`, and this fixed operational instruction:
 "Read the supplied JSON once using `python3 .taskplane/codex-hook.py stage read-input
@@ -23,14 +24,19 @@ ambient knowledge, or an unrelated Design.
 2. The worker verifies the startup and reads its pinned phase input with
    `$TP stage read-input --request -`, supplying the envelope as JSON on stdin.
    The engine verifies its size, digest, authority and committed input reference.
+   Ordinary child CLI calls resolve the existing parent-owned run and exact slot
+   from native child metadata and its authenticated Start binding. Keep the
+   native session ID unchanged; a prompt or environment slot cannot supply
+   missing authority.
    The input declares the phase skill and typed artifact references. Read only
    those inputs and files permitted by the scoped contract.
 3. Independent wave entries use the same envelope and verification protocol.
    Each write-capable worker uses its own registered checkout and contract slot.
-4. Follow the emitted wait policy for the outstanding set. Collect every result
-   before asking for an orchestrator gate. A faster worker does not cancel another.
-   Do not poll status/list agents or send progress requests. A host timeout is
-   not progress and does not justify another review or a new phase attempt.
+4. Use the native wait tool and its supported arguments for the outstanding set.
+   Native tools own waiting, timeouts, inspection, and interruption; Taskplane
+   adds no minimum wait duration. Collect every result before requesting a gate.
+   A faster worker does not cancel another. A timeout alone does not justify
+   another review or a new phase attempt.
    `stage collect-lenses` returns the full collection in `report`; consume it
    directly without another artifact read. Reuse completed, unchanged leases.
 5. A bounded correction preserves the current scope and attempt identity. If a
@@ -39,13 +45,21 @@ ambient knowledge, or an unrelated Design.
 
 `SubagentStart` binds the pending slot to the worker. `SubagentStop` records its
 actual terminal outcome and releases the slot. These observations do not grant
-human approval. The model orchestrator requests collection using
+human approval. The coordinating model requests collection using
 `loop collect --operation <obligations.phase_operation>` (and `--task <id>` for
 a parallel phase). The harness derives the outcome from accepted evidence and
 owns the existing gate. Retrying that exact operation after a lost response is
 safe; it cannot advance another phase. A returned dashboard is a progress
 update: continue the admitted work until an actual human gate or refusal.
 Never invent a gate outcome or use a resource waiver to continue.
+
+If a Product, Design, or Plan child stops without valid output, retain the
+`phase_candidate_unavailable` refusal. Reconcile its exact operation with
+`loop resolve reconcile --phase-operation <operation>`. Once the observed
+terminal releases the contract, an authorized retry uses the existing
+`loop resolve retry` action, original operation, candidate fingerprint, human
+identity, and stop attestation. It remains subject to the stage attempt limit.
+Missing output does not pass the phase or permit a different operation to advance.
 
 Standalone Review has its own scoped brief protocol; it does not replace phase
 startup or inject a lens route into Evaluate or Engineering.

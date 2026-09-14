@@ -57,7 +57,10 @@ def host_session_id() -> str | None:
 
 def session_path(root: str) -> str:
     """Partition execution authority without adopting legacy or sibling state."""
-    session = host_session_id()
+    from taskplane.codex_identity import command_worker
+
+    worker = command_worker()
+    session = worker[0] if worker else host_session_id()
     if not session:
         return root
     fingerprint = hashlib.sha256(session.encode("utf-8")).hexdigest()

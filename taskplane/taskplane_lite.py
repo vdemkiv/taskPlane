@@ -6251,7 +6251,10 @@ def task_slot() -> str | None:
     """The per-task contract slot selected by TASKPLANE_TASK, or None for the
     legacy single slot. An ill-formed value raises StateError (fail closed —
     it must never silently select the wrong contract)."""
-    v = (os.environ.get("TASKPLANE_TASK") or "").strip()
+    from taskplane.codex_identity import command_worker
+
+    worker = command_worker()
+    v = (worker[1] if worker and worker[1] else os.environ.get("TASKPLANE_TASK") or "").strip()
     if not v:
         return None
     if not _TASK_SLOT_RE.match(v):

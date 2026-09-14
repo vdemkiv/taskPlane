@@ -773,8 +773,9 @@ def test_validation_sandbox_is_independent_writable_copy_with_push_disabled(
     review.record_review_execution(
         str(ws), kind="dynamic_validation", status="failed",
         detail={"summary": "initial build"}, run_id=opened["run_id"])
-    result = review.run_review_validation_command(
-        str(ws), command=[sys.executable, "-c", "print('passed')"],
+    def validate(code):
+        return review.run_review_validation_command(
+        str(ws), command=[sys.executable, "-c", code],
         run_id=opened["run_id"], isolation_launcher=lambda argv, cwd, timeout: (
             subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, timeout=timeout,
@@ -782,10 +783,22 @@ def test_validation_sandbox_is_independent_writable_copy_with_push_disabled(
             {"schema": "taskplane.review-isolation-receipt/v1",
              "scope": "complete-process-tree", "network": "denied",
              "mechanism": "test-isolation"}))
+    result = validate("print('passed')")
     assert result["status"] == "executed"
     dynamic = result["review_execution"]["dynamic_validation"]
     assert dynamic["execution_scope"] == "validation-sandbox"
     assert dynamic["original_failure"]["summary"] == "initial build"
+    assert review.production_validation_projection(result["review_execution"])["status"] == "executed"
+    repeated = validate("print('passed again')")
+    dynamic = repeated["review_execution"]["dynamic_validation"]
+    assert dynamic["original_failure"]["summary"] == "initial build"
+    assert [row["status"] for row in dynamic["attempts"]] == ["failed", "executed", "executed"]
+    failed = validate("raise SystemExit(1)")
+    dynamic = failed["review_execution"]["dynamic_validation"]
+    assert dynamic["status"] == "failed"
+    assert [row["status"] for row in dynamic["attempts"]] == ["failed", "executed", "executed", "failed"]
+    assert all("attempts" not in row for row in dynamic["attempts"])
+    assert review.production_validation_projection(failed["review_execution"])["status"] == "failed"
 
 
 def test_production_validation_blocks_direct_and_descendant_explicit_pushes(

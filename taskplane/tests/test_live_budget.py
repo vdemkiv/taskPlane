@@ -24,11 +24,19 @@ def test_phase_limit_reaches_the_active_hook_contract(tmp_path, monkeypatch):
 
 @pytest.fixture
 def screen(tmp_path, monkeypatch, capsys):
+    cli.tp.record_entry_tools(["Read", "Grep", "Glob", "Write"])
     contract = cli.tp.build_contract("bounded worker")
     cli._apply_contract_token_ceiling(contract, 100)
     cli.tp.activate(str(tmp_path), contract, snapshot=SOURCE_SHA)
 
-    def invoke(tool, args, *, tokens=100, available=True):
+    def invoke(tool, args, *, tokens=100, available=True, worker=False, read_only=False):
+        if read_only:
+            selected = {**contract, "read_only": True}
+            monkeypatch.setattr(cli.tp, "load_active_for_event", lambda *_: selected)
+        if worker:
+            monkeypatch.setattr(cli.tp, "load_active_for_event",
+                lambda *_: {**contract, "worker_scoped": True,
+                    "budget": {"max_actions": 40}})
         transcript = tmp_path / "native.jsonl"
         _write_codex_transcript(transcript, label="meter", input_tokens=tokens,
                                cached_tokens=tokens, output_tokens=0)
@@ -52,7 +60,7 @@ def screen(tmp_path, monkeypatch, capsys):
 def test_cached_tokens_block_reads_and_coordination(screen, tool, args):
     result = screen(tool, args)
     assert any(row.get("decision") == "block" and "100/100 native tokens" in row["reason"]
-               for row in result)
+               for row in result), result
 
 
 @pytest.mark.parametrize("available", [True, False])
@@ -66,11 +74,28 @@ def test_missing_usage_is_not_zero(screen):
     assert any("telemetry unavailable" in row.get("reason", "") for row in result)
 
 
-def test_short_polling_refused_but_event_wait_allowed(screen):
-    result = screen("collaboration.wait_agent", {"timeout_ms": 10}, tokens=10)
-    assert any("short polling is disabled" in row.get("reason", "") for row in result)
+@pytest.mark.parametrize("name, arguments", [
+    ("collaboration.wait_agent", {"timeout_ms": 10}),
+    ("collaborationwait_agent", {"timeout_ms": 60000}),
+    ("collaboration.list_agents", {}),
+    ("collaborationspawn_agent", {"task_name": "another_review"}),
+    ("collaboration__spawn_agent", {"task_name": "another_review"}),
+])
+def test_native_coordination_does_not_reimplement_host_wait_policy(screen, name, arguments):
     assert not any(row.get("decision") == "block" for row in
-                   screen("collaboration.wait_agent", {"timeout_ms": 60000}, tokens=20))
+        screen(name, arguments, tokens=10, read_only=True))
+
+
+def test_unknown_tool_cannot_gain_coordination_authority_by_suffix(screen):
+    result = screen("foreign.spawn_agent", {"task_name": "another_review"},
+        tokens=10, read_only=True)
+    assert any(row.get("decision") == "block" for row in result)
+
+
+def test_native_alias_preserves_reviewer_role_restriction(screen):
+    result = screen("collaborationspawn_agent", {"task_name": "another_review"},
+        tokens=10, worker=True)
+    assert any("no coordination" in row.get("reason", "") for row in result)
 
 
 def test_hook_matches_all_tools_including_reads_and_messages():

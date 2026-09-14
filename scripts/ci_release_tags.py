@@ -84,6 +84,13 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.23.9": {
+        "reason": "untagged shared-entry readiness source candidate; native "
+                  "child recovery, whole-repository review, and evidence "
+                  "corrections supersede it in 2.23.10. Package builds and "
+                  "a source push do not establish a tagged release.",
+        "superseded_by": "2.23.10",
+    },
     "2.23.8": {
         "reason": "untagged native startup and budget recovery source candidate; "
                   "shared entry readiness and installed-package journey "

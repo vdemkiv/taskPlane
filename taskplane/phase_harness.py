@@ -947,10 +947,13 @@ def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> d
     result = runtime._collect_phase_attempt(
         ws, attempt, completed_worker=terminal if hooks is None else None
     )
-    if result["status"] != "collected":
+    if result["status"] != "collected" and (
+        hooks is None or context["stage"]["stage_kind"] not in {"product", "design", "plan"}
+    ):
         return {**result, "dispatch_allowed": False}
     _reconcile_usage(runtime, ws, contract, material, terminal)
-    runtime.collect_phase_runtime_telemetry(ws, contract)
+    if result["status"] == "collected":
+        runtime.collect_phase_runtime_telemetry(ws, contract)
     if hooks is None:
         # Current validation is not a historical Stop. Keep the slot intact;
         # the ordinary successful gate owns its retirement.
@@ -972,7 +975,8 @@ def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> d
                     slot,
                     event=None,
                     outcome=terminal["outcome"],
-                    submission_status="phase-collected:" + terminal["claim"],
+                    submission_status=("phase-collected:" if result["status"] == "collected"
+                        else "phase-terminal:") + terminal["claim"],
                     authority="phase-observation",
                 )
             runtime.tp.release_worker_contract(
@@ -1138,6 +1142,7 @@ def resolve_retry(
 ) -> dict[str, Any]:
     """One human-authorized successor attempt, retaining the failed evidence.
 
+    Observed, released pre-build workers need no successful output to retry.
     Expired unbound workers require an explicit stop attestation. Active or
     effect-owning Build workers need reconciliation, not this recovery path.
     The journal grant precedes cleanup; a crash is replayable and next cannot
@@ -1226,20 +1231,39 @@ def resolve_retry(
     material = context["artifacts"].read(prepared["result"]["reference"])
     if prepared["request_fingerprint"] != review_evidence.content_fingerprint(material):
         raise ValueError("phase preparation changed")
-    deadline = datetime.fromisoformat(material["bindings"]["deadline"])
-    if deadline.tzinfo is None or time.time() < deadline.timestamp():
-        raise ValueError("phase retry requires an expired attempt")
     slot = material["contract_slot"]
     contract = runtime.tp.load_json(
-        runtime.tp.active_contract_path(ws, slot), what="expired phase contract"
+        runtime.tp.active_contract_path(ws, slot), default=None, what="phase retry contract"
     )
+    if contract is None:
+        contract = runtime.tp.released_worker_contract(ws, slot)
     lifecycle = contract.get("worker_lifecycle") or {}
-    if (
-        lifecycle.get("status") != "pending"
-        or lifecycle.get("owner") is not None
-        or (contract.get("phase_runtime") or {}).get("operation_id") != operation
-    ):
+    if (contract.get("phase_runtime") or {}).get("operation_id") != operation:
+        raise ValueError("phase retry contract belongs to another operation")
+    if lifecycle.get("status") == "released" and context["stage"]["stage_kind"] in {
+        "product", "design", "plan"
+    }:
+        # Released contracts and native receipts retain their own validators.
+        # Do not read (or invent) the output the failed worker never produced.
+        source = runtime.design_host_transport.phase_nonce_source(
+            runtime.tp, ws, context["run_id"], existing_only=True
+        )
+        issued = source.recover(material["nonce_bindings"])
+        hooks = source.terminal_hooks(issued, material["nonce_bindings"])
+        if hooks is None or any(
+            lifecycle.get("owner") != {key: event["owner"][key]
+                for key in ("session_id", "agent_id", "task_name")}
+            for event in hooks
+        ):
+            raise ValueError("phase retry requires the original worker's observed terminal")
+    elif lifecycle.get("status") == "pending" and lifecycle.get("owner") is None:
+        deadline = datetime.fromisoformat(material["bindings"]["deadline"])
+        if deadline.tzinfo is None or time.time() < deadline.timestamp():
+            raise ValueError("phase retry requires an expired attempt")
+    else:
         raise ValueError("phase worker is not unbound; reconcile its actual terminal/effects first")
+    if len(retry_chain(context)) + 1 >= context["stage"]["budget"]["attempt_limit"]:
+        raise ValueError("phase attempt limit exhausted")
     # Preserve the exact pre-recovery object, not just its terminal projection.
     snapshot = context["artifacts"].put("phase-retry-contract", contract)
     config = dict(context["configuration"], candidate_fingerprint=candidate)
@@ -2573,16 +2597,29 @@ def _collect_phase_attempt(
         if stage["stage_kind"] == "build"
         else None
     )
-    authored = phase_candidates(_ports, ws, material)
-    lens_plan = None
-    if any(row["artifact_class"] == "lens-evidence" for row in definition["produces"]):
-        lens_plan = prepare_lenses(
-            _ports,
-            {**context, "definition": definition},
-            material,
-            artifacts.read(material["worker_input_reference"]),
-            authored,
-        )
+    def candidate_refusal(exc: Exception) -> dict[str, Any]:
+        refusal = {
+            "status": "pending", "reason_code": "phase_candidate_unavailable",
+            "operation_id": operation, "run_id": run_id,
+            "preparation": requested["reference"], "terminal_identity": terminal["claim"],
+            "error": str(exc), "accepted": False,
+        }
+        return {**refusal, "refusal_reference": artifacts.put("phase-collection-refusal", refusal)}
+    try:
+        authored = phase_candidates(_ports, ws, material)
+        lens_plan = None
+        if any(row["artifact_class"] == "lens-evidence" for row in definition["produces"]):
+            lens_plan = prepare_lenses(
+                _ports,
+                {**context, "definition": definition},
+                material,
+                artifacts.read(material["worker_input_reference"]),
+                authored,
+            )
+    except (OSError, ValueError) as exc:
+        if stage["stage_kind"] not in {"product", "design", "plan"}:
+            raise
+        return candidate_refusal(exc)
     package = None
     if stage["stage_kind"] in {"plan", "build"}:
         package = _ports.consume_phase_handoff(
@@ -2618,16 +2655,21 @@ def _collect_phase_attempt(
             inputs = artifacts.read(material["worker_input_reference"])
             if judgment.get("accepted_evaluations") != inputs["accepted_evaluations"]:
                 raise ValueError("Engineering judgment must consume every selected task evaluation")
-    if stage["stage_kind"] != "plan":
-        authored = _ports.produce_spec_phase_candidates(
-            artifacts, definition, authored, package=package, state=_ports.load(ws), workspace=ws
-        )
-    if lens_plan is not None:
-        authored["lens-evidence"] = lens_evidence(artifacts, {**material, "lens_plan": lens_plan})
-    output_rows = [
-        artifact.projection()
-        for artifact in _ports.store_spec_phase_outputs(artifacts, definition, authored)
-    ]
+    try:
+        if stage["stage_kind"] != "plan":
+            authored = _ports.produce_spec_phase_candidates(
+                artifacts, definition, authored, package=package, state=_ports.load(ws), workspace=ws
+            )
+        if lens_plan is not None:
+            authored["lens-evidence"] = lens_evidence(artifacts, {**material, "lens_plan": lens_plan})
+        output_rows = [
+            artifact.projection()
+            for artifact in _ports.store_spec_phase_outputs(artifacts, definition, authored)
+        ]
+    except (OSError, ValueError) as exc:
+        if stage["stage_kind"] not in {"product", "design", "plan"}:
+            raise
+        return candidate_refusal(exc)
     observation = _ports.agent_runtime.Observation(
         start["claim"],
         (),

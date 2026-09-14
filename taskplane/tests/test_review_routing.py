@@ -1005,6 +1005,9 @@ class TestSelectiveReviewKernel(unittest.TestCase):
                 json.dump(row, stream)
         collected = review.collect_review(self.ws, publish=False)
         self.assertEqual(collected["status"], "complete")
+        self.assertEqual(collected["counters"]["dispatched_agent_count"], 0)
+        self.assertEqual(collected["slot_conservation"]["dispatched"],
+                         {"count": 0, "slot_ids": []})
         validations = [store.read(ref)
                        for ref in collected["result_validations"]]
         self.assertEqual({row["trust"] for row in validations},

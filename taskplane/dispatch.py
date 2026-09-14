@@ -1018,7 +1018,7 @@ def next_action(_ports,
 
 
 def event_wait_policy(_ports, outstanding_set: str, outstanding_count: int) -> dict:
-    """Return the single long-lived event wait for a dispatched set."""
+    """Describe the outstanding domain set; native tools own wait behavior."""
     if not str(outstanding_set or "").strip():
         raise ValueError("outstanding_set is required")
     if int(outstanding_count) < 1:
@@ -1028,47 +1028,29 @@ def event_wait_policy(_ports, outstanding_set: str, outstanding_count: int) -> d
         "outstanding_set": str(outstanding_set),
         "outstanding_count": int(outstanding_count),
         "mode": "event",
-        "timeout_seconds": 1800,
-        "minimum_timeout_seconds": 300,
-        "reissue_after": ["completion", "attention"],
-        "scheduled_polling": False,
     }
 
 
 def event_wait_invocation(_ports, policy: Mapping[str, object],
                           outstanding_members: list[str], *,
                           wake: str | None = None) -> dict:
-    """Emit one live event wait, or its wake-authorized reissue.
-
-    A host may issue the first invocation immediately. A later invocation is
-    a reissue and must carry the completion/attention event that woke the
-    prior wait; timeouts and scheduled polling never authorize one.
-    """
+    """Describe what remains to collect, without scheduling or policing waits."""
     value = dict(policy) if isinstance(policy, _ports.Mapping) else {}
     members = list(outstanding_members)
     if (value.get("schema") != "taskplane.wait-policy/v1" or
-            value.get("mode") != "event" or
-            value.get("scheduled_polling") is not False or
-            int(value.get("timeout_seconds") or 0) < 1800 or
-            value.get("reissue_after") != ["completion", "attention"]):
+            value.get("mode") != "event"):
         raise ValueError("event wait policy is invalid")
     if (not members or any(not isinstance(member, str) or not member.strip()
                            for member in members) or
             len(set(members)) != len(members) or
             int(value.get("outstanding_count") or 0) != len(members)):
         raise ValueError("event wait outstanding set is invalid")
-    if wake is not None and wake not in value["reissue_after"]:
-        raise ValueError(
-            "event wait reissue requires a completion or attention wake")
     return {
         "schema": "taskplane.event-wait-invocation/v1",
         "operation": "wait_for_events",
         "outstanding_set": value["outstanding_set"],
         "outstanding_members": members,
-        "timeout_seconds": int(value["timeout_seconds"]),
-        "scheduled": False,
-        "reissue": wake is not None,
-        "wake": wake,
+        "wait_owner": "native",
     }
 
 

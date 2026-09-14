@@ -131,7 +131,7 @@ def _markers_present(root: str, spec) -> list:
 
 def fingerprint(root: str) -> str:
     """What the verdict actually depends on: which manifests exist and their
-    size/mtime, plus the PATH that resolves the toolchains. Installing a
+    size/mtime, plus PATH and the resolved executable's identity. Installing a
     toolchain or editing a manifest invalidates; six agents in one wave do
     not."""
     h = hashlib.sha1()
@@ -153,6 +153,17 @@ def fingerprint(root: str) -> str:
             except OSError:
                 present = f"{dependency}:missing\n"
             h.update(present.encode("utf-8"))
+        if _markers_present(root, spec):
+            executable = shutil.which(spec["tool"])
+            identity = f"{spec['tool']}:missing"
+            if executable:
+                try:
+                    st = os.stat(executable)
+                    identity = (f"{os.path.realpath(executable)}:{st.st_size}:"
+                        f"{st.st_mtime_ns}:{st.st_ctime_ns}:{st.st_mode}")
+                except OSError:
+                    identity = f"{executable}:unavailable"
+            h.update(identity.encode("utf-8"))
     h.update(("PATH=" + (os.environ.get("PATH") or "")).encode("utf-8"))
     return h.hexdigest()[:16]
 
@@ -373,9 +384,7 @@ def store(workspace: str, result: dict) -> dict:
 def probe_once(workspace: str, root: str | None = None, *,
                timeout: int = DEFAULT_TIMEOUT, refresh: bool = False,
                settings_authority: dict | None = None) -> dict:
-    """The entry point every caller should use: probe at most once per tree
-    state per checkout. This is the whole point of the module — six lens
-    agents dispatched in the same wave share ONE answer."""
+    """Share unchanged probes; repairs invalidate the environment fingerprint."""
     root = root or workspace
     if not enabled(authority=settings_authority):
         return {"fingerprint": fingerprint(root), "checks": [],

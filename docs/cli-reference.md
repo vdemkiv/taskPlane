@@ -864,7 +864,7 @@ Positional arguments:
 | `--outage-fingerprint` | OUTAGE_FINGERPRINT | exact current evaluator outage fingerprint; replay-safe |
 | `--phase-operation` | PHASE_OPERATION | exact existing phase operation to reconcile or retry once |
 | `--reason` | REASON | explicit Build acceptance, review deferral or EM baseline selection |
-| `--worker-stopped` | flag | attest the expired unbound worker is stopped; not a completion or pass |
+| `--worker-stopped` | flag | attest the former worker is stopped; observed terminal or expiry is also verified |
 
 ## `tp.py loop restore-settings`
 
@@ -1304,6 +1304,7 @@ Positional arguments:
 | `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
 | `--paths` | PATHS | changed files, directories or globs to review |
 | `--run-id` | RUN_ID | resume or deterministically name the repository preflight run |
+| `--scope` | one of: diff, repository | review a comparison or the complete pinned source snapshot |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py review validate`

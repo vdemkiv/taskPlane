@@ -88,6 +88,14 @@ decision. It returns compact artifact references plus the exact briefs; it
 does not print or duplicate the artifact bodies. Do not walk the older
 target/graph/impact/route/dispatch commands during a normal review.
 
+For a whole-repository review with no diff, use `$TP review start --scope
+repository --workspace <local-checkout>`. This selects the clean checkout's
+pinned tracked-file inventory; reviewers inspect those files through native
+read tools. It excludes untracked files and refuses changed tracked content.
+Do not manufacture a comparison or treat an empty diff as this scope. A PR or
+explicit comparison base is incompatible. Acquire a remote repository first,
+then select its local checkout for snapshot review.
+
 The opening performs repository acquisition, authentication, checkout and
 target verification before it scans a graph, activates a contract, or creates
 a dispatchable ReviewKernel run. Treat
@@ -166,6 +174,10 @@ times. The probe is a capability fact, not permission to silently downgrade
 the review. Always present the engine's execution preflight, including its
 discovered commands. The human's dynamic option is approval for the bounded
 dependency install and command run; do not require an exact receipt phrase.
+Reuse passing CI supplied for the reviewed revision as baseline evidence.
+A code or EM review does not itself require rerunning that suite. Honor an
+existing static-review instruction or validation choice without asking again;
+run additional checks only to verify changed behavior or resolve a specific gap.
 Run each declared command once. A command that starts and fails is a review bug,
 not infrastructure unavailability: record `review evidence dynamic_validation
 failed`, which becomes a high-severity canonical finding. If validation-only

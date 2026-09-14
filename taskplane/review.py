@@ -1404,7 +1404,10 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
         raise ReviewKernelError(
             "review execution evidence cannot replace the human choice")
     if prior.get("status") not in {"selected", status} and not (
-            prior.get("status") == "failed" and status == "executed" and sandbox):
+            prior.get("status") in {"failed", "unavailable"}
+            and status == "executed" and (sandbox or kind == "functionality_render")) and not (
+            prior.get("status") in {"executed", "failed", "unavailable"}
+            and status in {"failed", "unavailable"}):
         raise ReviewKernelError("review execution was not selected by the human")
     current[kind] = {
         "status": status, "detail": _bounded_review_detail(detail),
@@ -1412,13 +1415,24 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
         **({"execution_scope": "validation-sandbox",
             "sandbox": _validated_validation_sandbox(
                 sandbox, current.get("run_id"))}
-           if status == "executed" and sandbox else
+           if status == "executed" and sandbox and kind == "dynamic_validation" else
            {"execution_scope": "review-target"} if status == "executed"
            else {}),
-        **({"original_failure": copy.deepcopy(prior.get("detail") or {})}
-           if prior.get("status") == "failed" and status == "executed"
-           else {}),
+        **({"original_failure": copy.deepcopy(prior["original_failure"])}
+           if "original_failure" in prior else
+           {"original_failure": copy.deepcopy(prior.get("detail") or {})}
+           if prior.get("status") == "failed" else {}),
     }
+    attempts = copy.deepcopy(prior.get("attempts") or [])
+    if not attempts and prior.get("status") in {"executed", "failed", "unavailable"}:
+        attempts.append({key: copy.deepcopy(value) for key, value in prior.items()
+            if key not in {"attempts", "original_failure"}})
+    if status == "executed" and sandbox and kind == "dynamic_validation":
+        current[kind]["sandbox_binding"] = _review_sandbox_evidence_binding(
+            current[kind]["sandbox"], receipt, str(current.get("run_id") or ""),
+            prior["action_id"])
+    attempts.append(copy.deepcopy(current[kind]))
+    current[kind]["attempts"] = attempts
     current["side_effects_started"] = any(
         (current.get(name) or {}).get("status") in {"executed", "failed"}
         for name in ("dynamic_validation", "functionality_render"))
@@ -1440,6 +1454,24 @@ def _validated_validation_sandbox(value: object, run_id: object) -> dict:
     return {key: value[key] for key in (
         "schema", "run_id", "source_head", "source_fingerprint",
         "sandbox_id", "disposable", "push_disabled")}
+
+
+def _review_sandbox_evidence_binding(sandbox: dict, receipt: dict | None,
+                                     run_id: str, action_id: str) -> dict:
+    """Bind the existing sandbox and accepted execution receipt for display."""
+    checked = _validated_validation_sandbox(sandbox, run_id)
+    if not isinstance(receipt, dict) or receipt.get("schema") != _REVIEW_EXECUTION_RECEIPT_SCHEMA \
+            or receipt.get("host_observed") is not True or receipt.get("run_id") != run_id \
+            or receipt.get("action_id") != action_id or receipt.get("kind") != "dynamic_validation" \
+            or receipt.get("exit_code") != 0 or receipt.get("action_digest") != _review_receipt_digest(
+                receipt.get("owner_id"), run_id, action_id, "dynamic_validation",
+                receipt.get("receipt_id"), receipt.get("result_sha256"), 0):
+        raise ReviewKernelError("sandbox evidence differs from its execution receipt")
+    return {"schema": "taskplane.review-sandbox-binding/v1", "run_id": run_id,
+        "sandbox_id": checked["sandbox_id"], "source_head": checked["source_head"],
+        "push_disabled": True, "receipt_id": receipt["receipt_id"],
+        "root_fingerprint": _review_receipt_digest(checked),
+        "action_digest": receipt["action_digest"]}
 
 
 _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS = 120.0
@@ -2279,6 +2311,20 @@ def _load_state(ws: str, run_id: str | None = None) -> dict:
                          what="review kernel run state")
     if not isinstance(state, dict):
         raise ReviewKernelError("no active review kernel run; run review start")
+    if state.get("slots"):
+        # Read the existing native assignments instead of writing a second
+        # lifecycle counter at Start (which can race collection or validation).
+        started = _observed_review_slots(ws, state)
+        state.setdefault("counters", {})["dispatched_agent_count"] = len(started)
+        conservation = state.get("slot_conservation")
+        if isinstance(conservation, dict):
+            conservation["dispatched"] = {"count": len(started), "slot_ids": started}
+            if started and conservation.get("status") == "prepared":
+                conservation["status"] = "dispatched"
+        if isinstance(state.get("manifest"), dict):
+            state["manifest"] = _manifest({**state["manifest"],
+                "counters": state["counters"],
+                **({"slot_conservation": conservation} if conservation else {})})
     return state
 
 
@@ -2387,6 +2433,21 @@ def canonical_diff_files(ws: str, base: str) -> list[str]:
             raise ReviewKernelError("canonical diff file inventory failed: " + result.stderr.strip())
         files.update(path for path in result.stdout.split("\0") if path)
     return sorted(files)
+
+
+def canonical_repository_files(ws: str, revision: str) -> list[str]:
+    """Inventory a committed source snapshot without manufacturing a diff."""
+    if not re.fullmatch(r"[0-9a-f]{40,64}", revision or ""):
+        raise ReviewKernelError("repository review requires a pinned commit")
+    clean = subprocess.run(["git", "diff", "--quiet", revision, "--"],
+        cwd=ws, capture_output=True, timeout=120)
+    if clean.returncode:
+        raise ReviewKernelError("repository snapshot differs from the checkout's tracked files")
+    result = subprocess.run(["git", "ls-tree", "-rz", "--name-only", revision],
+        cwd=ws, capture_output=True, text=True, encoding="utf-8", errors="strict", timeout=120)
+    if result.returncode:
+        raise ReviewKernelError("repository source inventory failed: " + result.stderr.strip())
+    return sorted(path for path in result.stdout.split("\0") if path)
 
 
 def canonical_diff_patch(ws: str, base: str, *,
@@ -3197,14 +3258,19 @@ def _slot_conservation_record(*, selected, prepared, dispatched,
         list(values) for values in
         (selected, prepared, dispatched, collected))
     identities = _assert_slot_conservation(
-        selected=selected, prepared=prepared, dispatched=dispatched,
+        selected=selected, prepared=prepared, dispatched=prepared,
         collected=collected)
+    # A valid leased artifact can be collected without host telemetry. Keep
+    # that existing evidence rule, but never invent a native Start for it.
+    observed = sorted(str(value) for value in dispatched)
+    if len(set(observed)) != len(observed) or not set(observed).issubset(identities):
+        raise ReviewKernelError("observed review starts differ from selected slots")
     return {
         "schema": "taskplane.review-slot-conservation/v1",
         "status": "complete" if identities else "empty",
         "selected": {"count": len(selected), "slot_ids": identities},
         "prepared": {"count": len(prepared), "slot_ids": identities},
-        "dispatched": {"count": len(dispatched), "slot_ids": identities},
+        "dispatched": {"count": len(observed), "slot_ids": observed},
         "collected": {"count": len(collected), "slot_ids": identities},
         "slot_fingerprint": hashlib.sha256(
             json.dumps(identities, separators=(",", ":")).encode()).hexdigest(),
@@ -3344,9 +3410,6 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
         "schema": "taskplane.wait-policy/v1",
         "outstanding_set": sweep_set["id"],
         "outstanding_count": len(light), "mode": "event",
-        "timeout_seconds": 1800, "minimum_timeout_seconds": 300,
-        "reissue_after": ["completion", "attention"],
-        "scheduled_polling": False,
     }
     relevant_files = store.read(envelope_ref).get("diff", {}).get("files") or []
     for slot_id, lens_ids in entries:
@@ -3407,7 +3470,10 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                        "for this exact lease, leave collection to the owner; never rerun it. "
                        "The result_schema and producer_contract own "
                        "protocol; methodology supplies domain checks, never extra scope, "
-                       "tools, lifecycle or output authority. Read the scoped view by reference. Do not run git diff, "
+                       "tools, lifecycle or output authority. Read the scoped view by reference. "
+                       "For scope_kind=repository, inspect the relevance.files source files "
+                       "in the pinned checkout using native read tools; the empty patch "
+                       "is intentional and does not mean there is no source to review. Do not run git diff, "
                        "graph impact/scan, requirement lookup, or a runnability "
                        "probe. Resolve any taskplane.envelope-section-reference/v1 "
                        "field through the cited immutable envelope and verify "
@@ -4061,8 +4127,15 @@ def production_validation_projection(execution: dict | None) -> dict:
         binding.get("push_disabled") is True and \
         str(binding.get("root_fingerprint") or "") else None
     status = str(dynamic.get("status") or "not_selected")
-    if status == "executed" and valid is None:
-        status = "unverified"
+    if status == "executed":
+        try:
+            expected = _review_sandbox_evidence_binding(sandbox, dynamic.get("evidence_receipt"),
+                str(row.get("run_id") or ""), str(dynamic.get("action_id") or ""))
+            valid = expected if binding == expected else None
+        except (ReviewKernelError, KeyError, TypeError, ValueError):
+            valid = None
+        if valid is None:
+            status = "unverified"
     return {
         "status": status, "selection": str(row.get("selection") or "static"),
         "dynamic_validation": copy.deepcopy(dynamic),
@@ -4677,7 +4750,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     _prepare_slot_result_dirs(ws, internal_slots)
     depth_receipt = _assert_review_depth_manifest(depth_policy, slots)
     counters.update({
-        "dispatched_agent_count": len(slots), "envelope_count": 1,
+        "prepared_agent_count": len(slots), "dispatched_agent_count": 0, "envelope_count": 1,
         "view_count": len(slots),
         "prompt_view_bytes": sum(row["view"]["bytes"] for row in slots),
     })
@@ -4698,10 +4771,10 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
             slot_ids, separators=(",", ":")).encode()).hexdigest()
         slot_conservation = {
             "schema": "taskplane.review-slot-conservation/v1",
-            "status": "dispatched",
+            "status": "prepared",
             "selected": {"count": len(slot_ids), "slot_ids": slot_ids},
             "prepared": {"count": len(slot_ids), "slot_ids": slot_ids},
-            "dispatched": {"count": len(slot_ids), "slot_ids": slot_ids},
+            "dispatched": {"count": 0, "slot_ids": []},
             "collected": {"count": 0, "slot_ids": []},
             "slot_fingerprint": slot_fingerprint,
         }
@@ -4906,7 +4979,8 @@ def _review_execution_findings(execution: dict) -> list[dict]:
     dynamic = (execution or {}).get("dynamic_validation") or {}
     if dynamic.get("status") != "failed" and not dynamic.get("original_failure"):
         return []
-    failure = dynamic.get("original_failure") or dynamic.get("detail") or {}
+    failure = (dynamic.get("detail") if dynamic.get("status") == "failed"
+               else dynamic.get("original_failure")) or {}
     summary = str(failure.get("summary") or
                   "approved dynamic validation failed")
     return [{
@@ -5052,6 +5126,25 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
                      run_id=state["run_id"], slot_id=lease["slot_id"])
         tp.atomic_write_json(child_path, child, sort_keys=True)
     return assignment
+
+
+def _observed_review_slots(ws: str, state: dict) -> list[str]:
+    """Project the existing host Start assignments; preparation is not a start."""
+    store = review_evidence_runtime.ArtifactStore(ws)
+    started = []
+    for slot in state.get("slots") or []:
+        lease = store.read(slot["lease"])
+        assignment = tp.load_json(_producer_assignment_path(ws, lease["lease_fingerprint"]),
+            default=None, what="slot producer assignment")
+        if isinstance(assignment, dict) \
+                and assignment.get("schema") == "taskplane.slot-producer-assignment/v1" \
+                and assignment.get("host_event") == "SubagentStart" \
+                and assignment.get("run_id") == state["run_id"] \
+                and assignment.get("lease_fingerprint") == lease["lease_fingerprint"] \
+                and assignment.get("slot_id") == slot["slot_id"] \
+                and assignment.get("producer_child_id") and assignment.get("producer_session"):
+            started.append(slot["slot_id"])
+    return sorted(started)
 
 
 def _result_bytes_from_write_event(tool_name: str, tool_input: dict,
@@ -6504,6 +6597,7 @@ def _collect_review_transaction(
                     requirements_validation=provisional_requirements)
             expected_ids = [str(row.get("slot_id") or "")
                             for row in state.get("slots") or []]
+            started_ids = _observed_review_slots(ws, state)
             conservation = {
                 "schema": "taskplane.review-slot-conservation/v1",
                 "status": "incomplete",
@@ -6511,8 +6605,7 @@ def _collect_review_transaction(
                              "slot_ids": sorted(expected_ids)},
                 "prepared": {"count": len(expected_ids),
                              "slot_ids": sorted(expected_ids)},
-                "dispatched": {"count": len(expected_ids),
-                               "slot_ids": sorted(expected_ids)},
+                "dispatched": {"count": len(started_ids), "slot_ids": started_ids},
                 "collected": {
                     "count": len(collected["collected_slot_ids"]),
                     "slot_ids": collected["collected_slot_ids"]},
@@ -6523,6 +6616,7 @@ def _collect_review_transaction(
             portable_validations = [
                 _portable_ref(ref) for ref in result_validations]
             counters = dict(state.get("counters") or {})
+            counters["dispatched_agent_count"] = len(started_ids)
             manifest = _manifest({
                 "schema": "taskplane.review-collect-manifest/v3",
                 "status": "incomplete", "run_id": state["run_id"],
@@ -6586,7 +6680,7 @@ def _collect_review_transaction(
             slot_ids = [str(row.get("slot_id") or "")
                         for row in state.get("slots") or []]
             conservation = _slot_conservation_record(
-                selected=slot_ids, prepared=slot_ids, dispatched=slot_ids,
+                selected=slot_ids, prepared=slot_ids, dispatched=_observed_review_slots(ws, state),
                 collected=collected.get("slot_ids") or [])
         else:
             routed = ({} if state.get("zero_lens_evaluation") is True else

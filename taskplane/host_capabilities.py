@@ -128,6 +128,19 @@ def is_codex_readonly_invocation(tool: str, payload: Mapping, workspace: str) ->
             and shlex.join(argv) == command)
 
 
+def native_coordination_tool(name: str) -> str | None:
+    """Exact native spellings, including Codex's flattened hook names."""
+    tools = {"wait_agent", "wait_threads", "list_agents", "send_message",
+        "followup_task", "spawn_agent", "interrupt_agent"}
+    for tool in tools:
+        if name in {tool, "collaboration." + tool, "collaboration__" + tool,
+            "collaboration" + tool, "functions.collaboration." + tool}:
+            return tool
+    if name == "mcp__codex_app__wait_threads":
+        return "wait_threads"
+    return None
+
+
 def pending_codex_tool_call(name: str) -> dict | None:
     """Read one pending native invocation, not caller-supplied metadata.
 

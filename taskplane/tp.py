@@ -4568,27 +4568,13 @@ def _screen(a) -> int:
         )
         return 0
 
-    native_tool = tool_name.rsplit(".", 1)[-1].rsplit("__", 1)[-1]
-    if native_tool in {
-        "wait_agent",
-        "wait_threads",
-        "list_agents",
-        "send_message",
-        "followup_task",
-        "spawn_agent",
-        "interrupt_agent",
-    }:
+    native_tool = host_caps.native_coordination_tool(tool_name)
+    if native_tool is not None:
         reason = None
         owner = tp._worker_event_owner(event)
         if (contract.get("worker_scoped") or contract.get("worker_lifecycle")
                 or owner["agent_id"] or owner["task_name"]):
             reason = "lens workers must read their scoped input, write the result and finish; no coordination"
-        elif native_tool == "wait_agent" and int(tool_input.get("timeout_ms", 30000)) < 60000:
-            reason = (
-                "short polling is disabled; wait for completion/attention with timeout_ms=60000"
-            )
-        elif native_tool == "list_agents":
-            reason = "progress polling is disabled; use the completion/attention event wait"
         if reason:
             _meter_bump(ws, tid, "denies")
             print(json.dumps({"decision": "block", "reason": "taskplane: " + reason}))
@@ -8332,6 +8318,12 @@ def cmd_review(a) -> int:
         return 1
     spec = getattr(a, "spec", None)
     parsed = tgt.parse(spec) if spec else None
+    review_scope = getattr(a, "scope", "diff")
+    if review_scope == "repository" and (getattr(a, "base", None) or
+            (parsed or {}).get("kind") == "pr"):
+        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_scope",
+            "reason": "repository snapshot scope cannot be combined with a PR or comparison base"}))
+        return 1
     remote_repository = False
     if spec and (not parsed or parsed.get("kind") != "pr"):
         try:
@@ -8341,6 +8333,10 @@ def cmd_review(a) -> int:
             remote_repository = True
         except ValueError:
             remote_repository = False
+    if review_scope == "repository" and remote_repository:
+        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_scope",
+            "reason": "repository snapshot scope requires a local checkout; select its --workspace"}))
+        return 1
     if getattr(a, "review_action", None) == "resume":
         import preflight as repository_preflight_module
 
@@ -8535,7 +8531,12 @@ def cmd_review(a) -> int:
     # the PR diverged, inflating symbols and graph impact.
     base = rec.get("merge_base") or rec.get("base_ref") or getattr(a, "base", None) or "HEAD"
     try:
-        files = rv.select_diff_paths(rv.canonical_diff_files(ws, base), getattr(a, "paths", None))
+        inventory = (rv.canonical_repository_files(ws, rec["head"])
+            if review_scope == "repository" else rv.canonical_diff_files(ws, base))
+        files = rv.select_diff_paths(inventory, getattr(a, "paths", None))
+        if not files:
+            raise rv.ReviewKernelError(
+                "review scope is empty; use --scope repository for a whole-repository source review")
         active = tp.load_active(ws) or {}
         coding = active.get("coding") or {}
         if coding.get("scope_paths"):
@@ -8546,6 +8547,8 @@ def cmd_review(a) -> int:
                 )
         rec["changed_files"] = files
         rec["diff_policy"] = {"paths": files, "max_diff_bytes": diff_byte_limit}
+        if review_scope == "repository":
+            rec["diff_policy"].update(kind="repository", revision=rec["head"])
         rec["fingerprint"] = tgt.fingerprint(rec)
         tgt.save(ws, rec)
     except (ValueError, RuntimeError) as exc:
@@ -8693,7 +8696,8 @@ def cmd_review(a) -> int:
         import runnability as runmod
 
         probe = runmod.probe_once(ws)
-        diff_rc, patch = rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit)
+        diff_rc, patch = ((0, "") if review_scope == "repository" else
+            rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit))
         if diff_rc:
             if diff_rc == rv.CANONICAL_DIFF_TOO_LARGE:
                 print(
@@ -8710,7 +8714,10 @@ def cmd_review(a) -> int:
         import review_evidence as _re
 
         store = _re.ArtifactStore(ws)
-        diff_ref = store.put("diff", {"base": base, "patch": patch, "files": files})
+        snapshot_scope = ({"scope_kind": "repository", "revision": rec["head"]}
+            if review_scope == "repository" else {})
+        diff_ref = store.put("diff", {"base": None if snapshot_scope else base,
+            "patch": patch, "files": files, **snapshot_scope})
         symbols = rv.changed_symbols_from_patch(patch)
         routing_content = rv.changed_content_from_patch(patch)
         review_router = None
@@ -8785,6 +8792,7 @@ def cmd_review(a) -> int:
             graph=g,
             impact=imp,
             diff={
+                **snapshot_scope,
                 "files": files,
                 "changed_symbols": symbols,
                 "artifact": rv._portable_ref(diff_ref),
@@ -10603,7 +10611,19 @@ def main(argv=None) -> int:
     is_hook = bool(args and args[0] in _HOOK_COMMANDS and (
         args[0] not in {"context", "host-native-check"} or hook_path in {"native", "bridge"}))
     if not is_hook or any(flag in args for flag in ("-h", "--help")):
-        return _main(argv)
+        if any(flag in args for flag in ("-h", "--help")):
+            return _main(argv)
+        from taskplane.codex_identity import bind_command
+        from taskplane.taskplane_lite import StateError as NativeBindingStateError
+
+        with contextlib.ExitStack() as binding:
+            try:
+                binding.enter_context(bind_command(_workspace(_preparser_workspace(args))))
+            except (ValueError, NativeBindingStateError) as exc:
+                print(json.dumps({"error": "native command binding refused: " + str(exc),
+                    "dispatch_allowed": False}, sort_keys=True))
+                return 1
+            return _main(argv)
     raw = sys.stdin.read()
     try:
         event = json.loads(raw) if raw.strip() else {}
@@ -11089,7 +11109,7 @@ def _main(argv=None) -> int:
     lr.add_argument(
         "--worker-stopped",
         action="store_true",
-        help="attest the expired unbound worker is stopped; not a completion or pass",
+        help="attest the former worker is stopped; observed terminal or expiry is also verified",
     )
     lam = lsub.add_parser(
         "amend",
@@ -11740,6 +11760,8 @@ def _main(argv=None) -> int:
     rvs = rvsub.add_parser("start", help="establish the facts and activate the read-only contract")
     rvs.add_argument("spec", nargs="?", help="PR url, OWNER/REPO#N, or a ref")
     rvs.add_argument("--base", default=None, help="diff base ref")
+    rvs.add_argument("--scope", choices=["diff", "repository"], default="diff",
+        help="review a comparison or the complete pinned source snapshot")
     rvs.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvs.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
     rvs.add_argument(

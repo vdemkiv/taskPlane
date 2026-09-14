@@ -1,5 +1,25 @@
 # taskplane changelog
 
+## v2.23.10 — 2026-09-14 — native review and planning recovery
+
+- Authenticated native children can read their exact phase input through the
+  ordinary CLI. Stopped Product, Design, and Plan attempts with missing or
+  invalid output retain their failure and support exact-operation recovery
+  and bounded retry without advancing the phase.
+- Native collaboration aliases share the existing adapter. Agent lifecycle,
+  waiting, commands, file access, and permissions remain host-owned; redundant
+  Taskplane wait-duration and polling instructions were removed.
+- Whole-repository review explicitly inventories a clean pinned commit with
+  `--scope repository`. Empty diffs no longer silently prepare empty reviews.
+- Validation records preserve later failures and earlier failure history,
+  consume verified sandbox evidence, and distinguish prepared reviewers from
+  observed native starts. Known Python submodule imports produce dependency
+  edges; a repaired tool at the same PATH invalidates its stale probe result.
+- Product, Design, Plan, the RCA, retained hook audit, and targeted verification
+  are recorded in `docs/remediation/2026-09-14-review-recovery.md`. This source
+  update and its packages do not establish live installed-host acceptance or
+  retroactively complete the failed EM review.
+
 ## v2.23.9 — 2026-09-14 — shared entry readiness and recovery
 
 - Onboarding separates completed setup from runtime readiness on both hosts.
@@ -200,7 +220,7 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.9. Historical
+> v2.23.10. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -220,6 +240,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.23.10** | **Native review and planning recovery.** Restores authenticated child input and failed-attempt retries, adds whole-repository scope, preserves validation failures and actual reviewer starts, and fixes dependency detection and tool cache recovery. |
 | **v2.23.9** | **Shared entry readiness and recovery.** Separates setup from runtime readiness on both hosts, carries Claude startup identity, diagnoses stale engines, and aligns installed-package journey checks. |
 | **v2.23.8** | **Native plugin startup and budget recovery.** Uses the host-selected plugin for hooks and review commands, fixes Claude-only packages and failed setup reporting, and resumes existing tasks after an approved token increase. |
 | **v2.23.7** | **Native Codex integration.** Native command sessions, permission profiles and preview panels with exact TaskPlane evidence binding. Removes the custom file reader and fixes public command launch defaults. |
