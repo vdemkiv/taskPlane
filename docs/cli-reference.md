@@ -981,7 +981,9 @@ cold-start readiness — folder + git snapshot + init; renders the onboarding da
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--apply-setup` | JSON_FILE_OR_DASH | apply validated inline setup values from a JSON file or stdin (-) |
+| `--available-tools` | AVAILABLE_TOOLS | comma-separated tool names actually available in this task; compatibility only |
 | `--execution-storage` | one of: project | explicitly select project .taskplane execution storage; active runs refuse migration |
+| `--initialize` | flag | repair missing project setup and launcher, then recheck readiness |
 | `--install-codex-hooks` | flag | deprecated alias for --install-launcher; hooks are supplied only by the plugin |
 | `--install-launcher` | flag | install/refresh the ignored CLI launcher without registering project hooks |
 | `--json` | flag | print the readiness report instead of the widget |
