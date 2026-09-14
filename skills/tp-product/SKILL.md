@@ -5,6 +5,12 @@ description: "The product persona of taskplane — owns the WHAT. Use for anythi
 
 # /tp-product — the WHAT seat (author · refine · decide)
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-product`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
 workspace launcher exists; it resolves the newest valid installed taskplane
 engine on every call. Otherwise set

@@ -5,6 +5,12 @@ description: "The on-demand STRATEGIC lens of taskplane — the north-star revie
 
 # /tp-northstar — the north-star review (summoned, advisory, never a gate)
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-northstar`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
 workspace launcher exists; it resolves the newest valid installed taskplane
 engine on every call. Otherwise set

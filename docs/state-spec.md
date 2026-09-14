@@ -1,5 +1,14 @@
 # State specification — where taskplane's state lives, and why
 
+## Entry compatibility inventory (2.23.6)
+
+`entry-tools.json` lives under the existing host runtime session directory.
+It contains caller-declared tool names, the host session identity, and an
+installed-engine fingerprint. Reentry replaces it; an omitted declaration
+clears this session's list. Another session or engine update cannot reuse it.
+It is disposable compatibility metadata, not host proof, a contract, or a
+permission grant. Existing tool and source-write guards remain authoritative.
+
 ## Host session ownership (2.23.5)
 
 Identified host conversations partition execution storage by the SHA-256 of

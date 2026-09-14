@@ -65,6 +65,11 @@ else:
         step_tier,
     )
 if __package__:
+    from . import storage as _entry_storage
+else:
+    import storage as _entry_storage
+
+if __package__:
     from .producer_observation import hook_event_identity, _bounded_hook_identity
 else:
     from producer_observation import hook_event_identity, _bounded_hook_identity
@@ -6503,6 +6508,60 @@ def git_head(workspace: str) -> str | None:
     return r.stdout.strip() or None
 
 
+def _entry_tools_path() -> str:
+    # Compatibility metadata only: this cannot grant a tool or weaken screen.
+    return os.path.join(_entry_storage.session_path(_entry_storage.host_runtime_home()),
+                        "entry-tools.json")
+
+
+def _entry_engine_fingerprint() -> str:
+    root = os.path.dirname(os.path.abspath(__file__))
+    digest = hashlib.sha256()
+    digest.update(os.path.realpath(root).encode())
+    for name in ("tp.py", "taskplane_lite.py"):
+        with open(os.path.join(root, name), "rb") as stream:
+            digest.update(stream.read())
+    for directory in (".codex-plugin", ".claude-plugin"):
+        manifest = os.path.join(os.path.dirname(root), directory, "plugin.json")
+        if os.path.isfile(manifest):
+            with open(manifest, "rb") as stream:
+                digest.update(stream.read())
+            break
+    return digest.hexdigest()
+
+
+def record_entry_tools(names: list[str]) -> None:
+    """Remember the caller's current inventory in this host session only.
+
+    This is declared compatibility data, not host attestation or authorization.
+    Reentering replaces it; another session or changed engine cannot reuse it.
+    """
+    if any(not isinstance(name, str) or not name or len(name) > 160 for name in names) or len(names) > 256:
+        raise ValueError("available tools must be a bounded list of tool names")
+    atomic_write_json(_entry_tools_path(), {"engine": _entry_engine_fingerprint(),
+        "tools": sorted(set(names)), "session": _entry_storage.host_session_id()})
+
+
+def review_file_tool_readiness(contract: dict | None = None) -> dict:
+    """Check compatibility without changing the contract's tool permissions."""
+    record = load_json(_entry_tools_path(), default={}, what="entry tool inventory")
+    valid = (record.get("engine") == _entry_engine_fingerprint()
+             and record.get("session") == _entry_storage.host_session_id())
+    names = set(record.get("tools") or []) if valid else set()
+    allowed = set(contract.get("allowed_tools") or []) if contract is not None else names
+    usable = {name for name in names if any(alias in allowed for alias in tool_aliases(name))}
+    missing = []
+    if "Read" not in usable:
+        missing.append("Read")
+    if (contract is None or contract.get("write_allow")) and not (usable & WRITE_TOOLS):
+        missing.append("a scoped Write/Edit tool")
+    return {"ready": not missing, "missing": missing,
+            "source": "caller-declared tool inventory; not an enforcement receipt",
+            "detail": ("compatible review file tools" if not missing else
+                "Read-only review cannot start with this tool set: missing " + ", ".join(missing)
+                + ". Use a host exposing the required file tools. No contract was activated.")}
+
+
 def activate(
     workspace: str,
     contract: dict,
@@ -6515,6 +6574,10 @@ def activate(
     # This shared entry boundary covers CLI, loop, claim, and review adapters.
     import collision
 
+    if contract.get("read_only") and _entry_storage.host_session_id():
+        readiness = review_file_tool_readiness(contract)
+        if not readiness["ready"]:
+            raise ValueError(readiness["detail"])
     apply_foreign_state_exclusions(
         contract,
         workspace,

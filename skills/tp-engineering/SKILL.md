@@ -5,6 +5,12 @@ description: "The engineering persona of taskplane — owns whether the built th
 
 # /tp-engineering — the SOUND seat (impact · all lenses · verdicts)
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-engineering`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 ## Focused routing contract
 
 Evaluate launches zero Taskplane lens workers and performs

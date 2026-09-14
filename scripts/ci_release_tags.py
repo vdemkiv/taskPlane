@@ -84,6 +84,12 @@ NOT_SHIPPED = {
 # entry remains declared and untagged so the list cannot hide a release or a
 # fictional version.
 NOT_RELEASED = {
+    "2.23.5": {
+        "reason": "locally installed session-isolation candidate; no version tag "
+                  "or GitHub release was published. Shared entry initialization "
+                  "and tool compatibility are repaired in 2.23.6.",
+        "superseded_by": "2.23.6",
+    },
     "2.23.4": {
         "reason": "untagged standalone review startup candidate; local archives "
                   "and installation did not establish a version tag or GitHub "

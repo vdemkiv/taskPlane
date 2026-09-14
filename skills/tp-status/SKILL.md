@@ -5,6 +5,12 @@ description: "Use when the user asks where things stand with taskplane-governed 
 
 # /tp-status — where the governed work stands
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-status`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
 workspace launcher exists; it resolves the newest valid installed taskplane
 engine on every call. Otherwise set

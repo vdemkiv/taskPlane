@@ -597,6 +597,7 @@ class TestCodexHookProtocol(unittest.TestCase):
                     runnability={"summary": "available"})
                 state = review._load_state(ws)
                 store = review_evidence.ArtifactStore(ws)
+                tp.record_entry_tools(["Read", "Grep", "Glob", "Write", "apply_patch"])
                 parent = tp.build_contract(
                     "evaluate parent", read_only=True,
                     write_allow=[".eval/**"], tools=["Read", "Write"])
@@ -621,7 +622,7 @@ class TestCodexHookProtocol(unittest.TestCase):
                         row, sort_keys=True, separators=(",", ":"))
                     contract = tp.build_contract(
                         producer["task"], read_only=True,
-                        write_allow=producer["write_allow"], tools=["Write"])
+                        write_allow=producer["write_allow"], tools=["Read", "Write"])
                     env = {**os.environ,
                            "TASKPLANE_TASK": producer["task_slot"]}
                     parent_env = {key: value for key, value in os.environ.items()

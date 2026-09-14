@@ -7,6 +7,12 @@ description: "The pre-build solution-design flow of taskplane. Use when the user
 
 The user provides the goal and material decisions. Keep the interface simple; internally run the same strict taskplane harness as Build and Review.
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-design`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 ## Focused routing contract
 
 Design executes a deterministic minimum-sufficient focused route from the

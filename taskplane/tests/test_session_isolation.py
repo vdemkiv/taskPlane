@@ -53,6 +53,7 @@ def repos(tmp_path, monkeypatch):
 
 
 def activate(workspace, name):
+    lite.record_entry_tools(["Read", "Grep", "Glob", "Write"])
     contract = lite.build_contract(name, read_only=True, max_actions=100)
     contract["budget"].pop("max_tokens", None)
     lite.activate(str(workspace), contract, snapshot=lite.git_head(str(workspace)))
@@ -167,6 +168,7 @@ def test_session_routes_review_hooks_to_checkout_and_detaches_after_clear(repos,
 def test_routing_cannot_reinterpret_a_relative_write_as_checkout_permission(repos, monkeypatch):
     parent, checkout = repos
     monkeypatch.setenv("CODEX_THREAD_ID", "session-a")
+    lite.record_entry_tools(["Read", "Write"])
     contract = lite.build_contract("review", read_only=True,
                                   write_allow=[str(checkout / "allowed.txt")])
     contract["budget"].pop("max_tokens", None)
@@ -188,12 +190,13 @@ def test_real_review_start_keeps_two_sessions_runs_and_committed_scope_separate(
         monkeypatch.delenv("TASKPLANE_HOME", raising=False)
         rc, output, err = invoke(monkeypatch, "screen", event=hook(parent, session))
         assert rc == 0 and not output, (output, err)
-        # No readiness stub: the real hook above is the only fixture evidence.
+        # Tool inventory is declared separately; only the hook is enforcement evidence.
+        lite.record_entry_tools(["Read", "Grep", "Glob", "Write"])
         rc, output, err = invoke(monkeypatch, "review", "start", "HEAD", "--base",
                                  "HEAD^", "--workspace", str(checkout))
         assert rc == 2, (output, err)
         opened = json.loads(output)
-        assert opened["status"] == "needs_user"
+        assert opened.get("status") == "needs_user", (opened.get("next_action"), [row for row in opened.get("checks", []) if not row["ok"]], opened.get("initialization"))
         assert opened["contract"]["status"] == "active"
         assert opened["preflight"]["status"] == "ready"
         records.append((Path(lite.active_contract_path(str(checkout))),

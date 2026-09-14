@@ -5,6 +5,12 @@ description: "The internal delivery driver behind the taskplane facade — goal-
 
 # /tp-go — goal in, governed delivery out
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-go`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 ## Focused routing invariant
 
 Every delivery uses Product/Design minimum-sufficient focused routes,

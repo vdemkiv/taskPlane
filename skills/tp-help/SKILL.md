@@ -5,6 +5,12 @@ description: "Use when the user asks how taskplane works or how to get started: 
 
 # /tp-help — the guided tour
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-help`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 `flow.json` is the approved guidance graph: **help request → taskPlane mental
 model → folder/git/init/hooks setup → route by intent → one concrete next
 action**. Help never starts parallel delivery or invents a human gate; it

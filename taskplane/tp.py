@@ -1465,7 +1465,7 @@ def cmd_new(a) -> int:
         scope=scope,
         read_only=bool(getattr(a, "read_only", False)),
         write_allow=(list(a.write_allow) if getattr(a, "write_allow", None) else None),
-        tools=tools,
+        tools=tools if a.tools is not None else None,
         test_command=a.tests or None,
         deny_extra=deny_extra,
         max_actions=(int(a.max_actions) if getattr(a, "max_actions", None) is not None else None),
@@ -3112,6 +3112,21 @@ def _is_release_command(command: str) -> bool:
     if verb in _RELEASE_VERBS:
         return True
     tokens = tp._shsplit(" ".join(str(command or "").split()))
+    if verb == "onboard":
+        if any(mark in command for mark in (";", "|", "&", ">", "<", "`", "$", "\n")):
+            return False
+        if len(tokens) < 3 or not tp._is_tp_cli(tokens[1]):
+            return False
+        args = tokens[3:]
+        while args:
+            flag = args.pop(0)
+            if flag in {"--json", "--initialize"}:
+                continue
+            if flag in {"--workspace", "--available-tools"} and args:
+                args.pop(0)
+                continue
+            return False
+        return True
     if verb == "clear":
         return "--approved-by" in tokens
     if verb == "worker-release":
@@ -4093,6 +4108,31 @@ def _screen(a) -> int:
 
     tid = contract.get("task_id", "_")
 
+    # Keep existing inspection/recovery commands reachable even if telemetry
+    # disappears. They do not launch productive work or raise limits implicitly.
+    if _is_release_command(command):
+        # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
+        #
+        # The abstain above happens LONG before the approve path where the
+        # ledger is written, so `status`, `contracts`, `version` and `ack`
+        # left no row at all: R10 (did the run invent a CLI surface) and
+        # every efficiency reading were blind to the release verbs, and a
+        # run that polled `tp status` twenty times looked like one that
+        # never called it.
+        #
+        # Same rule, same ordering as the approve site: the decision is
+        # already final when this runs — an abstain emits the EMPTY payload,
+        # which is complete before the instrument is touched — and nothing
+        # here can change it. Failures are swallowed at both layers.
+        try:
+            sys.stdout.flush()
+            import derivation as _dv
+
+            _dv.record(ws, command, "abstain")
+        except Exception:  # noqa: BLE001
+            pass
+        return 0  # abstain: not metered, not denied
+
     # budget gate first — an exhausted harness does no further work. The RULE
     # lives in the kernel (tp.budget_status); the CLI only meters + forwards.
     # FAIL CLOSED on a corrupt meter for a governed contract: a torn/tampered
@@ -4197,31 +4237,6 @@ def _screen(a) -> int:
         print(json.dumps({"decision": "block", "reason": f"taskplane contract {tid}: {_tok_why}"}))
         return 0
 
-    # Recovery/inspection remain exempt from the action quota, but never
-    # from the token ceiling: reading status still triggers model inference.
-    if _is_release_command(command):
-        # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
-        #
-        # The abstain above happens LONG before the approve path where the
-        # ledger is written, so `status`, `contracts`, `version` and `ack`
-        # left no row at all: R10 (did the run invent a CLI surface) and
-        # every efficiency reading were blind to the release verbs, and a
-        # run that polled `tp status` twenty times looked like one that
-        # never called it.
-        #
-        # Same rule, same ordering as the approve site: the decision is
-        # already final when this runs — an abstain emits the EMPTY payload,
-        # which is complete before the instrument is touched — and nothing
-        # here can change it. Failures are swallowed at both layers.
-        try:
-            sys.stdout.flush()
-            import derivation as _dv
-
-            _dv.record(ws, command, "abstain")
-        except Exception:  # noqa: BLE001
-            pass
-        return 0  # abstain: not metered, not denied
-
     ok, reason = tp.budget_status(
         contract, used, reserve=_CLOSING_RESERVE, closing=_is_closing_command(command)
     )
@@ -4260,7 +4275,9 @@ def _screen(a) -> int:
         "interrupt_agent",
     }:
         reason = None
-        if contract.get("read_only"):
+        owner = tp._worker_event_owner(event)
+        if (contract.get("worker_scoped") or contract.get("worker_lifecycle")
+                or owner["agent_id"] or owner["task_name"]):
             reason = "lens workers must read their scoped input, write the result and finish; no coordination"
         elif native_tool == "wait_agent" and int(tool_input.get("timeout_ms", 30000)) < 60000:
             reason = (
@@ -8162,7 +8179,15 @@ def cmd_review(a) -> int:
         )
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
-    _prepare_standalone_review_launcher(ws)
+    initialized = _initialize_entry(ws)
+    if not initialized["ready"]:
+        print(json.dumps(initialized, sort_keys=True))
+        return 2
+    if runtime_storage.host_session_id():
+        file_tools = tp.review_file_tool_readiness()
+        if not file_tools["ready"]:
+            print(json.dumps({"status": "not_ready", "review_file_tools": file_tools}, sort_keys=True))
+            return 2
     tgt.save(ws, rec)
     out["target"] = rec
     # The canonical PR patch starts at the pinned merge-base, not the moving
@@ -8764,6 +8789,26 @@ def _print_target(rec, tgt) -> None:
     )
 
 
+def _initialize_entry(ws: str) -> dict:
+    """Reuse onboarding; repair missing setup without creating/replacing a run."""
+    report = _onboard_report(ws)
+    repairs = []
+    if (report["looks_like_project"] and report["is_git"] and report["has_commit"]
+            and report["run_readiness"]["ready"]):
+        hooks = report.get("codex_hooks")
+        if hooks and not hooks["launcher_ready"]:
+            _install_codex_hooks(ws, remove_project_duplicates=False)
+            repairs.append("install_launcher")
+        if not report["has_context"]:
+            with contextlib.redirect_stdout(io.StringIO()):
+                cmd_init(argparse.Namespace(workspace=ws, plan=None))
+            repairs.append("initialize_project")
+    if repairs:
+        report = _onboard_report(ws)
+    report["initialization"] = {"repairs": repairs, "run_preserved": True}
+    return report
+
+
 def cmd_onboard(a) -> int:
     """Cold-start onboarding. Detects whether the workspace is ready for a
     governed run (folder + git snapshot + init) and, by default, prints the
@@ -8791,7 +8836,16 @@ def cmd_onboard(a) -> int:
             "error": str(exc),
             "run_preserved": True,
         }
-    report = _onboard_report(ws)
+    available = getattr(a, "available_tools", None)
+    if available is not None:
+        tp.record_entry_tools([name.strip() for name in available.split(",") if name.strip()])
+    initialize = bool(getattr(a, "initialize", False))
+    report = _initialize_entry(ws) if initialize else _onboard_report(ws)
+    if initialize and runtime_storage.host_session_id():
+        # Reset an omitted declaration; a prior entry's inventory is not current.
+        if available is None:
+            tp.record_entry_tools([])
+        report["review_file_tools"] = tp.review_file_tool_readiness()
     failed = bool(result and result.get("status") in {"refused", "blocked"})
     if failed and isinstance(values, dict):
         report["submitted_values"] = values
@@ -8801,7 +8855,7 @@ def cmd_onboard(a) -> int:
         report["storage_selection"] = a.storage_selection
     if a.json:
         print(json.dumps(report, indent=2))
-        return 2 if failed else 0
+        return 2 if failed or (initialize and not report["ready"]) else 0
     # Render contract (v1.5.3/4): the HEADLINE is the never-skippable carrier
     # — on hosts without inline widgets (Codex) it is the primary channel.
     print("HEADLINE: " + dashboard.headline_onboarding(report))
@@ -11125,6 +11179,9 @@ def _main(argv=None) -> int:
     op.add_argument(
         "--json", action="store_true", help="print the readiness report instead of the widget"
     )
+    op.add_argument("--initialize", action="store_true",
+                    help="repair missing project setup and launcher, then recheck readiness")
+    op.add_argument("--available-tools", help="comma-separated tool names actually available in this task; compatibility only")
     op.add_argument("--out", help="also write the fragment to this path")
     op.add_argument(
         "--install-codex-hooks",

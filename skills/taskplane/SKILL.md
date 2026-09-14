@@ -5,6 +5,12 @@ description: "The simple user-facing entry point for taskplane. Use whenever the
 
 # /taskplane — simple for the user, strict for agents
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](references/entry-initialization.md)
+using entry point `taskplane`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 ## Focused routing invariant
 
 Every governed flow uses Product/Design minimum-sufficient focused routes,

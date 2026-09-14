@@ -5,6 +5,12 @@ description: "The new-feature flow of taskplane — use when the goal is to BUIL
 
 # /tp-build — new features, refined first, seen always
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-build`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 ## Focused routing invariant
 
 Every new-feature flow uses Product/Design minimum-sufficient focused routes,

@@ -5,6 +5,12 @@ description: Run taskplane governed work inside Claude Tag (Slack). Use when a s
 
 # /tp-tag — taskplane in Claude Tag
 
+## Initialize this entry
+
+Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
+using entry point `tp-tag`. Every direct invocation rechecks readiness;
+sealed stage and lens workers validate their supplied startup instead.
+
 You are running as **Claude Tag** — the organization's shared @Claude in a
 Slack channel. Tag's sandbox is **ephemeral** (discarded when the
 conversation goes idle), there are **no PreToolUse hooks** here, and the

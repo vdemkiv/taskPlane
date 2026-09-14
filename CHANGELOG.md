@@ -1,5 +1,25 @@
 # taskplane changelog
 
+## 2.23.6 — 2026-09-13 — common entry initialization
+
+- Every direct skill entry runs the existing onboarding sequence with
+  `--initialize`; missing context and launcher setup are repaired once.
+  Existing runs and user context are preserved. Standalone review applies the
+  same setup after committed-code preflight and before evidence or activation.
+- Read-only activation checks this session's declared file-tool inventory
+  against its contract. Missing tools refuse activation instead of stranding
+  the task. This metadata is compatibility information, not host attestation;
+  it cannot authorize shell commands or source writes.
+- Existing inspection and explicit recovery stay reachable without budget
+  telemetry. Worker coordination restrictions now use worker identity instead
+  of treating every read-only coordinator as a lens worker.
+- No MCP adapter, server, command registry, or new approval protocol is shipped.
+  The incident and design-flow history are recorded in
+  `docs/incidents/2026-09-13-entry-initialization-overengineering.md`.
+- A host without the file tools required by the existing read-only contract
+  remains unsupported for that review mode. No installed live-review pass is
+  claimed by source tests or packaging checks.
+
 ## 2.23.5 — 2026-09-13 — isolated host sessions and checkout readiness
 
 - Each identified host conversation gets separate execution storage, run
@@ -115,7 +135,7 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.5. Historical
+> v2.23.6. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -135,6 +155,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.23.6** | **Shared entry initialization.** Missing setup is repaired once; incompatible read-only file tools refuse activation before a session can be locked. Incident report included. |
 | **v2.23.5** | **Session isolation and fresh-checkout readiness.** Each host conversation owns its contracts, run bindings, meters and review state. Native hook proof follows only the same session across checkouts; clearing a review leaves other sessions intact. |
 | **v2.23.4** | **Automatic standalone review startup.** Prepares the actual checkout launcher and signed native worker contracts; retries preserve leases and evidence. Fresh installed end-to-end validation remains pending. |
 | **v2.23.3** | **Model-led orchestration with strict harness controls.** Disables budget waivers, denies worker control calls, checks fresh hooks on mutations, and safely replays exact phase collection through the existing gate. |

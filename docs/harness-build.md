@@ -22,6 +22,18 @@ or duplicate phase/budget policy engine is installed.
 - Model dispatch instructions use the canonical bounded startup and event wait
   policy. Showing a dashboard is not a reason to stop admitted work.
 
+## 2.23.6 shared entry initialization
+
+All direct skills use `onboard --initialize --json --available-tools <names>`.
+Setup reuses the existing onboarding and launcher owners. The small session
+inventory reports compatibility and cannot grant execution or weaken a
+contract. A missing required file tool refuses read-only activation before
+writing an active contract. Existing inspection/recovery stays available when
+usage telemetry is missing. No alternate transport is included.
+
+The scope incident and exact design-history distinction are documented in
+[the incident report](incidents/2026-09-13-entry-initialization-overengineering.md).
+
 ## 2.23.5 session isolation and fresh-checkout readiness
 
 Execution homes, Git run locators, contracts, meters, review state and local
