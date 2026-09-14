@@ -45,15 +45,20 @@ def screen(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize("tool,args", [
     ("Read", {"path": "input.txt"}),
-    ("Bash", {"command": "python3 taskplane/tp.py status"}),
     ("collaboration.wait_agent", {"timeout_ms": 60000}),
     ("collaboration.send_message", {"target": "lens", "message": "status?"}),
     ("collaboration.spawn_agent", {"task_name": "another_review"}),
 ])
-def test_cached_tokens_block_reads_inspection_and_coordination(screen, tool, args):
+def test_cached_tokens_block_reads_and_coordination(screen, tool, args):
     result = screen(tool, args)
     assert any(row.get("decision") == "block" and "100/100 native tokens" in row["reason"]
                for row in result)
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_status_remains_reachable_when_usage_is_exhausted_or_missing(screen, available):
+    result = screen("Bash", {"command": "python3 taskplane/tp.py status"}, available=available)
+    assert not any(row.get("decision") == "block" for row in result)
 
 
 def test_missing_usage_is_not_zero(screen):
