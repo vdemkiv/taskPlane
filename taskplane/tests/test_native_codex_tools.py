@@ -200,6 +200,21 @@ def test_governed_codex_uses_native_tool_requests_and_observed_results(native, m
         commands.execute(native, 'launch', {**request, 'deadline': 600})
 
 
+def test_public_codex_launch_does_not_add_an_unavailable_deadline(native, monkeypatch, capsys):
+    import tp
+    import governed_commands as commands
+    contract = kernel.build_contract('native command', scope=[native], tools=['exec_command'], plan_minted=True)
+    monkeypatch.setattr(commands.contract_engine, 'load_active', lambda _: contract)
+    arguments = ['command', 'launch', '--workspace', native, '--authorization', 'owner',
+                 '--run-id', 'run', '--task-id', 'task']
+    assert tp.main([*arguments, '--', '/bin/true']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['state'] == 'launch_requested'
+    assert result['native_request']['name'] == 'exec_command'
+    assert tp.main([*arguments, '--deadline-seconds', '1', '--', '/bin/true']) != 0
+    assert 'deadline' in capsys.readouterr().err
+
+
 def test_review_validation_uses_native_profile_and_keeps_timeout(native, monkeypatch):
     from taskplane import review
     import subprocess

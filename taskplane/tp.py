@@ -5125,16 +5125,19 @@ def _governed_command_request(a) -> dict:
         argv = list(a.argv)
         if argv[:1] == ["--"]:
             argv = argv[1:]
-        deadline_seconds = duration(
-            getattr(a, "deadline_seconds", None),
-            setting="task_seconds",
-            label="governed command deadline",
-        )
+        requested_deadline = getattr(a, "deadline_seconds", None)
+        deadline = None
+        if a.host != "codex" or requested_deadline is not None:
+            deadline = _time.time() + duration(
+                requested_deadline,
+                setting="task_seconds",
+                label="governed command deadline",
+            )
         request.update(
             {
                 "argv": argv,
                 "cwd": getattr(a, "cwd", None),
-                "deadline": _time.time() + deadline_seconds,
+                "deadline": deadline,
                 "host": a.host,
                 "run_id": a.run_id,
                 "task_id": a.task_id,

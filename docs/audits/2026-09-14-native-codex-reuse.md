@@ -170,6 +170,15 @@ the actual session record. The native panel tool returned `queued`; no visual
 completion is claimed. These checks are integration evidence, not a governed
 EM sign-off.
 
+Final integration checks also exercised the public command entry point. Its
+old default injected a hard deadline into every launch, which made native
+Codex reject even requests without a deadline. The Codex entry now leaves that
+optional field unset unless requested; the Claude transport retains its
+configured default. A live disposable fixture followed the public launch,
+native execution and public show path, observing both a native failure for an
+unavailable executable and native success for the installed executable. A
+completed native session can no longer authorize further polling/interruption.
+
 Regression fixtures for the old detached runner now name the Claude transport
 explicitly. Native tests exercise request/result separation, forged stdout,
 replayed launches, foreign process IDs, omitted shell metadata, scope widening,
@@ -178,6 +187,9 @@ and queued preview behavior. The first broad run found that Ruff and mypy were
 missing from the user-site-free test interpreter. Validation was moved to a
 temporary environment installed from the repository's hash-locked test and
 quality dependencies; environment restrictions were preserved.
+The extracted-package journey's startup fixture was corrected to initialize
+the workspace and declare its tools before expecting readiness; its refusal
+checks for missing and foreign host evidence remain intact.
 
 The workspace launcher still selects the Marketplace installation of 2.23.6.
 The source changes are not an in-place edit of that installed plugin. A release
