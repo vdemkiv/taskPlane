@@ -554,6 +554,13 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     observe_hook("unrelated-session")
     assert_unproven()
     observe_hook(environment["CLAUDE_SESSION_ID"])
+    entry = subprocess.run([
+        sys.executable, str(cli), "onboard", "--workspace", str(workspace),
+        "--initialize", "--available-tools", "Read,Write", "--json",
+    ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
+       env=environment)
+    assert entry.returncode == 0, entry.stdout + entry.stderr
+    assert json.loads(entry.stdout)["review_file_tools"]["ready"] is True
     advisory = next_stage("--advisory")
     assert advisory.returncode == 1, advisory.stdout + advisory.stderr
     assert "harness bypass is disabled" in json.loads(advisory.stdout)["error"]
