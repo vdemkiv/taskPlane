@@ -4,6 +4,17 @@ The user stopped the deterministic orchestrator build. The model continues to
 orchestrate through the existing TaskPlane harness; no new controller, host bridge
 or duplicate phase/budget policy engine is installed.
 
+## Native Codex ownership
+
+Use Codex's existing tools for agent dispatch, command execution, waiting,
+permissions, approval interaction, and opening files or previews. TaskPlane owns
+the requirements, dependency graph, review criteria, evidence binding and workflow
+decisions that those tools serve. An integration must map these responsibilities
+to the actual host capabilities before adding code. Missing integration is not a
+reason to build a replacement file reader, process supervisor, sandbox, or agent
+controller. Existing overlap and its migration limits are recorded in the
+[native Codex reuse audit](audits/2026-09-14-native-codex-reuse.md).
+
 ## Retained and completed
 
 - Exact-operation collection delegates to the existing gate. Its replay marker
@@ -24,15 +35,9 @@ or duplicate phase/budget policy engine is installed.
 
 ## 2.23.6 shared entry initialization
 
-The Codex file-access repair adds a bounded `inspect` data operation to the
-existing CLI. Its exact isolated installed-engine invocation is screened under
-the same Read/Grep/Glob permissions and action/token budgets. It reads regular
-files, lists directories, and performs literal searches without loading run
-configuration, executing Git, importing reviewed code, or writing source.
-General terminal commands remain denied. Native file tools and scoped artifact
-edits keep their existing behavior; no new server or approval system is added.
-Onboarding now carries `workspace_ready` and `review_ready` separately and
-includes incompatible file access in its effective readiness and exit status.
+Onboarding reports `workspace_ready` and `review_ready` separately and includes
+incompatible native file tools in its effective readiness and exit status.
+Completed setup is preserved when the current tool set cannot run a review.
 
 All direct skills use `onboard --initialize --json --available-tools <names>`.
 Setup reuses the existing onboarding and launcher owners. The small session

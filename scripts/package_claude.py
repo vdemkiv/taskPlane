@@ -81,7 +81,6 @@ MUST_CONTAIN = (
     "hooks/host-native.json",
     "hooks/host_native_runtime.py",
     "taskplane/taskplane_lite.py",
-    "taskplane/file_inspection.py",
     "taskplane/loop.py",
     "taskplane/tp.py",
     "taskplane/lens.py",

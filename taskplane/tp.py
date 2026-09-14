@@ -41,15 +41,6 @@ def _enforce_supported_python(version_info=None) -> None:
 
 _enforce_supported_python()
 
-# Keep bounded file inspection independent of repository discovery, Git,
-# run settings and their imports. The existing hook has already screened and
-# metered its exact invocation; source contents never enter an interpreter.
-if __name__ == "__main__" and sys.argv[1:2] == ["inspect"]:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import file_inspection
-
-    raise SystemExit(file_inspection.main(sys.argv[2:]))
-
 import argparse
 import ast
 import base64
@@ -8193,7 +8184,7 @@ def cmd_review(a) -> int:
         print(json.dumps(initialized, sort_keys=True))
         return 2
     if runtime_storage.host_session_id():
-        file_tools = tp.review_file_tool_readiness(workspace=ws)
+        file_tools = tp.review_file_tool_readiness()
         if not file_tools["ready"]:
             print(json.dumps({"status": "not_ready", "review_file_tools": file_tools}, sort_keys=True))
             return 2
@@ -8818,13 +8809,6 @@ def _initialize_entry(ws: str) -> dict:
     return report
 
 
-def cmd_inspect(a) -> int:
-    """Library entry; normal CLI inspection runs before repository discovery."""
-    import file_inspection
-
-    return file_inspection.main([a.request])
-
-
 def cmd_onboard(a) -> int:
     """Cold-start onboarding. Detects whether the workspace is ready for a
     governed run (folder + git snapshot + init) and, by default, prints the
@@ -8861,7 +8845,7 @@ def cmd_onboard(a) -> int:
         # Reset an omitted declaration; a prior entry's inventory is not current.
         if initialize and available is None:
             tp.record_entry_tools([])
-        file_tools = tp.review_file_tool_readiness(workspace=ws)
+        file_tools = tp.review_file_tool_readiness()
         report["review_file_tools"] = file_tools
         report["workspace_ready"] = report["ready"]
         report["review_ready"] = bool(report["ready"] and file_tools["ready"])
@@ -8869,7 +8853,7 @@ def cmd_onboard(a) -> int:
         report.setdefault("checks", []).append({"id": "review_file_tools",
             "label": "Review file access", "ok": file_tools["ready"],
             "detail": file_tools["detail"],
-            "hint": "Use the declared native file tools or the isolated Codex inspect operation."})
+            "hint": "Use a host exposing compatible native review tools; completed workspace setup is preserved."})
         if report["workspace_ready"] and not file_tools["ready"]:
             report["next_action"] = "review_file_tools_unavailable"
     failed = bool(result and result.get("status") in {"refused", "blocked"})
@@ -11196,10 +11180,6 @@ def _main(argv=None) -> int:
     )
     db.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     db.set_defaults(fn=cmd_dashboard)
-
-    fi = sub.add_parser("inspect", help="bounded read, directory listing or literal search; never executes source")
-    fi.add_argument("request", help="URL-safe base64 JSON: operation, path, optional start/limit/pattern")
-    fi.set_defaults(fn=cmd_inspect)
 
     op = sub.add_parser(
         "onboard",

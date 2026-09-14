@@ -62,7 +62,7 @@ def test_invalid_run_binding_is_reported_without_setup(project):
 
 def test_activation_refuses_incompatible_tools_before_creating_contract(project, monkeypatch):
     monkeypatch.setenv('CODEX_THREAD_ID', 'session-a')
-    kernel.record_entry_tools(['apply_patch'])
+    kernel.record_entry_tools(['exec_command', 'apply_patch'])
     contract = kernel.build_contract('review', read_only=True, write_allow=['.em-review/**'])
     with pytest.raises(ValueError, match='missing Read'):
         kernel.activate(project, contract)
@@ -115,6 +115,29 @@ def test_omitted_inventory_on_reentry_clears_only_current_session(project, monke
     assert report['ready'] is False
     assert report['review_ready'] is False
     assert report['next_action'] == 'review_file_tools_unavailable'
+
+
+@pytest.mark.parametrize('tools, ready', [
+    (['exec_command', 'apply_patch'], False),
+    (['Read', 'Write'], True),
+])
+def test_plain_onboarding_reports_tool_compatibility_without_repeating_setup(
+        project, monkeypatch, capsys, tools, ready):
+    monkeypatch.setenv('CODEX_THREAD_ID', 'session-a')
+    kernel.record_entry_tools(tools)
+    args = argparse.Namespace(workspace=project, json=True, out=None)
+    with mock.patch.object(cli, '_onboard_report', return_value={
+            'ready': True, 'checks': [], 'next_action': 'ready'}), \
+            mock.patch.object(cli, '_initialize_entry') as initialize:
+        assert cli.cmd_onboard(args) == (0 if ready else 2)
+    report = json.loads(capsys.readouterr().out)
+    assert report['workspace_ready'] is True
+    assert report['ready'] is ready
+    assert report['review_ready'] is ready
+    assert report['checks'][-1]['ok'] is ready
+    assert report['next_action'] == ('ready' if ready else 'review_file_tools_unavailable')
+    initialize.assert_not_called()
+    assert kernel.load_active(project) is None
 
 
 def test_existing_inspection_is_reachable_without_budget_telemetry(project, monkeypatch):

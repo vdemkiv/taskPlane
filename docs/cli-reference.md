@@ -50,7 +50,6 @@ not repeated in the tables.
 | `tp.py graph scan` | rebuild the dependency graph from the working tree |
 | `tp.py help` | print this help; with --md, the generated markdown CLI reference (docs/cli-reference.md) |
 | `tp.py init` | scaffold context docs + KB + graph |
-| `tp.py inspect` | bounded read, directory listing or literal search; never executes source |
 | `tp.py kb` | knowledge base (decisions) |
 | `tp.py kb lint` | check the knowledge base for malformed or empty records |
 | `tp.py kb list` | list every recorded decision |
@@ -507,14 +506,6 @@ scaffold context docs + KB + graph
 | --- | --- | --- |
 | `--plan` | one of: personal, team, enterprise | choose knowledge storage at init — personal is private/external; team/enterprise is shared in-repo |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
-
-## `tp.py inspect`
-
-bounded read, directory listing or literal search; never executes source
-
-Positional arguments:
-
-- `request` (required) — URL-safe base64 JSON: operation, path, optional start/limit/pattern
 
 ## `tp.py kb`
 
