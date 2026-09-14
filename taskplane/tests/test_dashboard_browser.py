@@ -290,6 +290,7 @@ class _RealBrowser:
         self.executable = ""
         self.version = ""
         self.executable_source = ""
+        self.stderr_path = tmp_path / "chrome-stderr.log"
 
     def __enter__(self) -> "_RealBrowser":
         (self.executable, self.version,
@@ -302,10 +303,14 @@ class _RealBrowser:
             f"--user-data-dir={profile}", "about:blank",
         ]
         try:
-            self.process = subprocess.Popen(
-                command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace",
-            )
+            # A pipe left unread during discovery can fill before Chrome
+            # publishes DevToolsActivePort. Keep diagnostics without blocking
+            # the child; closing our descriptor does not close the child's.
+            with self.stderr_path.open("wb") as stderr:
+                self.process = subprocess.Popen(
+                    command, stdout=subprocess.DEVNULL, stderr=stderr,
+                    text=True, encoding="utf-8", errors="replace",
+                )
         except OSError as exc:
             raise BrowserEnvironmentError(
                 f"environment failure: declared browser did not launch: {exc}"
@@ -314,18 +319,16 @@ class _RealBrowser:
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline and not active.exists():
             if self.process.poll() is not None:
-                stderr = (self.process.stderr.read() if self.process.stderr
-                          else "").strip()
                 raise BrowserEnvironmentError(
                     "environment failure: declared browser exited before "
-                    f"DevTools was ready: {stderr[-1000:]}"
+                    f"DevTools was ready: {self._stderr_tail()}"
                 )
             time.sleep(0.05)
         if not active.exists():
             self._stop_process()
             raise BrowserEnvironmentError(
                 "environment failure: declared browser did not expose "
-                "DevTools within 12 seconds"
+                f"DevTools within 12 seconds: {self._stderr_tail()}"
             )
         try:
             port = int(active.read_text(encoding="utf-8").splitlines()[0])
@@ -441,6 +444,12 @@ class _RealBrowser:
         }
         receipt["fingerprint"] = _digest(receipt)
         return receipt
+
+    def _stderr_tail(self) -> str:
+        with self.stderr_path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 1000))
+            return stream.read().decode("utf-8", errors="replace").strip()
 
     def _stop_process(self) -> None:
         if self.process is None:

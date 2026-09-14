@@ -181,7 +181,7 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.7. Historical
+> v2.23.8. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
 > Building the current packages and pushing source to main is not a tag, upload,
@@ -201,6 +201,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.23.8** | **Native plugin startup and budget recovery.** Uses the host-selected plugin for hooks and review commands, fixes Claude-only packages and failed setup reporting, and resumes existing tasks after an approved token increase. |
 | **v2.23.7** | **Native Codex integration.** Native command sessions, permission profiles and preview panels with exact TaskPlane evidence binding. Removes the custom file reader and fixes public command launch defaults. |
 | **v2.23.6** | **Shared entry initialization.** Missing setup is repaired once; incompatible read-only file tools refuse activation before a session can be locked. Incident report included. |
 | **v2.23.5** | **Session isolation and fresh-checkout readiness.** Each host conversation owns its contracts, run bindings, meters and review state. Native hook proof follows only the same session across checkouts; clearing a review leaves other sessions intact. |
