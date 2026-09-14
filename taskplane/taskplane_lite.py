@@ -15,12 +15,12 @@ not enforced before spend. The PreToolUse hook screens a *cooperative* shell
 for build contracts: it makes wrappers (env/nohup/sudo/xargs/…) and nested
 `sh -c`/`$()` transparent, and blocks resolvable out-of-scope writes plus
 clearly destructive unscopeable verbs (`find -delete/-exec`,
-`git checkout/reset/…`). A read-only review never authorizes a shell command:
-an allow/deny hook cannot rewrite a host command into shell=False execution,
-scrub its process environment, or bind the bytes of the eventual executable.
-It admits only explicitly listed host-native Read/Grep/Glob calls and scoped
-host-native edits to review artifacts. A future host-owned direct-exec broker
-may add command access; caller-authored argv/receipt fields do not. Under a
+`git checkout/reset/…`). Read-only review admits explicit native file tools or
+Codex's built-in read-only sandbox. A projected shell request must match the
+full pending native call, including its fixed non-login shell. Codex enforces
+the process permissions; TaskPlane does not implement a shell sandbox. Scoped
+host-native edits remain available for review artifacts. Caller-authored
+permission/receipt fields do not grant access. Under a
 *build* contract, `python -c "…"` can still write anywhere because a
 Turing-complete body cannot be screened from argv. For a hard build boundary,
 use a container or OS sandbox.
@@ -2692,13 +2692,36 @@ def screen_tool(
                 )
         return True, f"within every active contract ({len(members)}-way union)"
     if contract.get("read_only"):
+        from taskplane import host_capabilities
+        if host_capabilities.is_codex_readonly_control(tool_name, tool_input, workspace or os.getcwd()):
+            return screen_tool(contract, "Read", {"file_path": "."}, workspace)
         if tool_name in COMMAND_TOOLS:
+            from taskplane import governed_commands
+            native_input = (host_capabilities.pending_codex_tool_call("exec_command")
+                            if tool_name == "Bash" else tool_input)
+            native_matches = (tool_name in {"Bash", "exec_command", "functions.exec_command"}
+                              and native_input and (tool_name != "Bash" or native_input.get("cmd") == tool_input.get("command")))
+            if (native_matches
+                    and governed_commands.native_evidence_invocation_allowed(workspace or os.getcwd(), native_input)):
+                denial = governed_commands._raw_command_policy_denial(contract, str(native_input.get("cmd", "")))
+                if denial:
+                    return False, denial
+                return screen_tool(contract, "Read", {"file_path": "."}, workspace)
+            if native_matches and host_capabilities.is_codex_readonly_invocation(
+                    "exec_command" if tool_name == "Bash" else tool_name,
+                    native_input, workspace or os.getcwd()):
+                command = command_text(tool_name, tool_input)
+                deny = ((contract.get("coding") or {}).get("command_policy") or {}).get("deny") or []
+                denied = deny_violation(command, deny) or deny_violation(
+                    shlex.join(shlex.split(command)[6:]), deny)
+                if denied:
+                    return False, f"command matches deny pattern '{denied}'"
+                return screen_tool(contract, "Read", {"file_path": "."}, workspace)
             return False, (
-                "read-only review contract: every shell command tool is "
-                "blocked because this host hook cannot prove shell=False, a "
-                "sanitized process environment, or executable bytes; use "
-                "explicitly allowed host-native Read/Grep/Glob and scoped "
-                "Write/Edit tools"
+                "read-only review contract: shell command is not a verified "
+                "native Codex read-only invocation; use the canonical native "
+                "request from entry-initialization.md or explicitly allowed host-native "
+                "Read/Grep/Glob and scoped Write/Edit tools"
             )
         native_tools = READONLY_NATIVE_READ_TOOLS | WRITE_TOOLS
         if tool_name not in native_tools:
@@ -6518,7 +6541,7 @@ def _entry_engine_fingerprint() -> str:
     root = os.path.dirname(os.path.abspath(__file__))
     digest = hashlib.sha256()
     digest.update(os.path.realpath(root).encode())
-    for name in ("tp.py", "taskplane_lite.py"):
+    for name in ("tp.py", "taskplane_lite.py", "host_capabilities.py"):
         with open(os.path.join(root, name), "rb") as stream:
             digest.update(stream.read())
     for directory in (".codex-plugin", ".claude-plugin"):
@@ -6542,7 +6565,7 @@ def record_entry_tools(names: list[str]) -> None:
         "tools": sorted(set(names)), "session": _entry_storage.host_session_id()})
 
 
-def review_file_tool_readiness(contract: dict | None = None) -> dict:
+def review_file_tool_readiness(contract: dict | None = None, *, workspace: str | None = None) -> dict:
     """Check compatibility without changing the contract's tool permissions."""
     record = load_json(_entry_tools_path(), default={}, what="entry tool inventory")
     valid = (record.get("engine") == _entry_engine_fingerprint()
@@ -6550,12 +6573,20 @@ def review_file_tool_readiness(contract: dict | None = None) -> dict:
     names = set(record.get("tools") or []) if valid else set()
     allowed = set(contract.get("allowed_tools") or []) if contract is not None else names
     usable = {name for name in names if any(alias in allowed for alias in tool_aliases(name))}
+    from taskplane import host_capabilities
+    native = (host_capabilities.codex_readonly_runtime(workspace or os.getcwd())
+              if names & {"exec_command", "functions.exec_command"}
+              and (contract is None or "Read" in allowed) else None)
     missing = []
-    if "Read" not in usable:
+    if "Read" not in usable and not native:
         missing.append("Read")
     if (contract is None or contract.get("write_allow")) and not (usable & WRITE_TOOLS):
         missing.append("a scoped Write/Edit tool")
     return {"ready": not missing, "missing": missing,
+            "read_transport": "native_file_tool" if "Read" in usable else "codex_sandbox" if native else None,
+            "codex_sandbox": ({"executable": native, "permission_profile": ":read-only",
+                "instruction": "Use exec_command with the native sandbox invocation in entry-initialization.md; Codex owns execution and permission approval."}
+                if native and "Read" not in usable else None),
             "source": "caller-declared tool inventory; not an enforcement receipt",
             "detail": ("compatible review file tools" if not missing else
                 "Read-only review cannot start with this tool set: missing " + ", ".join(missing)
@@ -6575,7 +6606,7 @@ def activate(
     import collision
 
     if contract.get("read_only") and _entry_storage.host_session_id():
-        readiness = review_file_tool_readiness(contract)
+        readiness = review_file_tool_readiness(contract, workspace=workspace)
         if not readiness["ready"]:
             raise ValueError(readiness["detail"])
     apply_foreign_state_exclusions(

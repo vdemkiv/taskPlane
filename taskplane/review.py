@@ -967,13 +967,14 @@ def _host_review_transcripts(
     return [(host_hint, paths[0])]
 
 
-def _host_review_records(path: str) -> list[dict]:
+def _host_review_records(path: str, limit_bytes: int = MAX_HOST_TRANSCRIPT_BYTES) -> list[dict]:
+    limit_bytes = max(1, min(int(limit_bytes), MAX_HOST_TRANSCRIPT_BYTES))
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as stream:
-            start = max(0, size - MAX_HOST_TRANSCRIPT_BYTES)
+            start = max(0, size - limit_bytes)
             stream.seek(start)
-            payload = stream.read(MAX_HOST_TRANSCRIPT_BYTES)
+            payload = stream.read(limit_bytes)
             if start:
                 first_complete = payload.find(b"\n")
                 payload = (payload[first_complete + 1:]
@@ -2027,6 +2028,18 @@ def _run_review_process_tree_isolated(argv: list[str], cwd: str,
     must inject an equivalent launcher; silently falling back to ordinary
     ``subprocess.run`` would turn a manifest claim into fake isolation.
     """
+    if os.environ.get("CODEX_THREAD_ID"):
+        from taskplane import host_capabilities
+        request = host_capabilities.codex_sandbox_command(argv, cwd, writable_root=cwd)
+        result = subprocess.run(shlex.split(request["cmd"]), cwd=cwd,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=timeout, check=False)
+        if b"sandbox_apply: Operation not permitted" in bytes(result.stdout or b""):
+            raise OSError("Codex cannot nest its sandbox on macOS; run this exact validation action through native permission approval")
+        return result, {"schema": "taskplane.review-isolation-receipt/v1",
+                        "scope": "complete-process-tree", "network": "denied",
+                        "filesystem_writes": "validation-sandbox-only",
+                        "mechanism": "codex-permission-profile"}
     if sys.platform == "darwin" and os.path.isfile("/usr/bin/sandbox-exec"):
         escaped = cwd.replace("\\", "\\\\").replace('"', '\\"')
         profile = " ".join((

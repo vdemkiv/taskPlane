@@ -542,14 +542,14 @@ class TokenCeilingThroughTheScreener(_WS):
         tr = self._contract_with(900_000)
         decision, why = self._screen("grep -rn foo .", tr)
         self.assertEqual(decision, "block")
-        self.assertIn("every shell command tool is blocked", why)
+        self.assertIn("shell command is not a verified native Codex read-only invocation", why)
         self.assertNotIn("TOKEN BUDGET exhausted", why)
 
     def test_no_transcript_cannot_lift_read_only_shell_denial(self):
         self._contract_with(1)
         decision, why = self._screen("grep -rn foo .")
         self.assertEqual(decision, "block")
-        self.assertIn("every shell command tool is blocked", why)
+        self.assertIn("shell command is not a verified native Codex read-only invocation", why)
         self.assertNotIn("TOKEN BUDGET exhausted", why)
 
     def test_inspection_remains_reachable_at_the_token_ceiling(self):

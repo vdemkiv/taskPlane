@@ -25,7 +25,7 @@ not repeated in the tables.
 | `tp.py clear` | deactivate the workspace contract |
 | `tp.py command` | durable governed host-command lifecycle |
 | `tp.py command cancel` | cancel a durable command |
-| `tp.py command launch` | launch direct argv through the durable command runtime |
+| `tp.py command launch` | prepare native Codex execution or launch through the retained host runtime |
 | `tp.py command reconnect` | reconnect a durable command |
 | `tp.py command show` | show a durable command |
 | `tp.py command wait` | wait a durable command |
@@ -71,7 +71,7 @@ not repeated in the tables.
 | `tp.py loop collect` | validate and collect the exact phase evidence without supplying a gate outcome |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
-| `tp.py loop command launch` | launch direct argv through the durable command runtime |
+| `tp.py loop command launch` | prepare native Codex execution or launch through the retained host runtime |
 | `tp.py loop command reconnect` | reconnect a durable command |
 | `tp.py loop command show` | show a durable command |
 | `tp.py loop command wait` | wait a durable command |
@@ -219,7 +219,7 @@ Positional arguments:
 
 ## `tp.py command launch`
 
-launch direct argv through the durable command runtime
+prepare native Codex execution or launch through the retained host runtime
 
 Positional arguments:
 
@@ -229,7 +229,7 @@ Positional arguments:
 | --- | --- | --- |
 | `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
 | `--cwd` | CWD | command directory within the workspace |
-| `--deadline-seconds` | DEADLINE_SECONDS | optional execution deadline from launch |
+| `--deadline-seconds` | DEADLINE_SECONDS | optional hard deadline (unavailable on native Codex desktop tools) |
 | `--host` | one of: claude, codex | host adapter contract |
 | `--run-id` | RUN_ID (required) | canonical governed run identity |
 | `--task-id` | TASK_ID (required) | canonical governed task identity |
@@ -710,7 +710,7 @@ Positional arguments:
 
 ## `tp.py loop command launch`
 
-launch direct argv through the durable command runtime
+prepare native Codex execution or launch through the retained host runtime
 
 Positional arguments:
 
@@ -720,7 +720,7 @@ Positional arguments:
 | --- | --- | --- |
 | `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
 | `--cwd` | CWD | command directory within the workspace |
-| `--deadline-seconds` | DEADLINE_SECONDS | optional execution deadline from launch |
+| `--deadline-seconds` | DEADLINE_SECONDS | optional hard deadline (unavailable on native Codex desktop tools) |
 | `--host` | one of: claude, codex | host adapter contract |
 | `--run-id` | RUN_ID (required) | canonical governed run identity |
 | `--task-id` | TASK_ID (required) | canonical governed task identity |
@@ -1010,6 +1010,7 @@ launch a private governed working preview from a closed JSON request
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--request` | REQUEST (required) | bounded JSON request matching the documented taskplane preview request contract |
+| `--resume` | RESUME | observe the native panel result for an existing preview id without relaunching |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py ready`

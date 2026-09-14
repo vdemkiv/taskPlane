@@ -147,3 +147,44 @@ initialization, read-only enforcement, screener bypasses, Codex compatibility an
 onboarding. Production lint, the TaskPlane skill validator and whitespace checks
 passed. Packaging lists and the generated CLI reference are restored to the
 pre-reader baseline. No replacement process runtime was introduced in this audit.
+
+## Implementation following approval
+
+The approved migration is implemented in the working branch. The table above
+describes the audited baseline, not the new behavior below.
+
+| Area | Implemented behavior | Retained boundary or limitation |
+| --- | --- | --- |
+| Review reads | Native `exec_command` enters the installed Codex `:read-only` profile, with managed restrictions included. The projected Bash hook is checked against the full pending native call, including its non-login `/bin/sh` and working directory. Scoped `apply_patch` remains the artifact writer. | Missing or ambiguous native records, arbitrary JavaScript wrappers, outer shell effects, wider profiles and caller-authored permission claims are refused. This POSIX mapping does not claim Windows sandbox support. |
+| General Codex commands | Launch emits a native tool request. Show/wait/cancel project native session results and return native `write_stdin` requests where needed. TaskPlane launches no general Codex worker and maintains no second output log or process state machine. | The existing intent store holds assignment identity and native references. Unknown history and requested interruption cannot prove success. Codex cannot select the Claude transport as a workaround. |
+| Test evidence | The existing committed-copy preparer supplies the disposable checkout. Codex's profile permits writes only there; native environment arguments place test home/temp files there too. Evidence is checked against the exact command, assignment and source revision. The copy is removed after observed completion. | Semantic checkpoint enforcement remains separate. Native desktop tools do not expose a hard execution deadline; a general command requesting one is refused before launch. |
+| Review/preview isolation | The Codex branches now use native permission profiles rather than constructing Seatbelt policy text. Live validation through the updated review entry allowed a copy write and denied a source write. | The existing bounded validation action and preview CPU/memory limits remain, because those guarantees are not supplied by the current desktop command tool. The Claude isolation path is retained. |
+| Preview display | A static disposable `index.html` opens through native `open_in_codex`. The preview can resume observation without launching another command. | A native queued response remains queued. It is not an opened panel or visual-review evidence. A server URL and public hosting are not inferred. |
+| Usage and checkouts | Confirmed that `native_session_meter` remains the single Codex counter reader. Local targets use the supplied checkout; ready runs retain their pinned checkout through preflight. | Phase attribution, exact repository acquisition and internal validation copies remain TaskPlane domain behavior. No new task/worktree service or usage meter was added. |
+
+Live host checks used Codex `0.154.0-alpha.6.2`. They verified a read-only read,
+denied source writes, allowed writes in a disposable copy, managed-profile
+resolution through the updated validation entry, native interruption and its
+nonzero terminal event, and recovery of the full pending native command from
+the actual session record. The native panel tool returned `queued`; no visual
+completion is claimed. These checks are integration evidence, not a governed
+EM sign-off.
+
+Regression fixtures for the old detached runner now name the Claude transport
+explicitly. Native tests exercise request/result separation, forged stdout,
+replayed launches, foreign process IDs, omitted shell metadata, scope widening,
+read-only polling/interruption, assignment-bound copy execution and cleanup,
+and queued preview behavior. The first broad run found that Ruff and mypy were
+missing from the user-site-free test interpreter. Validation was moved to a
+temporary environment installed from the repository's hash-locked test and
+quality dependencies; environment restrictions were preserved.
+
+The workspace launcher still selects the Marketplace installation of 2.23.6.
+The source changes are not an in-place edit of that installed plugin. A release
+or an explicitly selected local development installation must carry the updated
+engine and skills before this workspace can use the new review path. No second
+hook registration, controller, server or custom installer was added.
+
+The original governed EM review still lacks completed evaluation and sign-off.
+Its previously observed pickup-budget refusal remains a separate unresolved
+policy decision; this migration does not reset usage or grant another budget.

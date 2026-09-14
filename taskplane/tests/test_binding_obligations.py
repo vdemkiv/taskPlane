@@ -276,7 +276,7 @@ class TheRunDeclaresWhatItOwesUpFront(unittest.TestCase):
         out = json.loads(r.stdout)
         self.assertEqual(out.get("decision"), "block")
         self.assertIn(
-            "every shell command tool is blocked", out.get("reason", ""))
+            "shell command is not a verified native Codex read-only invocation", out.get("reason", ""))
 
 
 class TheStopHookReportsWhatWasNeverShown(_Ws):

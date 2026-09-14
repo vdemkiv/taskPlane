@@ -16,6 +16,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import time
 from taskplane import settings as _host_settings, delivery_ports as _host_delivery_ports
 from dataclasses import dataclass
@@ -32,6 +34,178 @@ RUNTIME_RECEIPT_SCHEMA = "taskplane.host-hook-receipt/v1"
 RUNTIME_RECEIPT_MAX_AGE_SECONDS = 300.0
 ROOT_SESSION_CAPABILITY_SCHEMA = \
     "taskplane.host-root-session-capability/v1"
+
+
+def codex_readonly_runtime(workspace: str) -> str | None:
+    """Resolve the installed native sandbox; never a checkout executable.
+
+    This is tool compatibility, not permission or execution evidence. Codex
+    resolves and enforces its built-in profile when the native tool runs.
+    """
+    if not os.environ.get("CODEX_THREAD_ID") or os.name != "posix":
+        return None
+    if any(key.startswith(("LD_", "DYLD_", "BASH_FUNC_")) or key in
+           {"ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"} for key in os.environ):
+        return None
+    executable = shutil.which("codex")
+    if not executable:
+        return None
+    executable = os.path.realpath(executable)
+    root = os.path.realpath(workspace)
+    if os.path.commonpath((executable, root)) == root:
+        return None
+    return executable
+
+
+def codex_sandbox_command(argv: list[str], workspace: str, *, writable_root: str | None = None) -> dict:
+    """Map scope to a native profile; Codex owns all sandbox enforcement."""
+    executable = codex_readonly_runtime(workspace)
+    if not executable or not argv or any(not isinstance(x, str) or not x or "\0" in x for x in argv):
+        raise ValueError("Codex read-only execution is unavailable or argv is invalid")
+    options = ["-P", ":read-only"]
+    if writable_root is not None:
+        root = os.path.realpath(writable_root)
+        if root != os.path.realpath(workspace):
+            raise ValueError("native validation writes require its exact disposable checkout")
+        # CLI dotted keys are split literally, not parsed as TOML keys. Pass
+        # one inline table so dots/quotes in the filesystem path remain data.
+        profile = ('permissions.taskplane-validation={extends=":read-only", '
+                   f'filesystem={{{json.dumps(root)}="write"}}' + '}')
+        options = ["-c", profile,
+                   "-P", "taskplane-validation", "-C", root]
+    request = {"cmd": shlex.join([executable, "sandbox", "--include-managed-config", *options, "--", *argv]),
+               "shell": "/bin/sh", "login": False, "workdir": os.path.realpath(workspace)}
+    if os.environ.get("CODEX_SANDBOX") == "seatbelt":
+        # macOS cannot nest Seatbelt. This asks Codex's approval reviewer to
+        # launch its own narrower sandbox; it does not grant the approval.
+        request.update(sandbox_permissions="require_escalated", justification=
+                       "Allow Codex to launch its native sandbox for this scoped validation command?")
+    return request
+
+
+def codex_readonly_command(argv: list[str], workspace: str) -> dict:
+    """Describe a native tool invocation; TaskPlane executes no file IO."""
+    return codex_sandbox_command(argv, workspace)
+
+
+def is_codex_readonly_invocation(tool: str, payload: Mapping, workspace: str) -> bool:
+    """Admit only the native read-only sandbox, with no outer shell effects.
+
+    Codex currently projects exec_command into Bash/command for hooks. That
+    projection is accepted only in a Codex host session. Caller-authored
+    permissions, argv and receipts never authorize another command shape.
+    """
+    executable = codex_readonly_runtime(workspace)
+    if not executable or tool not in {"exec_command", "functions.exec_command", "Bash"}:
+        return False
+    if tool == "Bash":
+        if set(payload) != {"command"}:
+            return False
+        command = payload.get("command")
+        # This projection omits shell/login. Check the actual pending native
+        # call; an arbitrary outer shell could otherwise write before Codex
+        # ever enters the read-only sandbox.
+        native = pending_codex_tool_call("exec_command")
+        if native is None or native.get("cmd") != command:
+            return False
+        return is_codex_readonly_invocation("exec_command", native, workspace)
+    else:
+        if set(payload) - {"cmd", "shell", "login", "workdir", "max_output_tokens",
+                           "yield_time_ms", "sandbox_permissions", "justification", "tty"}:
+            return False
+        if payload.get("shell") != "/bin/sh" or payload.get("login") is not False:
+            return False
+        if os.path.realpath(str(payload.get("workdir") or workspace)) != os.path.realpath(workspace):
+            return False
+        command = payload.get("cmd")
+    if not isinstance(command, str):
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return (len(argv) > 6 and argv[:6] == [executable, "sandbox", "--include-managed-config", "-P", ":read-only", "--"]
+            and shlex.join(argv) == command)
+
+
+def pending_codex_tool_call(name: str) -> dict | None:
+    """Read one pending native invocation, not caller-supplied metadata.
+
+    Only the fixed one-tool code-mode expression is supported. Ambiguous
+    wrappers, missing native records and already-completed calls fail closed.
+    """
+    if not os.environ.get("CODEX_THREAD_ID"):
+        return None
+    from taskplane import review
+    try:
+        _, path = review._host_review_transcripts()[0]
+        records = review._host_review_records(path, 4 * 1024 * 1024)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    pending = {}
+    for row in records:
+        if row.get("type") != "response_item":
+            continue
+        value = row.get("payload") or {}
+        call_id = value.get("call_id")
+        if value.get("type") in {"custom_tool_call", "function_call"}:
+            pending[call_id] = value
+        elif value.get("type") in {"custom_tool_call_output", "function_call_output"}:
+            pending.pop(call_id, None)
+    if len(pending) != 1:
+        return None
+    value = next(iter(pending.values()))
+    raw = value.get("input", value.get("arguments"))
+    if value.get("name") in {"exec", "functions.exec"} and isinstance(raw, str):
+        match = re.fullmatch(r"text\(await tools\." + re.escape(name) + r"\((\{.*\})\)\);", raw.strip(), re.DOTALL)
+        raw = match[1] if match else None
+    elif value.get("name") not in {name, "functions." + name}:
+        return None
+    try:
+        args = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return None
+    return args if isinstance(args, dict) else None
+
+
+def is_codex_readonly_control(tool: str, payload: Mapping, workspace: str) -> bool:
+    """Admit native polling/interrupt only for an observed read-only session."""
+    if tool not in {"write_stdin", "functions.write_stdin", "BashOutput"}:
+        return False
+    native = pending_codex_tool_call("write_stdin")
+    if (native is None or native.get("chars", "") not in {"", "\x03"}
+            or type(native.get("session_id")) is not int
+            or set(native) - {"session_id", "chars", "yield_time_ms", "max_output_tokens"}
+            or (tool != "BashOutput" and dict(payload) != native)):
+        return False
+    from taskplane import host_native, review
+    try:
+        _, path = review._host_review_transcripts()[0]
+        records = review._host_review_records(path)
+        for row in reversed(records):
+            value = row.get("payload") or {}
+            if row.get("type") != "response_item" or value.get("type") not in {"custom_tool_call", "function_call"}:
+                continue
+            raw = value.get("input", value.get("arguments"))
+            if value.get("name") in {"exec", "functions.exec"} and isinstance(raw, str):
+                match = re.fullmatch(r"text\(await tools\.exec_command\((\{.*\})\)\);", raw.strip(), re.DOTALL)
+                raw = match[1] if match else None
+            elif value.get("name") not in {"exec_command", "functions.exec_command"}:
+                continue
+            args = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(args, dict):
+                continue
+            from taskplane import governed_commands
+            if not (is_codex_readonly_invocation("exec_command", args, workspace)
+                    or governed_commands.native_evidence_invocation_allowed(workspace, args)):
+                continue
+            request = host_native.native_tool_request("exec_command", args)
+            observed = host_native.native_tool_observations(records, request, after_ms=0)
+            if any(x["result"].get("session_id") == native["session_id"] for x in observed):
+                return True
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return False
 
 
 def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:

@@ -537,7 +537,7 @@ class TestCodexHookProtocol(unittest.TestCase):
             contract, "exec_command", {"cmd": "touch src/forbidden.py"},
             self.ws)
         self.assertFalse(ok)
-        self.assertIn("every shell command tool is blocked", reason)
+        self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
         self.assertIn("scoped Write/Edit tools", reason)
 
     def test_claude_allow_keeps_legacy_approve(self):
@@ -563,7 +563,7 @@ class TestCodexHookProtocol(unittest.TestCase):
         ok, reason = tp.screen_tool(
             contract, "Bash", {"command": f"printf fake > {result}"}, self.ws)
         self.assertFalse(ok)
-        self.assertIn("every shell command tool is blocked", reason)
+        self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
         for hook_command in ("screen", "subagent-start"):
             with self.subTest(command=hook_command):
                 ok, reason = tp.screen_tool(
@@ -571,7 +571,7 @@ class TestCodexHookProtocol(unittest.TestCase):
                     {"command": f"python3 taskplane/tp.py {hook_command}"},
                     self.ws)
                 self.assertFalse(ok)
-                self.assertIn("every shell command tool is blocked", reason)
+                self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
 
     def test_claude_and_codex_write_hooks_authorize_leased_results(self):
         for host_seed in (

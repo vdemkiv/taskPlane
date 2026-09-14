@@ -1110,9 +1110,11 @@ def _complete_evaluation(ws, monkeypatch, evaluate, run_id, requirement, task_id
             worker.setenv("TASKPLANE_TASK", slot)
             with pytest.raises(governed_commands.GovernedCommandError, match="exact evidence assignment"):
                 governed_commands.execute(ws, "launch", {
+                    "host": "claude",  # retained runtime cleanup/evidence fixture
                     "authorization": authorization, "argv": argv + ["unapproved.py"], "run_id": run_id,
                     "task_id": task_id, "assignment_binding": assignment["binding"]})
             launched = governed_commands.execute(ws, "launch", {
+                "host": "claude",  # retained runtime cleanup/evidence fixture
                 "authorization": authorization, "argv": argv, "run_id": run_id,
                 "task_id": task_id, "assignment_binding": assignment["binding"]})
             completed = governed_commands.execute(ws, "wait", {

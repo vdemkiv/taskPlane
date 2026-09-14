@@ -64,6 +64,158 @@ else:  # pragma: no cover - direct installed module loading
 SNAPSHOT_SCHEMA = "taskplane.host-surface-snapshot/v1"
 EVENT_SCHEMA = "taskplane.host-surface-event/v1"
 ROOT_SESSION_START_SCHEMA = "taskplane.host-root-session-start/v1"
+
+
+def native_tool_request(name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe an existing Codex tool without launching a replacement runtime.
+
+    The fixed orchestration expression lets evidence readers distinguish the
+    actual native result from arbitrary text printed by model-authored code.
+    """
+    if name not in {"exec_command", "write_stdin", "mcp__codex_app__open_in_codex"}:
+        raise ValueError("unsupported native tool")
+    values = dict(arguments)
+    return {"name": name, "arguments": values,
+            "script": f"text(await tools.{name}({json.dumps(values, sort_keys=True)}));"}
+
+
+def native_tool_observations(records: Sequence[Mapping[str, Any]], request: Mapping[str, Any],
+                             *, after_ms: float) -> list[dict[str, Any]]:
+    """Read native tool results, never a receipt asserted in stdout.
+
+    Records must come from the caller's already-validated native transcript.
+    Matching the complete function expression matters on code-mode hosts:
+    arbitrary code can print an object that merely resembles a command result.
+    """
+    if dict(request) != native_tool_request(str(request.get("name")), request.get("arguments") or {}):
+        raise ValueError("native tool request is not canonical")
+    calls: dict[str, tuple[float, str]] = {}
+    results = []
+    for record in records:
+        if record.get("type") != "response_item":
+            continue
+        payload = record.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            continue
+        kind = payload.get("type")
+        call_id = str(payload.get("call_id") or "")
+        if kind in {"custom_tool_call", "function_call"}:
+            try:
+                stamp = datetime.fromisoformat(str(record.get("timestamp")).replace("Z", "+00:00")).timestamp() * 1000
+            except ValueError:
+                continue
+            if stamp < after_ms or not call_id:
+                continue
+            name = payload.get("name")
+            raw = payload.get("input", payload.get("arguments"))
+            if name in {"exec", "functions.exec"} and isinstance(raw, str):
+                # Native transcripts may normalize Unicode escapes. Parse
+                # only the JSON argument inside this one fixed expression;
+                # never evaluate JavaScript or accept extra expressions.
+                match = re.fullmatch(r"text\(await tools\." + re.escape(str(request["name"]))
+                                     + r"\((\{.*\})\)\);", raw.strip(), re.DOTALL)
+                if match:
+                    try:
+                        if json.loads(match[1]) == request["arguments"]:
+                            calls[call_id] = (stamp, "code_mode")
+                    except ValueError:
+                        pass
+            elif name in {request.get("name"), "functions." + str(request.get("name"))}:
+                try:
+                    args = json.loads(raw) if isinstance(raw, str) else raw
+                except ValueError:
+                    continue
+                if args == request.get("arguments"):
+                    calls[call_id] = (stamp, "direct")
+        elif kind in {"custom_tool_call_output", "function_call_output"} and call_id in calls:
+            if payload.get("is_error"):
+                continue
+            output = payload.get("output")
+            if isinstance(output, list):
+                if (len(output) == 2 and isinstance(output[0], Mapping)
+                        and output[0].get("type") == "input_text"
+                        and re.fullmatch(r"Script completed\nWall time [0-9.]+ seconds\nOutput:\n",
+                                         str(output[0].get("text")))):
+                    output = output[1:]
+                if len(output) != 1 or not isinstance(output[0], Mapping) or output[0].get("type") != "input_text":
+                    continue
+                output = output[0].get("text")
+            try:
+                value = json.loads(output) if isinstance(output, str) else output
+            except ValueError:
+                continue
+            if not isinstance(value, dict):
+                continue
+            results.append({"receipt_id": call_id, "started_at_ms": calls[call_id][0],
+                            "source": "codex-session:native-tool-result", "result": value})
+    return results
+
+
+def native_command_observation(records: Sequence[Mapping[str, Any]], request: Mapping[str, Any],
+                               *, after_ms: float) -> dict[str, Any]:
+    """Project the native session once; do not persist or supervise a process.
+
+    A launch intention is not execution. Long commands finish in Codex's
+    CommandExecution event, even when no model is actively waiting for them.
+    Missing/truncated native history stays unknown rather than turning into a
+    locally invented success, cancellation or timeout.
+    """
+    from urllib.parse import unquote, urlparse
+
+    observations = native_tool_observations(records, request, after_ms=after_ms)
+    if not observations:
+        return {"state": "launch_requested", "native_request": dict(request)}
+    if len(observations) != 1:
+        raise ValueError("native command launch was repeated; execution is ambiguous")
+    launch = observations[0]
+    result = launch["result"]
+    session = result.get("session_id")
+    code = result.get("exit_code")
+    receipt = launch["receipt_id"]
+    output = str(result.get("output") or "")
+    if session is not None and (type(session) is not int or session <= 0):
+        raise ValueError("native process reference is invalid")
+    if code is None and session is not None:
+        expected = request["arguments"]
+        for record in records:
+            payload = record.get("payload") or {}
+            item = payload.get("item") or {}
+            if (record.get("type") != "event_msg" or payload.get("type") != "item_completed"
+                    or item.get("type") != "CommandExecution"
+                    or str(item.get("process_id")) != str(session)
+                    or not str(item.get("source", "")).startswith("unified_exec")
+                    or payload.get("started_at_ms", 0) < after_ms):
+                continue
+            native_cwd = str(item.get("cwd") or "")
+            if native_cwd.startswith("file:"):
+                native_cwd = unquote(urlparse(native_cwd).path)
+            if (item.get("command") != [expected["shell"], "-lc" if expected["login"] else "-c", expected["cmd"]]
+                    or os.path.realpath(native_cwd) != os.path.realpath(expected["workdir"])):
+                continue
+            if type(item.get("exit_code")) is int:
+                code = item["exit_code"]
+                output = str(item.get("aggregated_output") or "")
+                receipt = str(item["id"])
+                break
+    if code is not None and type(code) is not int:
+        raise ValueError("native command exit status is invalid")
+    state = ("succeeded" if code == 0 else "failed") if code is not None else "running" if session else "unknown"
+    return {"state": state, "exit_code": code, "session_id": session,
+            "source": launch["source"], "launch_receipt_id": launch["receipt_id"],
+            "receipt_id": receipt, "output_sha256": hashlib.sha256(output.encode()).hexdigest(),
+            "output_bytes": len(output.encode())}
+
+
+def native_command_followup(observation: Mapping[str, Any], *, cancel: bool = False,
+                            wait_ms: int = 1000) -> dict[str, Any] | None:
+    """Let the current model call Codex's existing wait/interrupt tool."""
+    if observation.get("state") != "running":
+        return None
+    return native_tool_request("write_stdin", {
+        "session_id": observation["session_id"], "chars": "\u0003" if cancel else "",
+        "yield_time_ms": max(1000, min(int(wait_ms), 60000)), "max_output_tokens": 4000})
+
+
 REVISION_ID_KEYS = (
     "target_fingerprint",
     "context_fingerprint",

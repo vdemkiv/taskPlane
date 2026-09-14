@@ -365,7 +365,7 @@ class TestScreenerBypassClosed(unittest.TestCase):
             allow, reason = tl.screen_tool(
                 self.ro, "Bash", {"command": cmd}, None)
             self.assertFalse(allow, f"LOOSENED read-only shell: {cmd}")
-            self.assertIn("every shell command tool is blocked", reason)
+            self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
 
     def test_scoped_blocks_wrapped_escape_and_destructive(self):
         for cmd in ["env rm -rf ../other", "find . -delete",

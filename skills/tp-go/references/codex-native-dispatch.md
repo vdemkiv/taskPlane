@@ -50,6 +50,14 @@ Never invent a gate outcome or use a resource waiver to continue.
 Standalone Review has its own scoped brief protocol; it does not replace phase
 startup or inject a lens route into Evaluate or Engineering.
 
+Codex workers use native file access, command sessions and panels as described
+in `../../taskplane/references/entry-initialization.md#native-codex-calls`.
+They consume that call protocol without repeating user onboarding. A governed
+command's `native_request` is an instruction to call the existing Codex tool,
+not execution evidence. Keep the returned command reference for evidence
+collection; only an observed native zero exit for the exact assignment can pass.
+Do not select the Claude transport to bypass unavailable native capabilities.
+
 ## Standalone Review startup
 
 `review option` returns each selected slot with its immutable brief reference

@@ -19,6 +19,8 @@ ENTRIES = ('taskplane', 'tp-go', 'tp-engineering', 'tp-build', 'tp-design',
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
+    from taskplane import host_capabilities
+    monkeypatch.setattr(host_capabilities, 'codex_readonly_runtime', lambda workspace: None)
     monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
     monkeypatch.delenv('CLAUDE_SESSION_ID', raising=False)
     ws = tmp_path / 'project'

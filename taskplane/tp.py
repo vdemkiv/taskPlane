@@ -5217,7 +5217,8 @@ def cmd_preview(a) -> int:
         import preview_runtime
     try:
         request = preview_runtime.load_preview_request(a.request)
-        out = preview_runtime.launch_preview_request(request)
+        out = (preview_runtime.resume_preview_request(request, a.resume)
+               if getattr(a, "resume", None) else preview_runtime.launch_preview_request(request))
     except preview_runtime.PreviewError as exc:
         out = {
             "schema": "taskplane.working-preview-launch/v1",
@@ -5248,7 +5249,7 @@ def cmd_preview(a) -> int:
 def _add_governed_command_actions(parser, *, fn=None) -> None:
     actions = parser.add_subparsers(dest="command_action", required=True)
     launch = actions.add_parser(
-        "launch", help="launch direct argv through the durable command runtime"
+        "launch", help="prepare native Codex execution or launch through the retained host runtime"
     )
     launch.add_argument(
         "--authorization", required=True, help="actor/session identity bound to the handle"
@@ -5263,7 +5264,7 @@ def _add_governed_command_actions(parser, *, fn=None) -> None:
         "--deadline-seconds",
         type=float,
         default=None,
-        help="optional execution deadline from launch",
+        help="optional hard deadline (unavailable on native Codex desktop tools)",
     )
     launch.add_argument("--wave-id", default=None, help="optional governed command-wave identity")
     launch.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
@@ -8184,7 +8185,7 @@ def cmd_review(a) -> int:
         print(json.dumps(initialized, sort_keys=True))
         return 2
     if runtime_storage.host_session_id():
-        file_tools = tp.review_file_tool_readiness()
+        file_tools = tp.review_file_tool_readiness(workspace=ws)
         if not file_tools["ready"]:
             print(json.dumps({"status": "not_ready", "review_file_tools": file_tools}, sort_keys=True))
             return 2
@@ -8845,7 +8846,7 @@ def cmd_onboard(a) -> int:
         # Reset an omitted declaration; a prior entry's inventory is not current.
         if initialize and available is None:
             tp.record_entry_tools([])
-        file_tools = tp.review_file_tool_readiness()
+        file_tools = tp.review_file_tool_readiness(workspace=ws)
         report["review_file_tools"] = file_tools
         report["workspace_ready"] = report["ready"]
         report["review_ready"] = bool(report["ready"] and file_tools["ready"])
@@ -11607,6 +11608,7 @@ def _main(argv=None) -> int:
         help="bounded JSON request matching the documented taskplane preview request contract",
     )
     pv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
+    pv.add_argument("--resume", default=None, help="observe the native panel result for an existing preview id without relaunching")
     pv.set_defaults(fn=cmd_preview)
 
     ak = sub.add_parser(

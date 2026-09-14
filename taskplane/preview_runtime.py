@@ -960,6 +960,10 @@ class PreviewRuntime:
                         detail=f"surface transport failed: {exc}",
                         target=preview["target"], revision=preview["revision"])
             return self.record_outcome(preview_id, "unavailable")
+        if result.get("status") in {"requested", "queued"}:
+            preview["native_surface"] = result
+            preview["outcome"] = "open_" + result["status"]
+            return self._save(preview)
         if (result.get("schema") != "taskplane.host-preview-surface/v1" or
                 result.get("surface") != preview["surface"] or
                 not str(result.get("binding") or "").strip()):
@@ -968,7 +972,7 @@ class PreviewRuntime:
         preview["outcome"] = "open"
         preview["surface_binding_fingerprint"] = _digest(result)
         surface_ownership = result.get("process_ownership")
-        if self._process_teardown is not None and not isinstance(
+        if result.get("owner") != "codex" and self._process_teardown is not None and not isinstance(
                 surface_ownership, Mapping):
             return self.record_outcome(preview_id, "unavailable")
         if isinstance(surface_ownership, Mapping):
@@ -1166,11 +1170,28 @@ def launch_working_preview(*, flow: str, host: str, state_root: str | Path,
             detail=f"preview startup failed: {exc}")
         preview_runtime.record_outcome(preview["preview_id"], "unavailable")
         raise
-    if opened["state"] != "open":
+    if opened["state"] != "open" and not opened.get("native_surface"):
         raise PreviewDenied(opened["outcome"], "native preview did not open")
     preview_runtime.arm_deadline(preview["preview_id"])
     return {"schema": "taskplane.working-preview-launch/v1",
-            "flow": flow, "preview": opened, "command_handle": handle}
+            "flow": flow, "preview": opened, "command_handle": handle,
+            **({"native_request": opened["native_surface"]["native_request"]}
+               if opened.get("outcome") == "open_requested" else {})}
+
+
+def resume_preview_request(request: Mapping[str, object], preview_id: str) -> dict:
+    """Observe a native panel request without relaunching the preview command."""
+    from taskplane.command_adapters import native_surface_transport, teardown_preview_processes
+    value = _normalize_preview_request(request)
+    runtime = PreviewRuntime(Path(value["state_root"]) / "previews", workspace=value["source_root"],
+                             authorization=value["authorization"], surface_transport=native_surface_transport,
+                             process_teardown=teardown_preview_processes)
+    preview = runtime._load(preview_id)
+    if (preview["target"], preview["revision"], preview["flow"]) != (value["target"], value["revision"], value["flow"]):
+        raise PreviewError("native preview continuation target changed")
+    if preview["state"] == "registered":
+        preview = runtime.open(preview_id)
+    return {"schema": "taskplane.working-preview-launch/v1", "flow": value["flow"], "preview": preview}
 
 
 def launch_design_preview(**kwargs) -> dict:

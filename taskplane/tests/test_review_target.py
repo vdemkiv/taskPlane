@@ -224,7 +224,7 @@ class TestTheCompletionGate(_Repo):
             with self.subTest(cmd):
                 decision, why = self._screen(cmd)
                 self.assertEqual(decision, "block", cmd)
-                self.assertIn("every shell command tool is blocked", why)
+                self.assertIn("shell command is not a verified native Codex read-only invocation", why)
         contract = tp.load_active(self.ws)
         for tool, tool_input in (
                 ("Read", {"file_path": os.path.join(self.ws, "a.txt")}),
@@ -243,7 +243,7 @@ class TestTheCompletionGate(_Repo):
         self.assertIsNone(tgt.binding_problem(self.ws))
         decision, why = self._screen("tp dod")
         self.assertEqual(decision, "block")
-        self.assertIn("every shell command tool is blocked", why)
+        self.assertIn("shell command is not a verified native Codex read-only invocation", why)
 
     def test_a_build_contract_is_not_subject_to_this(self):
         """A build contract already carries its snapshot; the hole was
@@ -263,7 +263,7 @@ class TestTheCompletionGate(_Repo):
         self.assertIsNone(tgt.binding_problem(self.ws))
         decision, why = self._screen("tp dod")
         self.assertEqual(decision, "block")
-        self.assertIn("every shell command tool is blocked", why)
+        self.assertIn("shell command is not a verified native Codex read-only invocation", why)
 
 
 class TestFindingsMustCiteTheTree(_Repo):
