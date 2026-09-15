@@ -1594,7 +1594,7 @@ def cmd_new(a) -> int:
         )
 
     projection = tp.contract_projection(c)
-    mode = "READ-ONLY review" if projection["read_only"] else "build"
+    mode = "Product document scope" if product else "READ-ONLY review" if projection["read_only"] else "build"
     print(f"taskplane: contract {c['task_id']} active ({mode}).")
     if c.get("read_only"):
         print(f"  writable  : {c.get('write_allow') or '(nothing — reads only)'}")
@@ -1610,10 +1610,13 @@ def cmd_new(a) -> int:
             file=sys.stderr,
         )
     owed = _seed_owed(ws, getattr(a, "owes", None), c.get("task_id", ""))
-    print(
-        "\nThe PreToolUse hook now blocks out-of-scope writes, denied "
-        "commands, and disallowed tools."
-    )
+    if product:
+        print(f"\nProduct enforcement: {enforcement.get('mode')} / {enforcement.get('status')}.")
+    else:
+        print(
+            "\nThe PreToolUse hook now blocks out-of-scope writes, denied "
+            "commands, and disallowed tools."
+        )
     if owed:
         print(
             f"  owes      : {', '.join(owed)} — recorded now, before the "
@@ -1623,8 +1626,11 @@ def cmd_new(a) -> int:
         )
     # Report the Definition-of-Ready verdict at activation time.
     ready, blockers, warnings = tp.dor_check(c, ws, snapshot)
-    _print_dor(ready, blockers, warnings)
+    _print_dor(ready, blockers, warnings, label="Product contract setup" if product else None)
     if c.get("standalone_product"):
+        print("Product content DoR: not assessed here; use the selected requirement's score/show result.")
+        print("Product operational DoR: not verified; confirm reads, document writes and controls.")
+        print("Product DoD: not verified; use actual review, delivery and any user decision.")
         if host_caps.codex_readonly_runtime(ws):
             print("Native read request (compatibility only; execute through Codex):")
             print(json.dumps(host_caps.codex_readonly_command(["pwd"], ws), sort_keys=True))
@@ -1635,8 +1641,8 @@ def cmd_new(a) -> int:
     return 0
 
 
-def _print_dor(ready, blockers, warnings) -> None:
-    print("\ntaskplane DoR (ready to start?): " + ("READY ✅" if ready else "NOT READY ❌"))
+def _print_dor(ready, blockers, warnings, *, label=None) -> None:
+    print("\n" + (label or "taskplane DoR (ready to start?)") + ": " + ("READY ✅" if ready else "NOT READY ❌"))
     for b in blockers:
         print("  ✗ " + b)
     for w in warnings:
@@ -7085,7 +7091,42 @@ def _run_hook_command(a) -> int:
         raw = json.dumps(event, separators=(",", ":"))
     original_stdin = sys.stdin
     captured = io.StringIO()
+    original_codex_session = os.environ.get("CODEX_THREAD_ID")
+    bound_codex_session = False
     try:
+        native_readonly_command = (
+            hook_path == "native" and a.cmd == "screen" and claim.get("claim_id")
+            and claim.get("execute") and event.get("hook_event_name") == "PreToolUse"
+            and event.get("tool_name", event.get("tool")) in tp.COMMAND_TOOLS
+        )
+        if native_readonly_command:
+            active = tp.load_active_for_event(workspace, event)
+            native_readonly_command = bool(active and active.get("read_only"))
+        if native_readonly_command:
+            # Codex supplies identity in its native hook payload even when
+            # the hook subprocess has no model-shell CODEX_THREAD_ID. Bind
+            # only this claimed event, corroborated by its exact host-owned
+            # transcript/header. Direct/manual hook calls never enter here.
+            # Ungoverned, Build and document-write tools need no such lookup.
+            from taskplane import review, spend
+            hook_transcript = spend.event_transcript(event)
+            codex_root = os.path.realpath(review._canonical_host_root("codex"))
+            codex_transcript = False
+            if isinstance(hook_transcript, str):
+                try:
+                    codex_transcript = os.path.commonpath((
+                        codex_root, os.path.realpath(hook_transcript))) == codex_root
+                except ValueError:
+                    pass  # A different volume cannot be this host's transcript.
+            if codex_transcript:
+                session = str(event.get("session_id") or event.get("thread_id") or "")
+                paths = review._codex_session_paths(codex_root, session, require_header=True)
+                if len(paths) != 1 or os.path.realpath(hook_transcript) != paths[0]:
+                    raise ValueError("native Codex hook transcript differs from its session")
+                if original_codex_session and original_codex_session != session:
+                    raise ValueError("native Codex hook session conflicts with its environment")
+                os.environ["CODEX_THREAD_ID"] = session
+                bound_codex_session = True
         sys.stdin = io.StringIO(raw)
         with contextlib.redirect_stdout(captured):
             returncode = _invoke_run_command(a, workspace)
@@ -7095,6 +7136,11 @@ def _run_hook_command(a) -> int:
         raise
     finally:
         sys.stdin = original_stdin
+        if bound_codex_session:
+            if original_codex_session is None:
+                os.environ.pop("CODEX_THREAD_ID", None)
+            else:
+                os.environ["CODEX_THREAD_ID"] = original_codex_session
 
     output = captured.getvalue()
     if a.cmd == "context" and not returncode and output.strip():

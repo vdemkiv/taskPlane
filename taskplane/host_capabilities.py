@@ -80,31 +80,43 @@ def codex_readonly_command(argv: list[str], workspace: str) -> dict:
     return request
 
 
-def is_codex_readonly_invocation(tool: str, payload: Mapping, workspace: str) -> bool:
+def is_codex_readonly_invocation(tool: str, payload: Mapping, workspace: str,
+                               *, diagnostic: dict | None = None) -> bool:
     """Recognize only the fixed native profile with no outer shell effects.
 
     Codex's Bash projection omits shell/login. Its command is admissible only
     when the pending native call proves those values; caller text is not a
     substitute. This does not expand a contract's allowed tools or scope.
     """
+    observed = diagnostic if diagnostic is not None else {}
+    observed["stage"] = "native_runtime"
+    observed["native_session_present"] = bool(os.environ.get("CODEX_THREAD_ID"))
     executable = codex_readonly_runtime(workspace)
     if not executable or tool not in {"exec_command", "functions.exec_command", "Bash"}:
         return False
     if tool == "Bash":
+        observed["stage"] = "projected_payload_shape"
         if set(payload) != {"command"}:
             return False
-        native = pending_codex_tool_call("exec_command")
-        if native is None or native.get("cmd") != payload.get("command"):
+        native = pending_codex_tool_call("exec_command", diagnostic=observed)
+        if native is None:
             return False
-        return is_codex_readonly_invocation("exec_command", native, workspace)
+        observed["stage"] = "projected_command_match"
+        if native.get("cmd") != payload.get("command"):
+            return False
+        return is_codex_readonly_invocation("exec_command", native, workspace, diagnostic=observed)
+    observed["stage"] = "native_payload_shape"
     if set(payload) - {
             "cmd", "shell", "login", "workdir", "max_output_tokens",
             "yield_time_ms", "sandbox_permissions", "justification", "tty"}:
         return False
+    observed["stage"] = "outer_shell"
     if payload.get("shell") != "/bin/sh" or payload.get("login") is not False:
         return False
+    observed["stage"] = "workspace_match"
     if os.path.realpath(str(payload.get("workdir") or workspace)) != os.path.realpath(workspace):
         return False
+    observed["stage"] = "canonical_command"
     command = payload.get("cmd")
     if not isinstance(command, str) or "\0" in command:
         return False
@@ -112,28 +124,83 @@ def is_codex_readonly_invocation(tool: str, payload: Mapping, workspace: str) ->
         argv = shlex.split(command)
     except ValueError:
         return False
-    return (len(argv) > 6 and argv[:6] == [
+    allowed = (len(argv) > 6 and argv[:6] == [
         executable, "sandbox", "--include-managed-config", "-P", ":read-only", "--"
     ] and shlex.join(argv) == command)
+    if allowed:
+        observed["stage"] = "admitted"
+    return allowed
 
 
-def pending_codex_tool_call(name: str) -> dict | None:
+def _native_argument_literal(raw: str) -> dict | None:
+    """Decode flat native argument data, including JS identifier keys.
+
+    The fixed code-mode call may use `{cmd: "..."}`. Values remain JSON
+    scalar literals; expressions, spreads, getters and comments are never
+    evaluated or accepted as invocation evidence.
+    """
+    decoder = json.JSONDecoder()
+    source = raw.strip()
+    if not source.startswith("{") or not source.endswith("}"):
+        return None
+    result = {}
+    position = 1
+    try:
+        while source[position:].strip() != "}":
+            if len(result) >= 32:
+                return None
+            position += len(source[position:]) - len(source[position:].lstrip())
+            if source[position] == '"':
+                key, position = decoder.raw_decode(source, position)
+            else:
+                key_match = re.match(r"[A-Za-z_$][A-Za-z0-9_$]*", source[position:])
+                if key_match is None:
+                    return None
+                key = key_match[0]
+                position += len(key)
+            position += len(source[position:]) - len(source[position:].lstrip())
+            if key in result or source[position] != ":":
+                return None
+            position += 1
+            position += len(source[position:]) - len(source[position:].lstrip())
+            value, position = decoder.raw_decode(source, position)
+            if type(value) not in (str, int, bool, type(None)):
+                return None
+            result[key] = value
+            position += len(source[position:]) - len(source[position:].lstrip())
+            if source[position] == ",":
+                position += 1
+            elif source[position:] != "}":
+                return None
+        return result
+    except (ValueError, IndexError, TypeError):
+        return None
+
+
+def pending_codex_tool_call(name: str, *, diagnostic: dict | None = None) -> dict | None:
     """Read exactly one outstanding call from the current host transcript.
 
     Only a direct tool call or the fixed single-tool code-mode expression is
     supported. Missing, ambiguous, malformed, and completed calls provide no
     authority. No execution state or replacement command runtime is created.
     """
+    observed = diagnostic if diagnostic is not None else {}
+    observed["stage"] = "host_session"
     if not os.environ.get("CODEX_THREAD_ID"):
         return None
     from taskplane import review
     try:
+        observed["stage"] = "host_transcript_selection"
         transcripts = review._host_review_transcripts()
         if len(transcripts) != 1 or transcripts[0][0] != "codex":
             return None
+        observed["stage"] = "host_transcript_read"
         records = review._host_review_records(transcripts[0][1])
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError) as exc:
+        observed["error_type"] = type(exc).__name__
         return None
+    observed["stage"] = "host_tool_records"
+    observed["record_count"] = len(records)
     pending = {}
     for row in records:
         if row.get("type") != "response_item":
@@ -150,9 +217,12 @@ def pending_codex_tool_call(name: str) -> dict | None:
             if not isinstance(call_id, str) or not call_id:
                 return None
             pending.pop(call_id, None)
+    observed["stage"] = "one_pending_native_call"
+    observed["pending_calls"] = len(pending)
     if len(pending) != 1:
         return None
     value = next(iter(pending.values()))
+    observed["stage"] = "native_expression_shape"
     raw = value.get("input", value.get("arguments"))
     if value.get("name") in {"exec", "functions.exec"} and isinstance(raw, str):
         match = re.fullmatch(
@@ -163,9 +233,10 @@ def pending_codex_tool_call(name: str) -> dict | None:
     elif value.get("name") not in {name, "functions." + name}:
         return None
     try:
+        observed["stage"] = "native_arguments"
         args = json.loads(raw) if isinstance(raw, str) else raw
     except ValueError:
-        return None
+        args = _native_argument_literal(raw)
     return args if isinstance(args, dict) else None
 
 

@@ -2689,8 +2689,9 @@ def screen_tool(
     if contract.get("read_only"):
         if tool_name in COMMAND_TOOLS:
             from taskplane import host_capabilities
+            native_read_diagnostic = {}
             if host_capabilities.is_codex_readonly_invocation(
-                    tool_name, tool_input, workspace or os.getcwd()):
+                    tool_name, tool_input, workspace or os.getcwd(), diagnostic=native_read_diagnostic):
                 command = command_text(tool_name, tool_input)
                 deny = ((contract.get("coding") or {}).get("command_policy") or {}).get("deny") or []
                 denied = deny_violation(command, deny) or deny_violation(
@@ -2702,6 +2703,7 @@ def screen_tool(
                 "read-only contract: use the native Codex read-only request "
                 "from host_capabilities.codex_readonly_command, or native "
                 "Read/Grep/Glob. Document writes use scoped Write/Edit/apply_patch."
+                " Native read check: " + json.dumps(native_read_diagnostic, sort_keys=True)
             )
         native_tools = READONLY_NATIVE_READ_TOOLS | WRITE_TOOLS
         if tool_name not in native_tools:

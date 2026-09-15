@@ -4,6 +4,8 @@ import json
 import os
 import shlex
 import datetime
+import io
+from argparse import Namespace
 
 import pytest
 
@@ -166,6 +168,56 @@ def test_missing_host_or_executable_is_explicitly_unsupported(native, monkeypatc
     assert host.codex_readonly_runtime(native) is None
 
 
+def test_native_read_refusal_names_missing_host_identity_without_payload(native, monkeypatch):
+    request = host.codex_readonly_command(["/bin/cat", "private-filename"], native)
+    monkeypatch.delenv("CODEX_THREAD_ID")
+    diagnostic = {}
+    assert not host.is_codex_readonly_invocation(
+        "Bash", {"command": request["cmd"]}, native, diagnostic=diagnostic)
+    assert diagnostic == {"stage": "native_runtime", "native_session_present": False}
+    assert "private-filename" not in json.dumps(diagnostic)
+
+
+def test_native_read_refusal_names_missing_pending_record(native, transcript):
+    request = host.codex_readonly_command(["pwd"], native)
+    diagnostic = {}
+    assert not host.is_codex_readonly_invocation(
+        "Bash", {"command": request["cmd"]}, native, diagnostic=diagnostic)
+    assert diagnostic["stage"] == "one_pending_native_call"
+    assert diagnostic["record_count"] == 0 and diagnostic["pending_calls"] == 0
+    assert "cmd" not in diagnostic
+
+
+def test_native_flat_js_argument_keys_match_actual_finish_shape(native, transcript):
+    request = {"cmd": "python3 /installed/taskplane/tp.py clear --task-id product --workspace " + native,
+               "shell": "/bin/sh", "login": False, "workdir": native}
+    record = _call(request)
+    arguments = ",".join(key + ":" + json.dumps(value) for key, value in request.items())
+    record["payload"]["input"] = "text(await tools.exec_command({" + arguments + "}));\n"
+    transcript.append(record)
+    assert host.pending_codex_tool_call("exec_command") == request
+
+
+def test_native_literal_quoted_scalar_escaping_is_preserved_as_data():
+    value = 'a "quote", a slash \\, a newline\n$(never execute)'
+    assert host._native_argument_literal('{cmd:' + json.dumps(value) + ',login:false}') == {
+        "cmd": value, "login": False}
+    assert host._native_argument_literal("{" + ",".join(
+        "key" + str(index) + ":0" for index in range(33)) + "}") is None
+
+
+@pytest.mark.parametrize("arguments", [
+    '{cmd: makeCommand()}', '{...request}', '{["cmd"]: "pwd"}',
+    '{get cmd() {return "pwd"}}', '{cmd: `pwd`}', '{cmd: "pwd", // comment\nlogin:false}',
+    '{cmd:"pwd",cmd:"different"}', '{cmd: "pwd", env: {HOME: "/tmp"}}',
+])
+def test_native_argument_literals_cannot_execute_js_or_replace_keys(arguments, transcript):
+    transcript.append({"type": "response_item", "payload": {
+        "type": "custom_tool_call", "call_id": "bad-native-expression", "name": "exec",
+        "input": "text(await tools.exec_command(" + arguments + "));"}})
+    assert host.pending_codex_tool_call("exec_command") is None
+
+
 @pytest.fixture
 def fresh_cli(native, tmp_path, monkeypatch):
     """Real CLI record shape; neither a host receipt nor execution proof."""
@@ -263,3 +315,119 @@ def test_fresh_cli_identity_refuses_replaced_path_without_posix_open_flags(fresh
         monkeypatch.delattr(review.os, name, raising=False)
     monkeypatch.setattr(review.os, "open", replace_after_open)
     assert host.pending_codex_tool_call("exec_command") is None
+
+
+@pytest.mark.parametrize("hook_path", ["native", "bridge", None])
+def test_only_claimed_native_hook_binds_missing_session_temporarily(fresh_cli, native, monkeypatch, hook_path):
+    import tp as cli
+    _, path, metadata, _, request = fresh_cli
+    session = metadata["payload"]["id"]
+    for key in list(os.environ):
+        if key.startswith("TASKPLANE_") or key == "CODEX_THREAD_ID":
+            monkeypatch.delenv(key)
+    if hook_path:
+        monkeypatch.setenv("TASKPLANE_HOOK_PATH", hook_path)
+    event = {"hook_event_name": "PreToolUse", "session_id": session,
+             "tool_use_id": "native-hook-read", "transcript_path": str(path),
+             "cwd": native, "tool_name": "Bash", "tool_input": {"command": request["cmd"]}}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    monkeypatch.setattr(cli.tp, "load_active_for_event", lambda *_: {"read_only": True})
+    observed = []
+
+    def invoke(args, workspace):
+        observed.append((os.environ.get("CODEX_THREAD_ID"),
+                         host.is_codex_readonly_invocation("Bash", event["tool_input"], workspace)))
+        return 0
+
+    monkeypatch.setattr(cli, "_invoke_run_command", invoke)
+    assert cli._run_hook_command(Namespace(cmd="screen", workspace=native)) == 0
+    expected = [(session, True)] if hook_path == "native" else [(None, False)]
+    assert observed == expected
+    assert "CODEX_THREAD_ID" not in os.environ
+
+
+@pytest.mark.parametrize("conflict", ["environment", "header"])
+def test_native_hook_identity_conflict_never_reaches_screen(fresh_cli, native, monkeypatch, conflict):
+    import tp as cli
+    root, path, metadata, call, _ = fresh_cli
+    session = metadata["payload"]["id"]
+    for key in list(os.environ):
+        if key.startswith("TASKPLANE_") or key == "CODEX_THREAD_ID":
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
+    if conflict == "environment":
+        monkeypatch.setenv("CODEX_THREAD_ID", "different-session")
+    else:
+        (root / "session_index.jsonl").write_text(json.dumps({"id": session}) + "\n")
+        metadata["payload"]["id"] = "different-session"
+        path.write_text(json.dumps(metadata) + "\n" + json.dumps(call) + "\n")
+    event = {"hook_event_name": "PreToolUse", "session_id": session,
+             "tool_use_id": "native-hook-conflict", "transcript_path": str(path), "cwd": native,
+             "tool_name": "Bash"}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    monkeypatch.setattr(cli.tp, "load_active_for_event", lambda *_: {"read_only": True})
+    monkeypatch.setattr(cli, "_invoke_run_command", lambda *_: pytest.fail("conflicting identity reached screen"))
+    with pytest.raises((ValueError, review.HostTranscriptUnavailable)):
+        cli._run_hook_command(Namespace(cmd="screen", workspace=native))
+    assert os.environ.get("CODEX_THREAD_ID") == ("different-session" if conflict == "environment" else None)
+
+
+def test_native_hook_session_is_restored_after_screen_error(fresh_cli, native, monkeypatch):
+    import tp as cli
+    _, path, metadata, _, _ = fresh_cli
+    for key in list(os.environ):
+        if key.startswith("TASKPLANE_") or key == "CODEX_THREAD_ID":
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
+    event = {"hook_event_name": "PreToolUse", "session_id": metadata["payload"]["id"],
+             "tool_use_id": "native-hook-error", "transcript_path": str(path), "cwd": native,
+             "tool_name": "Bash"}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    monkeypatch.setattr(cli.tp, "load_active_for_event", lambda *_: {"read_only": True})
+
+    def fail(*_):
+        assert os.environ["CODEX_THREAD_ID"] == metadata["payload"]["id"]
+        raise RuntimeError("screen failure")
+
+    monkeypatch.setattr(cli, "_invoke_run_command", fail)
+    with pytest.raises(RuntimeError, match="screen failure"):
+        cli._run_hook_command(Namespace(cmd="screen", workspace=native))
+    assert "CODEX_THREAD_ID" not in os.environ
+
+
+@pytest.mark.parametrize("contract_kind", ["none", "build"])
+@pytest.mark.parametrize("metadata_state", ["missing", "foreign"])
+def test_ordinary_and_build_commands_have_no_new_transcript_prerequisite(
+        fresh_cli, native, monkeypatch, capsys, contract_kind, metadata_state):
+    import tp as cli
+    _, path, metadata, call, _ = fresh_cli
+    session = metadata["payload"]["id"]
+    for key in list(os.environ):
+        if key.startswith("TASKPLANE_") or key == "CODEX_THREAD_ID":
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
+    if metadata_state == "missing":
+        path.unlink()
+    else:
+        metadata["payload"]["id"] = "foreign-session"
+        path.write_text(json.dumps(metadata) + "\n" + json.dumps(call) + "\n")
+    contract = None if contract_kind == "none" else cli.tp.build_contract(
+        "Ordinary Build command", scope=["src/**"])
+    monkeypatch.setattr(cli.tp, "load_active_for_event", lambda *_: contract)
+    monkeypatch.setattr(review, "_codex_session_paths", lambda *_a, **_k: pytest.fail(
+        "ordinary/Build command inspected native history"))
+    event = {"hook_event_name": "PreToolUse", "session_id": session,
+             "tool_use_id": "ordinary-command", "transcript_path": str(path), "cwd": native,
+             "tool_name": "Bash", "tool_input": {"command": "/bin/true"}}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    assert cli._run_hook_command(Namespace(cmd="screen", workspace=native, fn=cli.cmd_screen)) == 0
+    output = capsys.readouterr().out
+    if contract_kind == "none":
+        assert not output  # No contract still defers to the host.
+    else:
+        # Build keeps its incumbent usage-evidence check. This fixture has
+        # no provider totals; the new identity adapter must not run first.
+        refusal = json.loads(output)
+        assert refusal["decision"] == "block"
+        assert "TOKEN BUDGET telemetry unavailable" in refusal["reason"]
+    assert "CODEX_THREAD_ID" not in os.environ

@@ -873,7 +873,7 @@ def _host_session_index(path: str, *, root: str) -> list[dict]:
     return records
 
 
-def _codex_session_paths(root: str, session_id: str) -> list[str]:
+def _codex_session_paths(root: str, session_id: str, *, require_header: bool = False) -> list[str]:
     """Derive exact Codex paths; fresh CLI sessions can precede their index."""
     index_path = os.path.join(root, "session_index.jsonl")
     rows = [row for row in _host_session_index(os.path.join(
@@ -914,7 +914,7 @@ def _codex_session_paths(root: str, session_id: str) -> list[str]:
     paths = sorted(set(paths))
     if not paths and not os.path.lexists(index_path):
         raise HostTranscriptUnavailable("host session index is missing")
-    if not rows and len(paths) == 1:
+    if (not rows or require_header) and len(paths) == 1:
         # A fresh `codex exec` writes its canonical rollout before it adds a
         # session-index row. Read only its bounded native identity header;
         # never scan history or select a transcript from caller text.
