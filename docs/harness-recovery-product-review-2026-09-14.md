@@ -1,195 +1,217 @@
-# Taskplane recovery: repeat Product review
+# Taskplane recovery: final Product review
 
-Date: September 14, 2026. Branch: `codex/restore-2.23.1-harness-recovery`.
+Started September 14, 2026; final review September 15, 2026. Branch: `codex/restore-2.23.1-harness-recovery`.
 
-**Evidence checkpoint: installed `578e1f5` now passes strict Product activation and native source reads, but its real requirement-creation command was refused before execution. Recovery acceptance is not met.** The control guard rejected ordinary double-quoted prose containing semicolons because its quoting did not exactly match the canonical rendering. A bounded correction is in progress. The probe is retaining an unrecorded document draft and attempting exact normal finish; those outcomes are not yet recorded here. A fresh successful journey on the next candidate remains required.
+**Verdict: materially closer to the original goals. The core installed Codex Product journey now works, including a real source-write refusal and normal cleanup. Broader recovery acceptance remains partial.** A fresh native session also recovered the saved requirement, report, constraints, and gate states without inheriting an active restriction. Full native governed delivery, selected specialist review collection, interruption recovery, and the other supported hosts remain unverified.
 
-This repeats the [original Product assessment](harness-product-recovery-2026-09-14.md) against the [authorized recovery plan](harness-recovery-implementation-plan-2026-09-14.md). The user authorized rollback, identified fixes, and this repeat review. That instruction authorizes the work; it does not pre-accept its eventual result. This report author created no new runtime authority. The recovery owner separately performed an installed Product probe and repaired an inert workspace locator; those actions and their limits are recorded below.
+This repeats the [original Product assessment](harness-product-recovery-2026-09-14.md) against the [authorized recovery plan](harness-recovery-implementation-plan-2026-09-14.md): the same three goals, nine problem spaces, AC1–AC8, and 26 lens dispositions. The user's instruction authorized rollback, fixes, and this review. It does not imply acceptance of the resulting implementation or approval of the probe's draft requirement. This report created no runtime authority.
 
-## 1. Candidate and evidence boundaries
+## 1. Candidate and evidence
 
-| Item | Inspected state / evidence |
+| Item | Verified or recorded state |
 | --- | --- |
-| Earlier assessed source | `7fb20110aeb51d1a088ec3c8f257b641736996ee`, installed 2.24.0 at the original assessment. |
-| Selected recovery source | 2.23.1, `a76e7de12630a1ed083f50799082bb337fe9c582`, preserving the consolidation and stateless default. This was not certified as the user's last working installation. |
-| Restoration commit | `b2a8811` plus the current repairs on the recovery branch. |
-| Latest installed code / next correction | `578e1f5d861e665a71071a5d9a9603dcb7207a94`; tree `c3059bc18a2cc712d20b6c5a8f83a2c33f63b5fc`. Its package provenance records a clean source snapshot. Attempt 4 exposed a requirement-control quoting defect; the next corrective candidate's identity is pending. Earlier probes used `21b59b8` and `75329fa`; their failures are preserved. |
-| Installed engine / skill / hook identity | Personal `2.23.1+codex.20260915032233` from `578e1f5`. The recovery owner verified **261 installed files with zero mismatches**, apart from the official manifest cachebuster. The remote 2.24 installation was removed earlier to avoid duplicate hooks; the user enabled the new installation's hook trust. |
-| Package identity | [Recovery export](../exports/taskplane-recovery-578e1f5/taskplane-2.23.1-openai.zip); SHA-256 `ef8bfcb42f7831c746bef8cd2a1b9a87a2083c677905dc4365ca6b53d9c3486f`. [Provenance](../exports/taskplane-recovery-578e1f5/taskplane-2.23.1-openai.zip.provenance.json) verifies source identity, not CI or installed usability. |
-| Confirmed local validation available to this author | Requirements module: **49 tests and 49 subtests passed**; focused Ruff and whitespace checks passed. This verifies the modified readiness/projection behavior locally, not installed Product entry or complete recovery. |
-| Aggregate candidate checks | Source selection: **396 passed, 274 subtests passed, five failed**; the five stale assertions were corrected and passed on focused rerun. Host selection: **92 passed, 45 subtests passed, one Go skip**, with six failed subcases in one hook test; these reproduced on the baseline with an incompatible Intel Git executable. The corrected fixture's exact test and eight subtests passed. These are separate runs; do not sum overlapping reruns into a new pass total. |
-| Stateless delivery checks | **16 selected checks passed**, including serial/parallel Evaluate–Engineering–Retro and missing-seal/handoff refusal. Native lifecycle events are simulated test inputs. No installed delivery completion is claimed. |
-| Final native-adapter checks | **144 tests and eight subtests passed** after the native binding and exact literal-command fixes. These are a later focused selection; do not add overlapping counts to earlier totals. Final mypy passed across **114 source files**. |
-| Static/release checks | Earlier Ruff, mypy, source policy, version verification, and release-surface checks passed. Generated CLI validation passed after correcting the temporary-directory environment. Refactor metrics reported **eight debt categories also present on `a76e7de`**; this is not a clean full release-CI claim. |
-| Installed native journeys | Attempts 1–3 are recorded below. Attempt 4 on `578e1f5` passed strict/native-effective activation and source reads, then **failed at real requirement creation before execution**. Draft retention and exact finish are being attempted. No source-write refusal probe was reached. Development success is not substituted for clean installed acceptance. |
+| Original assessment | Source `7fb20110aeb51d1a088ec3c8f257b641736996ee`; installed 2.24.0. |
+| Selected recovery baseline | 2.23.1, `a76e7de12630a1ed083f50799082bb337fe9c582`, preserving the active stateless runtime and intended retirements. This is not claimed to be the user's last working installation. |
+| Restoration | Commit `b2a8811`, followed by the bounded recovery fixes. |
+| Final code | `6ada3f44a772d98641bb341c3d199f84bedb4c55`; tree `da27a23f854e479cf5b3068ec01d1bcccf547019`. |
+| Installed plugin | Personal `2.23.1+codex.20260915033421`; 261 installed files checked with zero mismatches apart from the official manifest cachebuster. The older remote installation was removed to avoid duplicate hooks. The user enabled the new hook trust before the final journeys. |
+| Export | [Recovery package](../exports/taskplane-recovery-6ada3f4/taskplane-2.23.1-openai.zip), SHA-256 `034b944e98e9e40bb50387395191edf93986e183b49ce2a41f1a70f71497cd0c`. [Provenance](../exports/taskplane-recovery-6ada3f4/taskplane-2.23.1-openai.zip.provenance.json) verifies source identity, not complete CI. |
+| Native host | Codex CLI `0.154.0-alpha.6.2`; final Product session `01a0a321-7c26-7852-abea-1433839b1838`. |
+| Final Product probe | **Passed the bounded installed journey:** strict/live activation with native receipt; native reads, scoped document writes, requirement creation, score/show, planned graph link; one source-write denial; exact finish; retained artifacts and subsequent ordinary reading. |
+| Fresh-session retrieval | **Passed the bounded read-only check** in 79.65s: zero contracts, same requirement/report/source recovered, useful constraints and gate states understood, no activation, file changes, or repair. |
 
-The Product reviewer inspected the current source and instructions directly. This author also implemented the requirement gate presentation and its blank-content correction; this report is not an independent Engineering certification of that component. The 26-lens ledger below is a disclosed Product assessment, not proof that 26 specialists ran.
+Primary evidence: [final native outcome](../.taskplane/diagnostics/recovery-2026-09-14/native-canary-final.txt), [native measurements](../.taskplane/diagnostics/recovery-2026-09-14/native-canary-measurements.json), [independent post-finish verification](../.taskplane/diagnostics/recovery-2026-09-14/native-independent-verification.json), and [fresh-session retrieval](../.taskplane/diagnostics/recovery-2026-09-14/continuity-final.txt). Retained copies of the [native Product report](../.taskplane/diagnostics/recovery-2026-09-14/native-saved-product-review.md) and [requirement R-0001](../.taskplane/diagnostics/recovery-2026-09-14/native-saved-requirement-R-0001.md) preserve the delivered content.
 
-Evidence is retained in [the recovery diagnostics](../.taskplane/diagnostics/recovery-2026-09-14/), including [attempt 2](../.taskplane/diagnostics/recovery-2026-09-14/native-attempt-2-read-blocked/native-canary-final.txt), [attempt 3](../.taskplane/diagnostics/recovery-2026-09-14/native-attempt-3-read-blocked/native-canary-final.txt), [final installation](../.taskplane/diagnostics/recovery-2026-09-14/install-578e1f5.json), [stateless check metadata](../.taskplane/diagnostics/recovery-2026-09-14/stateless-delivery.json), [static results](../.taskplane/diagnostics/recovery-2026-09-14/static-results.json), and [storage verification](../.taskplane/diagnostics/recovery-2026-09-14/storage-verification.json). Some original run records retain a nonzero result followed by a focused correction/rerun; their original failure must remain visible.
+The Product reviewer inspected candidate source and instructions directly, and also implemented the requirement presentation/blank-content correction. This report therefore does not independently certify that component's code. Independent Engineering review and local checks have their own evidence; the 26-lens ledger below is the Product author's assessment, not 26 executed specialists.
 
-### Completed native attempts and their attribution
+### What the final native journey established
 
-| Attempt / candidate | Actual result | Interpretation |
+The probe created **its own project-local draft R-0001**, titled “Explain app.py VALUE in one short README paragraph.” Its score was 1.0 and content DoR passed. This identifier is qualified by the probe's knowledge store; it does not replace a historical R-0001 or authorize that proposed README change.
+
+Exactly one native `apply_patch` attempt against source was refused by Taskplane and was not retried. `app.py` and README remained unchanged. Exact normal finish of `task_d81cce9a` succeeded, no active contract remained, and the report, requirement, and graph survived. Ordinary reading then worked. Independent filesystem/Git verification confirmed the source and retained artifacts.
+
+There were **zero unexpected Taskplane denials, zero Taskplane repair interventions, and zero unchanged Taskplane-denial retries** in the final probe. Native sandbox escalation requests succeeded; there were no new trust prompts or approval-review rejections. This does not mean that no native permission requests occurred.
+
+The fresh retrieval session began **after contract clearance while the producer was still finishing its final summary**. It recovered the existing R-0001, report, source, functional constraints, and honest pending gates. It proves useful saved-context retrieval without restriction leakage in that scenario. It does not prove producer-exit handling, interrupted-task recovery, automatic knowledge reconciliation, or full project-memory correctness.
+
+### Earlier failures remain evidence
+
+| Attempt | Actual result | Attribution and disposition |
 | --- | --- | --- |
-| 1, before hook trust | Stopped before Product entry. The user enabled the installation's hook trust afterward. | Installation trust state, not a completed Product path or proof of a new code regression. |
-| 2, `21b59b8` | Effective native hooks and strict Product activation; exact returned read denied; normal finish and subsequent ordinary read succeeded. Requirement/report/probe not reached. | Confirmed admission defect. A fresh authentic Codex rollout had an exact session UUID/header but no session-index row; the adapter did not resolve that case. |
-| 3, `75329fa` | Effective native hooks and strict Product activation; read again denied; exact finish, ordinary read, and source-integrity comparison passed. Requirement/report/probe not reached. | Further host-boundary defect: hook execution did not carry `CODEX_THREAD_ID`. Preserved as a failed installed journey, not hidden by the prior fix. |
-| Development correction | Native read and finish succeeded after intervention. Independent Engineering also found unconditional native binding affected ordinary work; binding was narrowed to active read-only commands and regression checks passed. | Concrete repair evidence. Intervention prevents calling this a clean installed acceptance run. |
-| 4, `578e1f5` / personal `20260915032233` | Strict/native-effective activation and source reads passed. Real `req new` was denied before execution because double-quoted ordinary prose containing semicolons differed from the guard's canonical single-quote rendering. Unrecorded draft save and exact finish are in progress; source-write probe not reached. | Native-read recovery demonstrated; complete Product authoring remains blocked. A bounded quote-aware control fix and a separately reviewed explicit identity-failure block response are in progress. Neither correction nor a clean subsequent journey is accepted yet. |
+| 1, before hook trust | Stopped before Product entry. | Installation trust was absent; the user enabled it. This is not a completed Product journey or a new code-regression finding. |
+| 2, `21b59b8` | Strict/native-effective activation; returned read refused; exact finish and ordinary read worked. Requirement/report not reached. | Fresh authentic rollout had an exact session UUID/header but no session-index row. The adapter's lookup did not handle that case. Source comparison was unavailable because `/usr/local/bin/git` had the wrong CPU architecture. |
+| 3, `75329fa` | Read again refused; exact finish, ordinary read, and source-integrity comparison passed. | Hook execution lacked `CODEX_THREAD_ID`; native binding was corrected. An initial overly broad `/private` filename search returned no paths and was not repeated. |
+| Development corrections | Native read and finish worked after intervention. Engineering found unconditional native binding affected ordinary work; it was narrowed to active read-only commands. | Useful repair evidence, not clean installed acceptance. Guard and explicit-refusal/replay corrections received focused regression checks. |
+| 4, `578e1f5` | Reads, scoped report save, exact finish, source/README integrity and ordinary reading worked. Real `req new` was refused before execution; no R-id or source probe. | Canonical quoting comparison rejected ordinary double-quoted prose containing semicolons. Fixed by bounded literal parsing. Probe total recorded as 351.9s. The earlier “301.38s to first artifact” used a saved-file modification time, **not proof of the first write**. |
+| 5, `6ada3f4` | Full bounded Product journey passed, including real refusal and normal finish. | Current installed acceptance evidence for this one Codex journey. Earlier failures are preserved and not retroactively counted as passes. |
 
-In completed attempts 2 and 3, Taskplane rejected its returned read request and each probe stopped rather than repeating an unchanged refusal. Exact finish and subsequent ordinary reading worked. This is a real improvement over the earlier stranded contract, but **usable Product entry failed in those installations**. A reporting process's exit code of zero does not establish that the journey passed.
+[Attempt 2](../.taskplane/diagnostics/recovery-2026-09-14/native-attempt-2-read-blocked/native-canary-final.txt), [attempt 3](../.taskplane/diagnostics/recovery-2026-09-14/native-attempt-3-read-blocked/native-canary-final.txt), and [attempt 4](../.taskplane/diagnostics/recovery-2026-09-14/native-attempt-4-quoted-control-blocked/native-canary-final.txt) remain available. The Git architecture issue reproduced on baseline `a76e7de`; it is an environment limitation. Applicable native/developer policy constraints and hook trust are distinguished from the actual Taskplane defects.
 
-Neither completed blocked attempt created a requirement ID or saved Product report; scoring, planned graph linking, source-write refusal, and full Product DoR/DoD were not reached. Attempt 2's source comparison was unavailable because `/usr/local/bin/git` had the wrong CPU architecture; attempt 3 used `/usr/bin/git` and verified the source unchanged. The architecture issue also reproduced on `a76e7de`; it is an environment limitation, not a new harness regression. Attempt 3 disclosed an initial overly broad filename search under `/private` that returned no paths and was not repeated. Hook trust enablement and applicable native/developer policy constraints remain separate from Taskplane defects.
+### Local checks and their limits
 
-Refactor metrics retain the same eight debt categories as the selected baseline. Reported baseline production/test lines and test-file count were 138,185 / 75,457 / 235; the earlier repaired candidate reported 138,474 / 76,458 / 240. These figures show existing structural debt and some growth; they do not prove a clean CI result or that these debt categories originated in the rollback fixes. The final adapter changes still require their applicable release-check evidence.
+| Evidence | Result and limit |
+| --- | --- |
+| Requirements checks | 49 tests and 49 subtests passed, including blank content, sign-off refusal, amendment invalidation, and honest readiness/completion presentation. |
+| Earlier source selection | 396 tests and 274 subtests passed, with five failures. Five stale assertions were corrected and those five passed on focused rerun. |
+| Earlier host selection | 92 tests and 45 subtests passed, one Go skip; six failed subcases within one hook test reproduced on the baseline with incompatible Intel Git. The corrected fixture's exact test and eight subtests passed. |
+| Final identity/control checks | Explicit native-identity block/public-boundary/replay: 145 tests and eight subtests passed before the final control fix. Final literal-control/recovery selection: 92 tests passed; nine actual-shell samples matched intended parsing. These overlapping runs are **not summed**. |
+| Stateless runtime | 16 selected serial/parallel Evaluate–Engineering–Retro and missing-seal/handoff checks passed. Native events are simulated; no real installed delivery completion is inferred. |
+| Static/release checks | Final mypy passed across 114 source files; source policy checked 129 modules with zero violations. Earlier Ruff, version, release-surface, and generated-CLI checks passed, the latter after correcting its temporary-directory environment. No complete release-CI result is claimed. |
+| Structural debt | Eight metric-debt categories also exist on `a76e7de`. Baseline production/test lines and test files were 138,185 / 75,457 / 235; an earlier repaired candidate reported 138,474 / 76,458 / 240. Existing debt and some growth remain visible; the categories were not introduced by these fixes. |
 
-The missing workspace locator was repaired through a fresh inert preflight. All five prior manifests and Git selection metadata were preserved; all 40 current stage-object digests and sizes verified. The old Product context remains archived and was not automatically selected. This establishes preservation of the checked authority/artifact references, not a byte-for-byte audit of every historical output or successful cross-task knowledge reuse.
+See [component results](../.taskplane/diagnostics/recovery-2026-09-14/literal-candidate-checks.json), [stateless results](../.taskplane/diagnostics/recovery-2026-09-14/stateless-delivery.json), and [static/debt results](../.taskplane/diagnostics/recovery-2026-09-14/static-results.json). Original nonzero results remain alongside their corrected reruns.
 
-## 2. The same original goals
+The workspace locator was recovered through a fresh inert preflight. [Storage verification](../.taskplane/diagnostics/recovery-2026-09-14/storage-verification.json) preserves all five earlier manifests and selection metadata and verifies all 40 current stage-object digests/sizes. The old Product context stays archived and was not selected as new authority. This is not a byte comparison of every historical output file.
 
-| Original goal | Earlier experience | Candidate change | Current assessment |
-| --- | --- | --- | --- |
-| **Visibility** | A readiness score could coexist with unusable operations; DoR/DoD were absent from the review; completion and approval were easy to confuse. | Requirement Markdown and score/show results project separate content DoR, recorded human decision, Product DoD, and implementation acceptance. Blank content fails readiness; requested changes are visible as `changes_required`; missing review remains unknown. Product instructions require operational evidence and next owners. | **Improved in source and focused local checks.** Installed presentation and the full phase handoff remain to be demonstrated. |
-| **Focus** | Product's contract blocked its documents, planned graph link, presentation, and ordinary exit. Repairing the harness displaced the requested work. | Product has explicit document authority, required installed-engine controls, planned-only graph linking, proposed-only decision drafts, permitted artifact presentation, and an owner-specific finish. Ordinary source Review, Help, and Status use native tools without automatic activation. | **Mixed installed result:** exact normal finish worked, but required native reading failed before Product authoring. Corrected admission and control-guard fixes require revalidation. |
-| **Continuity** | Artifacts survived only after an explicitly approved cleanup; blank session context and private knowledge/session coupling raised reuse concerns. | Normal Product finish retains artifacts and decisions, preserves other owners, and grants no Build authority. Stateless inputs and existing knowledge ownership remain. | **Partially demonstrated:** normal finish and the subsequent ordinary read worked; five prior manifests and 40 current stage objects verified after locator recovery. Same-task resume and cross-task knowledge retrieval remain unverified. |
+## 2. The same three original goals
 
-Lower supervision cost is the test of these goals in use. The normal path should require zero Taskplane-specific user repair commands and zero unchanged retries. The second installed attempt made no unchanged retry or harness workaround, and normal finish worked. The first attempt required the user to enable the new hook trust; separate this installation action from normal Product work. No time-to-artifact or cost improvement is established because authoring was never reached.
+| Goal | Original assessment | Final evidence and verdict |
+| --- | --- | --- |
+| **Visibility** | DoR/DoD were absent from the review; scoring, readiness, approval, and completion were confused. | **Materially improved and demonstrated:** saved report and requirement expose content DoR, human disposition, Product review completion, and implementation acceptance separately. Score 1.0 coexists honestly with pending human decision and unverified review/implementation. The fresh session recovered those distinctions. |
+| **Focus** | Required Product operations and normal exit were blocked; operating the harness displaced the task. | **Core journey demonstrated:** reads, documents, requirement controls, planned graph link, and normal finish work under strict live enforcement. A real source-write probe is refused and source stays unchanged. Ordinary Review/Help/Status also avoid unnecessary automatic activation by design. |
+| **Continuity** | Saved work required exceptional cleanup; isolation and blank context raised knowledge-reuse concerns. | **Narrow continuity demonstrated:** artifacts survive normal finish, the next native session sees no active restriction and retrieves useful prior constraints. Historical selected artifacts are preserved. Interruption recovery and broader automatic project-memory reuse remain open. |
+
+The final journey required no Taskplane-specific repair and no unchanged refusal retry. **No speedup or cost saving is claimed:** timing sources disagree, and full native delivery has not been measured.
 
 ## 3. The same nine problem spaces
 
-| Priority / problem space | Before | Candidate evidence and improvement | Remaining gap / next owner |
+| Priority / problem space | Before | What changed and what was proved | Remaining outcome / next owner |
 | --- | --- | --- | --- |
-| **P0 — DoR/DoD disappear** | The original review lacked explicit gate verdicts; scoring and completion were conflated. | `requirements.product_gate_summary`, readable requirement projection, `req score`/`req show`, and the Product procedure expose definitions, criteria, evidence, gaps, and owners. Shared scoring now rejects empty statements and NFR values. | **Improved.** Requirement records cannot validate stage-review or implementation evidence. Product must consume actual stage evidence when available; installed delivery must show the same distinctions. |
-| **P0 — Phase obstructs its own work** | Read-only authority permitted neither the expected documents nor required controls. | `cmd_new --product` grants document scope and the adapter returns a native read request. | **Failed on the last completed installed candidate:** that exact read was blocked after strict activation. Document/graph operations were not reached. Adapter correction and fresh installed evidence are required. Recovery owner. |
-| **P0 — Recovery becomes the task** | Ordinary release and its suggested remedy were blocked; the user had to authorize a special repair. | Exact `clear --task-id` is scoped to the current standalone Product owner; replacement/foreign/worker/active-delivery authority is protected. | **Partly demonstrated:** exact normal finish succeeded once after the unexpected read denial, and a subsequent ordinary read worked. Full finish/cancel/limit and refusal–resume scenarios remain open. |
-| **P1 — Enforcement exceeds useful role** | Native work was wrapped in broad prerequisites and repeated proof requirements. | Ordinary source Review, Help, and Status avoid automatic onboarding/contracts. Product uses the host's sandbox and existing domain checks. No replacement scheduler is added. | **Partially improved.** Product still relies on exact command shape and pending native-call matching. Delivery retains lifecycle/receipt/telemetry controls. Their proportionality and installed compatibility remain open; do not declare native duplication eliminated. |
-| **P1 — Failures collapse into “blocked”** | Unavailable evaluation or integration capability could resemble a product defect and trigger wasted repair. | Quality probes and evidence execution share `evidence_command_environment`; ambient-only Python tools no longer justify readiness. Product instructions distinguish capability, content, execution, optional output, and acceptance. | **Improved for the demonstrated environment mismatch.** Stale-engine, optional-telemetry, unsupported host, and recovery cases still need the declared scenario evidence. Evaluate must not turn missing dependencies into a source-code FIX. |
-| **P1 — Cost controls do not show value** | Repeated setup, large context, checks, and recovery consumed effort without demonstrated benefit. | Reduced ordinary-entry instructions and no automatic Review activation remove work from common requests. Product instructs one score/link sequence and no retry without a changed condition. | **Unmeasured.** Native waiting/polling behavior is not repaired or benchmarked by these changes. The existing emitted wait policy still governs delivery. Record time to artifact, interventions, non-progress retries, and unavailable usage honestly. |
-| **P1 — Session isolation threatens knowledge continuity** | New blank context and a new session-qualified requirement raised concern about project-memory reuse. | Five prior manifests/metadata and 40 stage-object digests verified after an inert locator recovery; archived Product context was not selected as new authority. | **Preservation improved; reuse remains open.** The knowledge/session boundary remains unchanged. Run interruption/resume and second-task retrieval without inherited restrictions. Recovery owner, then Product. |
-| **P1 — Readiness/visibility mislead** | Setup reported ready while required work failed; optional presentation blocked delivery. | Content readiness is separate, and actual probe reporting correctly records a blocked journey despite a completed reporting process. | **Still demonstrated operational gap:** native-effective hooks and successful activation did not establish an executable read. The exact adapter request failed. Correct the defect and repeat the journey before a ready claim. |
-| **P1 — Release evidence misses the journey** | Large test counts coexisted with incomplete installed acceptance. | Recovery has a criterion-level matrix, narrow behavioral refusals, retained stateless checks, and explicit source/simulation/installed evidence distinctions. | **Still open until exercised.** Installation and complete native journeys remain the release evidence boundary. No cross-host success or successful governed delivery is inferred here. |
+| **P0 — DoR/DoD disappear** | Initial review lacked explicit gates; a score suggested more completion than it established. | Shared requirement projection and Product instructions expose definitions, criterion evidence/status/gaps/owners. Blank content fails. Real saved output and fresh retrieval retain pending review, human, and implementation states despite score 1.0. | **Core visibility repaired.** Carry real selected review and completion evidence through the full governed phase handoff. Product and stage-review owner. |
+| **P0 — Phase obstructs its own work** | Documents, native reads, planned graph link, and presentation were refused. | Explicit document authority, native read admission, exact quoted controls and planned graph linking all worked in the final installed journey. | **Demonstrated for this Codex path.** Unsupported-capability and other host versions remain unverified. Integration owner. |
+| **P0 — Recovery becomes the task** | Ordinary release and its remedy failed; special user intervention was needed. | Exact owner finish succeeded after earlier failures and after successful final authoring/refusal. Artifacts remain; subsequent reading works; no active contract leaked into fresh retrieval. | **Normal finish repaired.** Cancellation, configured-limit and interrupted-phase recovery need their own native cases. Existing lifecycle owner. |
+| **P1 — Enforcement exceeds useful role** | Native work accumulated broad setup/proof prerequisites. | Ordinary source Review/Help/Status use native tools without automatic contracts. Product retains scoped documents, exact domain controls, real host sandboxing and evidence boundaries. A genuine source violation is refused. | **Partially improved.** Native-call matching and delivery receipt/telemetry machinery remain. Judge their value in real delivery; do not claim all duplication removed. Architecture/integration owner. |
+| **P1 — Failures collapse into “blocked”** | Capability gaps could resemble source defects and trigger wasted fixes. | Quality probes use the evidence-execution environment. Native identity failures return explicit blocks. The final scope refusal is distinguished from unexpected failures, and host/environment issues are attributed separately. | **Specific defects repaired.** Complete the stale-engine, missing-tool, optional-telemetry and unsupported-host scenario matrix. Evaluate/integration owner. |
+| **P1 — Cost controls do not show value** | Setup, checks and recovery consumed effort without measured benefit. | Final probe has zero Taskplane repair interventions, unexpected denials, and unchanged denial retries. Common entry instructions are shorter and avoid needless activation. | **Supervision improved in this sample; speed/cost unknown.** Resolve timing instrumentation and measure native waiting/polling and a complete delivery. Recovery owner. |
+| **P1 — Session isolation threatens continuity** | New session context and requirement numbering obscured prior knowledge. | A fresh native session retrieved the same requirement/report and useful constraints after clearance, with zero active contracts and no repair. Historical selection/artifact references verified. | **Narrow reuse proved.** Same-task interruption, producer exit, broader knowledge discovery/reconciliation and multi-project isolation remain open. Knowledge/lifecycle owner. |
+| **P1 — Readiness/visibility mislead** | Setup could say ready while the next operation failed; optional display blocked delivery. | Final required operations actually succeeded; readable text/files carry the result. Content readiness remains distinct from review completion and implementation. Earlier false operational confidence remains recorded as failure. | **Repaired for the exercised path.** Tool discovery alone still cannot certify every supported host or required operation. Product/integration owner. |
+| **P1 — Release evidence misses the journey** | Large pass counts coexisted with incomplete native acceptance. | A source-identified installed journey now includes positive work, a real refusal, integrity checks, cleanup and fresh retrieval. Local, simulated, and native evidence are explicitly separated. | **Materially closer, acceptance partial.** Real stateless delivery and the complete supported-host matrix remain missing. Release/review owner. |
 
-### Specific remaining product risks
+## 4. AC1–AC8: the original acceptance bar
 
-1. **Standalone specialist review is not yet demonstrated.** The Product skill calls for a focused route and selected specialist work. That instruction and this author ledger do not prove dispatch, admissible collection, candidate binding, or Product phase completion. Reuse the existing stage mechanisms where applicable; do not invent a receipt to close the gap.
-2. **Native command matching produced a real failure.** Codex read/control admission depends on the expected outer shell, workspace, fixed invocation, and—in projected hooks—one recognizable pending native call. The last installation refused its own returned request. Separately, reviewers identified abbreviated kind/status/supersedes guard cases being corrected. Source fixes must be followed by direct installed positive and refusal checks.
-3. **A sandbox launch can need genuine host permission.** The native adapter explicitly handles non-nestable macOS sandboxing through a native escalation request. That is distinct from a Taskplane-specific reset, but its actual burden must be counted and explained. Tool discovery alone is insufficient.
-4. **The rollback is broader than the repairs.** It removes later enforcement and other changes as a group. Ordinary review/help/status simplification has been reapplied in the candidate; the complete impact of every post-2.23.1 behavior has not been certified. Aggregate checks and the representative journey must expose regressions, not just improvements.
+A demonstrated subjourney does not close a broader criterion whose remaining cases were not exercised.
 
-## 4. AC1–AC8: same acceptance bar
-
-“Improved” below describes source behavior, not a completed installed acceptance criterion.
-
-| AC | Original baseline | Candidate result so far | Missing evidence / next owner |
+| AC | Earlier baseline | Final candidate result | Remaining gap / owner |
 | --- | --- | --- | --- |
-| **AC1 — usable Product entry** | Required manual harness recovery before useful completion. | **Failed on installed `21b59b8` and `75329fa`; final `578e1f5` pending:** activation succeeded, exact required read failed, and authoring was not reached. | Corrected candidate must complete inspect → requirement/document save without a new task or implicit Build. Recovery owner. |
-| **AC2 — correct authority** | Documents and planned graph link were refused; source-write negative case was not exercised. | **Improved in source:** document allowlist, exact controls, planned graph links, proposed decisions, native read boundary. | Candidate-bound positive/negative results and a real source-write refusal. Required-operation execution must be checked, not inferred from advertised tools. Engineering/recovery owner. |
-| **AC3 — finish and recover** | Ordinary release failed; exceptional user approval cleared the temporary restriction. | **Partially demonstrated live:** exact owner finish succeeded once after the read refusal; subsequent ordinary reading worked. | Complete cancel/limit and refusal–resume cases; preserve artifacts and other owners. One cleanup does not complete the entire criterion. |
-| **AC4 — accurate refusal and bounded retry** | Full failure matrix was not exercised. | **Specific mismatch repaired:** quality readiness uses the execution environment; Product instructions separate integration gaps and actual defects. | Installed missing-tool, unsupported capability, stale-engine, optional-output/telemetry cases; zero retry under unchanged prerequisites. |
-| **AC5 — continuity** | Same-task and second-task scenarios were not established. | **Preservation verified within stated bounds:** five prior manifests/selection metadata unchanged, 40 stage-object digests/sizes verified, old Product context archived and not selected. | Real interruption/resume and second-task knowledge reuse without active restrictions. This is not proof of all historical output-file bytes or useful knowledge retrieval. |
-| **AC6 — presentation and proportional overhead** | File-panel delivery and normal completion needed recovery. | **Improved in source:** native input, indexed artifact access, text fallback, simplified ordinary entry. | Measure repair commands, approval requests, diagnostic size against the proposed 2 KiB target, and non-progress retries on the installed journey. No measurements available yet. |
-| **AC7 — supported-host evidence** | Incident evidence existed for Codex; repaired cross-host acceptance did not. | **Not satisfied:** live Codex attempt failed at reading; 16 serial/parallel delivery checks passed using simulated native events. | Successful corrected installed Product and small stateless delivery journeys; Claude/Cowork remain unverified unless exercised. |
-| **AC8 — visible DoR/DoD** | Initial assessment omitted gate status; requirement score did not prove review completion. | **Improved and locally tested:** requirement projection separates content, human disposition, phase review, and implementation. Blank content fails; requested changes remain actionable. | Installed output and real stage handoff must carry these distinctions. Missing review/acceptance must remain visible after a 1.0 score. |
+| **AC1 — usable Product entry** | Required manual harness repair before completion. | **Demonstrated in the bounded Codex probe:** inspect, save requirement/report, score/show, planned link, and finish; no new conversation needed to repair it, no implicit Build. | Full specialist Product phase acceptance is separate from this core operation check. Product review owner. |
+| **AC2 — correct authority** | Required documents/link failed; source-negative case absent. | **Core authority demonstrated:** declared native document write succeeds; exactly one source patch refused; source/README unchanged; planned graph link succeeds. | Missing-capability detection before activation and broader guard/host cases have local evidence but not a full native scenario matrix. Integration/Engineering. |
+| **AC3 — finish and recover** | Ordinary release failed; exceptional approval was required. | **Normal finish demonstrated:** exact owner cleared once, artifacts retained, no active contract, subsequent ordinary read and fresh-session retrieval work. Expected refusal did not strand the session. | Explicit cancel, configured-limit and interruption/recovery cases remain unverified natively. Lifecycle owner. |
+| **AC4 — accurate refusal and bounded retry** | Failure classes and retries not established. | **Partial:** expected scope refusal clearly observed; zero unexpected denials/unchanged retries in final probe. Readiness/execution environment and identity refusals have focused fixes/checks. | Stale engine, missing execution dependency, optional telemetry and unsupported-capability native cases remain open. Integration/Evaluate. |
+| **AC5 — continuity** | Resume and next-task reuse unproved. | **Narrow fresh-session reuse demonstrated:** same draft R-0001, report, source and functional/gate context recovered without activation or file changes. Historical manifests/artifact references preserved. | Session began after clear while producer summary continued; no producer-exit, interruption-recovery, or full memory claim. Knowledge/lifecycle owner. |
+| **AC6 — usable presentation and proportional overhead** | Presentation and completion required recovery. | **Core presentation/supervision demonstrated:** readable files/text, zero Taskplane repairs, zero unchanged refusal retries, no new trust prompt or approval rejection. Full observed denial block 588 bytes, below 2 KiB for this sample. Native sandbox permission requests succeeded. | Timing disagrees; no speed/cost improvement or global diagnostic bound. Optional rich-panel failure and wider measurements remain open. Product/recovery owner. |
+| **AC7 — supported-host evidence** | Repaired cross-host journey absent. | **Partial:** one real installed Codex Product positive/refusal/finish journey and fresh retrieval passed. Sixteen stateless local checks passed with simulated native events. | Real installed small Build–Evaluate–Engineering–Retro and Claude/Cowork journeys remain unverified. Release owner. |
+| **AC8 — visible DoR/DoD** | Initial review omitted gates; score did not prove completion. | **Demonstrated in saved native output/retrieval:** score 1.0 and content DoR pass coexist with pending human decision/Product DoD and unverified phase review/implementation. Criteria, evidence, gaps and owners are retained. | Required specialist collection and real downstream gates must retain the same distinctions. Product/stage owner. |
 
 ## 5. Explicit readiness, decisions, and completion
 
-### Product DoR for this repeat review
+### Content DoR
 
-| Criterion | Status | Evidence / gap | Next owner |
-| --- | --- | --- | --- |
-| Original problem, three goals, and authorized scope are clear | **Met** | User instruction, original assessment, implementation plan. | Product preserves scope. |
-| Exact historical baseline and inspected candidate are identified | **Met** | Final code `578e1f5`, package hash/provenance, and personal installed version are identified. | Recovery owner links the final journey outcome. |
-| Criteria and applicable risks are explicit | **Met — authored** | Same nine spaces and AC1–AC8; current source inspected. | Product maintains the same bar. |
-| Required Product operations are demonstrably executable | **Failed on last completed installed candidate** | Exact activation-returned read was refused; authoring was not reached. Exact normal finish worked. | Recovery owner corrects and repeats the journey. |
+| Criterion | Status | Evidence / next owner |
+| --- | --- | --- |
+| Recovery problem, original goals and authority are explicit | **Met** | Original assessment, authorized plan and this repeat review. Product preserves scope. |
+| Final source, installation and evidence provenance are identified | **Met** | `6ada3f4`, verified package/installation, named native sessions and diagnostic artifacts. |
+| Functional criteria and applicable risks are reviewable | **Met for this assessment** | Same nine spaces and AC1–AC8; remaining gaps named. |
+| Probe requirement's mechanical content readiness | **Passed** | Probe-local R-0001 score 1.0, no reported content gaps. This does not approve the requirement or certify implementation. |
 
-**DoR verdict:** sufficient evidence exists for this comparative assessment. Operational Product readiness failed on the last completed installed candidate. The corrected candidate is pending validation. This is not a mechanical requirement score or stage-gate pass.
+### Operational DoR
+
+| Required operation | Status | Actual evidence / limit |
+| --- | --- | --- |
+| Native source inspection | **Passed in final installed probe** | Exact native read and bounded source reads succeeded under strict/live authority. |
+| Declared document authoring | **Passed** | Native scoped writes saved a readable report; retained copy and digest verified. |
+| Requirement/graph controls | **Passed** | R-0001 creation, score/show and planned graph link succeeded. |
+| Meaningful source protection | **Passed for the one designated probe** | Exactly one native source patch refused; source/README unchanged. |
+| Normal finish and subsequent access | **Passed** | Exact owner clear, no active contract, retained artifacts and subsequent reads. |
+| Every supported host and recovery condition | **Not verified** | One Codex host/version and bounded scenario do not establish the wider matrix. |
+
+**DoR verdict:** content and required operational entry are demonstrated for the final bounded Codex journey. This does not generalize to unexecuted host/recovery cases.
 
 ### Human decision
 
 | Decision | Observed state | Meaning |
 | --- | --- | --- |
-| Roll back to the selected post-refactor baseline, apply fixes, and repeat Product review | **Authorized by the user** | Continue the requested work without asking again for the same permission. |
-| Accept the resulting recovery and any remaining limitations | **Not yet recorded** | Approval of work to be done is not advance acceptance of its result. |
-| Disposition of any earlier requirement record | **Not inferred** | This review does not overwrite, fabricate, or import a requirement sign-off. |
+| Rollback, fixes and repeat Product review | **Authorized by the user** | Work proceeded under that existing instruction. |
+| Accept the finished recovery and its limitations | **Not recorded** | No future acceptance was inferred from implementation authorization. |
+| Approve the probe's draft R-0001 | **Pending** | No attributed Product approval, Build authority or self-signoff was created. |
 
-### Product DoD for this review and handoff
+### Product DoD
 
-| Criterion | Status | Evidence / gap | Next owner |
-| --- | --- | --- | --- |
-| Repeat original goals, problem spaces, criteria, remedies, and trade-offs | **Met — authored** | Sections 2–4. | Product incorporates actual validation results. |
-| State truthful before/after and remaining uncertainty | **Met — authored** | Source evidence distinguished from local and installed execution. | Product refreshes after any material fix. |
-| Retain selected independent review and candidate-bound evidence | **Partially evidenced** | Local aggregate evidence and reviewer findings are recorded; corrections and selected governed Product review collection are not yet accepted. | Recovery/review owner supplies the final results. |
-| Deliver accessible report with explicit gates and next owners | **Authored; delivery pending** | This readable Markdown artifact contains them. | Orchestrator delivers the final revision. |
-| Record applicable human disposition | **Pending result review** | Implementation authorization exists; final result acceptance does not. | User. |
-| Demonstrate normal Product completion without a stranded restriction | **Partial: cleanup demonstrated** | Last native attempt released its exact contract once and ordinary reading resumed. Full successful authoring/completion remains blocked by the read defect. | Installed journey owner. |
+| Criterion | Status | Evidence / gap / next owner |
+| --- | --- | --- |
+| Complete this comparative Product assessment | **Met — authored** | Original goals, all problem spaces, same ACs, 26 dispositions, before/after, evidence limits and priorities are present. |
+| Make report/requirement accessible with explicit gates | **Demonstrated for the native probe** | Saved report/requirement and fresh-session retrieval preserve the distinctions; this final report is also saved. Orchestrator delivers it. |
+| Preserve artifacts and finish normally | **Demonstrated** | Exact clearance, no active contract, retained report/requirement/graph and ordinary access verified. |
+| Required selected specialist review collected by the real phase owner | **Not verified** | Author ledger and local checks do not supply that evidence. Product/stage-review owner. |
+| Applicable human acceptance of Product handoff | **Pending** | User disposition has not been recorded. |
 
-**Product DoD: not satisfied as a governed accepted handoff.** The comparative report is available, but final candidate evidence, applicable review completion, installed cleanup proof, and result acceptance remain distinct outstanding facts.
+**Product DoD verdict:** the requested comparative report is complete as an authored assessment. A fully governed, specialist-reviewed and human-accepted Product phase is **not established**. The native draft remains correctly pending, even though the operation probe passed.
 
 ### Implementation acceptance
 
-**Recovery DoD: not satisfied at this evidence checkpoint. AC1 failed on the earlier completed installed candidates; the final candidate outcome is pending.** AC1–AC8 remain the acceptance bar. Normal cleanup and local checks demonstrate progress; they cannot replace successful authoring or installed delivery. Corrections in progress need a fresh candidate-specific result. No percentage-complete estimate is supported.
+**Core Product repair is demonstrated; broader recovery DoD is partial.** The unchanged AC1–AC8 bar includes cases still open in section 4. Full native delivery, specialist collection, all supported hosts and broader continuity are not certified. The probe requirement's proposed README implementation is also unverified and was not performed. Passing the canary is neither release-wide acceptance nor approval to implement that draft.
 
-## 6. Measurement and host matrix
+## 6. Measurement and supported journeys
 
-| Measure / journey | Current result |
+| Measure / journey | Observed result and limit |
 | --- | --- |
-| Time to first useful artifact on fixed installed Product journey | Not measured. |
-| Taskplane-specific user repair commands | No workaround or repair intervention in native attempt 2; first-attempt installation required user hook trust enablement. No successful normal Product path exists yet for the zero-intervention target. |
-| New implementation-approval prompts during Product-only work | None reported in attempt 2; authoring was not reached. Hook trust enablement is an installation action, not implementation approval. |
-| Unchanged failed retries / unnecessary polling | No unchanged retry after the read denial in attempt 2. Broader native waiting/polling efficiency is unverified. |
-| Required diagnostic size | Not measured against the proposed 2 KiB target. |
-| Codex installed draft–save–finish and refusal–recovery–resume | Last attempt failed at the initial read; exact normal finish and subsequent ordinary read succeeded. Full journey awaits correction and rerun. |
-| Codex small stateless delivery through Evaluate, Engineering, Retro | 16 selected local checks passed with simulated native events; real installed delivery remains unverified. |
-| Claude / Cowork same supported journeys | Not exercised in this review; no new support certification. |
-| Same-task interruption and next-task knowledge reuse | Historical selection/artifact preservation verified within section 1's bounds. Resume and useful cross-task reuse not exercised. |
+| First saved report write | Successful native AddFile result at `2026-09-15T03:38:41.633Z`, **245.91 wall seconds** after start `03:34:35.721478Z`. This is a write observation, not a measured speedup. |
+| Total Product probe duration | Wrapper elapsed **801.44s**; UTC wall interval **1,869.15s**. These disagree. Two host websocket/I/O retry warnings were observed, but the whole discrepancy is not attributed to them or Taskplane. No speed claim. |
+| Unexpected Taskplane denials | **0** in the final probe. The one deliberate source-write refusal is expected. |
+| Taskplane repair interventions / unchanged denial retries | **0 / 0** in the final probe. Earlier failed attempts and development intervention remain documented. |
+| Trust/permission behavior | No new trust prompt or approval-review rejection during the final journey. Native sandbox escalation requests succeeded; permission requests were not absent. |
+| Diagnostic size | Actual complete source-denial error block, including echoed patch: **588 bytes**. Meets the proposed 2 KiB target for this sample only; no global quota or universal bound is established. |
+| Native waiting/polling and usage cost | Not evaluated as a complete delivery workload. No cost-saving or polling-efficiency claim. |
+| Installed Codex Product journey | **Passed** for the identified candidate/session/host version. |
+| Fresh native saved-context retrieval | **Passed**, 79.65s, after clearance while producer summary continued. Narrow continuity only. |
+| Real installed stateless delivery | **Not verified.** Sixteen local checks use simulated native events. |
+| Claude / Cowork equivalent journeys | **Not verified.** No new cross-host certification. |
+| Same-task interruption / producer-exit recovery | **Not verified.** Fresh retrieval does not substitute for either. |
+
+Measurements and their limitations are retained in [native measurements](../.taskplane/diagnostics/recovery-2026-09-14/native-canary-measurements.json) and [continuity results](../.taskplane/diagnostics/recovery-2026-09-14/continuity-result.json).
 
 ## 7. All 26 lens dispositions
 
-This is the Product author's focused coverage ledger. “Applied” means the concern informed this report. It does not mean an independent specialist, native lens worker, or existing phase collector produced an accepted result.
+This is a disclosed Product author ledger. “Applied” means the concern informed this assessment; it does not imply an independent native specialist ran or an existing phase collector accepted its output.
 
 | Lens | Disposition, evidence, and limitation |
 | --- | --- |
-| product | **Applied:** same goals, nine spaces, AC1–AC8, and explicit acceptance gaps. |
-| security | **Applied:** scoped document writes, exact controls, host read sandbox, protected authority/evidence; independent negative verification still required. |
-| code-quality | **Reviewed at Product boundary:** changes reuse existing owners; this author does not certify code quality, especially its own requirements changes. Engineering owns that result. |
-| testability | **Applied:** observable positive/refusal pairs and distinction between simulated and installed evidence. |
-| design | **Applied:** explicit readiness/completion, text fallback, retained work, and named recovery owner. |
-| scalability | **Deferred:** no throughput or scale claim; native polling/performance remains unmeasured. |
-| integrability | **Applied:** actual native read denial confirms the pending-call integration gap; installed package/native hook identity and quality-environment checks are recorded. |
-| data-safety | **Applied:** five prior manifests/metadata and 40 current stage objects verified; old Product authority stays archived. Full historical-output byte comparison is not claimed. |
-| tech-writer | **Applied:** readable criterion tables, distinct failed/unknown states, bounded next action, and plain-language limitations. |
-| qa | **Applied:** same AC matrix; source/local/live evidence must stay separate. |
-| devops | **Applied:** final source `578e1f5`, package provenance/hash, and 261-file installed verification recorded; duplicate remote hooks removed and user trust enabled. Clean native journey running. Eight pre-existing structural debt categories remain visible. |
-| dba | **Not applicable to implementation scope:** no database schema or migration change; project-knowledge continuity is still assessed separately. |
-| sre | **Applied:** exact finish and subsequent ordinary read worked after the live read failure; no unchanged retry. Full refusal–resume/limit recovery remains unverified. |
-| project-management | **Applied:** bounded rollback/fixes, preserved authorization, named evidence owners, and no implicit Build. |
-| frontend | **Not applicable to UI implementation:** no frontend feature; Markdown/status presentation is covered by design/accessibility. |
-| backend | **Applied at behavioral boundary:** existing CLI, scope, cleanup, readiness, and requirement owners changed. Engineering validates implementation. |
-| tradeoffs | **Applied:** keep stateless consolidation and meaningful safeguards while reducing unnecessary ordinary entry work. Broad rollback losses remain a risk. |
-| solution-design | **Applied:** compare bounded existing-owner repairs with pre-refactor restoration, blanket disabling, and new frameworks; rejected alternatives remain rejected. |
-| services-selection | **Not applicable:** no new external service is introduced. |
-| time-to-market | **Applied:** complete a representative installed journey before expanding recovery; no measured speedup claimed. |
-| architecture | **Applied:** active stateless v4 preserved; native lifecycle ownership retained; no new scheduler/proof framework. Remaining wrappers are acknowledged. |
+| product | **Applied:** same three goals, nine spaces, AC1–AC8 and honest partial acceptance. |
+| security | **Applied:** real source-write refusal, unchanged source, bounded document/control authority, native sandbox permissions; wider attack/host matrix remains separate. |
+| code-quality | **Reviewed at Product boundary:** existing owners reused; component and independent review evidence retained. This author's own code is not independently certified by this ledger. |
+| testability | **Applied:** observable positive/refusal/finish checks and explicit simulated/native distinction. |
+| design | **Applied:** visible gate meaning, readable saved artifacts, normal exit and actionable unresolved states. |
+| scalability | **Deferred:** no throughput/scale claim; native delivery polling/performance unmeasured. |
+| integrability | **Applied:** real rollout/hook/quoting defects were found and corrected; final installed path passed. Other hosts and shapes remain unverified. |
+| data-safety | **Applied:** source/README unchanged, five prior manifests/metadata and 40 stage objects verified, old authority archived, artifacts survive normal finish. |
+| tech-writer | **Applied:** definitions, criterion evidence/gaps/owners, readable reports and a measured 588-byte refusal sample. |
+| qa | **Applied:** native canary plus independent integrity verification; failures and reruns retained; broader acceptance gaps explicit. |
+| devops | **Applied:** final source/package/installed identity verified; prior duplicate installation removed; eight pre-existing structural debt categories remain visible. |
+| dba | **Not applicable to implementation scope:** no database migration/schema change. Knowledge continuity is assessed separately. |
+| sre | **Applied:** normal finish and post-refusal continuation work; no unchanged denial retry. Limit/cancel/interruption cases remain unverified. |
+| project-management | **Applied:** authorized bounded recovery completed through repeat review; same ACs retained; no implicit Build or invented acceptance. |
+| frontend | **Not applicable to UI implementation:** no frontend feature; report presentation covered by design/accessibility. |
+| backend | **Applied at behavior boundary:** requirements, controls, readiness, native admission and cleanup exercised. Engineering evidence owns implementation soundness. |
+| tradeoffs | **Applied:** preserve stateless consolidation and real guards while simplifying ordinary work. Broad rollback losses and remaining wrappers are acknowledged. |
+| solution-design | **Applied:** bounded repairs in existing owners; no restoration of v3, blanket disablement, new scheduler, or proof framework. |
+| services-selection | **Not applicable:** no new external service introduced. |
+| time-to-market | **Applied:** core usable journey now demonstrated. Timing disagreement prevents a speedup claim; next work should close named gaps. |
+| architecture | **Applied:** active stateless v4 and sealed evidence retained; native execution/lifecycle ownership preserved; full native delivery still unverified. |
 | mobile | **Not applicable:** no mobile surface or compatibility claim. |
-| accessibility | **Applied:** text/file delivery and criterion-level meaning do not depend on an optional rich display. Installed presentation remains to be checked. |
-| privacy-compliance | **Applied:** bounded evidence and no publication of raw host transcripts or credentials; native-call inspection remains local. No new regulatory compliance claim. |
-| cost-finops | **Applied:** distinguish removed entry work from unmeasured cost/usage, polling, and supervision outcomes. |
-| i18n | **Deferred:** no locale expansion; preserve valid requirement text, including surrounding whitespace. No localization certification. |
+| accessibility | **Applied:** real text/file delivery and fresh retrieval carry gate meaning without requiring rich display. Optional panel failure matrix remains open. |
+| privacy-compliance | **Applied:** report uses bounded evidence, not published raw transcripts/credentials; no new regulatory compliance claim. |
+| cost-finops | **Applied:** zero repair/retry in final sample; elapsed-clock discrepancy and unmeasured native delivery/usage prevent savings claims. |
+| i18n | **Deferred:** no locale expansion; valid requirement text preserved. No localization certification. |
 
-## 8. Product recommendation and evidence update
+## 8. Recommendation and remaining priorities
 
-**Keep this recovery direction, correct the observed read/control defects, and repeat installed acceptance.** Restoring pre-refactor v3 behavior would undo the desired stateless architecture. The changes are closer to the original idea because cleanup now works on the tested native failure path, requirement completion no longer hides missing evidence, and ordinary inspection avoids unnecessary setup. Product still could not perform its first required read, so it is not ready to be called recovered.
+**Keep the installed post-refactor recovery candidate.** The original user-facing failure class is substantially reduced: Product can inspect, author, record requirements, show honest gates, refuse a real scope violation, finish, and leave useful context for a fresh session. Restoring the retired pre-refactor runtime would undo the stateless architecture without evidence of a better result.
 
-The immediate next step is to finish the bounded adapter/control fixes, pin and install that candidate, and repeat Product draft–save–finish with a meaningful refusal. Then complete one small stateless governed change. Record actual user intervention and failures. Preserve the failed attempt as evidence; do not broaden its remedy into an unrestricted harness redesign.
+The next priorities are bounded and evidence-driven:
 
-### Evidence update slot
+1. **Complete one real stateless governed change** through Evaluate, Engineering, sign-off and Retro, with current evidence and the existing applicable human decisions. Owner: delivery/review. Local simulated checks are insufficient.
+2. **Demonstrate selected Product specialist dispatch/collection and accepted handoff.** Owner: Product/stage review. Do not turn this author ledger or score 1.0 into a receipt.
+3. **Exercise cancellation, configured limits, interruption and producer exit.** Owner: lifecycle/integration. Preserve the observed normal-cleanup behavior and foreign-owner protection.
+4. **Validate remaining supported hosts and failure classes.** Owner: release/integration. Start with the actually supported host/version matrix, stale installation, unavailable quality tools and optional output/telemetry behavior.
+5. **Measure complete work and broader knowledge reuse.** Owner: Product/knowledge. Resolve timing instrumentation, inspect native waiting/polling, and verify useful project-context retrieval across tasks and interruption before claiming speed, cost or full memory recovery.
 
-The recovery owner should supply the following facts for a final revision of this report:
-
-1. Final source SHA/tree and installed engine/skill/hook identities.
-2. Aggregate check commands/results and retained evidence paths, including failures.
-3. Exact native host/version, Product positive and refusal/recovery outcomes, normal finish, and subsequent request result.
-4. Small stateless delivery outcome, required evidence, closure, and any unavailable host capability.
-5. Measured interventions, retries, diagnostic sizes, and explicit unresolved AC rows.
-
-Until the corrective candidate's evidence arrives, the source-improvement and successful-cleanup findings stand, the earlier installed entry failures remain recorded, and acceptance remains unmet.
+No new scheduler, permission system, telemetry meter or proof framework is required by this recommendation. This review's final conclusion is **core Product recovery demonstrated, original goals materially closer, broader acceptance partial**.
