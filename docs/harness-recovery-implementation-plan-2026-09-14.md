@@ -1,5 +1,7 @@
 # Harness recovery: implementation and acceptance plan
 
+Historical assessment or plan: see the [repeat Product review](harness-recovery-product-review-2026-09-14.md) for the implemented recovery and actual verification outcomes.
+
 Date: September 14, 2026. Product/Design authoring for the recovery authorized in this task.
 
 ## 1. Decision and intended outcome

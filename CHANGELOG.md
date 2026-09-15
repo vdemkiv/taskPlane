@@ -10,6 +10,9 @@
   requirement links, artifact delivery, human input and exact normal finish.
   Implementation writes, sibling/worker release and active-delivery release
   remain refused. Native Codex reads use its existing read-only sandbox.
+- Resolve fresh native Codex sessions from their exact transcript identity when
+  their session-index entry has not yet been written. Reject abbreviated or
+  option-like literal arguments that could change Product control authority.
 - Show criterion-level Product DoR, Product DoD and implementation acceptance
   separately. Blank statements fail readiness; scores and approvals do not
   claim that required review or implementation evidence exists.

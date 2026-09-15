@@ -874,13 +874,14 @@ def _host_session_index(path: str, *, root: str) -> list[dict]:
 
 
 def _codex_session_paths(root: str, session_id: str) -> list[str]:
-    """Derive exact Codex rollout paths from one indexed UUIDv7 identity."""
+    """Derive exact Codex paths; fresh CLI sessions can precede their index."""
+    index_path = os.path.join(root, "session_index.jsonl")
     rows = [row for row in _host_session_index(os.path.join(
         root, "session_index.jsonl"), root=root)
-        if row.get("id") == session_id]
-    if len(rows) != 1:
+        if row.get("id") == session_id] if os.path.lexists(index_path) else []
+    if len(rows) > 1:
         raise HostTranscriptUnavailable(
-            "host session identity is missing or ambiguous in its index")
+            "host session identity is ambiguous in its index")
     match = re.fullmatch(
         r"([0-9a-fA-F]{8})-([0-9a-fA-F]{4})-7[0-9a-fA-F]{3}-"
         r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}", session_id)
@@ -897,17 +898,52 @@ def _codex_session_paths(root: str, session_id: str) -> list[str]:
     paths = []
     for instant in instants:
         stamp = instant.strftime("%Y-%m-%dT%H-%M-%S")
-        candidate = os.path.realpath(os.path.join(
+        exact_path = os.path.join(
             root, "sessions", instant.strftime("%Y"),
             instant.strftime("%m"), instant.strftime("%d"),
-            f"rollout-{stamp}-{session_id}.jsonl"))
+            f"rollout-{stamp}-{session_id}.jsonl")
+        candidate = os.path.realpath(exact_path)
+        if not rows and os.path.lexists(exact_path) and candidate != os.path.abspath(exact_path):
+            raise HostTranscriptUnavailable("fresh host transcript path traverses a symbolic link")
         try:
             if os.path.commonpath((root, candidate)) == root and \
                     os.path.isfile(candidate):
                 paths.append(candidate)
         except ValueError:
             continue
-    return sorted(set(paths))
+    paths = sorted(set(paths))
+    if not paths and not os.path.lexists(index_path):
+        raise HostTranscriptUnavailable("host session index is missing")
+    if not rows and len(paths) == 1:
+        # A fresh `codex exec` writes its canonical rollout before it adds a
+        # session-index row. Read only its bounded native identity header;
+        # never scan history or select a transcript from caller text.
+        try:
+            before_path = os.lstat(paths[0])
+            if not stat.S_ISREG(before_path.st_mode) or before_path.st_nlink != 1:
+                raise ValueError("host transcript is not one regular file")
+            expected = _session_index_binding(before_path)
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(paths[0], flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if _session_index_binding(info) != expected:
+                    raise ValueError("host transcript changed before identity resolution")
+                raw = stream.readline(128 * 1024 + 1)
+                if _session_index_binding(os.fstat(stream.fileno())) != expected \
+                        or _session_index_binding(os.lstat(paths[0])) != expected:
+                    raise ValueError("host transcript changed during identity resolution")
+            if len(raw) > 128 * 1024 or not raw.endswith(b"\n"):
+                raise ValueError("host identity header is incomplete or oversized")
+            metadata = json.loads(raw)
+            payload = metadata.get("payload")
+            if metadata.get("type") != "session_meta" or not isinstance(payload, dict) \
+                    or payload.get("id") != session_id:
+                raise ValueError("host identity header differs from the exact session")
+        except (OSError, ValueError, AttributeError) as exc:
+            raise HostTranscriptUnavailable("fresh host transcript identity is unavailable or mismatched") from exc
+    return paths
 
 
 def _claude_session_paths(root: str, session_id: str) -> list[str]:

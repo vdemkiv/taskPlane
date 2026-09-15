@@ -6,6 +6,8 @@ import hashlib
 import io
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -118,6 +120,23 @@ class TestHookPathManifests(unittest.TestCase):
 
     def test_external_linked_worktree_uses_primary_launcher_without_plugin_root(self):
         """Reproduce the Codex desktop topology from the field incident."""
+        environment = dict(os.environ)
+        # Setup and the real hook shell must use the same runnable Git. Some
+        # desktop test hosts adapt direct argv calls while an earlier PATH
+        # entry is an incompatible architecture in /bin/sh.
+        for directory in os.get_exec_path(environment):
+            executable = shutil.which("git", path=directory)
+            if not executable:
+                continue
+            command = (subprocess.list2cmdline([executable, "--version"])
+                       if os.name == "nt" else shlex.join([executable, "--version"]))
+            probe = subprocess.run(command, shell=True, capture_output=True,
+                                   env=environment)
+            if probe.returncode == 0:
+                environment["PATH"] = os.path.dirname(executable) + os.pathsep + environment.get("PATH", "")
+                break
+        else:
+            self.fail("linked-worktree hook fixture requires a shell-runnable Git executable")
         for relative, expected_path in (
                 ("hooks/hooks.json", "native"),
                 (".codex/hooks.json", "bridge")):
@@ -128,16 +147,16 @@ class TestHookPathManifests(unittest.TestCase):
                 linked = Path(parent, "codex-worktree")
                 primary.mkdir()
                 subprocess.run(["git", "init", "-q"], cwd=primary,
-                               check=True)
+                               check=True, env=environment)
                 subprocess.run([
                     "git", "-c", "user.name=Taskplane Test", "-c",
                     "user.email=taskplane@example.invalid", "commit", "-q",
                     "--allow-empty", "-m", "snapshot",
-                ], cwd=primary, check=True)
+                ], cwd=primary, check=True, env=environment)
                 subprocess.run([
                     "git", "worktree", "add", "-q", "--detach",
                     str(linked), "HEAD",
-                ], cwd=primary, check=True)
+                ], cwd=primary, check=True, env=environment)
                 Path(primary, ".taskplane").mkdir()
                 marker = Path(parent, "called.json")
                 Path(primary, ".taskplane", "codex-hook.py").write_text(
@@ -148,7 +167,7 @@ class TestHookPathManifests(unittest.TestCase):
                     "'path': os.environ.get('TASKPLANE_HOOK_PATH')}, f)\n",
                     encoding="utf-8")
                 manifest = self._manifest(relative)
-                environment = {**os.environ, "TP_MARKER": str(marker)}
+                environment = {**environment, "TP_MARKER": str(marker)}
                 environment.pop("PLUGIN_ROOT", None)
                 environment.pop("CLAUDE_PLUGIN_ROOT", None)
                 host = "codex" if expected_path == "bridge" else "claude"

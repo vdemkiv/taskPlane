@@ -56,7 +56,10 @@ def test_product_allows_documents_and_rejects_source_and_mixed_patch(product):
     ("req", "new", "A complete requirement; with punctuation", "--acceptance", "Reject $(unsafe) as data"),
     ("req", "score", "R-0001"), ("req", "show", "R-0001"),
     ("graph", "link", "--req", "R-0001", "--kind", "planned", "--files", "taskplane/tp.py"),
+    ("graph", "link", "--req", "R-0001", "--kind=planned", "--files", "taskplane/tp.py"),
     ("decision", "new", "proposed policy", "--status", "proposed"),
+    ("decision", "new", "proposed policy", "--status=proposed"),
+    ("decision", "new", "--status=proposed", "--", "--status=accepted"),
 ])
 def test_required_product_controls_are_admitted(product, args):
     assert screen(product, "exec_command", {"cmd": command(*args)})[0]
@@ -73,11 +76,46 @@ def test_required_product_controls_are_admitted(product, args):
     ("decision", "new", "new policy", "--status", "accepted"),
     ("decision", "new", "new policy", "--supersedes", "D-0001"),
     ("decision", "new", "new policy"),
+    ("decision", "new", "--", "--status=proposed"),
     ("graph", "impact", "--base=--output=src/app.py"),
     ("graph", "impact", "--ba=--output=src/app.py"),
 ])
 def test_product_control_does_not_widen_authority(product, args):
     assert not screen(product, "exec_command", {"cmd": command(*args)})[0]
+
+
+@pytest.mark.parametrize("args", [
+    ("graph", "link", "--req", "R-0001", "--files", "src/**", "--kind", "planned", "--ki", "realizes"),
+    ("graph", "link", "--req", "R-0001", "--files", "src/**", "--kind", "planned", "--ki=realizes"),
+    ("decision", "new", "policy", "--status", "proposed", "--st", "accepted"),
+    ("decision", "new", "policy", "--status", "proposed", "--st=accepted"),
+    ("decision", "new", "policy", "--status", "proposed", "--su", "0001"),
+    ("decision", "new", "policy", "--status", "proposed", "--su=0001"),
+])
+def test_product_control_rejects_abbreviated_authority_overrides(product, args):
+    # argparse accepts these spellings and the last value wins. A canonical
+    # planned/proposed value must not disguise a later authority override.
+    assert not screen(product, "exec_command", {"cmd": command(*args)})[0]
+
+
+@pytest.mark.parametrize("args, prefixes, values", [
+    (("graph", "link", "--req", "R-0001", "--files", "src/**", "--kind", "planned"),
+     ("--k", "--ki", "--kin"), ("planned", "realizes")),
+    (("decision", "new", "policy", "--status", "proposed"),
+     ("--s", "--st", "--sta", "--stat", "--statu"), ("proposed", "accepted")),
+    (("decision", "new", "policy", "--status", "proposed"),
+     ("--s", "--su", "--sup", "--supe", "--super", "--supers", "--superse", "--supersed", "--supersede"),
+     ("0001",)),
+    (("graph", "impact"), ("--b", "--ba", "--bas"), ("HEAD", "--output=src/app.py")),
+    (("req", "list"),
+     ("--w", "--wo", "--wor", "--work", "--works", "--worksp", "--workspa", "--workspac"),
+     (".", "/")),
+])
+def test_product_control_requires_canonical_protected_options(product, args, prefixes, values):
+    for prefix in prefixes:
+        for value in values:
+            for suffix in [(prefix, value), (prefix + "=" + value,)]:
+                assert not screen(product, "exec_command", {"cmd": command(*args, *suffix)})[0], suffix
 
 
 def test_product_control_rejects_shell_effects_and_checkout_interpreter(product):

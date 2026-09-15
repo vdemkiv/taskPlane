@@ -3,6 +3,7 @@
 import json
 import os
 import shlex
+import datetime
 
 import pytest
 
@@ -163,3 +164,102 @@ def test_missing_host_or_executable_is_explicitly_unsupported(native, monkeypatc
     monkeypatch.setenv("CODEX_THREAD_ID", "native-test")
     monkeypatch.setattr(host.shutil, "which", lambda _: None)
     assert host.codex_readonly_runtime(native) is None
+
+
+@pytest.fixture
+def fresh_cli(native, tmp_path, monkeypatch):
+    """Real CLI record shape; neither a host receipt nor execution proof."""
+    instant = datetime.datetime(2026, 9, 15, 2, 41, 20, tzinfo=datetime.timezone.utc)
+    prefix = f"{int(instant.timestamp() * 1000):012x}"
+    session_id = f"{prefix[:8]}-{prefix[8:]}-7000-8000-000000000001"
+    root = tmp_path / "codex-home"
+    root.mkdir()
+    monkeypatch.setattr(review, "_canonical_host_root", lambda _: str(root))
+    monkeypatch.setenv("CODEX_THREAD_ID", session_id)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+    local = instant.astimezone()
+    path = root / "sessions" / local.strftime("%Y/%m/%d") / (
+        "rollout-" + local.strftime("%Y-%m-%dT%H-%M-%S") + "-" + session_id + ".jsonl")
+    path.parent.mkdir(parents=True)
+    metadata = {"type": "session_meta", "payload": {
+        "id": session_id, "session_id": session_id, "source": "exec", "cwd": native}}
+    request = host.codex_readonly_command(["pwd"], native)
+    call = _call(request)
+    call["payload"]["input"] += "\n"  # Actual installed canary code-mode shape.
+    path.write_text(json.dumps(metadata) + "\n" + json.dumps(call) + "\n")
+    return root, path, metadata, call, request
+
+
+@pytest.mark.parametrize("index_exists", [False, True])
+def test_fresh_cli_read_resolves_exact_native_header_before_index_update(fresh_cli, native, index_exists):
+    root, _, _, _, request = fresh_cli
+    if index_exists:
+        (root / "session_index.jsonl").write_text('{"id":"some-other-session"}\n')
+    assert host.pending_codex_tool_call("exec_command") == request
+    assert host.is_codex_readonly_invocation("Bash", {"command": request["cmd"]}, native)
+
+
+@pytest.mark.parametrize("damage", ["foreign-id", "wrong-type", "missing-newline", "duplicate-index", "symlink"])
+def test_unindexed_cli_identity_conflicts_are_refused(fresh_cli, native, damage):
+    root, path, metadata, call, request = fresh_cli
+    if damage == "foreign-id":
+        metadata["payload"]["id"] = "other-session"
+    elif damage == "wrong-type":
+        metadata["type"] = "response_item"
+    elif damage == "duplicate-index":
+        (root / "session_index.jsonl").write_text(
+            (json.dumps({"id": metadata["payload"]["id"]}) + "\n") * 2)
+    path.write_text(json.dumps(metadata) + ("" if damage == "missing-newline" else
+                    "\n" + json.dumps(call) + "\n"))
+    if damage == "symlink":
+        actual = path.with_suffix(".actual")
+        path.rename(actual)
+        path.symlink_to(actual)
+    assert host.pending_codex_tool_call("exec_command") is None
+    assert not host.is_codex_readonly_invocation("Bash", {"command": request["cmd"]}, native)
+
+
+def test_two_exact_timezone_candidates_are_not_selected_by_recency(fresh_cli, monkeypatch):
+    root, path, metadata, call, _ = fresh_cli
+    real_datetime = datetime.datetime
+
+    class FixedLocalDateTime(real_datetime):
+        @classmethod
+        def fromtimestamp(cls, timestamp, tz=None):
+            value = real_datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+            return value.astimezone(tz) if tz is not None else (
+                value.replace(tzinfo=None) - datetime.timedelta(hours=4))
+
+    monkeypatch.setattr(review.datetime, "datetime", FixedLocalDateTime)
+    session_id = metadata["payload"]["id"]
+    for stamp in ("2026-09-14T22-41-20", "2026-09-15T02-41-20"):
+        candidate = root / "sessions" / stamp[:10].replace("-", "/") / (
+            "rollout-" + stamp + "-" + session_id + ".jsonl")
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_text(json.dumps(metadata) + "\n" + json.dumps(call) + "\n")
+    assert host.pending_codex_tool_call("exec_command") is None
+
+
+def test_fresh_cli_identity_works_without_optional_posix_open_flags(fresh_cli, monkeypatch):
+    _, _, _, _, request = fresh_cli
+    for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        monkeypatch.delattr(review.os, name, raising=False)
+    assert host.pending_codex_tool_call("exec_command") == request
+
+
+def test_fresh_cli_identity_refuses_replaced_path_without_posix_open_flags(fresh_cli, monkeypatch):
+    _, path, _, _, _ = fresh_cli
+    replacement = path.with_suffix(".replacement")
+    replacement.write_bytes(path.read_bytes())
+    original_open = review.os.open
+
+    def replace_after_open(selected, flags, *args, **kwargs):
+        descriptor = original_open(selected, flags, *args, **kwargs)
+        if selected == str(path):
+            os.replace(replacement, path)
+        return descriptor
+
+    for name in ("O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+        monkeypatch.delattr(review.os, name, raising=False)
+    monkeypatch.setattr(review.os, "open", replace_after_open)
+    assert host.pending_codex_tool_call("exec_command") is None

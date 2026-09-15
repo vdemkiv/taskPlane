@@ -1,5 +1,7 @@
 # Taskplane harness recovery: Product assessment
 
+Historical assessment or plan: see the [repeat Product review](harness-recovery-product-review-2026-09-14.md) for the implemented recovery and actual verification outcomes.
+
 Date: 2026-09-14 (America/New_York). Source baseline: `7fb20110aeb51d1a088ec3c8f257b641736996ee`. Installed engine: 2.24.0.
 
 **Recommendation, corrected after precise refactor review:** retain the active stateless runtime and intended retirements in `146104c`. The recommendation to restore pre-refactor `1c4b63e` is withdrawn: it retained the old loop by default, and the original task records serious harness failures before it. Repair the demonstrated Product capability/completion mismatch and assess later enforcement changes independently. See [the corrected reassessment](harness-refactor-reassessment-2026-09-14.md). Passing old tests and deletion counts do not establish the right product behavior or a safe recovery baseline.

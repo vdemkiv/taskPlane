@@ -1,5 +1,7 @@
 # Harness refactor: corrected assessment
 
+Historical assessment or plan: see the [repeat Product review](harness-recovery-product-review-2026-09-14.md) for the implemented recovery and actual verification outcomes.
+
 Date: September 14, 2026. Comparison: `1c4b63e7f2f0caecca5e6810c238ee598783f657` → `146104cc089872394bfa9db648635d06efd07577`, with the PR #22 integration snapshot and later 2.23.1 checked separately.
 
 ## Conclusion

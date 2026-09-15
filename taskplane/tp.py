@@ -3211,6 +3211,18 @@ _HUMAN_INPUT_TOOLS = frozenset({
 })
 
 
+def _product_option_abbreviation(args: list[str], *options: str) -> str | None:
+    """Protected control options must use the spelling checked at admission."""
+    for value in args:
+        if value == "--":
+            break
+        flag = value.split("=", 1)[0]
+        if flag.startswith("--") and any(option != flag and option.startswith(flag)
+                                          for option in options):
+            return flag
+    return None
+
+
 def _product_control_argv(command: str, workspace: str) -> list[str] | None:
     """One trusted engine command in this workspace; shell effects never qualify."""
     import shutil
@@ -3238,8 +3250,7 @@ def _product_control_argv(command: str, workspace: str) -> list[str] | None:
         return None
     args = args[2:]
     options = args[:args.index("--")] if "--" in args else args
-    if any(x.startswith("--") and x.split("=", 1)[0] != "--workspace"
-           and "--workspace".startswith(x.split("=", 1)[0]) for x in options):
+    if _product_option_abbreviation(options, "--workspace"):
         return None
     positions = [i for i, x in enumerate(options)
                  if x == "--workspace" or x.startswith("--workspace=")]
@@ -3341,31 +3352,36 @@ def _screen_contract_tool(contract: dict, tool_name: str, tool_input: dict,
             args = _product_control_argv(command, workspace)
             if (args and len(args) >= 2 and args[0] in _PRODUCT_CONTROLS
                     and args[1] in _PRODUCT_CONTROLS[args[0]]):
+                options = args[:args.index("--")] if "--" in args else args
                 if args[0] == "graph":
-                    for i, value in enumerate(args):
+                    if _product_option_abbreviation(options, "--base", "--kind"):
+                        return False, "Product graph controls require canonical --base and --kind option names."
+                    for i, value in enumerate(options):
                         flag = value.split("=", 1)[0]
-                        if flag.startswith("--") and "--base".startswith(flag):
+                        if flag == "--base":
                             base = (value.split("=", 1)[1] if "=" in value
-                                    else args[i + 1] if i + 1 < len(args) else "")
-                            if flag != "--base" or not base or base.startswith("-"):
+                                    else options[i + 1] if i + 1 < len(options) else "")
+                            if not base or base.startswith("-"):
                                 return False, "Product graph base must be a revision, not a Git option."
                 if args[:2] == ["graph", "link"]:
-                    kinds = [(args[i + 1] if i + 1 < len(args) else "") if value == "--kind"
+                    kinds = [(options[i + 1] if i + 1 < len(options) else "") if value == "--kind"
                              else value.split("=", 1)[1]
-                             for i, value in enumerate(args)
+                             for i, value in enumerate(options)
                              if value == "--kind" or value.startswith("--kind=")]
                     if kinds != ["planned"]:
                         return False, "Product graph links require explicit --kind planned; realization belongs to delivery."
                 if args[:2] == ["decision", "new"]:
+                    if _product_option_abbreviation(options, "--status", "--supersedes"):
+                        return False, "Product decision controls require canonical --status and --supersedes option names."
                     statuses = []
-                    for i, value in enumerate(args):
+                    for i, value in enumerate(options):
                         flag = value.split("=", 1)[0]
-                        if flag.startswith("--sup"):
+                        if flag == "--supersedes":
                             return False, "Product drafts do not supersede accepted decisions."
-                        if flag.startswith("--sta"):
+                        if flag == "--status":
                             status = (value.split("=", 1)[1] if "=" in value
-                                      else args[i + 1] if i + 1 < len(args) else "")
-                            if flag != "--status" or status != "proposed":
+                                      else options[i + 1] if i + 1 < len(options) else "")
+                            if status != "proposed":
                                 return False, "Product records proposed decisions; acceptance needs its human-owned boundary."
                             statuses.append(status)
                     if statuses != ["proposed"]:
