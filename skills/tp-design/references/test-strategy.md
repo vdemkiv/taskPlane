@@ -6,9 +6,12 @@ The top-level fields are closed: use exactly the fields in the example below.
 
 - `acceptance_criteria` is nonempty. Each row has a unique `id` and nonempty
   unique `selectors`. A selector belongs to exactly one criterion.
-- Selectors use exact pytest node syntax, including for unittest methods:
-  `test_feature.py::FeatureTests::test_behavior`. These are planned selectors;
+- Selectors use exact pytest node syntax. Function names start with `test_`;
+  class names must start with `Test`, including for unittest methods:
+  `test_feature.py::TestFeature::test_behavior`. These are planned selectors;
   the implementation may use standard-library unittest and remain dependency-free.
+  `stage prepare-lenses` validates the Design and strategy before allocating
+  review workers; correct any refusal before dispatching reviews or stopping.
 - `producers` is nonempty, with unique `id`, repository `path`, and bounded
   `slice`. Each producer lists nonempty unique `consumers` and `freshness_inputs`.
 - Each producer needs at least one `severed_edges` row with a named `consumer`,
@@ -39,7 +42,7 @@ claim of actual feature verification.
     {
       "id": "AC-1",
       "selectors": [
-        "test_feature.py::test_behavior"
+        "test_feature.py::TestFeature::test_behavior"
       ]
     }
   ],
@@ -55,7 +58,7 @@ claim of actual feature verification.
         {
           "consumer": "test_feature.py",
           "mutation": "Replace the producer result with an incorrect value; the selected test must fail.",
-          "selector": "test_feature.py::test_behavior"
+          "selector": "test_feature.py::TestFeature::test_behavior"
         }
       ],
       "interface_kind": "in-process",
@@ -65,7 +68,7 @@ claim of actual feature verification.
         "tests",
         "settings"
       ],
-      "fingerprint_sha256": "ec7c9b59471b062584d141fc303449a4df0e43f9bff7956e9e9a57e241dafd68"
+      "fingerprint_sha256": "9c9845f96cbf98472f0cdf8484a73f19bbd3166ba485075c15497c2fa7c69beb"
     }
   ],
   "failure_policy": {
@@ -105,7 +108,7 @@ claim of actual feature verification.
     "broad_local_default": "refuse",
     "authoritative_matrix_runs": 1
   },
-  "contract_fingerprint_sha256": "442af4f27903c5a567e18c6a2f220aeff519ce148448d2dce508aac4563bd62e"
+  "contract_fingerprint_sha256": "87813cc4bc114da9a315ea68f3cad4cbbbecd63c5b646bc3aa112623c65ed055"
 }
 ```
 

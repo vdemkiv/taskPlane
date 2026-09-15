@@ -618,7 +618,58 @@ def test_documented_test_strategy_example_is_accepted():
     from taskplane import stage_artifacts
     path = Path(loop.__file__).resolve().parents[1] / "skills/tp-design/references/test-strategy.md"
     example = path.read_text().split("```json\n", 1)[1].split("\n```", 1)[0]
-    stage_artifacts.validate("test-strategy", json.loads(example))
+    strategy = json.loads(example)
+    stage_artifacts.validate("test-strategy", strategy)
+    # The acceptance-map owner has stricter selector rules than the strategy
+    # shape validator. Exercise the documented example through both owners.
+    design = {
+        "schema": "taskplane.design/v1", "requirement": "R-0001",
+        "acceptance_map": [{"criterion": row["id"], "tests": row["selectors"]}
+                           for row in strategy["acceptance_criteria"]],
+        "test_strategy": strategy,
+    }
+    assert loop.validate_spec_phase_artifact(design) == design
+
+
+@pytest.mark.parametrize("damage", ["class-name", "strategy-fingerprint"])
+def test_design_draft_validation_precedes_review_leases(readable_design_input, damage):
+    ws, store, run_id, artifacts, action, inputs = readable_design_input
+    strategy = _strategy()
+    design = {
+        "schema": "taskplane.design/v1", "requirement": inputs["requirement"]["id"],
+        "acceptance_map": [{"criterion": row["id"], "tests": row["selectors"]}
+                           for row in strategy["acceptance_criteria"]],
+        "test_strategy": {"path": "design/test-strategy.json"},
+        "test_strategy_reference": {
+            "schema": "taskplane.design-test-strategy-reference/v1",
+            "path": "design/test-strategy.json",
+            "strategy_fingerprint": strategy["contract_fingerprint_sha256"],
+        },
+    }
+    folder = Path(ws) / "design"
+    folder.mkdir(exist_ok=True)
+    candidate = copy.deepcopy(design)
+    invalid_strategy = copy.deepcopy(strategy)
+    if damage == "class-name":
+        candidate["acceptance_map"][0]["tests"] = [
+            "test_feature.py::FeatureTests::test_behavior"]
+        message = "TestClass::test_method"
+    else:
+        invalid_strategy["contract_fingerprint_sha256"] = "0" * 64
+        message = "fingerprint"
+    (folder / "contract.json").write_text(json.dumps(candidate))
+    (folder / "test-strategy.json").write_text(json.dumps(invalid_strategy))
+    before = artifacts.references("lens-plan")
+    contracts = list(Path(loop.tp.active_contract_path(ws, "placeholder")).parent.glob("*.json"))
+    with pytest.raises(ValueError, match=message):
+        loop.phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    assert artifacts.references("lens-plan") == before
+    assert list(Path(loop.tp.active_contract_path(ws, "placeholder")).parent.glob("*.json")) == contracts
+    assert loop.load(ws)["step"] == "design"
+    (folder / "contract.json").write_text(json.dumps(design))
+    (folder / "test-strategy.json").write_text(json.dumps(strategy))
+    prepared = loop.phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    assert prepared["dispatch"]
 
 
 @pytest.fixture

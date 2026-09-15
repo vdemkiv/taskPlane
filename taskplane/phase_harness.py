@@ -592,6 +592,13 @@ def prepare_lenses(
     # specialist review. This is the collector's canonical closed schema.
     if "requirement" in candidates:
         stage_artifacts.validate("requirement", candidates["requirement"])
+    # Apply the same Design/strategy validation as output collection before
+    # allocating specialist leases. A structurally valid Design can still
+    # contain selectors that the canonical acceptance-map owner rejects.
+    for name in ("design", "test-strategy"):
+        if name in candidates:
+            stage_artifacts.validate(name, candidates[name])
+            runtime.validate_spec_phase_artifact(candidates[name])
 
     definition, store = context["definition"], context["artifacts"]
     requirement = worker_input["requirement"]
