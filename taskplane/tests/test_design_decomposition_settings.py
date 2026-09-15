@@ -300,3 +300,88 @@ def test_reused_requirement_id_does_not_activate_an_unrelated_architecture_map(
     assert proof["configured"] is False
     assert proof["status"] == "not-requested"
     assert proof["errors"] == []
+
+
+def test_design_accepts_root_document_context_and_binds_its_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "taskplane-home"))
+    workspace = _repository(tmp_path)
+    readme = workspace / "README.md"
+    readme.write_text("# Interval utility\n", encoding="utf-8")
+    (workspace / "intervals.py").write_text('"""Interval utility."""\n', encoding="utf-8")
+    subprocess.run(["git", "add", "README.md", "intervals.py"], cwd=workspace, check=True)
+    subprocess.run(["git", "commit", "-qm", "root fixture"], cwd=workspace, check=True)
+    settings = load_settings()
+
+    first = depgraph.prepare_design_decomposition(
+        str(workspace), ["intervals.py", "README.md"], settings_digest=settings.digest)
+
+    assert first["status"] == "ready"
+    assert first["context"]["expanded_files"] == ["README.md", "intervals.py"]
+    assert first["context"]["unmatched_patterns"] == []
+    assert first["selected_component_count"] == 1
+    assert first["components"][0]["files"] == ["intervals.py"]
+    graph = depgraph.load(str(workspace))
+    assert "README.md" not in graph["files"]
+    assert graph["context_files"]["README.md"] == hashlib.sha256(readme.read_bytes()).hexdigest()
+    depgraph.validate_design_decomposition_receipt(first)
+    artifacts = _artifact_root(tmp_path, first, settings.digest)
+    depgraph.publish_design_decomposition(str(workspace), artifacts, first)
+
+    # An unstaged document edit must invalidate freshness without inventing
+    # a code component or changing the committed source identity.
+    readme.write_text("# Updated interval utility\n", encoding="utf-8")
+    changed = depgraph.prepare_design_decomposition(
+        str(workspace), ["intervals.py", "README.md"], settings_digest=settings.digest)
+    assert changed["status"] == "ready"
+    assert changed["head"] == first["head"]
+    assert changed["components"] == first["components"]
+    assert changed["graph_fingerprint"] != first["graph_fingerprint"]
+    assert changed["fingerprint"] != first["fingerprint"]
+    with pytest.raises(ValueError, match="stale for the current workspace graph"):
+        depgraph.publish_design_decomposition(str(workspace), artifacts, first)
+    repeated = depgraph.prepare_design_decomposition(
+        str(workspace), ["README.md", "intervals.py"], settings_digest=settings.digest)
+    assert repeated == changed
+
+
+def test_design_root_document_glob_has_no_synthetic_component(tmp_path, monkeypatch):
+    monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "taskplane-home"))
+    workspace = _repository(tmp_path)
+    (workspace / "README.md").write_text("# Context\n", encoding="utf-8")
+    settings = load_settings()
+    receipt = depgraph.prepare_design_decomposition(
+        str(workspace), ["*.md"], settings_digest=settings.digest)
+    assert receipt["status"] == "ready"
+    assert receipt["context"]["expanded_files"] == ["README.md"]
+    assert receipt["selected_component_count"] == 0
+    assert "(root)" not in depgraph.load(str(workspace))["modules"]
+    default = depgraph.prepare_design_decomposition(
+        str(workspace), [], settings_digest=settings.digest)
+    assert "README.md" not in default["context"]["expanded_files"]
+
+
+@pytest.mark.parametrize("kind", ["missing", "deleted", "ignored", "excluded", "symlink"])
+def test_design_root_context_still_refuses_unavailable_files(tmp_path, monkeypatch, kind):
+    monkeypatch.setenv("TASKPLANE_HOME", str(tmp_path / "taskplane-home"))
+    workspace = _repository(tmp_path)
+    readme = workspace / "README.md"
+    if kind in {"deleted", "ignored", "excluded"}:
+        readme.write_text("# Context\n", encoding="utf-8")
+    if kind == "deleted":
+        subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-qm", "context"], cwd=workspace, check=True)
+        readme.unlink()
+    elif kind == "ignored":
+        (workspace / ".gitignore").write_text("README.md\n", encoding="utf-8")
+    elif kind == "excluded":
+        (workspace / "components.yaml").write_text("exclude:\n  - README.md\n", encoding="utf-8")
+    elif kind == "symlink":
+        outside = tmp_path / "outside.md"
+        outside.write_text("# Outside workspace\n", encoding="utf-8")
+        readme.symlink_to(outside)
+    receipt = depgraph.prepare_design_decomposition(
+        str(workspace), ["README.md", "src/app/renderer/**"],
+        settings_digest=load_settings().digest)
+    assert receipt["status"] == "degraded"
+    assert receipt["context"]["unmatched_patterns"] == ["README.md"]
+    assert "unmatched-context-patterns" in receipt["degraded_reasons"]

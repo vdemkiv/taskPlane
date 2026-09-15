@@ -37,6 +37,7 @@ import json
 import posixpath
 import os
 import re
+import stat
 import time
 
 import graph_decomposition
@@ -586,6 +587,8 @@ def _stamp_meta(ws: str, g: dict, *, scanned: bool = False) -> dict:
             )
         ),
     }
+    if g.get("context_files"):
+        graph_material["context_files"] = g["context_files"]
     meta = dict(g.get("meta") or {})
     meta.update(
         {
@@ -1170,7 +1173,11 @@ def prepare_design_decomposition(ws: str, context_files, *, settings_digest: str
     if not head_before or head_before == "unknown":
         raise ValueError("Design decomposition requires an exact git HEAD")
     graph = scan(ws, decompose=True)
-    files = sorted(_safe_graph_path(path) for path in (graph.get("files") or {}))
+    scanned_files = {_safe_graph_path(path) for path in (graph.get("files") or {})}
+    # Supporting root documents have no source component, but are still
+    # repository context. Their bytes are bound by the graph fingerprint.
+    context_files = {_safe_graph_path(path) for path in (graph.get("context_files") or {})}
+    files = sorted(scanned_files | context_files) if requested else sorted(scanned_files)
     if requested:
         expanded = sorted(
             {
@@ -1241,7 +1248,7 @@ def prepare_design_decomposition(ws: str, context_files, *, settings_digest: str
         degraded_reasons.append("scanned-head-mismatch")
     if requested and unmatched:
         degraded_reasons.append("unmatched-context-patterns")
-    if expanded and not projected:
+    if expanded_set.intersection(scanned_files) and not projected:
         degraded_reasons.append("expanded-files-have-no-components")
     if any(row["degraded"] for row in projected):
         degraded_reasons.append("selected-component-degraded")
@@ -2505,6 +2512,38 @@ def _unscanned_root_artifact(relpath: str) -> bool:
     return not posixpath.dirname(rel) and rel.endswith(ARTIFACT_EXT)
 
 
+def _root_context_files(ws: str, candidates) -> dict[str, str]:
+    """Hash eligible root documents without creating source modules.
+
+    Candidates already honor Git ignores and repository exclusions. Refuse
+    links and nonregular files so declared context cannot read outside the
+    repository or block on a special file. Unreadable files stay unmatched.
+    """
+    result = {}
+    for rel in sorted(candidates):
+        if not _unscanned_root_artifact(rel):
+            continue
+        full = os.path.join(ws, rel)
+        try:
+            before = os.lstat(full)
+            if not stat.S_ISREG(before.st_mode):
+                continue
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            with os.fdopen(os.open(full, flags), "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                if not stat.S_ISREG(opened.st_mode) or (
+                    before.st_dev, before.st_ino
+                ) != (opened.st_dev, opened.st_ino):
+                    continue
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                    digest.update(chunk)
+                result[rel] = digest.hexdigest()
+        except OSError:
+            continue
+    return result
+
+
 def _is_artifact(relpath: str) -> bool:
     """A non-code file that is itself product surface (D-0016).
 
@@ -3153,6 +3192,9 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
         "recorded": prev.get("recorded", []),
         "meta": meta,
     }
+    root_context = _root_context_files(ws, files)
+    if root_context:
+        g["context_files"] = root_context
     if architecture.get("complete"):
         for node in architecture["node_details"]:
             kind = node["kind"]

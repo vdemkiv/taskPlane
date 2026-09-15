@@ -30,6 +30,10 @@ records them. Concretely:
   artifacts directly to the orchestrator. Product, Design, and Plan each have
   a mechanical gate; their complete evidence is presented together for one
   consolidated pre-implementation authorization.
+- Design expands declared context against scanned source files and eligible
+  root documentation/configuration. Root documents retain content hashes in
+  the graph without creating synthetic code modules. Missing, ignored,
+  excluded, unreadable, and linked root documents remain unavailable context.
 - The loop's state lives in one place taskplane manages (the active store's
   `loop.json`),
   and every transition is a taskplane event. There is one audit log for the
