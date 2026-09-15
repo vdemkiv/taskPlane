@@ -1752,6 +1752,12 @@ A validation or authority failure changes neither stage.
 
 collect the exact lens plan saved in a phase startup
 
+The response retains the plan, collection and validation references, and also
+returns `collection_content` with the full collected results and any explicit
+gaps, plus `lens_dispositions` for all review decisions. Consume those fields
+before Stop. Current-review references are not initial phase input artifacts;
+they do not require an additional `read-artifact` call.
+
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |

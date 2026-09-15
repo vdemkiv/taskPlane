@@ -41,6 +41,27 @@ def test_invalid_candidate_creates_no_specialist_leases(tmp_path, monkeypatch):
     assert stage_artifacts.requirement_shape() in inputs["instruction"]
 
 
+def test_current_lens_collection_delivers_complete_results(tmp_path, monkeypatch):
+    from taskplane.tests.phase_fixture import write_lens_results
+    ws, _, _, action, _, _ = product(tmp_path, monkeypatch)
+    envelope = action["stage_runtime_dispatch"]
+    artifacts = review_evidence.ArtifactStore(ws)
+    prepared = phase_harness.collect_lenses(loop, ws, envelope, prepare=True)
+    write_lens_results(artifacts, prepared["plan"])
+
+    collected = phase_harness.collect_lenses(loop, ws, envelope)
+
+    assert collected["status"] == "complete"
+    assert collected["collection_content"] == artifacts.read(collected["collection"])
+    assert collected["collection_content"]["results"]
+    assert collected["lens_dispositions"] == artifacts.read(prepared["plan"])["decision"]
+    assert len(collected["lens_dispositions"]) == 26
+    # Delivering new review results must not widen the initial input reader.
+    with pytest.raises(ValueError, match="not selected"):
+        phase_harness.read_artifact(loop, ws, {
+            "stage_runtime_dispatch": envelope, "references": [collected["collection"]]})
+
+
 def test_stopped_invalid_candidate_requires_a_fresh_authorized_attempt(tmp_path, monkeypatch):
     ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
     path = Path(ws) / "specs/requirement.json"

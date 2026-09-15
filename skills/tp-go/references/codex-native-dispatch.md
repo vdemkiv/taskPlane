@@ -23,13 +23,18 @@ ambient knowledge, or an unrelated Design.
    those inputs and files permitted by the scoped contract.
    To read a selected artifact, call `$TP stage read-artifact --request -`
    with `{"stage_runtime_dispatch": <the same unchanged envelope>,
-   "references": [<exact reference from the verified input>]}`. The response
+   "references": [<exact reference returned by read-input>]}`. The response
    contains `reference`, `projection`, and `content`. For inherited lens
    evidence, first read its manifest, then use a two-reference chain containing
    that manifest reference and its exact `collection`, `plan`, or validation
    reference. Collections retain full findings. Plan reads return all lens
    dispositions and rationale with `projection= lens-plan-evidence`; they omit
    predecessor execution packets. Never reconstruct a physical artifact path.
+   The startup's root-input capsule is resolved by `read-input`; it is not a
+   separately readable phase artifact. For the current phase's reviews,
+   `stage collect-lenses` returns `collection_content` (complete findings or
+   explicit gaps) and `lens_dispositions` directly. Consume those fields before
+   Stop; their newly created references are not part of the initial input.
 3. Independent wave entries use the same envelope and verification protocol.
    Each write-capable worker uses its own registered checkout and contract slot.
 4. Follow the emitted wait policy for the outstanding set. Collect every result

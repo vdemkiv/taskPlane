@@ -815,7 +815,12 @@ def collect_lenses(
             "dispatch": bound["slots"],
             "wait_invocation": bound.get("wait_invocation"),
         }
-    return review.collect_lens_plan(context["artifacts"], plan)
+    collected = review.collect_lens_plan(context["artifacts"], plan)
+    return {
+        **collected,
+        "collection_content": context["artifacts"].read(collected["collection"]),
+        "lens_dispositions": context["artifacts"].read(plan)["decision"],
+    }
 
 
 def lens_evidence(store: Any, material: dict[str, Any]) -> dict[str, Any]:
@@ -2490,7 +2495,9 @@ def _phase_bridge_prepare(
         worker_input["instruction"] += (
             " After authoring the draft, call tp stage prepare-lenses with this same startup "
             "request. Dispatch each returned brief once as an isolated tp-lens worker. "
-            "Wait, then call tp stage collect-lenses with that startup and consume the full "
+            "Wait, then call tp stage collect-lenses with that startup and consume its full "
+            "collection_content and lens_dispositions directly; these current-review references "
+            "are not initial input artifacts for read-artifact. Consume the full "
             "collection, including findings, notes and coverage. Changed drafts require a "
             "fresh candidate-bound plan; never reuse stale results. Empty dispatch lists "
             "start no workers. Consume every inherited lens-evidence collection by reference. "
