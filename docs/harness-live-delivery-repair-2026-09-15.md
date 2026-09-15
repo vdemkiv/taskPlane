@@ -29,3 +29,9 @@ A read-only recheck against the original authenticated Stop selects native ordin
 ## Native rerun
 
 A new disposable fixture is prepared at `/private/tmp/taskplane-live-repair-20260915-01a0a595`, baseline `9472ffc795d4048a6dd977fb69fc65bded0415a2`, with a fresh R-0001 containing separate acceptance criteria. No original failure state is copied. Native rerun and package verification are pending at this report revision.
+
+## First repaired native run
+
+Run `a9d2a031217040a6959d8db6ff1e0703`, native orchestrator `01a0a5ea-105a-75e1-be16-e839a7680bbc`, used installed build `2.23.1+codex.20260915163151`. Product and three specialists ran. The real terminal was retained and the budget refusal was correctly identified as `phase_token_budget_exhausted`. Whole-run interruption left zero active worker contracts immediately.
+
+The rerun exposed a second layer of the specialist-route defect: expected task/model/reasoning matched, but the host-protected prompt could not satisfy the role-marker check. Review activation now retains its original signed action, and dispatch verifies that action through the same signature/freshness/workspace checker used by activation. It requires the exact lease, role, worker, slot and read-only output scope. Unsigned, foreign, altered-output and corrupt-signature cases are rejected. The focused role/lifecycle/compatibility suites pass: 79 tests. No field in the first repaired run is retroactively changed.

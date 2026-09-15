@@ -4342,27 +4342,8 @@ def issue_review_contract_action(
     return action
 
 
-def activate_review_contract_action(
-    workspace: str,
-    action: dict,
-    *,
-    run_id: str,
-    task_id: str,
-    role_marker: str,
-    worker_identity: str,
-    action_id: str,
-    lens_ids: list[str],
-    target_fingerprint: str,
-    lease_fingerprint: str,
-    canonical_revision: int,
-    now: int | None = None,
-) -> dict:
-    """Verify one signed action and derive its exact read-only slot.
-
-    Verification completes before any active file is opened or written.  The
-    resulting slot is a replaceable enforcement/cache projection and confers
-    no authority beyond the signed lease action.
-    """
+def _verify_review_action_authority(workspace: str, action: dict, *, now: int | None = None) -> dict:
+    """One signature, workspace and freshness check for activation and native dispatch."""
     if (
         not isinstance(action, dict)
         or set(action) != _REVIEW_ACTION_FIELDS
@@ -4384,6 +4365,31 @@ def activate_review_contract_action(
         raise _review_bootstrap_error(workspace, "review action is stale or expired")
     if action.get("workspace_fingerprint") != _workspace_identity_fingerprint(workspace):
         raise _review_bootstrap_error(workspace, "review action belongs to another workspace")
+    return authority
+
+
+def activate_review_contract_action(
+    workspace: str,
+    action: dict,
+    *,
+    run_id: str,
+    task_id: str,
+    role_marker: str,
+    worker_identity: str,
+    action_id: str,
+    lens_ids: list[str],
+    target_fingerprint: str,
+    lease_fingerprint: str,
+    canonical_revision: int,
+    now: int | None = None,
+) -> dict:
+    """Verify one signed action and derive its exact read-only slot.
+
+    Verification completes before any active file is opened or written.  The
+    resulting slot is a replaceable enforcement/cache projection and confers
+    no authority beyond the signed lease action.
+    """
+    authority = _verify_review_action_authority(workspace, action, now=now)
     expected = {
         "run_id": str(run_id),
         "task_id": str(task_id),
@@ -4443,6 +4449,7 @@ def activate_review_contract_action(
             "bootstrap_key_id": authority["key_id"],
             "bootstrap_worker_identity": str(worker_identity),
             "bootstrap_lease_fingerprint": str(lease_fingerprint),
+            "bootstrap_action": json.loads(json.dumps(action)),
         }
     )
     return activate(workspace, contract, snapshot="auto", task_slot_override=slot)
@@ -5457,6 +5464,34 @@ def bind_worker_contract_event(workspace: str, event: dict, *, now: int | None =
         return _bind_worker_contract_slot(workspace, slot, owner, now=now)
 
 
+def _native_review_role_matches(workspace: str, expected: dict, task_name: str) -> bool:
+    """Verify a protected prompt against its existing signed review activation."""
+    lease_id = str(expected.get("ref") or "")
+    if expected.get("agent") != "tp-lens" or not re.fullmatch(r"[0-9a-f]{64}", lease_id):
+        return False
+    slot = "review-" + lease_id[:20]
+    contract = load_json(active_contract_path(workspace, slot), default=None)
+    if not isinstance(contract, dict) or not isinstance(contract.get("bootstrap_action"), dict):
+        return False
+    action = contract["bootstrap_action"]
+    _verify_review_action_authority(workspace, action)
+    producer = action["producer_contract"]
+    return (
+        action["worker_identity"] == task_name == contract.get("bootstrap_worker_identity")
+        and action["role_marker"] == expected["role_marker"]
+        and action["lease_identity"]["lease_fingerprint"] == lease_id
+        and contract.get("bootstrap_lease_fingerprint") == lease_id
+        and contract.get("authority_source") == "signed_action"
+        and contract.get("bootstrap_action_id") == action["action_id"]
+        and contract.get("task_slot") == producer["task_slot"] == slot
+        and contract.get("task_id") == "review_action_"
+            + hashlib.sha256(action["action_id"].encode("utf-8")).hexdigest()[:16]
+        and contract.get("read_only") is True and producer["read_only"] is True
+        and contract.get("write_allow") == producer["write_allow"] == [action["result_path"]]
+        and _leased_review_result_path(workspace, action["result_path"], lease_id)
+    )
+
+
 def native_worker_role_matches(workspace: str, expected: dict, task_name: str) -> bool:
     """Authenticate a native role when the host does not expose prompt text.
 
@@ -5469,6 +5504,8 @@ def native_worker_role_matches(workspace: str, expected: dict, task_name: str) -
     marker = role_marker(str(expected.get("agent") or ""))
     if expected.get("role_marker") != marker:
         return False
+    if expected.get("kind") == "lens":
+        return _native_review_role_matches(workspace, expected, task_name)
     matches = [
         (slot, contract)
         for slot, contract in _active_worker_contracts(workspace)

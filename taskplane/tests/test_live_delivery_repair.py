@@ -112,11 +112,15 @@ def test_lens_dispatch_has_exact_idempotent_native_expectations(tmp_path, monkey
     monkeypatch.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
     for slot in result["dispatch"]:
         role = artifacts.read(slot["brief"])["role"]
+        boot = slot["contract_bootstrap"]
+        with monkeypatch.context() as worker:
+            worker.setenv("TASKPLANE_TASK", boot["task_slot"])
+            loop.tp.activate_review_contract_action(ws, boot["action"], **boot["expected"])
         expected = loop.tp.peek_expectation(ws, role["task_name"])
         assert expected["ref"] == artifacts.read(slot["lease"])["lease_fingerprint"]
         event = {"cwd": ws, "tool_name": "spawn_agent", "tool_input": {
             "task_name": role["task_name"], "reasoning_effort": role["reasoning_effort"],
-            "fork_turns": "none", "message": role["role_marker"]}}
+            "fork_turns": "none", "message": "host-protected-prompt"}}
         monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
         assert cli.cmd_screen_dispatch(SimpleNamespace()) == 0
         output = capsys.readouterr().out
@@ -125,3 +129,27 @@ def test_lens_dispatch_has_exact_idempotent_native_expectations(tmp_path, monkey
     phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
     assert all(loop.tp.peek_expectation(ws, artifacts.read(slot["brief"])["role"]["task_name"])
         is None for slot in result["dispatch"])
+
+
+@pytest.mark.parametrize("damage", ["missing-action", "foreign-worker", "wider-output", "bad-signature"])
+def test_protected_lens_role_requires_exact_signed_activation(tmp_path, monkeypatch, damage):
+    ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
+    result = phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    slot = result["dispatch"][0]
+    boot = slot["contract_bootstrap"]
+    with monkeypatch.context() as worker:
+        worker.setenv("TASKPLANE_TASK", boot["task_slot"])
+        contract = loop.tp.activate_review_contract_action(ws, boot["action"], **boot["expected"])
+    name = boot["expected"]["worker_identity"]
+    expected = loop.tp.peek_expectation(ws, name)
+    assert loop.tp.native_worker_role_matches(ws, expected, name)
+    if damage == "missing-action": contract.pop("bootstrap_action")
+    if damage == "foreign-worker": contract["bootstrap_worker_identity"] = "foreign"
+    if damage == "wider-output": contract["write_allow"] = ["**"]
+    if damage == "bad-signature": contract["bootstrap_action"]["signature"] = "0" * 64
+    loop.tp.atomic_write_json(loop.tp.active_contract_path(ws, boot["task_slot"]), contract)
+    if damage == "bad-signature":
+        with pytest.raises(loop.tp.StateError, match="signature is invalid"):
+            loop.tp.native_worker_role_matches(ws, expected, name)
+    else:
+        assert not loop.tp.native_worker_role_matches(ws, expected, name)
