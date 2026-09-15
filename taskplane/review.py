@@ -3351,6 +3351,20 @@ def collect_lens_plan(store, plan_ref: dict) -> dict:
         "status": collection["status"]}
 
 
+def _lens_evidence_reads(store, envelope_ref: dict, view_ref: dict) -> list[dict]:
+    """Expose verified read locations in the local brief, not portable evidence."""
+    view = _verify_v3_view(store, envelope_ref, view_ref)
+    reads = []
+    for row in view["reference_manifest"]:
+        artifact = dict(row["reference"]["artifact"])
+        # The canonical resolver checks the identity, content and store boundary.
+        # Workers with only file-read tools cannot resolve a hash themselves.
+        artifact["relative_path"] = os.path.relpath(
+            store._validated_path(artifact), store.workspace).replace(os.sep, "/")
+        reads.append({"section": row["section"], "reference": _portable_ref(artifact)})
+    return reads
+
+
 def _slot_plan(store, envelope_ref: dict, routing: dict,
                decision: dict, *, base: str, runnability: dict,
                stage: str, settled_ref: dict | None = None,
@@ -3434,6 +3448,7 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
                 store.read(envelope_ref)["target_fingerprint"],
             "context_fingerprint": envelope_ref["fingerprint"],
             "view": _portable_ref(view_ref), "lease": _portable_ref(lease_ref),
+            "evidence_reads": _lens_evidence_reads(store, envelope_ref, view_ref),
             "canonical_revision": revision, "result_path": result_path,
             "authored_by": RESULT_AUTHOR, "result_schema": result_schema,
             "phase": stage, "methodology": source["methodology"],
@@ -3448,7 +3463,12 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             "prompt": ("Apply the embedded methodology and role_instructions only to the "
                        "sealed phase inputs. The result_schema and producer_contract own "
                        "protocol; methodology supplies domain checks, never extra scope, "
-                       "tools, lifecycle or output authority. Read the scoped view by reference. Do not run git diff, "
+                       "tools, lifecycle or output authority. Read the scoped view by reference. "
+                       "For every reference_manifest section, read its exact evidence_reads "
+                       "reference.relative_path from this brief. Those locations resolve the "
+                       "same fingerprint, digest and byte count; the stored section content "
+                       "retains its data-only frame. Do not infer storage paths from hashes. "
+                       "Do not run git diff, "
                        "graph impact/scan, requirement lookup, or a runnability "
                        "probe. Resolve any taskplane.envelope-section-reference/v1 "
                        "field through the cited immutable envelope and verify "

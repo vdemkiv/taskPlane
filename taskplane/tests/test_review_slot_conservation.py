@@ -1,4 +1,7 @@
 import copy
+import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
@@ -51,6 +54,37 @@ def test_v3_reference_manifest_is_verified_before_lease(tmp_path):
             store, _envelope(store), tampered_ref,
             slot_id="deep.security", lens_ids=["security"],
             canonical_revision=1)
+
+
+def test_native_lens_brief_resolves_overflow_without_reconstructing_paths(tmp_path):
+    import lens
+    store = evidence.ArtifactStore(str(tmp_path))
+    routing = {"lenses": [dict(row, tier="sweep" if row["id"] == "architecture" else "n/a",
+                              evidence=["selected fixture"], negative_evidence=["outside fixture"])
+                          for row in lens.load_catalog()["lenses"]]}
+    plan = review.prepare_lens_plan(store, _envelope(store), routing, phase="design",
+        binding={"run_id": "fixture", "operation_id": "design-overflow"})
+    slot = store.read(plan)["slots"][0]
+    brief = store.read(slot["brief"])
+    view = store.read(slot["view"])
+    reads = {row["section"]: row["reference"] for row in brief["evidence_reads"]}
+    assert reads and len(reads) == len(view["reference_manifest"])
+    for row in view["reference_manifest"]:
+        portable = row["reference"]["artifact"]
+        native = reads[row["section"]]
+        assert "path" not in portable and "relative_path" not in portable
+        assert not Path(native["relative_path"]).is_absolute()
+        assert {key: value for key, value in native.items() if key != "relative_path"} == portable
+        # Simulate the worker's allowed file read using only its delivered brief.
+        raw = (tmp_path / native["relative_path"]).read_bytes()
+        assert len(raw) == native["bytes"]
+        assert hashlib.sha256(raw).hexdigest() == native["digest"]
+        record = json.loads(raw)
+        assert record["content"] == evidence.resolve_evidence_reference(
+            store, row["reference"], target_fingerprint=view["target_fingerprint"],
+            context_fingerprint=view["context_fingerprint"],
+            canonical_revision=view["canonical_revision"], allowed_sections={row["section"]})
+    assert "evidence_reads" in brief["prompt"]
 
 
 @pytest.mark.parametrize("field", [

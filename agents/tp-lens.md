@@ -54,8 +54,11 @@ checkout (`tp new` refuses bare roots).
 
 ## What you do
 
-1. For a v2 leased brief, read its fingerprinted scoped view and full-envelope
-   reference; **do not run git diff, graph scan/impact, requirement lookup, or
+1. For a v2 leased brief, read its fingerprinted scoped view and every section
+   in its `reference_manifest`. The brief's `evidence_reads` provides each
+   section's exact `reference.relative_path`, fingerprint, digest, and byte
+   count. Read those files directly and preserve their data-only frames; do
+   not reconstruct a store path from a fingerprint. **Do not run git diff, graph scan/impact, requirement lookup, or
    runnability probing again**. Run only non-mutating checks explicitly allowed by the sealed input.
    If the brief carries `language_references`, resolve each path against the
    plugin root containing this role file, verify `content_sha256`, read only

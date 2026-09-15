@@ -126,6 +126,81 @@ def test_terminal_cleanup_cannot_release_a_worker_without_its_stop(tmp_path, mon
     assert not loop.load(ws).get("terminal_cleanup")
 
 
+@pytest.mark.parametrize("expired", [False, True])
+def test_interruption_revokes_unsubmitted_review_permissions_immediately(tmp_path, monkeypatch, expired):
+    ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
+    prepared = phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    activations = []
+    for slot in prepared["dispatch"]:
+        boot = slot["contract_bootstrap"]
+        signed = boot["action"]
+        if expired:
+            signed = loop.tp.issue_review_contract_action(ws,
+                **{key: signed[key] for key in ["run_id", "task_id", "role_marker",
+                    "worker_identity", "action_id", "producer_contract", "result_path"]},
+                lease=signed["lease_identity"], now=1, ttl_seconds=30)
+        with monkeypatch.context() as worker:
+            worker.setenv("TASKPLANE_TASK", boot["task_slot"])
+            contract = loop.tp.activate_review_contract_action(ws, signed, **boot["expected"],
+                **({"now": 2} if expired else {}))
+        activations.append((boot, signed, Path(loop.tp.active_contract_path(ws, contract["task_slot"]))))
+    assert all(path.exists() for _, _, path in activations)
+    sample = activations[0][1]
+    foreign_slot = "review-other-run"
+    foreign_result = str(Path(sample["result_path"]).with_name("f" * 64 + ".json"))
+    foreign = loop.tp.issue_review_contract_action(ws, run_id="another-run", task_id="other",
+        role_marker="taskplane-role:tp-lens", worker_identity="tp_lens_other",
+        action_id="another-review-action", lease={**sample["lease_identity"], "lease_fingerprint": "f" * 64},
+        producer_contract={"task": "unrelated review", "task_slot": foreign_slot,
+                           "read_only": True, "write_allow": [foreign_result]}, result_path=foreign_result)
+    with monkeypatch.context() as worker:
+        worker.setenv("TASKPLANE_TASK", foreign_slot)
+        loop.tp.activate_review_contract_action(ws, foreign, run_id="another-run", task_id="other",
+            role_marker=foreign["role_marker"], worker_identity=foreign["worker_identity"],
+            action_id=foreign["action_id"], lens_ids=foreign["lease_identity"]["lens_ids"],
+            target_fingerprint=foreign["lease_identity"]["target_fingerprint"],
+            lease_fingerprint="f" * 64, canonical_revision=foreign["lease_identity"]["canonical_revision"])
+    foreign_path = Path(loop.tp.active_contract_path(ws, foreign_slot))
+    foreign_bytes = foreign_path.read_bytes()
+    # No reviewer result or fabricated native lifecycle is needed to revoke
+    # an unlaunched read-only capability on authorized whole-run interruption.
+    _emit_host_hook(ws, action, "SubagentStop", monkeypatch, omit_lens_results=True)
+    result = loop.terminalize_run(ws, "interruption", by="human:simulated")
+    assert not result.get("error"), result
+    assert all(not path.exists() for _, _, path in activations)
+    assert foreign_path.read_bytes() == foreign_bytes
+    revocations = [row for row in result["worker_releases"]
+                   if row.get("schema") == "taskplane.review-worker-revocation/v1"]
+    assert len(revocations) == len(activations)
+    assert all(row["native_completion_claimed"] is False for row in revocations)
+    assert result["terminal_cleanup"]["cleanup_status"] == "clean"
+    boot, signed, path = activations[0]
+    with monkeypatch.context() as worker:
+        worker.setenv("TASKPLANE_TASK", boot["task_slot"])
+        with pytest.raises(loop.tp.StateError, match="closing run"):
+            loop.tp.activate_review_contract_action(ws, signed, **boot["expected"],
+                **({"now": 2} if expired else {}))
+    assert not path.exists()
+    assert loop.terminalize_run(ws, "interruption", by="human:simulated")["fingerprint"] == result["fingerprint"]
+
+
+def test_interruption_refuses_tampered_review_authority(tmp_path, monkeypatch):
+    ws, _, _, action, _, _ = product(tmp_path, monkeypatch)
+    prepared = phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    boot = prepared["dispatch"][0]["contract_bootstrap"]
+    with monkeypatch.context() as worker:
+        worker.setenv("TASKPLANE_TASK", boot["task_slot"])
+        contract = loop.tp.activate_review_contract_action(ws, boot["action"], **boot["expected"])
+    contract["bootstrap_action"]["signature"] = "0" * 64
+    path = Path(loop.tp.active_contract_path(ws, boot["task_slot"]))
+    loop.tp.atomic_write_json(str(path), contract)
+    _emit_host_hook(ws, action, "SubagentStop", monkeypatch, omit_lens_results=True)
+    result = loop.terminalize_run(ws, "interruption", by="human:simulated")
+    assert "signature is invalid" in result["error"]
+    assert path.exists()
+    assert not loop.load(ws).get("terminal_cleanup")
+
+
 def test_lens_dispatch_has_exact_idempotent_native_expectations(tmp_path, monkeypatch, capsys):
     ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
     result = phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)

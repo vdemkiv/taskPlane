@@ -4342,7 +4342,9 @@ def issue_review_contract_action(
     return action
 
 
-def _verify_review_action_authority(workspace: str, action: dict, *, now: int | None = None) -> dict:
+def _verify_review_action_authority(
+    workspace: str, action: dict, *, now: int | None = None, for_revocation: bool = False
+) -> dict:
     """One signature, workspace and freshness check for activation and native dispatch."""
     if (
         not isinstance(action, dict)
@@ -4361,11 +4363,50 @@ def _verify_review_action_authority(workspace: str, action: dict, *, now: int | 
         expires_at = int(action["expires_at"])
     except (TypeError, ValueError) as exc:
         raise _review_bootstrap_error(workspace, "review action time bounds are malformed") from exc
-    if issued_at > current or expires_at < current or expires_at <= issued_at:
+    if issued_at > current or expires_at <= issued_at or (
+        expires_at < current and not for_revocation
+    ):
         raise _review_bootstrap_error(workspace, "review action is stale or expired")
     if action.get("workspace_fingerprint") != _workspace_identity_fingerprint(workspace):
         raise _review_bootstrap_error(workspace, "review action belongs to another workspace")
+    if not for_revocation:
+        # A durable whole-run terminal intent revokes outstanding review
+        # activation, including actions whose child was never dispatched.
+        from taskplane import loop
+
+        state = loop.load(workspace)
+        if state and state.get("run_id") == action["run_id"]:
+            closing = bool(state.get("whole_run_terminal") or state.get("terminal_outcome"))
+            if isinstance(state.get("run_artifact_binding"), dict):
+                intent_path, _ = loop._whole_run_terminal_paths(workspace, state)
+                closing = closing or os.path.exists(intent_path)
+            if closing:
+                raise _review_bootstrap_error(workspace, "review action belongs to a closing run")
     return authority
+
+
+def verify_review_contract_for_revocation(workspace: str, slot: str, contract: dict) -> dict:
+    """Verify historical read-only authority without renewing an expired action."""
+    action = contract.get("bootstrap_action")
+    _verify_review_action_authority(workspace, action, for_revocation=True)
+    producer = action["producer_contract"]
+    lease_id = action["lease_identity"]["lease_fingerprint"]
+    if not (
+        contract.get("authority_source") == "signed_action"
+        and contract.get("bootstrap_action_id") == action["action_id"]
+        and contract.get("bootstrap_key_id") == action["key_id"]
+        and contract.get("bootstrap_worker_identity") == action["worker_identity"]
+        and contract.get("bootstrap_lease_fingerprint") == lease_id
+        and contract.get("task_slot") == producer["task_slot"] == slot
+        and contract.get("task") == producer["task"]
+        and contract.get("task_id") == "review_action_"
+            + hashlib.sha256(action["action_id"].encode("utf-8")).hexdigest()[:16]
+        and contract.get("read_only") is True and producer["read_only"] is True
+        and contract.get("write_allow") == producer["write_allow"] == [action["result_path"]]
+        and _leased_review_result_path(workspace, action["result_path"], lease_id)
+    ):
+        raise _review_bootstrap_error(workspace, "review revocation contract differs from signed action")
+    return action
 
 
 def activate_review_contract_action(

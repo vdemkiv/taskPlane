@@ -8076,7 +8076,18 @@ def _retire_terminal_run_workers(ws: str, intent: Mapping[str, object]) -> list[
     from taskplane import review_evidence
 
     selected = []
-    for slot, contract in tp._active_worker_contracts(ws):
+    reviews = []
+    # Review capabilities predate worker_scoped lifecycle slots, so the
+    # phase-only iterator intentionally omits them.
+    for slot in tp.list_task_slots(ws):
+        contract = tp.load_json(tp.active_contract_path(ws, slot), what="terminal worker contract")
+        if not isinstance(contract, dict):
+            continue
+        review_action = contract.get("bootstrap_action") or {}
+        if review_action.get("run_id") == intent["run_id"]:
+            tp.verify_review_contract_for_revocation(ws, slot, contract)
+            reviews.append((slot, contract))
+            continue
         requested = contract.get("phase_runtime") or {}
         if requested.get("run_id") != intent["run_id"]:
             continue
@@ -8095,6 +8106,29 @@ def _retire_terminal_run_workers(ws: str, intent: Mapping[str, object]) -> list[
                 raise ValueError("stop the exact active worker before terminal cleanup")
         selected.append((slot, contract))
     releases = []
+    for slot, contract in reviews:
+        path = tp.active_contract_path(ws, slot)
+        with tp.file_lock(path):
+            if tp.load_json(path, default=None) != contract:
+                raise ValueError("terminal review contract changed during cleanup")
+            action = tp.verify_review_contract_for_revocation(ws, slot, contract)
+            # Revoke a read-only review capability, whether dispatched or merely
+            # prepared. This never fabricates a native Stop or a passing result.
+            revoked = {
+                "schema": "taskplane.review-worker-revocation/v1",
+                "run_id": intent["run_id"], "task_slot": slot,
+                "action_id": action["action_id"],
+                "lease_fingerprint": action["lease_identity"]["lease_fingerprint"],
+                "worker_identity": action["worker_identity"],
+                "outcome": intent["outcome"], "terminal_intent": intent["fingerprint"],
+                "native_completion_claimed": False,
+            }
+            tp.safe_remove(path)
+            snapshot = os.path.join(tp.tp_dir(ws), "active", slot + ".snapshot")
+            if os.path.exists(snapshot):
+                tp.safe_remove(snapshot)
+            tp.trace(ws, "terminal_review_contract_revoked", revocation=revoked)
+            releases.append(revoked)
     for slot, contract in selected:
         with tp.file_lock(tp.active_contract_path(ws, slot)):
             if tp.load_json(tp.active_contract_path(ws, slot), default=None) != contract:
