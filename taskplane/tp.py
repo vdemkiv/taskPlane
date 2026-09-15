@@ -10049,6 +10049,17 @@ def _unbound_global_hook(argv=None) -> bool:
 
 def main(argv=None) -> int:
     _utf8_streams()
+    # Delivery owns advancement. Intercept legacy workspace launchers before
+    # any contract, settings, identity receipt or compatibility gate is read.
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "flow":
+        from taskplane import flow
+
+        return flow.main(args[1:])
+    if args and args[0] in _LIFECYCLE_HOOK_COMMANDS:
+        from taskplane import flow
+
+        return flow.run_hook(args[0])
     # Plugin hooks are registered globally by the host.  They must be inert
     # until the workspace has been explicitly onboarded with its local
     # launcher; otherwise SessionStart contaminates unrelated Codex chats.

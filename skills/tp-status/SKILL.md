@@ -1,15 +1,17 @@
 ---
 name: tp-status
-description: "Use when the user asks where things stand with taskplane-governed work: 'status', 'where are we', 'what's the state of the loop/track/requirements/debt'. Read-only snapshot rendered as the inline mission-control dashboard: active track, loop step, tasks, open requirements, tracked debt, KB size, dependency graph — with an explicit action banner (gate buttons if a decision is yours, 'no action needed' if agents are working)."
+description: Show delivery progress, the responsible owner, actual outcomes, and available token usage without initializing a workflow.
 ---
 
-# /tp-status — where the governed work stands
+# Delivery status
 
-Use native conversation/task status when it answers the question. For an existing
-Taskplane delivery, invoke the installed `taskplane/tp.py summary` once. Show the
-current work, actual outcome, and any pending user decision. Do not initialize setup,
-activate contracts, or run onboarding to inspect status. Expand a specific detail
-only when needed; a dashboard is optional when requested or useful.
+Use current task context first. For recorded delivery, invoke the installed
+`taskplane/tp.py flow report --workspace <checkout>` once. Show the orchestrator
+as owner, the latest meaningful milestone, actual verification, remaining work,
+and useful token or waste observations. An advisory is not a blocking gate.
+Missing usage means unknown, not zero. A recorded milestone is not proof that
+acceptance criteria passed; check the cited evidence when making that claim.
 
-Read [delivery status](references/delivery-status.md) only for detailed stage or
-artifact inspection of an existing delivery run.
+Do not start a flow to answer status. Use legacy `summary` or the
+[legacy status reference](references/delivery-status.md) only when the user asks
+about an older governed run. Distinguish historical gate state from current work.

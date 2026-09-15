@@ -1009,6 +1009,13 @@ def validate_hook_manifest(value: object) -> dict:
 def _workspace_only_hooks(value: dict) -> dict:
     """Make installed hooks inert until a workspace launcher exists."""
     projected = json.loads(json.dumps(value))
+    # Observers opt in through their journal, never a governed-work launcher.
+    # Their global registration remains inert in unrelated workspaces.
+    commands = [hook for rows in projected["hooks"].values()
+                for row in rows for hook in row.get("hooks") or []]
+    if commands and all("/taskplane/flow.py" in str(hook.get("command"))
+                        for hook in commands):
+        return projected
     posix_fallback = (
         '; elif [ -n "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}" ]; then')
     windows_fallback = " else if defined PLUGIN_ROOT "

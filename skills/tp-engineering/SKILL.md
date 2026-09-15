@@ -36,6 +36,8 @@ budget controls when available; missing usage remains unknown. The inventory
 creates no session budget or lifecycle to recover.
 
 Use `onboard` only for an explicit setup/diagnostic request or a concrete setup failure.
-Load [delivery review](references/delivery-review.md) only when an explicit stage
-dispatch or existing delivery run requires it. Existing contracts are not silently
-cleared; use the existing authorized recovery for that exact task.
+For current delivery, return findings and verification to the root orchestrator,
+which owns the decision to fix or continue. Load
+[legacy delivery review](references/delivery-review.md) only for an explicit
+request to inspect an older governed run. Old contracts remain historical data;
+they do not control native tool permissions or current delivery.

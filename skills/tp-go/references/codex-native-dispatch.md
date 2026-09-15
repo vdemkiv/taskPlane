@@ -1,90 +1,19 @@
-# Native Codex subagent dispatch
+# Native delegation
 
-Use this procedure whenever a taskplane action or lens brief is executed on
-Codex. The CLI has already decided the role, contract, model tier, reasoning
-effort, and evidence obligations. Codex supplies the transport; it does not
-reinterpret those decisions.
+Delegate only when authorized and a bounded task can usefully run independently.
+The orchestrator retains responsibility for integrating the result and completing
+the user's flow. A separate worker for every stage is not required.
 
-## One bounded startup, one exact task
+Give the worker the goal, relevant paths, scope, existing decisions, and expected
+verification. Use native agent tools and the host's supported settings. Keep
+context small; do not copy whole histories, catalogs, or unrelated source trees.
+Avoid conflicting writes by assigning disjoint files or isolated checkouts.
 
-`loop next` emits exactly `schema`, `stage_runtime_dispatch`, and `obligations`.
-The driver uses `obligations` to launch the worker. The delegated message contains
-only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`, and
-the exact `contract_bootstrap.environment`. Host roots belong only in that
-environment. Never forward the full action, a prior role brief, a conversation,
-ambient knowledge, or an unrelated Design.
+Wait using the native wait tool, inspect the actual output, and integrate it.
+Fix concrete defects without repeating all reviews. Interruptions and missing
+results are not successful completion. Telemetry records available activity and
+usage; missing observations never prevent collection or progress.
 
-1. Use the exact `task_name`, model and `reasoning_effort` in `obligations`.
-   Set `fork_turns="none"` explicitly. Omit a null model so the host inherits it.
-2. The worker verifies the startup and reads its pinned phase input with
-   `$TP stage read-input --request -`, supplying the envelope as JSON on stdin.
-   The engine verifies its size, digest, authority and committed input reference.
-   The input declares the phase skill and typed artifact references. Read only
-   those inputs and files permitted by the scoped contract.
-   To read a selected artifact, call `$TP stage read-artifact --request -`
-   with `{"stage_runtime_dispatch": <the same unchanged envelope>,
-   "references": [<exact reference returned by read-input>]}`. The response
-   contains `reference`, `projection`, and `content`. For inherited lens
-   evidence, first read its manifest, then use a two-reference chain containing
-   that manifest reference and its exact `collection`, `plan`, or validation
-   reference. Collections retain full findings. Plan reads return all lens
-   dispositions and rationale with `projection= lens-plan-evidence`; they omit
-   predecessor execution packets. Never reconstruct a physical artifact path.
-   The startup's root-input capsule is resolved by `read-input`; it is not a
-   separately readable phase artifact. For the current phase's reviews,
-   `stage collect-lenses` returns `collection_content` (complete findings or
-   explicit gaps) and `lens_dispositions` directly. Consume those fields before
-   Stop; their newly created references are not part of the initial input.
-3. Independent wave entries use the same envelope and verification protocol.
-   Each write-capable worker uses its own registered checkout and contract slot.
-4. Follow the emitted wait policy for the outstanding set. Collect every result
-   before asking for an orchestrator gate. A faster worker does not cancel another.
-5. Before Stop, a bounded correction preserves the current scope and attempt
-   identity and requires fresh lenses for changed drafts. Stop pins the candidate
-   bytes and completion to that turn. Never send a stopped phase worker a
-   follow-up to rewrite its output under the old terminal. For an uncollected
-   Product, Design or Plan attempt with an authenticated Stop, an explicitly
-   authorized correction uses `loop resolve retry --phase-operation <operation>
-   --candidate-fingerprint <current candidate> --worker-stopped --by <human>`.
-   Retain the failed evidence; the engine grants one fresh attempt, slot and
-   native identity within the existing scope and budget. Otherwise use an
-   attributable stage close/discard. Interruption is never completion.
-
-`SubagentStart` binds the pending slot to the worker. `SubagentStop` records its
-actual terminal outcome and releases the slot. These observations do not grant
-human approval. The driver alone requests the declared gate.
-
-Standalone Review has its own scoped brief protocol; it does not replace phase
-startup or inject a lens route into Evaluate or Engineering.
-
-## Sealed phase continuation
-
-For the active phase runtime, `taskplane/loop.py` owns
-`phase_evaluator_request` and `continue_phase_result`. Evaluation lenses come
-from the admitted registry; the agent's working lenses are omitted. The loop
-requires the current signed runtime result and canonical review, applies the
-declared gate, requests knowledge compare-and-swap through the incumbent owner,
-commits the result, and checks telemetry readiness before selecting declared
-edges. Trusted authority, gate, knowledge, and artifact ports are host
-capabilities; never put them in a worker package or reconstruct them from a
-role label. `taskplane/tp.py:phase_continuation_output` and the loop's
-`require_phase_continuation` revalidate committed evidence and current
-authority at consumption. Missing evidence or authority holds progression;
-knowledge conflicts and rejections remain visible while the accepted runtime
-result is preserved. The run aggregate owns phase selection. Simulated host identity and unavailable usage keep their
-original provenance in the output.
-
-## Long-running loops
-
-For a run likely to span many steps, recommend that the user start Codex Goal
-mode with `/goal` and place the outcome, constraints, and verification criteria
-in the goal. Goal mode does not expand permissions or replace taskplane gates.
-Only the user starts a goal; do not claim that a skill or subagent started it.
-
-## Claude parity
-
-Claude Dynamic Workflows remain an optional journaled transport. The portable
-task payload is the mandatory reference and carries the same canonical context
-and view fingerprints, contracts, routing decision, leases, provenance rules,
-DoR/DoD gates, and artifact references. Claude and Codex may deliver or dispatch
-those bytes differently; they may not derive different semantics.
+Do not activate legacy contracts, generate signed startup envelopes, enforce
+review counts, or require submission receipts for ordinary delegation. Native
+host permissions, the user's scope, and real authorization boundaries still apply.

@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
   "version": "2.23.1",
-  "description": "AI software-delivery control plane for Claude and Codex: stateless stage handoffs, scoped execution, focused pre-build review, direct Evaluate and Engineering evidence, durable recovery, and human approval.",
+  "description": "Orchestrator-led software delivery for Claude and Codex, with native tools, practical verification, and advisory progress and token telemetry.",
   "author": {
     "name": "Volodymyr Demkiv",
     "email": "vdemkiv@gmail.com",
@@ -23,22 +23,17 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "taskplane",
-    "shortDescription": "AI delivery with proof",
-    "longDescription": "taskplane connects requirements, Design, Plan, Build, Evaluate, Engineering, and Retro through scoped contracts and fingerprinted evidence. Fresh invocations recover exact run-owned settings and approved artifacts. Product and Design use focused review routes; Plan uses three or four selected lenses; Build, Evaluate, and Engineering launch no lens workers. Workers submit evidence, orchestrator-only gates validate it, and humans retain scope and final sign-off authority. Native lifecycle observations and measured or explicitly unknown usage remain distinct from source-test results.",
+    "shortDescription": "Deliver, measure, improve",
+    "longDescription": "The orchestrator carries the requested outcome through Product, Design when needed, Plan, Build, verification, and handoff. Native tools and host permissions govern execution. Local telemetry records progress, activity, and available native token counters; advisory signals highlight repetition and possible overengineering without blocking the flow or imposing a token cap.",
     "developerName": "Volodymyr Demkiv",
     "category": "Developer Tools",
     "capabilities": [
-      "Enforce Definition of Ready before implementation begins",
-      "Approve a proposed-HOW Design Contract before complex implementation",
-      "Carry dependency overlays, named contracts, and graph DoR/DoD from Design into Build and Review",
-      "Constrain execution to an approved task scope",
-      "Require evidence-backed Definition of Done before sign-off",
-      "Gate dependency and contract impact at Ready and Done",
-      "Separate worker submissions from orchestrator validation",
-      "Review code and solution designs through 26 engineering lenses",
-      "Publish progress artifacts for team handoff",
-      "Show status on demand: current step, gates, and what taskplane is waiting on",
-      "Project native PiP, fan-out, approvals, dashboards, carousels, and governed previews with accessible fallbacks"
+      "Execute authorized work through verified output",
+      "Keep the orchestrator accountable for delivery",
+      "Record meaningful progress and native token observations",
+      "Flag repeated actions and possible overengineering as advice",
+      "Review source and designs with proportionate evidence",
+      "Preserve native host permissions and user decisions"
     ],
     "websiteURL": "https://github.com/vdemkiv/taskPlane",
     "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",
