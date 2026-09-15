@@ -140,3 +140,12 @@ def test_large_usage_and_activity_only_generate_advice(tmp_path):
     report = flow.summarize(flow.read_events(tmp_path), run)
     assert report["tokens"]["total_tokens"] == 1_999_000
     assert len(report["advice"]) == 3
+
+
+def test_hook_setup_failure_does_not_stop_the_flow(tmp_path, capsys):
+    def unavailable(_workspace):
+        raise OSError("native hooks unavailable")
+
+    assert flow.main(["start", "--workspace", str(tmp_path)], prepare=unavailable) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "active"
+    assert flow.read_events(tmp_path)[0]["hook_setup"] == "unavailable"

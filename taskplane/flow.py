@@ -199,7 +199,7 @@ def run_hook(command: str | None = None) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, prepare=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "hook"])
     parser.add_argument("--workspace", default=os.getcwd())
@@ -216,8 +216,14 @@ def main(argv: list[str] | None = None) -> int:
         run = active_run(rows, session)
         if args.action == "start":
             if run is None:
+                setup = "unavailable"
+                if prepare is not None:
+                    try:
+                        setup = "ready" if prepare(str(workspace)).get("ok") else "unavailable"
+                    except Exception:
+                        pass  # Native hook setup is optional observation, never a gate.
                 run = {"kind": "start", "run": uuid.uuid4().hex, "session": session,
-                       "goal": args.goal[:2000], **counter({}, session)}
+                       "goal": args.goal[:2000], "hook_setup": setup, **counter({}, session)}
                 append(workspace, run)
                 rows.append(run)
         elif args.action != "report" and run is not None:

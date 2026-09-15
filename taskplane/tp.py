@@ -10055,7 +10055,7 @@ def main(argv=None) -> int:
     if args and args[0] == "flow":
         from taskplane import flow
 
-        return flow.main(args[1:])
+        return flow.main(args[1:], prepare=_install_codex_hooks)
     if args and args[0] in _LIFECYCLE_HOOK_COMMANDS:
         from taskplane import flow
 
