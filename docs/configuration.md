@@ -13,6 +13,13 @@ including roles, skills, lenses and artifacts. The loader rejects a second
 `phase_definitions` list in operational settings. The empty compatibility field
 is retained only so existing sealed snapshots remain readable.
 
+For an explicitly authorized disposable test, `loop init --phase-tokens-unlimited`
+removes only that new run's per-phase token ceiling. It requires the usual exact
+requirement and accountable `--by` identity. The run journals a derived registry
+with `budget.tokens: null`; shipped defaults and previous run evidence are unchanged.
+Native usage remains required and recorded. Time, attempt, correction, per-worker
+contract and host account limits remain active. The flag cannot change an active run.
+
 Each phase has its own `stages.<phase>.model` and `.reasoning`, including Retro;
 Fix uses `stages.fix`. Model `inherit` omits the host model argument. The current
 default reasoning is `high`. Routed lenses use their owning phase's settings.

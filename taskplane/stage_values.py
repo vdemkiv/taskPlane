@@ -332,6 +332,8 @@ def read_contract_json(
 def _contract_budget(value: object) -> None:
     row = _closed(value, frozenset({"tokens", "wall_ms", "attempts", "corrections"}), "budget")
     for key, count in row.items():
+        if key == "tokens" and count is None:
+            continue  # Explicit run-scoped opt-out; usage is still required.
         if type(count) is not int or count < 0:
             raise StageValidationError(f"budget {key} must be non-negative integer")
 

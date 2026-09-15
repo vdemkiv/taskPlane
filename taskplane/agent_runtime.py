@@ -172,9 +172,13 @@ class AgentRuntime:
                 if self.resource_limits_advisory:
                     continue
                 raise RuntimeRefusal("observation_unavailable")
-            if type(maximum) is not int or type(used) is not int:
+            if type(used) is not int:
                 raise RuntimeRefusal("budget_exhausted")
-            if not isinstance(maximum, int) or not isinstance(used, int) or used < 0:
+            if not isinstance(used, int) or used < 0:
+                raise RuntimeRefusal("budget_exhausted")
+            if name == "tokens" and maximum is None:
+                continue
+            if type(maximum) is not int or not isinstance(maximum, int):
                 raise RuntimeRefusal("budget_exhausted")
             if self.resource_limits_advisory:
                 continue

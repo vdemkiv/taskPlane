@@ -5105,6 +5105,7 @@ def cmd_loop(a) -> int:
             by=getattr(a, "by", None),
             enforcement_decision=enforcement,
             reuse_approved_design=getattr(a, "reuse_approved_design", False),
+            phase_tokens_unlimited=getattr(a, "phase_tokens_unlimited", False),
         )
         # Only collapse to the success summary when the engine did NOT refuse.
         # Previously any dict with a "step" key (including a refusal that also
@@ -10351,6 +10352,11 @@ def main(argv=None) -> int:
         help="fix cycles the loop may run before it escalates to the human (default 2)",
     )
     li.add_argument("--checkpoints", help="comma list: plan,em (default both)")
+    li.add_argument(
+        "--phase-tokens-unlimited", action="store_true",
+        help="explicitly remove only this new run's per-phase token ceiling; "
+        "usage, time limits and other checks remain required; needs attributable --by",
+    )
     li.add_argument(
         "--req",
         help="anchor the loop to a requirement R-id; requires an exact existing requirement",

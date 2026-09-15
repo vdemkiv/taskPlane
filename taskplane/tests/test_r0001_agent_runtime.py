@@ -17,7 +17,8 @@ from taskplane.tests.test_stage_entities import _authority, _stage
 
 
 def _setup(tmp_path: Path, *, local_read: bool = False,
-           foreign_stage: bool = False) -> tuple[runtime.AgentRuntime, runtime.Dispatch, list[str]]:
+           foreign_stage: bool = False,
+           token_limit: int | None = 100_000) -> tuple[runtime.AgentRuntime, runtime.Dispatch, list[str]]:
     root = Path(__file__).resolve().parents[2]
     # This is a generic runtime unit fixture, with an explicitly registered
     # stage-only contract. Production seven-phase contracts are exercised by
@@ -25,6 +26,7 @@ def _setup(tmp_path: Path, *, local_read: bool = False,
     rows = json.loads((root / "agents/spec-phase-definitions.json").read_text(encoding="utf-8"))
     inventory = {"taskplane.stage_entities.validate_stage": "taskplane.stage/v1"}
     for row in rows:
+        row["budget"]["tokens"] = token_limit
         row["consumes"] = [{"artifact_class": "stage", "artifact_schema_version": "taskplane.stage/v1", "knowledge_scope": [], "knowledge_fingerprint_required": True, "required": True}]
         row["produces"] = [{"artifact_class": "stage", "artifact_schema_version": "taskplane.stage/v1", "cardinality": "one", "required": True}]
         row["domain_validator_refs"] = list(inventory)

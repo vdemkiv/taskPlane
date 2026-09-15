@@ -5,7 +5,8 @@ import io
 import json
 from pathlib import Path
 from taskplane import loop, phase_records, requirements, review_evidence, taskplane_lite
-def _supporting_pristine_phase_run(tmp_path, monkeypatch, *, contracts=None, parallel=False, git_factory=None):
+def _supporting_pristine_phase_run(tmp_path, monkeypatch, *, contracts=None, parallel=False, git_factory=None,
+                                 phase_tokens_unlimited=False):
     """Public producers with simulated source/authority; no stage or host event seed."""
     from taskplane.tests.test_r0001_phase_agents_spec import _registry
     from taskplane.tests.test_stage_cross_host import (
@@ -27,6 +28,7 @@ def _supporting_pristine_phase_run(tmp_path, monkeypatch, *, contracts=None, par
     initialized = loop.init(
         ws, "supporting first-dispatch regression", requirement_id=requirement["id"],
         by="human:simulated", parallel=parallel,
+        phase_tokens_unlimited=phase_tokens_unlimited,
     )
     assert "error" not in initialized, initialized
     current = store.load(initial["run_id"])

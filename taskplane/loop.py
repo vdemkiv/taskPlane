@@ -2317,7 +2317,10 @@ def init(
     by: str | None = None,
     reuse_approved_design: bool = False,
     enforcement_decision: dict | None = None,
+    phase_tokens_unlimited: bool = False,
 ) -> dict:
+    if type(phase_tokens_unlimited) is not bool:
+        return {"error": "phase_tokens_unlimited must be boolean", "refused": True}
     if enforcement_decision is not None:
         import enforcement as enforcement_kernel
 
@@ -2396,7 +2399,8 @@ def init(
     try:
         with _stage_store(ws, state["run_id"]).transaction(state["run_id"]):
             save(ws, state)
-            phase_harness.initialize(sys.modules[__name__], ws, state)
+            phase_harness.initialize(sys.modules[__name__], ws, state,
+                                     phase_tokens_unlimited=phase_tokens_unlimited)
             _stage_bootstrap_pristine_root(ws, state)
             state = load(ws)
     except (ValueError, OSError) as exc:

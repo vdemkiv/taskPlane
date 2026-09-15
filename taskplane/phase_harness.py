@@ -15,7 +15,8 @@ import time
 from typing import Any, cast
 
 
-def initialize(runtime: Any, workspace: str, state: dict[str, Any]) -> None:
+def initialize(runtime: Any, workspace: str, state: dict[str, Any], *,
+               phase_tokens_unlimited: bool = False) -> None:
     """Select the phase runtime for a newly initialized, attributable run."""
     from taskplane import review_evidence
 
@@ -24,12 +25,13 @@ def initialize(runtime: Any, workspace: str, state: dict[str, Any]) -> None:
     manifest = store.load(state["run_id"])
     if phase_records.phase_routing(manifest) is not None:
         raise ValueError("a new run cannot inherit an earlier phase route")
-    registry, _ = runtime._phase_bridge_registry(
-        {"definition_source": "agents/spec-phase-definitions.json"}
-    )
+    selection: dict[str, Any] = {"definition_source": "agents/spec-phase-definitions.json"}
+    if phase_tokens_unlimited:
+        selection["phase_token_limit"] = None
+    registry, _ = runtime._phase_bridge_registry(selection)
     artifacts = review_evidence.ArtifactStore(workspace)
     configuration = {
-        "definition_source": "agents/spec-phase-definitions.json",
+        **selection,
         "definition_set_fingerprint": registry.definition_set_fingerprint,
         "knowledge_reference": artifacts.put(
             "phase-knowledge",
@@ -1437,7 +1439,7 @@ def pending(runtime: Any, ws: str, state: Mapping[str, Any]) -> dict[str, Any] |
                 else "phase_usage_unavailable"
                 if measured["tokens"] is None
                 else "phase_token_budget_exhausted"
-                if measured["tokens"] >= limit
+                if limit is not None and measured["tokens"] >= limit
                 else "phase_collection_requires_reconciliation"
             )
             return {
@@ -1508,7 +1510,7 @@ def _phase_bridge_context(_ports: Any, ws: str, state: Mapping[str, Any]) -> dic
     if route is None or route["result"]["owner"] != "agent-runtime":
         return None
     config = route["result"]["configuration"]
-    if not isinstance(config, dict) or set(config) != {
+    if not isinstance(config, dict) or set(config) - {"phase_token_limit"} != {
         "definition_source",
         "definition_set_fingerprint",
         "knowledge_reference",
@@ -1576,6 +1578,21 @@ def _phase_bridge_registry(_ports: Any, config: Mapping[str, Any]) -> Any:
     registry = _ports.operational_settings.load_phase_registry(
         rows, skills=skills, validator_inventory=inventory, artifact_schemas=schemas
     )
+    if "phase_token_limit" in config:
+        if config["phase_token_limit"] is not None:
+            raise ValueError("run phase_token_limit must be null when explicitly uncapped")
+        # Validate the shipped definitions before deriving this run's exact
+        # registry. The attributable initialization journals the selection;
+        # shipped defaults and earlier runs retain their finite budgets.
+        selected = []
+        for phase in registry.phases:
+            row = phase.to_dict()
+            row["budget"]["tokens"] = None
+            selected.append(stage_entities.create_contract(
+                {key: value for key, value in row.items() if key != "fingerprint"}))
+        registry = _ports.operational_settings.load_phase_registry(
+            selected, skills=skills, validator_inventory=inventory, artifact_schemas=schemas
+        )
     if (
         config.get("definition_set_fingerprint") is not None
         and registry.definition_set_fingerprint != config["definition_set_fingerprint"]
