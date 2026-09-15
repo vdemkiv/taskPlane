@@ -6,6 +6,7 @@ import shlex
 import datetime
 import io
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -346,8 +347,9 @@ def test_only_claimed_native_hook_binds_missing_session_temporarily(fresh_cli, n
     assert "CODEX_THREAD_ID" not in os.environ
 
 
-@pytest.mark.parametrize("conflict", ["environment", "header"])
-def test_native_hook_identity_conflict_never_reaches_screen(fresh_cli, native, monkeypatch, conflict):
+@pytest.mark.parametrize("conflict", ["environment", "header", "missing"])
+def test_native_hook_identity_conflict_explicitly_blocks_and_replays_at_public_boundary(
+        fresh_cli, native, monkeypatch, capsys, conflict):
     import tp as cli
     root, path, metadata, call, _ = fresh_cli
     session = metadata["payload"]["id"]
@@ -357,6 +359,8 @@ def test_native_hook_identity_conflict_never_reaches_screen(fresh_cli, native, m
     monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
     if conflict == "environment":
         monkeypatch.setenv("CODEX_THREAD_ID", "different-session")
+    elif conflict == "missing":
+        path.unlink()
     else:
         (root / "session_index.jsonl").write_text(json.dumps({"id": session}) + "\n")
         metadata["payload"]["id"] = "different-session"
@@ -367,9 +371,34 @@ def test_native_hook_identity_conflict_never_reaches_screen(fresh_cli, native, m
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
     monkeypatch.setattr(cli.tp, "load_active_for_event", lambda *_: {"read_only": True})
     monkeypatch.setattr(cli, "_invoke_run_command", lambda *_: pytest.fail("conflicting identity reached screen"))
-    with pytest.raises((ValueError, review.HostTranscriptUnavailable)):
-        cli._run_hook_command(Namespace(cmd="screen", workspace=native))
+    assert cli.main(["screen"]) == 0
+    first = capsys.readouterr()
+    assert not first.err
+    refusal = json.loads(first.out)
+    assert refusal["decision"] == "block"
+    assert refusal["hookSpecificOutput"] == {
+        "hookEventName": "PreToolUse", "permissionDecision": "deny",
+        "permissionDecisionReason": refusal["reason"],
+    }
+    assert "native_hook_identity" in refusal["reason"]
+    assert native not in first.out and session not in first.out
+    assert "different-session" not in first.out
     assert os.environ.get("CODEX_THREAD_ID") == ("different-session" if conflict == "environment" else None)
+    journal = Path(cli.tp.hook_claim_journal_path(native))
+    recorded = journal.read_bytes()
+    claims = json.loads(recorded)["claims"]
+    assert len(claims) == 1
+    assert claims[0]["response_class"] == "block"
+    assert claims[0]["status"] == "completed"
+
+    monkeypatch.setattr(review, "_codex_session_paths", lambda *_a, **_k: pytest.fail(
+        "duplicate hook re-resolved native identity"))
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    assert cli.main(["screen"]) == 0
+    replay = capsys.readouterr()
+    assert not replay.err
+    assert json.loads(replay.out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert journal.read_bytes() == recorded
 
 
 def test_native_hook_session_is_restored_after_screen_error(fresh_cli, native, monkeypatch):

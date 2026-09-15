@@ -118,6 +118,65 @@ def test_product_control_requires_canonical_protected_options(product, args, pre
                 assert not screen(product, "exec_command", {"cmd": command(*args, *suffix)})[0], suffix
 
 
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_product_controls_accept_ordinary_quoted_requirement_prose(product, quote):
+    title = "Explain app.py VALUE briefly in README"
+    functional = "README shall describe VALUE = 1; preserve app.py (the source of truth)."
+    acceptance = "AC1: Name app.py and VALUE; verify the scoped diff."
+    text = command("req", "new") + " " + quote + title + quote
+    text += " --functional " + quote + functional + quote
+    text += " --acceptance " + quote + acceptance + quote
+    text += " --nfr " + quote + "architecture=Preserve the module; add no behavior." + quote
+    assert cli._product_control_argv(text, product[0]) == [
+        "req", "new", title, "--functional", functional, "--acceptance", acceptance,
+        "--nfr", "architecture=Preserve the module; add no behavior."]
+    assert screen(product, "exec_command", {"cmd": text})[0]
+
+
+@pytest.mark.parametrize("quoted, expected", [
+    ('"One; two (scope), # literal, *.py"', "One; two (scope), # literal, *.py"),
+    ("'One; $(text), `text`, *.py # literal'", "One; $(text), `text`, *.py # literal"),
+    (r'"An escaped \"quote\"; still one title"', 'An escaped "quote"; still one title'),
+    (r'"A literal dollar \$HOME and backtick \`id\`"', "A literal dollar $HOME and backtick `id`"),
+    (r'Escaped\;punctuation', "Escaped;punctuation"),
+    (r'"A slash \\ and \q"', r"A slash \ and \q"),
+    ("'A title\nwith literal lines'", "A title\nwith literal lines"),
+    ("'reader'\"'\"'s; scope'", "reader's; scope"),
+    ('"Café\u00a0scope; preserve VALUE"', "Café\u00a0scope; preserve VALUE"),
+])
+def test_product_controls_preserve_quoted_and_escaped_data(product, quoted, expected):
+    text = command("req", "new") + " " + quoted
+    assert cli._product_control_argv(text, product[0]) == ["req", "new", expected]
+    assert screen(product, "exec_command", {"cmd": text})[0]
+
+
+@pytest.mark.parametrize("tail", [
+    '"closed"; touch src/app.py', r'"quote \\"; touch src/app.py',
+    '"unterminated', 'title # hidden arguments', 'title && true', 'title | cat',
+    'title > src/app.py', 'title < src/app.py', 'title\ntrue',
+    '"$(touch src/app.py)"', '"${TITLE}"', '"$TITLE"', '"`id`"',
+    '$(id)', '<(id)', 'title\\\ncontinued', '*.py', '?', '[ab]', '{a,b}', '~',
+])
+def test_product_controls_refuse_shell_effects_and_expansions(product, tail):
+    assert not screen(product, "exec_command", {"cmd": command("req", "new") + " " + tail})[0]
+
+
+@pytest.mark.parametrize("prefix, hidden_option", [
+    (("decision", "new", "policy"), "--status proposed"),
+    (("graph", "link", "--req", "R-0001", "--files", "src/app.py"), "--kind planned"),
+])
+def test_product_comments_cannot_supply_authority_options(product, prefix, hidden_option):
+    text = command(*prefix) + " # " + hidden_option
+    assert not screen(product, "exec_command", {"cmd": text})[0]
+
+
+def test_product_unicode_whitespace_is_title_data_not_an_option_boundary(product):
+    title = "Policy\u00a0--status\u00a0proposed"
+    text = command("decision", "new") + " " + title
+    assert cli._product_control_argv(text, product[0]) == ["decision", "new", title]
+    assert not screen(product, "exec_command", {"cmd": text})[0]
+
+
 def test_product_control_rejects_shell_effects_and_checkout_interpreter(product):
     workspace, _ = product
     for suffix in ["; touch src/app.py", " > src/app.py", " $(touch src/app.py)"]:

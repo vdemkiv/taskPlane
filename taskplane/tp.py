@@ -3229,16 +3229,67 @@ def _product_option_abbreviation(args: list[str], *options: str) -> str | None:
     return None
 
 
+def _product_literal_words(command: str) -> list[str] | None:
+    """Read one command's literal words; reject shell syntax and expansion.
+
+    This admits ordinary single/double quoting and escaped data without
+    interpreting shell programs. Double-quoted backslashes follow the fixed
+    POSIX shell, including escaped dollars/backticks that shlex preserves.
+    """
+    words, word = [], []
+    quote = None
+    started = False
+    position = 0
+    while position < len(command):
+        char = command[position]
+        if char == "\0":
+            return None
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                word.append(char)
+        elif char == "\\":
+            position += 1
+            if position == len(command) or command[position] in "\n\r\0":
+                return None
+            escaped = command[position]
+            if quote == '"' and escaped not in '\\"$`':
+                word.append("\\")
+            word.append(escaped)
+            started = True
+        elif quote == '"':
+            if char == '"':
+                quote = None
+            elif char in "$`":
+                return None
+            else:
+                word.append(char)
+        elif char in "'\"":
+            quote = char
+            started = True
+        elif char in " \t":
+            if started:
+                words.append("".join(word))
+                word, started = [], False
+        elif char in "\n\r;&|<>`$()#*?[]{}~":
+            return None
+        else:
+            word.append(char)
+            started = True
+        position += 1
+    if quote is not None:
+        return None
+    if started:
+        words.append("".join(word))
+    return words
+
+
 def _product_control_argv(command: str, workspace: str) -> list[str] | None:
     """One trusted engine command in this workspace; shell effects never qualify."""
     import shutil
-    try:
-        args = shlex.split(command)
-    except ValueError:
-        return None
-    if len(args) < 3:
-        return None
-    if re.search(r"[;&|<>`$()\n\r]", command) and shlex.join(args) != command:
+    args = _product_literal_words(command)
+    if args is None or len(args) < 3:
         return None
     interpreter = os.path.realpath(shutil.which(args[0]) or args[0])
     root = os.path.realpath(workspace)
@@ -7093,6 +7144,7 @@ def _run_hook_command(a) -> int:
     captured = io.StringIO()
     original_codex_session = os.environ.get("CODEX_THREAD_ID")
     bound_codex_session = False
+    native_identity_failure = None
     try:
         native_readonly_command = (
             hook_path == "native" and a.cmd == "screen" and claim.get("claim_id")
@@ -7109,27 +7161,48 @@ def _run_hook_command(a) -> int:
             # transcript/header. Direct/manual hook calls never enter here.
             # Ungoverned, Build and document-write tools need no such lookup.
             from taskplane import review, spend
-            hook_transcript = spend.event_transcript(event)
-            codex_root = os.path.realpath(review._canonical_host_root("codex"))
-            codex_transcript = False
-            if isinstance(hook_transcript, str):
-                try:
-                    codex_transcript = os.path.commonpath((
-                        codex_root, os.path.realpath(hook_transcript))) == codex_root
-                except ValueError:
-                    pass  # A different volume cannot be this host's transcript.
-            if codex_transcript:
-                session = str(event.get("session_id") or event.get("thread_id") or "")
-                paths = review._codex_session_paths(codex_root, session, require_header=True)
-                if len(paths) != 1 or os.path.realpath(hook_transcript) != paths[0]:
-                    raise ValueError("native Codex hook transcript differs from its session")
-                if original_codex_session and original_codex_session != session:
-                    raise ValueError("native Codex hook session conflicts with its environment")
-                os.environ["CODEX_THREAD_ID"] = session
-                bound_codex_session = True
-        sys.stdin = io.StringIO(raw)
-        with contextlib.redirect_stdout(captured):
-            returncode = _invoke_run_command(a, workspace)
+            try:
+                hook_transcript = spend.event_transcript(event)
+                codex_root = os.path.realpath(review._canonical_host_root("codex"))
+                codex_transcript = False
+                if isinstance(hook_transcript, str):
+                    try:
+                        codex_transcript = os.path.commonpath((
+                            codex_root, os.path.realpath(hook_transcript))) == codex_root
+                    except ValueError:
+                        pass  # A different volume cannot be this host's transcript.
+                if codex_transcript:
+                    session = str(event.get("session_id") or event.get("thread_id") or "")
+                    paths = review._codex_session_paths(codex_root, session, require_header=True)
+                    if len(paths) != 1 or os.path.realpath(hook_transcript) != paths[0]:
+                        raise ValueError("native Codex hook transcript differs from its session")
+                    if original_codex_session and original_codex_session != session:
+                        raise ValueError("native Codex hook session conflicts with its environment")
+                    os.environ["CODEX_THREAD_ID"] = session
+                    bound_codex_session = True
+            except (review.HostTranscriptUnavailable, OSError, ValueError) as exc:
+                native_identity_failure = type(exc).__name__
+        if native_identity_failure:
+            # A dependent identity refusal must be an explicit hook decision,
+            # including on its first delivery; stderr/exit 70 is not one.
+            reason = (
+                "taskplane blocked this read-only command: native Codex hook "
+                "session identity is unavailable or conflicting. Native read check: "
+                + json.dumps({"stage": "native_hook_identity", "error": native_identity_failure},
+                             sort_keys=True)
+            )
+            captured.write(json.dumps({
+                "decision": "block", "reason": reason,
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                },
+            }) + "\n")
+            returncode = 0
+        else:
+            sys.stdin = io.StringIO(raw)
+            with contextlib.redirect_stdout(captured):
+                returncode = _invoke_run_command(a, workspace)
     except Exception:
         if not context_replay:
             tp.complete_hook_event(workspace, claim, response_class="error")
