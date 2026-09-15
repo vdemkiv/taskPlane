@@ -5552,20 +5552,21 @@ def cmd_stage(a) -> int:
         return 1
     import loop as loopmod
 
-    if a.stage_action in {"read-input", "prepare-lenses", "collect-lenses"}:
+    if a.stage_action in {"read-input", "read-artifact", "prepare-lenses", "collect-lenses"}:
         from taskplane import phase_harness
 
         try:
-            out = (
-                phase_harness.read_input(loopmod, _workspace(a.workspace), request)
-                if a.stage_action == "read-input"
-                else phase_harness.collect_lenses(
+            if a.stage_action == "read-input":
+                out = phase_harness.read_input(loopmod, _workspace(a.workspace), request)
+            elif a.stage_action == "read-artifact":
+                out = phase_harness.read_artifact(loopmod, _workspace(a.workspace), request)
+            else:
+                out = phase_harness.collect_lenses(
                     loopmod,
                     _workspace(a.workspace),
                     request,
                     prepare=a.stage_action == "prepare-lenses",
                 )
-            )
         except (ValueError, OSError, KeyError) as exc:
             out = {"error": "phase input refused: " + str(exc)}
         print(json.dumps(out, sort_keys=True))
@@ -10630,6 +10631,7 @@ def main(argv=None) -> int:
     sgsub = sg.add_subparsers(dest="stage_action", required=True)
     for action, help_text in (
         ("read-input", "read only the verified input named by a stage startup"),
+        ("read-artifact", "read selected phase input or retained lens evidence"),
         ("collect-lenses", "collect the exact lens plan saved in a phase startup"),
         ("prepare-lenses", "dispatch shared lenses for the exact current phase candidate"),
         ("start", "start a root or verified successor stage"),

@@ -2,6 +2,13 @@
 
 `design/contract.json` is proposed-HOW evidence. It is an overlay on the current system, not permission to mutate code or the as-built graph.
 
+For stateless delivery, also follow [the test-strategy contract](test-strategy.md).
+Each acceptance mapping must include a nonempty `tests` or `selectors` array
+of planned exact test selectors. Set `test_strategy.path` to the declared
+strategy output, and include `test_strategy_reference` with schema
+`taskplane.design-test-strategy-reference/v1`, that same `path`, and
+`strategy_fingerprint` equal to its `contract_fingerprint_sha256`.
+
 ## Required shape
 
 ```json
@@ -77,7 +84,8 @@
     {
       "criterion": "Exact requirement acceptance criterion",
       "design_element": "Module/contract/decision that satisfies it",
-      "validation": "Test, probe, or review evidence that will prove it"
+      "validation": "Test, probe, or review evidence that will prove it",
+      "tests": ["test_feature.py::test_contract_behavior"]
     }
   ],
   "risks": [

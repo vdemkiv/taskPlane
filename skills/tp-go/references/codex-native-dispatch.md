@@ -21,6 +21,15 @@ ambient knowledge, or an unrelated Design.
    The engine verifies its size, digest, authority and committed input reference.
    The input declares the phase skill and typed artifact references. Read only
    those inputs and files permitted by the scoped contract.
+   To read a selected artifact, call `$TP stage read-artifact --request -`
+   with `{"stage_runtime_dispatch": <the same unchanged envelope>,
+   "references": [<exact reference from the verified input>]}`. The response
+   contains `reference`, `projection`, and `content`. For inherited lens
+   evidence, first read its manifest, then use a two-reference chain containing
+   that manifest reference and its exact `collection`, `plan`, or validation
+   reference. Collections retain full findings. Plan reads return all lens
+   dispositions and rationale with `projection= lens-plan-evidence`; they omit
+   predecessor execution packets. Never reconstruct a physical artifact path.
 3. Independent wave entries use the same envelope and verification protocol.
    Each write-capable worker uses its own registered checkout and contract slot.
 4. Follow the emitted wait policy for the outstanding set. Collect every result

@@ -1784,6 +1784,21 @@ read only the verified input named by a stage startup
 | `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py stage read-artifact`
+
+Read one artifact explicitly selected by the current worker's verified phase
+input. Pass `--request FILE|-` with the closed object
+`{"stage_runtime_dispatch": <unchanged startup envelope>, "references": [<exact reference>]}`.
+The reader rechecks current authority, worker identity, reference membership,
+digest and byte length. It accepts no storage paths or arbitrary lookup.
+
+For a child of retained lens evidence, use a two-reference chain: the selected
+`lens-evidence` reference, followed by its exact `plan`, `collection`, or
+validation reference. The response has `reference`, `projection`, and `content`.
+Normal content is exact. A lens plan has `projection="lens-plan-evidence"` and
+returns phase, binding and all dispositions, excluding old leases and execution
+packets. Collections include the complete results and findings.
+
 ## `tp.py stage resume`
 
 create a fresh attempt in an active stage root

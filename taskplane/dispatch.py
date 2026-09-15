@@ -1515,7 +1515,7 @@ def _publish_phase_dispatch(_ports, act_ws, contract, dispatch, evaluate_childre
     contract["worker_lifecycle"]["dispatch_intent_id"] = intent_id
     contract["worker_lifecycle"]["dispatch_intent_run_id"] = intent_run_id
     _ports.tp.record_expected_dispatch(
-        ws, "step", _ports.STEP_ROLE[step], model_tier, model,
+        ws, "step", dispatch["role"], model_tier, model,
         ref=dispatch_member, task_name=task_name,
         reasoning_effort=reasoning_effort,
         role_marker_value=dispatch["role_marker"],

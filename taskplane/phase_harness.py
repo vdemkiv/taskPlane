@@ -122,6 +122,11 @@ def compile_brief(
         "Execute the selected stateless phase using only this action's saved inputs, "
         "stage startup and sealed package; do not recover predecessor conversations or workspaces. "
         "The phase_definition owns role, working/evaluation lenses, budget and output schemas. "
+        "Read selected artifact content with tp stage read-artifact --request - using "
+        "{stage_runtime_dispatch: the unchanged startup envelope, references: [exact input reference]}. "
+        "For a lens-evidence manifest's plan, collection or validation, pass references "
+        "[manifest reference, exact child reference]. Collections contain the full findings; "
+        "lens plan projections contain all dispositions without old execution packets. "
         "Write each worker-owned phase_outputs candidate at its exact declared path. "
         "Runtime-owned outputs are produced by the collector; do not fabricate them. "
         "An empty lens set authorizes no lens workers or legacy focused routing. "
@@ -150,6 +155,8 @@ def compile_brief(
                 "policy, acceptance selectors, risks and rollout. Apply solution-design judgment. "
                 "The design candidate uses taskplane.design/v1 and includes its selected "
                 "test_strategy; author the declared test-strategy candidate too. Preserve the "
+                "authoring schema and fingerprint rules in the selected plugin's "
+                "skills/tp-design/references/test-strategy.md. "
                 "contract-required design/design.md narrative and design/contract.json projection "
                 "for the existing substantive Design validator. Do not mutate the as-built graph. "
                 "Return without loop submit; the orchestrator validates and presents human approval."
@@ -359,6 +366,63 @@ def read_input(runtime: Any, workspace: str, envelope: dict[str, Any]) -> dict[s
     ):
         raise ValueError("phase input belongs to different authority")
     return cast(dict[str, Any], value)
+
+
+def _input_artifact_references(value: Any) -> list[dict[str, Any]]:
+    """Collect only explicit references inside an already verified input."""
+    from taskplane import review_evidence
+
+    if isinstance(value, dict):
+        if value.get("schema") == "taskplane.artifact-reference/v1":
+            return [value] if set(value) == review_evidence.PORTABLE_ARTIFACT_REFERENCE_FIELDS else []
+        return [ref for item in value.values() for ref in _input_artifact_references(item)]
+    if isinstance(value, list):
+        return [ref for item in value for ref in _input_artifact_references(item)]
+    return []
+
+
+def read_artifact(runtime: Any, workspace: str, request: dict[str, Any]) -> dict[str, Any]:
+    """Read one selected input artifact, or one retained lens evidence child.
+
+    Every call reauthenticates the current startup and exact worker slot.
+    References are capabilities only when selected by that immutable input;
+    a caller cannot supply a store path or search ambient artifact history.
+    """
+    from taskplane import review_evidence, stage_artifacts
+
+    if set(request) != {"stage_runtime_dispatch", "references"}:
+        raise ValueError("artifact read requires stage_runtime_dispatch and references")
+    chain = request["references"]
+    if not isinstance(chain, list) or not 1 <= len(chain) <= 2:
+        raise ValueError("artifact read requires one reference or a two-reference lens chain")
+    inputs = read_input(runtime, workspace, request["stage_runtime_dispatch"])
+    allowed = _input_artifact_references(inputs)
+    store = review_evidence.ArtifactStore(workspace)
+    value: Any = None
+    for reference in chain:
+        if reference not in allowed:
+            raise ValueError("artifact is not selected by the verified phase input")
+        review_evidence.verify_portable_artifact_reference(store, reference)
+        value = store.read(reference)
+        allowed = []
+        if reference["kind"] == "lens-evidence":
+            stage_artifacts.validate("lens-evidence", value)
+            for entry in value["entries"]:
+                allowed.extend([entry["plan"], entry["collection"], *entry["validations"]])
+    projection = "exact"
+    if chain[-1]["kind"] == "lens-plan":
+        if not isinstance(value, dict) or value.get("schema") != "taskplane.lens-plan/v1":
+            raise ValueError("selected lens plan has an invalid schema")
+        # Retain every disposition and its rationale, without forwarding
+        # predecessor leases, dispatch packets or execution roots.
+        value = {
+            "schema": "taskplane.lens-plan-evidence/v1",
+            "phase": value["phase"],
+            "binding": value["binding"],
+            "decision": value["decision"],
+        }
+        projection = "lens-plan-evidence"
+    return {"reference": chain[-1], "projection": projection, "content": value}
 
 
 def accepted_evaluations(

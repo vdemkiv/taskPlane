@@ -530,6 +530,98 @@ def test_selected_phase_instruction_sources_match_admitted_skill_bytes(phase):
 
 
 @pytest.fixture
+def readable_design_input(collected_product_handoff, monkeypatch):
+    from taskplane.tests.phase_fixture import _emit_host_hook
+    ws, store, run_id, _, _, artifacts = collected_product_handoff
+    assert loop.gate(ws, "pass")["step"] == "design"
+    action = loop.next_action(ws)
+    obligations = action["obligations"]
+    expected = loop.tp.peek_expectation(ws, obligations["task_name"])
+    assert expected["agent"] == obligations["role"] == "tp-design"
+    assert loop.tp.native_worker_role_matches(ws, expected, obligations["task_name"])
+    assert _emit_host_hook(ws, action, "SubagentStart", monkeypatch) == 0
+    monkeypatch.setenv("TASKPLANE_TASK", obligations["contract_bootstrap"]["task_slot"])
+    inputs = loop.phase_harness.read_input(loop, ws, action["stage_runtime_dispatch"])
+    return ws, store, run_id, artifacts, action, inputs
+
+
+def test_worker_reads_selected_graph_and_complete_lens_evidence(readable_design_input):
+    ws, store, run_id, artifacts, action, inputs = readable_design_input
+    before = store.load(run_id)
+    def read(*references):
+        return loop.phase_harness.read_artifact(loop, ws, {
+            "stage_runtime_dispatch": action["stage_runtime_dispatch"],
+            "references": list(references)})
+    baseline = read(inputs["graph_baseline"])
+    assert baseline["content"] == artifacts.read(inputs["graph_baseline"])
+    assert baseline["projection"] == "exact"
+    lens_ref = next(row["reference"] for row in inputs["artifacts"]
+                    if row["artifact_class"] == "lens-evidence")
+    packet = read(lens_ref)["content"]
+    for entry in packet["entries"]:
+        collection = read(lens_ref, entry["collection"])
+        assert collection["content"] == artifacts.read(entry["collection"])
+        assert collection["content"]["results"]
+        plan = read(lens_ref, entry["plan"])
+        original = artifacts.read(entry["plan"])
+        assert plan["projection"] == "lens-plan-evidence"
+        assert plan["content"]["decision"] == original["decision"]
+        assert len(plan["content"]["decision"]) == 26
+        assert set(plan["content"]) == {"schema", "phase", "binding", "decision"}
+        with pytest.raises(ValueError, match="not selected"):
+            read(entry["collection"])
+    assert store.load(run_id) == before
+
+
+@pytest.mark.parametrize("damage", ["unselected", "digest", "path", "authority", "length"])
+def test_worker_artifact_reader_refuses_foreign_or_altered_input(readable_design_input, damage):
+    from taskplane import review_evidence
+    ws, store, run_id, artifacts, action, inputs = readable_design_input
+    request = {"stage_runtime_dispatch": copy.deepcopy(action["stage_runtime_dispatch"]),
+               "references": [copy.deepcopy(inputs["graph_baseline"])]}
+    if damage == "unselected":
+        request["references"] = [review_evidence.portable_artifact_reference(
+            artifacts, artifacts.put("graph-baseline", {"foreign": True}))]
+    elif damage == "digest":
+        request["references"][0]["digest"] = "0" * 64
+    elif damage == "path":
+        request["references"][0]["path"] = "/outside/graph.json"
+    elif damage == "authority":
+        request["stage_runtime_dispatch"]["startup"]["authority"]["authority_fingerprint"] = "0" * 64
+    else:
+        request["references"] *= 3
+    before = store.load(run_id)
+    with pytest.raises(ValueError):
+        loop.phase_harness.read_artifact(loop, ws, request)
+    assert store.load(run_id) == before
+
+
+def test_worker_artifact_reader_cli_and_corrupt_bytes(readable_design_input, monkeypatch, capsys):
+    import io
+    from types import SimpleNamespace
+    from taskplane import tp as cli
+    ws, _, _, artifacts, action, inputs = readable_design_input
+    ref = inputs["graph_baseline"]
+    request = {"stage_runtime_dispatch": action["stage_runtime_dispatch"], "references": [ref]}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(request)))
+    args = SimpleNamespace(stage_action="read-artifact", workspace=ws, request="-")
+    capsys.readouterr()
+    assert cli.cmd_stage(args) == 0
+    assert json.loads(capsys.readouterr().out)["content"] == artifacts.read(ref)
+    Path(artifacts._validated_path(ref)).write_text("{}")
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(request)))
+    assert cli.cmd_stage(args) == 1
+    assert "digest mismatch" in capsys.readouterr().out
+
+
+def test_documented_test_strategy_example_is_accepted():
+    from taskplane import stage_artifacts
+    path = Path(loop.__file__).resolve().parents[1] / "skills/tp-design/references/test-strategy.md"
+    example = path.read_text().split("```json\n", 1)[1].split("\n```", 1)[0]
+    stage_artifacts.validate("test-strategy", json.loads(example))
+
+
+@pytest.fixture
 def collected_lens_design(collected_product_handoff, monkeypatch):
     """Real phase owners with authored test candidates and simulated host events."""
     from taskplane.tests.phase_fixture import _emit_host_hook
