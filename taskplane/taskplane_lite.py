@@ -6067,6 +6067,9 @@ def _worker_loop_completed(contract: dict, state: dict | None) -> bool:
         return True
     if not isinstance(state, dict):
         return False
+    requested_run = (contract.get("phase_runtime") or {}).get("run_id")
+    if requested_run is not None and requested_run != state.get("run_id"):
+        return False
     task = str(lifecycle.get("task") or "")
     step = state.get("step")
     if stage in {"pm", "design", "plan", "em"}:
@@ -6119,12 +6122,14 @@ def sweep_completed_worker_contracts(
         lifecycle = contract["worker_lifecycle"]
         receipt = lifecycle.get("terminal")
         if not isinstance(receipt, dict):
+            outcome = (loop_state or {}).get("terminal_outcome") or "success"
             receipt = record_worker_terminal(
                 workspace,
                 slot,
                 event=None,
-                outcome="success",
-                submission_status="loop_advanced",
+                outcome=outcome,
+                submission_status="loop_terminal:" + str(outcome)
+                if outcome != "success" else "loop_advanced",
                 now=now,
                 authority="session-start",
             )
@@ -6818,6 +6823,11 @@ def record_expected_dispatch(
             same_identity = all(
                 prior.get(k) == entry.get(k) for k in ("kind", "task_name", "agent", "ref")
             )
+            if same_identity and kind == "lens":
+                if any(prior.get(key) != value for key, value in entry.items()
+                       if key not in {"ts", "matched"}):
+                    raise StateError(path, "lens dispatch routing changed")
+                return  # A lease-specific identity never grants a second spawn.
             if same_identity and not prior.get("matched"):
                 prior.update(entry)
                 _save_queue(path, q)

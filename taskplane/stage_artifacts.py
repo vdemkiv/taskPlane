@@ -71,20 +71,27 @@ def _seal(value: Any) -> None:
         raise ValueError("phase artifact fingerprint is stale")
 
 
+REQUIREMENT_REQUIRED: dict[str, type] = {"schema": str, "id": str, "acceptance_criteria": list}
+REQUIREMENT_OPTIONAL: dict[str, type] = {
+    "title": str, "summary": str, "functional": list, "non_functional": dict,
+    "contracts": list, "depends_on": list, "scope": list, "out_of_scope": list,
+}
+
+
+def requirement_shape() -> str:
+    """Render the same closed field contract used by candidate admission."""
+    names: dict[type, str] = {str: "string", list: "array", dict: "object"}
+    def describe(fields: dict[str, type]) -> str:
+        return ", ".join(f"{key} ({names[kind]})" for key, kind in fields.items())
+    return ("Required fields: " + describe(REQUIREMENT_REQUIRED) + ". Optional fields: "
+            + describe(REQUIREMENT_OPTIONAL) + ". No other fields are accepted. ")
+
+
 def requirement(value: Any) -> None:
     _object(
         value,
-        {"schema": str, "id": str, "acceptance_criteria": list},
-        {
-            "title": str,
-            "summary": str,
-            "functional": list,
-            "non_functional": dict,
-            "contracts": list,
-            "depends_on": list,
-            "scope": list,
-            "out_of_scope": list,
-        },
+        REQUIREMENT_REQUIRED,
+        REQUIREMENT_OPTIONAL,
         label="requirement",
     )
     _strings(value["acceptance_criteria"], "acceptance_criteria", nonempty=True)

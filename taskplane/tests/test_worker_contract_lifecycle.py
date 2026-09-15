@@ -242,6 +242,15 @@ def test_session_start_sweeps_only_loop_proven_completed_worker(tmp_path):
         tp.active_contract_path(str(tmp_path), active["task_slot"]))
 
 
+def test_session_start_preserves_interrupted_outcome(tmp_path):
+    contract = _active_worker(tmp_path)
+    released = tp.sweep_completed_worker_contracts(str(tmp_path),
+        loop_state={"step": "failed", "terminal_outcome": "interruption"}, now=20)
+    assert released[0]["outcome"] == "interruption"
+    saved = json.loads(Path(released[0]["quarantine"]).read_text())
+    assert saved["worker_lifecycle"]["terminal"]["submission_status"] == "loop_terminal:interruption"
+
+
 
 
 @pytest.mark.parametrize("active_delivery", [False, True])

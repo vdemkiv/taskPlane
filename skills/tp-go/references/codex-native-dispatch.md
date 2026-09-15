@@ -25,9 +25,16 @@ ambient knowledge, or an unrelated Design.
    Each write-capable worker uses its own registered checkout and contract slot.
 4. Follow the emitted wait policy for the outstanding set. Collect every result
    before asking for an orchestrator gate. A faster worker does not cancel another.
-5. A bounded correction preserves the current scope and attempt identity. If a
-   worker cannot continue, retain its evidence and use an attributable stage
-   close/discard operation. Do not infer completion from interruption.
+5. Before Stop, a bounded correction preserves the current scope and attempt
+   identity and requires fresh lenses for changed drafts. Stop pins the candidate
+   bytes and completion to that turn. Never send a stopped phase worker a
+   follow-up to rewrite its output under the old terminal. For an uncollected
+   Product, Design or Plan attempt with an authenticated Stop, an explicitly
+   authorized correction uses `loop resolve retry --phase-operation <operation>
+   --candidate-fingerprint <current candidate> --worker-stopped --by <human>`.
+   Retain the failed evidence; the engine grants one fresh attempt, slot and
+   native identity within the existing scope and budget. Otherwise use an
+   attributable stage close/discard. Interruption is never completion.
 
 `SubagentStart` binds the pending slot to the worker. `SubagentStop` records its
 actual terminal outcome and releases the slot. These observations do not grant

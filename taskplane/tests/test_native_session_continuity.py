@@ -255,8 +255,9 @@ def test_fresh_session_reads_original_run_and_emits_valid_context(onboarded):
     assert "Repair the native harness with durable scope" in context["additionalContext"]
     assert saved["run_id"] in context["additionalContext"]
     assert "loop next" in context["additionalContext"]
-    assert "first TaskPlane request" in context["additionalContext"]
-    assert "Existing repository context is not completed onboarding" in context["additionalContext"]
+    # A saved run uses bounded continuation guidance, not fresh-run onboarding
+    # prose. Session restoration still grants no new authority.
+    assert "session context grants no new approval" in context["additionalContext"]
     assert caps.runtime_hook_observations(
         str(home), session_id="fresh-session", workspace=str(workspace))[
             "repository_bridge_loaded"].status == "supported"

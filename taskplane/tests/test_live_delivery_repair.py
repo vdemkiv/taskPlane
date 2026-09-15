@@ -1,0 +1,127 @@
+"""Regression tests for the live failure, using explicitly simulated host events."""
+import io
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from taskplane import loop, phase_harness, phase_records, review_evidence, stage_artifacts
+from taskplane import tp as cli
+from taskplane.tests.phase_fixture import (
+    _supporting_pristine_phase_run, _emit_host_hook, _authored_requirement,
+)
+
+
+def product(tmp_path, monkeypatch):
+    ws, store, run_id, requirement = _supporting_pristine_phase_run(tmp_path, monkeypatch)
+    action = loop.next_action(ws)
+    assert not action.get("error"), action
+    _emit_host_hook(ws, action, "SubagentStart", monkeypatch)
+    context = loop._phase_bridge_context(ws, loop.load(ws))
+    operation = phase_harness.operation_id(context)
+    material = review_evidence.ArtifactStore(ws).read(
+        phase_records.phase_records(store.load(run_id))[operation]["result"]["reference"])
+    _authored_requirement(ws, context["stage"])
+    return ws, store, run_id, action, operation, material
+
+
+def test_invalid_candidate_creates_no_specialist_leases(tmp_path, monkeypatch):
+    ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
+    path = Path(ws) / "specs/requirement.json"
+    value = json.loads(path.read_text())
+    value["context_files"] = ["README.md"]
+    path.write_text(json.dumps(value))
+    artifacts = review_evidence.ArtifactStore(ws)
+    before = artifacts.references("lens-plan")
+    with pytest.raises(ValueError, match="unknown fields"):
+        phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    assert artifacts.references("lens-plan") == before
+    inputs = phase_harness.read_input(loop, ws, action["stage_runtime_dispatch"])
+    assert stage_artifacts.requirement_shape() in inputs["instruction"]
+
+
+def test_stopped_invalid_candidate_requires_a_fresh_authorized_attempt(tmp_path, monkeypatch):
+    ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
+    path = Path(ws) / "specs/requirement.json"
+    value = json.loads(path.read_text())
+    path.write_text(json.dumps({**value, "problem": "invalid closed-schema field"}))
+    _emit_host_hook(ws, action, "SubagentStop", monkeypatch, omit_lens_results=True)
+    source = loop.design_host_transport.phase_nonce_source(loop.tp, ws, run_id, existing_only=True)
+    issued = source.recover(material["nonce_bindings"])
+    old_hooks = source.phase_hooks(issued, material["nonce_bindings"])
+    assert old_hooks[1]["outputs"][0]["sha256"]
+    observed_dispatch = next(row for row in loop.load(ws)["dispatch_telemetry"]["bindings"]
+        if row["dispatch_id"] == material["bindings"]["attempt_id"])
+    assert observed_dispatch["ended_at"] == old_hooks[1]["observed_at"]
+    path.write_text(json.dumps(value))
+    rejected = loop.resolve(ws, "reconcile", phase_operation=operation)
+    assert "differ from their authenticated Stop" in rejected["error"]
+    before = store.load(run_id)
+    refused = loop.resolve(ws, "retry", phase_operation=operation,
+        candidate_fingerprint="a" * 64, worker_stopped=False, by="human:simulated")
+    assert refused.get("error") and store.load(run_id) == before
+    result = loop.resolve(ws, "retry", phase_operation=operation,
+        candidate_fingerprint="a" * 64, worker_stopped=True, by="human:simulated")
+    assert not result.get("error"), result
+    assert source.phase_hooks(issued, material["nonce_bindings"]) == old_hooks
+    assert not Path(loop.tp.active_contract_path(ws, material["contract_slot"])).exists()
+    next_action = loop.next_action(ws)
+    assert not next_action.get("error"), next_action
+    assert next_action["obligations"]["task_name"] != action["obligations"]["task_name"]
+    fresh_context = loop._phase_bridge_context(ws, loop.load(ws))
+    fresh = review_evidence.ArtifactStore(ws).read(phase_records.phase_records(store.load(run_id))[
+        phase_harness.operation_id(fresh_context)]["result"]["reference"])
+    assert fresh["bindings"]["budget"] == material["bindings"]["budget"]
+    assert fresh["bindings"]["nonce_digest"] != material["bindings"]["nonce_digest"]
+
+
+def test_terminal_interruption_retires_its_worker_immediately(tmp_path, monkeypatch):
+    ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
+    path = Path(ws) / "specs/requirement.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "problem": "invalid draft"}))
+    _emit_host_hook(ws, action, "SubagentStop", monkeypatch, omit_lens_results=True)
+    from taskplane.tests.test_worker_contract_lifecycle import _active_worker
+    unrelated = _active_worker(Path(ws), stage="plan", task="other", name="tp_other_plan")
+    other_path = Path(loop.tp.active_contract_path(ws, unrelated["task_slot"]))
+    before = other_path.read_bytes()
+    result = loop.terminalize_run(ws, "interruption", by="human:simulated")
+    assert not result.get("error"), result
+    assert result["terminal_cleanup"]["cleanup_status"] == "clean"
+    assert not Path(loop.tp.active_contract_path(ws, material["contract_slot"])).exists()
+    assert other_path.read_bytes() == before
+    assert result["worker_releases"][0]["outcome"] == "interruption"
+    again = loop.terminalize_run(ws, "interruption", by="human:simulated")
+    assert again["fingerprint"] == result["fingerprint"]
+
+
+def test_terminal_cleanup_cannot_release_a_worker_without_its_stop(tmp_path, monkeypatch):
+    ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
+    path = Path(loop.tp.active_contract_path(ws, material["contract_slot"]))
+    before = path.read_bytes()
+    result = loop.terminalize_run(ws, "interruption", by="human:simulated")
+    assert result.get("error"), result
+    assert path.read_bytes() == before
+    assert not loop.load(ws).get("terminal_cleanup")
+
+
+def test_lens_dispatch_has_exact_idempotent_native_expectations(tmp_path, monkeypatch, capsys):
+    ws, store, run_id, action, operation, material = product(tmp_path, monkeypatch)
+    result = phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    artifacts = review_evidence.ArtifactStore(ws)
+    monkeypatch.setenv("TASKPLANE_ENFORCE_DISPATCH", "strict")
+    for slot in result["dispatch"]:
+        role = artifacts.read(slot["brief"])["role"]
+        expected = loop.tp.peek_expectation(ws, role["task_name"])
+        assert expected["ref"] == artifacts.read(slot["lease"])["lease_fingerprint"]
+        event = {"cwd": ws, "tool_name": "spawn_agent", "tool_input": {
+            "task_name": role["task_name"], "reasoning_effort": role["reasoning_effort"],
+            "fork_turns": "none", "message": role["role_marker"]}}
+        monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+        assert cli.cmd_screen_dispatch(SimpleNamespace()) == 0
+        output = capsys.readouterr().out
+        assert "deny" not in output, output
+        assert loop.tp.peek_expectation(ws, role["task_name"]) is None
+    phase_harness.collect_lenses(loop, ws, action["stage_runtime_dispatch"], prepare=True)
+    assert all(loop.tp.peek_expectation(ws, artifacts.read(slot["brief"])["role"]["task_name"])
+        is None for slot in result["dispatch"])

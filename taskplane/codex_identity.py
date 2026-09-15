@@ -139,7 +139,7 @@ def observed_usage(workspace: str, terminal: dict[str, Any], *,
         now=datetime.fromtimestamp(stopped_at, timezone.utc))
     if matched is None or matched[0] != owner["task_name"]:
         raise ValueError("terminal native usage has no exact child source")
-    snapshot = native_session_meter.read_snapshot(matched[1])
+    snapshot = native_session_meter.read_snapshot(matched[1], at_or_before=stopped_at)
     counter_at = datetime.fromisoformat(snapshot["observed_at"].replace("Z", "+00:00"))
     if snapshot["session_id"] != owner["agent_id"] or \
             snapshot["root_session_id"] != owner["session_id"] or \

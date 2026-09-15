@@ -128,6 +128,9 @@ def compile_brief(
         "Do not change run scope or approval, clear contracts or fabricate lifecycle observations. "
     )
     if phase == "product":
+        from taskplane import stage_artifacts
+
+        instruction += stage_artifacts.requirement_shape()
         instruction += (
             "Author a requirement candidate with schema taskplane.requirement/v1, the supplied id "
             "and title, and nonempty acceptance_criteria preserving the supplied acceptance criteria. "
@@ -517,7 +520,12 @@ def prepare_lenses(
     candidates: dict[str, Any],
 ) -> dict[str, Any]:
     """Select only this attempt's immutable input, then use the shared kernel."""
-    from taskplane import review, review_evidence, lens
+    from taskplane import review, review_evidence, lens, stage_artifacts
+
+    # Reject a malformed Product draft before minting leases or paying for
+    # specialist review. This is the collector's canonical closed schema.
+    if "requirement" in candidates:
+        stage_artifacts.validate("requirement", candidates["requirement"])
 
     definition, store = context["definition"], context["artifacts"]
     requirement = worker_input["requirement"]
@@ -627,10 +635,13 @@ def prepare_lenses(
     )
 
 
-def phase_candidates(runtime: Any, workspace: str, material: dict[str, Any]) -> dict[str, Any]:
+def phase_candidates(runtime: Any, workspace: str, material: dict[str, Any], *,
+                     observed_outputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Read selected drafts and derive Plan outputs before review or collection."""
-    authored = {}
-    for artifact_class, path in material["output_paths"].items():
+    import hashlib
+
+    authored, observations = {}, []
+    for artifact_class, path in sorted(material["output_paths"].items()):
         output_root, relative = runtime._phase_bridge_output_location(workspace, path)
         raw = runtime._stage_loop_read_output_no_follow(
             output_root,
@@ -639,6 +650,13 @@ def phase_candidates(runtime: Any, workspace: str, material: dict[str, Any]) -> 
             remaining_bytes=os.stat(os.path.join(output_root, relative)).st_size,
         )
         authored[artifact_class] = runtime.json.loads(raw)
+        observations.append({"artifact_class": artifact_class, "path": path,
+                             "sha256": hashlib.sha256(raw).hexdigest()})
+    if observed_outputs is not None and observations != observed_outputs:
+        raise ValueError(
+            "phase candidates differ from their authenticated Stop; "
+            "an authorized successor attempt is required"
+        )
     if material["bindings"]["phase_id"] == "plan":
         state = runtime.load(workspace)
         context = runtime._phase_bridge_context(workspace, state)
@@ -660,6 +678,44 @@ def phase_candidates(runtime: Any, workspace: str, material: dict[str, Any]) -> 
             workspace=workspace,
         )
     return authored
+
+
+def _phase_output_observations(runtime: Any, workspace: str, material: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pin raw candidate bytes at Stop even when their schema is invalid."""
+    import hashlib
+
+    outputs = []
+    for artifact_class, path in sorted(material["output_paths"].items()):
+        root, relative = runtime._phase_bridge_output_location(workspace, path)
+        try:
+            raw = runtime._stage_loop_read_output_no_follow(
+                root, relative, required=True,
+                remaining_bytes=os.lstat(os.path.join(root, relative)).st_size,
+            )
+            observation: dict[str, Any] = {"sha256": hashlib.sha256(raw).hexdigest()}
+        except (OSError, ValueError):
+            observation = {"unavailable": True}
+        outputs.append({"artifact_class": artifact_class, "path": path, **observation})
+    return outputs
+
+
+def _stopped_retry_terminal(runtime: Any, ws: str, material: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
+    """Authenticate an uncollected pre-build worker independently of its draft."""
+    if material["bindings"]["phase_id"] not in {"product", "design", "plan"}:
+        raise ValueError("stopped phase retry is pre-build only")
+    source = runtime.design_host_transport.phase_nonce_source(
+        runtime.tp, ws, material["bindings"]["run_id"], existing_only=True
+    )
+    issued = source.recover(material["nonce_bindings"])
+    start, terminal = source.phase_hooks(issued, material["nonce_bindings"])
+    lifecycle = contract.get("worker_lifecycle") or {}
+    if lifecycle.get("status") != "active" or any(
+        lifecycle.get("owner") != {key: observed["owner"][key]
+            for key in ("session_id", "agent_id", "task_name")}
+        for observed in (start, terminal)
+    ):
+        raise ValueError("phase retry lacks its exact stopped worker")
+    return cast(dict[str, Any], terminal)
 
 
 def collect_lenses(
@@ -971,12 +1027,14 @@ def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> d
     ):
         raise ValueError("phase terminal owner differs from the bound worker")
     record_dispatch(runtime, ws, contract, material, start)
+    # Terminal accounting is a host fact even when the stopped draft cannot
+    # be accepted. Keep failed attempts closed in the usage ledger as well.
+    _reconcile_usage(runtime, ws, contract, material, terminal)
     result = runtime._collect_phase_attempt(
         ws, attempt, completed_worker=terminal if hooks is None else None
     )
     if result["status"] != "collected":
         return {**result, "dispatch_allowed": False}
-    _reconcile_usage(runtime, ws, contract, material, terminal)
     runtime.collect_phase_runtime_telemetry(ws, contract)
     if hooks is None:
         # Current validation is not a historical Stop. Keep the slot intact;
@@ -1112,7 +1170,7 @@ def _reconcile_usage(
 
 
 def release_expired(runtime: Any, ws: str, result: dict[str, Any]) -> None:
-    """Retire only the exact unbound slot; this is not native completion."""
+    """Retire the exact granted slot, retaining any authenticated native Stop."""
     from taskplane import review_evidence
 
     slot = result["contract_slot"]
@@ -1122,15 +1180,27 @@ def release_expired(runtime: Any, ws: str, result: dict[str, Any]) -> None:
         if contract is None:
             return  # Authenticated release already quarantined it.
         original = review_evidence.ArtifactStore(ws).read(result["contract_reference"])
+        material = review_evidence.ArtifactStore(ws).read(result["previous_preparation"])
         lifecycle = contract.get("worker_lifecycle") or {}
         submission = "human-authorized-phase-retry:" + result["previous_operation"]
         if lifecycle.get("status") == "terminal":
             terminal = lifecycle.get("terminal") or {}
-            if (
-                terminal.get("authority") != "orphan-recovery"
-                or terminal.get("submission_status") != submission
-            ):
+            stopped = (original.get("worker_lifecycle") or {}).get("status") == "active"
+            if stopped:
+                observed = _stopped_retry_terminal(runtime, ws, material, original)
+                expected = ("phase-observation", "phase-terminal:" + observed["claim"])
+            else:
+                expected = ("orphan-recovery", submission)
+            if (terminal.get("authority"), terminal.get("submission_status")) != expected:
                 raise ValueError("expired worker has a different terminal result")
+        elif contract == original and lifecycle.get("status") == "active":
+            observed = _stopped_retry_terminal(runtime, ws, material, contract)
+            _reconcile_usage(runtime, ws, contract, material, observed)
+            terminal = runtime.tp.record_worker_terminal(
+                ws, slot, event=None, outcome=observed["outcome"],
+                submission_status="phase-terminal:" + observed["claim"],
+                authority="phase-observation",
+            )
         else:
             if (
                 contract != original
@@ -1165,8 +1235,9 @@ def resolve_retry(
 ) -> dict[str, Any]:
     """One human-authorized successor attempt, retaining the failed evidence.
 
-    Expired unbound workers require an explicit stop attestation. Active or
-    effect-owning Build workers need reconciliation, not this recovery path.
+    Expired unbound workers require an explicit stop attestation. A stopped
+    pre-build worker requires its authenticated terminal. Running workers and
+    effect-owning Build workers cannot use this recovery path.
     The journal grant precedes cleanup; a crash is replayable and next cannot
     dispatch while cleanup is incomplete. Routing still has its single owner.
     """
@@ -1253,19 +1324,20 @@ def resolve_retry(
     material = context["artifacts"].read(prepared["result"]["reference"])
     if prepared["request_fingerprint"] != review_evidence.content_fingerprint(material):
         raise ValueError("phase preparation changed")
-    deadline = datetime.fromisoformat(material["bindings"]["deadline"])
-    if deadline.tzinfo is None or time.time() < deadline.timestamp():
-        raise ValueError("phase retry requires an expired attempt")
     slot = material["contract_slot"]
     contract = runtime.tp.load_json(
         runtime.tp.active_contract_path(ws, slot), what="expired phase contract"
     )
     lifecycle = contract.get("worker_lifecycle") or {}
-    if (
-        lifecycle.get("status") != "pending"
-        or lifecycle.get("owner") is not None
-        or (contract.get("phase_runtime") or {}).get("operation_id") != operation
-    ):
+    if (contract.get("phase_runtime") or {}).get("operation_id") != operation:
+        raise ValueError("phase retry contract belongs to another operation")
+    if lifecycle.get("status") == "active":
+        _stopped_retry_terminal(runtime, ws, material, contract)
+    elif lifecycle.get("status") == "pending" and lifecycle.get("owner") is None:
+        deadline = datetime.fromisoformat(material["bindings"]["deadline"])
+        if deadline.tzinfo is None or time.time() < deadline.timestamp():
+            raise ValueError("phase retry requires an expired attempt")
+    else:
         raise ValueError("phase worker is not unbound; reconcile its actual terminal/effects first")
     # Preserve the exact pre-recovery object, not just its terminal projection.
     snapshot = context["artifacts"].put("phase-retry-contract", contract)
@@ -2459,7 +2531,9 @@ def observe_phase_runtime_hook(
     source = runtime.nonce
     # Lifecycle is independent of candidate validity and serialization.
     observed = _ports.design_host_transport.observe_phase_hook(
-        _ports.tp, ws, contract, event, nonce=source, bindings=dispatch.nonce_bindings
+        _ports.tp, ws, contract, event, nonce=source, bindings=dispatch.nonce_bindings,
+        outputs=_phase_output_observations(_ports, ws, material)
+        if event.get("hook_event_name") == "SubagentStop" else None,
     )
     if observed["kind"] == "start":
         _ports.phase_harness.record_dispatch(_ports, ws, contract, material, observed)
@@ -2590,7 +2664,8 @@ def _collect_phase_attempt(
         if stage["stage_kind"] == "build"
         else None
     )
-    authored = phase_candidates(_ports, ws, material)
+    authored = phase_candidates(_ports, ws, material,
+        observed_outputs=terminal["outputs"] if completed_worker is None else None)
     lens_plan = None
     if any(row["artifact_class"] == "lens-evidence" for row in definition["produces"]):
         lens_plan = prepare_lenses(

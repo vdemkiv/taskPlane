@@ -152,3 +152,22 @@ def test_terminal_usage_uses_only_exact_current_child_counter(native, case):
         with pytest.raises(ValueError):
             codex_identity.observed_usage(workspace, terminal, codex_home=str(home))
     assert path.read_bytes() == before
+
+
+def test_later_turn_does_not_erase_the_stopped_turn_counter(native):
+    home, path, metadata, event = native
+    records = [metadata]
+    for ordinal, timestamp, total in [(5, "2026-09-07T00:00:00Z", 100),
+                                       (9, "2026-09-07T00:06:25Z", 900)]:
+        records.append({"type": "event_msg", "ordinal": ordinal, "timestamp": timestamp,
+            "payload": {"type": "token_count", "info": {"total_token_usage": {
+                "input_tokens": total - 5, "cached_input_tokens": 70,
+                "output_tokens": 5, "reasoning_output_tokens": 1, "total_tokens": total}}}})
+    path.write_text("".join(json.dumps(row) + "\n" for row in records))
+    terminal = {"observed_at": NOW.timestamp() + 1, "owner": {
+        "agent_id": CHILD, "session_id": PARENT, "agent_type": "default", "task_name": NAME}}
+    before = path.read_bytes()
+    snapshot = codex_identity.observed_usage(event["cwd"], terminal, codex_home=str(home))
+    assert snapshot["usage"]["total_tokens"] == 100
+    assert snapshot["ordinal"] == 5
+    assert path.read_bytes() == before

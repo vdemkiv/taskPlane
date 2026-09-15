@@ -21,6 +21,7 @@ import math
 import os
 import re
 import stat
+from datetime import datetime
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -160,7 +161,7 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
     raise NativeSessionMeterError("current native session metadata is unavailable")
 
 
-def _latest_counter(tail: bytes) -> tuple[dict[str, Any], bytes]:
+def _latest_counter(tail: bytes, *, at_or_before: float | None = None) -> tuple[dict[str, Any], bytes]:
     # The first tail record may start mid-line.  It cannot be authenticated as
     # a complete JSON event, so discard it unless the tail begins at byte zero.
     lines = tail.splitlines()
@@ -176,6 +177,15 @@ def _latest_counter(tail: bytes) -> tuple[dict[str, Any], bytes]:
         payload = row.get("payload")
         if not isinstance(payload, Mapping) or payload.get("type") != "token_count":
             continue
+        if at_or_before is not None:
+            try:
+                instant = datetime.fromisoformat(str(row.get("timestamp") or "").replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise NativeSessionMeterError("native counter timestamp is invalid") from exc
+            if instant.tzinfo is None:
+                raise NativeSessionMeterError("native counter timestamp requires a timezone")
+            if instant.timestamp() > at_or_before:
+                continue
         info = payload.get("info")
         total = info.get("total_token_usage") if isinstance(info, Mapping) else None
         if not isinstance(total, Mapping):
@@ -210,8 +220,8 @@ def _latest_counter(tail: bytes) -> tuple[dict[str, Any], bytes]:
     raise NativeSessionMeterError("native session has no complete token counter")
 
 
-def read_snapshot(path: str) -> dict[str, Any]:
-    """Read one current native session identity and cumulative counter."""
+def read_snapshot(path: str, *, at_or_before: float | None = None) -> dict[str, Any]:
+    """Read one identity and bounded counter, optionally at an authenticated stop."""
     selected = os.path.realpath(str(path or ""))
     try:
         with open(selected, "rb") as stream:
@@ -239,7 +249,7 @@ def read_snapshot(path: str) -> dict[str, Any]:
         if not separator:
             raise NativeSessionMeterError("native counter tail contains no complete record")
     metadata, metadata_record = _session_metadata(prefix)
-    counter, counter_record = _latest_counter(tail)
+    counter, counter_record = _latest_counter(tail, at_or_before=at_or_before)
     source = {
         "path_fingerprint": hashlib.sha256(selected.encode("utf-8")).hexdigest(),
         "device": int(before.st_dev),

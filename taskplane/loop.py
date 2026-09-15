@@ -3299,6 +3299,11 @@ def _bind_stateless_review_contract_actions(
             "expected": expected,
             "action": action,
         }
+        tp.record_expected_dispatch(
+            review_ws, "lens", role["agent"], role["model_tier"], tp.model_for_tier(role["model_tier"]),
+            ref=lease["lease_fingerprint"], task_name=worker_identity,
+            reasoning_effort=role["reasoning_effort"], role_marker_value=role_marker,
+        )
     if outstanding_members:
         if any(not isinstance(row, Mapping) for row in wait_policies) or any(
             dict(row) != dict(wait_policies[0]) for row in wait_policies[1:]
@@ -8058,6 +8063,50 @@ def _reconcile_whole_run_terminal_stage(
     return checked
 
 
+def _retire_terminal_run_workers(ws: str, intent: Mapping[str, object]) -> list[dict]:
+    """Revoke only this run's signed worker slots under its terminal authority.
+
+    This is control-plane interruption, never a claim that a native worker
+    completed successfully. Other runs and the orchestrator keep their slots.
+    """
+    from taskplane import review_evidence
+
+    selected = []
+    for slot, contract in tp._active_worker_contracts(ws):
+        requested = contract.get("phase_runtime") or {}
+        if requested.get("run_id") != intent["run_id"]:
+            continue
+        material = review_evidence.ArtifactStore(ws).read(requested["reference"])
+        if material["contract_slot"] != slot or material["bindings"]["run_id"] != intent["run_id"]:
+            raise ValueError("terminal worker has a foreign phase binding")
+        lifecycle = contract["worker_lifecycle"]
+        tp._verify_worker_release_action(ws, slot, lifecycle["release_action"], contract)
+        if lifecycle.get("status") == "active":
+            source = design_host_transport.phase_nonce_source(tp, ws, str(intent["run_id"]), existing_only=True)
+            issued = source.recover(material["nonce_bindings"])
+            start, terminal = source.phase_hooks(issued, material["nonce_bindings"])
+            if any(lifecycle.get("owner") != {key: observed["owner"][key]
+                    for key in ("session_id", "agent_id", "task_name")}
+                    for observed in (start, terminal)):
+                raise ValueError("stop the exact active worker before terminal cleanup")
+        selected.append((slot, contract))
+    releases = []
+    for slot, contract in selected:
+        with tp.file_lock(tp.active_contract_path(ws, slot)):
+            if tp.load_json(tp.active_contract_path(ws, slot), default=None) != contract:
+                raise ValueError("terminal worker changed during cleanup; reconcile its lifecycle")
+            lifecycle = contract["worker_lifecycle"]
+            terminal = lifecycle.get("terminal") or tp.record_worker_terminal(
+                ws, slot, event=None, outcome=intent["outcome"],
+                submission_status="whole-run-terminal:" + str(intent["fingerprint"]),
+                authority="loop-gate",
+            )
+            releases.append(tp.release_worker_contract(
+                ws, slot, action=lifecycle["release_action"], terminal_receipt=terminal,
+            ))
+    return releases
+
+
 def _complete_whole_run_terminal(ws: str, intent: Mapping[str, object]) -> dict:
     """Replay one persisted exact terminal intent through existing owners."""
     state = load(ws)
@@ -8076,6 +8125,7 @@ def _complete_whole_run_terminal(ws: str, intent: Mapping[str, object]) -> dict:
             "fingerprint"
         ) != _terminal_fingerprint(material):
             raise ValueError("whole-run terminal receipt conflicts")
+        _retire_terminal_run_workers(ws, intent)
         transition = _reconcile_whole_run_terminal_stage(
             ws, state, receipt.get("stage_predecessor")
         )
@@ -8093,6 +8143,7 @@ def _complete_whole_run_terminal(ws: str, intent: Mapping[str, object]) -> dict:
     # Stage-native startup is itself replay-safe and must occur only after the
     # intent has been made durable.
     _stage_bootstrap_pristine_root(ws, state)
+    worker_releases = _retire_terminal_run_workers(ws, intent)
     with mutate(ws) as locked:
         if locked is None:
             raise ValueError("whole-run terminal replay lost its run")
@@ -8156,6 +8207,7 @@ def _complete_whole_run_terminal(ws: str, intent: Mapping[str, object]) -> dict:
         "terminal_metrics": state.get("terminal_metrics"),
         "terminal_artifacts": state.get("terminal_artifacts"),
         "terminal_cleanup": state.get("terminal_cleanup"),
+        "worker_releases": worker_releases,
         "activity_fingerprint": activity["fingerprint"],
         "stage_predecessor": stage_predecessor,
     }
