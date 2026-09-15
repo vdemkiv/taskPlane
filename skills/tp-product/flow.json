@@ -47,7 +47,7 @@
     },
     {
       "id": "context",
-      "label": "product context + decisions",
+      "label": "product context + scoped operation readiness",
       "kind": "stage"
     },
     {
@@ -62,7 +62,7 @@
     },
     {
       "id": "dor",
-      "label": "Product DoR definition",
+      "label": "explicit Product content and operation DoR",
       "kind": "parallel"
     },
     {
@@ -72,7 +72,7 @@
     },
     {
       "id": "approval",
-      "label": "human approve / sign-off",
+      "label": "Product DoD evidence + applicable human disposition",
       "kind": "gate"
     },
     {
@@ -82,7 +82,7 @@
     },
     {
       "id": "terminal_handoff",
-      "label": "done / closed / discarded (no implicit Build)",
+      "label": "retained result + exact standalone finish; no implicit Build",
       "kind": "stage"
     }
   ],

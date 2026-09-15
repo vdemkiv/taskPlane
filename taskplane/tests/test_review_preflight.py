@@ -199,11 +199,9 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
     ]
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    guidance_paths = [
-        "agents/tp-product.md", "agents/tp-engineering.md",
-        "skills/tp-product/SKILL.md", "skills/tp-engineering/SKILL.md",
-        "docs/cli-reference.md",
-    ]
+    # Legacy delivery continuation belongs to the generated CLI reference;
+    # standalone Product and native review no longer require this workflow.
+    guidance_paths = ["docs/cli-reference.md"]
     for relative in guidance_paths:
         with open(os.path.join(root, relative), encoding="utf-8") as stream:
             guidance = stream.read()

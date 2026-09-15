@@ -180,6 +180,161 @@ class TestRefinementScorer(unittest.TestCase):
         self.assertNotIn("proceed", scored["recommendation"].lower())
 
 
+class TestProductGatePresentation(unittest.TestCase):
+    def setUp(self):
+        self.workspace = tempfile.TemporaryDirectory()
+        self.addCleanup(self.workspace.cleanup)
+        self.ws = self.workspace.name
+
+    def ready_requirement(self):
+        return req.record_requirement(
+            self.ws, "save the Product draft",
+            functional=["Product saves its declared document"],
+            acceptance=["The saved document is readable after normal completion"],
+            nfr={"security": "Source edits remain refused",
+                 "architecture": "Use the existing requirement store"})
+
+    def test_ready_draft_is_not_completed_product_or_implementation(self):
+        row = self.ready_requirement()
+        scored = req.gate(row)
+        self.assertEqual(scored["score"], 1.0)
+        summary = scored["product_gates"]
+        self.assertEqual(summary["dor"]["status"], "passed")
+        self.assertEqual(summary["human_decision"]["status"], "pending")
+        self.assertEqual(summary["dod"]["status"], "pending")
+        self.assertEqual(summary["implementation_acceptance"]["status"], "not_verified")
+        self.assertEqual(summary["implementation_acceptance"]["criteria"][0]["criterion"],
+                         row["acceptance"][0])
+        self.assertNotIn("product_gates", req.get_requirement(self.ws, row["id"]))
+
+    def test_recorded_approval_does_not_supply_phase_review_evidence(self):
+        row = self.ready_requirement()
+        req.product_signoff(self.ws, row["id"], decision="approve", by="Proceed")
+        summary = req.product_gate_summary(req.get_requirement(self.ws, row["id"]))
+        self.assertEqual(summary["human_decision"]["status"], "approval_recorded")
+        self.assertEqual(summary["dod"]["status"], "not_verified")
+        review = next(item for item in summary["dod"]["criteria"]
+                      if item["id"] == "phase_review")
+        self.assertEqual(review["status"], "not_verified")
+        self.assertTrue(review["gap"])
+        self.assertEqual(review["next_owner"], "Product review owner")
+        self.assertEqual(summary["implementation_acceptance"]["status"], "not_verified")
+
+    def test_status_label_alone_is_not_a_human_decision(self):
+        row = self.ready_requirement()
+        req.set_status(self.ws, row["id"], "product-approved")
+        summary = req.product_gate_summary(req.get_requirement(self.ws, row["id"]))
+        self.assertEqual(summary["human_decision"]["status"], "pending")
+        self.assertEqual(summary["dod"]["status"], "pending")
+
+    def test_requested_changes_keep_content_readiness_separate_from_completion(self):
+        row = self.ready_requirement()
+        req.product_signoff(self.ws, row["id"], decision="changes",
+                            by="Make the acceptance criterion clearer")
+        summary = req.product_gate_summary(req.get_requirement(self.ws, row["id"]))
+        self.assertEqual(summary["dor"]["status"], "passed")
+        self.assertEqual(summary["human_decision"]["status"], "changes_requested")
+        self.assertEqual(summary["dod"]["status"], "changes_required")
+        self.assertIn("Revise the same requirement", summary["human_decision"]["gap"])
+
+    def test_amendment_removes_current_approval_from_readable_projection(self):
+        row = self.ready_requirement()
+        req.product_signoff(self.ws, row["id"], decision="approve", by="Proceed")
+        amended = req.amend_requirement(
+            self.ws, row["id"], acceptance=["The revised document includes gate evidence"])
+        summary = req.product_gate_summary(amended)
+        self.assertEqual(summary["human_decision"]["status"], "pending")
+        self.assertEqual(len(amended["product_signoff_history"]), 1)
+        with open(req.requirement_file(self.ws, amended), encoding="utf-8") as stream:
+            body = stream.read()
+        self.assertIn("No current attributed Product decision", body)
+        self.assertNotIn('"by": "Proceed"', body)
+        self.assertIn("The revised document includes gate evidence", body)
+
+    def test_missing_required_nfr_is_a_visible_failed_criterion(self):
+        row = self.ready_requirement()
+        del row["nfr"]["architecture"]
+        summary = req.product_gate_summary(row)
+        self.assertEqual(summary["dor"]["status"], "failed")
+        self.assertEqual(summary["dod"]["status"], "failed")
+        architecture = next(item for item in summary["dor"]["criteria"]
+                            if item["id"] == "nfr:architecture")
+        self.assertEqual(architecture["status"], "failed")
+        self.assertIn("architecture", architecture["gap"])
+        self.assertEqual(architecture["next_owner"], "Product")
+
+    def test_readable_requirement_exposes_criteria_evidence_and_owners(self):
+        row = self.ready_requirement()
+        with open(req.requirement_file(self.ws, row), encoding="utf-8") as stream:
+            body = stream.read()
+        self.assertIn("Product DoR — requirement content", body)
+        self.assertIn("Product DoD — phase completion", body)
+        self.assertIn("Implementation DoD", body)
+        self.assertIn("Source edits remain refused", body)
+        self.assertIn("Product review owner", body)
+        self.assertIn("Not established by the requirement record", body)
+        self.assertIn("not_verified", body)
+
+    def test_blank_content_fails_shared_readiness_and_cannot_receive_signoff(self):
+        cases = (
+            ("functional", {"functional": [""]}),
+            ("functional", {"functional": ["A real behavior", " \t\n"]}),
+            ("acceptance", {"acceptance": [""]}),
+            ("acceptance", {"acceptance": ["An observable result", " \t\n"]}),
+            ("nfr:security", {"nfr": {"security": ""}}),
+            ("nfr:architecture", {"nfr": {"architecture": " \t\n"}}),
+        )
+        for criterion_id, amendment in cases:
+            with self.subTest(criterion=criterion_id, amendment=amendment):
+                row = self.ready_requirement()
+                amended = req.amend_requirement(self.ws, row["id"], **amendment)
+                scored = req.gate(amended)
+                self.assertLess(scored["score"], 1.0)
+                self.assertFalse(scored["product_dor_passed"])
+                summary = scored["product_gates"]
+                self.assertEqual(summary["dor"]["status"], "failed")
+                self.assertEqual(summary["dod"]["status"], "failed")
+                item = next(item for item in summary["dor"]["criteria"]
+                            if item["id"] == criterion_id)
+                self.assertEqual(item["status"], "failed")
+                self.assertTrue(item["gap"])
+                with self.assertRaises(req.ProductSignoffError):
+                    req.product_signoff(self.ws, row["id"], decision="approve", by="Proceed")
+                self.assertNotIn("product_signoff", req.get_requirement(self.ws, row["id"]))
+                with open(req.requirement_file(self.ws, amended), encoding="utf-8") as stream:
+                    body = stream.read()
+                self.assertIn("**Status: failed**", body)
+                if criterion_id == "acceptance":
+                    self.assertEqual(summary["implementation_acceptance"]["status"], "failed")
+
+    def test_blank_applicable_nfr_never_counts_as_covered_in_shared_score(self):
+        row = self.ready_requirement()
+        for axis in req.NFR_LENSES:
+            for blank in ("", " \t\n"):
+                with self.subTest(axis=axis, blank=blank):
+                    candidate = {**row, "nfr": {**row["nfr"], axis: blank}}
+                    scored = req.score_axes(candidate, [axis])
+                    self.assertNotIn(axis, scored["covered_nfr"])
+                    self.assertLess(scored["score"], 1.0)
+                    self.assertTrue(any(gap.get("lens") == axis for gap in scored["gaps"]))
+
+    def test_nonblank_statements_keep_original_text_and_remain_ready(self):
+        row = self.ready_requirement()
+        amended = req.amend_requirement(
+            self.ws, row["id"], functional=["  Save the document\n"],
+            acceptance=["\tThe saved document is readable  "],
+            nfr={"security": "  Refuse source writes\n",
+                 "architecture": "\tReuse the existing store  "})
+        scored = req.gate(amended)
+        self.assertTrue(scored["product_dor_passed"])
+        self.assertEqual(scored["score"], 1.0)
+        self.assertTrue(all(item["status"] == "passed"
+                            for item in scored["product_gates"]["dor"]["criteria"]))
+        req.product_signoff(self.ws, row["id"], decision="approve", by="Proceed")
+        self.assertEqual(req.get_requirement(self.ws, row["id"])["functional"],
+                         ["  Save the document\n"])
+
+
 class TestTaskModeAndDebt(unittest.TestCase):
     def setUp(self):
         self.ws = tempfile.mkdtemp()

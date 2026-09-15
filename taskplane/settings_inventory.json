@@ -90,6 +90,7 @@
         "CLAUDE_CODE_WORKFLOWS",
         "CLAUDE_SESSION_ID",
         "CODEX_HOME",
+        "CODEX_SANDBOX",
         "CODEX_THREAD_ID",
         "CODEX_VERSION",
         "TASKPLANE_AGENT_PID",

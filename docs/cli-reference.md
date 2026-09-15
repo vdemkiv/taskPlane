@@ -108,8 +108,9 @@ not repeated in the tables.
 | `tp.py req mode` | pick the delivery mode for a refinement score and change size |
 | `tp.py req new` | record a requirement (or a change request) |
 | `tp.py req score` | score a requirement's refinement against the bar |
+| `tp.py req show` | show a requirement with separate Product DoR and DoD |
 | `tp.py req signoff` | record the human Product gate |
-| `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
+| `tp.py review` | pin source for native review or inspect existing delivery review evidence |
 | `tp.py review activate-contract` | verify one signed leased-review action and activate only its producer slot |
 | `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
 | `tp.py review evidence` | record approved dynamic validation or render evidence |
@@ -117,7 +118,7 @@ not repeated in the tables.
 | `tp.py review resume` | apply one explicit user decision and continue the same repository preflight and review |
 | `tp.py review sandbox` | create a disposable writable PR copy for validation-only build repair and dynamic checks |
 | `tp.py review signoff` | record the human decision for a collected standalone review |
-| `tp.py review start` | establish the facts and activate the read-only contract |
+| `tp.py review start` | pin source for native review without a contract |
 | `tp.py review validate` | run one argv-only dynamic check inside the registered validation sandbox and record its evidence |
 | `tp.py root-seed` | prepare the reference-only seed before root start |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
@@ -197,6 +198,7 @@ deactivate the workspace contract
 | `--all` | flag | release EVERY active slot, not just this process's — the way out when a wave leaked contracts |
 | `--approved-by` | APPROVED_BY | human chat identity authorizing recovery past an exhausted budget |
 | `--slot` | SLOT | release one named slot (see `tp contracts`) without setting TASKPLANE_TASK |
+| `--task-id` | TASK_ID | finish only this exact standalone Product contract |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py command`
@@ -938,6 +940,7 @@ Positional arguments:
 | --- | --- | --- |
 | `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--allow-foreign-state` | ROOT (repeatable) | repeatable exact signed foreign-state root to include; requires --by and is recorded on the contract |
+| `--available-tools` | AVAILABLE_TOOLS | current native tool names for Product entry compatibility |
 | `--base` | REF | diff base for the target pin (e.g. origin/main) |
 | `--budget` | BUDGET | cooperative $ ceiling |
 | `--by` | BY | human identity required with --advisory or a foreign-state override |
@@ -946,6 +949,7 @@ Positional arguments:
 | `--max-actions` | MAX_ACTIONS | hook-enforced action ceiling (default 60) |
 | `--max-tokens` | N | EFFECTIVE-token ceiling for this contract (cache reads x0.1, cache writes x2, output x5 — the weighting cost actually follows). Counts what the host recorded, so it tracks spend where the action ceiling only counts tool calls. Unset = action ceiling only, exactly as before. |
 | `--owes` | RUN_TYPE | seed the artifacts this run type owes as BINDING obligations (e.g. `review`): recorded before the work starts, and taskplane's own completion commands stay blocked until each is shown |
+| `--product` | flag | standalone Product: native reads, docs/specs/knowledge writes, scoped finish |
 | `--read-only` | flag | review/plan role — block filesystem writes |
 | `--scope` | SCOPE | comma-separated scope globs (relative) |
 | `--target` | SPEC | what is being reviewed — a PR url, OWNER/REPO#N, or a ref. Pins this checkout (origin, head, base, dirty state) so the findings can cite the tree they came from and the completion gate can check it |
@@ -1135,6 +1139,14 @@ Positional arguments:
 | `--task-type` | TASK_TYPE | declared task type — sets the refinement bar this requirement is scored against |
 | `--threshold` | THRESHOLD | refinement score the requirement must reach (default 0.6) |
 
+## `tp.py req show`
+
+show a requirement with separate Product DoR and DoD
+
+Positional arguments:
+
+- `id` (required)
+
 ## `tp.py req signoff`
 
 record the human Product gate
@@ -1151,7 +1163,7 @@ Positional arguments:
 
 ## `tp.py review`
 
-open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload
+pin source for native review or inspect existing delivery review evidence
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1236,10 +1248,10 @@ apply one explicit user decision and continue the same repository preflight and 
 | `--action-id` | ACTION_ID (required) | exact pending user-action id |
 | `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--by` | BY (required) | the user's approving/cancelling chat identity |
-| `--goal` | GOAL | contract goal text after preflight resumes |
-| `--max-actions` | MAX_ACTIONS | action ceiling for the resumed review contract |
+| `--goal` | GOAL | review goal text after preflight resumes |
+| `--max-actions` | MAX_ACTIONS | optional advisory action limit for the resumed review |
 | `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
-| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the resumed review |
+| `--max-tokens` | MAX_TOKENS | optional advisory token limit for the resumed review |
 | `--paths` | PATHS | changed files, directories or globs to review |
 | `--response` | one of: approve, retry, initialize, cancel (required) | the user's decision for the pending action |
 | `--run-id` | RUN_ID (required) | run-id from the needs_user preflight response |
@@ -1272,7 +1284,7 @@ Positional arguments:
 
 ## `tp.py review start`
 
-establish the facts and activate the read-only contract
+pin source for native review without a contract
 
 Positional arguments:
 
@@ -1284,12 +1296,13 @@ Positional arguments:
 | `--base` | BASE | diff base ref |
 | `--by` | BY | human identity required with --advisory |
 | `--fetch` | flag | fetch pull/N/head into this checkout first |
-| `--goal` | GOAL | contract goal text (default: derived) |
-| `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
+| `--goal` | GOAL | review goal text |
+| `--max-actions` | MAX_ACTIONS | optional advisory action limit; native tools own execution |
 | `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
-| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
+| `--max-tokens` | MAX_TOKENS | optional advisory token limit; native tools own execution |
 | `--paths` | PATHS | changed files, directories or globs to review |
 | `--run-id` | RUN_ID | resume or deterministically name the repository preflight run |
+| `--scope` | one of: diff, repository | review a comparison or a committed repository snapshot |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py review validate`

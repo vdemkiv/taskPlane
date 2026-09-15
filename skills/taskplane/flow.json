@@ -3,8 +3,8 @@
   "skill": "taskplane",
   "approval": {
     "status": "human-approved",
-    "scope": "all-10",
-    "date": "2026-08-14"
+    "scope": "native source review simplification",
+    "date": "2026-09-14"
   },
   "settings": {
     "source": "taskplane/operational-settings.json",
@@ -37,18 +37,14 @@
       "discarded"
     ],
     "implicit_build": false,
-    "default": "taskplane.run/v4"
+    "default": "taskplane.run/v4",
+    "applies_to": "explicit delivery only"
   },
   "nodes": [
     {
       "id": "goal",
       "label": "user goal",
       "kind": "input"
-    },
-    {
-      "id": "onboarding",
-      "label": "check and present setup; preserve the request",
-      "kind": "control"
     },
     {
       "id": "route",
@@ -87,7 +83,7 @@
     },
     {
       "id": "review",
-      "label": "engineering review",
+      "label": "native source review and direct findings",
       "kind": "branch"
     },
     {
@@ -97,14 +93,6 @@
     }
   ],
   "edges": [
-    [
-      "goal",
-      "onboarding"
-    ],
-    [
-      "onboarding",
-      "route"
-    ],
     [
       "route",
       "help"
@@ -138,7 +126,11 @@
       "terminal_handoff"
     ],
     [
-      "review",
+      "goal",
+      "route"
+    ],
+    [
+      "build",
       "signoff"
     ]
   ]

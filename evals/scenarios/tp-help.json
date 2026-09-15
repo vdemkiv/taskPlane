@@ -1,11 +1,11 @@
 {
   "schema": "taskplane.eval-scenario/v1",
   "skill": "tp-help",
-  "title": "Read-only onboarding guidance that explains the next action without starting delivery",
+  "title": "Direct read-only help that explains the requested concept without setup",
   "source_files": ["skills/tp-help/SKILL.md", "skills/tp-help/flow.json"],
-  "inputs_fingerprint": "a166a17100396cc33335fa21819c8acecce3f9cbef214007201dda0cc7bca655",
+  "inputs_fingerprint": "637d859742ca3d9c5bf32d8fec5744a32c1a9f78e509f2dce525b49d2a831725",
   "expects_derivations": [],
-  "declared_surfaces": ["tp onboard"],
+  "declared_surfaces": [],
   "terminal": "response",
   "steps": [
     {"id": "A1", "claim": "help leaves the evaluated workspace unchanged", "record": "trace", "check": "absent", "select": {"event": "workspace_write"}, "required": true},

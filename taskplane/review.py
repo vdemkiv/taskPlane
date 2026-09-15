@@ -1,24 +1,7 @@
-"""Start a review in ONE call, and hand every lens agent ONE copy of the context.
+"""Native source inventory and explicit delivery-review evidence.
 
-Two measured costs, one cause: the review's opening sequence and its fan-out
-both re-derive things taskplane already holds.
-
-  * The opening. A review ran onboard, init, new, target, graph scan, graph
-    impact, lens route, lens dispatch and two dashboard renders before a
-    single lens looked at the diff — about ten shell calls, at a measured
-    ~11k effective tokens each, and every command AND its output stays in
-    the conversation to be re-read on every later turn. `tp loop evidence`
-    already proved the fix for the evaluate step in v2.6: return everything
-    the step needs in one payload, with the judgement slots empty.
-
-  * The fan-out. Four lens agents cost ~754k effective tokens, "each
-    carrying its own copy of the diff and the blast-radius brief". The diff
-    is identical for all of them. Writing it once and citing the path costs
-    one file; embedding it N times costs N copies at output weight.
-
-Neither changes what a review DECIDES. The briefs carry the same contract,
-the same lens, the same read-only harness; they just stop restating a
-document that is already on disk next to them.
+Ordinary source review saves pinned facts without execution authority. The
+retained ReviewKernel serves explicit delivery and historical recovery.
 """
 import copy
 import datetime
@@ -48,6 +31,27 @@ import storage as runtime_storage
 import taskplane_lite as tp
 import review_evidence as review_evidence_runtime
 import terminal_truth as terminal_truth_runtime
+
+
+def prepare_source_review(ws: str, *, target: dict, files: list[str], patch: str,
+                          scope: str, goal: str = "", max_tokens: int | None = None,
+                          max_actions: int | None = None) -> dict:
+    """Save source facts without creating a contract or execution lifecycle."""
+    for value in (max_tokens, max_actions):
+        if value is not None and (type(value) is not int or value < 1):
+            raise ValueError("explicit advisory review limits must be positive")
+    source = review_evidence_runtime.ArtifactStore(ws).put("source-review", {
+        "scope": scope, "revision": target["head"],
+        "base": None if scope == "repository" else target.get("merge_base") or target.get("base_ref"),
+        "files": files, "patch": patch, "goal": goal,
+    })
+    return {
+        "schema": "taskplane.source-review/v1", "status": "ready",
+        "workspace": os.path.realpath(ws), "revision": target["head"],
+        "scope": scope, "file_count": len(files), "source": _portable_ref(source),
+        "budget": {"mode": "advisory", "max_tokens": max_tokens, "max_actions": max_actions},
+        "next": "Read the selected source with native tools and report findings with file locations.",
+    }
 
 # This value crosses host boundaries inside immutable briefs. Keep the
 # reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
@@ -967,13 +971,15 @@ def _host_review_transcripts(
     return [(host_hint, paths[0])]
 
 
-def _host_review_records(path: str) -> list[dict]:
+def _host_review_records(path: str, byte_limit: int = MAX_HOST_TRANSCRIPT_BYTES) -> list[dict]:
+    if type(byte_limit) is not int or not 0 < byte_limit <= MAX_HOST_TRANSCRIPT_BYTES:
+        raise ValueError("host transcript byte limit is outside the supported bound")
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as stream:
-            start = max(0, size - MAX_HOST_TRANSCRIPT_BYTES)
+            start = max(0, size - byte_limit)
             stream.seek(start)
-            payload = stream.read(MAX_HOST_TRANSCRIPT_BYTES)
+            payload = stream.read(byte_limit)
             if start:
                 first_complete = payload.find(b"\n")
                 payload = (payload[first_complete + 1:]
@@ -2368,8 +2374,28 @@ def canonical_diff_files(ws: str, base: str) -> list[str]:
                                 text=True, encoding="utf-8", errors="strict", timeout=120)
         if result.returncode:
             raise ReviewKernelError("canonical diff file inventory failed: " + result.stderr.strip())
-        files.update(path for path in result.stdout.split("\0") if path)
+        paths = (path for path in result.stdout.split("\0") if path)
+        if args[0] == "ls-files":
+            # Generated evidence is not source; tracked changes remain reviewable.
+            paths = (path for path in paths if path.split("/", 1)[0]
+                     not in {".taskplane", ".em-review", ".eval"})
+        files.update(paths)
     return sorted(files)
+
+
+def canonical_repository_files(ws: str, revision: str) -> list[str]:
+    """Inventory a committed source snapshot without manufacturing a diff."""
+    if not re.fullmatch(r"[0-9a-f]{40,64}", revision or ""):
+        raise ReviewKernelError("repository review requires a pinned commit")
+    clean = subprocess.run(["git", "diff", "--quiet", revision, "--"],
+        cwd=ws, capture_output=True, timeout=120)
+    if clean.returncode:
+        raise ReviewKernelError("repository snapshot differs from the checkout's tracked files")
+    result = subprocess.run(["git", "ls-tree", "-rz", "--name-only", revision],
+        cwd=ws, capture_output=True, text=True, encoding="utf-8", errors="strict", timeout=120)
+    if result.returncode:
+        raise ReviewKernelError("repository source inventory failed: " + result.stderr.strip())
+    return sorted(path for path in result.stdout.split("\0") if path)
 
 
 def canonical_diff_patch(ws: str, base: str, *,

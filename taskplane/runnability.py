@@ -261,6 +261,8 @@ def probe_language_quality_toolchains(root: str, languages, *,
     Missing lint, format, strict typing, or security tooling remains explicit
     so Evaluate can fail closed before dispatching an evidence producer.
     """
+    from taskplane.governed_commands import evidence_command_environment
+
     requested = [str(item) for item in languages or []]
     if not requested or len(requested) != len(set(requested)):
         raise ValueError("impacted language quality mapping is empty or duplicate")
@@ -269,6 +271,7 @@ def probe_language_quality_toolchains(root: str, languages, *,
         raise ValueError(
             "unsupported impacted language quality toolchain: " +
             ", ".join(unsupported))
+    environment = evidence_command_environment()
     rows = []
     for language in sorted(requested):
         checks = []
@@ -278,6 +281,7 @@ def probe_language_quality_toolchains(root: str, languages, *,
             try:
                 proc = subprocess.run(
                     [sys.executable, "-m", module, "--version"], cwd=root,
+                    env=environment, stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace",
                     timeout=timeout)

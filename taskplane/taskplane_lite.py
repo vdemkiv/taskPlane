@@ -2688,12 +2688,20 @@ def screen_tool(
         return True, f"within every active contract ({len(members)}-way union)"
     if contract.get("read_only"):
         if tool_name in COMMAND_TOOLS:
+            from taskplane import host_capabilities
+            if host_capabilities.is_codex_readonly_invocation(
+                    tool_name, tool_input, workspace or os.getcwd()):
+                command = command_text(tool_name, tool_input)
+                deny = ((contract.get("coding") or {}).get("command_policy") or {}).get("deny") or []
+                denied = deny_violation(command, deny) or deny_violation(
+                    shlex.join(shlex.split(command)[6:]), deny)
+                if denied:
+                    return False, f"command matches deny pattern '{denied}'"
+                return screen_tool(contract, "Read", {"file_path": "."}, workspace)
             return False, (
-                "read-only review contract: every shell command tool is "
-                "blocked because this host hook cannot prove shell=False, a "
-                "sanitized process environment, or executable bytes; use "
-                "explicitly allowed host-native Read/Grep/Glob and scoped "
-                "Write/Edit tools"
+                "read-only contract: use the native Codex read-only request "
+                "from host_capabilities.codex_readonly_command, or native "
+                "Read/Grep/Glob. Document writes use scoped Write/Edit/apply_patch."
             )
         native_tools = READONLY_NATIVE_READ_TOOLS | WRITE_TOOLS
         if tool_name not in native_tools:
@@ -6477,9 +6485,11 @@ def activate(
     snapshot: str | None = "auto",
     *,
     task_slot_override: str | None = None,
+    require_empty: bool = False,
 ) -> dict:
     """Write the active contract + snapshot so the PreToolUse hook enforces
-    it. Returns the contract. snapshot='auto' records git HEAD."""
+    it. ``require_empty`` preserves every existing owner in the workspace.
+    Returns the contract. snapshot='auto' records git HEAD."""
     # This shared entry boundary covers CLI, loop, claim, and review adapters.
     import collision
 
@@ -6523,12 +6533,25 @@ def activate(
         raise StateError("TASKPLANE_TASK", f"invalid task slot {selected_slot!r}")
     cpath = active_contract_path(workspace, selected_slot)
     os.makedirs(os.path.dirname(cpath), exist_ok=True)
-    atomic_write_json(cpath, contract, indent=2)
-    spath = _snapshot_path(workspace, selected_slot)
-    tmp = spath + f".tmp.{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8", newline="") as f:
-        f.write(snapshot or "")
-    os.replace(tmp, spath)
+    # Root and worker slots share one lifecycle lock. Atomic file replacement
+    # alone cannot protect a finish operation's ownership check from a writer.
+    with file_lock(os.path.join(d, "active_contract.json")):
+        if require_empty:
+            try:
+                slots = [name for name in os.listdir(os.path.join(d, "active"))
+                         if name.endswith(".json") and not name.startswith(".")]
+            except FileNotFoundError:
+                slots = []
+            except OSError as exc:
+                raise StateError(cpath, "active contract slots cannot be inspected") from exc
+            if os.path.lexists(os.path.join(d, "active_contract.json")) or slots:
+                raise StateError(cpath, "activation requires an empty workspace contract set")
+        atomic_write_json(cpath, contract, indent=2)
+        spath = _snapshot_path(workspace, selected_slot)
+        tmp = spath + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(snapshot or "")
+        os.replace(tmp, spath)
     projection = contract_projection(contract)
     trace(
         workspace,
@@ -6629,18 +6652,32 @@ def gc_runtime(workspace: str, now: float | None = None) -> dict:
     return {"removed": removed, "dir": d}
 
 
-def clear(workspace: str) -> None:
+def clear(workspace: str, *, expected_task_id: str | None = None, guard=None) -> None:
     """Release THIS process's contract slot only. With TASKPLANE_TASK set the
     per-task slot is removed; a sibling task's contract is never touched (the
-    v2.3.0 fix: one agent's clear used to release everyone's contract)."""
+    v2.3.0 fix: one agent's clear used to release everyone's contract).
+
+    An expected owner and optional guard are checked under the same lock used
+    by activation. Ordinary operator recovery can still clear corrupt state.
+    """
     path = _active_contract_path(workspace)
-    if os.path.exists(path):
+    with file_lock(os.path.join(tp_dir(workspace), "active_contract.json")):
+        if not os.path.exists(path):
+            if expected_task_id is not None or guard is not None:
+                raise StateError(path, "the expected active contract is missing")
+            return
         try:
             c = load_json(path, default={}, what="active contract")
         except StateError:
+            if expected_task_id is not None or guard is not None:
+                raise
             c = {}  # corrupt slot: still clearable
         if not isinstance(c, dict):
             c = {}
+        if expected_task_id is not None and c.get("task_id") != expected_task_id:
+            raise StateError(path, "active contract owner changed before release")
+        if guard is not None and not guard(c):
+            raise StateError(path, "active contract no longer permits this release")
         safe_remove(path)
         slot = task_slot()
         if slot is not None:

@@ -19,7 +19,7 @@
     ],
     "entry": true,
     "evaluation_lenses": [],
-    "fingerprint": "2ddbacfead26e06845f37439db83b7b2b43a3d8fc7631690122a952fa5a13dd0",
+    "fingerprint": "2dba0a63bd81168fbcf59b495b563cd6d21b1be54b60f51e0dc228acbf4e5ff4",
     "gate": "human",
     "id": "product",
     "model_tier": "inherit",
@@ -40,7 +40,7 @@
     ],
     "role": "tp-product",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "de9bd4cfe670552ac365b6c22192fc5ed6f3933daa2ea2b4f285b38e4d561cc7",
+    "skill_content_fingerprint": "edfa710fc2b7d798f373c7020ffd449e1a74c6bc548df8219f38cda7c88b9cc9",
     "skill_ref": "skills/tp-product/SKILL.md",
     "successors": [
       "design"
@@ -419,7 +419,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "cb5d2924d4854af92d88bfd194db252b48f261dbbe8d11abb57bd27e00430ffe",
+    "fingerprint": "1fdcd9f0a3cde24728671906f37e2cf74694f215efc3ef7965681e799373a164",
     "gate": "human",
     "id": "evaluate",
     "model_tier": "inherit",
@@ -448,7 +448,7 @@
     ],
     "role": "tp-evaluate",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "53f9950271bd1455db78ed03071a3c0c3a702cf3c56c7048f341eca5bc56ef08",
+    "skill_content_fingerprint": "b2beec7933e29ce93fb193c4b2b54f1d292dea947affcba0105c6d2777824447",
     "skill_ref": "skills/tp-engineering/SKILL.md",
     "successors": [
       "engineering"
@@ -530,7 +530,7 @@
     ],
     "entry": false,
     "evaluation_lenses": [],
-    "fingerprint": "c27de43054914ab1b5a25f9a797354a170bcf507db1418d9dc0d451ae933cb98",
+    "fingerprint": "49fb41a13c59b9b9d83fc5b969d638bad7e0b0cc516d37f520e5ca7f7f752d81",
     "gate": "human",
     "id": "engineering",
     "model_tier": "inherit",
@@ -559,7 +559,7 @@
     ],
     "role": "tp-engineering",
     "schema": "taskplane.phase-definition/v1",
-    "skill_content_fingerprint": "53f9950271bd1455db78ed03071a3c0c3a702cf3c56c7048f341eca5bc56ef08",
+    "skill_content_fingerprint": "b2beec7933e29ce93fb193c4b2b54f1d292dea947affcba0105c6d2777824447",
     "skill_ref": "skills/tp-engineering/SKILL.md",
     "successors": [
       "retro"

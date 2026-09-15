@@ -5,17 +5,16 @@
   "source_files": [
     "skills/tp-product/SKILL.md",
     "skills/tp-product/flow.json",
-    "agents/tp-product.md"
+    "agents/tp-product.md",
+    "skills/tp-product/references/requirements.md"
   ],
-  "inputs_fingerprint": "52de8826239ace9c7ae9048607c8d2f900df1cb0f18a550c9f54a166708a04cd",
+  "inputs_fingerprint": "fcecbf346844541b3e40905c1f00a6138cb992062dc9167564b052f06d1795ef",
   "expects_derivations": [],
   "declared_surfaces": [
     "tp req new",
     "tp req amend",
     "tp req score",
-    "tp req signoff",
-    "tp req debt",
-    "tp decision new"
+    "tp req debt"
   ],
   "terminal": "human_gate",
   "steps": [

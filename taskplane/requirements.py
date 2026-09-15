@@ -203,6 +203,8 @@ def _write_requirement_file(ws: str, entry: dict) -> None:
 
 ## Open questions
 {bullets(entry.get('open_questions') or [])}
+
+{_render_product_gates(product_gate_summary(entry))}
 """
         with open(path, "w", encoding="utf-8") as stream:
             stream.write(body)
@@ -325,6 +327,19 @@ def amend_requirement(ws: str, rid: str, *, functional=None, nfr=None,
     return result
 
 
+def _has_statement(value) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _has_statements(values) -> bool:
+    return bool(values) and all(_has_statement(value) for value in values)
+
+
+def _stated_nfr(req: dict) -> set[str]:
+    return {axis for axis, value in (req.get("nfr") or {}).items()
+            if _has_statement(value)}
+
+
 def product_dor(req: dict | None, *, changed_files=None,
                 task_type: str = "implementation", catalog=None) -> dict:
     """Mechanical Product Definition of Ready used by every product gate.
@@ -347,7 +362,7 @@ def product_dor(req: dict | None, *, changed_files=None,
         if gap.get("axis") == "functional"
         or gap.get("lens") in CRITICAL_NFR_LENSES
     ]
-    stated = set(req.get("nfr") or {})
+    stated = _stated_nfr(req)
     for lens_id in sorted(PRODUCT_REQUIRED_NFR_LENSES - stated):
         gaps.append({"axis": "nfr", "lens": lens_id,
                      "detail": f"no {lens_id} NFR stated"})
@@ -360,6 +375,136 @@ def product_dor(req: dict | None, *, changed_files=None,
             "refinement": refinement,
             "dependencies": list(req.get("depends_on") or []),
             "contracts": list(req.get("contracts") or [])}
+
+
+def product_gate_summary(requirement: dict | None, changed_files=None,
+                         task_type: str = "implementation") -> dict:
+    """Present existing Product readiness without inventing completion proof.
+
+    This is a derived view, never an approval or persisted gate result. The
+    requirement index records content and a human decision; the current stage
+    gate owns validated phase review and implementation completion evidence.
+    """
+    dor = product_dor(requirement, changed_files=changed_files,
+                      task_type=task_type)
+    return _product_gate_summary(requirement, dor)
+
+
+def _product_gate_summary(requirement: dict | None, dor: dict) -> dict:
+    entry = requirement if isinstance(requirement, dict) else {}
+
+    def criterion(key, label, status, evidence, gap="", owner="Product"):
+        return {"id": key, "criterion": label, "status": status,
+                "evidence": evidence, "gap": gap, "next_owner": owner}
+
+    readiness = []
+    for key, label, satisfied in (
+            ("functional", "Functional requirements stated", _has_statements(entry.get("functional"))),
+            ("acceptance", "Acceptance criteria stated", _has_statements(entry.get("acceptance"))),
+            ("open_questions", "Functional questions resolved", not entry.get("open_questions"))):
+        values = entry.get(key) or []
+        readiness.append(criterion(
+            key, label, "passed" if satisfied and entry else "failed",
+            "; ".join(str(value) for value in values) or "None recorded",
+            "" if satisfied and entry else label + " is not satisfied"))
+    refinement = dor.get("refinement") or {}
+    required_nfr = PRODUCT_REQUIRED_NFR_LENSES | (
+        set(refinement.get("applicable_nfr") or []) & CRITICAL_NFR_LENSES)
+    nfr = entry.get("nfr") or {}
+    stated_nfr = _stated_nfr(entry)
+    for axis in sorted(required_nfr):
+        readiness.append(criterion(
+            "nfr:" + axis, axis + " requirement stated",
+            "passed" if axis in stated_nfr else "failed",
+            str(nfr[axis]) if axis in nfr else "None recorded",
+            "" if axis in stated_nfr else "No nonblank " + axis + " NFR stated"))
+
+    signoff = entry.get("product_signoff") or {}
+    decision = signoff.get("decision") if isinstance(signoff, dict) else None
+    attributed = isinstance(signoff, dict) and bool(signoff.get("by"))
+    human_status = ("approval_recorded" if decision == "approve" and attributed
+                    else "changes_requested" if decision == "changes" and attributed
+                    else "pending")
+    human_evidence = (json.dumps(signoff, sort_keys=True)
+                      if attributed and decision in {"approve", "changes"}
+                      else "No current attributed Product decision recorded")
+    human_gap = ("" if human_status == "approval_recorded"
+                 else "Revise the same requirement and present it again"
+                 if human_status == "changes_requested"
+                 else "The current requirement awaits a human disposition")
+    phase_criteria = [
+        criterion("requirement_ready", "Requirement content is ready",
+                  "passed" if dor["passed"] else "failed",
+                  "Existing product_dor result", "; ".join(dor["errors"])),
+        criterion("phase_review", "Required Product review is validated",
+                  "not_verified", "Not established by the requirement record",
+                  "Consult the current Product stage gate's review evidence",
+                  "Product review owner"),
+        criterion("human_decision", "Human disposition permits this handoff",
+                  "passed" if human_status == "approval_recorded"
+                  else "failed" if human_status == "changes_requested" else "pending",
+                  human_evidence, human_gap,
+                  "Product" if human_status == "changes_requested" else "User"),
+    ]
+    acceptance = [criterion(
+        "AC" + str(index), str(value) if _has_statement(value) else "Blank acceptance criterion",
+        "not_verified" if _has_statement(value) else "failed",
+        "Criterion declared; implementation evidence is not read by this projection"
+        if _has_statement(value) else "No nonblank criterion recorded",
+        "Verify against the current candidate in Evaluate and final sign-off"
+        if _has_statement(value) else "State an observable acceptance criterion",
+        "Engineering" if _has_statement(value) else "Product")
+        for index, value in enumerate(entry.get("acceptance") or [], 1)]
+    phase_status = ("changes_required" if human_status == "changes_requested"
+                    else "failed" if not dor["passed"]
+                    else "not_verified" if human_status == "approval_recorded"
+                    else "pending")
+    return {
+        "requirement": entry.get("id"),
+        "dor": {
+            "definition": "Definition of Ready: requirement content is complete enough for Product sign-off.",
+            "status": "passed" if dor["passed"] else "failed",
+            "criteria": readiness, "gaps": list(dor["errors"]),
+            "limit": "This content check does not verify that required host operations can execute.",
+        },
+        "human_decision": {"status": human_status, "evidence": human_evidence,
+                           "gap": human_gap},
+        "dod": {
+            "definition": "Definition of Done: ready content, validated Product review, and a human disposition permitting the handoff are retained.",
+            "status": phase_status,
+            "criteria": phase_criteria,
+            "limit": "The current stage gate owns phase completion; a score or recorded approval does not establish review completion.",
+        },
+        "implementation_acceptance": {
+            "definition": "Implementation DoD: every acceptance criterion has current candidate-bound evaluation and sign-off evidence.",
+            "status": "not_verified" if _has_statements(entry.get("acceptance")) else "failed",
+            "criteria": acceptance,
+            "gap": "Implementation completion is not established by a requirement record.",
+        },
+    }
+
+
+def _render_product_gates(summary: dict) -> str:
+    """Readable projection of the same gate summary returned by req score."""
+    def cell(value):
+        return str(value).replace("|", "\\|").replace("\n", " ") or "—"
+
+    blocks = []
+    for key, heading in (("dor", "Product DoR — requirement content"),
+                         ("dod", "Product DoD — phase completion"),
+                         ("implementation_acceptance", "Implementation DoD")):
+        section = summary[key]
+        rows = ["| Criterion | Status | Evidence | Gap | Next owner |",
+                "| --- | --- | --- | --- | --- |"]
+        rows.extend("| " + " | ".join(cell(row[field]) for field in (
+            "criterion", "status", "evidence", "gap", "next_owner")) + " |"
+            for row in section["criteria"])
+        blocks.append("\n".join([
+            "## " + heading, "", section["definition"], "",
+            "**Status: " + section["status"] + "**", "",
+            *rows, "", section.get("limit") or section.get("gap") or "",
+        ]))
+    return "\n\n".join(blocks)
 
 
 def product_signoff(ws: str, rid: str, *, decision: str, by: str,
@@ -486,18 +631,20 @@ def score_axes(req: dict, applicable) -> dict:
     directly. Same return shape as `score_refinement`."""
     gaps = []
 
-    # ---- functional axis (unchanged)
+    # ---- functional axis: blank placeholders are not stated requirements.
     fpts, ftot = 0, 3
-    if req.get("functional"):
+    if _has_statements(req.get("functional")):
         fpts += 1
     else:
         gaps.append({"axis": "functional",
-                     "detail": "no functional statements"})
-    if req.get("acceptance"):
+                     "detail": "blank functional statement(s)" if req.get("functional")
+                     else "no functional statements"})
+    if _has_statements(req.get("acceptance")):
         fpts += 1
     else:
         gaps.append({"axis": "functional",
-                     "detail": "no acceptance criteria (needed for DoD)"})
+                     "detail": "blank acceptance criteria (needed for DoD)" if req.get("acceptance")
+                     else "no acceptance criteria (needed for DoD)"})
     if not req.get("open_questions"):
         fpts += 1
     else:
@@ -506,9 +653,9 @@ def score_axes(req: dict, applicable) -> dict:
     functional = fpts / ftot
     functional_complete = fpts == ftot
 
-    # ---- nfr axis (gap detection unchanged; weighting recalibrated)
+    # ---- nfr axis: only nonblank statements cover an applicable concern.
     applicable = list(applicable or [])
-    stated = set(req.get("nfr", {}))
+    stated = _stated_nfr(req)
     covered = [lz for lz in applicable if lz in stated]
     for lz in applicable:
         if lz not in stated:
@@ -634,7 +781,8 @@ def gate(req: dict, *, threshold: float = 0.6, high_cost: bool = False,
     return {**s, "threshold": threshold, "below_threshold": below,
             "blocking": blocking, "recommendation": rec,
             "product_dor_passed": bool(dor["passed"]),
-            "product_dor_errors": list(dor["errors"])}
+            "product_dor_errors": list(dor["errors"]),
+            "product_gates": _product_gate_summary(req, dor)}
 
 
 # --------------------------------------------------------------- task mode

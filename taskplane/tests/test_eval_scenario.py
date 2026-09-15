@@ -16,8 +16,8 @@ prevent. So the fingerprint is taken over an EXTRACT: the taskplane surfaces
 the file names, the flags it mandates, the polarity of each mention
 (require / forbid), and the gate terms it uses. Prose is not in it.
 
-Both directions are proved below, on the REAL skill files, mutated in a
-temp copy:
+Both directions are proved below on temporary skill mirrors with a fixed
+parser-protocol fixture. The fixture does not define current Product behavior:
 
   * TestProseDoesNotMoveTheFingerprint — an appended paragraph, a reworded
     sentence and a re-wrapped paragraph must leave it BYTE-IDENTICAL.
@@ -72,9 +72,7 @@ def _patch(root, rel, fn):
 
 
 class _MutationCase(unittest.TestCase):
-    """A temp mirror of tp-engineering's real source files, plus its baseline
-    fingerprint. Mutations are applied to the COPY — this lane never edits
-    `skills/` or `agents/`."""
+    """A temporary skill mirror plus stable syntax for parser mutation checks."""
 
     SKILL = "tp-engineering"
     MAIN = "skills/tp-engineering/SKILL.md"
@@ -85,6 +83,20 @@ class _MutationCase(unittest.TestCase):
         self.root = tempfile.mkdtemp(prefix="tp-scenario-")
         self.addCleanup(shutil.rmtree, self.root, True)
         _mirror(self.root, self.sources)
+        # Parser correctness is independent of ordinary review's smaller flow.
+        # These mandates exist only in this temporary syntax fixture.
+        fixture = os.path.join(self.root, self.MAIN)
+        with open(fixture, "a", encoding="utf-8") as stream:
+            stream.write("""
+
+Graph quality is assessed before routing. The blast radius is scoped.
+
+**Every lens consumes a scoped view of the same context.**
+Use `$TP graph impact --files x`.
+
+Use `tp dod` and `tp ack` when requested.
+Do NOT pass `--all`.
+""")
         self.baseline = es.fingerprint(self.root, self.sources)
 
     def mutate(self, fn, rel=None):

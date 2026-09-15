@@ -57,12 +57,11 @@ transparency is not an instruction to execute the catalog.
 code-review.** The only files you may write are your own artifacts. When the
 loop dispatches you, `loop next` has already activated the exact PM contract:
 use it as-is and never replace or clear it. Only a standalone product session
-activates this contract first (`PLUGIN=${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}`):
-
-```bash
-python3 "$PLUGIN/taskplane/tp.py" new --scope "docs/**,specs/**,knowledge/**" \
-    --tools "Read,Grep,Glob,WebSearch,Bash,Write" "product: <goal>"
-```
+uses the installed engine's `new --product --available-tools
+"<actual native tools>" --workspace <checkout> "<goal>"` entry. It allows native
+reads and scoped document patches, not implementation edits. Follow the current
+Product skill for the native Codex read-only request and exact contract finish.
+Do not infer the installed engine from an unset environment variable.
 
 The requirement payload and commands in this role are authoritative. Do not
 inspect taskplane's implementation or tests merely to rediscover its schema;
@@ -72,9 +71,9 @@ In a standalone session, score the requirement once; inside a loop, let the PM
 gate score it mechanically. Return without turning product definition into a
 harness audit.
 
-For a normal loop PM action, write `specs/spec.md`, then call `req new` exactly
-once with every functional/NFR/acceptance/context-file/contract field and
-return the R-id. The PM gate mechanically computes the critical DoR score and
+For a normal loop PM action, refine the supplied requirement through the
+startup's declared candidate output, including functional/NFR/acceptance/context
+and contract fields. Return the same selected R-id; do not create another one. The PM gate mechanically computes the critical DoR score and
 links the requirement's context files to the planned dependency graph. Do not
 call taskPlane status, context, graph, graph impact, req score, req list/help,
 loop submit, new, or clear in this role; ground the requirement with ordinary
@@ -156,3 +155,13 @@ executive advisory tier was removed in v1.0.)
 Your verdicts feed gates: the plan-approval recommendation is yours; the
 final sign-off recommendation is tp-engineering's; both decisions belong
 to the human.
+
+## Visible readiness and completion
+
+Always present Product content DoR, operational DoR, Product phase DoD and
+implementation acceptance separately, with criterion, evidence, status, gap and
+next owner. Consume existing requirement and current stage gate results. A score
+of 1.0, saved document, recorded approval or normal contract finish cannot prove
+that review or implementation passed. Text delivery is sufficient when an
+optional panel is unavailable. For standalone work, finish only the activation's
+exact Product task ID; retain pending review/acceptance in the delivered report.

@@ -4,10 +4,10 @@
 
 **Design, build, and review AI-generated software with evidence, not trust.** taskplane
 is the AI software-delivery control plane for people who ship and review code
-with Claude or Codex every day. You ask it to design, build, review, or show status;
-behind that simple request it checks whether the work is ready, keeps every
-agent inside an approved scope, and requires current implementation, test, and
-review evidence before anything can be called done.
+with Claude or Codex every day. You ask it to design, build, review, or show status.
+Explicit delivery connects approved scope to current implementation, test and
+review evidence. Ordinary source review uses native tools without starting a
+delivery workflow. Product work keeps document authority separate from code changes.
 
 ![taskplane 2.16 flow guide — an infographic overview plus the ten approved skill-flow contracts, each paired with the problem it solves, its evidence-backed outcome, human gates, and the combined benefits of taskplane](docs/assets/taskplane-cowork-flow.gif)
 
@@ -44,19 +44,29 @@ persona, remember loop commands, select review lenses, or set dependency
 depth. taskplane reports a concise text summary after each material
 transition and shows the richer dashboard when the host supports it.
 
+### Recovery baseline
+
+The current recovery work starts from **2.23.1**, after stateless phase
+consolidation and before later enforcement tightening. It retains native source
+review and repairs Product authoring, required controls, normal finish and
+quality-tool readiness. Product reports now show DoR, phase DoD and implementation
+acceptance separately. A complete score cannot stand in for completed review.
+Local tests and installed-host observations are reported separately; source
+restoration alone does not establish a usable installed journey.
+
 ### Ten flows, one control plane
 
 | Flow | Problem it solves | Evidence-backed outcome |
 | --- | --- | --- |
 | `taskplane` | Users should not have to learn personas, graph depth, lens routing, or loop commands. | One goal routes to Design, Build, Review, or Status while the strict harness stays internal. |
-| `tp-product` | Ambiguous ideas become code before acceptance, dependencies, and product risks are settled. | A complete requirement, Product DoR, review, and explicit sign-off trigger Build only when ready. |
+| `tp-product` | Ambiguous ideas become code before acceptance, dependencies, and product risks are settled. | Scoped Product documents, explicit DoR/DoD and retained decisions; Build starts only when the user authorizes it. |
 | `tp-design` | Architecture and contract choices otherwise emerge implicitly during implementation. | Alternatives, graph overlay, trade-offs, rollout, and validation are sealed in an approved Design Contract. |
 | `tp-build` | The first implementation wins while readiness, alternatives, and downstream impact stay implicit. | Product, Design, Plan, optional A/B selection, Evaluate, Review, sign-off, and Retro stay connected. |
 | `tp-go` | Agents drift scope, skip graph work, or report partial execution as done. | Scoped workers submit evidence; independent gates advance stages; humans retain approval and sign-off. |
-| `tp-engineering` | Broad reviews reread the same repository and still miss dependencies outside the diff. | One diff and graph blast radius route only applicable lenses into one canonical review and human decision. |
+| `tp-engineering` | Source review becomes blocked by unrelated delivery machinery. | Native source inspection with actionable findings; explicit delivery separately consumes required Engineering evidence. |
 | `tp-status` | Long runs hide the active stage, dependency risk, open gate, and next owner. | Mission control joins workflow, requirements, debt, and graph state with one explicit action banner. |
 | `tp-northstar` | A locally sound idea can still consume time without serving product direction. | An advisory check exposes leverage, reversibility, opportunity cost, coherence, and the sharpest tension. |
-| `tp-help` | Setup mechanics and a large skill catalog delay the first governed result. | Readiness checks and a short mental model lead to one concrete next action. |
+| `tp-help` | Setup mechanics and a large skill catalog delay an answer. | Explain capabilities and existing state without initializing a workflow. |
 | `tp-tag` | Team-chat decisions lose context, ownership, evidence, and durable state. | The conversation drives a repository-persisted loop with attributed approvals, dashboards, and resumable memory. |
 
 Together these flows reduce user complexity without reducing agent discipline:

@@ -1,7 +1,7 @@
 # Contributing to taskplane
 
 Thanks for helping. The short version: stdlib-only Python, tests must pass,
-generated artifacts must be regenerated, and no change may weaken a guardrail.
+generated artifacts must be regenerated, and domain evidence must remain truthful.
 
 ## Run the tests
 
@@ -26,9 +26,11 @@ second time through partial `unittest discover` collection.
 
 - **Stdlib only.** The runtime (`taskplane/*.py`) may not gain pip
   dependencies; it must run anywhere the plugin does.
-- **Never weaken a guardrail.** Gates, contracts, scope screening, and
-  evidence checks fail closed. A change that makes an interaction simpler by
-  removing or softening an enforcement path will not be accepted.
+- **Preserve the protected outcome.** Scope, human authority and required
+  completion evidence remain enforced. Ordinary source review uses native
+  permissions. A control that blocks its own required operation should be
+  corrected in its existing owner; do not preserve a deadlock merely because
+  a historical test expected it.
 - **Tests accompany behavior changes**, including a regression test for every
   bug fix.
 

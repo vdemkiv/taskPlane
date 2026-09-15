@@ -371,6 +371,14 @@ def _checkpoint_environment() -> dict[str, str]:
     }
 
 
+def evidence_command_environment() -> dict[str, str]:
+    """Use the same isolated environment for quality probes and evidence."""
+    environment = _checkpoint_environment()
+    environment["PYTHONPATH"] = ""
+    environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.defpath
+    return environment
+
+
 def _git_output(workspace: str, *args: str,
                 executable: str = "git") -> str:
     try:
@@ -1119,9 +1127,7 @@ def _evidence_command_boundary(workspace, contract, argv, identity, assignment_b
     source_sha = _git_output(workspace, "rev-parse", "HEAD")
     if source_sha != assignment_binding["candidate_sha"] or _git_output(workspace, "rev-parse", "HEAD^{tree}") != assignment_binding["source_tree"]:
         raise GovernedCommandError("evidence command candidate changed")
-    environment = _checkpoint_environment()
-    environment["PYTHONPATH"] = ""
-    environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + os.defpath
+    environment = evidence_command_environment()
     executable = str(Path(shutil.which(argv[0], path=environment["PATH"]) or argv[0]).resolve())
     git = str(Path(shutil.which("git", path=environment["PATH"]) or "git").resolve())
     paths = assignment.get("implementation_files") or [selector.split("::", 1)[0] for selector in selectors]

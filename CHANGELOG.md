@@ -1,5 +1,21 @@
 # taskplane changelog
 
+## Unreleased — recovery on the 2.23.1 stateless baseline
+
+- Restore the post-refactor 2.23.1 source baseline, preserving the active v4
+  phase runtime and intentional removal of the older runtime and obsolete tests.
+- Retain ordinary native source review without automatic delivery setup,
+  contracts, graph scans or dashboard obligations.
+- Add scoped standalone Product entry with usable document tools, planned
+  requirement links, artifact delivery, human input and exact normal finish.
+  Implementation writes, sibling/worker release and active-delivery release
+  remain refused. Native Codex reads use its existing read-only sandbox.
+- Show criterion-level Product DoR, Product DoD and implementation acceptance
+  separately. Blank statements fail readiness; scores and approvals do not
+  claim that required review or implementation evidence exists.
+- Probe quality tools in the same isolated environment used for execution.
+  Missing dependencies are reported before evaluation begins.
+
 ## Unreleased — project-local execution and inline setup
 
 - Human-approved Product and Design amendments can be recorded during delivery,

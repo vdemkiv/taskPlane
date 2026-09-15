@@ -16,6 +16,8 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
 import time
 from taskplane import settings as _host_settings, delivery_ports as _host_delivery_ports
 from dataclasses import dataclass
@@ -32,6 +34,139 @@ RUNTIME_RECEIPT_SCHEMA = "taskplane.host-hook-receipt/v1"
 RUNTIME_RECEIPT_MAX_AGE_SECONDS = 300.0
 ROOT_SESSION_CAPABILITY_SCHEMA = \
     "taskplane.host-root-session-capability/v1"
+
+
+def codex_readonly_runtime(workspace: str) -> str | None:
+    """Locate the native sandbox executable, never one from the checkout.
+
+    Availability is tool compatibility only. The native host still resolves
+    the profile, applies managed policy, and decides whether to run it.
+    """
+    if not os.environ.get("CODEX_THREAD_ID") or os.name != "posix":
+        return None
+    if any(key.startswith(("LD_", "DYLD_", "BASH_FUNC_")) or key in
+           {"ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"} for key in os.environ):
+        return None
+    executable = shutil.which("codex")
+    if not executable:
+        return None
+    executable = os.path.realpath(executable)
+    root = os.path.realpath(workspace)
+    if os.path.commonpath((executable, root)) == root:
+        return None
+    return executable
+
+
+def codex_readonly_command(argv: list[str], workspace: str) -> dict:
+    """Describe one native read-only request without executing a command."""
+    executable = codex_readonly_runtime(workspace)
+    if not executable or not argv or any(
+            not isinstance(value, str) or not value or "\0" in value
+            for value in argv):
+        raise ValueError("Codex read-only execution is unavailable or argv is invalid")
+    request = {
+        "cmd": shlex.join([executable, "sandbox", "--include-managed-config",
+                           "-P", ":read-only", "--", *argv]),
+        "shell": "/bin/sh", "login": False,
+        "workdir": os.path.realpath(workspace),
+    }
+    if os.environ.get("CODEX_SANDBOX") == "seatbelt":
+        # Seatbelt cannot nest: the host must approve launching its narrower
+        # sandbox. This request does not itself grant that approval.
+        request.update(
+            sandbox_permissions="require_escalated",
+            justification="Allow Codex to launch its native read-only sandbox for this read command?",
+        )
+    return request
+
+
+def is_codex_readonly_invocation(tool: str, payload: Mapping, workspace: str) -> bool:
+    """Recognize only the fixed native profile with no outer shell effects.
+
+    Codex's Bash projection omits shell/login. Its command is admissible only
+    when the pending native call proves those values; caller text is not a
+    substitute. This does not expand a contract's allowed tools or scope.
+    """
+    executable = codex_readonly_runtime(workspace)
+    if not executable or tool not in {"exec_command", "functions.exec_command", "Bash"}:
+        return False
+    if tool == "Bash":
+        if set(payload) != {"command"}:
+            return False
+        native = pending_codex_tool_call("exec_command")
+        if native is None or native.get("cmd") != payload.get("command"):
+            return False
+        return is_codex_readonly_invocation("exec_command", native, workspace)
+    if set(payload) - {
+            "cmd", "shell", "login", "workdir", "max_output_tokens",
+            "yield_time_ms", "sandbox_permissions", "justification", "tty"}:
+        return False
+    if payload.get("shell") != "/bin/sh" or payload.get("login") is not False:
+        return False
+    if os.path.realpath(str(payload.get("workdir") or workspace)) != os.path.realpath(workspace):
+        return False
+    command = payload.get("cmd")
+    if not isinstance(command, str) or "\0" in command:
+        return False
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    return (len(argv) > 6 and argv[:6] == [
+        executable, "sandbox", "--include-managed-config", "-P", ":read-only", "--"
+    ] and shlex.join(argv) == command)
+
+
+def pending_codex_tool_call(name: str) -> dict | None:
+    """Read exactly one outstanding call from the current host transcript.
+
+    Only a direct tool call or the fixed single-tool code-mode expression is
+    supported. Missing, ambiguous, malformed, and completed calls provide no
+    authority. No execution state or replacement command runtime is created.
+    """
+    if not os.environ.get("CODEX_THREAD_ID"):
+        return None
+    from taskplane import review
+    try:
+        transcripts = review._host_review_transcripts()
+        if len(transcripts) != 1 or transcripts[0][0] != "codex":
+            return None
+        records = review._host_review_records(transcripts[0][1])
+    except (OSError, ValueError, RuntimeError):
+        return None
+    pending = {}
+    for row in records:
+        if row.get("type") != "response_item":
+            continue
+        value = row.get("payload")
+        if not isinstance(value, dict):
+            return None
+        kind, call_id = value.get("type"), value.get("call_id")
+        if kind in {"custom_tool_call", "function_call"}:
+            if not isinstance(call_id, str) or not call_id or call_id in pending:
+                return None
+            pending[call_id] = value
+        elif kind in {"custom_tool_call_output", "function_call_output"}:
+            if not isinstance(call_id, str) or not call_id:
+                return None
+            pending.pop(call_id, None)
+    if len(pending) != 1:
+        return None
+    value = next(iter(pending.values()))
+    raw = value.get("input", value.get("arguments"))
+    if value.get("name") in {"exec", "functions.exec"} and isinstance(raw, str):
+        match = re.fullmatch(
+            r"text\(await tools\." + re.escape(name) + r"\((\{.*\})\)\);",
+            raw.strip(), re.DOTALL,
+        )
+        raw = match[1] if match else None
+    elif value.get("name") not in {name, "functions." + name}:
+        return None
+    try:
+        args = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return None
+    return args if isinstance(args, dict) else None
 
 
 def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:

@@ -1,13 +1,14 @@
 {
   "schema": "taskplane.eval-scenario/v1",
   "skill": "tp-engineering",
-  "title": "A governed engineering review: one pinned target, one graph-qualified envelope, selective leased slots, one canonical collection",
+  "title": "Explicit delivery review: pinned evidence and retained legacy collection",
   "source_files": [
     "skills/tp-engineering/SKILL.md",
     "skills/tp-engineering/flow.json",
-    "agents/tp-engineering.md"
+    "agents/tp-engineering.md",
+    "skills/tp-engineering/references/delivery-review.md"
   ],
-  "inputs_fingerprint": "c54da160d220d6231f7926b07f276b9a7af1db9c39df15ec3960caa71e16ac58",
+  "inputs_fingerprint": "154c9feb545e3697615ec01e87d9cf644f4dc8980e6daf798054427e25a77a0f",
   "expects_derivations": [
     "diff",
     "impact"
@@ -16,7 +17,6 @@
     "tp review start",
     "tp review collect",
     "tp review signoff",
-    "tp graph impact",
     "tp findings"
   ],
   "terminal": "human_gate",

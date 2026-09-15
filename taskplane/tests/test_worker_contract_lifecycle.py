@@ -244,13 +244,18 @@ def test_session_start_sweeps_only_loop_proven_completed_worker(tmp_path):
 
 
 
-def test_native_session_start_context_invokes_completed_worker_sweep(
-        tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("active_delivery", [False, True])
+def test_native_session_start_sweeps_workers_only_for_active_delivery(
+        tmp_path, monkeypatch, capsys, active_delivery):
     calls = []
 
     def sweep(workspace, *, loop_state):
         calls.append((workspace, loop_state))
         return []
+
+    if active_delivery:
+        contract = tp.build_contract("explicit delivery session")
+        tp.activate(str(tmp_path), contract, snapshot="")
 
     monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
     monkeypatch.setattr(cli.tp, "sweep_completed_worker_contracts", sweep)
@@ -259,9 +264,12 @@ def test_native_session_start_context_invokes_completed_worker_sweep(
 
     assert cli.cmd_context(types.SimpleNamespace(
         workspace=str(tmp_path))) == 0
-    capsys.readouterr()
-    assert len(calls) == 1
-    assert calls[0][0] == str(tmp_path)
+    output = capsys.readouterr().out
+    if active_delivery:
+        assert calls == [(str(tmp_path), None)]
+    else:
+        assert not calls
+        assert not output
 
 
 def test_authenticated_release_refuses_before_terminal_and_tampering(tmp_path):

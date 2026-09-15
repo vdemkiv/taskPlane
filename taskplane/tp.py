@@ -1459,6 +1459,19 @@ def _apply_contract_token_ceiling(contract: dict, max_tokens: int) -> None:
 
 def cmd_new(a) -> int:
     ws = _workspace(a.workspace)
+    if getattr(a, "product", False):
+        import loop as loop_runtime
+        if any(getattr(a, name, None) for name in
+               ("target", "base", "fetch", "allow_foreign_state")):
+            print("taskplane: Product entry cannot fetch/check out source or override foreign state; "
+                  "use the already selected readable checkout.", file=sys.stderr)
+            return 1
+        prior = tp.load_active(ws)
+        state = loop_runtime._load_raw(ws)
+        if prior or tp.list_task_slots(ws) or (state and state.get("step") not in {"done", "failed"}):
+            print("taskplane: Product entry preserves the existing contract or delivery. "
+                  "Continue that owner; no replacement was activated.", file=sys.stderr)
+            return 1
     if _bare_root(ws):
         print(
             "taskplane: REFUSING to activate a contract here — "
@@ -1484,18 +1497,39 @@ def cmd_new(a) -> int:
     # (The old local CONTRACT_TEMPLATE diverged and crashed cmd_status/
     # cmd_budget on any loop-created contract.)
     scope = [s.strip() for s in a.scope.split(",") if s.strip()] if a.scope else []
-    tools = [t.strip() for t in a.tools.split(",") if t.strip()] if a.tools else []
+    tools = [t.strip() for t in a.tools.split(",") if t.strip()] if a.tools else None
     deny_extra = [d.strip() for d in a.deny] if a.deny else []
+    product = bool(getattr(a, "product", False))
+    if product:
+        if scope or getattr(a, "write_allow", None) or a.tests or a.tools:
+            print("taskplane: --product uses the declared docs/specs/knowledge scope; "
+                  "do not combine it with --scope, --write-allow, --tests or --tools.", file=sys.stderr)
+            return 1
+        declared = {name.strip() for name in str(getattr(a, "available_tools", "") or "").split(",")}
+        native_read = bool(declared & {"Read", "Grep", "Glob"})
+        native_read = native_read or (bool(declared & {"exec_command", "functions.exec_command"})
+                                     and bool(host_caps.codex_readonly_runtime(ws)))
+        native_write = bool(declared & tp.WRITE_TOOLS)
+        if not native_read or not native_write:
+            print(json.dumps({"ready": False, "reason": "Product needs native read access and "
+                              "a scoped document write tool before activation.",
+                              "read_available": native_read, "write_available": native_write,
+                              "next": "Declare the current native tools with --available-tools; "
+                              "no contract was activated."}))
+            return 1
+        scope = ["docs/**", "specs/**", "knowledge/**"]
     c = tp.build_contract(
         " ".join(a.goal),
         scope=scope,
-        read_only=bool(getattr(a, "read_only", False)),
-        write_allow=(list(a.write_allow) if getattr(a, "write_allow", None) else None),
+        read_only=product or bool(getattr(a, "read_only", False)),
+        write_allow=(scope if product else list(a.write_allow) if getattr(a, "write_allow", None) else None),
         tools=tools,
         test_command=a.tests or None,
         deny_extra=deny_extra,
         max_actions=(int(a.max_actions) if getattr(a, "max_actions", None) is not None else None),
     )
+    if product:
+        c["standalone_product"] = True
     allowed_foreign = list(getattr(a, "allow_foreign_state", None) or [])
     if allowed_foreign:
         if not str(getattr(a, "by", None) or "").strip():
@@ -1545,7 +1579,13 @@ def cmd_new(a) -> int:
         }
 
     snapshot = tp.git_head(ws)
-    tp.activate(ws, c, snapshot=snapshot)
+    try:
+        tp.activate(ws, c, snapshot=snapshot, require_empty=product)
+    except tp.StateError as exc:
+        if not product:
+            raise
+        print(f"taskplane: Product activation refused; the current owner is preserved: {exc}", file=sys.stderr)
+        return 1
     if _tgt_rec:
         print(
             f"  target    : {(_tgt_rec.get('head') or '')[:12]} vs "
@@ -1584,7 +1624,14 @@ def cmd_new(a) -> int:
     # Report the Definition-of-Ready verdict at activation time.
     ready, blockers, warnings = tp.dor_check(c, ws, snapshot)
     _print_dor(ready, blockers, warnings)
-    print("Then do the work, and run `tp.py dod` to close.")
+    if c.get("standalone_product"):
+        if host_caps.codex_readonly_runtime(ws):
+            print("Native read request (compatibility only; execute through Codex):")
+            print(json.dumps(host_caps.codex_readonly_command(["pwd"], ws), sort_keys=True))
+        print("Report the phase DoR and DoD separately; saving a draft is not acceptance.")
+        print(f"Finish this standalone contract with `tp.py clear --task-id {c['task_id']}`.")
+    else:
+        print("Then do the work, and run `tp.py dod` to close.")
     return 0
 
 
@@ -3152,6 +3199,184 @@ def _is_closing_command(command: str) -> bool:
     return verb in _CLOSING_VERBS if verb else False
 
 
+_PRODUCT_CONTROLS = {
+    "req": {"new", "amend", "score", "show", "signoff", "mode", "debt", "list"},
+    "graph": {"link", "impact", "check", "locate"},
+    "decision": {"new", "list", "show"},
+    "kb": {"list", "lint", "retrieve", "where"},
+}
+_HUMAN_INPUT_TOOLS = frozenset({
+    "AskUserQuestion", "request_user_input", "request_user_input_async",
+    "functions.request_user_input", "functions.request_user_input_async",
+})
+
+
+def _product_control_argv(command: str, workspace: str) -> list[str] | None:
+    """One trusted engine command in this workspace; shell effects never qualify."""
+    import shutil
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        return None
+    if len(args) < 3:
+        return None
+    if re.search(r"[;&|<>`$()\n\r]", command) and shlex.join(args) != command:
+        return None
+    interpreter = os.path.realpath(shutil.which(args[0]) or args[0])
+    root = os.path.realpath(workspace)
+    installed = shutil.which(os.path.basename(args[0]))
+    trusted = {os.path.realpath(sys.executable)}
+    if installed:
+        trusted.add(os.path.realpath(installed))
+    if (not re.fullmatch(r"(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?", os.path.basename(args[0]))
+            or interpreter not in trusted or not os.path.isfile(interpreter)
+            or os.path.commonpath([root, interpreter]) == root):
+        return None
+    if os.path.basename(args[0]) in {"py", "py.exe"} and args[1] == "-3":
+        args.pop(1)
+    if not tp._is_tp_cli(args[1], workspace):
+        return None
+    args = args[2:]
+    options = args[:args.index("--")] if "--" in args else args
+    if any(x.startswith("--") and x.split("=", 1)[0] != "--workspace"
+           and "--workspace".startswith(x.split("=", 1)[0]) for x in options):
+        return None
+    positions = [i for i, x in enumerate(options)
+                 if x == "--workspace" or x.startswith("--workspace=")]
+    if len(positions) > 1:
+        return None
+    if positions:
+        i = positions[0]
+        if args[i] == "--workspace":
+            if i + 1 == len(args):
+                return None
+            value = args[i + 1]
+            del args[i:i + 2]
+        else:
+            value = args.pop(i).split("=", 1)[1]
+        if os.path.realpath(os.path.join(root, value)) != root:
+            return None
+    return args
+
+
+def _product_control_tool(tool: str, payload: dict, workspace: str) -> bool:
+    """Bind control argv to its actual native outer shell and workspace."""
+    if tool == "Bash":
+        if set(payload) - {"command", "timeout", "description"}:
+            return False
+        if not os.environ.get("CODEX_THREAD_ID"):
+            return isinstance(payload.get("command"), str)
+        native = host_caps.pending_codex_tool_call("exec_command")
+        return bool(native and native.get("cmd") == payload.get("command")
+                    and _product_control_tool("exec_command", native, workspace))
+    if tool not in {"exec_command", "functions.exec_command"}:
+        return False
+    return bool(not set(payload) - {"cmd", "shell", "login", "workdir", "max_output_tokens",
+                                    "yield_time_ms", "sandbox_permissions", "justification", "tty"}
+                and payload.get("shell") == "/bin/sh" and payload.get("login") is False
+                and isinstance(payload.get("workdir"), str)
+                and os.path.realpath(payload["workdir"]) == os.path.realpath(workspace))
+
+
+def _standalone_product_finish(workspace: str, contract: dict, task_id: str) -> bool:
+    """Finish only the selected standalone Product owner; no delivery authority."""
+    if (not contract.get("standalone_product") or not contract.get("read_only")
+            or contract.get("_union") or contract.get("worker_scoped")
+            or contract.get("worker_lifecycle") or contract.get("task_id") != task_id):
+        return False
+    try:
+        import loop as loop_runtime
+        state = loop_runtime._load_raw(workspace)
+        current = tp.load_json(tp.active_contract_path(workspace), default={})
+    except (ValueError, OSError, tp.StateError):
+        return False
+    return (current.get("task_id") == task_id
+            and (not state or state.get("step") in {"done", "failed"}))
+
+
+def _product_finish_command(command: str, workspace: str, contract: dict) -> bool:
+    args = _product_control_argv(command, workspace)
+    return bool(args and len(args) == 3 and args[:2] == ["clear", "--task-id"]
+                and _standalone_product_finish(workspace, contract, args[2]))
+
+
+def _product_presentation(tool: str, payload: dict, workspace: str, contract: dict) -> bool:
+    if tool in _HUMAN_INPUT_TOOLS:
+        return True
+    if tool not in {"mcp__codex_app__open_in_codex", "open_in_codex"}:
+        return False
+    target = payload.get("target")
+    if (not isinstance(target, dict) or target.get("type") != "file"
+            or set(target) - {"type", "path", "line"}
+            or set(payload) - {"target", "placement"}
+            or not isinstance(target.get("path"), str)):
+        return False
+    if tp.writable_target(target["path"], contract.get("write_allow") or [], workspace):
+        return True
+    # Requirements are authored by the existing CLI into its external KB.
+    # Present only an indexed requirement, not an arbitrary external path.
+    import requirements
+    path = os.path.realpath(os.path.join(workspace, target["path"]))
+    try:
+        return any(path == requirements.requirement_file(workspace, row)
+                   for row in requirements.list_requirements(workspace))
+    except (OSError, ValueError, tp.StateError):
+        return False
+
+
+def _screen_contract_tool(contract: dict, tool_name: str, tool_input: dict,
+                          workspace: str) -> tuple[bool, str]:
+    members = contract.get("_union")
+    if members and tool_name not in tp.WRITE_TOOLS:
+        for member in members:
+            allowed, reason = _screen_contract_tool(member, tool_name, tool_input, workspace)
+            if not allowed:
+                return False, reason
+        return True, "within every active contract"
+    if contract.get("standalone_product") and contract.get("read_only"):
+        if _product_presentation(tool_name, tool_input, workspace, contract):
+            return tp.screen_tool(contract, "Read", {"file_path": "."}, workspace)
+        if tool_name in tp.COMMAND_TOOLS and _product_control_tool(tool_name, tool_input, workspace):
+            command = tp.command_text(tool_name, tool_input)
+            args = _product_control_argv(command, workspace)
+            if (args and len(args) >= 2 and args[0] in _PRODUCT_CONTROLS
+                    and args[1] in _PRODUCT_CONTROLS[args[0]]):
+                if args[0] == "graph":
+                    for i, value in enumerate(args):
+                        flag = value.split("=", 1)[0]
+                        if flag.startswith("--") and "--base".startswith(flag):
+                            base = (value.split("=", 1)[1] if "=" in value
+                                    else args[i + 1] if i + 1 < len(args) else "")
+                            if flag != "--base" or not base or base.startswith("-"):
+                                return False, "Product graph base must be a revision, not a Git option."
+                if args[:2] == ["graph", "link"]:
+                    kinds = [(args[i + 1] if i + 1 < len(args) else "") if value == "--kind"
+                             else value.split("=", 1)[1]
+                             for i, value in enumerate(args)
+                             if value == "--kind" or value.startswith("--kind=")]
+                    if kinds != ["planned"]:
+                        return False, "Product graph links require explicit --kind planned; realization belongs to delivery."
+                if args[:2] == ["decision", "new"]:
+                    statuses = []
+                    for i, value in enumerate(args):
+                        flag = value.split("=", 1)[0]
+                        if flag.startswith("--sup"):
+                            return False, "Product drafts do not supersede accepted decisions."
+                        if flag.startswith("--sta"):
+                            status = (value.split("=", 1)[1] if "=" in value
+                                      else args[i + 1] if i + 1 < len(args) else "")
+                            if flag != "--status" or status != "proposed":
+                                return False, "Product records proposed decisions; acceptance needs its human-owned boundary."
+                            statuses.append(status)
+                    if statuses != ["proposed"]:
+                        return False, "Product decision drafts require explicit --status proposed."
+                denial = governed_command_engine._raw_command_policy_denial(contract, command)
+                if denial:
+                    return False, denial
+                return tp.screen_tool(contract, "Read", {"file_path": "."}, workspace)
+    return tp.screen_tool(contract, tool_name, tool_input, workspace)
+
+
 def cmd_contracts(a) -> int:
     """List every active contract slot — including the stale ones.
 
@@ -3214,6 +3439,14 @@ def cmd_clear(a) -> int:
     worker slots now use authenticated terminal cleanup instead of this
     general operator command."""
     ws = _workspace(a.workspace)
+    task_id = getattr(a, "task_id", None)
+    if task_id:
+        c = tp.load_active(ws) or {}
+        if (getattr(a, "all", False) or getattr(a, "slot", None)
+                or not _standalone_product_finish(ws, c, task_id)):
+            print("taskplane: finish requires this exact standalone Product contract; "
+                  "worker, sibling, and active delivery contracts are unchanged.", file=sys.stderr)
+            return 1
     if getattr(a, "all", False):
         d = os.path.join(tp.tp_dir(ws), "active")
         freed = []
@@ -3262,7 +3495,15 @@ def cmd_clear(a) -> int:
     if getattr(a, "slot", None):
         tp.safe_remove(path)
     else:
-        tp.clear(ws)  # FUSE-safe removal (safe_remove)
+        if task_id:
+            try:
+                tp.clear(ws, expected_task_id=task_id,
+                         guard=lambda current: _standalone_product_finish(ws, current, task_id))
+            except tp.StateError as exc:
+                print(f"taskplane: Product finish refused; the current owner is preserved: {exc}", file=sys.stderr)
+                return 1
+        else:
+            tp.clear(ws)  # FUSE-safe removal (safe_remove)
     remaining = len(tp.list_task_slots(ws)) + int(
         os.path.exists(os.path.join(tp.tp_dir(ws), "active_contract.json"))
     )
@@ -3281,6 +3522,9 @@ def cmd_clear(a) -> int:
         tp.trace(
             ws, "contract_clear_human_approval", approved_by=a.approved_by, slots=[slot or "legacy"]
         )
+    if task_id:
+        tp.trace(ws, "product_contract_finished", task_id=task_id,
+                 product_acceptance="unchanged", implementation_authority="none")
     return 0
 
 
@@ -4041,6 +4285,16 @@ def _screen(a) -> int:
 
     tid = contract.get("task_id", "_")
 
+    # Product can deliver saved work, ask a question, or finish its exact
+    # standalone owner even when optional metering cannot be read. None of
+    # these operations approves a requirement or opens implementation authority.
+    if (contract.get("standalone_product") and contract.get("read_only")
+            and not contract.get("_union") and not contract.get("worker_scoped")
+            and (_product_presentation(tool_name, tool_input, ws, contract)
+                 or (_product_control_tool(tool_name, tool_input, ws)
+                     and _product_finish_command(command, ws, contract)))):
+        return 0  # Defer to native permissions; do not approve the operation.
+
     # budget gate first — an exhausted harness does no further work. The RULE
     # lives in the kernel (tp.budget_status); the CLI only meters + forwards.
     # FAIL CLOSED on a corrupt meter for a governed contract: a torn/tampered
@@ -4164,7 +4418,7 @@ def _screen(a) -> int:
             # A broken meter must fail closed, but it must not hide a more
             # specific authority boundary.  Preserve the contract's direct
             # tool/command refusal when both checks deny the same action.
-            _contract_allows, _contract_why = tp.screen_tool(contract, tool_name, tool_input, ws)
+            _contract_allows, _contract_why = _screen_contract_tool(contract, tool_name, tool_input, ws)
             if not _contract_allows:
                 _tok_why = _contract_why
             _meter_bump(ws, tid, "denies")
@@ -4247,7 +4501,7 @@ def _screen(a) -> int:
             print(json.dumps({"decision": "block", "reason": "taskplane: " + _unbound}))
             return 0
 
-    allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
+    allow, reason = _screen_contract_tool(contract, tool_name, tool_input, ws)
     if allow:
         # A leased review result needs evidence stronger than the JSON's own
         # `authored_by` string.  The always-on write hook records the observed
@@ -5962,7 +6216,14 @@ def cmd_req(a) -> int:
     import requirements as req
 
     ws = _workspace(a.workspace)
-    if a.req_action == "new":
+    if a.req_action == "show":
+        record = req.get_requirement(ws, a.id)
+        if record is None:
+            print(f"taskplane: no requirement {a.id}", file=sys.stderr)
+            return 1
+        print(json.dumps({"requirement": record, "file": req.requirement_file(ws, record),
+                          "product_gates": req.product_gate_summary(record)}, indent=2))
+    elif a.req_action == "new":
         try:
             nfr = dict(kv.split("=", 1) for kv in (a.nfr or []))
         except ValueError:
@@ -6459,15 +6720,11 @@ def cmd_context(a) -> int:
     import track as tr
 
     ws = _workspace(a.workspace)
-    print(
-        "[taskplane] On the first TaskPlane request in this session, and "
-        "after installation or update, run onboard and present its setup "
-        "dashboard before routing any intent (including review, status, "
-        "and help). Existing repository context is not completed onboarding. "
-        "Keep the requested goal and continue it when setup is ready. "
-        "Internal stage workers consume their sealed startup without "
-        "repeating this user-entry setup."
-    )
+    is_hook = (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {"native", "bridge"}
+    if not loopmod._load_raw(ws) and not tp.load_active(ws):
+        if not is_hook:
+            print("No active Taskplane delivery. Review and help use native tools directly.")
+        return 0
     lifecycle_released = []
     terminal_recovery = None
     if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
@@ -6494,22 +6751,6 @@ def cmd_context(a) -> int:
         # SessionStart is a replay point, never a source of terminal truth.
         # With no exact persisted whole-run intent this is a strict no-op.
         terminal_recovery = loopmod.replay_terminal_intent(ws)
-    if not os.path.isdir(tp.kb_root(ws)) and not os.path.isdir(tp.tp_dir(ws)):
-        # An installed plugin must expose its on-ramp. Using the same report
-        # as tp-go also recognizes linked worktrees (.git is a file) and
-        # keeps the prompt specific to the single missing prerequisite.
-        report = _onboard_report(ws)
-        prompts = {
-            "attach_folder": "no project folder is connected yet",
-            "init_git": "this folder needs a git repo with an initial commit",
-            "tp_init": "this repo needs taskplane initialization",
-        }
-        missing = prompts.get(report["next_action"], "setup is incomplete")
-        print(
-            f'[taskplane] installed; {missing} — say "set up taskplane" '
-            'to continue, or "taskplane help" for the tour.'
-        )
-        return 0
     st = loopmod.status(ws)
     g = dg.load(ws)
     reqs_open = [r for r in reqmod.list_requirements(ws) if r["status"] not in ("done",)]
@@ -6692,6 +6933,10 @@ def _invoke_run_command(a, workspace: str) -> int:
     from taskplane import run_context, run_store, settings
     import loop as loopmod
 
+    if a.cmd == "review" and getattr(a, "review_action", None) in {None, "start", "resume"}:
+        _set_effective_settings_snapshot(settings.load_settings(environment=os.environ))
+        return a.fn(a)
+
     if a.cmd == "loop" and getattr(a, "loop_action", None) == "next":
         observed = loopmod.read_pending_action(workspace)
         if observed is not None:
@@ -6836,7 +7081,7 @@ def _run_hook_command(a) -> int:
         sys.stdin = original_stdin
 
     output = captured.getvalue()
-    if a.cmd == "context" and not returncode:
+    if a.cmd == "context" and not returncode and output.strip():
         # Codex expects SessionStart JSON. Direct `tp context` remains plain
         # text; both initial and duplicate hook paths carry usable context.
         try:
@@ -7538,21 +7783,7 @@ def _legacy_review_activation_command(command: str) -> bool:
 
 
 def cmd_review(a) -> int:
-    """Open a review in ONE call.
-
-    A review used to run about ten shell commands before a single lens
-    looked at the diff — onboard, init, new, target, graph scan, graph
-    impact, lens route, lens dispatch, two dashboard renders — at a measured
-    ~11k effective tokens each, and each command AND its output then sits in
-    the conversation to be re-read on every later turn. `tp loop evidence`
-    proved the fix for the evaluate step in v2.6: return everything the step
-    needs in one payload, with every judgement slot left EMPTY.
-
-    This does the same for the review's opening. It decides nothing: no
-    finding, no verdict, no severity. It establishes facts — tools, target,
-    graph, impact, routing, runnability — activates the contract, writes the
-    shared context once, and hands back the briefs.
-    """
+    """Pin ordinary source review; retain explicit delivery evidence operations."""
     import target as tgt
     import review as rv
 
@@ -7578,7 +7809,7 @@ def cmd_review(a) -> int:
         )
         return 0
     enforcement = None
-    if review_action in {"start", "resume", "signoff"}:
+    if review_action == "signoff":
         active = tp.load_active(ws) or {}
         enforcement, refusal = _enforcement_check(
             ws,
@@ -7791,6 +8022,12 @@ def cmd_review(a) -> int:
         return 1
     spec = getattr(a, "spec", None)
     parsed = tgt.parse(spec) if spec else None
+    review_scope = getattr(a, "scope", "diff")
+    if review_scope == "repository" and (getattr(a, "base", None) or
+            (parsed or {}).get("kind") == "pr"):
+        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_scope",
+            "reason": "repository scope cannot be combined with a PR or comparison base"}))
+        return 1
     remote_repository = False
     if spec and (not parsed or parsed.get("kind") != "pr"):
         try:
@@ -7800,6 +8037,10 @@ def cmd_review(a) -> int:
             remote_repository = True
         except ValueError:
             remote_repository = False
+    if review_scope == "repository" and remote_repository:
+        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_scope",
+            "reason": "repository snapshot scope requires a local checkout; select --workspace"}))
+        return 1
     if getattr(a, "review_action", None) == "resume":
         import preflight as repository_preflight_module
 
@@ -7976,7 +8217,6 @@ def cmd_review(a) -> int:
         )
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
-    tgt.save(ws, rec)
     out["target"] = rec
     # The canonical PR patch starts at the pinned merge-base, not the moving
     # tip of the base branch.  Repository preflight already resolved and
@@ -7985,19 +8225,15 @@ def cmd_review(a) -> int:
     # the PR diverged, inflating symbols and graph impact.
     base = rec.get("merge_base") or rec.get("base_ref") or getattr(a, "base", None) or "HEAD"
     try:
-        files = rv.select_diff_paths(rv.canonical_diff_files(ws, base), getattr(a, "paths", None))
-        active = tp.load_active(ws) or {}
-        coding = active.get("coding") or {}
-        if coding.get("scope_paths"):
-            outside = [path for path in files if not tp.match_any(path, coding["scope_paths"])]
-            if outside:
-                raise rv.ReviewKernelError(
-                    "review paths exceed the active contract: " + ", ".join(outside)
-                )
+        inventory = (rv.canonical_repository_files(ws, rec["head"])
+            if review_scope == "repository" else rv.canonical_diff_files(ws, base))
+        files = rv.select_diff_paths(inventory, getattr(a, "paths", None))
+        if not files:
+            raise rv.ReviewKernelError(
+                "review scope is empty; use --scope repository for tracked source")
         rec["changed_files"] = files
         rec["diff_policy"] = {"paths": files, "max_diff_bytes": diff_byte_limit}
         rec["fingerprint"] = tgt.fingerprint(rec)
-        tgt.save(ws, rec)
     except (ValueError, RuntimeError) as exc:
         print(
             json.dumps(
@@ -8018,329 +8254,24 @@ def cmd_review(a) -> int:
         changed=len(rec.get("changed_files") or []),
     )
 
-    # 3. graph + impact — impact-first is not optional, and it costs nothing
-    #    here that it would not cost as its own call.
-    files = rec.get("changed_files") or []
-    g, imp = {}, {}
     try:
-        import depgraph as dg
-
-        g = dg.load(ws)
-        # RESCAN A GRAPH THAT DESCRIBES ANOTHER TREE (D2). The blast radius
-        # is the one input every lens is told NOT to re-derive, so a stored
-        # graph scanned at a different head hands the wrong revision to the
-        # whole wave at once. A graph with no `scanned_head` at all cannot
-        # say which tree it describes, so it is rescanned too.
-        _scanned = ((g.get("meta") or {}).get("scanned_head") or "")[:12]
-        if not g.get("modules") or _scanned != (rec.get("head") or "")[:12]:
-            g = dg.scan(ws)
-        imp = dg.impact(ws, files) if files else {}
-        out["impact"] = imp
-        step(
-            "graph",
-            True,
-            modules=len(g.get("modules") or {}),
-            edges=len(g.get("edges") or []),
-            impacted=imp.get("total_impacted", 0),
-        )
-    except Exception as e:
-        # Never pretend a stale/partially loaded graph is complete. The
-        # canonical pinned diff remains reviewable; ReviewKernel records the
-        # degraded graph and routes from diff/content with mandatory floors.
-        g, imp = {}, {}
-        step("graph", False, reason=e.__class__.__name__)
-    graph_errors = dg.quality_errors(g) if g and "dg" in locals() else []
-    if graph_errors:
-        quality = dg.scan_quality(g)
-        warning = {
-            "schema": "taskplane.graph-quality-warning/v1",
-            "status": "degraded",
-            "reason": graph_errors[0],
-            "graph_quality": quality,
-            "recovery": (quality.get("recovery") or dg.GRAPH_SCAN_RECOVERY),
-            "continuation": "immutable_diff_with_architecture_security_floors",
-        }
-        # Standalone Review is intentionally useful when graph enrichment is
-        # incomplete: preserve the producer failure visibly, then let the
-        # review kernel route from the pinned immutable diff with its
-        # architecture/security floors. Governed Evaluate/EM and DoD retain
-        # their strict refusals in cmd_loop/cmd_dod.
-        step(
-            "graph",
-            False,
-            reason=graph_errors[0],
-            recovery=warning["recovery"],
-            continuation=warning["continuation"],
-        )
-        out["graph_quality_warning"] = warning
-        preflight["graph_quality_warning"] = warning
-        # Adapt the producer-complete scan record into ReviewKernel's existing
-        # impact-quality interface. A failed graph producer makes the derived
-        # radius unknown, and the same degraded graph cannot honestly repair
-        # that uncertainty through caller expansion. The full producer record
-        # remains attached to the impact evidence rather than being recast as
-        # an unrelated truncation or coverage failure.
-        imp = dict(imp)
-        imp.update(
-            {
-                "unknown": True,
-                "unknown_reason": "graph_scan_degraded",
-                "graph_scan_quality": quality,
-            }
-        )
-        out["impact"] = imp
-    rec["review_cache"] = tgt.review_cache_identity(rec, g)
-    preflight["cache_identity"] = rec["review_cache"]
-    tgt.save(ws, rec)
-
-    # 4. contract — prepare it now, activate only after the kernel is ready.
-    #    A mapper refusal must never strand the caller under an active
-    #    read-only contract; graph degradation proceeds from the pinned diff.
-    import storage as runtime_storage
-
-    locator = runtime_storage.load_workspace_locator(ws)
-    write_allow = [".em-review/**"]
-    if locator:
-        write_allow = [os.path.join(path, "**") for path in locator["paths"].values()]
-    c = tp.build_contract(
-        (" ".join(a.goal) if getattr(a, "goal", None) else f"engineering review: {spec or base}"),
-        read_only=True,
-        write_allow=write_allow,
-        max_actions=(int(a.max_actions) if getattr(a, "max_actions", None) is not None else None),
-    )
-    if enforcement:
-        c["enforcement"] = enforcement
-    c["budget"].update(_standalone_review_budget(getattr(a, "max_tokens", None)))
-    _apply_contract_token_ceiling(c, c["budget"]["max_tokens"])
-    c["target"] = {
-        k: rec.get(k)
-        for k in (
-            "origin",
-            "head",
-            "base",
-            "base_ref",
-            "branch",
-            "merge_base",
-            "shallow",
-            "fingerprint",
-            "target",
-            "review_cache",
-            "diff_policy",
-        )
-    }
-    out["contract"] = {
-        "task_id": c["task_id"],
-        "read_only": True,
-        "status": "prepared",
-        "write_allow": write_allow,
-        "budget": c.get("budget"),
-    }
-
-    # 5. One normal-flow kernel call: quality before mapping, then exactly
-    #    one immutable envelope and exact deep/light slots. Large bytes are
-    #    artifacts; stdout is only the compact manifest.
-    try:
-        import runnability as runmod
-
-        probe = runmod.probe_once(ws)
-        diff_rc, patch = rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit)
+        diff_rc, patch = ((0, "") if review_scope == "repository" else
+            rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit))
         if diff_rc:
-            if diff_rc == rv.CANONICAL_DIFF_TOO_LARGE:
-                print(
-                    json.dumps(
-                        {
-                            "schema": "taskplane.review-start-manifest/v2",
-                            "status": "start_failed",
-                            **json.loads(patch),
-                        }
-                    )
-                )
-                return 1
-            raise RuntimeError(patch or "canonical diff derivation failed")
-        import review_evidence as _re
-
-        store = _re.ArtifactStore(ws)
-        diff_ref = store.put("diff", {"base": base, "patch": patch, "files": files})
-        symbols = rv.changed_symbols_from_patch(patch)
-        routing_content = rv.changed_content_from_patch(patch)
-        review_router = None
-        if graph_errors:
-            import lens as lensmod
-
-            def _degraded_review_router():
-                routing = lensmod.route(
-                    files,
-                    task_type="review",
-                    breadth="routed",
-                    stage="review",
-                    workspace=ws,
-                    requirement_text=None,
-                    content_by_file=routing_content,
-                )
-                guardrails = ("architecture", "security")
-                by_id = {str(row.get("id") or ""): row for row in routing.get("lenses") or []}
-                for lens_id in guardrails:
-                    row = by_id.get(lens_id)
-                    if row is None:
-                        continue
-                    tier = str(row.get("tier") or row.get("verdict") or "")
-                    reason = f"degraded graph fallback: {lens_id} floor"
-                    if tier not in {"light", "deep"}:
-                        row["initial_verdict"] = tier or "n/a"
-                        row["tier"] = "light"
-                        row["verdict"] = "light"
-                        row["mode"] = "inline"
-                        row.pop("negative_evidence", None)
-                    row["floor"] = reason
-                    for key in ("evidence", "reasons"):
-                        values = row.setdefault(key, [])
-                        if reason not in values:
-                            values.append(reason)
-                context = routing.setdefault("context", {})
-                progression = context.setdefault("review_progression", {})
-                sweep_lenses = list(progression.get("sweep_lenses") or [])
-                for lens_id in guardrails:
-                    row = by_id.get(lens_id) or {}
-                    tier = str(row.get("tier") or row.get("verdict") or "")
-                    if tier == "light" and lens_id not in sweep_lenses:
-                        # The two advertised guardrails are a fixed, bounded
-                        # widening of the existing single sweep. Keeping them
-                        # in the same slot avoids a second review wave while
-                        # ensuring dispatch cannot filter either floor out.
-                        sweep_lenses.append(lens_id)
-                progression["sweep_lenses"] = sweep_lenses
-                progression["sweep_count"] = 1 if sweep_lenses else 0
-                progression["deferred_light"] = [
-                    lens_id
-                    for lens_id in progression.get("deferred_light") or []
-                    if lens_id not in guardrails
-                ]
-                context["graph_quality_fallback"] = {
-                    "mode": "immutable_diff",
-                    "guardrails": ["architecture_floor", "security_floor"],
-                    "sweep_widening": [
-                        lens_id for lens_id in guardrails if lens_id in sweep_lenses
-                    ],
-                }
-                # Routing attached language references before the fallback
-                # promoted security. Refresh that deterministic attachment so
-                # the stored sweep brief applies the newly active floor too.
-                routing = lensmod._attach_language_context(routing, files, "review")
-                return routing
-
-            review_router = _degraded_review_router
-        manifest = rv.start_review(
-            ws,
-            target=rec,
-            graph=g,
-            impact=imp,
-            diff={
-                "files": files,
-                "changed_symbols": symbols,
-                "artifact": rv._portable_ref(diff_ref),
-            },
-            runnability=runmod.evidence_record(probe),
-            requirement={},
-            acceptance=[],
-            contracts=[],
-            stage="review",
-            task_type="review",
-            base=base,
-            caller_expander=(None if graph_errors else rv.bounded_caller_expander(g)),
-            router=review_router,
-            routing_content=routing_content,
+            raise ValueError(patch or "canonical diff unavailable")
+        result = rv.prepare_source_review(
+            ws, target=rec, files=files, patch=patch, scope=review_scope,
+            goal=" ".join(getattr(a, "goal", None) or []),
+            max_tokens=getattr(a, "max_tokens", None),
+            max_actions=getattr(a, "max_actions", None),
         )
-        if manifest.get("status") not in {"ready", "needs_user"}:
-            if repository_run:
-                import run_store as repository_run_store
-
-                store_record = repository_run_store.RunStore()
-                current = store_record.load(repository_run)
-                store_record.commit(
-                    repository_run,
-                    expected_revision=int(current["revision"]),
-                    changes={
-                        "status": "review_blocked",
-                        "contract": {"status": "inactive", "task_id": None},
-                        "review": {
-                            "kernel_run_id": manifest.get("run_id"),
-                            "status": manifest.get("status"),
-                        },
-                    },
-                )
-            manifest["contract"] = {"status": "inactive", "reason": manifest.get("status")}
-            manifest["preflight"] = preflight
-            print(json.dumps(rv._manifest(manifest), sort_keys=True, separators=(",", ":")))
-            return 1
-        tp.activate(ws, c, snapshot=tp.git_head(ws))
-        step("contract", True, task_id=c["task_id"])
-        try:
-            out["owes"] = _seed_owed(ws, "review", c["task_id"])
-            step("obligations", True, owed=len(out["owes"] or []))
-        except Exception as e:
-            step("obligations", False, reason=e.__class__.__name__)
         if repository_run:
-            import run_store as repository_run_store
-
-            store_record = repository_run_store.RunStore()
-            current = store_record.load(repository_run)
-            store_record.commit(
-                repository_run,
-                expected_revision=int(current["revision"]),
-                changes={
-                    "status": "governed",
-                    "contract": {"status": "active", "task_id": c["task_id"]},
-                    "review": {
-                        "kernel_run_id": manifest.get("run_id"),
-                        "status": manifest.get("status"),
-                    },
-                },
-            )
-        manifest["contract"] = {"task_id": c["task_id"], "read_only": True, "status": "active"}
-        if enforcement:
-            manifest["enforcement"] = enforcement
-        if repository_run:
-            manifest["repository_run_id"] = repository_run
-        manifest["tools"] = {"git": bool(t["git"]["present"]), "gh": bool(t["gh"]["present"])}
-        manifest["preflight"] = preflight
-        visuals, owed = _review_visuals(ws, manifest, final=False)
-        manifest["visuals"] = visuals
-        manifest["obligations"] = owed
-        manifest = rv._manifest(manifest)
-        kernel_state = rv._load_state(ws, manifest.get("run_id"))
-        rv._save_state(
-            ws,
-            dict(
-                kernel_state,
-                manifest=manifest,
-                counters=manifest["counters"],
-                **({"enforcement": enforcement} if enforcement else {}),
-            ),
-        )
-    except Exception as e:
-        step("route", False, reason=f"{e.__class__.__name__}: {e}")
-        # review start owns this contract.  A failed opening must not leave a
-        # read-only contract behind to block the user's next command.
-        try:
-            active = tp.load_active(ws) or {}
-            if active.get("task_id") == c.get("task_id"):
-                tp.clear(ws)
-        except Exception:
-            pass
-        print(
-            json.dumps(
-                {
-                    "schema": "taskplane.review-start-manifest/v2",
-                    "status": "start_failed",
-                    "reason": f"{e.__class__.__name__}: {e}",
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
+            result["repository_run_id"] = repository_run
+    except (ValueError, RuntimeError, OSError) as exc:
+        print(json.dumps({"status": "start_failed", "reason": str(exc)[:512]}))
         return 1
-    print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
-    return 0 if manifest.get("status") == "ready" else 2
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
 
 
 def cmd_target(a) -> int:
@@ -10025,6 +9956,9 @@ def main(argv=None) -> int:
     n.add_argument(
         "--read-only", action="store_true", help="review/plan role — block filesystem writes"
     )
+    n.add_argument("--product", action="store_true",
+                   help="standalone Product: native reads, docs/specs/knowledge writes, scoped finish")
+    n.add_argument("--available-tools", help="current native tool names for Product entry compatibility")
     n.add_argument(
         "--write-allow",
         action="append",
@@ -10220,6 +10154,7 @@ def main(argv=None) -> int:
     cl.add_argument(
         "--approved-by", help="human chat identity authorizing recovery past an exhausted budget"
     )
+    cl.add_argument("--task-id", help="finish only this exact standalone Product contract")
     cl.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     cl.set_defaults(fn=cmd_clear)
 
@@ -10779,6 +10714,8 @@ def main(argv=None) -> int:
     rdb.add_argument("--tags", help="comma-separated tags for retrieval")
     rdb.add_argument("--files", help="comma-separated file globs the debt lives in")
     rqsub.add_parser("list", help="list recorded requirements")
+    rshow = rqsub.add_parser("show", help="show a requirement with separate Product DoR and DoD")
+    rshow.add_argument("id")
     rq.set_defaults(fn=cmd_req)
 
     gp = sub.add_parser(
@@ -11061,10 +10998,7 @@ def main(argv=None) -> int:
 
     rvp = sub.add_parser(
         "review",
-        help="open a review in ONE call — tools, "
-        "target pin, graph, impact, contract, obligations, "
-        "routing, runnability and the ready-to-dispatch "
-        "briefs, as one JSON payload",
+        help="pin source for native review or inspect existing delivery review evidence",
     )
     rvsub = rvp.add_subparsers(dest="review_action")
     rva = rvsub.add_parser(
@@ -11082,33 +11016,32 @@ def main(argv=None) -> int:
         "--expected-identity", required=True, help="URL-safe encoded exact worker/lease identity"
     )
     rva.set_defaults(fn=cmd_review)
-    rvs = rvsub.add_parser("start", help="establish the facts and activate the read-only contract")
+    rvs = rvsub.add_parser("start", help="pin source for native review without a contract")
     rvs.add_argument("spec", nargs="?", help="PR url, OWNER/REPO#N, or a ref")
     rvs.add_argument("--base", default=None, help="diff base ref")
+    rvs.add_argument("--scope", choices=["diff", "repository"], default="diff",
+                     help="review a comparison or a committed repository snapshot")
     rvs.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvs.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
     rvs.add_argument(
         "--fetch", action="store_true", help="fetch pull/N/head into this checkout first"
     )
     rvs.add_argument(
-        "--goal", nargs="*", default=None, help="contract goal text (default: derived)"
+        "--goal", nargs="*", default=None, help="review goal text"
     )
     rvs.add_argument(
         "--max-actions",
         type=int,
         default=None,
         dest="max_actions",
-        help="action ceiling for the review contract (default "
-        "40). Prefer --max-tokens: an action cost ~11k "
-        "effective tokens on the measured review, with a "
-        "two-order-of-magnitude spread",
+        help="optional advisory action limit; native tools own execution",
     )
     rvs.add_argument(
         "--max-tokens",
         type=int,
         default=None,
         dest="max_tokens",
-        help="effective-token ceiling for the review contract",
+        help="optional advisory token limit; native tools own execution",
     )
     rvs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvs.add_argument(
@@ -11143,21 +11076,21 @@ def main(argv=None) -> int:
     rvr.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvr.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
     rvr.add_argument(
-        "--goal", nargs="*", default=None, help="contract goal text after preflight resumes"
+        "--goal", nargs="*", default=None, help="review goal text after preflight resumes"
     )
     rvr.add_argument(
         "--max-actions",
         type=int,
         default=None,
         dest="max_actions",
-        help="action ceiling for the resumed review contract",
+        help="optional advisory action limit for the resumed review",
     )
     rvr.add_argument(
         "--max-tokens",
         type=int,
         default=None,
         dest="max_tokens",
-        help="effective-token ceiling for the resumed review",
+        help="optional advisory token limit for the resumed review",
     )
     rvr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvr.set_defaults(fn=cmd_review)
