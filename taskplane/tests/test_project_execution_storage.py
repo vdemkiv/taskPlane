@@ -454,25 +454,3 @@ def test_project_cache_path_supports_package_import_without_flat_module_path(tmp
     result = subprocess.run([sys.executable, "-c", code, str(root)], cwd=repository,
                             env=environment, text=True, capture_output=True, check=True)
     assert result.stdout.strip() == str(root / ".taskplane" / "suite-cache" / "test-key.json")
-
-
-def test_archived_project_run_allows_successor_without_dropping_prior_guard(tmp_path, monkeypatch):
-    root = _checkout(tmp_path)
-    old_home = tmp_path / "old-home"
-    _bind(root, old_home)
-    monkeypatch.delenv("TASKPLANE_HOME")
-    selection = storage.select_project_execution_storage(str(root))
-    old_files = _files(old_home)
-    _, layout = _bind(root, root / ".taskplane", run_id="completed-project-run")
-    from taskplane import loop
-    archived = loop.archive(str(root), by="human:test")
-    assert archived["archived"] and archived["evidence_retained"]
-    assert storage.load_workspace_locator(str(root)) is None
-    assert storage.taskplane_home(workspace=str(root)) == layout.home
-    _bind(root, root / ".taskplane", run_id="successor")
-    assert storage.load_workspace_locator(str(root))["run_id"] == "successor"
-    assert Path(archived["locator"]).is_file()
-    assert _files(old_home) == old_files
-    Path(selection["previous_binding"]["archive_path"]).write_text("{}")
-    with pytest.raises(storage.StorageIdentityError, match="archive fingerprint mismatch"):
-        storage.load_workspace_locator(str(root))

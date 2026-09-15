@@ -299,26 +299,27 @@ def produce_attempt_telemetry(inputs: AttemptTelemetryInputs) -> dict[str, objec
     else:
         import stage_handoff
         import stage_entities
-    key_id = inputs.runtime_receipt.get("key_id")
-    issued_at = inputs.runtime_receipt.get("issued_at")
-    if not isinstance(key_id, str) or type(issued_at) is not int:
-        raise DispatchTelemetryError("telemetry runtime signing identity is malformed")
-    key = inputs.trusted_keys.get(key_id)
-    if key is None or key.status != "active" or issued_at > inputs.now:
-        raise DispatchTelemetryError(
-            "telemetry runtime signing authority is disabled or from the future"
-        )
+    if inputs.resource_limits_advisory:
+        key_id = inputs.runtime_receipt.get("key_id")
+        issued_at = inputs.runtime_receipt.get("issued_at")
+        if not isinstance(key_id, str) or type(issued_at) is not int:
+            raise DispatchTelemetryError("telemetry runtime signing identity is malformed")
+        key = inputs.trusted_keys.get(key_id)
+        if key is None or key.status != "active" or issued_at > inputs.now:
+            raise DispatchTelemetryError(
+                "telemetry runtime signing authority is disabled or from the future"
+            )
     verified = stage_handoff.verify_contract(
         inputs.runtime_receipt,
         trusted_keys=inputs.trusted_keys,
         expected_schema=stage_entities.AGENT_RUNTIME_SCHEMA,
         expected_freshness=inputs.freshness,
         now=inputs.now,
-        historical=False,
+        historical=inputs.resource_limits_advisory,
     )
     result = _telemetry_object(verified["payload"])
     nonce = inputs.nonce_source.validate(
-        inputs.nonce, inputs.nonce_bindings, enforce_deadline=True
+        inputs.nonce, inputs.nonce_bindings, enforce_deadline=not inputs.resource_limits_advisory
     )
     for field in (
         "run_id",
@@ -890,7 +891,6 @@ def project_transcript_usage(
         "messages": totals["messages"],
         "duplicates_removed": totals["duplicates_removed"],
         "effective_tokens": totals["effective_tokens"],
-        "cache_creation_tokens": totals["cache_creation_tokens"],
         "usage": usage,
         "source_fingerprint": source_fingerprint,
     }, checkpoint_row
@@ -2182,20 +2182,20 @@ def _root_admission_projection(
     meter = checked.get("meter")
     reason_code = None
     total = None
-    if checked["sticky"] and checked["reason_code"] != "root_budget_reached":
+    if checked["sticky"]:
         reason_code = str(checked["reason_code"])
     elif not isinstance(meter, Mapping) or meter.get("status") != "available":
         reason_code = "root_usage_unavailable"
     else:
         total = int(meter["usage"]["total_tokens"])
-        if checked["policy"]["resume"] == "forbidden" and meter.get("resumed") is not False:
+        if total >= int(checked["policy"]["root_budget_tokens"]):
+            reason_code = "root_budget_reached"
+        elif checked["policy"]["resume"] == "forbidden" and meter.get("resumed") is not False:
             reason_code = "root_resume_forbidden"
         elif int(meter["first_observed_input_tokens"]) > int(
             checked["policy"]["seed_budget_tokens"]
         ):
             reason_code = "root_seed_budget_exceeded"
-        elif checked["sticky"] or total >= int(checked["policy"]["root_budget_tokens"]):
-            reason_code = "root_budget_reached"
     projection = {
         "schema": ROOT_ADMISSION_PROJECTION_SCHEMA,
         "dispatch_allowed": reason_code is None,
@@ -2680,7 +2680,7 @@ def _screen_dispatch_projection(
             else "The root-session admission boundary is closed; active workers "
             "may terminalize but no new task was started."
         )
-        if isinstance(ledger, MutableMapping):
+        if isinstance(ledger, MutableMapping) and not resource_limits_advisory:
             state = ledger.get("root_admission")
             if isinstance(state, MutableMapping) and not state.get("sticky"):
                 state["sticky"] = True
@@ -2722,6 +2722,15 @@ def _screen_dispatch_projection(
         "wave_usage": reconciled_wave_usage,
         "checkpoint": None,
     }
+    if resource_limits_advisory and (
+        root_admission is None
+        or root_admission["reason_code"]
+        in {None, "root_usage_unavailable", "root_budget_reached", "root_seed_budget_exceeded"}
+    ):
+        # Authenticated ledger/root admission was validated above. Keep every
+        # measurement, triggered ceiling and budget claim; only its enforcement
+        # is advisory. Session/identity/custody refusals are not resource limits.
+        result.update(status="advisory", dispatch_allowed=True)
     if not result["dispatch_allowed"]:
         result["checkpoint"] = _scope_review_checkpoint(
             reason=reason,

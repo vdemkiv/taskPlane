@@ -26,9 +26,9 @@ second time through partial `unittest discover` collection.
 
 - **Stdlib only.** The runtime (`taskplane/*.py`) may not gain pip
   dependencies; it must run anywhere the plugin does.
-- **Keep domain evidence truthful.** Explicit delivery gates validate their
-  evidence. Ordinary source review uses native tool permissions and lifecycle;
-  do not add Taskplane onboarding or per-tool budget gates to that path.
+- **Never weaken a guardrail.** Gates, contracts, scope screening, and
+  evidence checks fail closed. A change that makes an interaction simpler by
+  removing or softening an enforcement path will not be accepted.
 - **Tests accompany behavior changes**, including a regression test for every
   bug fix.
 

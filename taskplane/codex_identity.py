@@ -7,9 +7,6 @@ conversation. This is a read-only adapter, not a new owner/receipt registry.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from contextlib import contextmanager
-from contextvars import ContextVar
-from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -22,59 +19,6 @@ from uuid import UUID
 
 MAX_METADATA_BYTES = 128 * 1024
 _AGENT_PATH = re.compile(r"/root/(?:[a-z0-9_]+/)*([a-z0-9_]+)\Z")
-
-# Import this projection through taskplane.codex_identity in every consumer.
-# It selects storage/contract ownership for one call, never native identity.
-_COMMAND_WORKER: ContextVar[tuple[str, str | None] | None] = ContextVar(
-    "taskplane_native_command_worker", default=None
-)
-
-
-def command_worker() -> tuple[str, str | None] | None:
-    return _COMMAND_WORKER.get()
-
-
-def current_child_event(workspace: str, *, now: datetime | None = None) -> dict[str, Any] | None:
-    """Reuse the native metadata adapter for the current command's child."""
-    child = str(os.environ.get("CODEX_THREAD_ID") or "")
-    matched = _matching_child({"agent_id": child, "cwd": workspace},
-        now=now, current_process=True)
-    if matched is None:
-        return None
-    return {"agent_id": child, "session_id": matched[3],
-        "parent_thread_id": matched[4], "cwd": workspace,
-        "agent_transcript_path": matched[1], "task_name": matched[0]}
-
-
-@contextmanager
-def bind_command(workspace: str) -> Iterator[None]:
-    """Use an already authenticated native Start's exact contract and run.
-
-    No prompt fields, parent-ID override, new locator, or lifecycle event is
-    accepted here. An unrelated child never inherits the parent's authority.
-    """
-    from taskplane import taskplane_lite
-
-    event = current_child_event(workspace)
-    if event is None:
-        yield
-        return
-    token = _COMMAND_WORKER.set((event["session_id"], None))
-    try:
-        binding = taskplane_lite._worker_contract_for_event(workspace, event)
-        if binding is None:
-            raise ValueError("native child command has no active SubagentStart contract binding")
-        slot, contract = binding
-        taskplane_lite._verify_worker_release_action(
-            workspace, slot, contract["worker_lifecycle"]["release_action"], contract
-        )
-        supplied = (os.environ.get("TASKPLANE_TASK") or "").strip()
-        if supplied and supplied != slot:
-            raise ValueError("native child command selected another worker's contract")
-        _COMMAND_WORKER.set((event["session_id"], slot))
-        yield
-    finally:
-        _COMMAND_WORKER.reset(token)
 
 
 def normalize_lifecycle(event: dict[str, Any], *, codex_home: str | None = None,
@@ -94,15 +38,12 @@ def normalize_lifecycle(event: dict[str, Any], *, codex_home: str | None = None,
 
 
 def _matching_child(event: dict[str, Any], *, codex_home: str | None = None,
-                    now: datetime | None = None, current_process: bool = False
-                    ) -> tuple[str, str, str, str, str] | None:
+                    now: datetime | None = None) -> tuple[str, str, str] | None:
     """One exact host-owned metadata source; no conversation reconstruction."""
     child = str(event.get("agent_id") or "")
     session = str(event.get("session_id") or event.get("thread_id") or "")
     try:
-        if (str(UUID(child)) != child or not event.get("cwd")
-                or (not session and not current_process)
-                or (current_process and child != os.environ.get("CODEX_THREAD_ID"))):
+        if str(UUID(child)) != child or not session or not event.get("cwd"):
             return None
     except ValueError:
         return None
@@ -142,13 +83,7 @@ def _matching_child(event: dict[str, Any], *, codex_home: str | None = None,
             spawn = ((meta.get("source") or {}).get("subagent") or {}).get("thread_spawn")
             if not isinstance(spawn, dict):
                 continue
-            if current_process:
-                session = str(meta.get("session_id") or "")
-                parent = str(meta.get("parent_thread_id") or "")
-                if not session or not parent or session == child or parent == child:
-                    continue
-            else:
-                parent = str(event.get("parent_thread_id") or session)
+            parent = str(event.get("parent_thread_id") or session)
             agent_path = str(meta.get("agent_path") or "")
             name = _AGENT_PATH.fullmatch(agent_path)
             if (meta.get("id") != child or meta.get("session_id") != session
@@ -160,7 +95,7 @@ def _matching_child(event: dict[str, Any], *, codex_home: str | None = None,
                     os.path.realpath(str(event["cwd"]))):
                 continue
             matches.append((name.group(1), str(resolved),
-                hashlib.sha256(raw.rstrip(b"\r\n")).hexdigest(), session, parent))
+                hashlib.sha256(raw.rstrip(b"\r\n")).hexdigest()))
         except (OSError, ValueError, TypeError, AttributeError):
             continue
     return matches[0] if len(matches) == 1 else None
@@ -187,24 +122,6 @@ def terminal_transcript(workspace: str, contract: dict[str, Any], event: dict[st
     if matched is None or matched[0] != owner["task_name"]:
         raise ValueError("native terminal transcript has no exact child metadata")
     return matched[1], matched[2]
-
-
-def active_transcript(workspace: str, contract: dict[str, Any], event: dict[str, Any] | None = None) -> str:
-    """Resolve the authenticated active slot's child for a live budget check.
-
-    The caller loads the slot through load_active_for_event. Discovery reads
-    only exact child metadata and cannot fall back to the parent's counter.
-    """
-    lifecycle = contract.get("worker_lifecycle") or {}
-    owner = lifecycle.get("owner")
-    if not isinstance(owner, dict) or lifecycle.get("status") != "active":
-        raise ValueError("live usage requires a bound active child")
-    supplied = (event or {}).get("agent_transcript_path") or (event or {}).get("transcript_path")
-    matched = _matching_child({**owner, "cwd": workspace,
-        **({"agent_transcript_path": supplied} if supplied else {})})
-    if matched is None or matched[0] != lifecycle.get("expected_task_name"):
-        raise ValueError("live usage has no exact bound child transcript")
-    return matched[1]
 
 
 def observed_usage(workspace: str, terminal: dict[str, Any], *,

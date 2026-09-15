@@ -7,12 +7,6 @@ description: "The pre-build solution-design flow of taskplane. Use when the user
 
 The user provides the goal and material decisions. Keep the interface simple; internally run the same strict taskplane harness as Build and Review.
 
-## Initialize this entry
-
-Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
-using entry point `tp-design`. Every direct invocation rechecks readiness;
-sealed stage and lens workers validate their supplied startup instead.
-
 ## Focused routing contract
 
 Design executes a deterministic minimum-sufficient focused route from the
@@ -26,7 +20,19 @@ graph → alternatives/trade-offs → Design Contract → solution-design eviden
 → conditional technical visual → human Design approval**. Design never exits
 through a worker-authored verdict; the human gate is part of the contract.
 
-Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation.
+Prefer the stable workspace launcher on Codex; it resolves the newest valid
+installed taskplane engine on every call. Fall back to the loaded plugin root
+only during first setup or on another host:
+
+```bash
+if [ -f .taskplane/codex-hook.py ]; then
+  TP=".taskplane/codex-hook.py"
+else
+  TP="${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"
+fi
+```
+
+If that path does not exist, locate this skill's plugin root and use its `taskplane/tp.py`. Do not ask the user to run commands.
 
 ## Responsibility boundary
 

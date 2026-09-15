@@ -110,9 +110,6 @@ REVIEW_RAW_DIFF_MAX_ARTIFACTS = 32
 REVIEW_RAW_DIFF_MAX_BYTES = 16 * 1024 * 1024
 
 
-from taskplane.storage import host_session_id as _host_session_id
-
-
 def _retained_review_diff_payload(
     *,
     base: str,
@@ -3289,12 +3286,11 @@ def _bind_stateless_review_contract_actions(
             "authority": "signed_action",
             "active_slot_semantics": "derived_cache_not_authority",
             "function": "taskplane_lite.activate_review_contract_action",
-            # Optional transport metadata, never an inline shell prefix.
-            # Native SubagentStart binds the signed pending worker by its
-            # exact task name when the host has no environment parameter.
+            # Dispatch metadata, not an inline shell prefix. The orchestrator
+            # activates the signed contract first and injects this exact slot
+            # into the native child lifecycle so SubagentStart can bind the
+            # child to its lease before evidence is authored.
             "environment": {"TASKPLANE_TASK": producer["task_slot"]},
-            "environment_required": False,
-            "binding_event": "SubagentStart",
             "command": "review activate-contract",
             "command_argv": command_argv,
             "host_command": shlex.join(command_argv),
@@ -3745,15 +3741,59 @@ def open_delivery_wave(
         reasons.append("first observed input is missing or zero")
     elif first > seed_budget:
         reasons.append("first observed input exceeds seed budget")
-    if override is not None:
-        raise ValueError("root-session harness overrides are disabled")
+    resource_policy = None
+    if (
+        override is None
+        and reasons == ["first observed input exceeds seed budget"]
+        and run_context.selected(state)
+    ):
+        # A long-lived root keeps its full cumulative counter. The existing
+        # human resource decision overrides only this numeric seed check,
+        # never host identity, available usage, or resume evidence.
+        resource_store = _stage_store(ws, str(state["run_id"]))
+        resource_policy = phase_harness.resource_policy(
+            resource_store.load(str(state["run_id"])), str(state["run_id"])
+        )
+        if resource_policy is not None:
+            if resource_policy["actor"] != (state.get("_stage_native_root_authority") or {}).get(
+                "actor"
+            ):
+                raise ValueError("root resource policy actor differs from run authority")
+            override = {
+                "by": resource_policy["actor"],
+                "reason": "Saved advisory resource policy " + resource_policy["fingerprint"],
+            }
+    attributed_override = None
     if reasons:
-        raise ValueError("; ".join(reasons))
+        if override is None:
+            raise ValueError("; ".join(reasons))
+        if (
+            not isinstance(override, Mapping)
+            or set(override) != {"by", "reason"}
+            or not str(override.get("by") or "").strip()
+            or not str(override.get("reason") or "").strip()
+        ):
+            raise ValueError("root-session override must be attributable")
+        attributed_override = {
+            "by": str(override["by"]),
+            "reason": str(override["reason"]),
+            "failed_checks": reasons,
+        }
     with mutate(ws) as locked:
         if locked is None or locked.get("root_hygiene") != root:
             raise ValueError("root preparation changed before wave open")
         if locked.get("dispatch_telemetry") != prior_ledger:
             raise ValueError("root admission changed before wave open")
+        if resource_policy is not None and (
+            locked.get("run_id") != state["run_id"]
+            or locked.get("_stage_native_root_authority")
+            != state.get("_stage_native_root_authority")
+            or phase_harness.resource_policy(
+                resource_store.load(str(state["run_id"])), str(state["run_id"])
+            )
+            != resource_policy
+        ):
+            raise ValueError("root resource policy changed before wave open")
         ledger = locked.get("dispatch_telemetry")
         if ledger is None:
             ledger = dispatch_telemetry.new_ledger(
@@ -3790,9 +3830,9 @@ def open_delivery_wave(
             "session_pseudonym": start["session_pseudonym"],
             "meter": meter,
             "observation_authority_fingerprint": hashlib.sha256(observation_authority).hexdigest(),
-            "conformance": "pass",
-            "canary_eligible": True,
-            "override": None,
+            "conformance": "overridden" if reasons else "pass",
+            "canary_eligible": not reasons,
+            "override": attributed_override,
         }
         locked["root_hygiene"] = opened
     return opened
@@ -7778,7 +7818,8 @@ def _whole_run_terminal_authority(state: Mapping[str, object], *, by: str) -> di
         raise ValueError("whole-run terminal authority requires an attributable --by identifier")
     session_id = str(
         os.environ.get("TASKPLANE_SESSION_ID")
-        or _host_session_id()
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
         or ""
     ).strip()
     if (
@@ -7794,7 +7835,7 @@ def _whole_run_terminal_authority(state: Mapping[str, object], *, by: str) -> di
         "codex"
         if os.environ.get("CODEX_THREAD_ID")
         else "claude"
-        if _host_session_id()
+        if os.environ.get("CLAUDE_SESSION_ID")
         else "taskplane-host"
     )
     authority = {

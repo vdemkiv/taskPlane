@@ -677,11 +677,6 @@ def _py_imports_checked(src: str, relpath: str, known_stems: dict) -> tuple[set,
                 names = ["/".join(base + (node.module or "").split("."))]
             else:
                 names = [node.module or ""]
-            module = names[0].replace(".", "/").rstrip("/")
-            for alias in node.names:
-                submodule = "/".join(part for part in (module, alias.name) if part)
-                if alias.name != "*" and submodule in known_stems:
-                    names.append(submodule)
         for n in names:
             n = n.replace(".", "/")
             hit = known_stems.get(n) or known_stems.get(n.split("/")[0])

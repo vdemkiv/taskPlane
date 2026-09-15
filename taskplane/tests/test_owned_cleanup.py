@@ -281,7 +281,6 @@ def test_cleanup_runs_on_every_terminal_outcome(
                 scope=[str(workspace)], tools=["exec_command"],
                 plan_minted=True), snapshot=None)
         launched = governed_commands.execute(str(workspace), "launch", {
-            "host": "claude",  # retained runtime cleanup/evidence fixture
             "authorization": "agent:publication-interrupt",
             "run_id": "run-publication-interrupt",
             "task_id": "task-publication-interrupt", "attempt": 1,
@@ -378,7 +377,6 @@ def test_cleanup_runs_on_every_terminal_outcome(
             "owned-cleanup-production", scope=[str(workspace)],
             tools=["exec_command"], plan_minted=True), snapshot=None)
     launched = governed_commands.execute(str(workspace), "launch", {
-        "host": "claude",  # retained runtime cleanup/evidence fixture
         "authorization": "agent:test", "run_id": "run-prod",
         "task_id": "task-prod", "attempt": 3,
         "argv": ["/bin/sleep", "5"],
@@ -456,7 +454,6 @@ def test_cleanup_runs_on_every_terminal_outcome(
                 with pytest.raises(type(interrupted)) as caught:
                     governed_commands.execute(
                         str(interrupted_workspace), "launch", {
-                            "host": "claude",  # retained runtime cleanup/evidence fixture
                             "authorization": "agent:interrupt",
                             "run_id": "run-interrupt",
                             "task_id": f"task-interrupt-{index}",
@@ -1198,7 +1195,6 @@ def test_cleanup_replay_is_exact_and_idempotent(tmp_path, monkeypatch):
     with pytest.raises(governed_commands.GovernedCommandError,
                        match="exact active contract"):
         governed_commands.execute(str(workspace), "launch", {
-            "host": "claude",  # retained runtime cleanup/evidence fixture
             "authorization": "agent:recovery", "run_id": "run-recovery",
             "task_id": "task-recovery",
             "argv": ["/usr/bin/printf", "recovered"],

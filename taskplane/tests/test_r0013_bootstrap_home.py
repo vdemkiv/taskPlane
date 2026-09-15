@@ -36,13 +36,12 @@ def _write_locator(checkout: Path, home: Path, run_id: str) -> None:
 
 
 def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_home(
-        tmp_path, monkeypatch):
+        tmp_path):
     """Prove the generated launcher protocol; live-host proof follows merge."""
-    monkeypatch.setenv("CODEX_THREAD_ID", "fresh-codex-task")
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
-    dedicated_home = Path(storage.session_path(str(tmp_path / "dedicated-home")))
+    dedicated_home = tmp_path / "dedicated-home"
     default_user_home = tmp_path / "user-home"
     default_user_home.mkdir()
     _write_locator(checkout, dedicated_home, "run-bootstrap")
@@ -130,7 +129,7 @@ def test_new_codex_task_writes_current_compatible_receipt_only_to_locator_bound_
         commands[("native", "SubagentStart")], cwd=checkout, shell=True,
         input=json.dumps({**stable_identity,
                           "hook_event_name": "SubagentStart",
-                          "session_id": "fresh-codex-task"}),
+                          "session_id": "conflicting-task"}),
         text=True, capture_output=True, env=conflicting,
         encoding="utf-8", errors="replace")
     assert rejected.returncode != 0

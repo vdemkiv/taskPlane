@@ -1,5 +1,3 @@
-# These tests cover the retained detached/semantic runtime. Native Codex tool
-# request and session evidence tests live in test_native_codex_tools.py.
 import hashlib
 import json
 import os
@@ -63,7 +61,7 @@ def test_direct_executable_launches_and_waits_without_pythonpath(tmp_path):
     launched = _direct_cli(
         cli, workspace, "command", "launch", "--workspace", str(workspace),
         "--authorization", "agent:direct", "--run-id", "run-direct",
-        "--task-id", "direct-startup", "--host", "claude", "--",
+        "--task-id", "direct-startup", "--host", "codex", "--",
         "/usr/bin/printf", "direct-ok\n")
     assert launched["lifecycle_states"] == ["created", "running"]
 
@@ -87,7 +85,7 @@ def test_direct_reconnect_emits_attention_when_detached_worker_is_lost(
     launched = _direct_cli(
         cli, workspace, "command", "launch", "--workspace", str(workspace),
         "--authorization", "agent:lost", "--run-id", "run-lost",
-        "--task-id", "lost-worker", "--host", "claude", "--",
+        "--task-id", "lost-worker", "--host", "codex", "--",
         "/bin/sh", "-c", "kill -9 \"$PPID\"")
 
     reconnected = None
@@ -142,7 +140,7 @@ def test_supported_cli_and_loop_run_one_real_durable_command(tmp_path, capsys):
     rc = tp.main([
         "command", "launch", "--workspace", str(workspace),
         "--authorization", "agent:c1", "--run-id", "run-r0007",
-        "--task-id", "c1-governed-command-runtime", "--host", "claude",
+        "--task-id", "c1-governed-command-runtime", "--host", "codex",
         "--", "/usr/bin/printf", "x" * output_size,
     ])
     assert rc == 0
@@ -225,7 +223,6 @@ def test_generic_command_seals_exact_evaluator_assignment_for_p12(tmp_path):
         "impact_manifest_fingerprint": "6" * 64,
     }
     launched = governed_commands.execute(str(workspace), "launch", {
-        "host": "claude",
         "authorization": authorization, "argv": argv, "run_id": run_id,
         "task_id": binding["task_id"], "assignment_binding": binding,
     })
@@ -267,7 +264,7 @@ def test_cancel_survives_cli_reconstruction_and_is_delivered(tmp_path, capsys):
     assert tp.main([
         "command", "launch", "--workspace", str(workspace),
         "--authorization", "agent:c1", "--run-id", "run-r0007",
-        "--task-id", "cancel-case", "--host", "claude", "--",
+        "--task-id", "cancel-case", "--host", "codex", "--",
         "/bin/sleep", "60",
     ]) == 0
     launched = _json_stdout(capsys)
@@ -326,7 +323,6 @@ def test_loop_launch_rejects_invalid_identity_before_runtime_creation(
     workspace = tmp_path / "invalid-loop-identity"
     workspace.mkdir()
     request = {
-        "host": "claude",
         "authorization": "agent:c1", "argv": [sys.executable, "-c", "pass"],
         "run_id": "run-r0007", "task_id": "governed-command",
     }
@@ -343,7 +339,6 @@ def test_loop_launch_rejects_missing_identity_before_runtime_creation(
     workspace = tmp_path / "missing-loop-identity"
     workspace.mkdir()
     request = {
-        "host": "claude",
         "authorization": "agent:c1", "argv": [sys.executable, "-c", "pass"],
         "run_id": "run-r0007", "task_id": "governed-command",
     }
@@ -362,7 +357,7 @@ def test_supported_cli_rejects_blank_and_malformed_identity(tmp_path, capsys):
         "--authorization", "agent:c1", "--run-id",
     ]
     suffix = [
-        "--task-id", "governed-command", "--host", "claude", "--",
+        "--task-id", "governed-command", "--host", "codex", "--",
         sys.executable, "-c", "pass",
     ]
     for run_id in ("", "run with spaces"):
@@ -376,7 +371,6 @@ def test_launch_rejects_ungoverned_and_opaque_argv_before_spawn(
     workspace = tmp_path / "repo"
     workspace.mkdir()
     request = {
-        "host": "claude",
         "authorization": "agent:c1", "run_id": "run-r0007",
         "task_id": "secure-launch", "argv": ["/usr/bin/printf", "ok"],
     }
@@ -442,7 +436,7 @@ def test_version_qualified_python_keeps_analyzer_policy_parity():
         read_only, "exec_command",
         {"cmd": f'{program} -c "print(1)"'}, None)
     assert allowed is False
-    assert "shell command is not a verified native Codex read-only invocation" in reason
+    assert "every shell command tool is blocked" in reason
     allowed, reason = contract_engine.screen_tool(
         read_only, "exec_command", {
             "cmd": (f'{program} -c "open(\'escaped.txt\', '
@@ -580,9 +574,8 @@ def test_governed_detached_launch_still_fails_before_spawn(
     with pytest.raises(governed_commands.GovernedCommandError,
                        match="unsupported.*no process"):
         governed_commands.execute(str(workspace), "launch", {
-        "host": "claude",
             "authorization": "agent:c1", "run_id": "run-r0007",
-            "task_id": "detached-denied",
+            "task_id": "detached-denied", "host": "codex",
             "argv": ["/usr/bin/printf", "ok"],
         })
 
@@ -1043,7 +1036,6 @@ def test_submit_checkpoint_red_blocks_receipt_and_later_submission(
 def _run_governed_checkpoint_command(workspace, argv, task_id):
     authorization = "agent:checkpoint"
     launched = governed_commands.execute(str(workspace), "launch", {
-        "host": "claude",
         "authorization": authorization,
         "argv": argv,
         "run_id": "run-r0010",

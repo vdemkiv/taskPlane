@@ -86,13 +86,10 @@ def isolated_test_runtime(*, host_environment=None):
 
         def _isolating_run(self, result=None):
             saved_home = os.environ.get("TASKPLANE_HOME", _MISSING)
-            saved_host_home = os.environ.get("TASKPLANE_HOST_HOME", _MISSING)
             try:
-                os.environ["TASKPLANE_HOST_HOME"] = tempfile.mkdtemp(prefix="tp-host-test-")
                 return saved_testcase_run(self, result)
             finally:
                 _restore_environment("TASKPLANE_HOME", saved_home)
-                _restore_environment("TASKPLANE_HOST_HOME", saved_host_home)
 
         try:
             for name in list(os.environ):

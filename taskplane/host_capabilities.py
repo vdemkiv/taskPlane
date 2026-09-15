@@ -16,8 +16,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
-import shutil
 import time
 from taskplane import settings as _host_settings, delivery_ports as _host_delivery_ports
 from dataclasses import dataclass
@@ -34,199 +32,6 @@ RUNTIME_RECEIPT_SCHEMA = "taskplane.host-hook-receipt/v1"
 RUNTIME_RECEIPT_MAX_AGE_SECONDS = 300.0
 ROOT_SESSION_CAPABILITY_SCHEMA = \
     "taskplane.host-root-session-capability/v1"
-
-
-from taskplane.storage import host_session_id as _host_session_id
-
-
-def codex_readonly_runtime(workspace: str) -> str | None:
-    """Resolve the installed native sandbox; never a checkout executable.
-
-    This is tool compatibility, not permission or execution evidence. Codex
-    resolves and enforces its built-in profile when the native tool runs.
-    """
-    if not os.environ.get("CODEX_THREAD_ID") or os.name != "posix":
-        return None
-    if any(key.startswith(("LD_", "DYLD_", "BASH_FUNC_")) or key in
-           {"ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"} for key in os.environ):
-        return None
-    executable = shutil.which("codex")
-    if not executable:
-        return None
-    executable = os.path.realpath(executable)
-    root = os.path.realpath(workspace)
-    if os.path.commonpath((executable, root)) == root:
-        return None
-    return executable
-
-
-def codex_sandbox_command(argv: list[str], workspace: str, *, writable_root: str | None = None) -> dict:
-    """Map scope to a native profile; Codex owns all sandbox enforcement."""
-    executable = codex_readonly_runtime(workspace)
-    if not executable or not argv or any(not isinstance(x, str) or not x or "\0" in x for x in argv):
-        raise ValueError("Codex read-only execution is unavailable or argv is invalid")
-    options = ["-P", ":read-only"]
-    if writable_root is not None:
-        root = os.path.realpath(writable_root)
-        if root != os.path.realpath(workspace):
-            raise ValueError("native validation writes require its exact disposable checkout")
-        # CLI dotted keys are split literally, not parsed as TOML keys. Pass
-        # one inline table so dots/quotes in the filesystem path remain data.
-        profile = ('permissions.taskplane-validation={extends=":read-only", '
-                   f'filesystem={{{json.dumps(root)}="write"}}' + '}')
-        options = ["-c", profile,
-                   "-P", "taskplane-validation", "-C", root]
-    request = {"cmd": shlex.join([executable, "sandbox", "--include-managed-config", *options, "--", *argv]),
-               "shell": "/bin/sh", "login": False, "workdir": os.path.realpath(workspace)}
-    if os.environ.get("CODEX_SANDBOX") == "seatbelt":
-        # macOS cannot nest Seatbelt. This asks Codex's approval reviewer to
-        # launch its own narrower sandbox; it does not grant the approval.
-        request.update(sandbox_permissions="require_escalated", justification=
-                       "Allow Codex to launch its native sandbox for this scoped validation command?")
-    return request
-
-
-def codex_readonly_command(argv: list[str], workspace: str) -> dict:
-    """Describe a native tool invocation; TaskPlane executes no file IO."""
-    return codex_sandbox_command(argv, workspace)
-
-
-def is_codex_readonly_invocation(tool: str, payload: Mapping, workspace: str) -> bool:
-    """Admit only the native read-only sandbox, with no outer shell effects.
-
-    Codex currently projects exec_command into Bash/command for hooks. That
-    projection is accepted only in a Codex host session. Caller-authored
-    permissions, argv and receipts never authorize another command shape.
-    """
-    executable = codex_readonly_runtime(workspace)
-    if not executable or tool not in {"exec_command", "functions.exec_command", "Bash"}:
-        return False
-    if tool == "Bash":
-        if set(payload) != {"command"}:
-            return False
-        command = payload.get("command")
-        # This projection omits shell/login. Check the actual pending native
-        # call; an arbitrary outer shell could otherwise write before Codex
-        # ever enters the read-only sandbox.
-        native = pending_codex_tool_call("exec_command")
-        if native is None or native.get("cmd") != command:
-            return False
-        return is_codex_readonly_invocation("exec_command", native, workspace)
-    else:
-        if set(payload) - {"cmd", "shell", "login", "workdir", "max_output_tokens",
-                           "yield_time_ms", "sandbox_permissions", "justification", "tty"}:
-            return False
-        if payload.get("shell") != "/bin/sh" or payload.get("login") is not False:
-            return False
-        if os.path.realpath(str(payload.get("workdir") or workspace)) != os.path.realpath(workspace):
-            return False
-        command = payload.get("cmd")
-    if not isinstance(command, str):
-        return False
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        return False
-    return (len(argv) > 6 and argv[:6] == [executable, "sandbox", "--include-managed-config", "-P", ":read-only", "--"]
-            and shlex.join(argv) == command)
-
-
-def native_coordination_tool(name: str) -> str | None:
-    """Exact native spellings, including Codex's flattened hook names."""
-    tools = {"wait_agent", "wait_threads", "list_agents", "send_message",
-        "followup_task", "spawn_agent", "interrupt_agent"}
-    for tool in tools:
-        if name in {tool, "collaboration." + tool, "collaboration__" + tool,
-            "collaboration" + tool, "functions.collaboration." + tool}:
-            return tool
-    if name == "mcp__codex_app__wait_threads":
-        return "wait_threads"
-    return None
-
-
-def pending_codex_tool_call(name: str) -> dict | None:
-    """Read one pending native invocation, not caller-supplied metadata.
-
-    Only the fixed one-tool code-mode expression is supported. Ambiguous
-    wrappers, missing native records and already-completed calls fail closed.
-    """
-    if not os.environ.get("CODEX_THREAD_ID"):
-        return None
-    from taskplane import review
-    try:
-        _, path = review._host_review_transcripts()[0]
-        records = review._host_review_records(path, 4 * 1024 * 1024)
-    except (OSError, ValueError, RuntimeError):
-        return None
-    pending = {}
-    for row in records:
-        if row.get("type") != "response_item":
-            continue
-        value = row.get("payload") or {}
-        call_id = value.get("call_id")
-        if value.get("type") in {"custom_tool_call", "function_call"}:
-            pending[call_id] = value
-        elif value.get("type") in {"custom_tool_call_output", "function_call_output"}:
-            pending.pop(call_id, None)
-    if len(pending) != 1:
-        return None
-    value = next(iter(pending.values()))
-    raw = value.get("input", value.get("arguments"))
-    if value.get("name") in {"exec", "functions.exec"} and isinstance(raw, str):
-        match = re.fullmatch(r"text\(await tools\." + re.escape(name) + r"\((\{.*\})\)\);", raw.strip(), re.DOTALL)
-        raw = match[1] if match else None
-    elif value.get("name") not in {name, "functions." + name}:
-        return None
-    try:
-        args = json.loads(raw) if isinstance(raw, str) else raw
-    except ValueError:
-        return None
-    return args if isinstance(args, dict) else None
-
-
-def is_codex_readonly_control(tool: str, payload: Mapping, workspace: str) -> bool:
-    """Admit native polling/interrupt only for an observed read-only session."""
-    if tool not in {"write_stdin", "functions.write_stdin", "BashOutput"}:
-        return False
-    native = pending_codex_tool_call("write_stdin")
-    if (native is None or native.get("chars", "") not in {"", "\x03"}
-            or type(native.get("session_id")) is not int
-            or set(native) - {"session_id", "chars", "yield_time_ms", "max_output_tokens"}
-            or (tool != "BashOutput" and dict(payload) != native)):
-        return False
-    from taskplane import host_native, review
-    try:
-        _, path = review._host_review_transcripts()[0]
-        records = review._host_review_records(path)
-        for row in reversed(records):
-            value = row.get("payload") or {}
-            if row.get("type") != "response_item" or value.get("type") not in {"custom_tool_call", "function_call"}:
-                continue
-            raw = value.get("input", value.get("arguments"))
-            if value.get("name") in {"exec", "functions.exec"} and isinstance(raw, str):
-                match = re.fullmatch(r"text\(await tools\.exec_command\((\{.*\})\)\);", raw.strip(), re.DOTALL)
-                raw = match[1] if match else None
-            elif value.get("name") not in {"exec_command", "functions.exec_command"}:
-                continue
-            args = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(args, dict):
-                continue
-            from taskplane import governed_commands
-            if not (is_codex_readonly_invocation("exec_command", args, workspace)
-                    or governed_commands.native_evidence_invocation_allowed(workspace, args)):
-                continue
-            request = host_native.native_tool_request("exec_command", args)
-            observed = host_native.native_tool_observations(records, request, after_ms=0)
-            for launch in reversed(observed):
-                if launch["result"].get("session_id") != native["session_id"]:
-                    continue
-                current = host_native.native_command_observation(
-                    records, request, after_ms=launch["started_at_ms"])
-                if current.get("state") == "running" and current.get("session_id") == native["session_id"]:
-                    return True
-    except (OSError, ValueError, RuntimeError):
-        pass
-    return False
 
 
 def _bounded(value: object, limit: int = MAX_REASON_BYTES) -> str:
@@ -540,16 +345,13 @@ def _fingerprint_text(value: object) -> str | None:
 def record_runtime_hook_receipt(
         home: str, *, hook_path: str, event: Mapping[str, Any],
         claim: Mapping[str, Any] | None = None,
-        native_home: str | None = None,
-        engine_fingerprint: str | None = None,
         observed_at: float | None = None) -> dict[str, Any]:
     """Persist proof that a configured hook actually executed.
 
     Hook execution is the runtime receipt onboarding needs. It is global to
-    the Codex task, not to the repository currently being reviewed. Codex
-    reports the session cwd even when a tool targets a prepared checkout.
-    An optional host cache carries native proof across execution homes, but
-    only for an exact session. Repository bridge proof stays local. Only fingerprints and
+    the Codex task, not to the repository currently being reviewed: the hook
+    receives the tool/event cwd and can govern a prepared checkout without
+    forcing the user to open another task there. Only fingerprints and
     bounded event metadata are retained; no prompt or tool input is stored.
     """
     path_name = str(hook_path or "").strip().lower()
@@ -558,7 +360,9 @@ def record_runtime_hook_receipt(
     if not isinstance(event, Mapping):
         raise TypeError("hook event must be a mapping")
     session = (event.get("session_id") or event.get("thread_id")
-               or event.get("conversation_id") or _host_session_id())
+               or event.get("conversation_id") or
+               os.environ.get("CODEX_THREAD_ID") or
+               os.environ.get("CLAUDE_SESSION_ID"))
     # The shared claim kernel owns event identity and duplicate suppression.
     # Two paths' latest events need not match: they can execute sequentially,
     # observe different event types, or serve different checkouts.
@@ -581,15 +385,11 @@ def record_runtime_hook_receipt(
             os.path.normcase(os.path.realpath(cwd))) if cwd else None,
         "event_name": _bounded(event.get("hook_event_name"), 64),
     }
-    if engine_fingerprint is not None:
-        receipt["engine_fingerprint"] = engine_fingerprint
-    targets = [_receipt_path(home, path_name, receipt["session_fingerprint"],
-                             receipt["workspace_fingerprint"])]
-    if path_name == "native" and native_home and receipt["session_fingerprint"]:
-        targets.append(_receipt_path(native_home, path_name, receipt["session_fingerprint"]))
+    targets = (_receipt_path(home, path_name, receipt["session_fingerprint"],
+                             receipt["workspace_fingerprint"]),)
     for target in targets:
         directory = os.path.dirname(target)
-        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.makedirs(directory, exist_ok=True)
         # Only an exact repeated event is a no-op. Freezing the first event
         # forever prevents a bridge loaded later from converging with native.
         try:
@@ -608,8 +408,6 @@ def record_runtime_hook_receipt(
 def runtime_hook_observations(
         home: str, *, session_id: str | None = None,
         workspace: str | None = None,
-        native_home: str | None = None,
-        engine_fingerprint: str | None = None,
         now: float | None = None) -> dict[str, Observation]:
     """Return fresh, session-compatible observations from hook execution."""
     current = float(now if now is not None else time.time())
@@ -621,10 +419,6 @@ def runtime_hook_observations(
         try:
             target = _receipt_path(home, hook_path, expected_session,
                                    expected_workspace)
-            if hook_path == "native" and native_home and expected_session:
-                shared = _receipt_path(native_home, hook_path, expected_session)
-                if os.path.lexists(shared):
-                    target = shared
             with open(target, encoding="utf-8") as f:
                 row = json.load(f)
             if not isinstance(row, dict) or row.get("schema") != \
@@ -657,17 +451,6 @@ def runtime_hook_observations(
             ("native", "native_plugin_hooks_loaded"),
             ("bridge", "repository_bridge_loaded")):
         if hook_path in receipts:
-            observed_engine = receipts[hook_path].get("engine_fingerprint")
-            if engine_fingerprint and observed_engine != engine_fingerprint:
-                observations[capability] = Observation(
-                    status="changed", source=f"runtime-hook:{hook_path}",
-                    confidence="high", reason=(
-                        "the loaded hook engine differs from this command, or its "
-                        "version is unrecorded; reload the host-selected plugin "
-                        "and recheck onboarding"),
-                    value={"expected_engine": engine_fingerprint,
-                           "observed_engine": observed_engine})
-                continue
             observations[capability] = Observation(
                 status="supported", source=f"runtime-hook:{hook_path}",
                 confidence="high", reason=(
@@ -728,7 +511,7 @@ def dispatch_snapshot_from_environment(
             env.get("TASKPLANE_INSTALL_CONTEXT") or "personal"),
         native_installed=None, bridge_configured=None, observations=rows,
         host_version=env.get("TASKPLANE_HOST_VERSION"),
-        session_id=_host_session_id(env),
+        session_id=env.get("CODEX_THREAD_ID") or env.get("CLAUDE_SESSION_ID"),
         now=str(env.get("TASKPLANE_HOST_RECEIPT_AT") or ""))
 
 
@@ -1170,7 +953,7 @@ def resolve_dispatch_route(
 
 
 def valid_plugin_root(
-        root: str, family: str, *, strict_permissions: bool = False
+        root: str, family: str
 ) -> tuple[tuple[int, int, int], str, str] | None:
     """Validate one contained taskplane installation candidate."""
     family_real = os.path.realpath(family)
@@ -1180,31 +963,13 @@ def valid_plugin_root(
             return None
     except ValueError:
         return None
+    manifest = os.path.join(root_real, os.path.join(".codex-plugin", "plugin.json"))
     engine = os.path.realpath(os.path.join(root_real, "taskplane", "tp.py"))
     try:
         if os.path.commonpath((family_real, engine)) != family_real:
             return None
-        manifests = []
-        for directory in (".codex-plugin", ".claude-plugin"):
-            manifest = os.path.join(root_real, directory, "plugin.json")
-            try:
-                if os.path.commonpath((family_real, os.path.realpath(manifest))) != family_real:
-                    return None
-                with open(manifest, encoding="utf-8") as handle:
-                    data = json.load(handle)
-            except FileNotFoundError:
-                continue
-            if not isinstance(data, dict) or data.get("name") != "taskplane":
-                return None
-            manifests.append(data)
-        if not manifests or any(row.get("version") != manifests[0].get("version")
-                                for row in manifests):
-            return None
-        data = manifests[0]
-    except PermissionError:
-        if strict_permissions:
-            raise
-        return None
+        with open(manifest, encoding="utf-8") as handle:
+            data = json.load(handle)
     except (OSError, ValueError, TypeError):
         return None
     version = data.get("version") if isinstance(data, dict) else None

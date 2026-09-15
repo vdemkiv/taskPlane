@@ -234,39 +234,7 @@ def _require_live_startup(process, *, label: str) -> None:
 
 def native_surface_transport(surface: str, sandbox: str,
                              preview: Mapping[str, object]) -> Mapping[str, object]:
-    """Use Codex's panel tool; retain the configured bridge for other hosts."""
-    if os.environ.get("CODEX_THREAD_ID"):
-        from taskplane import host_native, review
-        if surface == "hosting":
-            raise OSError("opening a Codex panel does not provide public hosting")
-        root = Path(sandbox).resolve()
-        entry = (root / "index.html").resolve()
-        if root not in entry.parents or not entry.is_file():
-            raise OSError("native file preview needs index.html in its disposable copy; no server endpoint is inferred")
-        request = host_native.native_tool_request("mcp__codex_app__open_in_codex", {
-            "target": {"type": "file", "path": str(entry)}})
-        pending = preview.get("native_surface")
-        if not pending:
-            return {"schema": "taskplane.host-preview-surface/v1", "surface": surface,
-                    "status": "requested", "native_request": request,
-                    "created_at_ms": time.time() * 1000, "session": os.environ["CODEX_THREAD_ID"]}
-        if pending.get("native_request") != request or pending.get("session") != os.environ["CODEX_THREAD_ID"]:
-            raise OSError("native preview request belongs to another target or task")
-        _, path = review._host_review_transcripts()[0]
-        observations = host_native.native_tool_observations(review._host_review_records(path), request,
-                                                           after_ms=pending["created_at_ms"])
-        if not observations:
-            return dict(pending)
-        observed = observations[-1]
-        result = observed["result"]
-        if result.get("isError") is not False:
-            raise OSError("native panel request failed")
-        texts = [x.get("text", "") for x in result.get("content", []) if x.get("type") == "text"]
-        response = json.loads(texts[0]) if len(texts) == 1 else {}
-        if response.get("status") not in {"opened", "queued"}:
-            raise OSError("native panel result did not confirm opening or queueing")
-        return {**dict(pending), "status": response["status"],
-                "binding": observed["receipt_id"], "owner": "codex"}
+    """Invoke the configured host-native surface bridge without a shell."""
     env_name = _SURFACE_ENV.get(surface)
     configured = os.environ.get(env_name or "", "").strip()
     if not configured:
@@ -302,7 +270,7 @@ def os_preview_isolation_launcher(command: object, cwd: str,
     # Remote disabling is physical, not a promise in a receipt.
     if (root / ".git").exists():
         raise ValueError("preview sandbox contains repository remotes")
-    if not os.environ.get("CODEX_THREAD_ID") and (sys.platform != "darwin" or not os.path.isfile("/usr/bin/sandbox-exec")):
+    if sys.platform != "darwin" or not os.path.isfile("/usr/bin/sandbox-exec"):
         raise OSError("complete preview process-tree isolation is unavailable")
     limits = dict(policy.get("limits") or {})
     if _resource is None or not hasattr(_resource, "RLIMIT_CPU") or not hasattr(
@@ -319,22 +287,14 @@ def os_preview_isolation_launcher(command: object, cwd: str,
     def apply_resource_limits():
         _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
         _resource.setrlimit(_resource.RLIMIT_AS, (memory_limit, memory_limit))
-    mechanism = "macos-seatbelt"
-    if os.environ.get("CODEX_THREAD_ID"):
-        from taskplane import host_capabilities
-        native = host_capabilities.codex_sandbox_command(list(command), str(root), writable_root=str(root))
-        isolated_argv = shlex.split(native["cmd"])
-        mechanism = "codex-permission-profile"
-    else:
-        escaped = str(root).replace("\\", "\\\\").replace('"', '\\"')
-        profile = " ".join((("(version 1)"), "(deny default)",
-                            '(import "system.sb")', "(allow process*)",
-                            "(allow file-read*)",
-                            f'(allow file-write* (subpath "{escaped}"))',
-                            "(deny network*)"))
-        isolated_argv = ["/usr/bin/sandbox-exec", "-p", profile, "--", *command]
+    escaped = str(root).replace("\\", "\\\\").replace('"', '\\"')
+    profile = " ".join((("(version 1)"), "(deny default)",
+                        '(import "system.sb")', "(allow process*)",
+                        "(allow file-read*)",
+                        f'(allow file-write* (subpath "{escaped}"))',
+                        "(deny network*)"))
     process = subprocess.Popen(
-        isolated_argv, cwd=str(root),
+        ["/usr/bin/sandbox-exec", "-p", profile, "--", *command], cwd=str(root),
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, start_new_session=True,
         preexec_fn=apply_resource_limits)
@@ -363,7 +323,7 @@ def os_preview_isolation_launcher(command: object, cwd: str,
                           "cpu": "rlimit-enforced",
                           "memory": "rlimit-enforced",
                           "process_ownership": ownership,
-                          "mechanism": mechanism,
+                          "mechanism": "macos-seatbelt",
                           "policy_fingerprint": fingerprint})
 
 

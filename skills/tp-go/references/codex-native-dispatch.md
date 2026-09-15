@@ -8,14 +8,9 @@ reinterpret those decisions.
 ## One bounded startup, one exact task
 
 `loop next` emits exactly `schema`, `stage_runtime_dispatch`, and `obligations`.
-The coordinating model uses `obligations` to launch the worker through native tools.
-There is no separate Taskplane controller. The delegated message contains
-only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`,
-the exact `contract_bootstrap.environment`, and this fixed operational instruction:
-"Read the supplied JSON once using `python3 .taskplane/codex-hook.py stage read-input
---request - --workspace .`, with that JSON as stdin. Batch independent input reads.
-Do not ask the parent how to read artifacts or send progress messages."
-Host roots belong only in that
+The driver uses `obligations` to launch the worker. The delegated message contains
+only the unchanged `stage_runtime_dispatch`, the standalone `role_marker`, and
+the exact `contract_bootstrap.environment`. Host roots belong only in that
 environment. Never forward the full action, a prior role brief, a conversation,
 ambient knowledge, or an unrelated Design.
 
@@ -24,80 +19,22 @@ ambient knowledge, or an unrelated Design.
 2. The worker verifies the startup and reads its pinned phase input with
    `$TP stage read-input --request -`, supplying the envelope as JSON on stdin.
    The engine verifies its size, digest, authority and committed input reference.
-   Ordinary child CLI calls resolve the existing parent-owned run and exact slot
-   from native child metadata and its authenticated Start binding. Keep the
-   native session ID unchanged; a prompt or environment slot cannot supply
-   missing authority.
    The input declares the phase skill and typed artifact references. Read only
    those inputs and files permitted by the scoped contract.
 3. Independent wave entries use the same envelope and verification protocol.
    Each write-capable worker uses its own registered checkout and contract slot.
-4. Use the native wait tool and its supported arguments for the outstanding set.
-   Native tools own waiting, timeouts, inspection, and interruption; Taskplane
-   adds no minimum wait duration. Collect every result before requesting a gate.
-   A faster worker does not cancel another. A timeout alone does not justify
-   another review or a new phase attempt.
-   `stage collect-lenses` returns the full collection in `report`; consume it
-   directly without another artifact read. Reuse completed, unchanged leases.
+4. Follow the emitted wait policy for the outstanding set. Collect every result
+   before asking for an orchestrator gate. A faster worker does not cancel another.
 5. A bounded correction preserves the current scope and attempt identity. If a
    worker cannot continue, retain its evidence and use an attributable stage
    close/discard operation. Do not infer completion from interruption.
 
 `SubagentStart` binds the pending slot to the worker. `SubagentStop` records its
 actual terminal outcome and releases the slot. These observations do not grant
-human approval. The coordinating model requests collection using
-`loop collect --operation <obligations.phase_operation>` (and `--task <id>` for
-a parallel phase). The harness derives the outcome from accepted evidence and
-owns the existing gate. Retrying that exact operation after a lost response is
-safe; it cannot advance another phase. A returned dashboard is a progress
-update: continue the admitted work until an actual human gate or refusal.
-Never invent a gate outcome or use a resource waiver to continue.
-
-If a Product, Design, or Plan child stops without valid output, retain the
-`phase_candidate_unavailable` refusal. Reconcile its exact operation with
-`loop resolve reconcile --phase-operation <operation>`. Once the observed
-terminal releases the contract, an authorized retry uses the existing
-`loop resolve retry` action, original operation, candidate fingerprint, human
-identity, and stop attestation. It remains subject to the stage attempt limit.
-Missing output does not pass the phase or permit a different operation to advance.
+human approval. The driver alone requests the declared gate.
 
 Standalone Review has its own scoped brief protocol; it does not replace phase
 startup or inject a lens route into Evaluate or Engineering.
-
-Codex workers use native file access, command sessions and panels as described
-in `../../taskplane/references/entry-initialization.md#native-codex-calls`.
-They consume that call protocol without repeating user onboarding. A governed
-command's `native_request` is an instruction to call the existing Codex tool,
-not execution evidence. Keep the returned command reference for evidence
-collection; only an observed native zero exit for the exact assignment can pass.
-Do not select the Claude transport to bypass unavailable native capabilities.
-
-## Standalone Review startup
-
-`review option` returns each selected slot with its immutable brief reference
-and signed `contract_bootstrap`. Review opening prepares the native launcher
-in the actual review checkout automatically; continuation repairs it if missing.
-Readiness in the caller's checkout alone is not proof of hooks in a managed
-review checkout. Before dispatch, require both startup fields. Run the emitted
-`contract_bootstrap.host_command` unchanged when `activation_order` is
-`orchestrator_before_subagent_start`. Verify the activation response names
-the exact expected task in `worker_binding` with event `SubagentStart` and
-status `pending` (or the same already-bound worker on a retry). Then use the
-exact slot role, task name, model, reasoning effort, and workspace for the native child.
-Pass the complete bounded slot alongside its role instruction with
-`fork_turns="none"`; do not send only the brief path.
-
-Confirm that the host's child working directory is the declared workspace
-before launch. A path in message text does not set that directory. When
-`contract_bootstrap.environment_required` is false, the task-slot environment
-is optional: the existing native `SubagentStart` hook binds the signed pending
-contract to the exact native child identity before its first screened action.
-The host does not need an environment argument in this case. A worker name
-alone cannot create authority; the signed pending contract must already exist.
-If the workspace or lifecycle binding is unavailable, report that precise gap
-before spawning. Never substitute the current session's contract. A retry of the same
-execution choice returns the existing review leases and their signed startup;
-it does not restart the review or erase recorded validation evidence.
 
 ## Sealed phase continuation
 

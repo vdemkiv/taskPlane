@@ -90,6 +90,21 @@ def _replace_packaged_hook_manifest(archive: Path, replacement: dict) -> None:
     os.replace(temporary, archive)
 
 
+def _expected_installed_hook_manifest(kind: str) -> dict:
+    claude = json.loads((
+        ROOT / "hooks" / "hooks.json"
+    ).read_text(encoding="utf-8"))
+    if kind == "claude":
+        return claude
+    assert kind == "openai"
+    codex = json.loads((
+        ROOT / ".codex" / "hooks.json"
+    ).read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(claude))
+    expected["hooks"]["SessionStart"] = codex["hooks"]["SessionStart"]
+    return expected
+
+
 def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
     host = "codex" if kind == "openai" else "claude"
     hook_path = "native"
@@ -97,11 +112,8 @@ def _assert_installed_session_start_wiring(kind: str, manifest: dict) -> None:
         hook[field]
         for entry in manifest["hooks"]["SessionStart"]
         for hook in entry["hooks"]
-        for field in (("command", "commandWindows") if kind == "openai" else ("command",))
+        for field in ("command", "commandWindows")
     ]
-    if kind == "claude":
-        assert all("commandWindows" not in hook for rows in manifest["hooks"].values()
-                   for row in rows for hook in row["hooks"])
     assert any("host-native-check" in command for command in commands)
     for command in commands:
         if "host-native-check" not in command:
@@ -166,8 +178,10 @@ def test_installed_openai_archive_has_codex_session_start_host_path_and_claude_a
 def test_installed_openai_hooks_are_inert_in_an_unonboarded_chat(tmp_path):
     archive = _run_package_entry_point("openai", tmp_path / "package")
     package_root = _extract(archive, tmp_path / "extracted")
-    # Exercise the packaged engine's shared scope guard. Native hosts own
-    # plugin resolution; package generation must not substitute a local CLI.
+    (package_root / "taskplane" / "tp.py").write_text(
+        "raise SystemExit('global hook started Taskplane')\n",
+        encoding="utf-8",
+    )
     unrelated = tmp_path / "unrelated-chat"
     unrelated.mkdir()
     taskplane_home = tmp_path / "must-not-exist"
@@ -261,10 +275,9 @@ def test_installed_openai_archive_onboards_and_bootstraps_a_fresh_linked_task(
     )
     assert hook.returncode == 0, hook.stdout + hook.stderr
     from taskplane import host_capabilities
-    session_fingerprint = host_capabilities._fingerprint_text("fresh-installed-task")
     receipt = json.loads(Path(host_capabilities._receipt_path(
-        str(linked / ".taskplane" / "sessions" / session_fingerprint), "native",
-        session_fingerprint)).read_text(encoding="utf-8"))
+        str(linked / ".taskplane"), "native",
+        host_capabilities._fingerprint_text("fresh-installed-task"))).read_text(encoding="utf-8"))
     assert receipt["hook_path"] == "native"
     assert receipt["event_name"] == "SessionStart"
     assert not (user_home / ".taskplane").exists()
@@ -292,7 +305,7 @@ def test_installed_archive_session_start_wiring_rejects_wrong_host_or_hook_path_
             manifest = _packaged_hook_manifest(archive)
             for entry in manifest["hooks"]["SessionStart"]:
                 for hook in entry["hooks"]:
-                    for field in (("command", "commandWindows") if kind == "openai" else ("command",)):
+                    for field in ("command", "commandWindows"):
                         hook[field] = hook[field].replace(old, new)
             _replace_packaged_hook_manifest(archive, manifest)
             with pytest.raises(AssertionError):
@@ -472,30 +485,9 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     environment = {
         "PATH": os.environ.get("PATH", ""),
         "TASKPLANE_HOME": str(case / "private-store"),
-        "TASKPLANE_HOST_HOME": str(case / "host-cache"),
         "TASKPLANE_SESSION_ID": "isolated-installed-fixture",
-        "CLAUDE_SESSION_ID": "isolated-installed-fixture",
     }
     cli = package_root / "taskplane/tp.py"
-    setup = subprocess.run([
-        sys.executable, str(cli), "onboard", "--workspace", str(workspace),
-        "--initialize", "--install-launcher", "--available-tools", "Read,Write", "--json",
-    ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
-       env=environment)
-    # Setup precedes the host observation exercised later in this journey.
-    # Keep that distinction identical for both extracted package layouts.
-    assert setup.returncode == 2, setup.stdout + setup.stderr
-    assert json.loads(setup.stdout)["setup_ready"] is True
-    assert json.loads(setup.stdout)["workspace_ready"] is False
-    assert json.loads(setup.stdout)["setup_result"]["launcher"]["ok"] is True
-    assert (workspace / ".taskplane/codex-hook.py").is_file()
-    # Exercise the generated installed entry point, not only the engine that
-    # created it. Claude archives deliberately contain no Codex manifest.
-    cli = workspace / ".taskplane/codex-hook.py"
-    launched = subprocess.run([sys.executable, str(cli), "version"],
-        cwd=workspace, text=True, capture_output=True, env=environment)
-    assert launched.returncode == 0, launched.stdout + launched.stderr
-    assert launched.stdout.strip() == VERSION
     requirement_result = subprocess.run([
         sys.executable, str(cli), "req", "--workspace", str(workspace),
         "new", "Installed package remains governable",
@@ -512,7 +504,7 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     initialized = subprocess.run([
         sys.executable, str(cli), "loop", "--workspace", str(workspace),
         "init", "--spec", str(spec), "--req", requirement_id,
-        "--design", "--parallel", "--by", "human:fixture",
+        "--design", "--parallel", "--advisory", "--by", "human:fixture",
         "installed package journey",
     ], cwd=case, text=True, encoding="utf-8", capture_output=True,
        env=environment)
@@ -521,48 +513,11 @@ def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
     assert state["initialized"] is True
     assert state["step"] == "pm"
 
-    def next_stage(*extra):
-        return subprocess.run([
-            sys.executable, str(cli), "loop", "--workspace", str(workspace),
-            "next", "--by", "human:fixture", *extra,
-        ], cwd=case, text=True, encoding="utf-8", capture_output=True,
-           env=environment)
-
-    def assert_unproven():
-        refused = next_stage()
-        assert refused.returncode == 1, refused.stdout + refused.stderr
-        payload = json.loads(refused.stdout)
-        assert payload["schema"] == "taskplane.enforcement-refusal/v1"
-        assert payload["enforcement"]["status"] == "unproven"
-
-    def observe_hook(session):
-        # Real installed entry point; only the external host event is simulated.
-        hook = subprocess.run([
-            sys.executable, str(cli), "screen",
-        ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
-           input=json.dumps({"hook_event_name": "PreToolUse", "cwd": str(workspace),
-                             "session_id": session, "tool_use_id": f"read-{session}",
-                             "tool_name": "Read", "tool_input": {"file_path": str(spec)}}),
-           env={**environment, "TASKPLANE_HOOK_PATH": "native"})
-        assert hook.returncode == 0, hook.stdout + hook.stderr
-
-    # No capability mock or advisory waiver: prove the public readiness
-    # boundary rejects missing/foreign receipts before accepting this session.
-    assert_unproven()
-    observe_hook("unrelated-session")
-    assert_unproven()
-    observe_hook(environment["CLAUDE_SESSION_ID"])
-    entry = subprocess.run([
-        sys.executable, str(cli), "onboard", "--workspace", str(workspace),
-        "--available-tools", "Read,Write", "--json",
-    ], cwd=workspace, text=True, encoding="utf-8", capture_output=True,
+    next_action = subprocess.run([
+        sys.executable, str(cli), "loop", "--workspace", str(workspace),
+        "next", "--advisory", "--by", "human:fixture",
+    ], cwd=case, text=True, encoding="utf-8", capture_output=True,
        env=environment)
-    assert entry.returncode == 0, entry.stdout + entry.stderr
-    assert json.loads(entry.stdout)["review_file_tools"]["ready"] is True
-    advisory = next_stage("--advisory")
-    assert advisory.returncode == 1, advisory.stdout + advisory.stderr
-    assert "harness bypass is disabled" in json.loads(advisory.stdout)["error"]
-    next_action = next_stage()
     assert next_action.returncode == 0, next_action.stdout + next_action.stderr
     action = json.loads(next_action.stdout)
     assert set(action) == {"schema", "stage_runtime_dispatch", "obligations"}
@@ -630,35 +585,3 @@ def test_extracted_marketplace_packages_execute_the_governed_journey(tmp_path):
         assert version.returncode == 0, version.stdout + version.stderr
         assert version.stdout.strip() == VERSION
         _run_minimal_installed_loop(package_root, case / "governed-loop")
-
-
-def test_extracted_claude_review_reaches_native_source_without_setup(tmp_path):
-    package = _extract(_run_package_entry_point("claude", tmp_path / "package"), tmp_path / "installed")
-    workspace = tmp_path / "checkout"
-    workspace.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
-    (workspace / "source.py").write_text("VALUE = 1\n")
-    subprocess.run(["git", "add", "."], cwd=workspace, check=True)
-    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=test@example.invalid",
-                    "commit", "-qm", "source"], cwd=workspace, check=True)
-    environment = {"PATH": os.environ.get("PATH", ""), "CLAUDE_PLUGIN_ROOT": str(package),
-                   "CLAUDE_CODE_SESSION_ID": "extracted-native-review",
-                   "TASKPLANE_HOST_HOME": str(tmp_path / "host-state")}
-    result = subprocess.run([sys.executable, str(package / "taskplane/tp.py"), "review", "start",
-        "--scope", "repository", "--workspace", str(workspace)], cwd=workspace,
-        env=environment, text=True, capture_output=True)
-    assert result.returncode == 0, result.stdout + result.stderr
-    manifest = json.loads(result.stdout)
-    assert manifest["status"] == "ready" and manifest["file_count"] == 1
-    assert "contract" not in manifest and len(result.stdout.encode()) < 2048
-    assert not list(workspace.rglob("active_contract.json"))
-    hook_manifest = json.loads((package / "hooks/hooks.json").read_text())
-    command = hook_manifest["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    event = {"session_id": "extracted-native-review", "cwd": str(workspace),
-             "hook_event_name": "PreToolUse", "tool_use_id": "first-read", "tool_name": "Read",
-             "tool_input": {"file_path": str(workspace / "source.py")}}
-    if os.name != "nt":
-        result = subprocess.run(command, shell=True, env=environment, cwd=workspace,
-            input=json.dumps(event), text=True, capture_output=True)
-        assert result.returncode == 0 and not result.stdout, result.stdout + result.stderr
-    assert (workspace / "source.py").read_text() == "VALUE = 1\n"

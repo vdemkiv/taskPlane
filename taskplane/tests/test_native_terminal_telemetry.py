@@ -512,7 +512,7 @@ def test_root_usage_missing_or_at_ceiling_cannot_silently_resume_dispatch() -> N
         observation_authority=authority)
     assert ceiling["dispatch_allowed"] is False
     assert ceiling["root_admission"]["reason_code"] == \
-        "root_seed_budget_exceeded"
+        "root_budget_reached"
 
 
 def test_root_meter_ledger_rejects_projection_tamper_and_cross_call_rollback() -> None:
@@ -876,12 +876,12 @@ def test_missing_native_counter_blocks_terminal_release_without_zero_fallback(
     _start_worker(event, monkeypatch, capsys)
 
     output = _stop_worker(
-        event, monkeypatch, capsys, outcome="failure", expected_rc=0)
+        event, monkeypatch, capsys, outcome="failure", expected_rc=2)
 
     state = loop.load(workspace)
     binding = _bound_attempt(workspace, expected)
-    denial = next(row for row in output if row.get("continue") is False)
-    assert "usage unavailable" in denial["stopReason"].lower()
+    denial = next(row for row in output if row.get("decision") == "block")
+    assert "native terminal counter" in denial["reason"]
     assert binding["usage"] is None
     assert binding["usage_source_fingerprint"] is None
     assert binding["finalized_receipt_fingerprint"] is None
@@ -907,11 +907,11 @@ def test_terminal_native_counter_at_pickup_ceiling_blocks_release(
 
     output = _stop_worker(
         event, monkeypatch, capsys, outcome="success",
-        transcript=transcript, expected_rc=0)
+        transcript=transcript, expected_rc=2)
 
-    denial = next(row for row in output if row.get("continue") is False)
+    denial = next(row for row in output if row.get("decision") == "block")
     assert "TOKEN BUDGET exhausted (10/10 native tokens)" in \
-        denial["stopReason"]
+        denial["reason"]
     state = loop.load(workspace)
     assert all(row["thread_type"] == "main"
                for row in state["dispatch_telemetry"]["dispatches"])

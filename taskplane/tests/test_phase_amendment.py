@@ -463,10 +463,6 @@ def test_design_amendment_preserves_old_reviews_and_requires_approval_before_pla
         pytest.fail("a prepared Plan must not rescan after its review workers execute"))
     collected = phase_harness.collect_lenses(loop, ws, dispatched["stage_runtime_dispatch"])
     assert collected["status"] == "complete", collected
-    assert collected["report"] == artifacts.read(collected["collection"])
-    reused = phase_harness.collect_lenses(loop, ws, dispatched["stage_runtime_dispatch"], prepare=True)
-    assert reused["dispatch"] == []
-    assert reused["report"] == collected["report"]
     selected_portable = review_evidence.portable_artifact_reference(artifacts, selected["plan"])
     assert collected["plan"] == selected_portable
     assert artifacts.read(collected["plan"])["slots"] == plan["slots"]

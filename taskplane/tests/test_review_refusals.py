@@ -50,9 +50,8 @@ import tp as cli                  # noqa: E402
 
 
 def _run(*args):
-    from taskplane.tests.host_screen_support import confirmed_cli_hooks
     out, err = io.StringIO(), io.StringIO()
-    with confirmed_cli_hooks(cli), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             rc = cli.main(list(args))
         except SystemExit as e:
@@ -289,22 +288,23 @@ class TestReviewStartRefusesBeforeItDoesAnyWork(_PRRepo):
         _git(self.ws, "checkout", "-q", "tp-pr-42")
         rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(json.loads(out)["status"], "ready")
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(json.loads(out)["status"], "needs_user")
 
     def test_the_pull_requests_head_opens_the_review_normally(self):
         _git(self.ws, "fetch", "-q", "origin", "refs/pull/42/head:tp-pr-42")
         _git(self.ws, "checkout", "-q", "tp-pr-42")
         rc, out, _err = _run("review", "start", LOCAL_SPEC, "--base", "HEAD~1",
                              "--workspace", self.ws)
-        self.assertEqual(rc, 0, out)
+        self.assertEqual(rc, 2, out)
         d = json.loads(out)
-        self.assertEqual(d["status"], "ready")
-        self.assertEqual(d["revision"], self.pr_head)
-        pinned = tgt.load(self.ws)
-        self.assertTrue(pinned["fingerprint"])
-        self.assertEqual(pinned["head"], self.pr_head)
-        self.assertIsNone(tp.load_active(self.ws))
+        self.assertEqual(d["status"], "needs_user")
+        self.assertTrue(d["target_fingerprint"])
+        self.assertEqual(d["preflight"]["identity"]["head"], self.pr_head)
+        self.assertEqual(d["preflight"]["identity"]["merge_base"],
+                         d["preflight"]["cache_identity"]["merge_base"])
+        self.assertTrue(
+            d["preflight"]["cache_identity"]["graph_revision"])
 
 
 class TestReviewPreflightDiagnostics(_PRRepo):
@@ -443,17 +443,27 @@ class TestTheGateReallyCarriesTheGraphCheck(_PRRepo):
         self.assertIsNone(tgt.binding_problem(self.ws))
 
 
-class TestSourceReviewDoesNotRequireStoredGraph(_PRRepo):
-    def test_a_stale_graph_is_neither_required_nor_rescanned(self):
+class TestReviewStartRescansAGraphFromAnotherRevision(_PRRepo):
+    """`review start` hands the blast radius to every lens. Loading a stored
+    graph without checking WHICH tree it was scanned at is how the wrong
+    revision reaches seven deep lenses at once."""
+
+    def test_a_graph_scanned_elsewhere_is_rescanned(self):
         depgraph.scan(self.ws)
         g = depgraph.load(self.ws)
         g["meta"]["scanned_head"] = "s" * 40
         depgraph.save(self.ws, g)
-        rc, out, _err = _run("review", "start", "--base", "HEAD~1",
+        _rc, out, _err = _run("review", "start", "--base", "HEAD~1",
                               "--workspace", self.ws)
-        self.assertEqual(rc, 0, out)
-        self.assertEqual(json.loads(out)["revision"], self.head)
-        self.assertEqual(depgraph.load(self.ws), g)
+        d = json.loads(out)
+        quality_path = os.path.join(
+            self.ws, d["graph_quality"]["relative_path"])
+        with open(quality_path, encoding="utf-8") as stream:
+            quality = json.load(stream)
+        self.assertEqual(quality["scanned_head"], self.head)
+        self.assertEqual(
+            (depgraph.load(self.ws)["meta"] or {}).get("scanned_head"),
+            self.head)
 
 
 if __name__ == "__main__":

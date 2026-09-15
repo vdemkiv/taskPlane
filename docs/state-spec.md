@@ -1,58 +1,20 @@
 # State specification — where taskplane's state lives, and why
 
-## Entry compatibility inventory (2.23.6)
-
-`entry-tools.json` lives under the existing host runtime session directory.
-It contains caller-declared tool names, the host session identity, and an
-installed-engine fingerprint. Reentry replaces it; an omitted declaration
-clears this session's list. Another session or engine update cannot reuse it.
-It is disposable compatibility metadata, not host proof, a contract, or a
-permission grant. Existing tool and source-write guards remain authoritative.
-
-## Host session ownership (2.23.5)
-
-Identified host conversations partition execution storage by the SHA-256 of
-their host session ID. The default home is
-`<checkout>/.taskplane/sessions/<fingerprint>/`; an explicit `TASKPLANE_HOME`
-is partitioned the same way. Each checkout's private Git directory stores its
-locator at `taskplane/sessions/<fingerprint>/workspace.json`. Contracts, meters,
-review signing authority and run state resolve through that session's home and
-locator. Local review and evaluation outputs also have session subdirectories.
-
-A process restart with the same host session ID can recover its own run. A new
-conversation does not adopt any legacy shared state or another conversation's
-run. `clear` operates on the calling session only; operator commands must carry
-that session's host identity. CLI use without a host identity remains in the
-legacy local namespace and cannot implicitly select an identified session.
-
-Native hooks record bounded observations in a private temporary host cache,
-keyed by exact session ID; `TASKPLANE_HOST_HOME` can select that cache's location.
-The cache contains no contracts, execution results or findings. It lets the same
-session verify readiness in a fresh checkout with a different execution home.
-Repository bridge observations remain workspace-bound. Missing session identity,
-a different session, or explicit denied host policy cannot use native proof.
-
-A standalone review records its active checkout in that session's host cache.
-Later screen and lifecycle hooks resolve that checkout while preserving the
-original meaning of relative tool paths. Clearing the owning contract makes the
-binding inactive. The shared `.taskplane/codex-hook.py` launcher is stateless;
-its presence alone never proves hook readiness or selects another session.
-
 taskplane separates source, durable knowledge, and private run data. The rule
 that decides every case:
 
 > **Knowledge = the knowledge store, and where it lives is PLAN-AWARE.**
 > Decisions, requirements, debt, the dependency graph, and context docs are
 > the project's durable memory. On a **personal** plan (the default) the
-> store is private — a per-project folder under the project's ignored
-> `.taskplane/projects/<key>/`, never committed or pushed. On a
+> store is external — a per-project folder under
+> `~/.taskplane/projects/<key>/`, never committed or pushed. On a
 > **Team/Enterprise** plan the store lives IN the repo at `.taskplane-kb/`
 > and is committed *deliberately* with the code, so the team shares one
 > registry and a fresh clone inherits it.
-> **Runtime = project-local and run-scoped.** Managed mirrors/worktrees live under
-> `.taskplane/checkouts/`; live enforcement, graph/evidence, leases, raw
-> events, and artifacts live under `.taskplane/runs/<run-id>/`. Source,
-> execution, and evidence remain separate subtrees. Legacy unmanaged workspaces
+> **Runtime = external and run-scoped.** Managed mirrors/worktrees live under
+> `~/.taskplane/checkouts/`; live enforcement, graph/evidence, leases, raw
+> events, and artifacts live under `~/.taskplane/runs/<run-id>/`. The source
+> checkout is never a report/scratch directory. Legacy unmanaged workspaces
 > retain their git-ignored local runtime paths for compatibility.
 > **Never anywhere in the store: prompt data.** No instructions-to-models,
 > no role text, no rendered prompts. Enforced by `tp.py kb lint`.
@@ -61,7 +23,7 @@ The change from the earliest versions: the knowledge base used to live in a
 plain in-repo `knowledge/` directory and rode along on every `git add -A`, so
 even on a solo project decisions, graphs, and strategy notes got pushed with
 the code by accident. Since v1.5.0 the store is **plan-aware**: personal work
-stays ignored and private; team work is shared in-repo *on purpose*, through
+stays external and private; team work is shared in-repo *on purpose*, through
 an anchored gitignore that makes exactly the shared store committable (below).
 Sharing is a deliberate act, not an accident of `git push`.
 
@@ -78,26 +40,21 @@ first:
 1. **`TASKPLANE_STORE` env** — e.g. `TASKPLANE_STORE=repo` forces the in-repo
    store (used by Claude Tag; see below).
 2. **Private setting** (`mode.json`) — an individual's `tp share set private`
-   on a team plan keeps *their* work in the ignored private store while they explore.
+   on a team plan keeps *their* work in the external store while they explore.
 3. **Shared config** (`.taskplane-kb/config.json`) — a committed marker that a
    clone inherits, so team members pick up the shared store with zero setup.
-4. **Plan** — `personal` → private; `team`/`enterprise` → shared in-repo. Set via
+4. **Plan** — `personal` → external; `team`/`enterprise` → in-repo. Set via
    `tp share plan …` or `tp init --plan …`.
-5. **Default** — private, beneath the project's `.taskplane/`.
+5. **Default** — external (`~/.taskplane`).
 
-### The private store (personal plan / private mode)
+### The external store (personal plan / private mode)
 
-Root: `<project>/.taskplane/` (override explicitly with `$TASKPLANE_HOME`).
-Existing run locators retain their recorded home, including legacy external
-homes. An explicit project-storage selection may supersede only an unused
-preflight binding after verifying that no execution, stage, or contract has
-started. The previous binding remains available for audit; active runs require
-their named recovery or migration action. Managed repositories
+Root: `~/.taskplane/` (override with `$TASKPLANE_HOME`). Managed repositories
 use a stable normalized repository key, so equivalent HTTPS/SSH origins and
 different checkout paths share identity without sharing run state:
 
 ```
-<project>/.taskplane/projects/<key>/
+~/.taskplane/projects/<key>/
   ├─ meta.json                     project abs path + git remote (self-describing)
   ├─ mode.json                     this user's share mode (e.g. private)
   └─ knowledge/
@@ -133,33 +90,33 @@ shared knowledge (an anchored `/knowledge/` allow under `.taskplane-kb/`), so a
 plain `git add` picks up exactly the shared store and nothing else. Committing
 `.taskplane-kb/` is how the team shares the registry.
 
-## Runtime paths — project-local, isolated by run
+## Runtime paths — external for runs, local for standalone contracts
 
 | Path | Contents | Why local |
 | --- | --- | --- |
-| `.taskplane/runs/<run-id>/state/control/` | active contracts, snapshot ref, meter and trace for a managed run | enforcement remains bound to the run and its trusted Git-metadata locator |
-| `.taskplane/runs/<run-id>/stages/objects/<stage-id>/` | immutable, content-addressed `taskplane.stage/v1` aggregate revisions | stage history remains independently addressable and is never inferred from a mutable active pointer |
-| `.taskplane/runs/<run-id>/stages/executions/<stage-id>/` | one claimed execution root per stable stage, with fresh attempt roots beneath it | successor and resumed-stage execution cannot inherit a predecessor's mutable runtime tree |
-| `.taskplane/runs/<run-id>/{graph,evidence,lenses,artifacts}/` | graph, immutable evidence/views, leased results, reports/dashboards, and explicitly selected stage artifacts | private run products stay distinct from source and shared knowledge |
-| `.taskplane/` | standalone contract/meter/trace | managed runs keep control state in their own run subtree |
+| `~/.taskplane/runs/<run-id>/state/control/` | active contracts, snapshot ref, meter and trace for a managed run | enforcement is run-scoped and cannot pollute or be spoofed by the source checkout |
+| `~/.taskplane/runs/<run-id>/stages/objects/<stage-id>/` | immutable, content-addressed `taskplane.stage/v1` aggregate revisions | stage history remains independently addressable and is never inferred from a mutable active pointer |
+| `~/.taskplane/runs/<run-id>/stages/executions/<stage-id>/` | one claimed execution root per stable stage, with fresh attempt roots beneath it | successor and resumed-stage execution cannot inherit a predecessor's mutable runtime tree |
+| `~/.taskplane/runs/<run-id>/{graph,evidence,lenses,artifacts}/` | graph, immutable evidence/views, leased results, reports/dashboards, and explicitly selected stage artifacts | private run products stay distinct from source and shared knowledge |
+| `.taskplane/` | standalone contract/meter/trace | managed runs keep this control state externally |
 | `.taskplane/active_contract.json` | the standalone root contract | one governed process per workspace, the common case |
 | `.taskplane/active/<slot>.json` | PER-TASK contract slots (v2.3.1) | each emitted worker contract is pending until `SubagentStart` binds it to one exact child, which receives `TASKPLANE_TASK=<slot>`. A process with that variable is bound to exactly its slot (missing/corrupt fails closed). A slot-less orchestrator reads only its root contract; it never combines worker contracts. `SubagentStop` terminalizes and quarantines the slot on every terminal outcome; committed gates and SessionStart sweep completed-worker leftovers. |
 | `.taskplane/quarantine/contracts/` | released worker contract records | diagnostic copy of terminal worker authority; the active slot and snapshot are removed only after the signed exact-slot terminal receipt validates |
 | `.eval/`, `.em-review/`, `.security-review/` | standalone review artifacts | managed reviews use the run root and never place source here |
-| `.taskplane/checkouts/<repository-key>/worktrees/tasks/<run-id>/` | managed parallel workers' worktrees | source vehicles remain in the checkout registry; work merges via `tp/<task>` branches |
-| `.tp-work/` | standalone workers' worktrees | managed phases use isolated execution roots |
+| `~/.taskplane/checkouts/<repository-key>/worktrees/tasks/<run-id>/` | managed parallel workers' worktrees | source vehicles remain in the checkout registry; work merges via `tp/<task>` branches |
+| `.tp-work/` | standalone workers' worktrees | managed phases use external execution roots |
 | `plan/`, `specs/`, `design/` | authored requirement, proposed-HOW Design Contract/visual, and implementation-plan sources | these MAY stay in the repo if you want them version-controlled; the loop treats them as its own evidence rather than product-code diff |
 
 Standalone `.taskplane/` self-ignores via its own `.gitignore`; `tp init` adds the
 remaining compatibility paths to the repo-root `.gitignore` (idempotent). On a team plan the gitignore
 is **anchored** so `.taskplane-kb/knowledge/` stays committable while the
 runtime paths above remain ignored; on a personal plan the whole store is
-ignored and no runtime output is committed.
+external and nothing taskplane-generated enters the repo.
 
 ### Loop coordination state is per-user — even on a team plan
 
 Only *knowledge* is shared. The loop **state machine** (`state/loop.json`,
-`tracks.json`) is per-user and lives in the ignored private store even on a team
+`tracks.json`) is per-user and lives in the external store even on a team
 plan — one person's active track, current step and fix-cycle count are not
 the team's. A team shares the registry of decisions/requirements/debt, not
 each other's in-flight loop.
@@ -230,7 +187,7 @@ is never reopened; continuation creates a successor with an explicit handoff.
 
 A project created before the plan-aware store still has a git-tracked
 plain `knowledge/`. On a **personal** plan `tp init` (or `tp kb migrate`)
-relocates it: the directory is moved into the ignored private store, `git rm
+relocates it: the directory is moved into the external store, `git rm
 --cached` untracks it, and `knowledge/` is added to `.gitignore`. Until
 migration runs, reads fall back to the in-repo location so nothing breaks
 mid-flight. After it, the repo carries no taskplane artifacts — the
@@ -263,13 +220,13 @@ anchored gitignore.
 | --- | --- |
 | `tp share status` | show the resolved mode (plan, private-or-shared) and the count of unpublished local records |
 | `tp share plan personal\|team\|enterprise` | set the project's plan (changeable any time); also settable at `tp init --plan …` |
-| `tp share set private` | on a team plan, keep *your* work in the ignored project store (`.taskplane/`) while you explore — recorded in `mode.json` |
+| `tp share set private` | on a team plan, keep *your* work in the external store (`~/.taskplane`) while you explore — recorded in `mode.json` |
 | `tp share push [--ids …]` | publish selected records from your private store into the shared `.taskplane-kb/` store (re-numbered into the shared index), like a git push; then a human commits `.taskplane-kb/` |
 
 ### Private mode and publishing
 
 On a team plan an individual can `tp share set private` to keep their work in
-their own private store, invisible to the team, and later `tp share push
+their own external store, invisible to the team, and later `tp share push
 [--ids …]` to publish selected work into the shared store. Publishing covers
 **decisions and flows only** — it does NOT push requirements or context docs.
 Like a git push it is always a deliberate, idempotent human act; the actual

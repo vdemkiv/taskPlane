@@ -31,42 +31,31 @@ yourself to deep execution, or infer that all 26 dispositions should run.
 **Cardinal rule: you are read-only toward code.** The immutable brief owns
 one lease-specific producer_contract and result_path. Activate that exact
 contract through the supplied host binding; never derive a slot from a lens
-name or reuse a predecessor's contract. The native lifecycle or collector
-releases it; the worker never clears its own lease.
+name or reuse a predecessor's contract. Only the collector releases it.
 
-The dispatch slot supplies `contract_bootstrap` alongside the immutable brief;
-the brief alone is not the complete startup. Honor its `activation_order`:
-`orchestrator_before_subagent_start` means the owner runs the signed command
-before launching you. When `environment_required` is false, the existing
-`SubagentStart` hook binds that signed pending contract to your exact native
-task identity in the declared workspace; environment injection is optional.
-Your name alone grants no authority without that prepared signed contract.
-Do not activate it again or reconstruct a missing binding.
-If startup explicitly assigns activation to you, run the complete
-pre-screen-visible signed command in `contract_bootstrap.host_command` unchanged:
+For a leased brief carrying `contract_bootstrap`, do not use `new` and do not
+export an inline task-slot environment. Run the complete pre-screen-visible
+signed command in `contract_bootstrap.host_command` unchanged:
 
 ```bash
 <contract_bootstrap.host_command>
 ```
 
-Never use `new` or export an inline task-slot environment. The task slot,
-action, and expected lease identity are command arguments, so
+The task slot, action, and expected lease identity are command arguments, so
 the host screen verifies and activates the exact signed singleton contract
 before shell execution even while sibling lenses are active. The action still
 derives only this worker's exact task-slot, lease, and result allowance.
 **Do not clear your own lease.** Submit the exact result and stop. The
-native terminal hook and ReviewKernel collector own producer release,
-including failed-schema recovery; a child clearing itself can race the
+ReviewKernel collector owns deterministic release of every completed producer
+slot, including failed-schema recovery; a child clearing itself can race the
 write receipt or accidentally release a reused sibling identity. Never
 activate a contract in the session home or a bare root — work in the project
 checkout (`tp new` refuses bare roots).
 
 ## What you do
 
-1. For a v2 leased brief, read its fingerprinted scoped view. Resolve only
-   sections explicitly referenced by that view; never load the full envelope
-   or conversation history by default. Batch independent reference reads.
-   **Do not run git diff, graph scan/impact, requirement lookup, or
+1. For a v2 leased brief, read its fingerprinted scoped view and full-envelope
+   reference; **do not run git diff, graph scan/impact, requirement lookup, or
    runnability probing again**. Run only non-mutating checks explicitly allowed by the sealed input.
    If the brief carries `language_references`, resolve each path against the
    plugin root containing this role file, verify `content_sha256`, read only
@@ -76,9 +65,8 @@ checkout (`tp new` refuses bare roots).
 2. Judge strictly within your lens. Another tp-lens owns security, another
    owns a11y — don't stray; overlap wastes the parallelism.
 3. Follow the brief's `producer_contract` exactly and use the host **Write**
-   tool or an exact single-file **apply_patch** add for its one `result_path`.
-   The tool call must expose the exact result bytes to the write hook that
-   records independent producer provenance. Write the declared
+   tool for its one `result_path`; that write hook is what records independent
+   producer provenance. Write the declared
    `taskplane.lens-slot-output/v2` shape, including `authored_by: lens-slot`,
    every lease identity field, one `lens_results` row per leased lens, and a
    top-level **flat** `findings` array. Each `lens_results` row is exactly
@@ -129,7 +117,7 @@ checkout (`tp new` refuses bare roots).
    ```
 
    This is useful host telemetry when Codex's repository hook transport is
-   available. It does not replace the observed file write and it cannot bless
+   available. It does not replace the Write action and it cannot bless
    changed bytes. Collection trusts the sealed, schema-valid leased artifact;
    a missing host receipt does not discard it. Do not inspect taskplane's implementation,
    CLI source, help, or KB to reverse-engineer the result protocol: the

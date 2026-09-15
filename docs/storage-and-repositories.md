@@ -7,11 +7,11 @@ review lens can run. `tp repository prepare <target>` is the shared entry point;
 
 ## Hybrid layout
 
-The default execution home is the project's ignored `.taskplane/` folder.
-Source worktrees, private state, and evidence have separate roots inside it:
+With the default `TASKPLANE_HOME=~/.taskplane`, private machine state is kept
+outside the source checkout:
 
 ```text
-<project>/.taskplane/
+~/.taskplane/
   repositories/<repository-key>.json
   checkouts/<repository-key>/mirror.git
   checkouts/<repository-key>/worktrees/<checkout-id>/
@@ -27,18 +27,11 @@ Source worktrees, private state, and evidence have separate roots inside it:
   cache/graphs/<repository-key>/<head>/<scanner>.json
 ```
 
-Private control state, graph evidence, leases, and reports belong to the run;
-they do not become product source or shared knowledge. Shared team knowledge is stored
+The checkout contains source only. Private control state, graph evidence,
+leases, and reports belong to the run. Shared team knowledge alone is stored
 in the repository under `.taskplane-kb/knowledge/` when team/enterprise mode
 is selected. A secure locator in Git metadata binds the checkout to its
 repository key and run; untrusted PR content cannot commit or spoof it.
-
-An explicit `TASKPLANE_HOME` or an existing run's trusted locator may select a
-different home. Existing runs are not silently moved. A project-local selection
-can replace an unused preflight binding only after checking for execution,
-contract, and stage state, and retaining the old binding for audit. Stage roots
-inside the source project are accepted only beneath its canonical `.taskplane/`
-home; arbitrary source paths and symlink escapes remain refused.
 
 ## Prepare, ask, resume
 

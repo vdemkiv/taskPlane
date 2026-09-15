@@ -537,7 +537,7 @@ class TestCodexHookProtocol(unittest.TestCase):
             contract, "exec_command", {"cmd": "touch src/forbidden.py"},
             self.ws)
         self.assertFalse(ok)
-        self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
+        self.assertIn("every shell command tool is blocked", reason)
         self.assertIn("scoped Write/Edit tools", reason)
 
     def test_claude_allow_keeps_legacy_approve(self):
@@ -563,7 +563,7 @@ class TestCodexHookProtocol(unittest.TestCase):
         ok, reason = tp.screen_tool(
             contract, "Bash", {"command": f"printf fake > {result}"}, self.ws)
         self.assertFalse(ok)
-        self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
+        self.assertIn("every shell command tool is blocked", reason)
         for hook_command in ("screen", "subagent-start"):
             with self.subTest(command=hook_command):
                 ok, reason = tp.screen_tool(
@@ -571,15 +571,14 @@ class TestCodexHookProtocol(unittest.TestCase):
                     {"command": f"python3 taskplane/tp.py {hook_command}"},
                     self.ws)
                 self.assertFalse(ok)
-                self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
+                self.assertIn("every shell command tool is blocked", reason)
 
     def test_claude_and_codex_write_hooks_authorize_leased_results(self):
         for host_seed in (
                 {"session_id": "claude-session"},
                 {"turn_id": "codex-turn"}):
             host_event = dict(host_seed)
-            with self.subTest(host=next(iter(host_event))), mock.patch.dict(
-                    os.environ, {"CLAUDE_SESSION_ID": host_event.get("session_id", "")}):
+            with self.subTest(host=next(iter(host_event))):
                 ws = _repo()
                 host_event["transcript_path"] = _hook_usage_transcript(
                     ws, codex="turn_id" in host_event,
@@ -597,7 +596,6 @@ class TestCodexHookProtocol(unittest.TestCase):
                     runnability={"summary": "available"})
                 state = review._load_state(ws)
                 store = review_evidence.ArtifactStore(ws)
-                tp.record_entry_tools(["Read", "Grep", "Glob", "Write", "apply_patch"])
                 parent = tp.build_contract(
                     "evaluate parent", read_only=True,
                     write_allow=[".eval/**"], tools=["Read", "Write"])
@@ -622,7 +620,7 @@ class TestCodexHookProtocol(unittest.TestCase):
                         row, sort_keys=True, separators=(",", ":"))
                     contract = tp.build_contract(
                         producer["task"], read_only=True,
-                        write_allow=producer["write_allow"], tools=["Read", "Write"])
+                        write_allow=producer["write_allow"], tools=["Write"])
                     env = {**os.environ,
                            "TASKPLANE_TASK": producer["task_slot"]}
                     parent_env = {key: value for key, value in os.environ.items()
@@ -1067,12 +1065,11 @@ class TestReviewManifestHostParity(unittest.TestCase):
         # The test runner itself may be a Codex process.  Clear every marker
         # used by the shared host seam so the first capture is true Claude,
         # then make the second true Codex independently of ambient state.
-        marker_names = ("CODEX_HOME", "CODEX_THREAD_ID", "CLAUDE_SESSION_ID", "TASKPLANE_STORE")
+        marker_names = ("CODEX_HOME", "CODEX_THREAD_ID", "TASKPLANE_STORE")
         prior = {key: os.environ.get(key) for key in marker_names}
         try:
             for key in marker_names:
                 os.environ.pop(key, None)
-            os.environ["CLAUDE_SESSION_ID"] = "transport-only"
             self.assertEqual(tp.host(), "claude")
             claude = review.start_review(ws, **args)
             store = review_evidence.ArtifactStore(ws)

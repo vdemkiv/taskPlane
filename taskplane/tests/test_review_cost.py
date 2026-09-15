@@ -22,7 +22,6 @@ unseen.
 import io
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -69,13 +68,6 @@ class _WS(unittest.TestCase):
         self._codex_home = os.environ.get("CODEX_HOME")
         self._codex_thread = os.environ.get("CODEX_THREAD_ID")
         self._canonical_host_root = rv._canonical_host_root
-        # These CLI-cost fixtures exercise a host with confirmed hooks.
-        # Unproven/bypass refusal is covered by enforcement integration tests.
-        from taskplane.tests.test_enforcement_integration import _snapshot
-        capability = mock.patch.object(cli, "_host_capability_snapshot",
-            side_effect=lambda ws, install_context=None: _snapshot(ws, live=True))
-        capability.start()
-        self.addCleanup(capability.stop)
 
     def tearDown(self):
         if self._home is None:
@@ -291,8 +283,6 @@ class RenderByReference(_WS):
 
 class OneCallOpening(_WS):
     def _start(self, *extra):
-        os.environ["CODEX_THREAD_ID"] = "review-cost-thread"
-        tp.record_entry_tools(["Read", "Write"])
         # Positive fixture supplies actual complete scanner + symbol-index
         # evidence at the pinned head. It therefore earns a normal route;
         # the separate graph-quality tests keep partial evidence fail-closed.
@@ -307,37 +297,73 @@ class OneCallOpening(_WS):
                             "--workspace", self.ws, *extra)
         return rc, json.loads(out), err
 
-    def test_it_establishes_source_facts_without_a_choice_gate(self):
+    def test_it_establishes_every_fact_a_review_opens_with(self):
         rc, d, _ = self._start()
-        self.assertEqual(rc, 0, d)
-        self.assertEqual(d["status"], "ready")
-        self.assertEqual(d["scope"], "diff")
-        self.assertNotIn("review_execution", d)
-        self.assertLessEqual(len(json.dumps(d).encode()), 2048)
+        self.assertEqual(rc, 2, d)
+        self.assertEqual(d["status"], "needs_user")
+        self.assertEqual(d["slots"], [])
+        self.assertEqual(d["review_execution"]["status"], "needs_user")
+        self.assertEqual(sum(d["routing_counts"].values()),
+                         len(lens.load_catalog()["lenses"]))
+        self.assertLessEqual(len(json.dumps(d).encode()), 16 * 1024)
 
-    def test_manifest_references_one_native_readable_artifact(self):
+    def test_cli_manifest_counter_covers_final_contract_and_tool_fields(self):
         _, d, _ = self._start()
         import review_evidence
-        source = review_evidence.ArtifactStore(self.ws).read(d["source"])
-        self.assertEqual(source["files"], ["pkg/a.go"])
-        self.assertTrue(source["patch"])
-        self.assertEqual(source["revision"], tp.git_head(self.ws))
+        self.assertIn("contract", d)
+        self.assertIn("tools", d)
+        self.assertEqual(d["manifest_bytes"],
+                         len(review_evidence.canonical_bytes(d)))
+        self.assertEqual(d["counters"]["emitted_bytes"],
+                         d["manifest_bytes"])
 
-    def test_source_review_does_not_activate_a_contract_or_dispatch(self):
+    def test_it_returns_the_briefs_ready_to_dispatch(self):
         _, d, _ = self._start()
-        self.assertIsNone(tp.load_active(self.ws))
-        self.assertNotIn("slots", d)
-        self.assertNotIn("contract", d)
+        prompt = next(choice["prompt"] for choice in
+                      d["review_execution"]["action"]["choices"]
+                      if choice["response"] == "static")
+        self._observe_user_action(
+            prompt, message_id="review-cost-static-choice")
+        rc, out, _ = _run(
+            "review", "option", "static", "--receipt",
+            "review-cost-static-choice",
+            "--run-id", d["run_id"], "--workspace", self.ws)
+        self.assertEqual(rc, 0, out)
+        ready = json.loads(out)
+        self.assertEqual(ready["status"], "ready")
+        self.assertTrue(ready["slots"])
+        self.assertLessEqual(sum(row["slot_id"] == "light-sweep"
+                                 for row in ready["slots"]), 1)
+        self.assertNotIn("dispatch", ready)
 
-    def test_source_review_does_not_seed_dashboard_obligations(self):
-        self._start()
+    def test_it_activates_the_contract_and_pins_the_target(self):
+        _, d, _ = self._start()
+        c = tp.load_active(self.ws)
+        self.assertTrue(c["read_only"])
+        self.assertEqual(c["target"]["fingerprint"],
+                         d["target_fingerprint"])
+
+    def test_it_seeds_the_obligations_a_review_owes(self):
+        _, d, _ = self._start()
+        # Owed state remains in the obligation ledger, not duplicated on
+        # compact stdout.
         import obligations
-        self.assertFalse(obligations.status(self.ws)["issued"])
+        self.assertTrue(obligations.status(self.ws)["issued"])
+        self.assertNotIn("owes", d)
 
     def test_it_decides_nothing(self):
+        """It establishes facts. A step that produced findings or a verdict
+        would be a grader grading its own inputs."""
         _, d, _ = self._start()
-        for field in ("findings", "verdict", "routing_decision", "sign_off"):
-            self.assertNotIn(field, d)
+        self.assertNotIn("findings", d)
+        self.assertNotIn("verdict", d)
+        # The only "verdict"s anywhere in the payload are ROUTING verdicts —
+        # which lens runs, not what it concluded.
+        self.assertEqual(d["routing_decision"]["kind"], "routing-decision")
+        self.assertNotIn("dispositions", d["routing_decision"])
+        blob = json.dumps(d).lower()
+        for word in ('"severity":', '"blocker"', '"sign_off"'):
+            self.assertNotIn(word, blob, f"review start emitted {word}")
 
     def test_a_target_it_cannot_pin_fails_before_anything_is_activated(self):
         empty = os.path.join(self.d, "empty")
@@ -347,11 +373,12 @@ class OneCallOpening(_WS):
         self.assertFalse(json.loads(out)["ok"])
         self.assertFalse((tp.load_active(empty) or {}).get("task_id"))
 
-    def test_an_explicit_token_limit_is_advisory(self):
+    def test_a_token_ceiling_can_be_set_at_the_opening(self):
         _, d, _ = self._start("--max-tokens", "750000")
-        self.assertEqual(d["budget"]["max_tokens"], 750000)
-        self.assertEqual(d["budget"]["mode"], "advisory")
-        self.assertIsNone(tp.load_active(self.ws))
+        contract = tp.load_active(self.ws)
+        self.assertEqual(contract["budget"]["max_tokens"], 750000)
+        self.assertGreater(contract["budget"]["target_tokens"], 0)
+        self.assertLess(contract["budget"]["target_tokens"], 750000)
 
 
 # ------------------------------------- 3. one copy of the diff, not four
@@ -449,11 +476,11 @@ class TokenBudget(unittest.TestCase):
         ok, why = spend.status({"budget": {"max_tokens": 100}}, 100)
         self.assertFalse(ok)
         self.assertIn("TOKEN BUDGET exhausted", why)
-        self.assertIn("Ask the user to approve", why)
-        self.assertIn("do not retry", why)
+        self.assertIn("--grant-tokens", why)
+        self.assertIn("OUTSIDE this workspace", why)
 
-    def test_an_unreadable_ceiling_fails_closed(self):
-        self.assertFalse(spend.status({"budget": {"max_tokens": "lots"}},
+    def test_an_unreadable_ceiling_is_ignored_not_enforced(self):
+        self.assertTrue(spend.status({"budget": {"max_tokens": "lots"}},
                                      10 ** 9)[0])
 
     def test_it_names_what_an_action_actually_cost(self):
@@ -506,24 +533,23 @@ class TokenCeilingThroughTheScreener(_WS):
         tr = self._contract_with(900_000)
         decision, why = self._screen("grep -rn foo .", tr)
         self.assertEqual(decision, "block")
-        self.assertIn("shell command is not a verified native Codex read-only invocation", why)
+        self.assertIn("every shell command tool is blocked", why)
         self.assertNotIn("TOKEN BUDGET exhausted", why)
 
     def test_no_transcript_cannot_lift_read_only_shell_denial(self):
         self._contract_with(1)
         decision, why = self._screen("grep -rn foo .")
         self.assertEqual(decision, "block")
-        self.assertIn("shell command is not a verified native Codex read-only invocation", why)
+        self.assertIn("every shell command tool is blocked", why)
         self.assertNotIn("TOKEN BUDGET exhausted", why)
 
-    def test_inspection_remains_reachable_at_the_token_ceiling(self):
-        """Recovery can inspect the limit without admitting productive work."""
+    def test_inspection_is_still_free_even_over_the_ceiling(self):
+        """A run that cannot report why it stopped is worse than one that
+        overspends by one status call."""
         tr = self._contract_with(1)
-        for args in (("status",), ("contracts",), ("ack", "--status")):
-            cmd = shlex.join([sys.executable, os.path.join(ROOT, "taskplane", "tp.py"), *args])
+        for cmd in ("tp status", "tp contracts", "tp ack --status"):
             with self.subTest(cmd):
-                decision, reason = self._screen(cmd, tr)
-                self.assertEqual(decision, "abstain", reason)
+                self.assertEqual(self._screen(cmd, tr)[0], "abstain")
 
 
 if __name__ == "__main__":

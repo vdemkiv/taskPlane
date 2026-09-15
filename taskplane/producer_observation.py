@@ -116,9 +116,6 @@ _OBSERVATION_INTENT_FIELDS = frozenset(
 )
 
 
-from taskplane.storage import host_session_id as _host_session_id
-
-
 class ProducerObservationError(ValueError):
     """A submission lacks one exact, fresh host observation."""
 
@@ -1424,7 +1421,8 @@ def hook_event_identity(workspace: str, action: str, event: dict) -> str:
         64).strip()
     session = _bounded_hook_identity(
         event.get("session_id") or event.get("thread_id")
-        or _host_session_id(), 160).strip()
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID"), 160).strip()
     stable_id = _bounded_hook_identity(
         event.get("hook_event_id") or event.get("event_id")
         or event.get("tool_use_id") or event.get("call_id"), 160).strip()

@@ -211,26 +211,25 @@ def test_evidence_consuming_phase_cannot_dispatch_lens_workers():
             "id":"engineering", "working_lenses": ["security"], "evaluation_lenses": []}})
 
 
-def test_waiver_refuses_without_mutation_and_deadline_requires_recovery(tmp_path, monkeypatch):
+def test_advisory_run_prepares_without_session_owned_signing_and_keeps_waiting(tmp_path, monkeypatch):
     import time
     from taskplane.tests.phase_fixture import _normal_phase_workspace
     ws, store, stage, _, _, _ = _normal_phase_workspace(tmp_path, monkeypatch)
     run_id = stage["run_id"]
     original = loop._load_raw(ws)
     actor = original["_stage_native_root_authority"]["actor"]
-    before = store.load(run_id)
     policy = loop.resolve(ws, "limits-advisory", by=actor)
-    assert "bypass is disabled" in policy["error"]
-    assert store.load(run_id) == before
+    assert not policy.get("error"), policy
+    assert policy["resource_policy"]["mode"] == "advisory"
     action = loop.next_action(ws)
     assert not action.get("error"), action
     inputs = phase_harness.read_input(loop, ws, action["stage_runtime_dispatch"])
-    assert "resource_policy" not in inputs
+    assert inputs["resource_policy"]["mode"] == "advisory"
     manifest = store.load(run_id)
     future = time.time() + 3600
     monkeypatch.setattr(time, "time", lambda: future)
     pending = loop.next_action(ws)
-    assert pending["obligations"]["status"] == "recovery_required", pending
+    assert pending["obligations"]["status"] == "pending", pending
     assert pending["obligations"]["dispatch_allowed"] is False
     assert store.load(run_id) == manifest
     assert loop._load_raw(ws)["settings_snapshot"] == original["settings_snapshot"]
@@ -288,44 +287,44 @@ def test_native_shaped_stop_without_inline_usage_keeps_real_budget(tmp_path, mon
         assert refusals[-1]["reason_code"] == (
             "budget_exhausted" if total else "observation_unavailable")
     assert artifacts.read(action["stage_runtime_dispatch"]["startup"]["phase_input"])["phase_definition"]["budget"]["tokens"] == 100000
-    if total == 100:
+    if total == 100000:
         import time
         original = loop._load_raw(ws)
         saved_snapshot = copy.deepcopy(original["settings_snapshot"])
         actor = original["_stage_native_root_authority"]["actor"]
         operation = action["obligations"]["phase_operation"]
         assert loop.resolve(ws, "limits-advisory", by="human:foreign").get("error")
-        # Replay within the existing authority window launches no worker.
-        future = time.time() + 5
+        # The real-shaped terminal is already recorded. Only resource time
+        # passes; neither the worker nor a Stop callback is run again.
+        future = time.time() + 3600
         monkeypatch.setattr(time, "time", lambda: future)
         policy = loop.resolve(ws, "limits-advisory", by=actor)
-        assert "bypass is disabled" in policy["error"]
+        assert "error" not in policy, policy
         assert policy["dispatch_allowed"] is False
         monkeypatch.setenv("TASKPLANE_SESSION_ID", "replacement-after-terminal")
-        assert "bypass is disabled" in loop.resolve(ws, "limits-advisory", by=actor)["error"]
+        assert loop.resolve(ws, "limits-advisory", by=actor)["replay"] is True
         reconciled = loop.resolve(ws, "reconcile", phase_operation=operation)
         assert reconciled.get("status") == "collected", reconciled
         assert reconciled["worker_released"] is True
         assert loop.resolve(ws, "reconcile", phase_operation=operation)["replay"] is True
         completed = phase_pending(ws)["completion"]
         assert completed["resource_usage"]["tokens"] == total
-        assert completed["resource_usage"]["advisory"] is False
+        assert completed["resource_usage"]["advisory"] is True
         assert artifacts.read(completed["runtime_result"])["budget"]["tokens"] == 100000
         assert loop._load_raw(ws)["settings_snapshot"] == saved_snapshot
         assert loop._load_raw(ws)["requirement_id"] == original["requirement_id"]
         assert len([row for row in phase_records.phase_records(store.load(stage["run_id"])).values()
             if row["operation"] == "phase_prepare"]) == 1
-        # Expiry cannot be waived to continue execution. Previously sealed
-        # evidence stays readable, and key revocation still applies.
+        # A sealed result is durable evidence, not a lease on a conversation.
+        # Its signing window may end, but current key revocation still applies.
         from dataclasses import replace
         material = artifacts.read(completed["preparation"])
         signer = loop._phase_bridge_signing(ws, material)
         signed = artifacts.read(completed["runtime_receipt"])
         later = future + 172800
         monkeypatch.setattr(time, "time", lambda: later)
-        assert "deadline expired" in loop.resolve(ws, "reconcile", phase_operation=operation)["error"]
-        assert signer.verify(signed)["payload"]
-        assert run_context.resource_limits_advisory(ws) is False
+        assert loop.resolve(ws, "reconcile", phase_operation=operation)["replay"] is True
+        assert run_context.resource_limits_advisory(ws) is True
         key = signer.keys[signer.key_id]
         revoked = replace(signer, now=int(later), keys={**signer.keys,
             signer.key_id: replace(key, status="revoked", changed_at=int(later))})

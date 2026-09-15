@@ -15,12 +15,12 @@ not enforced before spend. The PreToolUse hook screens a *cooperative* shell
 for build contracts: it makes wrappers (env/nohup/sudo/xargs/…) and nested
 `sh -c`/`$()` transparent, and blocks resolvable out-of-scope writes plus
 clearly destructive unscopeable verbs (`find -delete/-exec`,
-`git checkout/reset/…`). Read-only review admits explicit native file tools or
-Codex's built-in read-only sandbox. A projected shell request must match the
-full pending native call, including its fixed non-login shell. Codex enforces
-the process permissions; TaskPlane does not implement a shell sandbox. Scoped
-host-native edits remain available for review artifacts. Caller-authored
-permission/receipt fields do not grant access. Under a
+`git checkout/reset/…`). A read-only review never authorizes a shell command:
+an allow/deny hook cannot rewrite a host command into shell=False execution,
+scrub its process environment, or bind the bytes of the eventual executable.
+It admits only explicitly listed host-native Read/Grep/Glob calls and scoped
+host-native edits to review artifacts. A future host-owned direct-exec broker
+may add command access; caller-authored argv/receipt fields do not. Under a
 *build* contract, `python -c "…"` can still write anywhere because a
 Turing-complete body cannot be screened from argv. For a hard build boundary,
 use a container or OS sandbox.
@@ -64,11 +64,6 @@ else:
         model_for_tier,
         step_tier,
     )
-if __package__:
-    from . import storage as _entry_storage
-else:
-    import storage as _entry_storage
-
 if __package__:
     from .producer_observation import hook_event_identity, _bounded_hook_identity
 else:
@@ -310,9 +305,6 @@ _SHELL_KEYWORDS = frozenset(
     }
 )
 _SHELL_VALUE_FLAGS = frozenset({"-o", "+o", "--rcfile", "--init-file"})
-
-
-from taskplane.storage import host_session_id as _host_session_id
 
 
 def _strip_keywords(toks) -> list:
@@ -2695,36 +2687,13 @@ def screen_tool(
                 )
         return True, f"within every active contract ({len(members)}-way union)"
     if contract.get("read_only"):
-        from taskplane import host_capabilities
-        if host_capabilities.is_codex_readonly_control(tool_name, tool_input, workspace or os.getcwd()):
-            return screen_tool(contract, "Read", {"file_path": "."}, workspace)
         if tool_name in COMMAND_TOOLS:
-            from taskplane import governed_commands
-            native_input = (host_capabilities.pending_codex_tool_call("exec_command")
-                            if tool_name == "Bash" else tool_input)
-            native_matches = (tool_name in {"Bash", "exec_command", "functions.exec_command"}
-                              and native_input and (tool_name != "Bash" or native_input.get("cmd") == tool_input.get("command")))
-            if (native_matches
-                    and governed_commands.native_evidence_invocation_allowed(workspace or os.getcwd(), native_input)):
-                denial = governed_commands._raw_command_policy_denial(contract, str(native_input.get("cmd", "")))
-                if denial:
-                    return False, denial
-                return screen_tool(contract, "Read", {"file_path": "."}, workspace)
-            if native_matches and host_capabilities.is_codex_readonly_invocation(
-                    "exec_command" if tool_name == "Bash" else tool_name,
-                    native_input, workspace or os.getcwd()):
-                command = command_text(tool_name, tool_input)
-                deny = ((contract.get("coding") or {}).get("command_policy") or {}).get("deny") or []
-                denied = deny_violation(command, deny) or deny_violation(
-                    shlex.join(shlex.split(command)[6:]), deny)
-                if denied:
-                    return False, f"command matches deny pattern '{denied}'"
-                return screen_tool(contract, "Read", {"file_path": "."}, workspace)
             return False, (
-                "read-only review contract: shell command is not a verified "
-                "native Codex read-only invocation; use the canonical native "
-                "request from entry-initialization.md or explicitly allowed host-native "
-                "Read/Grep/Glob and scoped Write/Edit tools"
+                "read-only review contract: every shell command tool is "
+                "blocked because this host hook cannot prove shell=False, a "
+                "sanitized process environment, or executable bytes; use "
+                "explicitly allowed host-native Read/Grep/Glob and scoped "
+                "Write/Edit tools"
             )
         native_tools = READONLY_NATIVE_READ_TOOLS | WRITE_TOOLS
         if tool_name not in native_tools:
@@ -4277,14 +4246,9 @@ def _leased_review_result_path(workspace: str, value: object, lease_fingerprint:
             and _same_path(os.path.realpath(path), os.path.realpath(expected))
             and writable_target(path, [path], workspace)
         )
-    import storage as _runtime_storage
-
-    expected_paths = {
-        os.path.join(_runtime_storage.session_path(root), "kernel-v2", "results",
-                     f"{fingerprint}.json").replace(os.sep, "/")
-        for root in (".eval", ".em-review")
-    }
-    return path in expected_paths and writable_target(path, [path], workspace)
+    return bool(
+        re.fullmatch(r"\.(?:eval|em-review)/kernel-v2/results/[0-9a-f]{64}\.json", path)
+    ) and writable_target(path, [path], workspace)
 
 
 def issue_review_contract_action(
@@ -4471,32 +4435,7 @@ def activate_review_contract_action(
             "bootstrap_lease_fingerprint": str(lease_fingerprint),
         }
     )
-    path = active_contract_path(workspace, slot)
-    with file_lock(path):
-        existing = load_json(path, default=None, what="review worker contract")
-        if existing is not None:
-            lifecycle = existing.get("worker_lifecycle") or {}
-            if (existing.get("worker_scoped") is not True
-                    or any(existing.get(key) != contract.get(key) for key in (
-                        "task_id", "task", "task_slot", "read_only", "write_allow",
-                        "authority_source", "bootstrap_action_id", "bootstrap_key_id",
-                        "bootstrap_worker_identity", "bootstrap_lease_fingerprint"))
-                    or lifecycle.get("expected_task_name") != str(worker_identity)
-                    or lifecycle.get("expected_role_marker") != str(role_marker)
-                    or lifecycle.get("slot") != slot
-                    or lifecycle.get("stage") != "review"
-                    or lifecycle.get("task") != slot
-                    or lifecycle.get("status") not in {"pending", "active"}):
-                raise _review_bootstrap_error(
-                    workspace, "review worker slot already has a different binding")
-            _verify_worker_release_action(
-                workspace, slot, lifecycle.get("release_action"), existing)
-            return existing
-        contract = prepare_worker_contract(
-            workspace, contract, stage="review", task=slot,
-            task_name=str(worker_identity), role_marker=str(role_marker),
-            task_slot_override=slot, now=current)
-        return activate(workspace, contract, snapshot="auto", task_slot_override=slot)
+    return activate(workspace, contract, snapshot="auto", task_slot_override=slot)
 
 
 EXPANDED_LENS_ROUTE_REQUEST_SCHEMA = "taskplane.expanded-lens-route-provider-request/v1"
@@ -5288,7 +5227,6 @@ def prepare_worker_contract(
     task: str,
     task_name: str,
     role_marker: str,
-    task_slot_override: str | None = None,
     now: int | None = None,
 ) -> dict:
     """Make a contract child-scoped before it becomes an active slot.
@@ -5303,8 +5241,7 @@ def prepare_worker_contract(
     task = str(task or "").strip()
     task_name = str(task_name or "").strip()
     role_marker = str(role_marker or "").strip()
-    slot = str((contract.get("task_id") or "") if task_slot_override is None
-               else task_slot_override).strip()
+    slot = str(contract.get("task_id") or "").strip()
     if (
         not stage
         or not task
@@ -5346,7 +5283,8 @@ def _worker_event_owner(event: dict) -> dict:
         "session_id": _bounded_hook_identity(
             event.get("session_id")
             or event.get("thread_id")
-            or _host_session_id(),
+            or os.environ.get("CODEX_THREAD_ID")
+            or os.environ.get("CLAUDE_SESSION_ID"),
             160,
         ).strip(),
         "agent_id": _bounded_hook_identity(
@@ -6253,10 +6191,7 @@ def task_slot() -> str | None:
     """The per-task contract slot selected by TASKPLANE_TASK, or None for the
     legacy single slot. An ill-formed value raises StateError (fail closed —
     it must never silently select the wrong contract)."""
-    from taskplane.codex_identity import command_worker
-
-    worker = command_worker()
-    v = (worker[1] if worker and worker[1] else os.environ.get("TASKPLANE_TASK") or "").strip()
+    v = (os.environ.get("TASKPLANE_TASK") or "").strip()
     if not v:
         return None
     if not _TASK_SLOT_RE.match(v):
@@ -6491,9 +6426,12 @@ def grant_budget(workspace: str, extra: int) -> dict | None:
     half of the budget gate. Returns the updated contract, or None if there is
     no active contract / no ceiling to raise.
 
-    A governed caller must carry explicit human approval. The hook abstains
-    for that narrow recovery command so native permissions can still apply.
-    Bare self-issued grants remain screened."""
+    This is a HUMAN action, run from an UNGOVERNED context. There is NO
+    screener exemption (the wall is intentional — a governed agent must not
+    grant itself budget): a `tp.py budget --grant` issued with cwd INSIDE
+    the exhausted workspace is itself screened and blocked. The human runs it
+    from a different directory (the hook keys governance on cwd), passing
+    `--workspace <ws>`."""
     c = load_active(workspace)
     if c is None:
         return None
@@ -6528,91 +6466,9 @@ def grant_budget(workspace: str, extra: int) -> dict | None:
     return c
 
 
-def grant_token_budget(workspace: str, extra: int, observed: int, approved_by: str,
-                       *, expected_task_id: str) -> dict:
-    """Apply approved headroom without resetting the cumulative native counter."""
-    path = _active_contract_path(workspace)
-    with file_lock(path):
-        c = load_active(workspace)
-        if (not c or c.get("_union") or c.get("task_id") != expected_task_id
-                or (c.get("budget") or {}).get("max_tokens") is None):
-            raise ValueError("select one current contract with a token ceiling")
-        if type(extra) is not int or extra <= 0 or type(observed) is not int or observed < 0 or not approved_by.strip():
-            raise ValueError("positive additional tokens, native usage and human approval are required")
-        old = int(c["budget"]["max_tokens"])
-        c["budget"]["max_tokens"] = max(old, observed) + extra
-        atomic_write_json(path, c, indent=2)
-        trace(workspace, "token_budget_granted", task_id=c["task_id"],
-              approved_by=approved_by, extra_tokens=extra, observed_tokens=observed,
-              old=old, new=c["budget"]["max_tokens"])
-    return c
-
-
 def git_head(workspace: str) -> str | None:
     r = _run(["git", "rev-parse", "HEAD"], cwd=workspace)
     return r.stdout.strip() or None
-
-
-def _entry_tools_path() -> str:
-    # Compatibility metadata only: this cannot grant a tool or weaken screen.
-    return os.path.join(_entry_storage.session_path(_entry_storage.host_runtime_home()),
-                        "entry-tools.json")
-
-
-def _entry_engine_fingerprint() -> str:
-    root = os.path.dirname(os.path.abspath(__file__))
-    digest = hashlib.sha256()
-    digest.update(os.path.realpath(root).encode())
-    for name in ("tp.py", "taskplane_lite.py", "host_capabilities.py"):
-        with open(os.path.join(root, name), "rb") as stream:
-            digest.update(stream.read())
-    for directory in (".codex-plugin", ".claude-plugin"):
-        manifest = os.path.join(os.path.dirname(root), directory, "plugin.json")
-        if os.path.isfile(manifest):
-            with open(manifest, "rb") as stream:
-                digest.update(stream.read())
-            break
-    return digest.hexdigest()
-
-
-def record_entry_tools(names: list[str]) -> None:
-    """Remember the caller's current inventory in this host session only.
-
-    This is declared compatibility data, not host attestation or authorization.
-    Reentering replaces it; another session or changed engine cannot reuse it.
-    """
-    if any(not isinstance(name, str) or not name or len(name) > 160 for name in names) or len(names) > 256:
-        raise ValueError("available tools must be a bounded list of tool names")
-    atomic_write_json(_entry_tools_path(), {"engine": _entry_engine_fingerprint(),
-        "tools": sorted(set(names)), "session": _entry_storage.host_session_id()})
-
-
-def review_file_tool_readiness(contract: dict | None = None, *, workspace: str | None = None) -> dict:
-    """Check compatibility without changing the contract's tool permissions."""
-    record = load_json(_entry_tools_path(), default={}, what="entry tool inventory")
-    valid = (record.get("engine") == _entry_engine_fingerprint()
-             and record.get("session") == _entry_storage.host_session_id())
-    names = set(record.get("tools") or []) if valid else set()
-    allowed = set(contract.get("allowed_tools") or []) if contract is not None else names
-    usable = {name for name in names if any(alias in allowed for alias in tool_aliases(name))}
-    from taskplane import host_capabilities
-    native = (host_capabilities.codex_readonly_runtime(workspace or os.getcwd())
-              if names & {"exec_command", "functions.exec_command"}
-              and (contract is None or "Read" in allowed) else None)
-    missing = []
-    if "Read" not in usable and not native:
-        missing.append("Read")
-    if (contract is None or contract.get("write_allow")) and not (usable & WRITE_TOOLS):
-        missing.append("a scoped Write/Edit tool")
-    return {"ready": not missing, "missing": missing,
-            "read_transport": "native_file_tool" if "Read" in usable else "codex_sandbox" if native else None,
-            "codex_sandbox": ({"executable": native, "permission_profile": ":read-only",
-                "instruction": "Use exec_command with the native sandbox invocation in entry-initialization.md; Codex owns execution and permission approval."}
-                if native and "Read" not in usable else None),
-            "source": "caller-declared tool inventory; not an enforcement receipt",
-            "detail": ("compatible review file tools" if not missing else
-                "Read-only review cannot start with this tool set: missing " + ", ".join(missing)
-                + ". Use a host exposing the required file tools. No contract was activated.")}
 
 
 def activate(
@@ -6627,10 +6483,6 @@ def activate(
     # This shared entry boundary covers CLI, loop, claim, and review adapters.
     import collision
 
-    if contract.get("read_only") and _entry_storage.host_session_id():
-        readiness = review_file_tool_readiness(contract, workspace=workspace)
-        if not readiness["ready"]:
-            raise ValueError(readiness["detail"])
     apply_foreign_state_exclusions(
         contract,
         workspace,
@@ -7207,7 +7059,7 @@ HOOK_CLAIM_SCHEMA = "taskplane.hook-claims/v1"
 HOOK_CLAIM_CAP = 512
 HOOK_CLAIM_TTL_SECONDS = 24 * 60 * 60
 HOOK_CLAIM_WAIT_SECONDS = 2.0
-_HOOK_RESPONSE_CLASSES = frozenset(("allow", "block", "advisory", "context", "empty", "error", "stop"))
+_HOOK_RESPONSE_CLASSES = frozenset(("allow", "block", "advisory", "context", "empty", "error"))
 
 
 def hook_claim_journal_path(workspace: str) -> str:

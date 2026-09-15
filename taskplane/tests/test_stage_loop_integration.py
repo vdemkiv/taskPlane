@@ -223,8 +223,8 @@ def _build_collection_signing_fixture(tmp_path, *, advisory, original_admission=
 
 @pytest.mark.parametrize("advisory,original_admission", [(False, True), (True, True), (True, False)],
     ids=["strict", "human-advisory", "human-advisory-before-preparation"])
-def test_build_collection_signing_cannot_use_historical_waiver(tmp_path, advisory, original_admission):
-    from taskplane import design_host_transport, phase_harness
+def test_build_collection_signing_honors_explicit_advisory_policy(tmp_path, advisory, original_admission):
+    from taskplane import design_host_transport, phase_harness, review_evidence
 
     fixture = _build_collection_signing_fixture(tmp_path, advisory=advisory,
         original_admission=original_admission)
@@ -232,16 +232,47 @@ def test_build_collection_signing_cannot_use_historical_waiver(tmp_path, advisor
     def authorize():
         checked.append("current-host-authority")
         return True
-    before = copy.deepcopy(fixture.manifest)
-    with pytest.raises(design_host_transport.NativeEntryError, match="signing admission is stale"):
-        phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
-            admit=True, authorize=authorize)
-    assert (fixture.path.read_bytes() if fixture.path.exists() else None) == fixture.before_bytes
+    if not advisory:
+        with pytest.raises(design_host_transport.NativeEntryError, match="signing admission is stale"):
+            phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+                admit=True, authorize=authorize)
+        assert fixture.path.read_bytes() == fixture.before_bytes
+        assert checked
+        return
+    signer = phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+        admit=True, authorize=authorize)
+    signed = signer.sign(fixture.result, store=fixture.artifacts)
+    assert signer.verify(signed, store=fixture.artifacts)["payload"] == fixture.result
+    assert signer.expires_at == 301 + 86400
+    assert signer.bindings == fixture.original["bindings"]
     assert checked
-    assert fixture.manifest == before
-    assert phase_records.resource_policy(fixture.manifest, "run-1") is None
-    historical = phase_records.historical_resource_policy(fixture.manifest, "run-1")
-    assert (historical is not None) is advisory
+    after = json.loads(fixture.path.read_text())
+    original_operation = fixture.original["bindings"]["operation_id"]
+    if original_admission:
+        assert after["admissions"][original_operation] == fixture.before["admissions"][original_operation]
+        assert after["keys"][fixture.authority.key_id] == fixture.before["keys"][fixture.authority.key_id]
+    policy = phase_records.resource_policy(fixture.manifest, "run-1")
+    collection = review_evidence.content_fingerprint({"kind": "approved-build-output",
+        "preparation": fixture.material["original_preparation"], "freshness": fixture.material["freshness"],
+        "scope": fixture.material["signing_scope"], "resource_policy": policy["fingerprint"]})
+    expected_operations = {original_operation + "-collection-" + collection}
+    if original_admission:
+        expected_operations.add(original_operation)
+    assert set(after["admissions"]) == expected_operations
+    saved = fixture.path.read_bytes()
+    fixture.runtime.clock.advance(7)
+    retry = phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+        admit=True, authorize=authorize)
+    assert retry.key_id == signer.key_id
+    assert retry.expires_at == signer.expires_at
+    retry.verify(signed, store=fixture.artifacts)
+    assert fixture.path.read_bytes() == saved
+    fixture.runtime.clock.advance(86400)
+    expired = phase_harness._phase_bridge_signing(fixture.ports, fixture.ws, fixture.material,
+        admit=True, authorize=authorize)
+    with pytest.raises(design_host_transport.NativeEntryError, match="key is disabled, not yet valid or stale"):
+        expired.sign(fixture.result, store=fixture.artifacts)
+    assert fixture.path.read_bytes() == saved  # A retry cannot renew its signing window.
 
 
 @pytest.mark.parametrize("case", ["original-bindings", "original-freshness", "current-source",
@@ -773,11 +804,8 @@ def test_phase_output_mapping_refuses_before_nonce_or_worker_effects(monkeypatch
         "run_id":"preflight-only", "store":SimpleNamespace(load=lambda run_id: {})}
     monkeypatch.setattr(loop, "_phase_bridge_context", lambda *args: context)
     monkeypatch.setattr(loop, "_phase_bridge_authorize", lambda *args: None)
-    contract = {"budget": {"max_tokens": 10_000_000, "target_tokens": 9_000_000}}
-    before = copy.deepcopy(contract)
     with pytest.raises(ValueError, match="phase output paths do not match declared outputs"):
-        loop._phase_bridge_prepare("unused", {}, contract, {})
-    assert contract == before, "invalid output settings must not mutate the live budget"
+        loop._phase_bridge_prepare("unused", {}, {}, {})
 
 
 @pytest.mark.parametrize("case", ["uncanceled", "different-reason", "foreign-run", "foreign-candidate",
@@ -850,9 +878,8 @@ def _cli(ws, *arguments):
     import contextlib
     import io
     from taskplane import tp as cli
-    from taskplane.tests.host_screen_support import confirmed_cli_hooks
     output = io.StringIO()
-    with confirmed_cli_hooks(cli), contextlib.redirect_stdout(output):
+    with contextlib.redirect_stdout(output):
         code = cli.main(["loop", "--workspace", ws, *arguments])
     value = json.loads(output.getvalue())
     assert code == 0, json.dumps(value, indent=2)
@@ -965,8 +992,8 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
     assert _emit_host_hook(ws, build, "SubagentStop", monkeypatch) == 0
     assert phase_pending(ws)["status"] == "collected"
     assert _cli(ws, "gate", "pass")["step"] == "evaluate"
-    # An old waiver remains in history but cannot expand review capacity.
-    # After the denial, normal declared capacity still admits the same work.
+    # A simulated human decision uses the real run receipt owner. The actual
+    # delivery kernel must carry measured capacity into action and evidence.
     from taskplane import review_evidence
     current = store.load(run_id)
     decision = {"schema": "taskplane.resource-policy/v1", "run_id": run_id,
@@ -977,13 +1004,7 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
         request_fingerprint=review_evidence.content_fingerprint(decision), result=decision,
         validate_authority=lambda manifest: None)
     review = loop._review_runtime_modules()[2]
-    normal_capacity = review.DEFAULT_MAX_DIFF_BYTES
     monkeypatch.setattr(review, "DEFAULT_MAX_DIFF_BYTES", 1)
-    denied = loop.next_action(ws, root_observation_authority=authority)
-    assert denied["obligations"]["dispatch_allowed"] is False
-    assert "preparation failed closed" in denied["obligations"]["error"]
-    assert phase_records.historical_resource_policy(store.load(run_id), run_id)["mode"] == "advisory"
-    monkeypatch.setattr(review, "DEFAULT_MAX_DIFF_BYTES", normal_capacity)
     captures = []
     actual_kernel = loop._review_kernel
     def observed_kernel(*args, **kwargs):
@@ -993,11 +1014,12 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
     monkeypatch.setattr(loop, "_review_kernel", observed_kernel)
     evaluate = loop.next_action(ws, root_observation_authority=authority)
     assert evaluate["obligations"].get("dispatch_allowed") is True, evaluate
-    assert captures and captures[0].get("diff_capacity") is None
+    assert captures and captures[0]["diff_capacity"]["previous_max_diff_bytes"] == 1
+    assert captures[0]["diff_capacity"]["additional_cost"] == "unknown"
     review_state = review._load_state(ws, captures[0]["run_id"])
     envelope = review_evidence._load_complete_envelope(
         review_evidence.ArtifactStore(ws), review_state["envelope"])
-    assert envelope["diff"].get("capacity") is None
+    assert envelope["diff"]["capacity"] == captures[0]["diff_capacity"]
     assert loop._phase_bridge_context(ws, loop.load(ws))["stage"]["stage_kind"] == "evaluate"
 
     verdict = _complete_evaluation(ws, monkeypatch, evaluate, run_id, requirement, "T1")
@@ -1007,7 +1029,7 @@ def test_public_plan_build_collects_scoped_commit(collected_lens_design, monkeyp
 
 @pytest.mark.parametrize("outcome", ["success", "failure"])
 def test_rejected_evaluate_stop_releases_only_authenticated_child(
-        collected_lens_design, monkeypatch, outcome, capsys):
+        collected_lens_design, monkeypatch, outcome):
     """Real phase/slot owners with explicitly simulated native test events."""
     import sys
     from taskplane import run_artifacts
@@ -1043,15 +1065,9 @@ def test_rejected_evaluate_stop_releases_only_authenticated_child(
         # event whose native transcript cannot be authenticated.
         assert _emit_host_hook(ws, first, "SubagentStop", patch,
             agent_id="foreign-child", last_assistant_message="{}") == 2
-        capsys.readouterr()
-        # Missing usage must pause the worker; exit 2 requests another model
-        # turn and would spend more tokens without an authenticated meter.
         assert _emit_host_hook(ws, first, "SubagentStop", patch,
             agent_transcript_path=str(Path(ws).parent / "absent-native-transcript.jsonl"),
-            last_assistant_message="{}") == 0
-        paused = json.loads(capsys.readouterr().out)
-        assert paused["continue"] is False
-        assert "Budget meter unavailable" in paused["stopReason"]
+            last_assistant_message="{}") == 2
         assert collection_calls == []
         assert {slot: Path(taskplane_lite.active_contract_path(ws, slot)).read_bytes()
                 for slot in slots} == before_slots
@@ -1110,17 +1126,15 @@ def _complete_evaluation(ws, monkeypatch, evaluate, run_id, requirement, task_id
             worker.setenv("TASKPLANE_TASK", slot)
             with pytest.raises(governed_commands.GovernedCommandError, match="exact evidence assignment"):
                 governed_commands.execute(ws, "launch", {
-                    "host": "claude",  # retained runtime cleanup/evidence fixture
                     "authorization": authorization, "argv": argv + ["unapproved.py"], "run_id": run_id,
                     "task_id": task_id, "assignment_binding": assignment["binding"]})
             launched = governed_commands.execute(ws, "launch", {
-                "host": "claude",  # retained runtime cleanup/evidence fixture
                 "authorization": authorization, "argv": argv, "run_id": run_id,
                 "task_id": task_id, "assignment_binding": assignment["binding"]})
             completed = governed_commands.execute(ws, "wait", {
                 "authorization": authorization, "handle": launched["handle"],
                 "consumer": "evaluate:" + assignment["producer_kind"], "timeout": 30})
-            assert completed["event"]["state"] == "succeeded", json.dumps(completed["event"], indent=2)
+            assert completed["event"]["state"] == "succeeded", completed
         return {"authorization": authorization, "handle": launched["handle"]}
     results = authored_evidence_results(assignments, execute)
     for child, assignment in zip(children, assignments):
@@ -1349,11 +1363,8 @@ def test_parallel_phases_join_em_and_retro(collected_lens_design, monkeypatch):
         worker.setenv("TASKPLANE_TASK", second_action["obligations"]["contract_bootstrap"]["task_slot"])
         assert _cli(second_ws, "submit", "pass")["submitted"] is True
     assert _emit_host_hook(second_ws, second_action, "SubagentStop", monkeypatch) == 0
-    from taskplane import gates
-    operation = second_action["obligations"]["phase_operation"]
-    gated = gates.collect_phase(loop, ws, operation, task_id="T2")
+    gated = loop.gate(ws, "pass", task_id="T2")
     assert not gated.get("error"), gated
-    assert gates.collect_phase(loop, ws, operation, task_id="T2")["replay"] is True
     continuation = loop.next_action(ws, root_observation_authority=authority)["obligations"]
     assert len(continuation.get("wave", [])) == 1, continuation
     verdict = _complete_evaluation(second_ws, monkeypatch, continuation["wave"][0], run_id, requirement, "T2")
@@ -1402,31 +1413,3 @@ def test_phase_gate_refuses_v4_workflow_without_current_phase(tmp_path):
     refused = loop.gate(ws, "pass")
     assert "current agent-runtime phase" in refused["error"]
     assert loop.load(ws) == before
-
-
-@pytest.mark.parametrize("lose_return", [False, True])
-def test_phase_collection_uses_native_gate_and_replays_without_advancing_twice(collected_product_handoff, monkeypatch, lose_return):
-    from taskplane import gates, phase_harness
-
-    ws, _, _, _, _, _ = collected_product_handoff
-    context = loop._phase_bridge_context(ws, loop.load(ws))
-    operation = phase_harness.operation_id(context)
-    refused = gates.collect_phase(loop, ws, 'foreign-operation')
-    assert refused.get('error')
-    assert loop.load(ws)['step'] == 'pm'
-    if lose_return:
-        native_gate = loop.gate
-        def lose_committed_return(*args, **kwargs):
-            native_gate(*args, **kwargs)
-            raise OSError("controller lost the committed gate response")
-        with monkeypatch.context() as fault:
-            fault.setattr(loop, "gate", lose_committed_return)
-            refused = gates.collect_phase(loop, ws, operation)
-            assert "committed gate response" in refused["error"]
-        assert loop.load(ws)["phase_collections"][operation] == "pass"
-    collected = _cli(ws, "collect", "--operation", operation)
-    assert collected.get('status') == 'collected', collected
-    assert loop.load(ws)['step'] == 'design'
-    replay = gates.collect_phase(loop, ws, operation)
-    assert replay.get('replay') is True
-    assert loop.load(ws)['step'] == 'design'

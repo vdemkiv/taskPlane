@@ -1,7 +1,24 @@
-"""Native source inventory and explicit delivery-review evidence.
+"""Start a review in ONE call, and hand every lens agent ONE copy of the context.
 
-Ordinary review saves pinned source facts without acquiring execution authority.
-The retained ReviewKernel serves explicit delivery and historical recovery.
+Two measured costs, one cause: the review's opening sequence and its fan-out
+both re-derive things taskplane already holds.
+
+  * The opening. A review ran onboard, init, new, target, graph scan, graph
+    impact, lens route, lens dispatch and two dashboard renders before a
+    single lens looked at the diff — about ten shell calls, at a measured
+    ~11k effective tokens each, and every command AND its output stays in
+    the conversation to be re-read on every later turn. `tp loop evidence`
+    already proved the fix for the evaluate step in v2.6: return everything
+    the step needs in one payload, with the judgement slots empty.
+
+  * The fan-out. Four lens agents cost ~754k effective tokens, "each
+    carrying its own copy of the diff and the blast-radius brief". The diff
+    is identical for all of them. Writing it once and citing the path costs
+    one file; embedding it N times costs N copies at output weight.
+
+Neither changes what a review DECIDES. The briefs carry the same contract,
+the same lens, the same read-only harness; they just stop restating a
+document that is already on disk next to them.
 """
 import copy
 import datetime
@@ -31,75 +48,6 @@ import storage as runtime_storage
 import taskplane_lite as tp
 import review_evidence as review_evidence_runtime
 import terminal_truth as terminal_truth_runtime
-
-
-def prepare_source_review(ws: str, *, target: dict, files: list[str], patch: str,
-                          scope: str, goal: str = "", max_tokens: int | None = None,
-                          max_actions: int | None = None,
-                          usage_start: dict | None = None) -> dict:
-    """Save selected source facts without acquiring native execution authority."""
-    for value in (max_tokens, max_actions):
-        if value is not None and (type(value) is not int or value < 1):
-            raise ValueError("explicit advisory review limits must be positive")
-    source = review_evidence_runtime.ArtifactStore(ws).put("source-review", {
-        "scope": scope, "revision": target["head"],
-        "base": None if scope == "repository" else target.get("merge_base") or target.get("base_ref"),
-        "files": files, "patch": patch, "goal": goal,
-    })
-    manifest = {
-        "schema": "taskplane.source-review/v1", "status": "ready",
-        "workspace": os.path.realpath(ws), "revision": target["head"],
-        "scope": scope, "file_count": len(files), "source": _portable_ref(source),
-        "budget": {"mode": "advisory", "max_tokens": max_tokens, "max_actions": max_actions},
-        "next": "Read the selected source with native tools and report findings with file locations.",
-    }
-    previous = load_source_review(ws)
-    if previous and previous.get("source") == manifest["source"]:
-        usage_start = previous.get("usage_start")
-        for key in ("max_tokens", "max_actions"):
-            if manifest["budget"][key] is None:
-                manifest["budget"][key] = previous["budget"].get(key)
-    tp.atomic_write_json(os.path.join(_public_root(ws), "source-review.json"), {
-        **manifest, "session_id": runtime_storage.host_session_id(),
-        "usage_start": usage_start or {"status": "unavailable"},
-    }, indent=2)
-    return manifest
-
-
-def load_source_review(ws: str) -> dict | None:
-    value = tp.load_json(os.path.join(_public_root(ws), "source-review.json"),
-                         default=None, what="source review")
-    if not isinstance(value, dict) or value.get("schema") != "taskplane.source-review/v1":
-        return None
-    if value.get("session_id") != runtime_storage.host_session_id():
-        return None
-    return value
-
-
-def source_review_usage(review: dict, current: dict) -> dict:
-    """Report the native observation delta; never turn it into a tool gate."""
-    result = {"budget": review["budget"], "status": "unavailable",
-              "note": "Advisory usage since the review's starting observation; native tools own execution."}
-    start = review.get("usage_start") or {}
-    if start.get("status") != "available" or current.get("status") != "available":
-        return {**result, "reason": "native start or current usage is unavailable"}
-    if any(start.get(key) != current.get(key) or not start.get(key)
-           for key in ("provider", "session_id")):
-        return {**result, "reason": "native usage belongs to a different session or provider"}
-    baseline, observed = start.get("usage") or {}, current.get("usage") or {}
-    delta = {}
-    for key in ("input_tokens", "cached_input_tokens", "uncached_input_tokens",
-                "cache_creation_tokens", "output_tokens", "reasoning_tokens", "total_tokens"):
-        if key not in baseline and key not in observed:
-            continue
-        old, new = baseline.get(key), observed.get(key)
-        if type(old) is not int or type(new) is not int or old < 0 or new < old:
-            return {**result, "reason": "native counters changed or are unavailable"}
-        delta[key] = new - old
-    if "total_tokens" not in delta:
-        return {**result, "reason": "native total is unavailable"}
-    return {**result, "status": "available", "usage": delta,
-            "provider": start["provider"], "session_id": start["session_id"]}
 
 # This value crosses host boundaries inside immutable briefs. Keep the
 # reference POSIX-shaped; ``context_dir`` joins it to the native workspace.
@@ -987,10 +935,8 @@ def _host_review_transcripts(
     """Resolve exactly one indexed host transcript without walking history."""
     host_hint, session_hint, _ = _review_receipt_reference(receipt_ref)
     if session_hint is None and host_hint is None:
-        from taskplane.storage import host_session_id
-
-        session = host_session_id()
-        ambient = (("codex" if os.environ.get("CODEX_THREAD_ID") else "claude", session),)
+        ambient = (("codex", os.environ.get("CODEX_THREAD_ID")),
+                   ("claude", os.environ.get("CLAUDE_SESSION_ID")))
         resolved = []
         for ambient_host, ambient_session in ambient:
             value = str(ambient_session or "").strip()
@@ -1021,14 +967,13 @@ def _host_review_transcripts(
     return [(host_hint, paths[0])]
 
 
-def _host_review_records(path: str, limit_bytes: int = MAX_HOST_TRANSCRIPT_BYTES) -> list[dict]:
-    limit_bytes = max(1, min(int(limit_bytes), MAX_HOST_TRANSCRIPT_BYTES))
+def _host_review_records(path: str) -> list[dict]:
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as stream:
-            start = max(0, size - limit_bytes)
+            start = max(0, size - MAX_HOST_TRANSCRIPT_BYTES)
             stream.seek(start)
-            payload = stream.read(limit_bytes)
+            payload = stream.read(MAX_HOST_TRANSCRIPT_BYTES)
             if start:
                 first_complete = payload.find(b"\n")
                 payload = (payload[first_complete + 1:]
@@ -1349,7 +1294,7 @@ def review_execution_preflight(*, selection: str | None = None,
                       "dependency install"))
     choices = [{**row, "requires": list(row["requires"])}
                for row in _REVIEW_EXECUTION_CHOICES]
-    engine = os.path.realpath(os.path.join(os.path.dirname(__file__), "tp.py"))
+    workspace_launcher = "py" if os.name == "nt" else "python3"
     action_id = _review_execution_action_id(run_id, "review-execution-mode")
     for choice in choices:
         if choice["response"] != "static":
@@ -1361,9 +1306,10 @@ def review_execution_preflight(*, selection: str | None = None,
                 choice["description"] += " Dependencies must be installed first."
         choice["prompt"] = (f"{choice['label']} for review "
                             f"{str(run_id or '').strip()}".strip())
-        argv = [sys.executable, engine, "review", "option", choice["response"],
-                "--run-id", str(run_id or "").strip()]
-        choice["command"] = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        choice["command"] = (workspace_launcher +
+                             " .taskplane/codex-hook.py review option " +
+                             choice["response"] + " --run-id " +
+                             str(run_id or "").strip())
     if not selection:
         return {
             "schema": "taskplane.review-execution-preflight/v1",
@@ -1458,10 +1404,7 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
         raise ReviewKernelError(
             "review execution evidence cannot replace the human choice")
     if prior.get("status") not in {"selected", status} and not (
-            prior.get("status") in {"failed", "unavailable"}
-            and status == "executed" and (sandbox or kind == "functionality_render")) and not (
-            prior.get("status") in {"executed", "failed", "unavailable"}
-            and status in {"failed", "unavailable"}):
+            prior.get("status") == "failed" and status == "executed" and sandbox):
         raise ReviewKernelError("review execution was not selected by the human")
     current[kind] = {
         "status": status, "detail": _bounded_review_detail(detail),
@@ -1469,24 +1412,13 @@ def record_review_execution_evidence(preflight: dict, *, kind: str,
         **({"execution_scope": "validation-sandbox",
             "sandbox": _validated_validation_sandbox(
                 sandbox, current.get("run_id"))}
-           if status == "executed" and sandbox and kind == "dynamic_validation" else
+           if status == "executed" and sandbox else
            {"execution_scope": "review-target"} if status == "executed"
            else {}),
-        **({"original_failure": copy.deepcopy(prior["original_failure"])}
-           if "original_failure" in prior else
-           {"original_failure": copy.deepcopy(prior.get("detail") or {})}
-           if prior.get("status") == "failed" else {}),
+        **({"original_failure": copy.deepcopy(prior.get("detail") or {})}
+           if prior.get("status") == "failed" and status == "executed"
+           else {}),
     }
-    attempts = copy.deepcopy(prior.get("attempts") or [])
-    if not attempts and prior.get("status") in {"executed", "failed", "unavailable"}:
-        attempts.append({key: copy.deepcopy(value) for key, value in prior.items()
-            if key not in {"attempts", "original_failure"}})
-    if status == "executed" and sandbox and kind == "dynamic_validation":
-        current[kind]["sandbox_binding"] = _review_sandbox_evidence_binding(
-            current[kind]["sandbox"], receipt, str(current.get("run_id") or ""),
-            prior["action_id"])
-    attempts.append(copy.deepcopy(current[kind]))
-    current[kind]["attempts"] = attempts
     current["side_effects_started"] = any(
         (current.get(name) or {}).get("status") in {"executed", "failed"}
         for name in ("dynamic_validation", "functionality_render"))
@@ -1508,24 +1440,6 @@ def _validated_validation_sandbox(value: object, run_id: object) -> dict:
     return {key: value[key] for key in (
         "schema", "run_id", "source_head", "source_fingerprint",
         "sandbox_id", "disposable", "push_disabled")}
-
-
-def _review_sandbox_evidence_binding(sandbox: dict, receipt: dict | None,
-                                     run_id: str, action_id: str) -> dict:
-    """Bind the existing sandbox and accepted execution receipt for display."""
-    checked = _validated_validation_sandbox(sandbox, run_id)
-    if not isinstance(receipt, dict) or receipt.get("schema") != _REVIEW_EXECUTION_RECEIPT_SCHEMA \
-            or receipt.get("host_observed") is not True or receipt.get("run_id") != run_id \
-            or receipt.get("action_id") != action_id or receipt.get("kind") != "dynamic_validation" \
-            or receipt.get("exit_code") != 0 or receipt.get("action_digest") != _review_receipt_digest(
-                receipt.get("owner_id"), run_id, action_id, "dynamic_validation",
-                receipt.get("receipt_id"), receipt.get("result_sha256"), 0):
-        raise ReviewKernelError("sandbox evidence differs from its execution receipt")
-    return {"schema": "taskplane.review-sandbox-binding/v1", "run_id": run_id,
-        "sandbox_id": checked["sandbox_id"], "source_head": checked["source_head"],
-        "push_disabled": True, "receipt_id": receipt["receipt_id"],
-        "root_fingerprint": _review_receipt_digest(checked),
-        "action_digest": receipt["action_digest"]}
 
 
 _VALIDATION_SANDBOX_PROCESS_TIMEOUT_SECONDS = 120.0
@@ -2113,18 +2027,6 @@ def _run_review_process_tree_isolated(argv: list[str], cwd: str,
     must inject an equivalent launcher; silently falling back to ordinary
     ``subprocess.run`` would turn a manifest claim into fake isolation.
     """
-    if os.environ.get("CODEX_THREAD_ID"):
-        from taskplane import host_capabilities
-        request = host_capabilities.codex_sandbox_command(argv, cwd, writable_root=cwd)
-        result = subprocess.run(shlex.split(request["cmd"]), cwd=cwd,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                timeout=timeout, check=False)
-        if b"sandbox_apply: Operation not permitted" in bytes(result.stdout or b""):
-            raise OSError("Codex cannot nest its sandbox on macOS; run this exact validation action through native permission approval")
-        return result, {"schema": "taskplane.review-isolation-receipt/v1",
-                        "scope": "complete-process-tree", "network": "denied",
-                        "filesystem_writes": "validation-sandbox-only",
-                        "mechanism": "codex-permission-profile"}
     if sys.platform == "darwin" and os.path.isfile("/usr/bin/sandbox-exec"):
         escaped = cwd.replace("\\", "\\\\").replace('"', '\\"')
         profile = " ".join((
@@ -2283,7 +2185,7 @@ def _kernel_root(ws: str) -> str:
     locator = runtime_storage.load_workspace_locator(ws)
     if locator:
         return os.path.join(locator["paths"]["state"], "review-kernel-v2")
-    return os.path.join(runtime_storage.review_public_root(ws), "kernel-v2")
+    return os.path.join(ws, ".em-review", "kernel-v2")
 
 
 def _public_root(ws: str) -> str:
@@ -2295,13 +2197,8 @@ def _result_path(ws: str, stage: str, fingerprint: str) -> str:
     if locator:
         return os.path.join(locator["paths"]["lenses"], "results",
                             f"{fingerprint}.json")
-    root = ".eval" if stage == "build" else ".em-review"
-    if runtime_storage.host_session_id():
-        root = os.path.relpath(
-            runtime_storage.evaluation_root(ws) if stage == "build"
-            else runtime_storage.review_public_root(ws), ws)
     return os.path.join(
-        root, "kernel-v2",
+        ".eval" if stage == "build" else ".em-review", "kernel-v2",
         "results", f"{fingerprint}.json").replace(os.sep, "/")
 
 
@@ -2365,20 +2262,6 @@ def _load_state(ws: str, run_id: str | None = None) -> dict:
                          what="review kernel run state")
     if not isinstance(state, dict):
         raise ReviewKernelError("no active review kernel run; run review start")
-    if state.get("slots"):
-        # Read the existing native assignments instead of writing a second
-        # lifecycle counter at Start (which can race collection or validation).
-        started = _observed_review_slots(ws, state)
-        state.setdefault("counters", {})["dispatched_agent_count"] = len(started)
-        conservation = state.get("slot_conservation")
-        if isinstance(conservation, dict):
-            conservation["dispatched"] = {"count": len(started), "slot_ids": started}
-            if started and conservation.get("status") == "prepared":
-                conservation["status"] = "dispatched"
-        if isinstance(state.get("manifest"), dict):
-            state["manifest"] = _manifest({**state["manifest"],
-                "counters": state["counters"],
-                **({"slot_conservation": conservation} if conservation else {})})
     return state
 
 
@@ -2485,29 +2368,8 @@ def canonical_diff_files(ws: str, base: str) -> list[str]:
                                 text=True, encoding="utf-8", errors="strict", timeout=120)
         if result.returncode:
             raise ReviewKernelError("canonical diff file inventory failed: " + result.stderr.strip())
-        paths = (path for path in result.stdout.split("\0") if path)
-        # Private runtime output is not source. Keep tracked changes even in
-        # these directories, and never modify the user's ignore rules.
-        if args[0] == "ls-files":
-            paths = (path for path in paths if path.split("/", 1)[0]
-                     not in {".taskplane", ".em-review", ".eval"})
-        files.update(paths)
+        files.update(path for path in result.stdout.split("\0") if path)
     return sorted(files)
-
-
-def canonical_repository_files(ws: str, revision: str) -> list[str]:
-    """Inventory a committed source snapshot without manufacturing a diff."""
-    if not re.fullmatch(r"[0-9a-f]{40,64}", revision or ""):
-        raise ReviewKernelError("repository review requires a pinned commit")
-    clean = subprocess.run(["git", "diff", "--quiet", revision, "--"],
-        cwd=ws, capture_output=True, timeout=120)
-    if clean.returncode:
-        raise ReviewKernelError("repository snapshot differs from the checkout's tracked files")
-    result = subprocess.run(["git", "ls-tree", "-rz", "--name-only", revision],
-        cwd=ws, capture_output=True, text=True, encoding="utf-8", errors="strict", timeout=120)
-    if result.returncode:
-        raise ReviewKernelError("repository source inventory failed: " + result.stderr.strip())
-    return sorted(path for path in result.stdout.split("\0") if path)
 
 
 def canonical_diff_patch(ws: str, base: str, *,
@@ -3318,19 +3180,14 @@ def _slot_conservation_record(*, selected, prepared, dispatched,
         list(values) for values in
         (selected, prepared, dispatched, collected))
     identities = _assert_slot_conservation(
-        selected=selected, prepared=prepared, dispatched=prepared,
+        selected=selected, prepared=prepared, dispatched=dispatched,
         collected=collected)
-    # A valid leased artifact can be collected without host telemetry. Keep
-    # that existing evidence rule, but never invent a native Start for it.
-    observed = sorted(str(value) for value in dispatched)
-    if len(set(observed)) != len(observed) or not set(observed).issubset(identities):
-        raise ReviewKernelError("observed review starts differ from selected slots")
     return {
         "schema": "taskplane.review-slot-conservation/v1",
         "status": "complete" if identities else "empty",
         "selected": {"count": len(selected), "slot_ids": identities},
         "prepared": {"count": len(prepared), "slot_ids": identities},
-        "dispatched": {"count": len(observed), "slot_ids": observed},
+        "dispatched": {"count": len(dispatched), "slot_ids": identities},
         "collected": {"count": len(collected), "slot_ids": identities},
         "slot_fingerprint": hashlib.sha256(
             json.dumps(identities, separators=(",", ":")).encode()).hexdigest(),
@@ -3470,6 +3327,9 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
         "schema": "taskplane.wait-policy/v1",
         "outstanding_set": sweep_set["id"],
         "outstanding_count": len(light), "mode": "event",
+        "timeout_seconds": 1800, "minimum_timeout_seconds": 300,
+        "reissue_after": ["completion", "attention"],
+        "scheduled_polling": False,
     }
     relevant_files = store.read(envelope_ref).get("diff", {}).get("files") or []
     for slot_id, lens_ids in entries:
@@ -3524,24 +3384,15 @@ def _slot_plan(store, envelope_ref: dict, routing: dict,
             # brief make a correct host activation impossible.
             "contract": dict(producer_contract),
             "prompt": ("Apply the embedded methodology and role_instructions only to the "
-                       "sealed inputs. Batch independent input/reference reads, write one "
-                       "compact result and finish. Do not send progress messages, poll, "
-                       "spawn agents, or request another review. If the result already exists "
-                       "for this exact lease, leave collection to the owner; never rerun it. "
-                       "The result_schema and producer_contract own "
+                       "sealed phase inputs. The result_schema and producer_contract own "
                        "protocol; methodology supplies domain checks, never extra scope, "
-                       "tools, lifecycle or output authority. Read the scoped view by reference. "
-                       "For scope_kind=repository, inspect the relevance.files source files "
-                       "in the pinned checkout using native read tools; the empty patch "
-                       "is intentional and does not mean there is no source to review. Do not run git diff, "
+                       "tools, lifecycle or output authority. Read the scoped view by reference. Do not run git diff, "
                        "graph impact/scan, requirement lookup, or a runnability "
                        "probe. Resolve any taskplane.envelope-section-reference/v1 "
                        "field through the cited immutable envelope and verify "
-                       "its fingerprint and byte count. The dispatch slot supplies "
-                       "contract_bootstrap alongside this immutable brief; honor "
-                       "its activation_order and exact workspace/task_slot. "
-                       "Never reconstruct a missing binding. Use the host Write "
-                       "tool or an exact single-file apply_patch add to author the "
+                       "its fingerprint and byte count. Activate "
+                       "producer_contract under its exact "
+                       "task_slot, then use the host Write tool to author the "
                        "declared result_schema at result_path. Copy every "
                        "identity field exactly; authored_by is lens-slot. "
                        "For every pass verdict, include compact checked_evidence "
@@ -4187,15 +4038,8 @@ def production_validation_projection(execution: dict | None) -> dict:
         binding.get("push_disabled") is True and \
         str(binding.get("root_fingerprint") or "") else None
     status = str(dynamic.get("status") or "not_selected")
-    if status == "executed":
-        try:
-            expected = _review_sandbox_evidence_binding(sandbox, dynamic.get("evidence_receipt"),
-                str(row.get("run_id") or ""), str(dynamic.get("action_id") or ""))
-            valid = expected if binding == expected else None
-        except (ReviewKernelError, KeyError, TypeError, ValueError):
-            valid = None
-        if valid is None:
-            status = "unverified"
+    if status == "executed" and valid is None:
+        status = "unverified"
     return {
         "status": status, "selection": str(row.get("selection") or "static"),
         "dynamic_validation": copy.deepcopy(dynamic),
@@ -4810,7 +4654,7 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
     _prepare_slot_result_dirs(ws, internal_slots)
     depth_receipt = _assert_review_depth_manifest(depth_policy, slots)
     counters.update({
-        "prepared_agent_count": len(slots), "dispatched_agent_count": 0, "envelope_count": 1,
+        "dispatched_agent_count": len(slots), "envelope_count": 1,
         "view_count": len(slots),
         "prompt_view_bytes": sum(row["view"]["bytes"] for row in slots),
     })
@@ -4831,10 +4675,10 @@ def start_review(ws: str, *, target: dict, graph: dict, impact: dict,
             slot_ids, separators=(",", ":")).encode()).hexdigest()
         slot_conservation = {
             "schema": "taskplane.review-slot-conservation/v1",
-            "status": "prepared",
+            "status": "dispatched",
             "selected": {"count": len(slot_ids), "slot_ids": slot_ids},
             "prepared": {"count": len(slot_ids), "slot_ids": slot_ids},
-            "dispatched": {"count": 0, "slot_ids": []},
+            "dispatched": {"count": len(slot_ids), "slot_ids": slot_ids},
             "collected": {"count": 0, "slot_ids": []},
             "slot_fingerprint": slot_fingerprint,
         }
@@ -4957,18 +4801,16 @@ def configure_review_execution(ws: str, *, selection: str,
         raise ReviewKernelError("review execution choice requires an active review")
     prior = state.get("review_execution") or review_execution_preflight(
         run_id=state.get("run_id"))
-    configured = review_execution_preflight(
-        selection=selection, decided_by=by, run_id=state.get("run_id"),
-        approval_receipt=approval_receipt)
     if prior.get("status") == "configured":
-        # The CLI derives a deterministic explicit-option receipt. Validate
-        # either receipt form before comparing it, and preserve any execution
-        # evidence already recorded when the same choice is retried.
-        same = prior.get("selection") == configured["selection"] and \
-            prior.get("approval_receipt") == configured["approval_receipt"]
+        supplied_id = getattr(approval_receipt, "receipt_id", None)
+        same = prior.get("selection") == selection and \
+            (prior.get("approval_receipt") or {}).get("receipt_id") == supplied_id
         if same:
             return state.get("manifest") or prior
         raise ReviewKernelError("review execution choice is already recorded")
+    configured = review_execution_preflight(
+        selection=selection, decided_by=by, run_id=state.get("run_id"),
+        approval_receipt=approval_receipt)
     session = state.get("review_session")
     if isinstance(session, dict) and session.get("status") == "awaiting_consent":
         import review_session
@@ -5039,8 +4881,7 @@ def _review_execution_findings(execution: dict) -> list[dict]:
     dynamic = (execution or {}).get("dynamic_validation") or {}
     if dynamic.get("status") != "failed" and not dynamic.get("original_failure"):
         return []
-    failure = (dynamic.get("detail") if dynamic.get("status") == "failed"
-               else dynamic.get("original_failure")) or {}
+    failure = dynamic.get("original_failure") or dynamic.get("detail") or {}
     summary = str(failure.get("summary") or
                   "approved dynamic validation failed")
     return [{
@@ -5186,25 +5027,6 @@ def register_slot_producer(ws: str, *, event: dict, contract: dict,
                      run_id=state["run_id"], slot_id=lease["slot_id"])
         tp.atomic_write_json(child_path, child, sort_keys=True)
     return assignment
-
-
-def _observed_review_slots(ws: str, state: dict) -> list[str]:
-    """Project the existing host Start assignments; preparation is not a start."""
-    store = review_evidence_runtime.ArtifactStore(ws)
-    started = []
-    for slot in state.get("slots") or []:
-        lease = store.read(slot["lease"])
-        assignment = tp.load_json(_producer_assignment_path(ws, lease["lease_fingerprint"]),
-            default=None, what="slot producer assignment")
-        if isinstance(assignment, dict) \
-                and assignment.get("schema") == "taskplane.slot-producer-assignment/v1" \
-                and assignment.get("host_event") == "SubagentStart" \
-                and assignment.get("run_id") == state["run_id"] \
-                and assignment.get("lease_fingerprint") == lease["lease_fingerprint"] \
-                and assignment.get("slot_id") == slot["slot_id"] \
-                and assignment.get("producer_child_id") and assignment.get("producer_session"):
-            started.append(slot["slot_id"])
-    return sorted(started)
 
 
 def _result_bytes_from_write_event(tool_name: str, tool_input: dict,
@@ -6657,7 +6479,6 @@ def _collect_review_transaction(
                     requirements_validation=provisional_requirements)
             expected_ids = [str(row.get("slot_id") or "")
                             for row in state.get("slots") or []]
-            started_ids = _observed_review_slots(ws, state)
             conservation = {
                 "schema": "taskplane.review-slot-conservation/v1",
                 "status": "incomplete",
@@ -6665,7 +6486,8 @@ def _collect_review_transaction(
                              "slot_ids": sorted(expected_ids)},
                 "prepared": {"count": len(expected_ids),
                              "slot_ids": sorted(expected_ids)},
-                "dispatched": {"count": len(started_ids), "slot_ids": started_ids},
+                "dispatched": {"count": len(expected_ids),
+                               "slot_ids": sorted(expected_ids)},
                 "collected": {
                     "count": len(collected["collected_slot_ids"]),
                     "slot_ids": collected["collected_slot_ids"]},
@@ -6676,7 +6498,6 @@ def _collect_review_transaction(
             portable_validations = [
                 _portable_ref(ref) for ref in result_validations]
             counters = dict(state.get("counters") or {})
-            counters["dispatched_agent_count"] = len(started_ids)
             manifest = _manifest({
                 "schema": "taskplane.review-collect-manifest/v3",
                 "status": "incomplete", "run_id": state["run_id"],
@@ -6740,7 +6561,7 @@ def _collect_review_transaction(
             slot_ids = [str(row.get("slot_id") or "")
                         for row in state.get("slots") or []]
             conservation = _slot_conservation_record(
-                selected=slot_ids, prepared=slot_ids, dispatched=_observed_review_slots(ws, state),
+                selected=slot_ids, prepared=slot_ids, dispatched=slot_ids,
                 collected=collected.get("slot_ids") or [])
         else:
             routed = ({} if state.get("zero_lens_evaluation") is True else
@@ -6936,7 +6757,7 @@ def signoff_review(ws: str, *, decision: str, by: str, note: str = "",
 
 
 def context_dir(ws: str) -> str:
-    return os.path.join(runtime_storage.review_public_root(ws), "context")
+    return os.path.join(ws, CONTEXT_DIR)
 
 
 def _record(ws: str, paths: dict, status: str) -> None:
@@ -6997,7 +6818,7 @@ def write_context(ws: str, *, diff: str = "", impact: dict | None = None,
             # These paths cross the host boundary inside immutable briefs.
             # Keep filesystem construction host-native, but emit portable
             # POSIX references so Claude/Codex payload bytes match on Windows.
-            out[name] = tp.to_posix(os.path.relpath(p, ws))
+            out[name] = tp.to_posix(os.path.join(CONTEXT_DIR, name))
         except OSError:
             continue
     _record(ws, out, "written" if out else "empty")

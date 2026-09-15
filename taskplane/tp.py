@@ -481,8 +481,7 @@ def _codex_hooks_report(ws: str) -> dict:
         installed_engine = _resolve_taskplane_engine(family)
     else:
         installed_engine = None
-    runner_current = bool(family and runner_body == _codex_runner_body(family))
-    runner = bool(installed_engine and os.path.isfile(installed_engine) and runner_current)
+    runner = bool(installed_engine and os.path.isfile(installed_engine))
     installed = os.path.isfile(manifest)
     duplicates = _project_hook_duplicates(ws)
     return {
@@ -498,15 +497,13 @@ def _codex_hooks_report(ws: str) -> dict:
         "manifest": manifest,
         "project_hooks_required": False,
         "launcher_ready": runner,
-        "launcher_present": bool(runner_body),
-        "launcher_current": runner_current,
         "config": config_path,
         "runner": runner_path,
         "resolved_engine": installed_engine,
         "hint": (
-            "Run onboard --initialize to prepare the project entry point and preserve the run."
+            "Run onboard --install-launcher to prepare the project entry point."
             if installed and (not runner or duplicates)
-            else "Enable the installed TaskPlane plugin in the host; readiness "
+            else "Enable the installed TaskPlane plugin in Codex; readiness "
             "requires a host-observed native hook receipt."
             if installed
             else "Install the TaskPlane plugin with its native hooks."
@@ -587,11 +584,9 @@ def _host_capability_snapshot(
         else os.environ.get("CLAUDE_CODE_VERSION")
     )
     if session_id is None:
-        session_id = runtime_storage.host_session_id()
+        session_id = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
     observations = host_caps.runtime_hook_observations(
-        tp.store_home(ws), session_id=session_id, workspace=ws,
-        native_home=runtime_storage.host_runtime_home(),
-        engine_fingerprint=tp._entry_engine_fingerprint(),
+        tp.store_home(ws), session_id=session_id, workspace=ws
     )
     # Explicit adapter-owned environment receipts take precedence over the
     # short-lived runtime receipt when both exist.
@@ -610,13 +605,22 @@ def _host_capability_snapshot(
 
 
 def _screen_enforcement_mode(host: str) -> str:
-    """Harness enforcement cannot be disabled by host defaults or environment."""
+    """Resolve the rollback lever without guessing an undeclared host."""
     raw = os.environ.get("TASKPLANE_ENFORCE_SCREEN")
-    if raw is not None and str(raw).strip().lower() != "strict":
-        raise enforcement_kernel.EnforcementError(
-            "harness bypass is disabled; TASKPLANE_ENFORCE_SCREEN must be strict"
-        )
-    return "strict"
+    if raw is not None:
+        mode = str(raw).strip().lower()
+        if mode not in enforcement_kernel.MODES:
+            raise enforcement_kernel.EnforcementError(
+                "TASKPLANE_ENFORCE_SCREEN must be strict, warn, or off"
+            )
+        return mode
+    declared_claude = host == "claude" and bool(
+        os.environ.get("CLAUDE_SESSION_ID")
+        or os.environ.get("CLAUDE_CODE_VERSION")
+        or str(os.environ.get("TASKPLANE_HOST") or "").lower()
+        in {"claude", "claude-code", "cowork", "chat"}
+    )
+    return "strict" if declared_claude else "warn"
 
 
 def _saved_enforcement(value) -> dict | None:
@@ -627,27 +631,6 @@ def _saved_enforcement(value) -> dict | None:
     except (TypeError, ValueError):
         return None
     return checked
-
-
-def _hook_recovery(snapshot) -> list[str]:
-    """Recommend host loading, never infer a product from a session id."""
-    if snapshot.host == "claude" and os.environ.get("CLAUDE_CODE_VERSION"):
-        action = "In Claude Code, enable TaskPlane hooks and run /reload-plugins."
-    elif snapshot.host == "claude":
-        action = (
-            "Check that TaskPlane is enabled in this Claude/Cowork session and that "
-            "its native hooks execute. Use this host's plugin reload or reopen "
-            "control if available; /reload-plugins is a Claude Code command."
-        )
-    else:
-        action = (
-            "Enable TaskPlane native hooks in Codex; start a new task only if "
-            "the installed plugin needs initial loading."
-        )
-    return [action,
-            "Rerun onboard --json through the native host, then retry the exact "
-            "command with the same run and pinned scope when ready is true. "
-            "Keep completed setup; do not create receipts or waive enforcement."]
 
 
 def _enforcement_check(
@@ -666,8 +649,23 @@ def _enforcement_check(
     workspace_fp = hashlib.sha256(
         os.path.normcase(os.path.realpath(os.path.abspath(ws))).encode("utf-8")
     ).hexdigest()
+    if (
+        prior
+        and prior.get("status") == "advisory"
+        and prior.get("workspace_fingerprint") == workspace_fp
+    ):
+        return prior, None
     snapshot = _host_capability_snapshot(ws)
     mode = _screen_enforcement_mode(snapshot.host)
+    if (
+        os.environ.get("TASKPLANE_ENFORCE_SCREEN") is None
+        and prior
+        and prior.get("workspace_fingerprint") == workspace_fp
+        and (run_id is None or prior.get("run_id") == run_id)
+    ):
+        # Policy belongs to the durable run, not the process that resumes it.
+        # Reprobe liveness below; retained policy is not retained live proof.
+        mode = prior["mode"]
     # A named slot does not exist until ``new`` activates it.  Loading that
     # slot to calculate pre-activation liveness would fail closed whenever a
     # sibling contract already exists, making a second slot impossible to
@@ -698,24 +696,33 @@ def _enforcement_check(
         # because the wall clock advanced between invocations.
         decision = prior
     if advisory:
-        return decision, {
-            "schema": "taskplane.enforcement-refusal/v1",
-            "error": "harness bypass is disabled; --advisory cannot waive screen enforcement",
-            "enforcement": decision,
-            "recovery": ["restore live plugin hooks and retry without --advisory"],
-        }
+        try:
+            decision = enforcement_kernel.acknowledge_advisory(decision, actor=str(actor or ""))
+        except enforcement_kernel.EnforcementError as exc:
+            return decision, {
+                "schema": "taskplane.enforcement-refusal/v1",
+                "error": str(exc),
+                "enforcement": decision,
+                "recovery": ["repeat with --advisory --by <human>"],
+            }
     if require_live and mode == "strict" and decision["status"] == "unproven":
+        recovery = (
+            [
+                "run /reload-plugins, then retry this exact command",
+                "or repeat with --advisory --by <human>",
+            ]
+            if snapshot.host == "claude"
+            and (os.environ.get("CLAUDE_CODE_VERSION") or os.environ.get("CLAUDE_SESSION_ID"))
+            else [
+                "start a new host conversation and retry",
+                "or repeat with --advisory --by <human>",
+            ]
+        )
         return decision, {
             "schema": "taskplane.enforcement-refusal/v1",
             "error": "governed action refused: screen enforcement is unproven",
             "enforcement": decision,
-            "recovery": _hook_recovery(snapshot),
-            "diagnostics": {
-                "host": snapshot.host,
-                "session_identity_available": bool(snapshot.session_fingerprint),
-                "engine": os.path.abspath(__file__),
-                "host_capabilities": host_caps.onboarding_projection(snapshot),
-            },
+            "recovery": recovery,
         }
     return decision, None
 
@@ -820,7 +827,7 @@ def _codex_hook_rows() -> dict:
     return generated
 
 
-def _install_codex_hooks(ws: str, *, remove_project_duplicates: bool = True) -> dict:
+def _install_codex_hooks(ws: str) -> dict:
     """Install only the ignored CLI launcher; hooks belong to the plugin.
 
     Remove only recognized generated project duplicates; preserve unrelated
@@ -846,9 +853,9 @@ def _install_codex_hooks(ws: str, *, remove_project_duplicates: bool = True) -> 
 
     # Validate the project path independently of any accepted external run
     # binding. The launcher always belongs to this checkout.
-    launcher_home = runtime_storage.project_taskplane_home(ws, session_scoped=False)
+    launcher_home = runtime_storage.project_taskplane_home(ws)
     os.makedirs(launcher_home, exist_ok=True)
-    runtime_storage.project_taskplane_home(ws, session_scoped=False)
+    runtime_storage.project_taskplane_home(ws)
     runner_path = os.path.join(launcher_home, "codex-hook.py")
     family = _plugin_family_for_engine(os.path.abspath(__file__))
     body = _codex_runner_body(family)
@@ -862,13 +869,12 @@ def _install_codex_hooks(ws: str, *, remove_project_duplicates: bool = True) -> 
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
-        runtime_storage.project_taskplane_home(ws, session_scoped=False)
+        runtime_storage.project_taskplane_home(ws)
         os.replace(tmp, runner_path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    if remove_project_duplicates:
-        _project_hook_duplicates(ws, remove=True)
+    _project_hook_duplicates(ws, remove=True)
     tp._ensure_self_ignored(launcher_home)
     return _codex_hooks_report(ws)
 
@@ -1077,8 +1083,8 @@ def _apply_onboarding_setup(ws: str, value: dict) -> dict:
     if value.get("install_launcher"):
         launcher = _install_codex_hooks(ws)
         receipt["launcher"] = launcher
-        if not launcher.get("ok"):
-            receipt["status"] = "blocked" if launcher.get("status") == "blocked" else "failed"
+        if launcher.get("status") == "blocked":
+            receipt["status"] = "blocked"
             return receipt
     if value.get("initialize"):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1240,88 +1246,88 @@ def _onboard_report(ws: str) -> dict:
             "hint": "Use one validated plugin build whose phase definitions match its skills; preserve the current run.",
         }
     )
-    launcher = _codex_hooks_report(ws)
-    engine_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    engine_install = _valid_plugin_root(engine_root, engine_root)
-    codex_hooks = launcher if is_codex else None
-    snapshot = _host_capability_snapshot(ws)
-    host_capabilities = host_caps.onboarding_projection(snapshot)
-    host_capabilities = _prefer_existing_loop_resume(ws, host_capabilities)
-    native_effective = host_capabilities["effective_path"]["value"] == "native_effective"
-    resumable = host_capabilities.get("next_action") == "resume_run"
-    if native_effective:
-        checks[0]["hint"] = (
-            "The loaded native Taskplane hook governs this checkout; "
-            f"continue in the current {'Codex' if is_codex else 'Claude'} task."
+    codex_hooks = _codex_hooks_report(ws) if is_codex else None
+    host_capabilities = None
+    if codex_hooks is not None:
+        snapshot = _host_capability_snapshot(ws)
+        host_capabilities = host_caps.onboarding_projection(snapshot)
+        host_capabilities = _prefer_existing_loop_resume(ws, host_capabilities)
+        native_effective = host_capabilities["effective_path"]["value"] == "native_effective"
+        resumable = host_capabilities.get("next_action") == "resume_run"
+        if native_effective:
+            checks[0]["hint"] = (
+                "The loaded native Taskplane hook governs this checkout; "
+                "continue in the current Codex task."
+            )
+        checks.extend(
+            (
+                {
+                    "id": "hook_install",
+                    "label": "Plugin hooks installed",
+                    "ok": (
+                        host_capabilities["install"]["status"] == "supported"
+                        and codex_hooks["installed"]
+                    ),
+                    "detail": (
+                        host_capabilities["install"]["status"]
+                        if codex_hooks["ok"]
+                        else codex_hooks["status"]
+                    ),
+                    "hint": codex_hooks.get("hint")
+                    or ("Run onboarding's hook setup before governed work."),
+                },
+                {
+                    "id": "workspace_launcher",
+                    "label": "Project launcher",
+                    "ok": codex_hooks["launcher_ready"],
+                    "detail": codex_hooks["runner"],
+                    "hint": "Run onboard --install-launcher; project hook registrations remain unnecessary.",
+                },
+                {
+                    "id": "repository_trust",
+                    "label": "Repository trust",
+                    "ok": (native_effective or host_capabilities["trust"]["status"] == "supported"),
+                    "detail": (
+                        "not required for native hooks"
+                        if native_effective
+                        else host_capabilities["trust"]["status"]
+                    ),
+                    "hint": "Review the plugin permission in Codex; project hook "
+                    "registrations are not required.",
+                },
+                {
+                    "id": "managed_policy",
+                    "label": "Managed hook policy",
+                    "ok": (host_capabilities["managed_policy"]["status"] == "supported"),
+                    "detail": host_capabilities["managed_policy"]["status"],
+                    "hint": "An organization-managed restriction requires "
+                    "administrator action; taskPlane will not change it.",
+                },
+                {
+                    "id": "loaded_session",
+                    "label": "Hooks loaded this session",
+                    "ok": (host_capabilities["loaded_session"]["status"] == "supported"),
+                    "detail": host_capabilities["loaded_session"]["status"],
+                    "hint": (
+                        "This Codex task already has an observed hook "
+                        "receipt; no restart is required."
+                        if host_capabilities["loaded_session"]["status"] == "supported"
+                        else "Read the existing run with loop resume; dispatch "
+                        "will check live enforcement separately."
+                        if resumable
+                        else "Start one new Codex task only after the initial "
+                        "hook installation or a host policy change."
+                    ),
+                },
+                {
+                    "id": "effective_hook_path",
+                    "label": "Effective hook path",
+                    "ok": host_capabilities["ready"] and native_effective,
+                    "detail": host_capabilities["effective_path"]["value"],
+                    "hint": host_capabilities["effective_path"]["reason"],
+                },
+            )
         )
-    checks.extend(
-        (
-            {
-                "id": "hook_install",
-                "label": "Plugin hooks installed",
-                "ok": (
-                    host_capabilities["install"]["status"] == "supported"
-                    and launcher["installed"]
-                ),
-                "detail": (
-                    host_capabilities["install"]["status"]
-                    if launcher["ok"]
-                    else launcher["status"]
-                ),
-                "hint": launcher.get("hint")
-                or ("Run onboarding's hook setup before governed work."),
-            },
-            {
-                "id": "workspace_launcher",
-                "label": "Project launcher",
-                "ok": native_effective or launcher["launcher_ready"],
-                "detail": launcher["runner"],
-                "hint": "Optional CLI convenience when native plugin hooks are effective.",
-            },
-            {
-                "id": "repository_trust",
-                "label": "Repository trust",
-                "ok": (native_effective or host_capabilities["trust"]["status"] == "supported"),
-                "detail": (
-                    "not required for native hooks"
-                    if native_effective
-                    else host_capabilities["trust"]["status"]
-                ),
-                "hint": "Review the plugin permission in the host; project hook "
-                "registrations are not required.",
-            },
-            {
-                "id": "managed_policy",
-                "label": "Managed hook policy",
-                "ok": (host_capabilities["managed_policy"]["status"] == "supported"),
-                "detail": host_capabilities["managed_policy"]["status"],
-                "hint": "An organization-managed restriction requires "
-                "administrator action; taskPlane will not change it.",
-            },
-            {
-                "id": "loaded_session",
-                "label": "Hooks loaded this session",
-                "ok": (host_capabilities["loaded_session"]["status"] == "supported"),
-                "detail": host_capabilities["loaded_session"]["status"],
-                "hint": (
-                    "This task already has an observed hook "
-                    "receipt; no restart is required."
-                    if host_capabilities["loaded_session"]["status"] == "supported"
-                    else "Read the existing run with loop resume; dispatch "
-                    "will check live enforcement separately."
-                    if resumable
-                    else " ".join(_hook_recovery(snapshot))
-                ),
-            },
-            {
-                "id": "effective_hook_path",
-                "label": "Effective hook path",
-                "ok": host_capabilities["ready"] and native_effective,
-                "detail": host_capabilities["effective_path"]["value"],
-                "hint": host_capabilities["effective_path"]["reason"],
-            },
-        )
-    )
     base_ready = (
         looks_like_project
         and inside_git
@@ -1330,7 +1336,10 @@ def _onboard_report(ws: str) -> dict:
         and run_readiness["ready"]
         and phase_ready
     )
-    ready = base_ready and bool(host_capabilities["ready"]) and native_effective
+    ready = base_ready and (
+        host_capabilities is None
+        or (bool(host_capabilities["ready"]) and native_effective and bool(codex_hooks["ok"]))
+    )
     if not looks_like_project:
         nxt = "attach_folder"
     elif not (inside_git and has_commit):
@@ -1346,7 +1355,6 @@ def _onboard_report(ws: str) -> dict:
     elif (
         codex_hooks is not None
         and not codex_hooks["ok"]
-        and not native_effective
         and host_capabilities["next_action"]
         not in {"contact_administrator", "review_repository_trust"}
     ):
@@ -1373,12 +1381,6 @@ def _onboard_report(ws: str) -> dict:
         "host": host,
         "artifacts": artifacts,
         "configuration": _onboarding_configuration(ws),
-        "launcher": launcher,
-        "engine": {
-            "path": os.path.abspath(__file__),
-            "version": engine_install[1] if engine_install else None,
-            "fingerprint": tp._entry_engine_fingerprint(),
-        },
         "codex_hooks": codex_hooks,
         "host_capabilities": host_capabilities,
         # R-0005 install truth: the account-type install/update paths,
@@ -1400,7 +1402,6 @@ def _onboard_report(ws: str) -> dict:
         "is_git": inside_git,
         "has_commit": has_commit,
         "has_context": has_context,
-        "setup_ready": base_ready,
         "ready": ready,
         "checks": checks,
         "next_action": nxt,
@@ -1430,8 +1431,7 @@ def _onboard_report(ws: str) -> dict:
 # Not a harness invariant (Cowork can't intercept spend) — a stop signal for
 # `tp budget`. The kernel's action budget is the enforced ceiling.
 DEFAULT_MAX_COST_USD = 3.0
-DEFAULT_STANDALONE_REVIEW_MAX_TOKENS = 1_000_000
-DEFAULT_LENS_MAX_TOKENS = 100_000
+DEFAULT_STANDALONE_REVIEW_MAX_TOKENS = 25_000_000
 
 
 def _standalone_review_budget(max_tokens: int | None) -> dict:
@@ -1491,7 +1491,7 @@ def cmd_new(a) -> int:
         scope=scope,
         read_only=bool(getattr(a, "read_only", False)),
         write_allow=(list(a.write_allow) if getattr(a, "write_allow", None) else None),
-        tools=tools if a.tools is not None else None,
+        tools=tools,
         test_command=a.tests or None,
         deny_extra=deny_extra,
         max_actions=(int(a.max_actions) if getattr(a, "max_actions", None) is not None else None),
@@ -1678,10 +1678,6 @@ def cmd_session_verify(a) -> int:
         event = event if isinstance(event, dict) else {}
     except Exception:
         event = {}
-    ws = _workspace(getattr(a, "workspace", None) or event.get("cwd"))
-    if reason := _budget_stop_reason(ws, tp.load_active_for_event(ws, event), event):
-        _emit_budget_stop(reason)
-        return 0
     submission = _submission_stop_check(event, workspace=getattr(a, "workspace", None))
     if submission and submission.get("block"):
         _emit_submission_stop_block("Stop", submission)
@@ -2634,9 +2630,6 @@ def cmd_subagent_stop(a) -> int:
                 print("{}")
                 return 0
         except Exception as exc:
-            if reason := _budget_stop_reason(ws, lifecycle_contract, event):
-                _emit_budget_stop(reason)
-                return 0
             _emit_submission_stop_block(
                 "SubagentStop",
                 {
@@ -2647,9 +2640,6 @@ def cmd_subagent_stop(a) -> int:
                 },
             )
             return 2
-    if reason := _budget_stop_reason(ws, lifecycle_contract, event):
-        _emit_budget_stop(reason)
-        return 0
     try:
         import loop as _loop_runtime
 
@@ -3126,96 +3116,7 @@ def _is_completion_command(command: str) -> bool:
     return any(_re.search(p, text) for p in _ob.COMPLETION_PATTERNS)
 
 
-def _recovery_argv(command: str) -> list[str] | None:
-    """One canonical CLI invocation; never exempt a compound shell command."""
-    import re
-    import shutil
-
-    if any(mark in command for mark in (";", "|", "&", ">", "<", "`", "$", "\n", "\r")):
-        return None
-    tokens = tp._shsplit(command)
-    if len(tokens) < 3:
-        return None
-    interpreter = os.path.basename(tokens[0]).lower()
-    if os.path.dirname(tokens[0]):
-        # An arbitrary repository script named python3 is not a trusted
-        # interpreter just because the second argument names our engine.
-        resolved = os.path.realpath(tokens[0])
-        candidates = {os.path.realpath(sys.executable)}
-        installed = shutil.which(interpreter)
-        if installed:
-            candidates.add(os.path.realpath(installed))
-        if resolved not in candidates:
-            return None
-    if interpreter in {"py", "py.exe"} and tokens[1] == "-3":
-        tokens.pop(1)
-    if len(tokens) < 3 or not re.fullmatch(r"(?:python(?:3(?:\.\d+)?)?|py)(?:\.exe)?", interpreter):
-        return None
-    if not tp._is_tp_cli(tokens[1]):
-        # The optional workspace CLI must be an unchanged engine-generated
-        # launcher, not an arbitrary script with the same basename.
-        path = os.path.abspath(tokens[1])
-        if not path.endswith(os.path.join(".taskplane", "codex-hook.py")) or os.path.islink(path):
-            return None
-        try:
-            with open(path, encoding="utf-8") as stream:
-                body = stream.read(65537)
-                family = _codex_runner_family(body)
-                if (not family or body != _codex_runner_body(family)
-                        or not tp._is_tp_cli(_resolve_taskplane_engine(family) or "")):
-                    return None
-        except (OSError, UnicodeError):
-            return None
-    return tokens[2:]
-
-
-def _approved_budget_recovery(command: str) -> dict | None:
-    args = _recovery_argv(command)
-    if not args or args[0] != "budget":
-        return None
-    values = {}
-    args = args[1:]
-    while args:
-        flag = args.pop(0)
-        if flag not in {"--grant", "--grant-tokens", "--approved-by", "--workspace"} or flag in values or not args:
-            return None
-        values[flag] = args.pop(0)
-    grants = set(values) & {"--grant", "--grant-tokens"}
-    if len(grants) != 1 or not values.get("--approved-by", "").strip():
-        return None
-    try:
-        return values if int(values[next(iter(grants))]) > 0 else None
-    except ValueError:
-        return None
-
-
-def _control_workspace_args(args: list[str], workspace: str | None) -> list[str] | None:
-    """Remove the single workspace selector after checking its authority."""
-    args = list(args)
-    options = args[:args.index("--")] if "--" in args else args
-    if any(arg.startswith("--") and arg.split("=", 1)[0] != "--workspace"
-           and "--workspace".startswith(arg.split("=", 1)[0]) for arg in options):
-        return None  # argparse abbreviations must not evade workspace screening
-    positions = [i for i, arg in enumerate(options)
-                 if arg == "--workspace" or arg.startswith("--workspace=")]
-    if len(positions) > 1:
-        return None
-    if positions:
-        i = positions[0]
-        if args[i] == "--workspace":
-            if i + 1 == len(args):
-                return None
-            value = args[i + 1]
-            del args[i:i + 2]
-        else:
-            value = args.pop(i).split("=", 1)[1]
-        if not value or (workspace and os.path.realpath(os.path.join(workspace, value))
-                         != os.path.realpath(workspace)):
-            return None
-    return args
-
-
-def _is_release_command(command: str, workspace: str | None = None) -> bool:
+def _is_release_command(command: str) -> bool:
     """Unmetered control-plane commands, including explicit human recovery.
 
     Mutating recovery is accepted only when the argv carries the human's
@@ -3223,32 +3124,10 @@ def _is_release_command(command: str, workspace: str | None = None) -> bool:
     exhausted task from becoming an unrecoverable lock while keeping a bare
     self-issued ``clear``/``budget --grant`` behind the wall.
     """
-    recovery = _recovery_argv(command)
-    if not recovery:
-        return False
-    recovery = _control_workspace_args(recovery, workspace)
-    if not recovery:
-        return False
-    if (len(recovery) <= 3 and "--" not in recovery and recovery[-1] in {"--help", "-h"}
-            or recovery in [["help"], ["help", "--md"]]):
-        return True
-    if recovery and recovery[0] == "budget":
-        return _approved_budget_recovery(command) is not None
-    verb = recovery[0]
+    verb = tp.taskplane_verb(command)
     if verb in _RELEASE_VERBS:
         return True
-    tokens = recovery
-    if verb == "onboard":
-        args = tokens[1:]
-        while args:
-            flag = args.pop(0)
-            if flag in {"--json", "--initialize"}:
-                continue
-            if flag in {"--workspace", "--available-tools"} and args:
-                args.pop(0)
-                continue
-            return False
-        return True
+    tokens = tp._shsplit(" ".join(str(command or "").split()))
     if verb == "clear":
         return "--approved-by" in tokens
     if verb == "worker-release":
@@ -3257,11 +3136,12 @@ def _is_release_command(command: str, workspace: str | None = None) -> bool:
         # receipt exists.  Making this narrow retry unmetered cannot let a
         # live worker shed enforcement; a bare/general clear remains walled.
         return tokens.count("--slot") == 1 and tokens.count("--signed-action") == 1
+    if verb == "budget":
+        return "--grant" in tokens and "--approved-by" in tokens
     if verb == "review":
-        if tokens[1:2] == ["collect"] and "--run-id" in tokens:
+        if all(token in tokens for token in ("collect", "--run-id")):
             return True
-        return tokens[1:2] == ["resume"] and all(
-            token in tokens for token in ("--run-id", "--action-id", "--by"))
+        return all(token in tokens for token in ("resume", "--run-id", "--action-id", "--by"))
     return False
 
 
@@ -3270,166 +3150,6 @@ def _is_closing_command(command: str) -> bool:
     of it — the only spender of the closing reserve."""
     verb = tp.taskplane_verb(command)
     return verb in _CLOSING_VERBS if verb else False
-
-
-# These commands operate the incumbent engine's state machine. Their handlers
-# retain phase authority, signed input, human consent and evidence validation.
-# They are metered work, not budget-recovery exemptions. In particular, never
-# admit new/clear/budget or the hook entry points through this path.
-_READONLY_CONTROL_ACTIONS = {
-    "onboard": None,
-    "summary": None,
-    "dashboard": None,
-    "findings": None,
-    "north-star": None,
-    "dod": None,
-    "review": {"option", "evidence", "sandbox", "validate", "signoff", "collect"},
-    "repository": {"status", "prepare", "resume"},
-    "target": {"show", "pin"},
-    "loop": {"resume", "status", "next", "wave", "collect", "submit", "gate",
-             "approve", "resolve", "amend", "evidence", "retro", "reconcile",
-             "verify-dispatch", "command"},
-    "stage": {"read-input", "collect-lenses", "prepare-lenses", "start", "resume",
-              "terminalize", "terminalize-and-start", "split", "history", "reuse"},
-    "command": {"launch", "show", "wait", "cancel"},
-    "preview": None,
-    "lens": {"route", "collect", "list", "show", "dispatch"},
-    "graph": {"scan", "impact", "edge", "check", "locate", "html"},
-    "req": {"new", "amend", "score", "signoff", "mode", "debt", "list"},
-    "decision": {"new", "list", "show", "accept", "reject", "supersede"},
-    "kb": {"record", "retrieve", "list", "lint", "where"},
-}
-_HUMAN_INPUT_TOOLS = frozenset({
-    "AskUserQuestion", "request_user_input", "request_user_input_async",
-    "functions.request_user_input", "functions.request_user_input_async",
-})
-
-
-def _readonly_control_command(command: str, workspace: str, contract: dict) -> bool:
-    """Recognize one trusted CLI, preserving workspace and artifact scope."""
-    args = _recovery_argv(command)
-    if not args:
-        return False
-    args = _control_workspace_args(args, workspace)
-    if not args:
-        return False
-    options = args[:args.index("--")] if "--" in args else args
-    if any(arg.startswith("--") and arg.split("=", 1)[0] not in {"--out", "--output"}
-           and any(flag.startswith(arg.split("=", 1)[0]) for flag in ("--out", "--output"))
-           for arg in options):
-        return False
-    if args[0] == "onboard" and any(arg.startswith("--install") for arg in args):
-        return False
-    # The global and subparser workspace spellings have identical authority.
-    for flag in ("--out", "--output"):
-        options = args[:args.index("--")] if "--" in args else args
-        positions = [i for i, value in enumerate(options)
-                     if value == flag or value.startswith(flag + "=")]
-        if len(positions) > 1:
-            return False
-        if not positions:
-            continue
-        i = positions[0]
-        if args[i] == flag:
-            if i + 1 == len(args):
-                return False
-            value = args[i + 1]
-            del args[i:i + 2]
-        else:
-            value = args.pop(i).split("=", 1)[1]
-        if value != "-" and not tp.writable_target(
-                value, contract.get("write_allow") or [], workspace):
-            return False
-    if not args or args[0] not in _READONLY_CONTROL_ACTIONS:
-        return False
-    actions = _READONLY_CONTROL_ACTIONS[args[0]]
-    if actions is not None and (len(args) < 2 or args[1] not in actions):
-        return False
-    return True
-
-
-def _screen_contract_tool(contract: dict, tool_name: str, tool_input: dict,
-                          workspace: str) -> tuple[bool, str]:
-    """Screen engine control and native file access through one host-neutral path."""
-    members = contract.get("_union")
-    if members and tool_name not in tp.WRITE_TOOLS:
-        for member in members:
-            allowed, reason = _screen_contract_tool(member, tool_name, tool_input, workspace)
-            if not allowed:
-                return False, f"[{member.get('task_id', '?')}] {reason} (most-restrictive union)"
-        return True, "within every active contract"
-    command = tp.command_text(tool_name, tool_input)
-    if (contract.get("read_only") and tool_name in tp.COMMAND_TOOLS
-            and _readonly_control_command(command, workspace, contract)):
-        from taskplane import governed_commands
-
-        denial = governed_commands._raw_command_policy_denial(contract, command)
-        if denial:
-            return False, denial
-        return tp.screen_tool(contract, "Read", {"file_path": "."}, workspace)
-    if contract.get("read_only"):
-        if tool_name == "mcp__visualize__show_widget":
-            return tp.screen_tool(contract, "Read", {"file_path": "."}, workspace)
-        if tool_name in {"mcp__codex_app__open_in_codex", "open_in_codex", "SendUserFile"}:
-            path = _presentation_file(tool_name, tool_input)
-            if path and tp.writable_target(path, contract.get("write_allow") or [], workspace):
-                return tp.screen_tool(contract, "Read", {"file_path": path}, workspace)
-    return tp.screen_tool(contract, tool_name, tool_input, workspace)
-
-
-def _presentation_file(tool: str, payload: dict) -> str | None:
-    if tool in {"mcp__codex_app__open_in_codex", "open_in_codex"}:
-        target = payload.get("target") or {}
-        if (set(payload) - {"target", "placement"} or not isinstance(target, dict)
-                or set(target) - {"type", "path", "line"} or target.get("type") != "file"):
-            return None
-        path = target.get("path")
-    elif tool == "SendUserFile":
-        path = payload.get("path") or payload.get("file_path")
-    else:
-        return None
-    return path if isinstance(path, str) and path else None
-
-
-def _owed_artifact_delivery(workspace: str, contract: dict, tool: str, payload: dict) -> bool:
-    """Keep delivery of the current engine's exact artifacts reachable at the wall.
-
-    This only admits a host presentation request. It never acknowledges it,
-    invents a render receipt, opens an external URL or changes another task.
-    """
-    import obligations
-
-    paths = []
-    body = None
-    if tool in {"mcp__codex_app__open_in_codex", "open_in_codex", "SendUserFile"}:
-        path = _presentation_file(tool, payload)
-        if not path:
-            return False
-        paths = [path]
-    elif tool == "mcp__visualize__show_widget":
-        bodies = [value for key, value in payload.items()
-                  if key not in {"title", "name"} and isinstance(value, str)]
-        body = max(bodies, key=len, default="")
-    else:
-        return False
-    latest = {row["id"]: row for row in obligations.read(workspace)
-              if row.get("event") == "issued" and row.get("id")}
-    for row in latest.values():
-        if (row.get("kind") not in obligations.RENDER_KINDS
-                or row.get("session") != contract.get("task_id")):
-            continue
-        artifact = row.get("artifact")
-        if not isinstance(artifact, str):
-            continue
-        expected = os.path.realpath(os.path.join(workspace, artifact))
-        fingerprint = obligations.artifact_fingerprint(expected)
-        if not fingerprint or (row.get("fingerprint") and row["fingerprint"] != fingerprint):
-            continue
-        if paths and all(os.path.realpath(os.path.join(workspace, path)) == expected for path in paths):
-            return True
-        if body is not None and obligations.content_fingerprint(body) == fingerprint:
-            return True
-    return False
 
 
 def cmd_contracts(a) -> int:
@@ -3747,66 +3467,6 @@ def _hook_usage_provider(event: dict) -> str:
     return "codex" if str(event.get("task_name") or "").strip() else "claude"
 
 
-def _budget_provider(event: dict) -> str:
-    if any(event.get(key) for key in ("provider", "host", "task_name")):
-        return _hook_usage_provider(event)
-    return "codex" if "turn_id" in event else "claude"
-
-
-def _budget_transcript(ws: str, contract: dict, event: dict, provider: str) -> str | None:
-    """Use the bound worker's counter, never a parent transcript fallback."""
-    if provider == "codex" and contract.get("worker_scoped"):
-        from taskplane import codex_identity
-
-        return codex_identity.active_transcript(ws, contract, event)
-    import spend
-
-    return spend.event_transcript(event)
-
-
-def _budget_stop_reason(ws: str, contract: dict | None, event: dict) -> str | None:
-    """A spent worker must be allowed to stop, even with unfinished output."""
-    if not contract or not (contract.get("budget") or {}).get("token_usage_required"):
-        return None
-    if event.get("agent_id") and not (
-        contract.get("worker_scoped") or contract.get("bootstrap_action_id")
-    ):
-        # An unrelated child's Stop must not consume the root's budget.
-        return None
-    import spend
-
-    try:
-        provider = _budget_provider(event)
-        path = _budget_transcript(ws, contract, event, provider)
-        projection = _bounded_transcript_projection(ws, path, provider) if path else {}
-        if projection.get("status") != "available":
-            return (
-                "Token usage unavailable; pause for human review. Do not retry or launch workers."
-            )
-        ok, reason = spend.status(contract, int(projection["usage"]["total_tokens"]))
-        if not ok:
-            return reason
-        used = _meter_load(ws, strict=True).get(contract["task_id"], {}).get("actions", 0)
-        ok, reason = tp.budget_status(contract, used, reserve=0, closing=True)
-        return None if ok else reason
-    except Exception as exc:
-        return f"Budget meter unavailable ({type(exc).__name__}); pause for human review."
-
-
-def _emit_budget_stop(reason: str) -> None:
-    # Stop decision:block/exit 2 means "continue generating" in Codex.
-    # Preserve the failed gate without requesting another model turn.
-    print(
-        json.dumps(
-            {
-                "continue": False,
-                "stopReason": reason,
-                "systemMessage": "TaskPlane paused: " + reason,
-            }
-        )
-    )
-
-
 def _seal_terminal_dispatch_telemetry(
     ws: str, contract: dict, event: dict, *, outcome: str
 ) -> dict:
@@ -3978,24 +3638,6 @@ def _meter_bump(ws, task_id, key) -> dict:
         # Atomic write so a concurrent reader never sees a torn file.
         tp.atomic_write_json(path, m, indent=None)
     return e
-
-
-def _record_budget_counter(ws: str, contract: dict, event: dict) -> None:
-    """Retain the host-selected source for an approved CLI grant to re-read.
-
-    This is an observation only: the native permission flow still decides
-    whether the subsequent CLI command runs and changes the ceiling.
-    """
-    provider = _budget_provider(event)
-    source = _budget_transcript(ws, contract, event, provider)
-    path = os.path.join(tp.tp_dir(ws), "meter.json")
-    with tp.file_lock(path):
-        meter = _meter_load(ws, strict=True)
-        row = meter.setdefault(contract["task_id"], {"actions": 0, "denies": 0})
-        # Overwrite even a missing source: an older session is not a fallback.
-        row["native_counter"] = {"provider": provider, "path": source,
-                                 "activated_at": contract.get("activated_at")}
-        tp.atomic_write_json(path, meter, indent=None)
 
 
 # Per-process memo of `git rev-parse --show-toplevel` per cwd — see the
@@ -4275,14 +3917,6 @@ def _screen(a) -> int:
             return 0
         bootstrap = None
     if bootstrap is not None:
-        # Bootstrap is an action by the existing owner too. A signed child
-        # lease must not provide an escape from an exhausted parent budget.
-        parent = tp.load_active_for_event(ws, event)
-        if reason := _budget_stop_reason(ws, parent, event):
-            print(json.dumps({"decision": "block", "reason": reason}))
-            return 0
-        if parent:
-            _meter_bump(ws, parent["task_id"], "actions")
         ws = str(bootstrap.pop("workspace", ws))
         contract = _activate_visible_review_bootstrap(ws, **bootstrap)
         tp.trace(
@@ -4407,35 +4041,6 @@ def _screen(a) -> int:
 
     tid = contract.get("task_id", "_")
 
-    # Keep existing inspection/recovery commands reachable even if telemetry
-    # disappears. They do not launch productive work or raise limits implicitly.
-    if (_is_release_command(command, ws) or tool_name in _HUMAN_INPUT_TOOLS
-            or _owed_artifact_delivery(ws, contract, tool_name, tool_input)):
-        recovery = _approved_budget_recovery(command)
-        if recovery and "--grant-tokens" in recovery:
-            _record_budget_counter(ws, contract, event)
-        # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
-        #
-        # The abstain above happens LONG before the approve path where the
-        # ledger is written, so `status`, `contracts`, `version` and `ack`
-        # left no row at all: R10 (did the run invent a CLI surface) and
-        # every efficiency reading were blind to the release verbs, and a
-        # run that polled `tp status` twenty times looked like one that
-        # never called it.
-        #
-        # Same rule, same ordering as the approve site: the decision is
-        # already final when this runs — an abstain emits the EMPTY payload,
-        # which is complete before the instrument is touched — and nothing
-        # here can change it. Failures are swallowed at both layers.
-        try:
-            sys.stdout.flush()
-            import derivation as _dv
-
-            _dv.record(ws, command, "abstain")
-        except Exception:  # noqa: BLE001
-            pass
-        return 0  # abstain: not metered, not denied
-
     # budget gate first — an exhausted harness does no further work. The RULE
     # lives in the kernel (tp.budget_status); the CLI only meters + forwards.
     # FAIL CLOSED on a corrupt meter for a governed contract: a torn/tampered
@@ -4458,98 +4063,123 @@ def _screen(a) -> int:
             )
         )
         return 0
+    # INSPECTION MUST NOT COST. A stuck agent should still be able to say why
+    # it is stuck. These commands read and print; none of them changes a
+    # contract, a budget, or a ledger, so neither the ceiling nor the meter
+    # has anything to protect against them. `clear` is NOT among them — see
+    # _RELEASE_VERBS for why.
+    if _is_release_command(command):
+        # THE DERIVATION LEDGER — RECORDING ONLY, AND LAST (second site).
+        #
+        # The abstain above happens LONG before the approve path where the
+        # ledger is written, so `status`, `contracts`, `version` and `ack`
+        # left no row at all: R10 (did the run invent a CLI surface) and
+        # every efficiency reading were blind to the release verbs, and a
+        # run that polled `tp status` twenty times looked like one that
+        # never called it.
+        #
+        # Same rule, same ordering as the approve site: the decision is
+        # already final when this runs — an abstain emits the EMPTY payload,
+        # which is complete before the instrument is touched — and nothing
+        # here can change it. Failures are swallowed at both layers.
+        try:
+            sys.stdout.flush()
+            import derivation as _dv
+
+            _dv.record(ws, command, "abstain")
+        except Exception:  # noqa: BLE001
+            pass
+        return 0  # abstain: not metered, not denied
+
     # TOKEN CEILING — one selected, incremental transcript projection feeds
     # both contract enforcement and native telemetry.  It is never parsed
     # twice and never reads more than the 64 MiB design bound per action.
-    _tpath = None
-    _token_denial = None
-    _projection = None
-    _budget = contract.get("budget") or {}
-    _token_ceiling = _budget.get("max_tokens") is not None
-    _telemetry_task_id = _contract_dispatch_task_id(contract)
-    _telemetry_consumer = _dispatch_usage_observation_required(ws, _telemetry_task_id)
-    if _token_ceiling or _telemetry_consumer:
-        try:
-            import spend as _spend
+    if not _is_release_command(command):
+        _tpath = None
+        _token_denial = None
+        _projection = None
+        _budget = contract.get("budget") or {}
+        _token_ceiling = _budget.get("max_tokens") is not None
+        _telemetry_task_id = _contract_dispatch_task_id(contract)
+        _telemetry_consumer = _dispatch_usage_observation_required(ws, _telemetry_task_id)
+        if _token_ceiling or _telemetry_consumer:
+            try:
+                import spend as _spend
 
-            _provider = _budget_provider(event)
-            _tpath = _budget_transcript(ws, contract, event, _provider)
-            _projection = (
-                _bounded_transcript_projection(ws, _tpath, _provider)
-                if _tpath
-                else {
-                    "status": "unavailable",
-                    "reason": "host transcript path is unavailable",
-                }
-            )
-            if _projection.get("status") == "available":
-                _observed_tokens = int((_projection.get("usage") or {})["total_tokens"])
-                _tok_ok, _tok_why = _spend.status(contract, _observed_tokens)
-                if not _tok_ok:
-                    _token_denial = (_tok_why, _observed_tokens)
-            elif bool(_budget.get("token_usage_required")):
-                _token_denial = (
-                    "TOKEN BUDGET telemetry unavailable — "
-                    + str(_projection.get("reason") or "host token totals are unavailable"),
-                    None,
+                _tpath = _spend.event_transcript(event)
+                _provider = "codex" if "turn_id" in event else "claude"
+                _projection = (
+                    _bounded_transcript_projection(ws, _tpath, _provider)
+                    if _tpath
+                    else {
+                        "status": "unavailable",
+                        "reason": "host transcript path is unavailable",
+                    }
                 )
-        except Exception as exc:
-            if bool(_budget.get("token_usage_required")):
-                _token_denial = (
-                    "TOKEN BUDGET telemetry unavailable — " + f"{type(exc).__name__}: {exc}",
-                    None,
+                if _projection.get("status") == "available":
+                    _observed_tokens = int((_projection.get("usage") or {})["total_tokens"])
+                    _tok_ok, _tok_why = _spend.status(contract, _observed_tokens)
+                    if not _tok_ok:
+                        _token_denial = (_tok_why, _observed_tokens)
+                elif bool(_budget.get("token_usage_required")):
+                    _token_denial = (
+                        "TOKEN BUDGET telemetry unavailable — "
+                        + str(_projection.get("reason") or "host token totals are unavailable"),
+                        None,
+                    )
+            except Exception as exc:
+                if bool(_budget.get("token_usage_required")):
+                    _token_denial = (
+                        "TOKEN BUDGET telemetry unavailable — " + f"{type(exc).__name__}: {exc}",
+                        None,
+                    )
+        # Dispatch telemetry consumes the exact same normalized projection.
+        # Its absence never creates a positive budget claim.
+        if (
+            _telemetry_consumer
+            and _tpath
+            and isinstance(_projection, dict)
+            and _projection.get("status") == "available"
+        ):
+            try:
+                import loop as _loop_runtime
+
+                _native_task_name = str(
+                    ((contract.get("worker_lifecycle") or {}).get("expected_task_name") or "")
+                ).strip()
+                _loop_runtime.record_observed_dispatch_usage(
+                    ws,
+                    task_id=_telemetry_task_id,
+                    normalized_usage=_normalized_dispatch_projection(_projection),
+                    source_fingerprint=str(_projection["source_fingerprint"]),
+                    native_task_name=_native_task_name,
+                    dispatch_id=(_contract_dispatch_intent_id(contract) or None),
                 )
-    # Dispatch telemetry consumes the exact same normalized projection.
-    # Its absence never creates a positive budget claim.
-    if (
-        _telemetry_consumer
-        and _tpath
-        and isinstance(_projection, dict)
-        and _projection.get("status") == "available"
-    ):
-        try:
-            import loop as _loop_runtime
+            except Exception:
+                pass
+        from taskplane import run_context
 
-            _native_task_name = str(
-                ((contract.get("worker_lifecycle") or {}).get("expected_task_name") or "")
-            ).strip()
-            _loop_runtime.record_observed_dispatch_usage(
-                ws,
-                task_id=_telemetry_task_id,
-                normalized_usage=_normalized_dispatch_projection(_projection),
-                source_fingerprint=str(_projection["source_fingerprint"]),
-                native_task_name=_native_task_name,
-                dispatch_id=(_contract_dispatch_intent_id(contract) or None),
+        if _token_denial is not None and not run_context.resource_limits_advisory(ws):
+            _tok_why, _effective = _token_denial
+            # A broken meter must fail closed, but it must not hide a more
+            # specific authority boundary.  Preserve the contract's direct
+            # tool/command refusal when both checks deny the same action.
+            _contract_allows, _contract_why = tp.screen_tool(contract, tool_name, tool_input, ws)
+            if not _contract_allows:
+                _tok_why = _contract_why
+            _meter_bump(ws, tid, "denies")
+            tp.trace(ws, "token_budget_deny", tool=tool_name, effective=_effective)
+            print(
+                json.dumps({"decision": "block", "reason": f"taskplane contract {tid}: {_tok_why}"})
             )
-        except Exception:
-            pass
-    from taskplane import run_context
-
-    if _token_denial is not None and (
-        bool(_budget.get("token_usage_required")) or not run_context.resource_limits_advisory(ws)
-    ):
-        _tok_why, _effective = _token_denial
-        _record_budget_counter(ws, contract, event)
-        # A broken meter must fail closed, but it must not hide a more
-        # specific authority boundary.  Preserve the contract's direct
-        # tool/command refusal when both checks deny the same action.
-        _contract_allows, _contract_why = _screen_contract_tool(contract, tool_name, tool_input, ws)
-        if not _contract_allows:
-            _tok_why = _contract_why
-        _meter_bump(ws, tid, "denies")
-        tp.trace(ws, "token_budget_deny", tool=tool_name, effective=_effective)
-        print(json.dumps({"decision": "block", "reason": f"taskplane contract {tid}: {_tok_why}"}))
-        return 0
+            return 0
 
     ok, reason = tp.budget_status(
         contract, used, reserve=_CLOSING_RESERVE, closing=_is_closing_command(command)
     )
     from taskplane import run_context
 
-    if not ok and (
-        bool((contract.get("budget") or {}).get("token_usage_required"))
-        or not run_context.resource_limits_advisory(ws)
-    ):
+    if not ok and not run_context.resource_limits_advisory(ws):
         _meter_bump(ws, tid, "denies")
         tp.trace(
             ws,
@@ -4566,20 +4196,6 @@ def _screen(a) -> int:
                 }
             )
         )
-        return 0
-
-    native_tool = host_caps.native_coordination_tool(tool_name)
-    if native_tool is not None:
-        reason = None
-        owner = tp._worker_event_owner(event)
-        if (contract.get("worker_scoped") or contract.get("worker_lifecycle")
-                or owner["agent_id"] or owner["task_name"]):
-            reason = "lens workers must read their scoped input, write the result and finish; no coordination"
-        if reason:
-            _meter_bump(ws, tid, "denies")
-            print(json.dumps({"decision": "block", "reason": "taskplane: " + reason}))
-        else:
-            _meter_bump(ws, tid, "actions")
         return 0
 
     # OBLIGATION → PROHIBITION. A hook can deny an action; it cannot compel
@@ -4631,7 +4247,7 @@ def _screen(a) -> int:
             print(json.dumps({"decision": "block", "reason": "taskplane: " + _unbound}))
             return 0
 
-    allow, reason = _screen_contract_tool(contract, tool_name, tool_input, ws)
+    allow, reason = tp.screen_tool(contract, tool_name, tool_input, ws)
     if allow:
         # A leased review result needs evidence stronger than the JSON's own
         # `authored_by` string.  The always-on write hook records the observed
@@ -4841,68 +4457,18 @@ def cmd_status(a) -> int:
     return 0
 
 
-def _source_review_usage_snapshot(workspace: str) -> dict:
-    import review as review_runtime
-
-    try:
-        transcripts = review_runtime._host_review_transcripts()
-        if len(transcripts) != 1:
-            raise ValueError("one native transcript is required")
-        provider, path = transcripts[0]
-        projection = _bounded_transcript_projection(workspace, path, provider)
-        if projection.get("status") != "available":
-            raise ValueError(str(projection.get("reason") or "native usage unavailable"))
-        usage = dict(projection["usage"])
-        if "cache_creation_tokens" in projection:
-            usage["cache_creation_tokens"] = projection["cache_creation_tokens"]
-        return {"status": "available", "provider": provider,
-                "session_id": runtime_storage.host_session_id(), "usage": usage}
-    except (ValueError, RuntimeError, OSError, KeyError) as exc:
-        return {"status": "unavailable", "reason": str(exc)[:256]}
-
-
 def cmd_budget(a) -> int:
     ws = _workspace(a.workspace)
     c = tp.load_active(ws)
     if c is None:
-        import review as review_runtime
-
-        source = review_runtime.load_source_review(ws)
-        if source is not None:
-            if any(getattr(a, key, None) is not None for key in ("grant", "grant_tokens", "spent", "tokens")):
-                print("taskplane: source review uses native tools; its budget is advisory and has no contract to grant.", file=sys.stderr)
-                return 1
-            print(json.dumps(review_runtime.source_review_usage(
-                source, _source_review_usage_snapshot(ws)), sort_keys=True))
-            return 0
-        print("taskplane: no active contract or source review.", file=sys.stderr)
+        print("taskplane: no active contract.", file=sys.stderr)
         return 1
-    extra_tokens = getattr(a, "grant_tokens", None)
-    if extra_tokens is not None:
-        approved_by = str(getattr(a, "approved_by", None) or "").strip()
-        if extra_tokens < 1 or not approved_by:
-            print("taskplane: --grant-tokens requires a positive count and --approved-by.", file=sys.stderr)
-            return 1
-        try:
-            counter = _meter_load(ws, strict=True).get(c["task_id"], {}).get("native_counter") or {}
-            if not counter.get("path") or counter.get("activated_at") != c.get("activated_at"):
-                raise ValueError("current host token counter unavailable; run the approved grant through the native hook")
-            projection = _bounded_transcript_projection(ws, counter["path"], counter["provider"])
-            if projection.get("status") != "available":
-                raise ValueError("current host token counter unavailable: " + str(projection.get("reason")))
-            observed = int(projection["usage"]["total_tokens"])
-            updated = tp.grant_token_budget(ws, extra_tokens, observed, approved_by,
-                                            expected_task_id=c["task_id"])
-        except (ValueError, KeyError, OSError, MeterCorrupt, tp.StateError) as exc:
-            print(f"taskplane: token grant refused — {exc}", file=sys.stderr)
-            return 1
-        print(f"taskplane: budget granted — +{extra_tokens:,} native tokens, ceiling now "
-              f"{updated['budget']['max_tokens']:,} ({observed:,} observed). "
-              "The existing task can resume within its remaining permissions and limits.")
-        return 0
-    if getattr(a, "grant", None) is not None:
-        # Explicit --approved-by recovery remains reachable inside a governed
-        # task. A bare self-issued grant still goes through normal screening.
+    if getattr(a, "grant", None):
+        # The approval half of the budget gate: exhaustion blocks and asks
+        # the human; this records the human's YES. Meant for the HUMAN /
+        # the ungoverned main session — a governed agent's own `tp budget
+        # --grant` is still screened (and budget-blocked) like any other
+        # command; the wall is intentional.
         if a.grant < 1:
             print("taskplane: --grant must be a positive action count.", file=sys.stderr)
             return 1
@@ -4922,7 +4488,7 @@ def cmd_budget(a) -> int:
     if a.spent is None:
         print(
             "taskplane: pass --spent USD (cooperative estimate) or "
-            "--grant N (actions) or --grant-tokens N --approved-by USER (native tokens).",
+            "--grant N (raise the action ceiling).",
             file=sys.stderr,
         )
         return 1
@@ -5157,14 +4723,14 @@ def cmd_loop(a) -> int:
             host={
                 "kind": tp.host(),
                 "session_id": (
-                    runtime_storage.host_session_id()
+                    os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
                 ),
             },
         )
         if prepared.get("status") != "ready":
             print(json.dumps(prepared, sort_keys=True))
             return 2
-    if action in {"next", "gate", "collect"}:
+    if action in {"next", "gate"}:
         refusal = _graph_quality_refusal(ws, "Design/Plan/Review/DoD")
         if refusal:
             print(json.dumps(refusal, indent=2))
@@ -5172,10 +4738,7 @@ def cmd_loop(a) -> int:
     # Defining or reading a run launches no worker. Its durable scope must
     # exist before a transport can be admitted, including after a fresh
     # session. Enforcement belongs at the effect/dispatch boundary.
-    guarded_actions = {"next", "wave", "claim", "gate", "collect", "approve",
-                       "select", "resolve", "replan", "restore-settings", "terminal"}
-    if action == "amend" and not getattr(a, "preview", False):
-        guarded_actions.add("amend")
+    guarded_actions = {"next", "wave", "claim", "gate", "approve"}
     if action in guarded_actions or action == "init":
         current = loopmod.load(ws)
         locator = runtime_storage.load_workspace_locator(ws)
@@ -5283,10 +4846,6 @@ def cmd_loop(a) -> int:
         out = loopmod.claim(ws, a.task_id, a.agent_workspace)
     elif action == "approve":
         out = loopmod.approve(ws, force=a.force, by=getattr(a, "by", None))
-    elif action == "collect":
-        from taskplane import gates
-
-        out = gates.collect_phase(loopmod, ws, a.operation, task_id=a.task)
     elif action == "select":
         out = loopmod.select(ws, a.choice, note=a.note or "")
     elif action == "restore-settings":
@@ -5465,19 +5024,16 @@ def _governed_command_request(a) -> dict:
         argv = list(a.argv)
         if argv[:1] == ["--"]:
             argv = argv[1:]
-        requested_deadline = getattr(a, "deadline_seconds", None)
-        deadline = None
-        if a.host != "codex" or requested_deadline is not None:
-            deadline = _time.time() + duration(
-                requested_deadline,
-                setting="task_seconds",
-                label="governed command deadline",
-            )
+        deadline_seconds = duration(
+            getattr(a, "deadline_seconds", None),
+            setting="task_seconds",
+            label="governed command deadline",
+        )
         request.update(
             {
                 "argv": argv,
                 "cwd": getattr(a, "cwd", None),
-                "deadline": deadline,
+                "deadline": _time.time() + deadline_seconds,
                 "host": a.host,
                 "run_id": a.run_id,
                 "task_id": a.task_id,
@@ -5560,8 +5116,7 @@ def cmd_preview(a) -> int:
         import preview_runtime
     try:
         request = preview_runtime.load_preview_request(a.request)
-        out = (preview_runtime.resume_preview_request(request, a.resume)
-               if getattr(a, "resume", None) else preview_runtime.launch_preview_request(request))
+        out = preview_runtime.launch_preview_request(request)
     except preview_runtime.PreviewError as exc:
         out = {
             "schema": "taskplane.working-preview-launch/v1",
@@ -5592,7 +5147,7 @@ def cmd_preview(a) -> int:
 def _add_governed_command_actions(parser, *, fn=None) -> None:
     actions = parser.add_subparsers(dest="command_action", required=True)
     launch = actions.add_parser(
-        "launch", help="prepare native Codex execution or launch through the retained host runtime"
+        "launch", help="launch direct argv through the durable command runtime"
     )
     launch.add_argument(
         "--authorization", required=True, help="actor/session identity bound to the handle"
@@ -5607,7 +5162,7 @@ def _add_governed_command_actions(parser, *, fn=None) -> None:
         "--deadline-seconds",
         type=float,
         default=None,
-        help="optional hard deadline (unavailable on native Codex desktop tools)",
+        help="optional execution deadline from launch",
     )
     launch.add_argument("--wave-id", default=None, help="optional governed command-wave identity")
     launch.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
@@ -6904,11 +6459,15 @@ def cmd_context(a) -> int:
     import track as tr
 
     ws = _workspace(a.workspace)
-    is_hook = (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {"native", "bridge"}
-    if not loopmod._load_raw(ws) and not tp.load_active(ws):
-        if not is_hook:
-            print("No active Taskplane delivery. Review and help use native tools directly.")
-        return 0
+    print(
+        "[taskplane] On the first TaskPlane request in this session, and "
+        "after installation or update, run onboard and present its setup "
+        "dashboard before routing any intent (including review, status, "
+        "and help). Existing repository context is not completed onboarding. "
+        "Keep the requested goal and continue it when setup is ready. "
+        "Internal stage workers consume their sealed startup without "
+        "repeating this user-entry setup."
+    )
     lifecycle_released = []
     terminal_recovery = None
     if (os.environ.get("TASKPLANE_HOOK_PATH") or "").strip().lower() in {
@@ -6935,6 +6494,22 @@ def cmd_context(a) -> int:
         # SessionStart is a replay point, never a source of terminal truth.
         # With no exact persisted whole-run intent this is a strict no-op.
         terminal_recovery = loopmod.replay_terminal_intent(ws)
+    if not os.path.isdir(tp.kb_root(ws)) and not os.path.isdir(tp.tp_dir(ws)):
+        # An installed plugin must expose its on-ramp. Using the same report
+        # as tp-go also recognizes linked worktrees (.git is a file) and
+        # keeps the prompt specific to the single missing prerequisite.
+        report = _onboard_report(ws)
+        prompts = {
+            "attach_folder": "no project folder is connected yet",
+            "init_git": "this folder needs a git repo with an initial commit",
+            "tp_init": "this repo needs taskplane initialization",
+        }
+        missing = prompts.get(report["next_action"], "setup is incomplete")
+        print(
+            f'[taskplane] installed; {missing} — say "set up taskplane" '
+            'to continue, or "taskplane help" for the tour.'
+        )
+        return 0
     st = loopmod.status(ws)
     g = dg.load(ws)
     reqs_open = [r for r in reqmod.list_requirements(ws) if r["status"] not in ("done",)]
@@ -6999,7 +6574,6 @@ def cmd_context(a) -> int:
 
 _HOOK_COMMANDS = frozenset(
     {
-        "host-native-check",
         "screen",
         "screen-skill",
         "screen-dispatch",
@@ -7034,8 +6608,6 @@ def _hook_response_class(command: str, output: str, returncode: int) -> str:
         return "advisory"
     hook_output = payload.get("hookSpecificOutput")
     hook_output = hook_output if isinstance(hook_output, dict) else {}
-    if command in {"subagent-stop", "session-verify"} and payload.get("continue") is False:
-        return "stop"
     if payload.get("decision") == "block" or hook_output.get("permissionDecision") == "deny":
         return "block"
     if "additionalContext" in hook_output:
@@ -7049,9 +6621,6 @@ def _hook_response_class(command: str, output: str, returncode: int) -> str:
 
 def _replay_hook_response(command: str, response_class: str) -> int:
     """Replay protocol semantics without replaying a hook's side effects."""
-    if response_class == "stop" and command in {"subagent-stop", "session-verify"}:
-        _emit_budget_stop("The original budget stop remains in effect; human approval is required.")
-        return 0
     if response_class in {"block", "error"}:
         reason = (
             "taskplane already processed this lifecycle event; the "
@@ -7122,14 +6691,6 @@ def _invoke_run_command(a, workspace: str) -> int:
         return a.fn(a)
     from taskplane import run_context, run_store, settings
     import loop as loopmod
-
-    if a.cmd == "review" and getattr(a, "review_action", None) in {None, "start", "resume"}:
-        _set_effective_settings_snapshot(settings.load_settings(environment=os.environ))
-        return a.fn(a)
-    if a.cmd == "budget":
-        import review as review_runtime
-        if not tp.load_active(workspace) and review_runtime.load_source_review(workspace):
-            return a.fn(a)
 
     if a.cmd == "loop" and getattr(a, "loop_action", None) == "next":
         observed = loopmod.read_pending_action(workspace)
@@ -7225,68 +6786,10 @@ def _run_hook_command(a) -> int:
 
         event = codex_identity.normalize_lifecycle(event)
         raw = json.dumps(event, separators=(",", ":"))
-    with runtime_storage.hook_session(event):
-        return _run_session_hook_command(a, raw, event, hook_path)
-
-
-def _persist_claude_hook_session(event: dict) -> None:
-    """Carry host-observed identity into Bash via Claude's SessionStart API.
-
-    A hook subprocess cannot export into its parent. The host-owned env file
-    is the supported handoff; never infer the current session from a receipt
-    found on disk. This does not create enforcement evidence.
-    """
-    path = os.environ.get("CLAUDE_ENV_FILE")
-    session = event.get("session_id")
-    if (event.get("hook_event_name") != "SessionStart"
-            or os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID") or not path
-            or not isinstance(session, str) or not session.strip()
-            or any(char in session for char in ("\0", "\n", "\r"))):
-        return
-    line = "export CLAUDE_SESSION_ID=" + shlex.quote(session.strip()) + "\n"
-    with tp.file_lock(path):
-        with open(path, "a+", encoding="utf-8") as stream:
-            stream.seek(0)
-            if line not in stream.readlines():
-                stream.write("\n" + line)
-
-
-def _run_session_hook_command(a, raw: str, event: dict, hook_path: str) -> int:
-    """Hook state and contracts belong to the event's host conversation."""
-    receipt_event = event
     event_cwd = event.get("cwd")
     workspace = _workspace(
         event_cwd if isinstance(event_cwd, str) and event_cwd else getattr(a, "workspace", None)
     )
-    review_workspace = runtime_storage.review_session_workspace()
-    if review_workspace and review_workspace != workspace:
-        event = dict(event)
-        inputs = event.get("tool_input")
-        if isinstance(inputs, dict):
-            inputs = dict(inputs)
-            # Paths remain relative to the host's actual cwd, never silently
-            # reinterpreted as paths in the review checkout.
-            for key in ("file_path", "path", "notebook_path", "cwd", "workdir"):
-                value = inputs.get(key)
-                if isinstance(value, str) and value and not os.path.isabs(value):
-                    inputs[key] = os.path.abspath(os.path.join(workspace, value))
-            if event.get("tool_name", event.get("tool")) == "apply_patch":
-                def absolute_patch_target(match):
-                    path = match.group("path")
-                    if os.path.isabs(path):
-                        return match.group(0)
-                    start = match.start("path") - match.start()
-                    return match.group(0)[:start] + os.path.abspath(os.path.join(workspace, path))
-
-                inputs["command"] = tp._PATCH_TARGET_RE.sub(
-                    absolute_patch_target, str(inputs.get("command") or ""))
-            event["tool_input"] = inputs
-        event["cwd"] = review_workspace
-        workspace = review_workspace
-        raw = json.dumps(event, separators=(",", ":"))
-        # The invocation may inherit the session cwd's project home. Resolve
-        # the selected checkout's own locator instead of carrying it across.
-        os.environ.pop("TASKPLANE_HOME", None)
     a.workspace = workspace
     if hook_path not in {"native", "bridge"}:
         # Direct hook invocations still belong to the event's checkout.
@@ -7304,9 +6807,7 @@ def _run_session_hook_command(a, raw: str, event: dict, hook_path: str) -> int:
     claim = tp.claim_hook_event(workspace, a.cmd, event, hook_path=hook_path)
     if claim.get("claim_id"):
         host_caps.record_runtime_hook_receipt(
-            receipt_home, hook_path=hook_path, event=receipt_event, claim=claim,
-            native_home=runtime_storage.host_runtime_home(),
-            engine_fingerprint=tp._entry_engine_fingerprint(),
+            receipt_home, hook_path=hook_path, event=event, claim=claim
         )
     context_replay = (
         not claim.get("execute")
@@ -7335,7 +6836,7 @@ def _run_session_hook_command(a, raw: str, event: dict, hook_path: str) -> int:
         sys.stdin = original_stdin
 
     output = captured.getvalue()
-    if a.cmd == "context" and not returncode and output.strip():
+    if a.cmd == "context" and not returncode:
         # Codex expects SessionStart JSON. Direct `tp context` remains plain
         # text; both initial and duplicate hook paths carry usable context.
         try:
@@ -7416,9 +6917,8 @@ def _contracts_elsewhere(ws: str, limit: int = 4) -> list:
         owner = os.path.realpath(os.path.abspath(owner))
         if owner == here or not os.path.isdir(owner):
             continue
-        control = tp.tp_dir(owner)
-        active = os.path.join(control, "active")
-        has = os.path.isfile(os.path.join(control, "active_contract.json")) or (
+        active = os.path.join(owner, ".taskplane", "active")
+        has = os.path.isfile(os.path.join(owner, ".taskplane", "active_contract.json")) or (
             os.path.isdir(active) and any(n.endswith(".json") for n in os.listdir(active))
         )
         if has:
@@ -7954,18 +7454,14 @@ def _activate_visible_review_bootstrap(
         parent_budget = ((parent or {}).get("budget") if isinstance(parent, dict) else {}) or {}
         inherited = parent_budget.get("max_tokens")
         producer_budget = _standalone_review_budget(
-            min(int(inherited), DEFAULT_LENS_MAX_TOKENS)
+            int(inherited)
             if isinstance(inherited, int) and not isinstance(inherited, bool)
-            else DEFAULT_LENS_MAX_TOKENS
+            else None
         )
         contract = tp.activate_review_contract_action(workspace, action, **expected)
         active_path = tp.active_contract_path(workspace, task_slot)
         try:
             contract["budget"].update(producer_budget)
-            _apply_contract_token_ceiling(contract, producer_budget["max_tokens"])
-            contract["budget"]["max_actions"] = min(
-                int(contract["budget"].get("max_actions", 8)), 8
-            )
             tp.atomic_write_json(active_path, contract, sort_keys=True)
         except Exception:
             # Never leave the just-created producer active without the token
@@ -8041,39 +7537,24 @@ def _legacy_review_activation_command(command: str) -> bool:
     return False
 
 
-def _standalone_review_parent_task(workspace: str, manifest: dict) -> str:
-    """Require the review's own active parent before issuing worker startup."""
-    import review as review_kernel
-
-    parent = manifest.get("contract") or {}
-    active = tp.load_json(
-        os.path.join(tp.tp_dir(workspace), "active_contract.json"),
-        default=None, what="standalone review parent contract") or {}
-    if (parent.get("read_only") is not True or not parent.get("task_id")
-            or parent.get("status") != "active"
-            or active.get("task_id") != parent["task_id"]
-            or active.get("read_only") is not True):
-        raise review_kernel.ReviewKernelError(
-            "standalone review dispatch requires its read-only parent contract")
-    return parent["task_id"]
-
-
-def _bind_standalone_review_dispatch(workspace: str, manifest: dict) -> dict:
-    """Attach the existing signed slot activation to dispatchable Review output."""
-    if manifest.get("status") != "ready" or not manifest.get("slots"):
-        return manifest
-    import loop as loop_runtime
-
-    parent_task = _standalone_review_parent_task(workspace, manifest)
-    return loop_runtime._bind_stateless_review_contract_actions(
-        workspace, manifest, task_id=parent_task)
-
-
 def cmd_review(a) -> int:
-    """Pin ordinary review scope; retain explicit legacy evidence operations."""
+    """Open a review in ONE call.
+
+    A review used to run about ten shell commands before a single lens
+    looked at the diff — onboard, init, new, target, graph scan, graph
+    impact, lens route, lens dispatch, two dashboard renders — at a measured
+    ~11k effective tokens each, and each command AND its output then sits in
+    the conversation to be re-read on every later turn. `tp loop evidence`
+    proved the fix for the evaluate step in v2.6: return everything the step
+    needs in one payload, with every judgement slot left EMPTY.
+
+    This does the same for the review's opening. It decides nothing: no
+    finding, no verdict, no severity. It establishes facts — tools, target,
+    graph, impact, routing, runnability — activates the contract, writes the
+    shared context once, and hands back the briefs.
+    """
     import target as tgt
     import review as rv
-    import storage as runtime_storage
 
     ws = _workspace(a.workspace)
     review_action = getattr(a, "review_action", None)
@@ -8090,11 +7571,6 @@ def cmd_review(a) -> int:
                     "lease_fingerprint": contract["bootstrap_lease_fingerprint"],
                     "read_only": contract["read_only"],
                     "write_allow": contract["write_allow"],
-                    "worker_binding": {
-                        "event": "SubagentStart",
-                        "status": contract["worker_lifecycle"]["status"],
-                        "task_name": contract["worker_lifecycle"]["expected_task_name"],
-                    },
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -8102,7 +7578,7 @@ def cmd_review(a) -> int:
         )
         return 0
     enforcement = None
-    if review_action == "signoff":
+    if review_action in {"start", "resume", "signoff"}:
         active = tp.load_active(ws) or {}
         enforcement, refusal = _enforcement_check(
             ws,
@@ -8118,7 +7594,6 @@ def cmd_review(a) -> int:
         try:
             ws = rv.resolve_review_workspace(ws, a.run_id)
             state = rv._load_state(ws, a.run_id)
-            _standalone_review_parent_task(ws, state.get("manifest") or {})
             pending = state.get("review_execution") or rv.review_execution_preflight(
                 run_id=state.get("run_id")
             )
@@ -8133,7 +7608,6 @@ def cmd_review(a) -> int:
                 approval_receipt=None,
                 run_id=a.run_id,
             )
-            result = _bind_standalone_review_dispatch(ws, result)
             visuals, owed = _review_visuals(ws, result, final=False)
             result = rv._manifest({**result, "visuals": visuals, "obligations": owed})
             kernel_state = rv._load_state(ws, result.get("run_id"))
@@ -8317,12 +7791,6 @@ def cmd_review(a) -> int:
         return 1
     spec = getattr(a, "spec", None)
     parsed = tgt.parse(spec) if spec else None
-    review_scope = getattr(a, "scope", "diff")
-    if review_scope == "repository" and (getattr(a, "base", None) or
-            (parsed or {}).get("kind") == "pr"):
-        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_scope",
-            "reason": "repository snapshot scope cannot be combined with a PR or comparison base"}))
-        return 1
     remote_repository = False
     if spec and (not parsed or parsed.get("kind") != "pr"):
         try:
@@ -8332,10 +7800,6 @@ def cmd_review(a) -> int:
             remote_repository = True
         except ValueError:
             remote_repository = False
-    if review_scope == "repository" and remote_repository:
-        print(json.dumps({"status": "start_failed", "reason_code": "invalid_review_scope",
-            "reason": "repository snapshot scope requires a local checkout; select its --workspace"}))
-        return 1
     if getattr(a, "review_action", None) == "resume":
         import preflight as repository_preflight_module
 
@@ -8410,7 +7874,7 @@ def cmd_review(a) -> int:
         host_record = {
             "kind": tp.host(),
             "session_id": (
-                runtime_storage.host_session_id()
+                os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
             ),
         }
         pending = repository_preflight_module.find_bootstrap(ws, spec=spec)
@@ -8512,6 +7976,7 @@ def cmd_review(a) -> int:
         )
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1
+    tgt.save(ws, rec)
     out["target"] = rec
     # The canonical PR patch starts at the pinned merge-base, not the moving
     # tip of the base branch.  Repository preflight already resolved and
@@ -8520,12 +7985,7 @@ def cmd_review(a) -> int:
     # the PR diverged, inflating symbols and graph impact.
     base = rec.get("merge_base") or rec.get("base_ref") or getattr(a, "base", None) or "HEAD"
     try:
-        inventory = (rv.canonical_repository_files(ws, rec["head"])
-            if review_scope == "repository" else rv.canonical_diff_files(ws, base))
-        files = rv.select_diff_paths(inventory, getattr(a, "paths", None))
-        if not files:
-            raise rv.ReviewKernelError(
-                "review scope is empty; use --scope repository for a whole-repository source review")
+        files = rv.select_diff_paths(rv.canonical_diff_files(ws, base), getattr(a, "paths", None))
         active = tp.load_active(ws) or {}
         coding = active.get("coding") or {}
         if coding.get("scope_paths"):
@@ -8536,8 +7996,6 @@ def cmd_review(a) -> int:
                 )
         rec["changed_files"] = files
         rec["diff_policy"] = {"paths": files, "max_diff_bytes": diff_byte_limit}
-        if review_scope == "repository":
-            rec["diff_policy"].update(kind="repository", revision=rec["head"])
         rec["fingerprint"] = tgt.fingerprint(rec)
         tgt.save(ws, rec)
     except (ValueError, RuntimeError) as exc:
@@ -8560,25 +8018,329 @@ def cmd_review(a) -> int:
         changed=len(rec.get("changed_files") or []),
     )
 
+    # 3. graph + impact — impact-first is not optional, and it costs nothing
+    #    here that it would not cost as its own call.
+    files = rec.get("changed_files") or []
+    g, imp = {}, {}
     try:
-        diff_rc, patch = ((0, "") if review_scope == "repository" else
-            rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit))
-        if diff_rc:
-            raise ValueError(patch or "canonical diff unavailable")
-        result = rv.prepare_source_review(
-            ws, target=rec, files=files, patch=patch, scope=review_scope,
-            goal=" ".join(getattr(a, "goal", None) or []),
-            max_tokens=getattr(a, "max_tokens", None),
-            max_actions=getattr(a, "max_actions", None),
-            usage_start=_source_review_usage_snapshot(ws),
+        import depgraph as dg
+
+        g = dg.load(ws)
+        # RESCAN A GRAPH THAT DESCRIBES ANOTHER TREE (D2). The blast radius
+        # is the one input every lens is told NOT to re-derive, so a stored
+        # graph scanned at a different head hands the wrong revision to the
+        # whole wave at once. A graph with no `scanned_head` at all cannot
+        # say which tree it describes, so it is rescanned too.
+        _scanned = ((g.get("meta") or {}).get("scanned_head") or "")[:12]
+        if not g.get("modules") or _scanned != (rec.get("head") or "")[:12]:
+            g = dg.scan(ws)
+        imp = dg.impact(ws, files) if files else {}
+        out["impact"] = imp
+        step(
+            "graph",
+            True,
+            modules=len(g.get("modules") or {}),
+            edges=len(g.get("edges") or []),
+            impacted=imp.get("total_impacted", 0),
         )
+    except Exception as e:
+        # Never pretend a stale/partially loaded graph is complete. The
+        # canonical pinned diff remains reviewable; ReviewKernel records the
+        # degraded graph and routes from diff/content with mandatory floors.
+        g, imp = {}, {}
+        step("graph", False, reason=e.__class__.__name__)
+    graph_errors = dg.quality_errors(g) if g and "dg" in locals() else []
+    if graph_errors:
+        quality = dg.scan_quality(g)
+        warning = {
+            "schema": "taskplane.graph-quality-warning/v1",
+            "status": "degraded",
+            "reason": graph_errors[0],
+            "graph_quality": quality,
+            "recovery": (quality.get("recovery") or dg.GRAPH_SCAN_RECOVERY),
+            "continuation": "immutable_diff_with_architecture_security_floors",
+        }
+        # Standalone Review is intentionally useful when graph enrichment is
+        # incomplete: preserve the producer failure visibly, then let the
+        # review kernel route from the pinned immutable diff with its
+        # architecture/security floors. Governed Evaluate/EM and DoD retain
+        # their strict refusals in cmd_loop/cmd_dod.
+        step(
+            "graph",
+            False,
+            reason=graph_errors[0],
+            recovery=warning["recovery"],
+            continuation=warning["continuation"],
+        )
+        out["graph_quality_warning"] = warning
+        preflight["graph_quality_warning"] = warning
+        # Adapt the producer-complete scan record into ReviewKernel's existing
+        # impact-quality interface. A failed graph producer makes the derived
+        # radius unknown, and the same degraded graph cannot honestly repair
+        # that uncertainty through caller expansion. The full producer record
+        # remains attached to the impact evidence rather than being recast as
+        # an unrelated truncation or coverage failure.
+        imp = dict(imp)
+        imp.update(
+            {
+                "unknown": True,
+                "unknown_reason": "graph_scan_degraded",
+                "graph_scan_quality": quality,
+            }
+        )
+        out["impact"] = imp
+    rec["review_cache"] = tgt.review_cache_identity(rec, g)
+    preflight["cache_identity"] = rec["review_cache"]
+    tgt.save(ws, rec)
+
+    # 4. contract — prepare it now, activate only after the kernel is ready.
+    #    A mapper refusal must never strand the caller under an active
+    #    read-only contract; graph degradation proceeds from the pinned diff.
+    import storage as runtime_storage
+
+    locator = runtime_storage.load_workspace_locator(ws)
+    write_allow = [".em-review/**"]
+    if locator:
+        write_allow = [os.path.join(path, "**") for path in locator["paths"].values()]
+    c = tp.build_contract(
+        (" ".join(a.goal) if getattr(a, "goal", None) else f"engineering review: {spec or base}"),
+        read_only=True,
+        write_allow=write_allow,
+        max_actions=(int(a.max_actions) if getattr(a, "max_actions", None) is not None else None),
+    )
+    if enforcement:
+        c["enforcement"] = enforcement
+    c["budget"].update(_standalone_review_budget(getattr(a, "max_tokens", None)))
+    _apply_contract_token_ceiling(c, c["budget"]["max_tokens"])
+    c["target"] = {
+        k: rec.get(k)
+        for k in (
+            "origin",
+            "head",
+            "base",
+            "base_ref",
+            "branch",
+            "merge_base",
+            "shallow",
+            "fingerprint",
+            "target",
+            "review_cache",
+            "diff_policy",
+        )
+    }
+    out["contract"] = {
+        "task_id": c["task_id"],
+        "read_only": True,
+        "status": "prepared",
+        "write_allow": write_allow,
+        "budget": c.get("budget"),
+    }
+
+    # 5. One normal-flow kernel call: quality before mapping, then exactly
+    #    one immutable envelope and exact deep/light slots. Large bytes are
+    #    artifacts; stdout is only the compact manifest.
+    try:
+        import runnability as runmod
+
+        probe = runmod.probe_once(ws)
+        diff_rc, patch = rv.canonical_diff_patch(ws, base, paths=files, max_bytes=diff_byte_limit)
+        if diff_rc:
+            if diff_rc == rv.CANONICAL_DIFF_TOO_LARGE:
+                print(
+                    json.dumps(
+                        {
+                            "schema": "taskplane.review-start-manifest/v2",
+                            "status": "start_failed",
+                            **json.loads(patch),
+                        }
+                    )
+                )
+                return 1
+            raise RuntimeError(patch or "canonical diff derivation failed")
+        import review_evidence as _re
+
+        store = _re.ArtifactStore(ws)
+        diff_ref = store.put("diff", {"base": base, "patch": patch, "files": files})
+        symbols = rv.changed_symbols_from_patch(patch)
+        routing_content = rv.changed_content_from_patch(patch)
+        review_router = None
+        if graph_errors:
+            import lens as lensmod
+
+            def _degraded_review_router():
+                routing = lensmod.route(
+                    files,
+                    task_type="review",
+                    breadth="routed",
+                    stage="review",
+                    workspace=ws,
+                    requirement_text=None,
+                    content_by_file=routing_content,
+                )
+                guardrails = ("architecture", "security")
+                by_id = {str(row.get("id") or ""): row for row in routing.get("lenses") or []}
+                for lens_id in guardrails:
+                    row = by_id.get(lens_id)
+                    if row is None:
+                        continue
+                    tier = str(row.get("tier") or row.get("verdict") or "")
+                    reason = f"degraded graph fallback: {lens_id} floor"
+                    if tier not in {"light", "deep"}:
+                        row["initial_verdict"] = tier or "n/a"
+                        row["tier"] = "light"
+                        row["verdict"] = "light"
+                        row["mode"] = "inline"
+                        row.pop("negative_evidence", None)
+                    row["floor"] = reason
+                    for key in ("evidence", "reasons"):
+                        values = row.setdefault(key, [])
+                        if reason not in values:
+                            values.append(reason)
+                context = routing.setdefault("context", {})
+                progression = context.setdefault("review_progression", {})
+                sweep_lenses = list(progression.get("sweep_lenses") or [])
+                for lens_id in guardrails:
+                    row = by_id.get(lens_id) or {}
+                    tier = str(row.get("tier") or row.get("verdict") or "")
+                    if tier == "light" and lens_id not in sweep_lenses:
+                        # The two advertised guardrails are a fixed, bounded
+                        # widening of the existing single sweep. Keeping them
+                        # in the same slot avoids a second review wave while
+                        # ensuring dispatch cannot filter either floor out.
+                        sweep_lenses.append(lens_id)
+                progression["sweep_lenses"] = sweep_lenses
+                progression["sweep_count"] = 1 if sweep_lenses else 0
+                progression["deferred_light"] = [
+                    lens_id
+                    for lens_id in progression.get("deferred_light") or []
+                    if lens_id not in guardrails
+                ]
+                context["graph_quality_fallback"] = {
+                    "mode": "immutable_diff",
+                    "guardrails": ["architecture_floor", "security_floor"],
+                    "sweep_widening": [
+                        lens_id for lens_id in guardrails if lens_id in sweep_lenses
+                    ],
+                }
+                # Routing attached language references before the fallback
+                # promoted security. Refresh that deterministic attachment so
+                # the stored sweep brief applies the newly active floor too.
+                routing = lensmod._attach_language_context(routing, files, "review")
+                return routing
+
+            review_router = _degraded_review_router
+        manifest = rv.start_review(
+            ws,
+            target=rec,
+            graph=g,
+            impact=imp,
+            diff={
+                "files": files,
+                "changed_symbols": symbols,
+                "artifact": rv._portable_ref(diff_ref),
+            },
+            runnability=runmod.evidence_record(probe),
+            requirement={},
+            acceptance=[],
+            contracts=[],
+            stage="review",
+            task_type="review",
+            base=base,
+            caller_expander=(None if graph_errors else rv.bounded_caller_expander(g)),
+            router=review_router,
+            routing_content=routing_content,
+        )
+        if manifest.get("status") not in {"ready", "needs_user"}:
+            if repository_run:
+                import run_store as repository_run_store
+
+                store_record = repository_run_store.RunStore()
+                current = store_record.load(repository_run)
+                store_record.commit(
+                    repository_run,
+                    expected_revision=int(current["revision"]),
+                    changes={
+                        "status": "review_blocked",
+                        "contract": {"status": "inactive", "task_id": None},
+                        "review": {
+                            "kernel_run_id": manifest.get("run_id"),
+                            "status": manifest.get("status"),
+                        },
+                    },
+                )
+            manifest["contract"] = {"status": "inactive", "reason": manifest.get("status")}
+            manifest["preflight"] = preflight
+            print(json.dumps(rv._manifest(manifest), sort_keys=True, separators=(",", ":")))
+            return 1
+        tp.activate(ws, c, snapshot=tp.git_head(ws))
+        step("contract", True, task_id=c["task_id"])
+        try:
+            out["owes"] = _seed_owed(ws, "review", c["task_id"])
+            step("obligations", True, owed=len(out["owes"] or []))
+        except Exception as e:
+            step("obligations", False, reason=e.__class__.__name__)
         if repository_run:
-            result["repository_run_id"] = repository_run
-    except (ValueError, RuntimeError, OSError) as exc:
-        print(json.dumps({"status": "start_failed", "reason": str(exc)[:512]}))
+            import run_store as repository_run_store
+
+            store_record = repository_run_store.RunStore()
+            current = store_record.load(repository_run)
+            store_record.commit(
+                repository_run,
+                expected_revision=int(current["revision"]),
+                changes={
+                    "status": "governed",
+                    "contract": {"status": "active", "task_id": c["task_id"]},
+                    "review": {
+                        "kernel_run_id": manifest.get("run_id"),
+                        "status": manifest.get("status"),
+                    },
+                },
+            )
+        manifest["contract"] = {"task_id": c["task_id"], "read_only": True, "status": "active"}
+        if enforcement:
+            manifest["enforcement"] = enforcement
+        if repository_run:
+            manifest["repository_run_id"] = repository_run
+        manifest["tools"] = {"git": bool(t["git"]["present"]), "gh": bool(t["gh"]["present"])}
+        manifest["preflight"] = preflight
+        visuals, owed = _review_visuals(ws, manifest, final=False)
+        manifest["visuals"] = visuals
+        manifest["obligations"] = owed
+        manifest = rv._manifest(manifest)
+        kernel_state = rv._load_state(ws, manifest.get("run_id"))
+        rv._save_state(
+            ws,
+            dict(
+                kernel_state,
+                manifest=manifest,
+                counters=manifest["counters"],
+                **({"enforcement": enforcement} if enforcement else {}),
+            ),
+        )
+    except Exception as e:
+        step("route", False, reason=f"{e.__class__.__name__}: {e}")
+        # review start owns this contract.  A failed opening must not leave a
+        # read-only contract behind to block the user's next command.
+        try:
+            active = tp.load_active(ws) or {}
+            if active.get("task_id") == c.get("task_id"):
+                tp.clear(ws)
+        except Exception:
+            pass
+        print(
+            json.dumps(
+                {
+                    "schema": "taskplane.review-start-manifest/v2",
+                    "status": "start_failed",
+                    "reason": f"{e.__class__.__name__}: {e}",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         return 1
-    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
-    return 0
+    print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    return 0 if manifest.get("status") == "ready" else 2
 
 
 def cmd_target(a) -> int:
@@ -8757,7 +8519,7 @@ def cmd_repository(a) -> int:
         host = {
             "kind": tp.host(),
             "session_id": (
-                runtime_storage.host_session_id()
+                os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
             ),
         }
         try:
@@ -8813,37 +8575,6 @@ def _print_target(rec, tgt) -> None:
     )
 
 
-def _initialize_entry(ws: str) -> dict:
-    """Reuse onboarding; repair missing setup without creating/replacing a run."""
-    report = _onboard_report(ws)
-    repairs = []
-    installed = None
-    if (report["looks_like_project"] and report["is_git"] and report["has_commit"]
-            and report["run_readiness"]["ready"]):
-        hooks = report.get("launcher", report.get("codex_hooks"))
-        native = ((report.get("host_capabilities") or {}).get("effective_path") or {}).get("value") == "native_effective"
-        plugin_root = os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT")
-        direct_plugin = bool(plugin_root and tp._is_tp_cli(os.path.join(plugin_root, "taskplane", "tp.py")))
-        if hooks and not hooks["launcher_ready"] and (
-                hooks.get("launcher_present") or not (native or direct_plugin)):
-            installed = _install_codex_hooks(ws, remove_project_duplicates=False)
-            if installed.get("ok"):
-                repairs.append("install_launcher")
-        if not report["has_context"]:
-            with contextlib.redirect_stdout(io.StringIO()):
-                cmd_init(argparse.Namespace(workspace=ws, plan=None))
-            repairs.append("initialize_project")
-    if repairs or installed is not None:
-        report = _onboard_report(ws)
-    report["initialization"] = {"repairs": repairs, "run_preserved": True}
-    if installed is not None:
-        report["initialization"]["launcher"] = installed
-        if not installed.get("ok"):
-            report["ready"] = False
-            report["next_action"] = "install_launcher"
-    return report
-
-
 def cmd_onboard(a) -> int:
     """Cold-start onboarding. Detects whether the workspace is ready for a
     governed run (folder + git snapshot + init) and, by default, prints the
@@ -8863,10 +8594,7 @@ def cmd_onboard(a) -> int:
         if values is not None:
             result = _apply_onboarding_setup(ws, values)
         elif getattr(a, "install_codex_hooks", False) or getattr(a, "install_launcher", False):
-            launcher = _install_codex_hooks(ws)
-            result = {"launcher": launcher,
-                      "status": "applied" if launcher.get("ok") else
-                      "blocked" if launcher.get("status") == "blocked" else "failed"}
+            result = {"launcher": _install_codex_hooks(ws)}
     except (OSError, ValueError, TypeError, runtime_storage.StorageIdentityError) as exc:
         result = {
             "schema": "taskplane.onboarding-setup-result/v1",
@@ -8874,34 +8602,8 @@ def cmd_onboard(a) -> int:
             "error": str(exc),
             "run_preserved": True,
         }
-    available = getattr(a, "available_tools", None)
-    if available is not None:
-        tp.record_entry_tools([name.strip() for name in available.split(",") if name.strip()])
-    initialize = bool(getattr(a, "initialize", False))
-    report = _initialize_entry(ws) if initialize else _onboard_report(ws)
-    if runtime_storage.host_session_id():
-        # Reset an omitted declaration; a prior entry's inventory is not current.
-        if initialize and available is None:
-            tp.record_entry_tools([])
-        file_tools = tp.review_file_tool_readiness(workspace=ws)
-        report["review_file_tools"] = file_tools
-        report["workspace_ready"] = report["ready"]
-        report["review_ready"] = bool(report["ready"] and file_tools["ready"])
-        report["ready"] = report["review_ready"]
-        report.setdefault("checks", []).append({"id": "review_file_tools",
-            "label": "Review file access", "ok": file_tools["ready"],
-            "detail": file_tools["detail"],
-            "hint": "Use a host exposing compatible native review tools; completed workspace setup is preserved."})
-        if report["workspace_ready"] and not file_tools["ready"]:
-            report["next_action"] = "review_file_tools_unavailable"
-    failed = bool(result and result.get("status") in {"refused", "blocked", "failed"})
-    if failed and result is not None:
-        report["ready"] = False
-        if "workspace_ready" in report:
-            report["workspace_ready"] = False
-            report["review_ready"] = False
-        if result.get("launcher") is not None:
-            report["next_action"] = "install_launcher"
+    report = _onboard_report(ws)
+    failed = bool(result and result.get("status") in {"refused", "blocked"})
     if failed and isinstance(values, dict):
         report["submitted_values"] = values
     if result is not None:
@@ -8910,7 +8612,7 @@ def cmd_onboard(a) -> int:
         report["storage_selection"] = a.storage_selection
     if a.json:
         print(json.dumps(report, indent=2))
-        return 2 if failed or ((initialize or "review_file_tools" in report) and not report["ready"]) else 0
+        return 2 if failed else 0
     # Render contract (v1.5.3/4): the HEADLINE is the never-skippable carrier
     # — on hosts without inline widgets (Codex) it is the primary channel.
     print("HEADLINE: " + dashboard.headline_onboarding(report))
@@ -8930,7 +8632,7 @@ def cmd_onboard(a) -> int:
             + str(row.get("remediation") or "")
         )
     print(dashboard.render_onboarding(report, out=a.out))
-    return 2 if failed or ((initialize or "review_file_tools" in report) and not report["ready"]) else 0
+    return 2 if failed else 0
 
 
 def _inline_max() -> int:
@@ -9911,7 +9613,7 @@ def _cli_stage_request_note() -> list[str]:
         "`human:vdemkiv` (letters, digits, `.`, `_`, `:`, or `-`; no spaces).",
         "That value becomes the root stage `authority.actor`. A",
         "stable session identity must already be present in",
-        "`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_CODE_SESSION_ID` (legacy: `CLAUDE_SESSION_ID`).",
+        "`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.",
         "The workspace must already have a governed locator bound to an",
         "current v4 run with an exact target revision.",
         "",
@@ -10254,11 +9956,8 @@ def _unbound_global_hook(argv=None) -> bool:
         return False
     if os.environ.get("TASKPLANE_HOOK_PATH") not in ("native", "bridge"):
         return False
-    if runtime_storage.review_session_workspace():
-        return False
     workspace = os.getcwd()
-    if (os.path.isfile(os.path.join(workspace, ".taskplane", "codex-hook.py"))
-            or os.path.isdir(os.path.join(tp.kb_root(workspace), "context"))):
+    if os.path.isfile(os.path.join(workspace, ".taskplane", "codex-hook.py")):
         return False
     try:
         common = tp._run(
@@ -10277,56 +9976,14 @@ def _unbound_global_hook(argv=None) -> bool:
     launcher = os.path.realpath(
         os.path.join(common.stdout.strip(), "..", ".taskplane", "codex-hook.py")
     )
-    primary = os.path.dirname(os.path.dirname(launcher))
-    return not (os.path.isfile(launcher)
-                or os.path.isdir(os.path.join(tp.kb_root(primary), "context")))
+    return not os.path.isfile(launcher)
 
 
 def main(argv=None) -> int:
-    """Select host identity before even compatibility and fast-path reads."""
-    args = list(sys.argv[1:] if argv is None else argv)
-    hook_path = os.environ.get("TASKPLANE_HOOK_PATH")
-    is_hook = bool(args and args[0] in _HOOK_COMMANDS and (
-        args[0] not in {"context", "host-native-check"} or hook_path in {"native", "bridge"}))
-    if not is_hook or any(flag in args for flag in ("-h", "--help")):
-        if any(flag in args for flag in ("-h", "--help")):
-            return _main(argv)
-        from taskplane.codex_identity import bind_command
-        from taskplane.taskplane_lite import StateError as NativeBindingStateError
-
-        with contextlib.ExitStack() as binding:
-            try:
-                runtime_storage.host_session_id()
-                binding.enter_context(bind_command(_workspace(_preparser_workspace(args))))
-            except (ValueError, NativeBindingStateError, runtime_storage.StorageIdentityError) as exc:
-                print(json.dumps({"error": "native command binding refused: " + str(exc),
-                    "dispatch_allowed": False}, sort_keys=True))
-                return 1
-            return _main(argv)
-    raw = sys.stdin.read()
-    try:
-        event = json.loads(raw) if raw.strip() else {}
-    except ValueError:
-        event = {}
-    if not isinstance(event, dict):
-        event = {}
-    original_stdin = sys.stdin
-    try:
-        sys.stdin = io.StringIO(raw)
-        if hook_path == "native" and args[0] in {"context", "host-native-check"}:
-            # Compatibility for older hosts only; native identity needs no handoff.
-            _persist_claude_hook_session(event)
-        with runtime_storage.hook_session(event):
-            return _main(argv)
-    finally:
-        sys.stdin = original_stdin
-
-
-def _main(argv=None) -> int:
     _utf8_streams()
     # Plugin hooks are registered globally by the host.  They must be inert
-    # until the workspace has been explicitly initialized; the optional
-    # launcher is also accepted for backward compatibility.
+    # until the workspace has been explicitly onboarded with its local
+    # launcher; otherwise SessionStart contaminates unrelated Codex chats.
     if _unbound_global_hook(argv):
         return 0
     # Parse without today's settings. The selected run's saved policy is
@@ -10419,7 +10076,7 @@ def _main(argv=None) -> int:
         "the PR's title, body and discussion)",
     )
     n.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
     )
     n.add_argument(
         "--by",
@@ -10585,20 +10242,17 @@ def _main(argv=None) -> int:
     b = sub.add_parser(
         "budget",
         help="record a cooperative spend estimate, "
-        "or record an approved action/token budget increase",
+        "or --grant N more actions (the budget approval gate)",
     )
-    budget_change = b.add_mutually_exclusive_group()
-    budget_change.add_argument("--spent", type=float, help="cooperative $ estimate (advisory)")
-    budget_change.add_argument(
+    b.add_argument("--spent", type=float, help="cooperative $ estimate (advisory)")
+    b.add_argument(
         "--grant",
         type=int,
         metavar="N",
-        help="raise the enforced action ceiling by N after human approval; "
-        "governed recovery requires --approved-by",
+        help="raise the enforced action ceiling by N — for the "
+        "human / ungoverned main session after approving "
+        "more budget (a governed agent cannot grant itself)",
     )
-    budget_change.add_argument("--grant-tokens", type=int, metavar="N",
-        help="add N native tokens of headroom above the current counter or ceiling, "
-        "whichever is higher; requires --approved-by and a host-observed counter")
     b.add_argument("--approved-by", help="human chat identity authorizing this budget grant")
     b.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     b.set_defaults(fn=cmd_budget)
@@ -10617,9 +10271,6 @@ def _main(argv=None) -> int:
     la.add_argument("--by", required=True, help="human identity authorizing archival")
     la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     lsub.add_parser("resume", help="read durable run scope and continuation without dispatch")
-    lcollect = lsub.add_parser("collect", help="validate and collect the exact phase evidence without supplying a gate outcome")
-    lcollect.add_argument("--operation", required=True, help="exact phase operation from the canonical report")
-    lcollect.add_argument("--task", help="exact task id for a parallel phase")
     li = lsub.add_parser("init", help="start an Evaluate-Loop for a goal")
     li.add_argument("goal", nargs="*")
     li.add_argument("--spec", help="path to an existing spec (skips PM)")
@@ -10664,7 +10315,7 @@ def _main(argv=None) -> int:
         "archived first — without this flag re-init refuses)",
     )
     li.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
     )
     li.add_argument(
         "--by",
@@ -10691,7 +10342,7 @@ def _main(argv=None) -> int:
         "workflow_available() (default)",
     )
     ln.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
     )
     ln.add_argument("--by", default=None, help="human identity required with --advisory")
     lw = lsub.add_parser("wave", help="print the EXECUTE wave: one brief per scope-disjoint task")
@@ -10707,7 +10358,7 @@ def _main(argv=None) -> int:
         "'auto' consults workflow_available() (default)",
     )
     lw.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
     )
     lw.add_argument("--by", default=None, help="human identity required with --advisory")
     lc = lsub.add_parser("claim", help="a worker claims one wave task into its own worktree")
@@ -10718,7 +10369,7 @@ def _main(argv=None) -> int:
         help="the worker's worktree — its contract activates there",
     )
     lc.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
     )
     lc.add_argument("--by", default=None, help="human identity required with --advisory")
     lg = lsub.add_parser("gate", help="orchestrator-only: judge the evidence and advance the loop")
@@ -10729,7 +10380,7 @@ def _main(argv=None) -> int:
         "--req", help="attach requirement R-id to the loop before DoR evaluation (design anchor)"
     )
     lg.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
     )
     lg.add_argument("--by", default=None, help="human identity required with --advisory")
     lsu = lsub.add_parser(
@@ -10754,7 +10405,7 @@ def _main(argv=None) -> int:
     la.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     la.add_argument("--force", action="store_true", help="pass a BLOCKED refinement gate anyway")
     la.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
     )
     lr = lsub.add_parser(
         "resolve", help="resolve a blocked loop: retry, pass, skip, defer or abort"
@@ -10786,7 +10437,7 @@ def _main(argv=None) -> int:
     lr.add_argument(
         "--worker-stopped",
         action="store_true",
-        help="attest the former worker is stopped; observed terminal or expiry is also verified",
+        help="attest the expired unbound worker is stopped; not a completion or pass",
     )
     lam = lsub.add_parser(
         "amend",
@@ -11256,9 +10907,6 @@ def _main(argv=None) -> int:
     op.add_argument(
         "--json", action="store_true", help="print the readiness report instead of the widget"
     )
-    op.add_argument("--initialize", action="store_true",
-                    help="repair missing project setup and launcher, then recheck readiness")
-    op.add_argument("--available-tools", help="comma-separated tool names actually available in this task; compatibility only")
     op.add_argument("--out", help="also write the fragment to this path")
     op.add_argument(
         "--install-codex-hooks",
@@ -11413,7 +11061,10 @@ def _main(argv=None) -> int:
 
     rvp = sub.add_parser(
         "review",
-        help="pin source for native review or inspect existing delivery review evidence",
+        help="open a review in ONE call — tools, "
+        "target pin, graph, impact, contract, obligations, "
+        "routing, runnability and the ready-to-dispatch "
+        "briefs, as one JSON payload",
     )
     rvsub = rvp.add_subparsers(dest="review_action")
     rva = rvsub.add_parser(
@@ -11431,32 +11082,33 @@ def _main(argv=None) -> int:
         "--expected-identity", required=True, help="URL-safe encoded exact worker/lease identity"
     )
     rva.set_defaults(fn=cmd_review)
-    rvs = rvsub.add_parser("start", help="pin source scope for native review without onboarding or a contract")
+    rvs = rvsub.add_parser("start", help="establish the facts and activate the read-only contract")
     rvs.add_argument("spec", nargs="?", help="PR url, OWNER/REPO#N, or a ref")
     rvs.add_argument("--base", default=None, help="diff base ref")
-    rvs.add_argument("--scope", choices=["diff", "repository"], default="diff",
-        help="review a comparison or the complete pinned source snapshot")
     rvs.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvs.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
     rvs.add_argument(
         "--fetch", action="store_true", help="fetch pull/N/head into this checkout first"
     )
     rvs.add_argument(
-        "--goal", nargs="*", default=None, help="review goal text"
+        "--goal", nargs="*", default=None, help="contract goal text (default: derived)"
     )
     rvs.add_argument(
         "--max-actions",
         type=int,
         default=None,
         dest="max_actions",
-        help="optional advisory action limit; native tools own execution",
+        help="action ceiling for the review contract (default "
+        "40). Prefer --max-tokens: an action cost ~11k "
+        "effective tokens on the measured review, with a "
+        "two-order-of-magnitude spread",
     )
     rvs.add_argument(
         "--max-tokens",
         type=int,
         default=None,
         dest="max_tokens",
-        help="optional advisory token limit since review start; no per-tool gate",
+        help="effective-token ceiling for the review contract",
     )
     rvs.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvs.add_argument(
@@ -11465,7 +11117,7 @@ def _main(argv=None) -> int:
         help="resume or deterministically name the repository preflight run",
     )
     rvs.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
     )
     rvs.add_argument("--by", default=None, help="human identity required with --advisory")
     rvs.set_defaults(fn=cmd_review)
@@ -11486,26 +11138,26 @@ def _main(argv=None) -> int:
     )
     rvr.add_argument("--by", required=True, help="the user's approving/cancelling chat identity")
     rvr.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="continue with visibly advisory screen enforcement"
     )
     rvr.add_argument("--paths", nargs="+", help="changed files, directories or globs to review")
     rvr.add_argument("--max-diff-bytes", type=int, help="positive canonical diff byte limit")
     rvr.add_argument(
-        "--goal", nargs="*", default=None, help="review goal text after repository preflight resumes"
+        "--goal", nargs="*", default=None, help="contract goal text after preflight resumes"
     )
     rvr.add_argument(
         "--max-actions",
         type=int,
         default=None,
         dest="max_actions",
-        help="optional advisory action limit for the resumed review",
+        help="action ceiling for the resumed review contract",
     )
     rvr.add_argument(
         "--max-tokens",
         type=int,
         default=None,
         dest="max_tokens",
-        help="optional advisory token limit since the resumed review starts",
+        help="effective-token ceiling for the resumed review",
     )
     rvr.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvr.set_defaults(fn=cmd_review)
@@ -11583,7 +11235,7 @@ def _main(argv=None) -> int:
     rvsg.add_argument("--run-id", default=None, help="select the collected review run")
     rvsg.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
     rvsg.add_argument(
-        "--advisory", action="store_true", help="removed: harness enforcement cannot be waived"
+        "--advisory", action="store_true", help="acknowledge degraded screen enforcement"
     )
     rvsg.set_defaults(fn=cmd_review)
     rvp.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
@@ -11670,7 +11322,6 @@ def _main(argv=None) -> int:
         help="bounded JSON request matching the documented taskplane preview request contract",
     )
     pv.add_argument("--workspace", default=argparse.SUPPRESS, help=_WS_HELP)
-    pv.add_argument("--resume", default=None, help="observe the native panel result for an existing preview id without relaunching")
     pv.set_defaults(fn=cmd_preview)
 
     ak = sub.add_parser(

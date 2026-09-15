@@ -1,13 +1,10 @@
-import base64
 import datetime
 import io
 import json
 import os
-import shlex
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -19,237 +16,6 @@ import review  # noqa: E402
 import review_evidence  # noqa: E402
 import tp as taskplane_cli  # noqa: E402
 from taskplane.tests.native_meter_support import attach_native_counter  # noqa: E402
-from taskplane.tests.test_review_refusals import _run  # noqa: E402
-
-
-@pytest.fixture
-def opened_cli_review(tmp_path, monkeypatch):
-    """Explicitly reconstruct a legacy delivery review for recovery checks."""
-    monkeypatch.setenv("CODEX_THREAD_ID", "review-fixture-session")
-    taskplane_cli.tp.record_entry_tools(["Read", "Grep", "Glob", "Write"])
-    workspace = tmp_path / "source"
-    workspace.mkdir()
-    for args in (["init", "-q"], ["config", "user.email", "test@example.com"],
-                 ["config", "user.name", "Test"]):
-        subprocess.run(["git", *args], cwd=workspace, check=True)
-    source = workspace / "service.py"
-    source.write_text("def value():\n    return 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "service.py"], cwd=workspace, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=workspace, check=True)
-    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace,
-                                   text=True).strip()
-    source.write_text("def value():\n    return 2\n", encoding="utf-8")
-    subprocess.run(["git", "commit", "-qam", "change"], cwd=workspace, check=True)
-
-    import depgraph
-    import target
-    import storage
-    ws = str(workspace)
-    rec = target.pin(ws, base=base)
-    target.save(ws, rec)
-    graph = depgraph.scan(ws)
-    files = ["service.py"]
-    patch = review.canonical_diff_patch(ws, base, paths=files)[1]
-    artifact = review_evidence.ArtifactStore(ws).put("diff", {"patch": patch})
-    opened = review.start_review(ws, target=rec, graph=graph,
-        impact=depgraph.impact(ws, files), diff={"files": files, "artifact": artifact},
-        runnability={"summary": "available"}, stage="review", task_type="review", base=base)
-    contract = taskplane_cli.tp.build_contract("legacy review fixture", read_only=True,
-        write_allow=[str(Path(storage.review_public_root(ws)) / "**")])
-    contract["target"] = rec
-    taskplane_cli.tp.activate(ws, contract, snapshot=rec["head"])
-    storage.bind_review_session(ws, contract["task_id"])
-    opened["contract"] = {"task_id": contract["task_id"], "read_only": True, "status": "active"}
-    state = review._load_state(ws, opened["run_id"])
-    review._save_state(ws, {**state, "manifest": opened})
-    assert opened["status"] == "needs_user" and not opened["slots"]
-    return workspace, opened
-
-
-@pytest.mark.parametrize("selection", ["static", "dynamic", "dynamic-render"])
-def test_cli_review_emits_usable_signed_worker_startup(
-        tmp_path, opened_cli_review, selection, monkeypatch):
-    workspace, opened = opened_cli_review
-    monkeypatch.delenv("TASKPLANE_TASK", raising=False)
-    parent = Path(taskplane_cli.tp.active_contract_path(str(workspace)))
-    parent_before = parent.read_bytes()
-
-    rc, stdout, stderr = _run("review", "option", selection, "--run-id",
-                              opened["run_id"], "--workspace", str(workspace))
-    ready = json.loads(stdout)
-    assert rc == 0, (stdout, stderr)
-    assert ready["status"] == "ready"
-    assert len(ready["slots"]) in {4, 5}
-    state = review._load_state(str(workspace), opened["run_id"])
-    assert state["manifest"]["slots"] == ready["slots"]
-
-    # Retrying the same choice re-emits startup for the same leases, so an
-    # interrupted or previously unbound review can continue without restarting.
-    rc, stdout, stderr = _run("review", "option", selection, "--run-id",
-                              opened["run_id"], "--workspace", str(workspace))
-    assert rc == 0, (stdout, stderr)
-    retried = json.loads(stdout)
-    assert retried["review_execution"] == ready["review_execution"]
-    for original, current in zip(ready["slots"], retried["slots"], strict=True):
-        assert current["lease"] == original["lease"]
-        assert current["brief"] == original["brief"]
-        assert current["contract_bootstrap"]["expected"] == \
-            original["contract_bootstrap"]["expected"]
-
-    for slot in ready["slots"]:
-        bootstrap = slot["contract_bootstrap"]
-        assert bootstrap["activation_order"] == "orchestrator_before_subagent_start"
-        assert bootstrap["workspace"] == str(workspace.resolve())
-        assert bootstrap["expected"]["run_id"] == opened["run_id"]
-        assert bootstrap["expected"]["task_id"] == opened["contract"]["task_id"]
-        result = subprocess.run(bootstrap["command_argv"], cwd=tmp_path,
-                                capture_output=True, text=True, check=False)
-        assert result.returncode == 0, result.stdout + result.stderr
-        activated = json.loads(result.stdout)
-        assert activated["task_slot"] == bootstrap["task_slot"]
-        assert activated["lease_fingerprint"] == slot["lease"]["fingerprint"]
-        active_path = Path(taskplane_cli.tp.active_contract_path(
-            str(workspace), bootstrap["task_slot"]))
-        active = json.loads(active_path.read_text())
-        assert active["read_only"] is True
-        assert active["write_allow"] == [slot["result_path"]]
-        assert active["budget"]["max_tokens"] <= 100_000
-        assert active["worker_scoped"] is True
-        assert active["worker_lifecycle"]["status"] == "pending"
-        assert activated["worker_binding"] == {
-            "event": "SubagentStart", "status": "pending",
-            "task_name": bootstrap["expected"]["worker_identity"],
-        }
-
-        # Simulate only the native Start event, with no inherited slot env.
-        # The actual hook must select the signed child and register its lease.
-        event = {
-            "hook_event_name": "SubagentStart", "cwd": str(tmp_path),
-            "session_id": "review-fixture-session", "turn_id": "review-test-turn",
-            "agent_id": "child-" + slot["slot_id"],
-            "task_name": bootstrap["expected"]["worker_identity"],
-            "agent_type": bootstrap["expected"]["worker_identity"],
-        }
-        with monkeypatch.context() as native:
-            native.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
-            rc, stdout, stderr = _run("subagent-start")
-        assert rc == 0, (stdout, stderr)
-        bound = taskplane_cli.tp.load_active_for_event(str(workspace), event)
-        assert bound["task_slot"] == bootstrap["task_slot"]
-        assert bound["worker_lifecycle"]["owner"]["agent_id"] == event["agent_id"]
-        assignment = json.loads(Path(review._producer_assignment_path(
-            str(workspace), slot["lease"]["fingerprint"])).read_text())
-        assert assignment["producer_child_id"] == event["agent_id"]
-        assert assignment["contract_task_slot"] == bootstrap["task_slot"]
-        assert taskplane_cli.tp.load_active(str(workspace))["task_id"] == \
-            opened["contract"]["task_id"]
-
-        # A replay cannot reset an already-bound native child to pending.
-        replay = subprocess.run(bootstrap["command_argv"], cwd=tmp_path,
-                                capture_output=True, text=True, check=False)
-        assert replay.returncode == 0, replay.stdout + replay.stderr
-        assert json.loads(active_path.read_text()) == bound
-
-    # Child activation must not replace the parent or manufacture results.
-    assert parent.read_bytes() == parent_before
-    assert all(not Path(slot["result_path"]).exists() for slot in ready["slots"])
-
-
-def test_native_review_dispatch_does_not_require_a_checkout_launcher(
-        opened_cli_review):
-    workspace, opened = opened_cli_review
-    launcher = workspace / ".taskplane" / "codex-hook.py"
-    assert not launcher.exists()
-    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
-                              opened["run_id"], "--workspace", str(workspace))
-    assert rc == 0, (stdout, stderr)
-    assert not launcher.exists()
-    assert not (workspace / ".codex" / "hooks.json").exists()
-    assert subprocess.check_output(["git", "status", "--porcelain", "--",
-                                    ".taskplane", ".codex", "service.py"],
-                                   cwd=workspace, text=True) == ""
-
-
-def test_native_review_dispatch_preserves_project_hook_bytes(
-        opened_cli_review):
-    workspace, opened = opened_cli_review
-    hooks = workspace / ".codex" / "hooks.json"
-    hooks.parent.mkdir()
-    hooks.write_text(json.dumps({"hooks": taskplane_cli._codex_hook_rows()}), encoding="utf-8")
-    original = hooks.read_bytes()
-    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
-                              opened["run_id"], "--workspace", str(workspace))
-    assert rc == 0, (stdout, stderr)
-    assert hooks.read_bytes() == original
-    assert not (workspace / ".taskplane" / "codex-hook.py").exists()
-
-
-@pytest.mark.parametrize("mutation,reason", [
-    ("signature", "signature is invalid"),
-    ("worker_identity", "worker_identity identity mismatches worker"),
-    ("lease_fingerprint", "lease_fingerprint identity mismatches lease"),
-    ("workspace", "authority"),
-])
-def test_cli_review_rejects_altered_startup(
-        tmp_path, opened_cli_review, mutation, reason):
-    workspace, opened = opened_cli_review
-    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
-                              opened["run_id"], "--workspace", str(workspace))
-    assert rc == 0, (stdout, stderr)
-    slot = json.loads(stdout)["slots"][0]
-    bootstrap = slot["contract_bootstrap"]
-    command = list(bootstrap["command_argv"])
-    other_workspace = tmp_path / "other"
-    other_workspace.mkdir()
-    if mutation == "workspace":
-        command[command.index("--workspace") + 1] = str(other_workspace)
-    else:
-        flag = "--signed-action" if mutation == "signature" else "--expected-identity"
-        index = command.index(flag) + 1
-        value = json.loads(base64.urlsafe_b64decode(command[index] + "=" * (-len(command[index]) % 4)))
-        value[mutation] = "0" * 64
-        command[index] = base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True,
-                            text=True, check=False)
-    assert result.returncode != 0
-    assert reason in result.stdout + result.stderr
-    for root in (workspace, other_workspace):
-        assert not Path(taskplane_cli.tp.active_contract_path(
-            str(root), bootstrap["task_slot"])).exists()
-    assert not Path(slot["result_path"]).exists()
-
-
-def test_cli_review_refuses_missing_parent_before_recording_choice(opened_cli_review):
-    workspace, opened = opened_cli_review
-    Path(taskplane_cli.tp.active_contract_path(str(workspace))).unlink()
-    before = review._load_state(str(workspace), opened["run_id"])
-    rc, stdout, stderr = _run("review", "option", "static", "--run-id",
-                              opened["run_id"], "--workspace", str(workspace))
-    assert rc == 1, (stdout, stderr)
-    assert "requires its read-only parent contract" in stdout
-    assert review._load_state(str(workspace), opened["run_id"]) == before
-
-
-def test_review_choice_retry_preserves_evidence_and_rejects_different_consent():
-    workspace, opened = _start_review_without_execution_choice()
-    review.configure_review_execution(
-        workspace, selection="dynamic", run_id=opened["run_id"])
-    review.record_review_execution(
-        workspace, kind="dynamic_validation", status="failed",
-        detail="fixture process failure", run_id=opened["run_id"])
-    before = review._load_state(workspace, opened["run_id"])
-    retried = review.configure_review_execution(
-        workspace, selection="dynamic", run_id=opened["run_id"])
-    assert retried == before["manifest"]
-    assert retried["review_execution"]["dynamic_validation"]["status"] == "failed"
-    for kwargs in ({"selection": "static"},
-                   {"selection": "dynamic", "by": "another-human"},
-                   {"selection": "dynamic", "approval_receipt":
-                    before["review_execution"]["approval_receipt"]}):
-        with pytest.raises(review.ReviewKernelError):
-            review.configure_review_execution(
-                workspace, run_id=opened["run_id"], **kwargs)
-    assert review._load_state(workspace, opened["run_id"]) == before
 
 
 def _host_receipt(*, action_id, response, actor="human", run_id="run-1"):
@@ -410,7 +176,7 @@ def _start_review_without_execution_choice():
 
 
 def test_review_preflight_exposes_one_structured_choice_without_side_effects(
-        monkeypatch, opened_cli_review):
+        monkeypatch):
     run_id = "b" * 32
     row = review.review_execution_preflight(run_id=run_id)
     assert row["schema"] == "taskplane.review-execution-preflight/v1"
@@ -424,15 +190,18 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
     assert row["action"]["choices"][1]["requires"] == [
         "dependency-install", "process-execution", "browser-access"]
     commands = [choice["command"] for choice in row["action"]["choices"]]
-    engine = os.path.realpath(os.path.join(os.path.dirname(review.__file__), "tp.py"))
-    command_args = [[sys.executable, engine, "review", "option", mode, "--run-id", run_id]
-                    for mode in ("dynamic", "dynamic-render", "static")]
-    quote = subprocess.list2cmdline if os.name == "nt" else shlex.join
-    assert commands == [quote(args) for args in command_args]
+    launcher = (("py" if os.name == "nt" else "python3") +
+                " .taskplane/codex-hook.py review option ")
+    assert commands == [
+        launcher + "dynamic --run-id " + run_id,
+        launcher + "dynamic-render --run-id " + run_id,
+        launcher + "static --run-id " + run_id,
+    ]
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     guidance_paths = [
-        "agents/tp-product.md", "skills/tp-product/SKILL.md",
+        "agents/tp-product.md", "agents/tp-engineering.md",
+        "skills/tp-product/SKILL.md", "skills/tp-engineering/SKILL.md",
         "docs/cli-reference.md",
     ]
     for relative in guidance_paths:
@@ -454,24 +223,27 @@ def test_review_preflight_exposes_one_structured_choice_without_side_effects(
             choice["command"] for choice in
             review.review_execution_preflight(
                 run_id=run_id)["action"]["choices"]]
-    assert windows_commands == [subprocess.list2cmdline(args) for args in command_args]
+    assert windows_commands == [
+        windows_launcher + "dynamic --run-id " + run_id,
+        windows_launcher + "dynamic-render --run-id " + run_id,
+        windows_launcher + "static --run-id " + run_id,
+    ]
 
-    workspace, opened = opened_cli_review
-    workspace = str(workspace)
+    workspace, opened = _start_review_without_execution_choice()
     static_command = next(
         choice["command"] for choice in
         opened["review_execution"]["action"]["choices"]
         if choice["response"] == "static")
-    assert not Path(workspace, ".taskplane/codex-hook.py").exists()
+    installed = taskplane_cli._install_codex_hooks(workspace)
+    assert installed["ok"], installed
     executed = subprocess.run(
-        static_command if os.name == "nt" else shlex.split(static_command), cwd=workspace, text=True,
+        static_command.split(), cwd=workspace, text=True,
         encoding="utf-8", errors="replace",
         capture_output=True, check=False)
     assert executed.returncode == 0, executed.stderr
     continued = json.loads(executed.stdout)
     assert continued["run_id"] == opened["run_id"]
     assert continued["status"] == "ready"
-    assert not Path(workspace, ".taskplane/codex-hook.py").exists()
     assert continued["review_execution"]["selection"] == "static"
     assert continued["visuals"]["workflow_and_wave"]["inline"]["path"]
     assert review._load_state(workspace, opened["run_id"])["run_id"] == \
@@ -787,9 +559,8 @@ def test_validation_sandbox_is_independent_writable_copy_with_push_disabled(
     review.record_review_execution(
         str(ws), kind="dynamic_validation", status="failed",
         detail={"summary": "initial build"}, run_id=opened["run_id"])
-    def validate(code):
-        return review.run_review_validation_command(
-        str(ws), command=[sys.executable, "-c", code],
+    result = review.run_review_validation_command(
+        str(ws), command=[sys.executable, "-c", "print('passed')"],
         run_id=opened["run_id"], isolation_launcher=lambda argv, cwd, timeout: (
             subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, timeout=timeout,
@@ -797,22 +568,10 @@ def test_validation_sandbox_is_independent_writable_copy_with_push_disabled(
             {"schema": "taskplane.review-isolation-receipt/v1",
              "scope": "complete-process-tree", "network": "denied",
              "mechanism": "test-isolation"}))
-    result = validate("print('passed')")
     assert result["status"] == "executed"
     dynamic = result["review_execution"]["dynamic_validation"]
     assert dynamic["execution_scope"] == "validation-sandbox"
     assert dynamic["original_failure"]["summary"] == "initial build"
-    assert review.production_validation_projection(result["review_execution"])["status"] == "executed"
-    repeated = validate("print('passed again')")
-    dynamic = repeated["review_execution"]["dynamic_validation"]
-    assert dynamic["original_failure"]["summary"] == "initial build"
-    assert [row["status"] for row in dynamic["attempts"]] == ["failed", "executed", "executed"]
-    failed = validate("raise SystemExit(1)")
-    dynamic = failed["review_execution"]["dynamic_validation"]
-    assert dynamic["status"] == "failed"
-    assert [row["status"] for row in dynamic["attempts"]] == ["failed", "executed", "executed", "failed"]
-    assert all("attempts" not in row for row in dynamic["attempts"])
-    assert review.production_validation_projection(failed["review_execution"])["status"] == "failed"
 
 
 def test_production_validation_blocks_direct_and_descendant_explicit_pushes(

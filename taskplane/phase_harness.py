@@ -15,9 +15,6 @@ import time
 from typing import Any, cast
 
 
-from taskplane.storage import host_session_id as _host_session_id
-
-
 def initialize(runtime: Any, workspace: str, state: dict[str, Any]) -> None:
     """Select the phase runtime for a newly initialized, attributable run."""
     from taskplane import review_evidence
@@ -682,14 +679,6 @@ def collect_lenses(
     candidates = phase_candidates(runtime, workspace, material)
     plan = prepare_lenses(runtime, context, material, inputs, candidates)
     if prepare:
-        collected = review.collect_lens_plan(context["artifacts"], plan)
-        if collected["status"] == "complete":
-            return {
-                "plan": plan,
-                "dispatch": [],
-                "wait_invocation": None,
-                "report": context["artifacts"].read(collected["collection"]),
-            }
         bound = runtime._bind_stateless_review_contract_actions(
             workspace,
             {
@@ -704,10 +693,7 @@ def collect_lenses(
             "dispatch": bound["slots"],
             "wait_invocation": bound.get("wait_invocation"),
         }
-    collected = review.collect_lens_plan(context["artifacts"], plan)
-    # The phase needs these findings now. Returning only an opaque reference
-    # forced another model/tool round trip to discover and read the same result.
-    return {**collected, "report": context["artifacts"].read(collected["collection"])}
+    return review.collect_lens_plan(context["artifacts"], plan)
 
 
 def lens_evidence(store: Any, material: dict[str, Any]) -> dict[str, Any]:
@@ -899,9 +885,47 @@ def usage_evidence(
 
 
 def advise_resource_limits(runtime: Any, ws: str, state: dict[str, Any], by: str) -> dict[str, Any]:
-    """Retain the removed API as an explicit refusal, including direct calls."""
-    return {"error": "resource-limit bypass is disabled; approve a specific budget increase or stop",
-            "dispatch_allowed": False}
+    """Explicit human policy, not a settings rewrite, retry or scope approval."""
+    from taskplane import review_evidence
+
+    if runtime.tp.task_slot() is not None:
+        raise ValueError("resource policy is orchestrator-only")
+    context = runtime._phase_bridge_context(ws, state)
+    if (
+        context is None
+        or not by
+        or by != (state.get("_stage_native_root_authority") or {}).get("actor")
+    ):
+        raise ValueError("resource policy requires the existing run's human --by")
+    runtime._phase_bridge_authorize(ws, context, context["manifest"])
+    prior = resource_policy(context["manifest"], context["run_id"])
+    if prior is not None:
+        return {"resource_policy": prior, "replay": True, "dispatch_allowed": False}
+    value = {
+        "schema": "taskplane.resource-policy/v1",
+        "run_id": context["run_id"],
+        "mode": "advisory",
+        "actor": by,
+        "decided_at": int(time.time()),
+        "authority_fingerprint": context["stage"]["authority"]["authority_fingerprint"],
+    }
+    phase_records.commit_phase_record(
+        context["store"],
+        context["run_id"],
+        expected_revision=context["manifest"]["revision"],
+        operation_id="run-resource-limits",
+        operation="resource_policy",
+        request_fingerprint=review_evidence.content_fingerprint(value),
+        result=value,
+        validate_authority=lambda current: runtime._phase_bridge_authorize(ws, context, current),
+    )
+    return {
+        "resource_policy": resource_policy(
+            context["store"].load(context["run_id"]), context["run_id"]
+        ),
+        "replay": False,
+        "dispatch_allowed": False,
+    }
 
 
 def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> dict[str, Any]:
@@ -950,13 +974,10 @@ def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> d
     result = runtime._collect_phase_attempt(
         ws, attempt, completed_worker=terminal if hooks is None else None
     )
-    if result["status"] != "collected" and (
-        hooks is None or context["stage"]["stage_kind"] not in {"product", "design", "plan"}
-    ):
+    if result["status"] != "collected":
         return {**result, "dispatch_allowed": False}
     _reconcile_usage(runtime, ws, contract, material, terminal)
-    if result["status"] == "collected":
-        runtime.collect_phase_runtime_telemetry(ws, contract)
+    runtime.collect_phase_runtime_telemetry(ws, contract)
     if hooks is None:
         # Current validation is not a historical Stop. Keep the slot intact;
         # the ordinary successful gate owns its retirement.
@@ -978,8 +999,7 @@ def reconcile(runtime: Any, ws: str, state: dict[str, Any], operation: str) -> d
                     slot,
                     event=None,
                     outcome=terminal["outcome"],
-                    submission_status=("phase-collected:" if result["status"] == "collected"
-                        else "phase-terminal:") + terminal["claim"],
+                    submission_status="phase-collected:" + terminal["claim"],
                     authority="phase-observation",
                 )
             runtime.tp.release_worker_contract(
@@ -1145,7 +1165,6 @@ def resolve_retry(
 ) -> dict[str, Any]:
     """One human-authorized successor attempt, retaining the failed evidence.
 
-    Observed, released pre-build workers need no successful output to retry.
     Expired unbound workers require an explicit stop attestation. Active or
     effect-owning Build workers need reconciliation, not this recovery path.
     The journal grant precedes cleanup; a crash is replayable and next cannot
@@ -1163,7 +1182,8 @@ def resolve_retry(
         )
     session = str(
         os.environ.get("TASKPLANE_SESSION_ID")
-        or _host_session_id()
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
         or ""
     ).strip()
     if not session or len(session.encode()) > 256 or any(ord(char) < 32 for char in session):
@@ -1233,39 +1253,20 @@ def resolve_retry(
     material = context["artifacts"].read(prepared["result"]["reference"])
     if prepared["request_fingerprint"] != review_evidence.content_fingerprint(material):
         raise ValueError("phase preparation changed")
+    deadline = datetime.fromisoformat(material["bindings"]["deadline"])
+    if deadline.tzinfo is None or time.time() < deadline.timestamp():
+        raise ValueError("phase retry requires an expired attempt")
     slot = material["contract_slot"]
     contract = runtime.tp.load_json(
-        runtime.tp.active_contract_path(ws, slot), default=None, what="phase retry contract"
+        runtime.tp.active_contract_path(ws, slot), what="expired phase contract"
     )
-    if contract is None:
-        contract = runtime.tp.released_worker_contract(ws, slot)
     lifecycle = contract.get("worker_lifecycle") or {}
-    if (contract.get("phase_runtime") or {}).get("operation_id") != operation:
-        raise ValueError("phase retry contract belongs to another operation")
-    if lifecycle.get("status") == "released" and context["stage"]["stage_kind"] in {
-        "product", "design", "plan"
-    }:
-        # Released contracts and native receipts retain their own validators.
-        # Do not read (or invent) the output the failed worker never produced.
-        source = runtime.design_host_transport.phase_nonce_source(
-            runtime.tp, ws, context["run_id"], existing_only=True
-        )
-        issued = source.recover(material["nonce_bindings"])
-        hooks = source.terminal_hooks(issued, material["nonce_bindings"])
-        if hooks is None or any(
-            lifecycle.get("owner") != {key: event["owner"][key]
-                for key in ("session_id", "agent_id", "task_name")}
-            for event in hooks
-        ):
-            raise ValueError("phase retry requires the original worker's observed terminal")
-    elif lifecycle.get("status") == "pending" and lifecycle.get("owner") is None:
-        deadline = datetime.fromisoformat(material["bindings"]["deadline"])
-        if deadline.tzinfo is None or time.time() < deadline.timestamp():
-            raise ValueError("phase retry requires an expired attempt")
-    else:
+    if (
+        lifecycle.get("status") != "pending"
+        or lifecycle.get("owner") is not None
+        or (contract.get("phase_runtime") or {}).get("operation_id") != operation
+    ):
         raise ValueError("phase worker is not unbound; reconcile its actual terminal/effects first")
-    if len(retry_chain(context)) + 1 >= context["stage"]["budget"]["attempt_limit"]:
-        raise ValueError("phase attempt limit exhausted")
     # Preserve the exact pre-recovery object, not just its terminal projection.
     snapshot = context["artifacts"].put("phase-retry-contract", contract)
     config = dict(context["configuration"], candidate_fingerprint=candidate)
@@ -2077,14 +2078,6 @@ def _phase_bridge_prepare(
     paths = config["output_paths"].get(stage["stage_kind"], {} if not worker_outputs else None)
     if not isinstance(paths, dict) or set(paths) != worker_outputs:
         raise ValueError("phase output paths do not match declared outputs")
-    # Validate declared outputs before mutating the live contract. Bind the
-    # phase ceiling before activation so hooks enforce it during execution.
-    ceiling = min(int(definition["budget"]["tokens"]), int(contract["budget"]["max_tokens"]))
-    contract["budget"].update(
-        max_tokens=ceiling,
-        target_tokens=max(1, min(int(contract["budget"]["target_tokens"]), ceiling - 1)),
-        token_usage_required=True,
-    )
     predecessor = _phase_predecessor(_ports, context)
     consumed = input_package(_ports, context)
     package = () if consumed is None else consumed.artifacts
@@ -2344,10 +2337,8 @@ def _phase_bridge_prepare(
         worker_input["instruction"] += (
             " After authoring the draft, call tp stage prepare-lenses with this same startup "
             "request. Dispatch each returned brief once as an isolated tp-lens worker. "
-            "Use one event wait for the outstanding set; never poll status or message workers "
-            "for progress. On completion call tp stage collect-lenses with that startup; "
-            "its report contains the full collection, including findings, notes and coverage. "
-            "Do not fetch it again or prepare another plan for unchanged drafts. Changed drafts require a "
+            "Wait, then call tp stage collect-lenses with that startup and consume the full "
+            "collection, including findings, notes and coverage. Changed drafts require a "
             "fresh candidate-bound plan; never reuse stale results. Empty dispatch lists "
             "start no workers. Consume every inherited lens-evidence collection by reference. "
             "Do not author a lens-evidence output or old Design/Plan lens receipt yourself."
@@ -2599,29 +2590,16 @@ def _collect_phase_attempt(
         if stage["stage_kind"] == "build"
         else None
     )
-    def candidate_refusal(exc: Exception) -> dict[str, Any]:
-        refusal = {
-            "status": "pending", "reason_code": "phase_candidate_unavailable",
-            "operation_id": operation, "run_id": run_id,
-            "preparation": requested["reference"], "terminal_identity": terminal["claim"],
-            "error": str(exc), "accepted": False,
-        }
-        return {**refusal, "refusal_reference": artifacts.put("phase-collection-refusal", refusal)}
-    try:
-        authored = phase_candidates(_ports, ws, material)
-        lens_plan = None
-        if any(row["artifact_class"] == "lens-evidence" for row in definition["produces"]):
-            lens_plan = prepare_lenses(
-                _ports,
-                {**context, "definition": definition},
-                material,
-                artifacts.read(material["worker_input_reference"]),
-                authored,
-            )
-    except (OSError, ValueError) as exc:
-        if stage["stage_kind"] not in {"product", "design", "plan"}:
-            raise
-        return candidate_refusal(exc)
+    authored = phase_candidates(_ports, ws, material)
+    lens_plan = None
+    if any(row["artifact_class"] == "lens-evidence" for row in definition["produces"]):
+        lens_plan = prepare_lenses(
+            _ports,
+            {**context, "definition": definition},
+            material,
+            artifacts.read(material["worker_input_reference"]),
+            authored,
+        )
     package = None
     if stage["stage_kind"] in {"plan", "build"}:
         package = _ports.consume_phase_handoff(
@@ -2657,21 +2635,16 @@ def _collect_phase_attempt(
             inputs = artifacts.read(material["worker_input_reference"])
             if judgment.get("accepted_evaluations") != inputs["accepted_evaluations"]:
                 raise ValueError("Engineering judgment must consume every selected task evaluation")
-    try:
-        if stage["stage_kind"] != "plan":
-            authored = _ports.produce_spec_phase_candidates(
-                artifacts, definition, authored, package=package, state=_ports.load(ws), workspace=ws
-            )
-        if lens_plan is not None:
-            authored["lens-evidence"] = lens_evidence(artifacts, {**material, "lens_plan": lens_plan})
-        output_rows = [
-            artifact.projection()
-            for artifact in _ports.store_spec_phase_outputs(artifacts, definition, authored)
-        ]
-    except (OSError, ValueError) as exc:
-        if stage["stage_kind"] not in {"product", "design", "plan"}:
-            raise
-        return candidate_refusal(exc)
+    if stage["stage_kind"] != "plan":
+        authored = _ports.produce_spec_phase_candidates(
+            artifacts, definition, authored, package=package, state=_ports.load(ws), workspace=ws
+        )
+    if lens_plan is not None:
+        authored["lens-evidence"] = lens_evidence(artifacts, {**material, "lens_plan": lens_plan})
+    output_rows = [
+        artifact.projection()
+        for artifact in _ports.store_spec_phase_outputs(artifacts, definition, authored)
+    ]
     observation = _ports.agent_runtime.Observation(
         start["claim"],
         (),

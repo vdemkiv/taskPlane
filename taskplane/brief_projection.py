@@ -443,6 +443,8 @@ def project(
         raise BriefProjectionError("previous loop next action must be a mapping")
 
     budget = _usage_projection(wave_usage)
+    if resource_limits_advisory:
+        budget.update(status="advisory", dispatch_allowed=True)
     current_action, new_evidence, unchanged_refs = _split_delta(
         action, previous, reference_artifact=reference_artifact
     )

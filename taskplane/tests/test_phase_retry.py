@@ -103,21 +103,3 @@ def test_retry_crash_before_release_cannot_dispatch_and_replay_completes(expired
     assert second["obligations"]["task_name"] != first["obligations"]["task_name"]
     changed = dict(args, candidate_fingerprint="b" * 64)
     assert "replay changed" in loop.resolve(ws, "retry", **changed)["error"]
-
-
-def test_retries_stop_at_the_existing_stage_attempt_limit(expired, monkeypatch):
-    ws, store, run_id, first, material, args = expired
-    context = loop._phase_bridge_context(ws, loop.load(ws))
-    limit = context["stage"]["budget"]["attempt_limit"]
-    for _ in range(limit - 1):
-        assert loop.resolve(ws, "retry", **args).get("resolved") == "retry"
-        following = loop.next_action(ws)
-        assert following["obligations"]["dispatch_allowed"], following
-        material = review_evidence.ArtifactStore(ws).read(phase_pending(ws)["reference"])
-        deadline = datetime.fromisoformat(material["bindings"]["deadline"]).timestamp()
-        monkeypatch.setattr(loop.time, "time", lambda: deadline + 1)
-        args = dict(args, phase_operation=phase_pending(ws)["operation_id"])
-    before = store.load(run_id)
-    result = loop.resolve(ws, "retry", **args)
-    assert "attempt limit exhausted" in result.get("error", ""), result
-    assert store.load(run_id) == before

@@ -37,9 +37,6 @@ _STEPS = {
 _FILES = ("design/contract.json", "design/test-strategy.json", "design/design.md")
 
 
-from taskplane.storage import host_session_id as _host_session_id
-
-
 def _object(value: object, label: str) -> Json:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise ValueError(label + " must be an object with string keys")
@@ -505,7 +502,8 @@ def _amend(runtime: ModuleType, ws: str, **request: object) -> Json:
         raise ValueError("amendment requires the current run's human --by identity")
     session = str(
         os.environ.get("TASKPLANE_SESSION_ID")
-        or _host_session_id()
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
         or ""
     ).strip()
     if not session or len(session.encode()) > 256 or any(ord(char) < 32 for char in session):

@@ -32,7 +32,6 @@ import ast
 import hashlib
 import json
 import os
-import re
 import stat
 import sys
 import zipfile
@@ -195,17 +194,7 @@ def load_hook_manifest() -> dict:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise PackageError(f"cannot read hook manifest: {exc}") from exc
-    validate_hook_manifest(value)
-    for rules in value["hooks"].values():
-        for rule in rules:
-            for hook in rule.get("hooks") or []:
-                match = re.search(r'/taskplane/tp\.py" ([a-z-]+(?: --host claude)?)', hook.get("command", ""))
-                require(match is not None, "Claude hook must select a known plugin entry point")
-                hook.pop("commandWindows", None)
-                hook["command"] = ('TASKPLANE_HOOK_PATH=native python3 '
-                                   '"${CLAUDE_PLUGIN_ROOT}/taskplane/tp.py" ' + match.group(1))
-                hook["shell"] = "bash"
-    return value
+    return validate_hook_manifest(value)
 
 
 def add_tree(files: set, base: Path, predicate) -> None:
@@ -284,9 +273,7 @@ def write_zip(files: list, output: Path) -> None:
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.create_system = 3
                 info.external_attr = (stat.S_IFREG | 0o644) << 16
-                payload = ((json.dumps(load_hook_manifest(), indent=2) + "\n").encode()
-                           if relative == "hooks/hooks.json" else path.read_bytes())
-                archive.writestr(info, payload,
+                archive.writestr(info, path.read_bytes(),
                                  compress_type=zipfile.ZIP_DEFLATED,
                                  compresslevel=9)
         os.replace(temporary, output)
@@ -401,8 +388,6 @@ def validate_archive(path: Path, version: str) -> tuple:
             raise PackageError(
                 "archive contains an unreadable hook manifest") from exc
         validate_hook_manifest(hook_manifest)
-        require(hook_manifest == load_hook_manifest(),
-                "Claude archive must contain the Claude hook projection")
         uncompressed = sum(i.file_size for i in archive.infolist())
     return len(names), uncompressed
 

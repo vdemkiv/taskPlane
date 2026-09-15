@@ -5,12 +5,6 @@ description: "The internal delivery driver behind the taskplane facade — goal-
 
 # /tp-go — goal in, governed delivery out
 
-## Initialize this entry
-
-Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
-using entry point `tp-go`. Every direct invocation rechecks readiness;
-sealed stage and lens workers validate their supplied startup instead.
-
 ## Focused routing invariant
 
 Every delivery uses Product/Design minimum-sufficient focused routes,
@@ -28,7 +22,16 @@ Current workflow contract: **v2.17**. Review, Evaluate, and final Engineering
 all consume the same **canonical review context**; transport may differ by
 host, but the workflow and evidence contract do not.
 
-Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. Drive the whole loop; pause ONLY at the human gates.
+On Codex, resolve the stable launcher from the current checkout or its Git
+repository family:
+`TP_LAUNCHER="$(git rev-parse --path-format=absolute --git-common-dir
+2>/dev/null)/../.taskplane/codex-hook.py"`; prefer
+`.taskplane/codex-hook.py` when that current-checkout file exists. Every `$TP`
+below means `python3 "$TP_LAUNCHER"`. It resolves the newest valid installed
+taskplane engine on every call. Only when neither launcher exists use
+`python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`; if both
+variables are unset, stop with the bootstrap error rather than invoking
+`/taskplane/tp.py`. Drive the whole loop; pause ONLY at the human gates.
 Follow each step's returned `instruction`.
 
 `flow.json` is the approved end-to-end graph: **goal → Product → optional
@@ -146,11 +149,10 @@ At a human gate, STOP after showing the widget or dashboard artifact. Widget
 buttons can drive the next prompt where supported; otherwise ask for the same
 explicit approval in conversation. Never run the loop silently.
 
-0. **Onboarding:** Follow the facade's one-time setup sequence. Check readiness
-   with `$TP onboard --json`; a ready workspace continues without another setup
-   visualization. Present `$TP onboard` only for initial setup, a missing
-   prerequisite, or an explicit setup/settings request. Tasks, phases, resumed
-   sessions, and updates do not reset completed setup. Retain the user's goal.
+0. **Onboarding:** Follow the facade's onboarding sequence before the first
+   TaskPlane request in a host session and after every install or update,
+   including in an existing repository. FIRST run `$TP onboard --json` and
+   present `$TP onboard`; retain the user's request and continue it when ready.
    For an existing run, use `$TP loop resume` first. It reads durable scope
    without dispatch, lifecycle effects, an advisory waiver or a session receipt.
    Follow `resume_run` even when `ready` is false; `loop next` separately

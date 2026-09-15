@@ -23,9 +23,6 @@ import taskplane_lite as tp
 import target as target_module
 
 
-from taskplane.storage import host_session_id as _host_session_id
-
-
 class PreflightError(RuntimeError):
     pass
 
@@ -120,7 +117,8 @@ def atomic_governed_startup(*, workspace: str, worker_workspace: str, task_id: s
         raise PreflightError("worker workspace belongs to another repository")
     session_id = str(
         os.environ.get("TASKPLANE_SESSION_ID")
-        or _host_session_id()
+        or os.environ.get("CODEX_THREAD_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
         or ""
     ).strip()
     if not session_id or len(session_id.encode("utf-8")) > 256:

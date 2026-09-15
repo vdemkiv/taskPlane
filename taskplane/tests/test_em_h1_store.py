@@ -144,7 +144,7 @@ def test_h30_readonly_denies_every_command_tool(tool_name: str,
         allowed, reason = tp.screen_tool(
             contract, tool_name, {input_key: command}, str(tmp_path))
         assert allowed is False, (tool_name, command)
-        assert "shell command is not a verified native Codex read-only invocation" in reason
+        assert "every shell command tool is blocked" in reason
         assert "host-native Read/Grep/Glob" in reason
 
 
@@ -165,7 +165,7 @@ def test_h30_caller_structured_fields_or_receipts_cannot_bypass_shell_denial(
         contract, "exec_command", forged, str(tmp_path))
 
     assert allowed is False
-    assert "shell command is not a verified native Codex read-only invocation" in reason
+    assert "every shell command tool is blocked" in reason
 
 
 def test_h30_exported_builtin_impersonation_has_no_admitted_shell_surface(
@@ -178,7 +178,7 @@ def test_h30_exported_builtin_impersonation_has_no_admitted_shell_surface(
         contract, "Bash", {"command": "echo harmless"}, str(tmp_path))
 
     assert allowed is False
-    assert "shell command is not a verified native Codex read-only invocation" in reason
+    assert "every shell command tool is blocked" in reason
 
 
 def test_h30_path_reuse_and_content_mutation_never_become_command_authority(
@@ -203,7 +203,7 @@ def test_h30_path_reuse_and_content_mutation_never_become_command_authority(
 
     assert first[0] is False and second[0] is False
     assert first[1] == second[1]
-    assert "shell command is not a verified native Codex read-only invocation" in first[1]
+    assert "every shell command tool is blocked" in first[1]
 
 
 def test_h30_readonly_contract_has_explicit_native_tool_allowlist(tmp_path: Path):

@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.24.0",
+  "version": "2.23.1",
   "description": "AI software-delivery control plane for Claude and Codex: stateless stage handoffs, scoped execution, focused pre-build review, direct Evaluate and Engineering evidence, durable recovery, and human approval.",
   "author": {
     "name": "Volodymyr Demkiv",

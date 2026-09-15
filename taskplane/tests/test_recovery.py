@@ -278,8 +278,6 @@ class TestBareRootRefusal(unittest.TestCase):
         subprocess.run(["git", "-c", "user.email=e@e", "-c", "user.name=t",
                         "commit", "-qm", "i"], cwd=fake_home)
         env = dict(os.environ, HOME=fake_home)
-        from taskplane.tests.host_screen_support import record_simulated_hook
-        record_simulated_hook(fake_home, environment=env)
         r = subprocess.run([sys.executable, TP, "new", "--scope", "src/**",
                             "--workspace", fake_home, "goal"],
                            capture_output=True, text=True, env=env, encoding="utf-8", errors="replace")

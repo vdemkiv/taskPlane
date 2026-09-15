@@ -157,8 +157,7 @@ def onboarded(tmp_path, monkeypatch):
         "user.email=test@example.invalid", "commit", "--allow-empty",
         "-qm", "baseline",
     ], cwd=workspace, check=True)
-    monkeypatch.setenv("CODEX_THREAD_ID", "fresh-session")
-    home = Path(storage.session_path(str(tmp_path / "dedicated-state")))
+    home = tmp_path / "dedicated-state"
     monkeypatch.setenv("TASKPLANE_HOME", str(home))
     assert cli._install_codex_hooks(str(workspace))["ok"]
     return workspace, home
@@ -169,7 +168,6 @@ def _fresh_process(workspace, *arguments, event=None, hook_path=None, home=None,
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith("TASKPLANE_")
                    and key not in caps._ENV_OBSERVATIONS}
-    environment["TASKPLANE_HOST_HOME"] = os.environ["TASKPLANE_HOST_HOME"]
     for key in ("CODEX_THREAD_ID", "CLAUDE_SESSION_ID"):
         environment.pop(key, None)
     if event or session:
@@ -207,7 +205,7 @@ def test_initialization_persists_scope_before_hook_readiness(onboarded):
         str(workspace), environment, hook_path="bridge") == str(home)
     assert environment["TASKPLANE_HOME"] == str(home)
     assert not (home / "host-receipts").exists()
-    recovered = json.loads(_fresh_process(workspace, "loop", "resume"))
+    recovered = json.loads(_fresh_process(workspace, "loop", "resume", session=None))
     assert recovered["run_id"] == initialized["run_id"]
     assert recovered["goal"] == "Durable scope before dispatch"
     assert recovered["read_only"] is True
@@ -226,7 +224,7 @@ def test_fresh_process_retains_strict_policy_without_environment(onboarded):
                    if not key.startswith("TASKPLANE_")
                    and key not in caps._ENV_OBSERVATIONS
                    and key not in ("CODEX_THREAD_ID", "CLAUDE_SESSION_ID")}
-    environment["CODEX_THREAD_ID"] = "fresh-session"
+    environment["CODEX_THREAD_ID"] = "replacement-with-no-policy-env"
     result = subprocess.run([
         sys.executable, str(workspace / ".taskplane/codex-hook.py"), "loop", "next",
     ], cwd=workspace, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
@@ -238,9 +236,9 @@ def test_fresh_process_retains_strict_policy_without_environment(onboarded):
     assert loop._load_raw(str(workspace)) == before
 
 
-def test_same_session_restart_reads_original_run_and_emits_valid_context(onboarded):
+def test_fresh_session_reads_original_run_and_emits_valid_context(onboarded):
     workspace, home = onboarded
-    # A process restart retains its host conversation; a new conversation is isolated.
+    # The run is produced normally before the process/session is replaced.
     initialized = json.loads(_fresh_process(
         workspace, "loop", "init", "Repair the native harness with durable scope", home=home))
     assert not initialized.get("error"), initialized
@@ -257,7 +255,8 @@ def test_same_session_restart_reads_original_run_and_emits_valid_context(onboard
     assert "Repair the native harness with durable scope" in context["additionalContext"]
     assert saved["run_id"] in context["additionalContext"]
     assert "loop next" in context["additionalContext"]
-    assert "onboard" not in context["additionalContext"]
+    assert "first TaskPlane request" in context["additionalContext"]
+    assert "Existing repository context is not completed onboarding" in context["additionalContext"]
     assert caps.runtime_hook_observations(
         str(home), session_id="fresh-session", workspace=str(workspace))[
             "repository_bridge_loaded"].status == "supported"
@@ -321,7 +320,7 @@ def test_readiness_uses_real_claims_during_sequential_hook_delivery(
     workspace, home = onboarded
     _fresh_process(workspace, "loop", "init", "Hook ordering regression", home=home)
     lagging = "bridge" if leading == "native" else "native"
-    event = {"session_id": "fresh-session", "hook_event_name": "PreToolUse",
+    event = {"session_id": "receipt-regression", "hook_event_name": "PreToolUse",
              "tool_use_id": "current", "tool_name": "Read", "cwd": str(workspace)}
     # Reinstall in an existing chat: retained records describe different
     # events, and have no claim evidence from the corrected engine.
@@ -459,7 +458,7 @@ def test_read_only_resume_preserves_exact_saved_task_scopes(onboarded):
     loop.save(str(workspace), state)
     path = Path(storage.load_workspace_locator(str(workspace))["home"]) / "runs" / loop.load(str(workspace))["run_id"] / "manifest.json"
     before = path.read_bytes()
-    recovered = json.loads(_fresh_process(workspace, "loop", "resume"))
+    recovered = json.loads(_fresh_process(workspace, "loop", "resume", session=None))
     assert recovered["tasks"] == state["tasks"]
     assert path.read_bytes() == before
 

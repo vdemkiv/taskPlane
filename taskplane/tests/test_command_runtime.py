@@ -30,13 +30,11 @@ def test_governed_deadline_and_wait_reject_nan_inf_zero_negative_and_default_fro
 
     launch = argparse.Namespace(
         command_action="launch", authorization="actor", argv=["echo", "ok"],
-        cwd=None, deadline_seconds=None, host="claude", run_id="run-1",
+        cwd=None, deadline_seconds=None, host="codex", run_id="run-1",
         task_id="P10", wave_id="W1")
     request = tp._governed_command_request(launch)
     assert request["deadline"] == 1000.0 + \
         settings.limits.timeouts["task_seconds"]
-    launch.host = "codex"
-    assert tp._governed_command_request(launch)["deadline"] is None
 
     wait = argparse.Namespace(
         command_action="wait", authorization="actor", handle="opaque",

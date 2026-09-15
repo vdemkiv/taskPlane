@@ -3226,10 +3226,6 @@ _ONBOARDING_ACTIONS = {
         "use one consistent plugin build",
     ),
     "resume_run": ("Resume the saved run", "read the saved run; dispatch will recheck readiness"),
-    "review_file_tools_unavailable": (
-        "Review file access is unavailable",
-        "use compatible native review tools; workspace setup is complete",
-    ),
     "ready": ("Ready to go", "ready for governed work"),
 }
 
@@ -3455,14 +3451,12 @@ def render_onboarding(report, out=None):
         for name, row in stages.items()
     )
     setup_result = report.get("setup_result") or {}
-    failed = setup_result.get("status") in {"refused", "blocked", "failed"}
+    failed = setup_result.get("status") in {"refused", "blocked"}
     save_message = (
         "Could not finish setup: "
         + str(
             setup_result.get("error")
             or (setup_result.get("launcher") or {}).get("reason")
-            or ("TaskPlane could not initialize its entry point. Check the installed plugin before retrying."
-                if setup_result.get("launcher") is not None else None)
             or "Please retry."
         )
         if failed

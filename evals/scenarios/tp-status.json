@@ -2,12 +2,8 @@
   "schema": "taskplane.eval-scenario/v1",
   "skill": "tp-status",
   "title": "A read-only mission-control snapshot that never advances the work it reports",
-  "source_files": [
-    "skills/tp-status/SKILL.md",
-    "skills/tp-status/flow.json",
-    "skills/tp-status/references/delivery-status.md"
-  ],
-  "inputs_fingerprint": "f7b336f9356472a57af3db3d1a15f02b51f22db7535d5b171b4696c914e13579",
+  "source_files": ["skills/tp-status/SKILL.md", "skills/tp-status/flow.json"],
+  "inputs_fingerprint": "ef2e046e7345d8d8911ab63fcad0763b532cb20f833fb939ca9d16bfa98f460a",
   "expects_derivations": [],
   "declared_surfaces": ["tp status", "tp dashboard", "tp graph html"],
   "terminal": "response",

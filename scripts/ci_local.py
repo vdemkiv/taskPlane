@@ -219,10 +219,7 @@ def _ci_settings(
     settings_path: str | Path = DEFAULT_SETTINGS_PATH,
 ) -> OperationalSettings:
     try:
-        settings = load_settings(
-            settings_path, environment={}, use_run_snapshot=False,
-            use_project_settings=False,
-        )
+        settings = load_settings(settings_path, environment={})
     except SettingsError as exc:
         raise RunnerError(f"authoritative CI settings were rejected: {exc}") from exc
     if (
@@ -419,7 +416,9 @@ def build_authoritative_ci_runtime(
     return {**payload, "fingerprint": _sha256_json(payload)}
 
 
-PYTEST_SHARD_COUNT = _ci_settings().tests.shards
+PYTEST_SHARD_COUNT = load_settings(
+    DEFAULT_SETTINGS_PATH, environment={},
+).tests.shards
 PYTEST_CHECK_IDS = tuple(
     f"pytest-shard-{index + 1}" for index in range(PYTEST_SHARD_COUNT)
 )
@@ -1844,9 +1843,7 @@ def native_entry_snapshot(
         if host == "codex"
         else os.environ.get("CLAUDE_CODE_VERSION")
     )
-    from taskplane.storage import host_session_id
-
-    session = host_session_id()
+    session = os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
     # No request field can manufacture a current host session or version.
     if (
         host != request.host_kind

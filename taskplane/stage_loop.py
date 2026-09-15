@@ -14,9 +14,6 @@ if TYPE_CHECKING:
     import terminal_truth
 
 
-from taskplane.storage import host_session_id as _host_session_id
-
-
 def _stage_command_error(_ports, command: object, exc: Exception) -> dict:
     """Return a stable CLI error without changing run state."""
     return {
@@ -1998,13 +1995,14 @@ def _stage_native_init_authority(
         )
     session_id = str(
         _ports.os.environ.get("TASKPLANE_SESSION_ID")
-        or _host_session_id(_ports.os.environ)
+        or _ports.os.environ.get("CODEX_THREAD_ID")
+        or _ports.os.environ.get("CLAUDE_SESSION_ID")
         or ""
     ).strip()
     if not session_id:
         raise ValueError(
             "stage-native new-run init requires TASKPLANE_SESSION_ID, "
-            "CODEX_THREAD_ID, or CLAUDE_CODE_SESSION_ID (legacy: CLAUDE_SESSION_ID)"
+            "CODEX_THREAD_ID, or CLAUDE_SESSION_ID"
         )
     if any(
         not value

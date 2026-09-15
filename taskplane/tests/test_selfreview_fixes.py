@@ -222,7 +222,7 @@ class TestOnboarding(unittest.TestCase):
         self.assertTrue(r["looks_like_project"])
         self.assertEqual(r["next_action"], "tp_init")
 
-    def test_session_context_without_delivery_does_not_require_onboarding(self):
+    def test_session_context_exposes_onramp_without_git(self):
         ws = tempfile.mkdtemp(prefix="tp-ob-context-")
         env = dict(os.environ, TASKPLANE_HOME=tempfile.mkdtemp(
             prefix="tp-ob-store-"))
@@ -232,10 +232,8 @@ class TestOnboarding(unittest.TestCase):
              "--workspace", ws],
             capture_output=True, text=True, env=env, check=False, encoding="utf-8", errors="replace")
         self.assertEqual(p.returncode, 0)
-        self.assertIn("No active Taskplane delivery", p.stdout)
-        self.assertIn("native tools", p.stdout)
-        self.assertNotIn("set up taskplane", p.stdout)
-        self.assertNotIn("onboard", p.stdout)
+        self.assertIn("no project folder is connected yet", p.stdout)
+        self.assertIn("set up taskplane", p.stdout)
 
     def test_workspace_ready_does_not_fake_host_hook_readiness(self):
         ws = _repo(prefix="tp-ob-ready-")
@@ -367,7 +365,7 @@ class TestScreenerBypassClosed(unittest.TestCase):
             allow, reason = tl.screen_tool(
                 self.ro, "Bash", {"command": cmd}, None)
             self.assertFalse(allow, f"LOOSENED read-only shell: {cmd}")
-            self.assertIn("shell command is not a verified native Codex read-only invocation", reason)
+            self.assertIn("every shell command tool is blocked", reason)
 
     def test_scoped_blocks_wrapped_escape_and_destructive(self):
         for cmd in ["env rm -rf ../other", "find . -delete",

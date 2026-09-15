@@ -1,195 +1,6 @@
 # taskplane changelog
 
-## v2.24.0 — 2026-09-14 — native source review simplification
-
-- Ordinary review, help, and status use native tools without delivery onboarding.
-  Source review pins a repository or diff inventory without creating a Taskplane
-  contract, dispatch, dashboard obligation, or automatic 1M token gate.
-- Claude CLI and retained hooks share `CLAUDE_CODE_SESSION_ID`, with explicit
-  legacy compatibility and conflicting-identity diagnostics. Native hosts need
-  no environment-file identity handoff. Existing contracts are preserved.
-- Optional review usage reports native counter deltas from the starting
-  observation, retaining cache categories and unknowns. Explicit limits are
-  advisory; retries preserve the original observation.
-- Review entry instructions are short and delivery details load only when
-  requested. Claude archives omit Windows command variants and repeated
-  launcher discovery chains.
-- RCA, approved Product → Design → Plan, implementation, and validation are
-  recorded in `docs/remediation/2026-09-14-claude-review-simplification.md`.
-  Extracted-package checks do not establish acceptance in the reported Cowork
-  session, which was not available locally.
-
-## v2.23.10 — 2026-09-14 — native review and planning recovery
-
-- Authenticated native children can read their exact phase input through the
-  ordinary CLI. Stopped Product, Design, and Plan attempts with missing or
-  invalid output retain their failure and support exact-operation recovery
-  and bounded retry without advancing the phase.
-- Native collaboration aliases share the existing adapter. Agent lifecycle,
-  waiting, commands, file access, and permissions remain host-owned; redundant
-  Taskplane wait-duration and polling instructions were removed.
-- Whole-repository review explicitly inventories a clean pinned commit with
-  `--scope repository`. Empty diffs no longer silently prepare empty reviews.
-- Validation records preserve later failures and earlier failure history,
-  consume verified sandbox evidence, and distinguish prepared reviewers from
-  observed native starts. Known Python submodule imports produce dependency
-  edges; a repaired tool at the same PATH invalidates its stale probe result.
-- Product, Design, Plan, the RCA, retained hook audit, and targeted verification
-  are recorded in `docs/remediation/2026-09-14-review-recovery.md`. This source
-  update and its packages do not establish live installed-host acceptance or
-  retroactively complete the failed EM review.
-
-## v2.23.9 — 2026-09-14 — shared entry readiness and recovery
-
-- Onboarding separates completed setup from runtime readiness on both hosts.
-  Claude startup carries its session identity into subsequent shell commands;
-  hook observations identify the engine that executed them. Diagnostics expose
-  the command engine and preserve the existing run when loading is incomplete.
-- Existing stale generated launchers are refreshed during initialization.
-  Direct skills share recovery guidance that retains the requested commit scope,
-  completed setup, and prior budget approvals.
-- Shared entry controls admit review continuation, human input, and delivery of
-  owed artifacts through the existing screen. Presentation does not create an
-  acknowledgement or claim that the host rendered the artifact.
-- The installed-package journey now expects completed setup before runtime
-  readiness, and checks readiness after the later host observation. The full
-  journey passes for both extracted package layouts with this expectation.
-- This is a source version update. The latest EM pass covered code quality,
-  integrability, scalability, and testability; security was deferred. It does
-  not establish full release approval or live-host validation.
-
-## v2.23.8 — 2026-09-14 — native plugin startup and approved budget recovery
-
-- Native hooks use the installed plugin selected by Codex or Claude. Entry
-  skills and review choice commands use that engine directly; native review
-  dispatch no longer creates or requires a repository launcher. The optional
-  CLI launcher remains available for older integrations and explicit setup.
-- Claude-only archives resolve through their Claude manifest. Managed-checkout
-  and launcher resolution share the same validator and reject conflicting
-  manifests. Extracted-package tests now execute the generated launcher too.
-- Failed launcher setup is reported as a failure in the CLI and onboarding
-  screen. Native execution receipts and plugin trust remain separate checks;
-  package tests do not claim that a live Cowork hook has executed.
-- Approved token increases use `budget --grant-tokens N --approved-by USER`.
-  The grant restores N tokens of headroom above observed native usage or the
-  existing ceiling, preserves source permissions, and resumes the existing task.
-  Recovery help stays available after exhaustion; bare self-grants stay blocked.
-- Untracked scratch and older bundles were archived with verified checksums.
-  Root release bundles are ignored, and skill/phase evaluation bindings match
-  the corrected native entry instructions. The original EM review remains
-  incomplete; these repairs do not create a sign-off or Marketplace publication.
-
-## 2.23.7 — 2026-09-14 — native Codex execution and review access
-
-- Codex review reads use the installed native permission profiles, including
-  managed restrictions. The projected hook command is checked against the
-  actual native invocation; source writes and wider profiles remain blocked.
-- General Codex commands use native execution sessions, polling and interruption.
-  TaskPlane retains exact assignment and evidence binding without launching a
-  second general command worker. Completed commands reject further controls.
-- Codex review and preview isolation use native sandbox profiles. Static
-  previews open through `open_in_codex`; queued panels remain pending until
-  the host reports them opened. Existing bounded validation and preview
-  resource limits retain their separate enforcement.
-- Normal public Codex launches no longer receive an implicit unsupported
-  deadline. Explicit hard deadlines are refused before launch; the retained
-  Claude command transport keeps its configured timeout.
-- Audited prior native-functionality replacements and removed the custom file
-  reader. Native usage counters and existing Codex checkouts remain the source
-  for their existing TaskPlane adapters.
-- Local validation: the full regression run passed 4,265 tests and 521 subtests,
-  with three skips and one startup-fixture failure subsequently corrected and
-  retested. Final command and entry rechecks passed 146 tests and 38 subtests;
-  both extracted-package journeys passed. Live native command, permission and
-  interruption checks are recorded in the audit. These results do not claim
-  completion of the original governed EM review or Marketplace installation.
-
-## 2.23.6 — 2026-09-13 — common entry initialization
-
-- Every direct skill entry runs the existing onboarding sequence with
-  `--initialize`; missing context and launcher setup are repaired once.
-  Existing runs and user context are preserved. Standalone review applies the
-  same setup after committed-code preflight and before evidence or activation.
-- Read-only activation checks this session's declared file-tool inventory
-  against its contract. Missing tools refuse activation instead of stranding
-  the task. This metadata is compatibility information, not host attestation;
-  it cannot authorize shell commands or source writes.
-- Existing inspection and explicit recovery stay reachable without budget
-  telemetry. Worker coordination restrictions now use worker identity instead
-  of treating every read-only coordinator as a lens worker.
-- No MCP adapter, server, command registry, or new approval protocol is shipped.
-  The incident and design-flow history are recorded in
-  `docs/incidents/2026-09-13-entry-initialization-overengineering.md`.
-- A host without the file tools required by the existing read-only contract
-  remains unsupported for that review mode. No installed live-review pass is
-  claimed by source tests or packaging checks.
-
-## 2.23.5 — 2026-09-13 — isolated host sessions and checkout readiness
-
-- Each identified host conversation gets separate execution storage, run
-  locators, contracts, meters and review state. Hooks select the event's session;
-  old shared contracts and other sessions' contracts are never adopted. Clearing
-  one session leaves other sessions intact.
-- Native hook observations can prove readiness for a fresh checkout in the same
-  session without copying contracts, runs or findings. Unknown and foreign
-  sessions cannot use that proof; repository bridge trust remains local.
-- Standalone review binds its session's subsequent hook and worker lifecycle
-  events to the reviewed checkout. Original tool paths retain their original
-  working-directory meaning. Clearing the review detaches this routing.
-- The ignored launcher remains a shared stateless entry point. Execution state
-  and review outputs remain session-owned. Installed live review validation is
-  still separate from the simulated-host regression suite and package checks.
-
-## 2.23.4 — 2026-09-13 — automatic standalone review startup
-
-- Standalone review now includes the existing signed worker activation in each
-  dispatch slot and requires its own active read-only parent contract.
-  Retrying the same execution choice preserves the review's leases and
-  validation evidence while returning the startup commands again.
-- Signed review startup prepares the existing native child contract lifecycle,
-  so hosts without per-child environment arguments bind the exact worker on
-  `SubagentStart`. Replaying startup preserves an already-bound child.
-- Review opening prepares the ignored launcher in its actual checkout and
-  continuation repairs a missing launcher through the existing installer.
-  Reviewed project hook files are preserved.
-- Review dispatch guidance requires the complete slot and verified host
-  workspace binding before launch. Lens results may use the supported exact
-  single-file `apply_patch` add as well as `Write`.
-- Validation: the native-binding repair passed 186 tests and 14 subtests;
-  the final launcher repair passed 111 tests and eight subtests. These suites
-  overlap. The preceding installed live attempt failed because its managed
-  checkout lacked the launcher, exceeded budgets, and could not nest process
-  isolation. The final repair has not completed a fresh live review or human
-  sign-off; archive preparation does not establish those outcomes.
-
-## 2.23.3 — 2026-09-13 — model-led orchestration with strict harness controls
-
-- Workers cannot advance their own gates or resolve their own escalation. Additional
-  control commands require fresh installed hook receipts.
-- Run-wide budget waivers are disabled, including historical waiver records and
-  legacy advisory arguments. Missing usage and exhausted limits remain visible.
-- Exact-operation collection uses the existing gate and commits its replay marker
-  with the transition. Interrupted serial and parallel collection can be retried
-  without advancing twice.
-- Model orchestration remains in place; no duplicate controller or policy engine
-  is included. Progress dashboards do not stop admitted work.
-- Canonical CI ignores project onboarding settings and active-run snapshots.
-
-## 2.23.2 — 2026-09-11 — budget enforcement and inline setup
-
-- Phase token limits now reach the live hook contract before launch. Cached
-  input counts toward the cap, and missing required usage fails closed.
-- Quick lenses are limited to 100,000 tokens and eight actions. All tools are
-  metered; status and coordination cannot bypass the token ceiling. Budget
-  exhaustion pauses for human approval without automatically retrying Stop.
-- Completed reviews are reused; scoped reads, inline collection reports and
-  fewer progress calls reduce repeated context. The updated plugin hooks must
-  be loaded for the all-tools matcher to apply.
-- Harness bypass settings and admission overrides are refused. Onboarding is
-  shown once at initial setup and reopens only when needed or requested.
-- Archived project-local runs no longer prevent the next run from starting.
-  Existing runs, settings snapshots and historical artifacts remain intact.
-
+## Unreleased — project-local execution and inline setup
 
 - Human-approved Product and Design amendments can be recorded during delivery,
   including Build and Review, with superseded scope, work and evidence retained.
@@ -239,10 +50,10 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.24.0. Historical
+> v2.23.1, not released. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Building the current packages and pushing source to main is not a tag, upload,
+> Preparing, validating, or pushing v2.23.1 to an isolated PR branch is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -259,17 +70,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
-| **v2.24.0** | **Native source review.** Removes mandatory onboarding and automatic review contracts, recognizes Claude native session identity, reports review usage deltas, and ships compact Claude hook metadata. |
-| **v2.23.10** | **Native review and planning recovery.** Restores authenticated child input and failed-attempt retries, adds whole-repository scope, preserves validation failures and actual reviewer starts, and fixes dependency detection and tool cache recovery. |
-| **v2.23.9** | **Shared entry readiness and recovery.** Separates setup from runtime readiness on both hosts, carries Claude startup identity, diagnoses stale engines, and aligns installed-package journey checks. |
-| **v2.23.8** | **Native plugin startup and budget recovery.** Uses the host-selected plugin for hooks and review commands, fixes Claude-only packages and failed setup reporting, and resumes existing tasks after an approved token increase. |
-| **v2.23.7** | **Native Codex integration.** Native command sessions, permission profiles and preview panels with exact TaskPlane evidence binding. Removes the custom file reader and fixes public command launch defaults. |
-| **v2.23.6** | **Shared entry initialization.** Missing setup is repaired once; incompatible read-only file tools refuse activation before a session can be locked. Incident report included. |
-| **v2.23.5** | **Session isolation and fresh-checkout readiness.** Each host conversation owns its contracts, run bindings, meters and review state. Native hook proof follows only the same session across checkouts; clearing a review leaves other sessions intact. |
-| **v2.23.4** | **Automatic standalone review startup.** Prepares the actual checkout launcher and signed native worker contracts; retries preserve leases and evidence. Fresh installed end-to-end validation remains pending. |
-| **v2.23.3** | **Model-led orchestration with strict harness controls.** Disables budget waivers, denies worker control calls, checks fresh hooks on mutations, and safely replays exact phase collection through the existing gate. |
-| **v2.23.2** | **Budget and harness enforcement, simpler onboarding.** Applies phase caps during execution, limits each quick lens to 100,000 native tokens and eight actions, meters every tool, and stops budget-triggered continuation loops. Reuses completed reviews, returns findings inline, and keeps onboarding to initial setup. Includes project-local storage recovery and disables harness bypass. Marketplace packages require loading the updated plugin hooks. |
-| **v2.23.1** | **Superseded untagged onboarding candidate.** Uses the shared hook claim guard for event identity, checks the current launcher after reinstall, and follows the same Git-family path as hook execution. The dashboard keeps incomplete setup visibly incomplete. Every session's first request and every installation/update presents onboarding and preserves the original goal. Prompts hook trust before reload, reports failed acknowledgment writes, and bounds Stop reminders without releasing completion gates. Includes focused regression coverage; a fresh-host check remains separate from CI. |
+| **v2.23.1** | **Onboarding readiness repair.** Uses the shared hook claim guard for event identity, checks the current launcher after reinstall, and follows the same Git-family path as hook execution. The dashboard keeps incomplete setup visibly incomplete. Every session's first request and every installation/update presents onboarding and preserves the original goal. Prompts hook trust before reload, reports failed acknowledgment writes, and bounds Stop reminders without releasing completion gates. Includes focused regression coverage; a fresh-host check remains separate from CI. |
 | **v2.23.0** | **Superseded untagged harness marketplace candidate.** Gives the refactor integrated in [PR #22](https://github.com/vdemkiv/taskPlane/pull/22) a distinct version from the earlier 2.20.0 development builds. Includes stateless phases through Retro, unified lens routing and collection, evolving dependency graphs, dashboard/settings/onboarding wiring, and the cleaned test suite. Package preparation does not claim Marketplace publication. |
 | **v2.20.0** | **Superseded local development version.** Product, Design, Plan, Build, Evaluate, EM review and Retro use the v4 run aggregate and verified artifact handoffs. Independent task phases run in isolated worktrees and join at EM review. Dependency graphs can evolve between phases. Singleton execution, cutover switches and unreleased-state migration are removed; prior v3 runs must be archived. Human plan approval and final sign-off remain. |
 | **v2.19.1** | **Reverted unreleased candidate.** PR #15 declared this version; [PR #18](https://github.com/vdemkiv/taskPlane/pull/18) restored the exact 2.19.0 baseline without rewriting history. No v2.19.1 tag exists; this candidate is not reused for 2.20.0. |

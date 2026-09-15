@@ -21,11 +21,11 @@ not repeated in the tables.
 | Command | What it does |
 | --- | --- |
 | `tp.py ack` | discharge an obligation the engine issued (WS-F evals); --status lists what is open |
-| `tp.py budget` | record a cooperative spend estimate, or record an approved action/token budget increase |
+| `tp.py budget` | record a cooperative spend estimate, or --grant N more actions (the budget approval gate) |
 | `tp.py clear` | deactivate the workspace contract |
 | `tp.py command` | durable governed host-command lifecycle |
 | `tp.py command cancel` | cancel a durable command |
-| `tp.py command launch` | prepare native Codex execution or launch through the retained host runtime |
+| `tp.py command launch` | launch direct argv through the durable command runtime |
 | `tp.py command reconnect` | reconnect a durable command |
 | `tp.py command show` | show a durable command |
 | `tp.py command wait` | wait a durable command |
@@ -68,10 +68,9 @@ not repeated in the tables.
 | `tp.py loop archive` | detach a run and retain its evidence |
 | `tp.py loop authorize` | derive routine authority for a real host/facade flow from the bound consolidated receipt |
 | `tp.py loop claim` | a worker claims one wave task into its own worktree |
-| `tp.py loop collect` | validate and collect the exact phase evidence without supplying a gate outcome |
 | `tp.py loop command` | run a durable command through the live loop root |
 | `tp.py loop command cancel` | cancel a durable command |
-| `tp.py loop command launch` | prepare native Codex execution or launch through the retained host runtime |
+| `tp.py loop command launch` | launch direct argv through the durable command runtime |
 | `tp.py loop command reconnect` | reconnect a durable command |
 | `tp.py loop command show` | show a durable command |
 | `tp.py loop command wait` | wait a durable command |
@@ -110,7 +109,7 @@ not repeated in the tables.
 | `tp.py req new` | record a requirement (or a change request) |
 | `tp.py req score` | score a requirement's refinement against the bar |
 | `tp.py req signoff` | record the human Product gate |
-| `tp.py review` | pin source for native review or inspect existing delivery review evidence |
+| `tp.py review` | open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload |
 | `tp.py review activate-contract` | verify one signed leased-review action and activate only its producer slot |
 | `tp.py review collect` | validate leased lens results and publish one canonical findings revision |
 | `tp.py review evidence` | record approved dynamic validation or render evidence |
@@ -118,7 +117,7 @@ not repeated in the tables.
 | `tp.py review resume` | apply one explicit user decision and continue the same repository preflight and review |
 | `tp.py review sandbox` | create a disposable writable PR copy for validation-only build repair and dynamic checks |
 | `tp.py review signoff` | record the human decision for a collected standalone review |
-| `tp.py review start` | pin source scope for native review without onboarding or a contract |
+| `tp.py review start` | establish the facts and activate the read-only contract |
 | `tp.py review validate` | run one argv-only dynamic check inside the registered validation sandbox and record its evidence |
 | `tp.py root-seed` | prepare the reference-only seed before root start |
 | `tp.py screen` | PreToolUse hook entrypoint (stdin event) |
@@ -180,13 +179,12 @@ Positional arguments:
 
 ## `tp.py budget`
 
-record a cooperative spend estimate, or record an approved action/token budget increase
+record a cooperative spend estimate, or --grant N more actions (the budget approval gate)
 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--approved-by` | APPROVED_BY | human chat identity authorizing this budget grant |
-| `--grant` | N | raise the enforced action ceiling by N after human approval; governed recovery requires --approved-by |
-| `--grant-tokens` | N | add N native tokens of headroom above the current counter or ceiling, whichever is higher; requires --approved-by and a host-observed counter |
+| `--grant` | N | raise the enforced action ceiling by N — for the human / ungoverned main session after approving more budget (a governed agent cannot grant itself) |
 | `--spent` | SPENT | cooperative $ estimate (advisory) |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
@@ -220,7 +218,7 @@ Positional arguments:
 
 ## `tp.py command launch`
 
-prepare native Codex execution or launch through the retained host runtime
+launch direct argv through the durable command runtime
 
 Positional arguments:
 
@@ -230,7 +228,7 @@ Positional arguments:
 | --- | --- | --- |
 | `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
 | `--cwd` | CWD | command directory within the workspace |
-| `--deadline-seconds` | DEADLINE_SECONDS | optional hard deadline (unavailable on native Codex desktop tools) |
+| `--deadline-seconds` | DEADLINE_SECONDS | optional execution deadline from launch |
 | `--host` | one of: claude, codex | host adapter contract |
 | `--run-id` | RUN_ID (required) | canonical governed run identity |
 | `--task-id` | TASK_ID (required) | canonical governed task identity |
@@ -647,7 +645,7 @@ record a human approval at a checkpoint gate
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--by` | BY | who approved and where (e.g. a Slack user + quoted reply) — recorded in trace + KB |
 | `--force` | flag | pass a BLOCKED refinement gate anyway |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
@@ -679,18 +677,9 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--agent-workspace` | AGENT_WORKSPACE (required) | the worker's worktree — its contract activates there |
 | `--by` | BY | human identity required with --advisory |
-
-## `tp.py loop collect`
-
-validate and collect the exact phase evidence without supplying a gate outcome
-
-| Flag | Value | What it does |
-| --- | --- | --- |
-| `--operation` | OPERATION (required) | exact phase operation from the canonical report |
-| `--task` | TASK | exact task id for a parallel phase |
 
 ## `tp.py loop command`
 
@@ -711,7 +700,7 @@ Positional arguments:
 
 ## `tp.py loop command launch`
 
-prepare native Codex execution or launch through the retained host runtime
+launch direct argv through the durable command runtime
 
 Positional arguments:
 
@@ -721,7 +710,7 @@ Positional arguments:
 | --- | --- | --- |
 | `--authorization` | AUTHORIZATION (required) | actor/session identity bound to the handle |
 | `--cwd` | CWD | command directory within the workspace |
-| `--deadline-seconds` | DEADLINE_SECONDS | optional hard deadline (unavailable on native Codex desktop tools) |
+| `--deadline-seconds` | DEADLINE_SECONDS | optional execution deadline from launch |
 | `--host` | one of: claude, codex | host adapter contract |
 | `--run-id` | RUN_ID (required) | canonical governed run identity |
 | `--task-id` | TASK_ID (required) | canonical governed task identity |
@@ -788,7 +777,7 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--by` | BY | human identity required with --advisory |
 | `--note` | NOTE | one-line note recorded with the gate decision |
 | `--req` | REQ | attach requirement R-id to the loop before DoR evaluation (design anchor) |
@@ -816,7 +805,7 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--by` | BY | human identity required with --advisory and with new runs; the value becomes the root stage authority.actor and must use identifier syntax (for example human:vdemkiv; no spaces) |
 | `--checkpoints` | CHECKPOINTS | comma list: plan,em (default both) |
 | `--design` | flag | run the Design Contract + human design approval before implementation planning |
@@ -834,7 +823,7 @@ print the next stage brief for the active loop
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--by` | BY | human identity required with --advisory |
 | `--emit` | one of: workflow, task, auto | stage dispatch surface (R-0004): 'workflow' wraps an evaluate/fix stage payload as ONE ready-to-run stage-wave workflow invocation, 'task' prints today's payload byte-identically (the mandatory fallback and the only Codex path), 'auto' consults workflow_available() (default) |
 | `--req` | REQ | attach requirement R-id to the loop before DoR evaluation (design anchor) |
@@ -864,7 +853,7 @@ Positional arguments:
 | `--outage-fingerprint` | OUTAGE_FINGERPRINT | exact current evaluator outage fingerprint; replay-safe |
 | `--phase-operation` | PHASE_OPERATION | exact existing phase operation to reconcile or retry once |
 | `--reason` | REASON | explicit Build acceptance, review deferral or EM baseline selection |
-| `--worker-stopped` | flag | attest the former worker is stopped; observed terminal or expiry is also verified |
+| `--worker-stopped` | flag | attest the expired unbound worker is stopped; not a completion or pass |
 
 ## `tp.py loop restore-settings`
 
@@ -933,7 +922,7 @@ print the EXECUTE wave: one brief per scope-disjoint task
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--by` | BY | human identity required with --advisory |
 | `--emit` | one of: workflow, task, auto | stage dispatch surface (R-0004): 'workflow' wraps the EXECUTE wave as ONE ready-to-run execute-wave workflow invocation covering every wave entry, 'task' prints today's wave payload byte-identically (the mandatory fallback and the only Codex path), 'auto' consults workflow_available() (default) |
 
@@ -947,7 +936,7 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--allow-foreign-state` | ROOT (repeatable) | repeatable exact signed foreign-state root to include; requires --by and is recorded on the contract |
 | `--base` | REF | diff base for the target pin (e.g. origin/main) |
 | `--budget` | BUDGET | cooperative $ ceiling |
@@ -982,9 +971,7 @@ cold-start readiness — folder + git snapshot + init; renders the onboarding da
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--apply-setup` | JSON_FILE_OR_DASH | apply validated inline setup values from a JSON file or stdin (-) |
-| `--available-tools` | AVAILABLE_TOOLS | comma-separated tool names actually available in this task; compatibility only |
 | `--execution-storage` | one of: project | explicitly select project .taskplane execution storage; active runs refuse migration |
-| `--initialize` | flag | repair missing project setup and launcher, then recheck readiness |
 | `--install-codex-hooks` | flag | deprecated alias for --install-launcher; hooks are supplied only by the plugin |
 | `--install-launcher` | flag | install/refresh the ignored CLI launcher without registering project hooks |
 | `--json` | flag | print the readiness report instead of the widget |
@@ -1011,7 +998,6 @@ launch a private governed working preview from a closed JSON request
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--request` | REQUEST (required) | bounded JSON request matching the documented taskplane preview request contract |
-| `--resume` | RESUME | observe the native panel result for an existing preview id without relaunching |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py ready`
@@ -1165,7 +1151,7 @@ Positional arguments:
 
 ## `tp.py review`
 
-pin source for native review or inspect existing delivery review evidence
+open a review in ONE call — tools, target pin, graph, impact, contract, obligations, routing, runnability and the ready-to-dispatch briefs, as one JSON payload
 
 | Flag | Value | What it does |
 | --- | --- | --- |
@@ -1248,12 +1234,12 @@ apply one explicit user decision and continue the same repository preflight and 
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--action-id` | ACTION_ID (required) | exact pending user-action id |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--by` | BY (required) | the user's approving/cancelling chat identity |
-| `--goal` | GOAL | review goal text after repository preflight resumes |
-| `--max-actions` | MAX_ACTIONS | optional advisory action limit for the resumed review |
+| `--goal` | GOAL | contract goal text after preflight resumes |
+| `--max-actions` | MAX_ACTIONS | action ceiling for the resumed review contract |
 | `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
-| `--max-tokens` | MAX_TOKENS | optional advisory token limit since the resumed review starts |
+| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the resumed review |
 | `--paths` | PATHS | changed files, directories or globs to review |
 | `--response` | one of: approve, retry, initialize, cancel (required) | the user's decision for the pending action |
 | `--run-id` | RUN_ID (required) | run-id from the needs_user preflight response |
@@ -1278,7 +1264,7 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | acknowledge degraded screen enforcement |
 | `--by` | BY (required) | the human approval or change-request words |
 | `--note` | NOTE | optional decision rationale |
 | `--run-id` | RUN_ID | select the collected review run |
@@ -1286,7 +1272,7 @@ Positional arguments:
 
 ## `tp.py review start`
 
-pin source scope for native review without onboarding or a contract
+establish the facts and activate the read-only contract
 
 Positional arguments:
 
@@ -1294,17 +1280,16 @@ Positional arguments:
 
 | Flag | Value | What it does |
 | --- | --- | --- |
-| `--advisory` | flag | removed: harness enforcement cannot be waived |
+| `--advisory` | flag | continue with visibly advisory screen enforcement |
 | `--base` | BASE | diff base ref |
 | `--by` | BY | human identity required with --advisory |
 | `--fetch` | flag | fetch pull/N/head into this checkout first |
-| `--goal` | GOAL | review goal text |
-| `--max-actions` | MAX_ACTIONS | optional advisory action limit; native tools own execution |
+| `--goal` | GOAL | contract goal text (default: derived) |
+| `--max-actions` | MAX_ACTIONS | action ceiling for the review contract (default 40). Prefer --max-tokens: an action cost ~11k effective tokens on the measured review, with a two-order-of-magnitude spread |
 | `--max-diff-bytes` | MAX_DIFF_BYTES | positive canonical diff byte limit |
-| `--max-tokens` | MAX_TOKENS | optional advisory token limit since review start; no per-tool gate |
+| `--max-tokens` | MAX_TOKENS | effective-token ceiling for the review contract |
 | `--paths` | PATHS | changed files, directories or globs to review |
 | `--run-id` | RUN_ID | resume or deterministically name the repository preflight run |
-| `--scope` | one of: diff, repository | review a comparison or the complete pinned source snapshot |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
 ## `tp.py review validate`
@@ -1436,7 +1421,7 @@ with `--by`; use stage identifier syntax such as
 `human:vdemkiv` (letters, digits, `.`, `_`, `:`, or `-`; no spaces).
 That value becomes the root stage `authority.actor`. A
 stable session identity must already be present in
-`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_CODE_SESSION_ID` (legacy: `CLAUDE_SESSION_ID`).
+`TASKPLANE_SESSION_ID`, `CODEX_THREAD_ID`, or `CLAUDE_SESSION_ID`.
 The workspace must already have a governed locator bound to an
 current v4 run with an exact target revision.
 

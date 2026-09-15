@@ -5,12 +5,6 @@ description: "The new-feature flow of taskplane — use when the goal is to BUIL
 
 # /tp-build — new features, refined first, seen always
 
-## Initialize this entry
-
-Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
-using entry point `tp-build`. Every direct invocation rechecks readiness;
-sealed stage and lens workers validate their supplied startup instead.
-
 ## Focused routing invariant
 
 Every new-feature flow uses Product/Design minimum-sufficient focused routes,
@@ -23,7 +17,10 @@ diff, tests, criteria, graph impact, requirements/contracts, Design
 conformance, and provenance. Zero-lens stages remain zero on success, failure,
 cancellation, interruption, and handoff.
 
-Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. Building new is where
+On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
+workspace launcher exists; it resolves the newest valid installed taskplane
+engine on every call. Otherwise set
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Building new is where
 agents waste the most — vague specs, invisible progress, one unexamined
 design. tp-build inverts that: **refine before you plan, see before you
 sign, and when the design space is wide, build it twice and choose.**

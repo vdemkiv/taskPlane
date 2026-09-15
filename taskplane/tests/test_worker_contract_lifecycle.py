@@ -244,18 +244,13 @@ def test_session_start_sweeps_only_loop_proven_completed_worker(tmp_path):
 
 
 
-@pytest.mark.parametrize("active_delivery", [False, True])
-def test_native_session_start_sweeps_workers_only_for_active_delivery(
-        tmp_path, monkeypatch, capsys, active_delivery):
+def test_native_session_start_context_invokes_completed_worker_sweep(
+        tmp_path, monkeypatch, capsys):
     calls = []
 
     def sweep(workspace, *, loop_state):
         calls.append((workspace, loop_state))
         return []
-
-    if active_delivery:
-        contract = tp.build_contract("explicit delivery session")
-        tp.activate(str(tmp_path), contract, snapshot="")
 
     monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
     monkeypatch.setattr(cli.tp, "sweep_completed_worker_contracts", sweep)
@@ -264,12 +259,9 @@ def test_native_session_start_sweeps_workers_only_for_active_delivery(
 
     assert cli.cmd_context(types.SimpleNamespace(
         workspace=str(tmp_path))) == 0
-    output = capsys.readouterr().out
-    if active_delivery:
-        assert calls == [(str(tmp_path), None)]
-    else:
-        assert not calls
-        assert not output
+    capsys.readouterr()
+    assert len(calls) == 1
+    assert calls[0][0] == str(tmp_path)
 
 
 def test_authenticated_release_refuses_before_terminal_and_tampering(tmp_path):
@@ -314,13 +306,6 @@ def test_subagent_stop_quarantines_missing_submission_instead_of_stranding(
     start = _event(tmp_path, name="tp_step_executor_t1_deadbeef")
     tp.bind_worker_contract_event(str(tmp_path), start, now=11)
     event = {**start, "hook_event_name": "SubagentStop", "outcome": "failed"}
-    # This test concerns missing submission cleanup, with usage available.
-    # Missing usage is independently required to hold the contract closed.
-    transcript = tmp_path / "claude-usage.jsonl"
-    transcript.write_text(json.dumps({"message": {"id": "terminal", "usage": {
-        "input_tokens": 1, "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0, "output_tokens": 1}}}) + "\n")
-    event.update(provider="claude", transcript_path=str(transcript))
     monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(
         read=lambda: json.dumps(event)))
     monkeypatch.setattr(cli, "_submission_stop_check", lambda *a, **k: {

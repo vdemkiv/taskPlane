@@ -5,13 +5,10 @@ description: "The on-demand STRATEGIC lens of taskplane — the north-star revie
 
 # /tp-northstar — the north-star review (summoned, advisory, never a gate)
 
-## Initialize this entry
-
-Before following this skill, apply [common entry initialization](../taskplane/references/entry-initialization.md)
-using entry point `tp-northstar`. Every direct invocation rechecks readiness;
-sealed stage and lens workers validate their supplied startup instead.
-
-Use the installed engine selected by [common entry initialization](../taskplane/references/entry-initialization.md); `$TP` below denotes that CLI invocation. Product owns the WHAT,
+On Codex, set `TP='python3 .taskplane/codex-hook.py'` when that stable
+workspace launcher exists; it resolves the newest valid installed taskplane
+engine on every call. Otherwise set
+`TP=python3 "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/taskplane/tp.py"`. Product owns the WHAT,
 engineering owns whether it's SOUND — those seats run automatically, backed
 by the routed 26-lens review catalog. This is the third lens — **strategy** —
 outside that catalog, and it is **summoned, not automatic**. Point it at anything: an idea, a

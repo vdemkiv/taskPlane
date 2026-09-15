@@ -40,70 +40,6 @@ def submission(ws, **changes):
             "execution_storage": "keep-existing", **changes}
 
 
-@pytest.mark.parametrize("operation", ["install", "apply"])
-def test_failed_launcher_never_reports_applied_setup(workspace, monkeypatch, capsys, operation):
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    failed = {"ok": False, "launcher_ready": False,
-              "resolved_engine": None, "status": "stale"}
-    monkeypatch.setattr(cli, "_install_codex_hooks", lambda ws: failed)
-    args = Namespace(workspace=workspace, json=True, out=None,
-        install_launcher=operation == "install",
-        setup_values=submission(workspace, install_launcher=True)
-                     if operation == "apply" else None)
-    assert cli.cmd_onboard(args) == 2
-    report = json.loads(capsys.readouterr().out)
-    assert report["setup_result"]["status"] == "failed"
-    assert report["setup_result"]["launcher"] == failed
-    assert report["ready"] is False
-    rendered = dashboard.render_onboarding(report)
-    assert "Could not finish setup" in rendered
-    assert "Check the installed plugin before retrying" in rendered
-    assert "Saved. These preferences" not in rendered
-
-
-def test_claude_initialization_prepares_and_checks_the_launcher(workspace, monkeypatch):
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
-    result = cli._initialize_entry(workspace)
-    assert result["host"] == "claude"
-    assert result["launcher"]["ok"] is True
-    runner = Path(workspace, ".taskplane/codex-hook.py")
-    assert runner.is_file()
-    assert "install_launcher" in result["initialization"]["repairs"]
-    assert cli._initialize_entry(workspace)["initialization"]["repairs"] == []
-
-
-def test_automatic_launcher_failure_is_reported_even_with_existing_context(workspace, monkeypatch):
-    cli._initialize_entry(workspace)
-    Path(workspace, ".taskplane/codex-hook.py").unlink()
-    failed = {"ok": False, "launcher_ready": False, "status": "stale"}
-    monkeypatch.setattr(cli, "_install_codex_hooks", lambda *args, **kwargs: failed)
-    report = cli._initialize_entry(workspace)
-    assert report["ready"] is False
-    assert report["initialization"]["launcher"] == failed
-    assert report["initialization"]["repairs"] == []
-
-
-def test_initialized_native_workspace_does_not_require_local_launcher(workspace, monkeypatch):
-    cli._initialize_entry(workspace)
-    Path(workspace, ".taskplane/codex-hook.py").unlink()
-    monkeypatch.chdir(workspace)
-    monkeypatch.setenv("TASKPLANE_HOOK_PATH", "native")
-    assert cli._unbound_global_hook(["screen"]) is False
-
-
-def test_native_plugin_initialization_does_not_install_a_redundant_launcher(workspace, monkeypatch):
-    monkeypatch.setenv("PLUGIN_ROOT", str(Path(cli.__file__).resolve().parents[1]))
-    def unexpected(*args, **kwargs):
-        raise AssertionError("native plugin initialization must not require a launcher")
-    monkeypatch.setattr(cli, "_install_codex_hooks", unexpected)
-    report = cli._initialize_entry(workspace)
-    assert report["has_context"]
-    assert report["initialization"]["repairs"] == ["initialize_project"]
-    assert not Path(workspace, ".taskplane/codex-hook.py").exists()
-
-
 def test_apply_writes_only_changed_context_and_preserves_current_run(workspace):
     identity = storage.resolve_repository_identity(workspace)
     layout = storage.resolve_layout(identity, home=os.environ["TASKPLANE_HOME"], run_id="context-save")
@@ -259,8 +195,7 @@ def test_native_observation_requires_no_project_hook_rows(workspace, monkeypatch
     cli._install_codex_hooks(workspace)
     Path(cli.tp.kb_root(workspace), "context").mkdir(parents=True)
     cli.host_caps.record_runtime_hook_receipt(
-        os.environ["TASKPLANE_HOME"], hook_path="native",
-        engine_fingerprint=cli.tp._entry_engine_fingerprint(), event={
+        os.environ["TASKPLANE_HOME"], hook_path="native", event={
             "session_id": "setup-session", "hook_event_name": "PreToolUse", "tool_use_id": "setup-call", "cwd": workspace})
     report = cli._onboard_report(workspace)
     assert report["host_capabilities"]["effective_path"]["value"] == "native_effective"

@@ -3,8 +3,8 @@
   "skill": "tp-status",
   "approval": {
     "status": "human-approved",
-    "scope": "native source review simplification",
-    "date": "2026-09-14"
+    "scope": "all-10",
+    "date": "2026-08-14"
   },
   "settings": {
     "source": "taskplane/operational-settings.json",
@@ -37,8 +37,7 @@
       "discarded"
     ],
     "implicit_build": false,
-    "default": "taskplane.run/v4",
-    "applies_to": "explicit delivery only"
+    "default": "taskplane.run/v4"
   },
   "nodes": [
     {
@@ -48,7 +47,7 @@
     },
     {
       "id": "manifest",
-      "label": "delivery details only when requested",
+      "label": "bounded stage + handoff + lineage",
       "kind": "parallel"
     },
     {
@@ -75,19 +74,25 @@
       "id": "action",
       "label": "action banner / no action",
       "kind": "stage"
-    },
-    {
-      "id": "summary",
-      "label": "native status or one saved summary",
-      "kind": "stage"
-    },
-    {
-      "id": "answer",
-      "label": "current state and any needed action",
-      "kind": "stage"
     }
   ],
   "edges": [
+    [
+      "request",
+      "manifest"
+    ],
+    [
+      "request",
+      "state"
+    ],
+    [
+      "request",
+      "requirements"
+    ],
+    [
+      "request",
+      "graph"
+    ],
     [
       "manifest",
       "view"
@@ -107,30 +112,6 @@
     [
       "view",
       "action"
-    ],
-    [
-      "request",
-      "summary"
-    ],
-    [
-      "summary",
-      "answer"
-    ],
-    [
-      "summary",
-      "manifest"
-    ],
-    [
-      "manifest",
-      "state"
-    ],
-    [
-      "manifest",
-      "requirements"
-    ],
-    [
-      "manifest",
-      "graph"
     ]
   ]
 }

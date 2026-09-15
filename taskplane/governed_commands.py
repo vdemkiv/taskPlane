@@ -1,9 +1,9 @@
-"""Supported composition root for governed host commands.
+"""Supported composition root for durable governed host commands.
 
-Codex owns its command sessions. TaskPlane emits native tool requests and binds
-observed native results to assignments. The older detached runtime is retained
-for Claude and the semantic checkpoint boundary, whose additional guarantees
-are not exposed by the current desktop command tools.
+The durable lifecycle remains owned by :mod:`command_runtime`; host launch,
+wait, reconnect, and cancellation remain owned by :mod:`command_adapters`.
+This module validates the closed public request and joins those owners for the
+CLI and Evaluate-Loop roots.
 """
 from __future__ import annotations
 
@@ -142,148 +142,6 @@ def _dispatch_intent_root(workspace: str) -> Path:
             "dispatch-intent-telemetry-v1")
 
 
-def _native_command_path(workspace: str, handle: str) -> Path:
-    if not re.fullmatch(r"codex-[0-9a-f]{32}", handle):
-        raise GovernedCommandError("invalid native command reference")
-    return _dispatch_intent_root(workspace) / (handle + ".json")
-
-
-def _native_command_records(session: str) -> list[dict]:
-    from taskplane import review
-    if session != os.environ.get("CODEX_THREAD_ID"):
-        raise GovernedCommandError("native command belongs to another Codex task")
-    _, path = review._host_review_transcripts(f"codex:{session}:command-evidence")[0]
-    return review._host_review_records(path)
-
-
-def _native_command_request(argv: list[str], cwd: str, authority: dict, handle: str,
-                            sandbox: str | None = None) -> dict:
-    from taskplane import host_capabilities, host_native
-    # A task/attempt reference in the native environment binds identical test
-    # commands to separate launches without another process or receipt API.
-    runtime_argv = ["/usr/bin/env", "TASKPLANE_COMMAND_REFERENCE=" + handle, *argv]
-    if sandbox:
-        environment = dict(authority["evidence_boundary"]["runtime_environment"])
-        environment.update(TMPDIR=str(Path(sandbox) / ".native-tmp"),
-                           HOME=str(Path(sandbox) / ".native-home"),
-                           TASKPLANE_COMMAND_REFERENCE=handle)
-        runtime_argv = ["/usr/bin/env", "-i", *[key + "=" + val for key, val in sorted(environment.items())], *argv]
-        args = host_capabilities.codex_sandbox_command(runtime_argv, sandbox, writable_root=sandbox)
-    else:
-        args = (host_capabilities.codex_readonly_command(runtime_argv, cwd)
-            if authority.get("read_only") else
-            {"cmd": shlex.join(runtime_argv), "shell": "/bin/sh", "login": False, "workdir": cwd})
-    args.update(tty=True, yield_time_ms=1000, max_output_tokens=4000)
-    return host_native.native_tool_request("exec_command", args)
-
-
-def _native_copy_path(intent: dict) -> Path:
-    path = Path(intent["sandbox"])
-    root = (Path(tempfile.gettempdir()) / "taskplane-checkpoint-sandboxes-v1").resolve()
-    if (path.name != "repo" or path.parent.parent.resolve() != root
-            or not re.fullmatch(r"checkpoint-[a-zA-Z0-9_]+", path.parent.name)
-            or path.parent.is_symlink()):
-        raise GovernedCommandError("native validation copy ownership is invalid")
-    return path
-
-
-def _native_copy_cleanup(intent: dict) -> None:
-    """Remove only the existing preparer's copy after native completion."""
-    if not intent.get("sandbox"):
-        return
-    path = _native_copy_path(intent)
-    if not path.parent.exists():
-        return
-    marker = path.parent / ".native-command-owner"
-    if marker.read_text() != intent["handle"]:
-        raise GovernedCommandError("native validation copy owner changed")
-    shutil.rmtree(path.parent)
-
-
-def native_evidence_invocation_allowed(workspace: str, arguments: Mapping) -> bool:
-    """Check assignment scope; Codex alone enforces the writable-copy profile."""
-    matches = re.findall(r"TASKPLANE_COMMAND_REFERENCE=(codex-[0-9a-f]{32})", str(arguments.get("cmd", "")))
-    if len(matches) != 1:
-        return False
-    try:
-        intent = json.loads(_native_command_path(workspace, matches[0]).read_text())
-        if (intent["session"] != os.environ.get("CODEX_THREAD_ID") or not intent.get("sandbox")
-                or not intent["authority"].get("evidence_boundary")
-                or dict(arguments) != intent["native_request"]["arguments"]
-                or intent["native_request"] != _native_command_request(intent["argv"], intent["cwd"], intent["authority"], intent["handle"], intent["sandbox"])):
-            return False
-        _governed_launch_authority(workspace, intent["cwd"], intent["argv"], intent["identity"],
-                                  assignment_binding=intent["assignment_binding"], expected=intent["authority"])
-        return (_native_copy_path(intent).parent / ".native-command-owner").read_text() == intent["handle"]
-    except (OSError, ValueError, KeyError, GovernedCommandError):
-        return False
-
-
-def _native_command_intent(workspace: str, value: dict) -> dict:
-    from taskplane import host_capabilities
-    if not host_capabilities.codex_readonly_runtime(workspace):
-        raise GovernedCommandError("native Codex command tools are unavailable; no process was launched")
-    if value.get("deadline") is not None:
-        raise GovernedCommandError("native desktop command tools do not expose an execution deadline; no process was launched")
-    argv = value["argv"]
-    if not isinstance(argv, (list, tuple)) or not argv or any(
-            not isinstance(x, str) or not x or "\0" in x for x in argv):
-        raise GovernedCommandError("governed command launch requires direct argv")
-    cwd = _validated_cwd(workspace, value.get("cwd"))
-    identity = {"schema": IDENTITY_SCHEMA, "run_id": value["run_id"],
-                "task_id": value["task_id"], "attempt": value.get("attempt", 1)}
-    authority = _governed_launch_authority(workspace, cwd, list(argv), identity,
-                                         assignment_binding=value.get("assignment_binding"))
-    # Native permission requests remain subject to Codex's approval review.
-    handle = "codex-" + secrets.token_hex(16)
-    sandbox = None
-    if authority.get("evidence_boundary"):
-        sandbox = _prepare_checkpoint_sandbox(workspace, authority["evidence_boundary"])
-        for name in (".native-tmp", ".native-home"):
-            (Path(sandbox) / name).mkdir(exist_ok=True)
-        (Path(sandbox).parent / ".native-command-owner").write_text(handle)
-    intent = {"schema": "taskplane.native-command-assignment/v1",
-              "handle": handle, "workspace": workspace, "identity": identity,
-              "session": os.environ["CODEX_THREAD_ID"], "created_at_ms": time.time() * 1000,
-              "authorization_fingerprint": hashlib.sha256(value["authorization"].encode()).hexdigest(),
-              "authority": authority, "argv": list(argv), "cwd": cwd,
-              "assignment_binding": value.get("assignment_binding"),
-              "sandbox": sandbox,
-              "native_request": _native_command_request(list(argv), cwd, authority, handle, sandbox)}
-    try:
-        _atomic_json(_native_command_path(workspace, handle), intent)
-    except BaseException:
-        _native_copy_cleanup(intent)
-        raise
-    return {"schema": RESULT_SCHEMA, "action": "launch", "handle": handle,
-            "identity": identity, "host": "codex", "state": "launch_requested",
-            "native_request": intent["native_request"], "evidence": {"authoritative": False},
-            "instruction": "Execute native_request through Codex, then show this reference. Do not repeat a launch with missing history."}
-
-
-def _native_command_result(workspace: str, action: str, value: dict) -> dict:
-    from taskplane import host_native
-    try:
-        intent = json.loads(_native_command_path(workspace, value["handle"]).read_text())
-        if (intent["workspace"] != workspace or intent["handle"] != value["handle"]
-                or intent["authorization_fingerprint"] != hashlib.sha256(value["authorization"].encode()).hexdigest()):
-            raise ValueError("native command ownership mismatch")
-        if intent["native_request"] != _native_command_request(intent["argv"], intent["cwd"], intent["authority"], intent["handle"], intent.get("sandbox")):
-            raise ValueError("native command differs from the assigned invocation")
-        observed = host_native.native_command_observation(
-            _native_command_records(intent["session"]), intent["native_request"], after_ms=intent["created_at_ms"])
-        if observed.get("exit_code") is not None:
-            _native_copy_cleanup(intent)
-    except (OSError, ValueError, KeyError) as exc:
-        raise GovernedCommandError(f"native command evidence unavailable: {exc}") from exc
-    followup = host_native.native_command_followup(
-        observed, cancel=action in {"cancel", "interrupt"},
-        wait_ms=int(float(value.get("timeout") or 1) * 1000))
-    return {"schema": RESULT_SCHEMA, "action": action, "handle": intent["handle"],
-            "identity": intent["identity"], "host": "codex", "snapshot": observed,
-            "native_request": followup, "evidence": {"authoritative": "receipt_id" in observed}}
-
-
 def _closed_request(action: str, request: object) -> dict:
     allowed = _ACTION_FIELDS.get(str(action))
     if allowed is None:
@@ -329,10 +187,6 @@ def _closed_request(action: str, request: object) -> dict:
             not isinstance(value["assignment_binding"], Mapping):
         raise GovernedCommandError(
             "governed command assignment binding must be an object")
-    if action == "launch" and value.get("host", "codex") not in {"codex", "claude"}:
-        raise GovernedCommandError("unsupported command host")
-    if action == "launch" and value.get("host") == "claude" and os.environ.get("CODEX_THREAD_ID"):
-        raise GovernedCommandError("a Codex session cannot select the legacy general command transport")
     return value
 
 
@@ -1091,28 +945,6 @@ def governed_command_execution_evidence(
                 not isinstance(item, str) or not item for item in expected_argv)):
         raise GovernedCommandError(
             "governed command execution expectation is invalid")
-    if handle.startswith("codex-"):
-        observed = _native_command_result(workspace, "show", {
-            "authorization": authorization, "handle": handle})["snapshot"]
-        intent = json.loads(_native_command_path(workspace, handle).read_text())
-        current_candidate = _git_output(workspace, "rev-parse", "HEAD")
-        current_tree = _git_output(workspace, "rev-parse", "HEAD^{tree}")
-        if (observed.get("state") != "succeeded" or observed.get("exit_code") != 0
-                or intent["argv"] != expected_argv or intent["assignment_binding"] != expected_binding
-                or expected_binding["candidate_sha"] != current_candidate
-                or expected_binding["source_tree"] != current_tree):
-            raise GovernedCommandError("native execution does not prove this exact assignment")
-        _governed_launch_authority(workspace, intent["cwd"], expected_argv, intent["identity"],
-                                  assignment_binding=expected_binding, expected=intent["authority"])
-        material = {"handle": handle, "identity": intent["identity"],
-                    "authorization_fingerprint": intent["authorization_fingerprint"],
-                    "assignment_binding": expected_binding,
-                    "assignment_binding_fingerprint": _canonical_digest(expected_binding),
-                    "source_sha": current_candidate, "target_sha": current_candidate, "source_tree": current_tree,
-                    "plan_fingerprint": expected_binding.get("plan_fingerprint"),
-                    "runtime_argv": expected_argv, "command_fingerprint": _canonical_digest(expected_argv),
-                    "state": "succeeded", "exit_code": 0, "native_evidence": observed}
-        return {**material, "receipt_digest": _canonical_digest(material)}
     try:
         bundle = _sealed_runtime_evidence(_runtime_root(workspace), handle)
         evidence = bundle["evidence"]
@@ -1337,11 +1169,7 @@ def _governed_launch_authority(
             raise GovernedCommandError("evidence command requires the exact task workspace")
         evidence_boundary = _evidence_command_boundary(workspace, contract, argv, identity, assignment_binding)
     else:
-        payload = {"cmd": command}
-        if contract.get("read_only") and os.environ.get("CODEX_THREAD_ID"):
-            from taskplane import host_capabilities
-            payload = host_capabilities.codex_readonly_command(argv, workspace)
-        allowed, reason = contract_engine.screen_tool(contract, "exec_command", payload, workspace)
+        allowed, reason = contract_engine.screen_tool(contract, "exec_command", {"cmd": command}, workspace)
         if not allowed:
             raise GovernedCommandError(f"governed command launch is outside its active contract: {reason}")
     contract_material = contract
@@ -1357,7 +1185,6 @@ def _governed_launch_authority(
         **({"evidence_boundary": evidence_boundary, "evidence_contract_slot": contract["task_slot"]}
            if evidence_boundary is not None else {}),
         "command_fingerprint": _canonical_digest(argv),
-        "read_only": bool(contract.get("read_only")),
         **({"assignment_binding_fingerprint":
             _canonical_digest(dict(assignment_binding))}
            if assignment_binding is not None else {}),
@@ -1954,10 +1781,6 @@ def execute(workspace: str, action: str, request: object) -> dict:
     """Execute one closed lifecycle action through adapter and runtime."""
     workspace = str(Path(workspace).resolve())
     value = _closed_request(action, request)
-    if action == "launch" and str(value.get("host") or "codex") == "codex":
-        return _native_command_intent(workspace, value)
-    if action not in {"launch", "checkpoint", "dispatch"} and str(value.get("handle", "")).startswith("codex-"):
-        return _native_command_result(workspace, action, value)
     if action in {"launch", "checkpoint"}:
         supplied_attempt = value.get("attempt")
         value["attempt"] = _resolved_cleanup_attempt(
