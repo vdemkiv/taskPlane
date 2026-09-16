@@ -7,20 +7,12 @@
   },
   "license": "Apache-2.0",
   "keywords": [
-    "governance",
     "software-delivery",
-    "ai-agents",
-    "task-contract",
-    "evaluate-loop",
-    "lenses",
-    "requirements",
-    "solution-design",
-    "knowledge-base",
+    "code-review",
     "dependency-graph",
-    "parallel-agents",
-    "definition-of-done",
-    "audit",
-    "guardrails"
+    "telemetry",
+    "claude",
+    "codex"
   ],
   "homepage": "https://github.com/vdemkiv/taskPlane",
   "repository": "https://github.com/vdemkiv/taskPlane"

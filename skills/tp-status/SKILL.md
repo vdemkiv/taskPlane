@@ -12,9 +12,7 @@ and useful token or waste observations. An advisory is not a blocking gate.
 Missing usage means unknown, not zero. A recorded milestone is not proof that
 acceptance criteria passed; check the cited evidence when making that claim.
 
-Do not start a flow to answer status. Use legacy `summary` or the
-[legacy status reference](references/delivery-status.md) only when the user asks
-about an older governed run. Distinguish historical gate state from current work.
+Do not start a flow to answer status.
 
 ## Shared delivery state
 

@@ -12,13 +12,11 @@
   "license": "Apache-2.0",
   "keywords": [
     "software-delivery",
-    "ai-agents",
-    "governance",
-    "task-contract",
     "code-review",
-    "requirements",
-    "human-in-the-loop",
-    "guardrails"
+    "dependency-graph",
+    "telemetry",
+    "claude",
+    "codex"
   ],
   "skills": "./skills/",
   "interface": {

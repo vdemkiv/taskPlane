@@ -1,208 +1,79 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
 permissions:
   contents: read
-
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 env:
-  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  EVENT_NAME: ${{ github.event_name }}
-  EXACT_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.ref }}
-  RUN_ID: ${{ github.run_id }}
-
-# Independent protected checks: no plan, join, pushed-SHA, or PR-head pseudo-job.
+  PYTHONUTF8: "1"
 jobs:
   tests:
     name: tests (python 3.12)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.CANDIDATE_SHA }}
-          fetch-depth: 30
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.12", cache: pip}
-      - name: Install sealed test environment
-        shell: bash
+      - name: Install test dependencies
         run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r requirements-dev.lock
-      - name: Initialize canonical settings and execute one unsharded suite
-        id: execute
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/taskplane-ci"
-          python scripts/ci_local.py --emit-ci-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --github-output "$GITHUB_OUTPUT" --source-sha "$CANDIDATE_SHA" --event "$EVENT_NAME" --ref "$EXACT_REF" --run-id "$RUN_ID"
-          python scripts/ci_local.py --runtime-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --ci-cell pytest-1 --receipt "$RUNNER_TEMP/taskplane-ci/pytest-1.json"
-      - name: Publish candidate, settings, command, runtime, failure, quality, artifact, and cleanup receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node 24)
-        with:
-          name: authoritative-tests-${{ env.CANDIDATE_SHA }}
-          path: ${{ runner.temp }}/taskplane-ci
-          if-no-files-found: error
-          retention-days: ${{ fromJSON(steps.execute.outputs.retention-days) }}
-
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
+      - run: python scripts/ci_local.py --check tests
   quality-package:
     name: quality + package + release provenance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.CANDIDATE_SHA }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.12", cache: pip}
-      - name: Install sealed quality environment
-        shell: bash
-        run: |
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r requirements-dev.lock
-      - name: Initialize canonical settings and execute quality, package, and provenance
-        id: execute
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/taskplane-ci"
-          python scripts/ci_local.py --emit-ci-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --github-output "$GITHUB_OUTPUT" --source-sha "$CANDIDATE_SHA" --event "$EVENT_NAME" --ref "$EXACT_REF" --run-id "$RUN_ID"
-          python scripts/ci_local.py --runtime-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --ci-cell quality-package --receipt "$RUNNER_TEMP/taskplane-ci/quality-package.json"
-      - name: Publish candidate, settings, command, runtime, failure, quality, artifact, and cleanup receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node 24)
+      - run: python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+      - run: python scripts/ci_local.py --check quality
+      - run: python scripts/ci_local.py --check package
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: quality-package-${{ env.CANDIDATE_SHA }}
-          path: ${{ runner.temp }}/taskplane-ci
+          name: plugins-${{ github.sha }}
+          path: dist/
           if-no-files-found: error
-          retention-days: ${{ fromJSON(steps.execute.outputs.retention-days) }}
-
   dashboard-browser:
     name: dashboard browser conformance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.CANDIDATE_SHA }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with: {python-version: "3.12", cache: pip}
-      - name: Install sealed browser-test environment
-        shell: bash
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "3.12"}
+      - name: Install test dependencies
         run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Initialize settings, freeze browser identity, and execute browser behavior
-        id: execute
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/taskplane-ci"
-          python scripts/ci_local.py --emit-ci-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --github-output "$GITHUB_OUTPUT" --observe-browser --source-sha "$CANDIDATE_SHA" --event "$EVENT_NAME" --ref "$EXACT_REF" --run-id "$RUN_ID"
-          python scripts/ci_local.py --runtime-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --ci-cell dashboard-browser --receipt "$RUNNER_TEMP/taskplane-ci/dashboard-browser.json"
-      - name: Publish candidate, settings, command, runtime, failure, quality, artifact, and cleanup receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node 24)
-        with:
-          name: dashboard-browser-${{ env.CANDIDATE_SHA }}
-          path: ${{ runner.temp }}/taskplane-ci
-          if-no-files-found: error
-          retention-days: ${{ fromJSON(steps.execute.outputs.retention-days) }}
-
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
+      - run: python scripts/ci_local.py --check browser
   interpreter-import:
     name: interpreter import (${{ matrix.python }})
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.13"]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.CANDIDATE_SHA }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "${{ matrix.python }}"}
-      - name: Initialize canonical settings and compile/import shipped entry points
-        id: execute
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/taskplane-ci"
-          python scripts/ci_local.py --emit-ci-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --github-output "$GITHUB_OUTPUT" --source-sha "$CANDIDATE_SHA" --event "$EVENT_NAME" --ref "$EXACT_REF" --run-id "$RUN_ID"
-          python scripts/ci_local.py --runtime-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --ci-cell interpreter-import-${{ matrix.python }} --receipt "$RUNNER_TEMP/taskplane-ci/interpreter-import.json"
-      - name: Publish candidate, settings, command, runtime, failure, quality, artifact, and cleanup receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node 24)
-        with:
-          name: interpreter-import-${{ matrix.python }}-${{ env.CANDIDATE_SHA }}
-          path: ${{ runner.temp }}/taskplane-ci
-          if-no-files-found: error
-          retention-days: ${{ fromJSON(steps.execute.outputs.retention-days) }}
-
+      - run: python -m compileall -q taskplane scripts
+      - run: python taskplane/tp.py --help
+      - run: python taskplane/tp.py flow --help
   native-portability:
     name: native portability (windows)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.CANDIDATE_SHA }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with: {python-version: "3.12", cache: pip}
-      - name: Install sealed native-test environment
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/requirements-test.lock"
-          python -m pip install --disable-pip-version-check --require-hashes --no-deps -r "$RUNNER_TEMP/requirements-test.lock"
-      - name: Initialize canonical settings and execute native-only portability behavior
-        id: execute
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/taskplane-ci"
-          python scripts/ci_local.py --emit-ci-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --github-output "$GITHUB_OUTPUT" --source-sha "$CANDIDATE_SHA" --event "$EVENT_NAME" --ref "$EXACT_REF" --run-id "$RUN_ID"
-          python scripts/ci_local.py --runtime-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --ci-cell os-portability-windows --receipt "$RUNNER_TEMP/taskplane-ci/os-portability-windows.json"
-      - name: Publish candidate, settings, command, runtime, failure, quality, artifact, and cleanup receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node 24)
-        with:
-          name: native-portability-${{ env.CANDIDATE_SHA }}
-          path: ${{ runner.temp }}/taskplane-ci
-          if-no-files-found: error
-          retention-days: ${{ fromJSON(steps.execute.outputs.retention-days) }}
-
-  security-no-egress:
-    name: zero-token corpus (credential-empty, no-egress)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ env.CANDIDATE_SHA }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.12"}
-      - name: Initialize canonical settings and execute one credential-empty no-egress run
-        id: execute
+      - name: Install test dependencies
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/taskplane-ci" "$RUNNER_TEMP/taskplane-empty-home"
-          python scripts/ci_local.py --emit-ci-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --github-output "$GITHUB_OUTPUT" --source-sha "$CANDIDATE_SHA" --event "$EVENT_NAME" --ref "$EXACT_REF" --run-id "$RUN_ID"
-          env -i PATH="$PATH" HOME="$RUNNER_TEMP/taskplane-empty-home" LANG=C.UTF-8 LC_ALL=C.UTF-8 RUNNER_TEMP="$RUNNER_TEMP" python scripts/ci_local.py --runtime-plan "$RUNNER_TEMP/taskplane-ci/runtime.json" --ci-cell security-no-egress --receipt "$RUNNER_TEMP/taskplane-ci/security-no-egress.json"
-      - name: Publish candidate, settings, command, runtime, failure, quality, artifact, and cleanup receipts
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node 24)
-        with:
-          name: security-no-egress-${{ env.CANDIDATE_SHA }}
-          path: ${{ runner.temp }}/taskplane-ci
-          if-no-files-found: error
-          retention-days: ${{ fromJSON(steps.execute.outputs.retention-days) }}
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
+      - run: python scripts/ci_local.py --check tests

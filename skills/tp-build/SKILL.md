@@ -15,7 +15,7 @@ Build A/B variants only when requested, in separate checkouts, and let the user
 select before integrating mutually exclusive variants. Do not create multiple
 implementations or review waves by default.
 
-Reuse authorization already given. Missing telemetry, a stale legacy run, or a
+Reuse authorization already given. Missing telemetry or a
 review quota must not block authorized implementation. Native host permissions
 remain in force.
 

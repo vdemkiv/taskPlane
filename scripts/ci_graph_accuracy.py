@@ -124,7 +124,7 @@ def _load_expected(profile_dir):
 def _scan(profile_dir):
     """Run the REAL scanner over the fixture and return (modules, edges)."""
     import depgraph
-    import taskplane_lite as tp
+    import primitives as tp
     home = os.path.join(profile_dir, ".tp-accuracy-home")
     prev = os.environ.get("TASKPLANE_HOME")
     os.environ["TASKPLANE_HOME"] = home

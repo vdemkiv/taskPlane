@@ -30,17 +30,9 @@ from its supplied root or this skill's location and invoke it with Python:
 - `review start --base <ref> --workspace <checkout>` for a comparison.
 
 The response references the selected source artifact; read it through native tools.
-It creates no execution contract, dispatch, or tool budget. Any explicitly supplied
-`--max-tokens` or `--max-actions` is advisory. Use the host's native usage and
-budget controls when available; missing usage remains unknown. The inventory
-creates no session budget or lifecycle to recover.
-
-Use `onboard` only for an explicit setup/diagnostic request or a concrete setup failure.
-For current delivery, return findings and verification to the root orchestrator,
-which owns the decision to fix or continue. Load
-[legacy delivery review](references/delivery-review.md) only for an explicit
-request to inspect an older governed run. Old contracts remain historical data;
-they do not control native tool permissions or current delivery.
+The inventory captures source only. Reviewers use native tools and the host's permissions.
+For current delivery, attach findings and verification to the shared run. The root
+orchestrator owns the decision to fix or continue.
 
 ## Shared delivery state
 

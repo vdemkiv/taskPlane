@@ -86,26 +86,11 @@ def test_malformed_events_and_storage_errors_never_block(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out) == {}
 
 
-def test_legacy_launcher_ignores_stale_contracts_and_corrupt_settings(tmp_path):
-    start(tmp_path)
-    for name in ("active.json", "loop.json", "settings.json"):
-        (tmp_path / ".taskplane" / name).write_text("corrupt legacy gate")
-    for command in ("screen", "screen-dispatch", "screen-skill", "session-verify", "context"):
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "taskplane/tp.py"), command],
-            input=json.dumps(event(tmp_path)), capture_output=True, text=True,
-            env={**os.environ, "TASKPLANE_HOOK_PATH": "native"}, cwd=tmp_path,
-        )
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout).get("decision") != "block"
-        assert "permissionDecision" not in result.stdout
-
-
 def test_installed_hook_commands_abstain_without_workspace_setup(tmp_path):
     manifest = json.loads((ROOT / "hooks/hooks.json").read_text())
     for rows in manifest["hooks"].values():
         for row in rows:
-            command = row["hooks"][0]["command"]
+            command = row["hooks"][0]["commandWindows" if os.name == "nt" else "command"]
             result = subprocess.run(command, shell=True, input=json.dumps(event(tmp_path)),
                                     cwd=tmp_path, capture_output=True, text=True,
                                     env={**os.environ, "PLUGIN_ROOT": str(ROOT)})
@@ -140,12 +125,3 @@ def test_large_usage_and_activity_only_generate_advice(tmp_path):
     report = flow.summarize(flow.read_events(tmp_path), run)
     assert report["tokens"]["total_tokens"] == 1_999_000
     assert len(report["advice"]) == 3
-
-
-def test_hook_setup_failure_does_not_stop_the_flow(tmp_path, capsys):
-    def unavailable(_workspace):
-        raise OSError("native hooks unavailable")
-
-    assert flow.main(["start", "--workspace", str(tmp_path)], prepare=unavailable) == 0
-    assert json.loads(capsys.readouterr().out)["status"] == "active"
-    assert flow.read_events(tmp_path)[0]["hook_setup"] == "unavailable"

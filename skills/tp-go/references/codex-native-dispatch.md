@@ -17,6 +17,4 @@ Fix concrete defects without repeating all reviews. Interruptions and missing
 results are not successful completion. Telemetry records available activity and
 usage; missing observations never prevent collection or progress.
 
-Do not activate legacy contracts, generate signed startup envelopes, enforce
-review counts, or require submission receipts for ordinary delegation. Native
-host permissions, the user's scope, and real authorization boundaries still apply.
+Native host permissions and the user’s scope remain authoritative.

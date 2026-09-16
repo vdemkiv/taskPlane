@@ -306,40 +306,10 @@ def graph_payload(graph: dict, modules,
     }
 
 
-# Compatibility aliases retained for depgraph's historically internal names.
-_node_kind = node_kind
-_is_boundary = is_boundary
-
-
-
-
-
-
-class _NoReviewProgression:
-    """Conservative lower-layer fallback for review-only document signals."""
-
-    @staticmethod
-    def document_evidence_uncertainty(_files, _content_by_file=None):
-        return "documentation evidence provider unavailable"
-
-    @staticmethod
-    def document_lens_signals(_files, _content_by_file=None):
-        return {}
-
-    @staticmethod
-    def apply_document_signals(vmap, _files, _content_by_file=None):
-        return vmap
-
-
-_NO_REVIEW_PROGRESSION = _NoReviewProgression()
-
-
 # ---------------------------------------------------------------- thresholds
 
 DEEP = 0.6            # score >= DEEP  -> "deep"
 LIGHT = 0.2           # score >= LIGHT -> "light"; below -> "n/a"
-DEEP_CAP = 8          # hard cap on the deep set (overflow demoted to light)
-DEEP_TARGET = (5, 7)  # desired deep band (informational; never manufactured)
 
 MAX_FILE_BYTES = 64 * 1024   # per-file content-scan bound
 MAX_FILES = 200              # max files content-scanned per ctx
@@ -515,18 +485,17 @@ class Ctx:
     requirement_text lowercased requirement/acceptance-criteria blob
     graph            {"hub_dependents": int, "boundary_contracts": [str],
                       "modules": [str], "module_dependents": {mod: int}}
-    stage            loop stage (carried for the router; unused by detectors)
+    stage            delivery stage (context only; unused by detectors)
     fixture_exempt   {path: reason} — fixture-classed paths that keep FULL
                      weight because their graph module has dependents (B5,
                      R-0008); computed HERE, at ctx construction
     """
 
     __slots__ = ("workspace", "files", "requirement_text", "graph", "stage",
-                 "fixture_exempt", "_contents", "_content_by_file",
-                 "_review_risk", "_review_progression")
+                 "fixture_exempt", "_contents", "_content_by_file")
 
     def __init__(self, workspace, files, requirement_text, graph, stage,
-                 content_by_file=None, review_progression=None):
+                 content_by_file=None):
         self.workspace = workspace
         self.files = sorted({str(f).replace(os.sep, "/") for f in files or []})
         if isinstance(requirement_text, (list, tuple)):
@@ -542,8 +511,6 @@ class Ctx:
              if str(path).replace(os.sep, "/") in self.files}
             if isinstance(content_by_file, dict) else None)
         self._contents = None
-        self._review_risk = None
-        self._review_progression = review_progression
 
     def is_discounted(self, path: str) -> bool:
         """True when the D-0002 fixture discount APPLIES to `path`: it is
@@ -606,18 +573,12 @@ class Ctx:
 
 
 def make_ctx(workspace, files, requirement_text=None, graph=None,
-             stage=None, content_by_file=None,
-             review_progression=None) -> Ctx:
-    """Build a detector context. graph=None -> derive a payload from the
-    dependency graph (hub dependents + boundary contracts adjacent to the
-    touched modules); any graph failure degrades to an empty payload rather
-    than blocking routing (the security floor still fires on path evidence,
-    and route v2 fails open to breadth=all at the router seam — t2)."""
+             stage=None, content_by_file=None) -> Ctx:
+    """Build source-signal context; unavailable graphs yield an empty payload."""
     if graph is None:
         graph = _graph_payload(workspace, files)
     return Ctx(workspace, files, requirement_text, graph, stage,
-               content_by_file=content_by_file,
-               review_progression=review_progression)
+               content_by_file=content_by_file)
 
 
 def _graph_payload(workspace, files) -> dict:
@@ -1239,373 +1200,20 @@ def verdict_for_score(score: float) -> str:
     return "n/a"
 
 
-def verdicts(lens_ids, ctx: Ctx, floors: bool = True) -> dict:
-    """{lens_id: {verdict, score, evidence, negative_evidence}} for the given
-    lenses. An n/a WITHOUT negative evidence raises ValueError — an
-    unevidenced routing gap must halt the route, not silently skip a lens."""
+def verdicts(lens_ids, ctx: Ctx) -> dict:
+    """Describe lens relevance using only observed source signals."""
     out = {}
     for lid in sorted(set(lens_ids)):
-        r = detect(lid, ctx)
-        v = verdict_for_score(r["score"])
-        if v == "n/a" and not r["negative_evidence"]:
-            raise ValueError(
-                f"lens {lid}: n/a verdict without negative evidence — "
-                "detectors must prove absence, not assert it (fail closed)")
-        out[lid] = {"verdict": v, "score": r["score"],
-                    "evidence": r["evidence"],
-                    "negative_evidence": r["negative_evidence"]}
-    if floors:
-        _apply_floors(out, ctx)
+        result = detect(lid, ctx)
+        out[lid] = {"verdict": verdict_for_score(result["score"]),
+                    "score": result["score"], "evidence": result["evidence"],
+                    "negative_evidence": result["negative_evidence"]}
     return out
 
-
-# ------------------------------------------------------------------- floors
-
-_ENFORCEMENT_MARKERS = ("taskplane_lite.py",)
-_ENFORCEMENT_SEGMENTS = ("hooks",)
-_AUTHISH = ("auth", "login", "permission", "secret", "credential", "token")
-
-
-def _security_floor_reason(ctx: Ctx) -> str | None:
-    """Non-None when the change touches enforcement/boundary surfaces:
-    taskplane_lite.py, hooks/, auth-ish files, or boundary contracts in the
-    graph impact."""
-    for f in ctx.files:
-        base = os.path.basename(f)
-        if base in _ENFORCEMENT_MARKERS:
-            return f"enforcement surface touched: {f}"
-        segs = f.lower().split("/")
-        if any(s in segs for s in _ENFORCEMENT_SEGMENTS):
-            return f"enforcement surface touched: {f}"
-        if any(a in base.lower() for a in _AUTHISH) or f.lower().endswith(
-                (".env", ".pem")) or "/.env" in f.lower():
-            return f"auth-ish surface touched: {f}"
-    bcs = sorted(ctx.graph.get("boundary_contracts") or [])
-    if bcs:
-        return "boundary contracts in impact: " + ", ".join(bcs[:3])
-    return None
-
-
-def _code_change_file(ctx: Ctx) -> str | None:
-    code_ext = load_catalog().get("code_extensions") or []
-    for f in ctx.files:
-        if _is_code(f, code_ext):
-            return f
-    return None
-
-
-# D6 — the architecture floor promised a full pass and delivered a mention.
-#
-# The skill has claimed since v2.11.0 that a STRUCTURALLY SIGNIFICANT change
-# gets a full architecture pass. The floor promoted `n/a -> light` and
-# stopped, so a field review of a diff that touched a 12-dependent hub came
-# back `light` while carrying `hub module (12 direct dependents)` in its OWN
-# evidence, and was swept in one line.
-#
-# ARCH_HUB_DEPENDENTS is the "this is a design event whatever the path looks
-# like" bar, and is deliberately the same 8 as lens._HUB_FULL (which has
-# meant "a full design pass" since v2.0.0) — the two must not disagree about
-# what a hub is. It is NOT the much lower _HUB_DEPENDENTS=3 scoring signal,
-# which only earns graph weight.
-ARCH_HUB_DEPENDENTS = 8
-
-# Paths that ARE the structure: a service contract, a topology, or the
-# infrastructure the components run on. Sorted at the call site so the
-# reason a floor gives is deterministic.
-_ARCH_STRUCTURAL_GLOBS = ("**/*.proto", "**/docker-compose*", "**/*.tf",
-                          "**/k8s/**", "**/helm/**")
-
-
-def _structurally_significant(ctx: Ctx) -> str | None:
-    """The REASON this change is an architectural event, or None.
-
-    A reason rather than a bool on purpose: the defect was a floor that fired
-    and could not say what it saw, so its promotion read like a guess. Order
-    is fixed (graph before paths) so the same ctx always yields the same
-    sentence."""
-    try:
-        hub = int(ctx.graph.get("hub_dependents") or 0)
-    except (TypeError, ValueError):
-        hub = 0
-    if hub >= ARCH_HUB_DEPENDENTS:
-        return (f"hub module ({hub} direct dependents >= "
-                f"{ARCH_HUB_DEPENDENTS})")
-    bcs = sorted(ctx.graph.get("boundary_contracts") or [])
-    if bcs:
-        return "named boundary contract(s) in impact: " + ", ".join(bcs[:3])
-    hit = _glob_hit(ctx.files, sorted(_ARCH_STRUCTURAL_GLOBS))
-    if hit:
-        return f"structural surface: {hit[0]} matches {hit[1]}"
-    return None
-
-
-# A floor that can DEMOTE is not a floor. `_promote` is order-aware in BOTH
-# directions: it consults this table to decide whether the target is
-# actually higher than what is already recorded, and writes nothing at all
-# when it is not.
-_VERDICT_ORDER = {"n/a": 0, "light": 1, "deep": 2}
-
-
-def _verdict_rank(verdict) -> int:
-    """Rank a verdict for the never-lower comparison. 'deep (forced)' and
-    any other word this module did not mint rank at the TOP — an unknown
-    verdict is depth somebody else claimed, and a floor that overwrote it
-    would be lowering coverage while calling itself a floor."""
-    v = str(verdict or "n/a")
-    if v.startswith("deep"):
-        return _VERDICT_ORDER["deep"]
-    return _VERDICT_ORDER.get(v, _VERDICT_ORDER["deep"])
-
-
-def _promote(entry: dict, reason: str, to: str = "light") -> bool:
-    """Raise `entry` to at least `to`, or do nothing. Returns whether it
-    fired, so the caller can tell a promotion from a no-op. Idempotent: a
-    second identical application appends no second evidence line."""
-    if _VERDICT_ORDER[to] <= _verdict_rank(entry.get("verdict")):
-        # A floor is an applicability fact, not merely a mutation marker.
-        # Persist it even when the signal engine already met/exceeded the
-        # minimum; the stage-profile pass runs later and must be able to prove
-        # this lens is protected from narrowing.
-        entry["floor"] = reason
-        return False
-    entry["verdict"] = to
-    entry["evidence"] = entry["evidence"] + [reason]
-    entry["floor"] = reason
-    return True
-
-
-def _apply_floors(vmap: dict, ctx: Ctx) -> dict:
-    """Idempotent floors (mutate vmap in place, return it): security may not
-    be n/a on enforcement/boundary diffs; architecture is DEEP on a
-    structurally significant change (D6) and at least light on any other
-    code change. Reasons are recorded in evidence and under 'floor'.
-
-    Every write goes through `_promote`, so no floor here can lower a
-    verdict the engine already scored higher."""
-    sec = vmap.get("security")
-    if sec is not None:
-        reason = _security_floor_reason(ctx)
-        if reason:
-            _promote(sec, f"floor: security promoted to light — {reason}",
-                     to="light")
-    arch = vmap.get("architecture")
-    if arch is not None:
-        significant = _structurally_significant(ctx)
-        if significant:
-            _promote(arch, "floor: architecture promoted to deep — "
-                     f"{significant}", to="deep")
-        else:
-            f = _code_change_file(ctx)
-            if f:
-                _promote(arch, "floor: architecture promoted to light — "
-                         f"code change ({f})", to="light")
-    # R-0001 engineering review: deep floors scale with attributable risk.
-    # Apply this last so the stage floor remains the canonical recorded
-    # reason and cannot be budgeted away.
-    if ctx.stage == "review":
-        risk = _review_risk_profile(vmap, ctx)
-        for lens_id in risk["required_deep_lenses"]:
-            entry = vmap.get(lens_id)
-            if entry is not None:
-                _promote(
-                    entry,
-                    f"{risk['floor_prefix']}: {lens_id} runs deep — "
-                    f"{risk['reason']}",
-                    to="deep",
-                )
-                entry["review_risk_class"] = risk["class"]
-                entry["review_risk_reason"] = risk["reason"]
-                entry["review_required_deep"] = True
-    return vmap
-
-
-_REVIEW_FLOORS = ("architecture", "code-quality", "security", "qa")
-_DOC_RISK_PRIORITY = (
-    "security", "privacy-compliance", "sre", "integrability",
-    "accessibility", "product", "tech-writer",
-)
-
-
-def _review_risk_profile(vmap: dict, ctx: Ctx) -> dict:
-    """Classify review depth once per immutable routing context.
-
-    Documentation and one-file low-risk code receive one attributable deep
-    slot.  Missing module mapping alone does not widen them.  Mixed,
-    substantive, risky, or explicitly ambiguous/corrupt evidence retains the
-    four engineering floors.  The cached result also makes repeated floor
-    application idempotent: stage-created deep verdicts never reclassify their
-    own input as substantive.
-    """
-    if ctx._review_risk is not None:
-        return ctx._review_risk
-
-    code_ext = load_catalog().get("code_extensions") or []
-    code_files = [path for path in ctx.files if _is_code(path, code_ext)]
-    doc_files = [
-        path for path in ctx.files
-        if path.lower().endswith((".md", ".mdx", ".rst", ".txt", ".adoc"))
-        or os.path.basename(path).lower().startswith(
-            ("readme", "changelog", "changes", "release-notes")
-        )
-    ]
-    non_doc_files = [path for path in ctx.files if path not in doc_files]
-    available_content = {path for path, _ in ctx.contents()}
-    missing_code_content = [path for path in code_files
-                            if path not in available_content]
-    significant = _structurally_significant(ctx)
-    security_reason = _security_floor_reason(ctx)
-
-    risk_class = "substantive-risky"
-    reason = "substantive or risky review change"
-    required = _REVIEW_FLOORS
-    floor_prefix = "mandatory review floor"
-
-    if not ctx.files:
-        reason = "empty or missing change mapping"
-    elif code_files and doc_files:
-        reason = "mixed code and documentation change"
-    elif code_files and len(non_doc_files) != len(code_files):
-        reason = "mixed code and non-document change"
-    elif doc_files and len(doc_files) == len(ctx.files):
-        review_progression = (ctx._review_progression
-                              or _NO_REVIEW_PROGRESSION)
-        document_content = {path: text for path, text in ctx.contents()}
-        uncertainty = review_progression.document_evidence_uncertainty(
-            ctx.files, document_content
-        )
-        if uncertainty:
-            reason = uncertainty
-        else:
-            signals = review_progression.document_lens_signals(
-                ctx.files, document_content
-            )
-            selected = next(
-                (lens_id for lens_id in _DOC_RISK_PRIORITY if lens_id in signals
-                 and lens_id in vmap),
-                "tech-writer",
-            )
-            risk_class = "documentation-only"
-            reason = f"documentation evidence selected {selected}"
-            required = (selected,)
-            floor_prefix = "risk-selected review floor"
-    elif missing_code_content:
-        reason = "code content unavailable for risk classification"
-    elif significant:
-        reason = significant
-    elif security_reason:
-        reason = security_reason
-    elif any(_verdict_rank(row.get("verdict")) >= _VERDICT_ORDER["deep"]
-             for row in vmap.values()):
-        reason = "signal engine classified at least one lens deep"
-    elif code_files and len(code_files) > 1:
-        reason = "multi-file code change"
-    elif code_files:
-        risk_class = "simple-low-risk"
-        reason = f"single mapped low-risk code file: {code_files[0]}"
-        ranked = sorted(
-            (lens_id for lens_id in _REVIEW_FLOORS if lens_id in vmap),
-            key=lambda lens_id: (
-                -float(vmap[lens_id].get("score") or 0),
-                _REVIEW_FLOORS.index(lens_id),
-            ),
-        )
-        required = (ranked[0] if ranked else "code-quality",)
-        floor_prefix = "risk-selected review floor"
-    else:
-        reason = "unclassified or missing module mapping"
-
-    ctx._review_risk = {
-        "class": risk_class,
-        "reason": reason,
-        "required_deep_lenses": tuple(required),
-        "floor_prefix": floor_prefix,
-    }
-    return ctx._review_risk
-
-
-# ------------------------------------------------------------------- budget
-
-def apply_budget(verdict_map: dict, cap: int = DEEP_CAP,
-                 target: tuple = DEEP_TARGET, ctx: Ctx | None = None) -> dict:
-    """Rank deep lenses by score (ties broken by lens id) and DEMOTE — never
-    drop — everything past `cap` to light, recording the demotion in
-    evidence. `target` documents the desired deep band; depth is never
-    manufactured to reach it. Floors are applied before ranking so they
-    participate in the same hard cap as every other deep disposition; a
-    floor is ranked ahead of an equal non-floor signal but cannot expand the
-    deep set past the declared budget. Returns a NEW map."""
-    out = {lid: {"verdict": v["verdict"], "score": v["score"],
-                 "evidence": list(v["evidence"]),
-                 "negative_evidence": list(v["negative_evidence"]),
-                 **({"floor": v["floor"]} if "floor" in v else {})}
-           for lid, v in verdict_map.items()}
-    if ctx is not None:
-        _apply_floors(out, ctx)
-    deep = sorted((lid for lid, v in out.items() if v["verdict"] == "deep"),
-                  key=lambda lid: ("floor" not in out[lid],
-                                   -out[lid]["score"], lid))
-    for rank, lid in enumerate(deep, start=1):
-        if rank > cap:
-            entry = out[lid]
-            entry["verdict"] = "light"
-            entry["evidence"].append(
-                f"budget: demoted deep->light (rank {rank} > cap {cap}, "
-                f"score {entry['score']})")
-    return out
-
-
-# -------------------------------------------------------------- entry point
 
 def route_verdicts(workspace, files, stage=None, requirement_text=None,
-                   graph=None, content_by_file=None,
-                   review_progression=None) -> dict:
-    """The one-call entry the router (t2) uses: verdicts for EVERY catalog
-    lens over the changed files, budget-capped, floors applied after the
-    budget. `stage` is carried on the ctx for the router's stage profiles
-    (t2) — detection itself is stage-independent. Deterministic; designed to
-    complete well under 1s on a repo-sized change list."""
-    cat = load_catalog()
+                   graph=None, content_by_file=None) -> dict:
+    """Suggest relevant lenses without dispatching workers or imposing quotas."""
     ctx = make_ctx(workspace, files, requirement_text=requirement_text,
-                   graph=graph, stage=stage,
-                   content_by_file=content_by_file,
-                   review_progression=review_progression)
-    vmap = verdicts([l["id"] for l in cat["lenses"]], ctx, floors=False)
-    if stage == "review":
-        # Evidence-aware documentation routing is bounded and independent of
-        # code-module mapping; uncertainty cannot widen to the full catalog.
-        (ctx._review_progression or _NO_REVIEW_PROGRESSION) \
-            .apply_document_signals(vmap, files, content_by_file)
-    return apply_budget(vmap, cap=DEEP_CAP, target=DEEP_TARGET, ctx=ctx)
-
-
-def focused_signal_rows(verdict_map: dict, catalog_ids) -> list[dict]:
-    """Project incumbent applicability evidence into policy-owned rows.
-
-    The projection stays lower-owned and dependency-neutral. Stage adapters
-    may add risk groups, mandatory floors, or scoped fingerprint inputs before
-    invoking ``lens_route_policy``; this function never selects work.
-    """
-    ids = list(catalog_ids or ())
-    if len(ids) != 26 or len(set(ids)) != len(ids):
-        raise ValueError("focused route requires the complete 26-lens catalog")
-    if not isinstance(verdict_map, dict) or set(verdict_map) != set(ids):
-        raise ValueError(
-            "focused route verdicts must cover the complete lens catalog")
-    rows = []
-    for lens_id in ids:
-        source = verdict_map[lens_id]
-        if not isinstance(source, dict):
-            raise ValueError(f"lens {lens_id}: verdict row must be an object")
-        row = {
-            "id": lens_id,
-            "verdict": source.get("verdict"),
-            "score": source.get("score"),
-            "evidence": list(source.get("evidence") or []),
-            "negative_evidence": list(source.get("negative_evidence") or []),
-            "risk_group": str(source.get("risk_group") or lens_id),
-            "mandatory": bool(source.get("mandatory") or source.get("floor")),
-        }
-        if "fingerprint_inputs" in source:
-            row["fingerprint_inputs"] = source["fingerprint_inputs"]
-        rows.append(row)
-    return rows
+                   graph=graph, stage=stage, content_by_file=content_by_file)
+    return verdicts([lens["id"] for lens in load_catalog()["lenses"]], ctx)

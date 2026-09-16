@@ -31,20 +31,16 @@ Minor = worth fixing, doesn't gate. Prefer the smallest suggestion that resolves
 
 ## How this lens runs
 
-One selected execution disposition creates one isolated worker through the
-shared lens dispatcher. Product, Design and Plan select focused lenses.
-Standalone Review uses the same dispatcher. Build, Fix, Evaluate, Engineering
-and Retro consume collected lens evidence and launch no lens workers.
-Use only this attempt's sealed input. Domain examples mentioning tools or
-knowledge stores do not grant access beyond the brief. Missing evidence is
-reported as a limitation. The collector owns release and downstream handoff.
+Apply this lens where it helps verify the requested outcome. Product, Design,
+Plan, Build, Evaluate, Engineering and Retro share one task decomposition,
+dependency graph and dashboard. Use native tools and host permissions.
+Delegate only when authorized and useful. There is no mandatory lens count,
+sealed brief, lease, submission receipt or Taskplane token cap.
 
 
-## Shared result contract
+## Shared review evidence
 
-Use the immutable brief's `taskplane.lens-slot-output/v2` result_schema.
-The shared role `agents/tp-lens.md` defines execution; this lens supplies
-only domain judgment. Copy the lease identities, write only result_path,
-and preserve findings, notes, checked_evidence and references_applied.
-Do not invent a lens-specific format or write Design evidence rows yourself.
-The common collector validates and normalizes results for every phase.
+Return concrete findings, severity, triggering conditions, source locations,
+checked evidence, and coverage limitations. Use `agents/tp-lens.md` and attach
+this evidence to the existing run and review index. The root orchestrator
+integrates results and advances delivery.

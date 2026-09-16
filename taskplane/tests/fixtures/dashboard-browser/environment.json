@@ -36,10 +36,11 @@
     "transport": "python-stdlib-loopback"
   },
   "selectors": [
-    "body[data-dashboard-freshness]",
-    "[data-dashboard-action]",
-    "#tp-design-graph svg[data-phase-graph='tp-design-graph']",
-    "#tp-plan-task-dag svg[data-phase-graph='tp-plan-task-dag']",
-    "#tp-plan-waves[data-plan-approval]"
+    ".tp-flow",
+    "#workflow",
+    "#decomposition",
+    "#dependencies iframe",
+    "#lenses",
+    "#telemetry"
   ]
 }

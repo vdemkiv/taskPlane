@@ -14,9 +14,7 @@ import os
 import stat
 import secrets
 import subprocess
-import sys
 import re
-import shlex
 from pathlib import Path
 import tempfile
 from typing import Any, BinaryIO, Iterator
@@ -392,100 +390,9 @@ def load_json(path: str, default: Any=_LOAD_RAISE, *, what: str='state file') ->
 
 def _run(cmd: Any, cwd: Any, shell: Any=False, timeout: Any=600, env: Any=None) -> Any:
     return subprocess.run(cmd, cwd=cwd, shell=shell, capture_output=True, text=True, timeout=timeout, env=env, encoding='utf-8', errors='replace')
-_CHECKOUT_PYTHON_TRAMPOLINE = 'import os,sys;root=os.path.realpath(sys.argv[1]);sys.path.insert(0,os.path.realpath(sys.argv[2]));import primitives as _tp;_tp._checkout_bound_main(root,sys.argv[3:])'
-
-def _python_program(value: Any) -> bool:
-    try:
-        program = os.path.basename(os.fspath(value)).lower()
-    except TypeError:
-        return False
-    return bool(re.fullmatch('python(?:\\d+(?:\\.\\d+)?)?(?:\\.exe)?', program))
-
-def _checkout_bound_python_args(workspace: str, args: Any) -> list[Any]:
-    return [sys.executable, '-c', _CHECKOUT_PYTHON_TRAMPOLINE, os.path.realpath(workspace), os.path.dirname(os.path.realpath(__file__)), *list(args)]
-
-def _checkout_bound_main(workspace: str, args: Any) -> None:
-    """Execute Python argv with a checkout namespace, transitively.
-
-    Tests and regression probes legitimately start nested Python/pytest
-    processes. They must inherit the same checkout boundary instead of
-    falling back to an unrelated editable install from system site-packages.
-    Intercepting only explicit Python argv keeps ordinary subprocesses and
-    shell commands byte-for-byte unchanged.
-    """
-    import importlib.machinery
-    import runpy
-    import types
-    root = os.path.realpath(workspace)
-    python_args = list(args or ())
-    package_path = os.path.join(root, 'taskplane')
-    package = types.ModuleType('taskplane')
-    package.__package__ = 'taskplane'
-    package.__path__ = [package_path]
-    package.__spec__ = importlib.machinery.ModuleSpec('taskplane', loader=None, is_package=True)
-    package.__spec__.submodule_search_locations = package.__path__
-    sys.modules['taskplane'] = package
-    sys.path[:] = [p for p in sys.path if p not in (root, package_path)]
-    sys.path[:0] = [root, package_path]
-    original_popen = subprocess.Popen
-
-    def checkout_popen(command: Any, *popen_args: Any, **popen_kwargs: Any) -> Any:
-        if isinstance(command, (list, tuple)) and command and _python_program(command[0]):
-            command = _checkout_bound_python_args(root, command[1:])
-        return original_popen(command, *popen_args, **popen_kwargs)
-    setattr(subprocess, "Popen", checkout_popen)
-    if not python_args:
-        raise SystemExit('checkout-bound Python command is empty')
-    if python_args[0] == '-m' and len(python_args) >= 2:
-        module = python_args[1]
-        sys.argv = [module, *python_args[2:]]
-        runpy.run_module(module, run_name='__main__', alter_sys=True)
-    elif python_args[0] == '-c' and len(python_args) >= 2:
-        sys.argv = ['-c', *python_args[2:]]
-        exec(compile(python_args[1], '<string>', 'exec'), {'__name__': '__main__'})
-    else:
-        script = python_args[0]
-        if not os.path.isabs(script):
-            script = os.path.join(root, script)
-        sys.argv = [script, *python_args[1:]]
-        runpy.run_path(script, run_name='__main__')
-
-def _checkout_bound_python_argv(workspace: str, command: str) -> list[Any] | None:
-    """Translate one plain Python suite command to the current interpreter.
-
-    The checkout intentionally has no ``taskplane/__init__.py``. A globally
-    installed regular package would therefore beat the checkout namespace.
-    The bootstrap pins that namespace in-process without PATH aliases,
-    PYTHONPATH shims, or a machine-specific interpreter name.
-    """
-    try:
-        lexer = shlex.shlex(str(command or ''), posix=True, punctuation_chars='|&;<>')
-        lexer.whitespace_split = True
-        lexer.commenters = ''
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    if not tokens or any((token and set(token) <= set('|&;<>') for token in tokens)):
-        return None
-    if not _python_program(tokens[0]):
-        return None
-    if len(tokens) < 2:
-        return None
-    return _checkout_bound_python_args(workspace, tokens[1:])
-
-def run_suite_command(workspace: str, command: Any, *, env: Any=None, timeout: int=600) -> Any:
-    """Run a declared suite portably while retaining its original identity."""
-    if isinstance(command, (list, tuple)):
-        argv = _checkout_bound_python_args(workspace, command[1:]) if command and _python_program(command[0]) else list(command)
-        return _run(argv, cwd=workspace, shell=False, timeout=timeout, env=env)
-    bound = _checkout_bound_python_argv(workspace, command)
-    if bound is not None:
-        return _run(bound, cwd=workspace, shell=False, timeout=timeout, env=env)
-    return _run(command, cwd=workspace, shell=True, timeout=timeout, env=env)
-
 def _ensure_self_ignored(d: str) -> None:
     """The runtime dir ignores itself — a worker's `git add -A` must never
-    commit contracts/traces, and merges must never collide on them."""
+    commit local observations, and merges must never collide on them."""
     gi = os.path.join(d, '.gitignore')
     if not os.path.isdir(d):
         return

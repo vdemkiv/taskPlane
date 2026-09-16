@@ -121,11 +121,7 @@ def test_dashboard_displays_shared_tasks_lenses_stages_graph_and_escaped_evidenc
     assert all('id="phase-'+p+'"' in page for p in ('product','design','plan','build','evaluate','engineering','retro'))
     assert 'srcdoc=' in page and 'Module dependency graph' in page
     assert 'Unknown tokens' not in page
-    assert 'finished' in dashboard.headline_loop(str(ws))
-    pages=dashboard.widget_paged(str(ws),budget=1200)
-    assert len(pages)==7
-    assert all(len(p['html'].encode())<=1200 for p in pages)
-    assert 'inline display limit' in pages[3]['html']
+    assert 'finished' in page
 
 
 def test_resumed_thread_totals_are_not_double_counted(tmp_path):

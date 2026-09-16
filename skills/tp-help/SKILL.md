@@ -12,8 +12,7 @@ contract, or render a setup dashboard just to explain the product.
 Ordinary code review uses native tools and [engineering](../tp-engineering/SKILL.md).
 The orchestrator owns delivery. Hooks record advisory telemetry and never block
 normal flow; native host permissions remain authoritative. Use `flow report` for
-recorded milestones and available token usage. Legacy loop commands describe
-historical governed runs, not the default execution path.
+recorded milestones and available token usage.
 For actual setup or a concrete installation failure, consult
-[entry diagnostics](../tp-go/references/setup.md).
+[CLI reference](../../docs/cli-reference.md).
 Explain only the requested concept; load no full manuals or hook manifests as a tour.

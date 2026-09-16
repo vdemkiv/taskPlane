@@ -135,7 +135,7 @@ def test_claude_hooks_prefer_current_plugin_over_stale_codex_launcher(tmp_path):
     hooks = json.loads((ROOT / 'hooks/hooks.json').read_text())['hooks']
     for name, groups in hooks.items():
         for group in groups:
-            result = subprocess.run(group['hooks'][0]['command'], shell=True, cwd=tmp_path,
+            result = subprocess.run(group['hooks'][0]['commandWindows' if os.name == 'nt' else 'command'], shell=True, cwd=tmp_path,
                 input=json.dumps({'hook_event_name': name, 'cwd': str(tmp_path), 'session_id': 'root',
                                   'transcript_path': str(tmp_path / 'root.jsonl')}),
                 capture_output=True, text=True,

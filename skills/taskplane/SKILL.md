@@ -17,7 +17,7 @@ hook readiness, a delivery run, or a fresh conversation.
 - Build or fix an approved delivery plan: read [delivery](../tp-go/SKILL.md).
   For a new feature or explicit A/B prototype, use [build](../tp-build/SKILL.md).
 - Explicit installation, setup, or configuration diagnostics: read
-  [entry diagnostics](../tp-go/references/setup.md).
+  [CLI reference](../../docs/cli-reference.md).
 
 Product, Design, and Plan should produce concrete work for review before Build when
 requested. Keep native execution, permissions, waiting, and session identity with the

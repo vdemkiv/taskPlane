@@ -21,10 +21,6 @@ _AUDIT_TEXT_MAX_CHARS = 2048
 _AUDIT_COLLECTION_MAX_ITEMS = 64
 
 
-def root_hygiene_projection(receipt: Mapping[str, object]) -> dict[str, object]:
-    """Return the bounded audit view of the canonical root seal."""
-    from taskplane import wave_metrics
-    return wave_metrics.root_hygiene_projection(receipt, consumer="audit")
 
 
 _AUDIT_IDENTITY_FIELDS = frozenset({
@@ -175,9 +171,6 @@ def audit_record(
         observed_at: float | None = None) -> dict[str, object]:
     """Create the one closed, minimized record accepted by every trace sink."""
     payload = dict(data or {})
-    root_receipt = payload.pop("root_hygiene_receipt", None)
-    root_projection = (root_hygiene_projection(root_receipt)
-                       if isinstance(root_receipt, Mapping) else None)
     event_text = str(event)
     safe_event = (event_text if _AUDIT_LITERAL_RE.fullmatch(event_text)
                   else "event:" + hashlib.sha256(
@@ -189,8 +182,6 @@ def audit_record(
     rec.update({_sanitize_audit_key(key):
                 _sanitize_audit_value(value, key=str(key))
                 for key, value in payload.items()})
-    if root_projection is not None:
-        rec["root_hygiene"] = root_projection
     return rec
 
 if TYPE_CHECKING or __package__:
@@ -391,13 +382,3 @@ def trace(workspace: str, event: str, **data: Any) -> None:
                   "before trusting this session's audit trail.",
                   file=sys.stderr)
         return
-
-    # Keep the cheap status read model current from the same production event
-    # path. It is presentation-only: snapshot damage or an unavailable disk
-    # must never turn into authority or block the audit transition above.
-    try:
-        import progress
-        progress.record_trace_event(
-            workspace, event, rec, observed_at=rec["ts"], state_dir=d)
-    except Exception:
-        pass

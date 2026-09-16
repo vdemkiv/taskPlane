@@ -70,6 +70,3 @@ one concrete step toward tested output. Never reset milestones just to silence a
 warning. Do not ask the user to approve an advisory or increase a token budget.
 
 Use [native delegation](references/codex-native-dispatch.md) only if delegating.
-Do not initialize the legacy `loop`, `stage`, or contract system for normal work.
-Its commands and historical records remain available for explicit legacy
-inspection; they are not the delivery path or its permission authority.

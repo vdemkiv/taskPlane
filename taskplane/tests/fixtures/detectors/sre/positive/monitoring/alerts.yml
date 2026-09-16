@@ -1,3 +1,0 @@
-alert: HighErrorRate
-expr: rate(errors[5m]) > 0.1
-runbook: docs/runbooks/errors.md

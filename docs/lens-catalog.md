@@ -2,7 +2,7 @@
 
 26 lenses, grouped by the team perspective they represent. The design rule: **every lens has a distinct charter and an explicit "does NOT own" boundary, so they compose** — a `.tsx` change fires *design* (UX), *frontend* (implementation) and *accessibility* (a11y) without three of them reporting the same thing. Machine definitions live in `lenses/catalog.json`; each lens also has a `lenses/<id>.md` stub for its evaluator prompt.
 
-> This file is GENERATED from `lenses/catalog.json` by `scripts/gen_lens_catalog.py`. Edit the catalog (or the generator's prose), then regenerate — don't hand-edit. CI regenerates and diffs this file (and the other generated lens artifacts) on every push, so a stale copy fails the build.
+> This file is GENERATED from `lenses/catalog.json` by `scripts/gen_lens_catalog.py`. Edit the catalog (or the generator's prose), then regenerate.
 
 ## The set, by group
 
@@ -18,7 +18,7 @@
 | **Architecture & systems** | tradeoffs | every significant design choice names >=2 real alternatives with an explicit trade-off table: gained / given up / revisit-when; the chosen option is recorded as a proposed decision (D-record) in the registry |
 |  | solution-design | soundness, proportionality and implementability of a PROPOSED design before any code exists — requirement/constraint → decision → modules/contracts → validation → failure/rollout traceability |
 |  | services-selection | whether a chosen dependency, library, service or vendor earns its place at all — incumbent capability vs new dependency, build vs buy, managed vs self-hosted, maturity, licence, operational load, lock-in and exit cost |
-|  | architecture | component boundaries, data flow, contracts, scaling & failure modes *(mandatory evidenced floor; not automatic dispatch)* |
+|  | architecture | component boundaries, data flow, contracts, scaling & failure modes *(source signal; not automatic dispatch)* |
 | **Quality & verification** | security | confidentiality, integrity, authz, safe inputs, supply chain & build integrity *(signal baseline; not automatic dispatch)* |
 |  | testability | CAN the production code be tested — seams, determinism, isolation, hermeticity *(signal baseline; not automatic dispatch)* |
 |  | qa | IS the change tested well and safe to ship |
@@ -37,15 +37,15 @@
 
 *opt* = suggested/optional (off unless its files appear).
 
-## Mandatory floors remain evidence-based
+## Advisory selection
 
-Architecture and security cannot be silently omitted when canonical evidence shows their owned boundary. The focused policy applies each floor before it groups overlapping risks and caps normal Plan execution at 3–4 quick lenses. A floor guarantees an evidenced disposition; it does not authorize a Build/Fix/Evaluate/final-EM worker or an automatic full-catalog run.
+Source paths, content and dependency impact suggest relevant lenses. The orchestrator chooses useful reviews for the requested scope. There is no mandatory review count, fixed depth cap or dispatch authority in these suggestions.
 
-## Routing notes
+## Using lenses in the shared flow
 
-- Every routed Product, Design, and Plan stage emits one evidenced `execute_deep`, `execute_light`, `covered_by`, or `not_applicable` row for all 26 lenses.
-- Only the two `execute_*` rows dispatch. Normal delivery uses focused quick routes. Build, Fix, Evaluate, and final engineering review launch zero lens workers; Evaluate is a direct evidence collector and judge and creates no lens artifacts.
-- More than four independent mandatory Plan risks split scope or require protected exact-target expanded-route authority. That authority is Plan-only.
+- Product, Design, Plan, Build, Evaluate, Engineering and Retro reuse the same run, graph, task decomposition and dashboard.
+- Attach actual review evidence and native agent IDs to that run. Suggestions alone are not completed reviews.
+- Delegate only when authorized and useful. Missing token counters remain visibly unavailable and never stop delivery.
 
 ## Adding a lens
 

@@ -30,7 +30,6 @@ FIXTURES = Path(__file__).with_name("fixtures") / "dashboard-browser"
 sys.path.insert(0, str(TASKPLANE))
 
 import dashboard  # noqa: E402
-import views  # noqa: E402
 
 
 class BrowserEnvironmentError(RuntimeError):
@@ -475,388 +474,49 @@ class _DocumentCounter(HTMLParser):
             self.tags[tag] += 1
 
 
-def _snapshot_model(sequence: int, marker: str, *, topology=None) -> dict[str, Any]:
-    values: dict[str, Any] = {
-        "generated_at": f"2026-08-31T00:00:{sequence:02d}Z",
-        "browser_marker": marker,
-    }
-    if isinstance(topology, Mapping):
-        values.update({key: topology[key] for key in (
-            "design_graph", "plan_task_dag", "plan_waves")})
-    material = {
-        "identity": {
-            "workflow_id": "wf-browser",
-            "run_id": "run-browser",
-            "target": "repository",
-            "revision": "abc123",
-            "sequence": sequence,
-        },
-        "sequence": sequence,
-        "revision": "abc123",
-        "state": "active",
-        "values": values,
-        "gate": {"status": "awaiting-human", "approval_enabled": True},
-    }
-    return {**material, "fingerprint": _digest(material)}
 
-
-def _publish(root: Path, sequence: int, marker: str, *, topology=None) -> dict:
-    model = _snapshot_model(sequence, marker, topology=topology)
-    phase_html = ""
-    if isinstance(topology, Mapping):
-        phase_html = dashboard.render_phase_dependency_graphs(topology)
-
-    def render(_canonical: str) -> str:
-        return (
-            '<main id="dashboard-snapshot" data-browser-marker="'
-            + marker + '"><h1>Taskplane dashboard</h1>'
-            + phase_html
-            + '<button id="approve-action" data-dashboard-action="approve">'
-              'approve</button></main>'
-        )
-
-    result = views.deliver_dashboard(
-        str(root), model, html_renderer=render)
-    assert result["status"] == "published"
-    return {"model": model, "delivery": result}
-
-
-def _artifact_relative(root: Path, result: Mapping[str, Any]) -> str:
-    path = Path(result["delivery"]["artifacts"]["html"]["path"])
-    return path.relative_to(root).as_posix()
-
-
-def _dom_state(browser: _RealBrowser) -> dict[str, Any]:
-    value = browser.evaluate("""(() => ({
-      url: location.href,
-      marker: document.querySelector('#dashboard-snapshot')?.dataset.browserMarker,
-      freshness: document.body?.dataset.dashboardFreshness,
-      reason: document.body?.dataset.dashboardFreshnessReason,
-      disabled: document.querySelector('#approve-action')?.disabled,
-      ariaDisabled: document.querySelector('#approve-action')?.getAttribute('aria-disabled')
-    }))()""")
-    assert isinstance(value, dict)
-    return value
-
-
-def _absolute_head(server: _LoopbackServer, head: Mapping[str, Any]) -> dict:
-    value = dict(head)
-    if value.get("html_href"):
-        value["html_href"] = server.url(str(value["html_href"]))
-    return value
-
-
-def test_real_browser_replaces_dom_only_for_newer_snapshot_and_marks_stale(
-        tmp_path):
+def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, monkeypatch):
+    from taskplane import depgraph, flow, tp
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    for name, content in {"src/api/main.py": "from src.data import store\n",
+                          "src/data/store.py": "VALUE = 1\n"}.items():
+        path = workspace / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    monkeypatch.setenv("CODEX_THREAD_ID", "browser-root")
+    assert tp.main(["flow", "start", "--workspace", str(workspace), "--goal", "Ship a small product"]) == 0
+    depgraph.scan(str(workspace), decompose=True)
+    (workspace / "tasks.json").write_text(json.dumps({"tasks": [
+        {"id": "T1", "title": "Build product", "dependencies": [],
+         "paths": ["src/api/main.py"], "status": "done", "verification": "Product tests passed"}]}))
+    (workspace / "review.md").write_text('<script>window.badEvidence=true</script> Reviewed dependency impact')
+    (workspace / "reviews.json").write_text(json.dumps([{"lens": "quality", "agent": "/root/quality",
+        "phase": "engineering", "evidence": "review.md"}]))
+    assert tp.main(["flow", "attach", "--workspace", str(workspace), "--tasks", "tasks.json",
+                    "--reviews", "reviews.json", "--evidence", "review.md"]) == 0
+    for phase in ("product", "design", "plan", "build", "evaluate", "engineering", "retro"):
+        assert tp.main(["flow", "progress", "--workspace", str(workspace), "--phase", phase,
+                        "--note", f"{phase} evidence recorded"]) == 0
+    assert tp.main(["flow", "finish", "--workspace", str(workspace), "--note", "Verified through retro"]) == 0
     config = _json_fixture("environment.json")
-    root = tmp_path / "delivery"
-    old = _publish(root, 7, "snapshot-7")
-
-    with _LoopbackServer(root) as server, _RealBrowser(tmp_path, config) as browser:
-        old_url = server.url(_artifact_relative(root, old))
-        browser.navigate(old_url)
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'fresh'")
-        initial = _dom_state(browser)
-        assert initial["marker"] == "snapshot-7"
-        assert initial["disabled"] is False
-
-        exact = _absolute_head(server, old["delivery"]["current_head"])
-        assert browser.evaluate(
-            f"window.taskplaneDashboardApplyHead({_canonical(exact).decode()})"
-        ) is True
-        assert _dom_state(browser)["url"] == old_url
-        assert _dom_state(browser)["marker"] == "snapshot-7"
-
-        older = {**exact, "sequence": 6, "snapshot_fingerprint": "6" * 64}
-        assert browser.evaluate(
-            f"window.taskplaneDashboardApplyHead({_canonical(older).decode()})"
-        ) is False
-        stale = _dom_state(browser)
-        assert stale["url"] == old_url
-        assert stale["marker"] == "snapshot-7"
-        assert stale["freshness"] == "stale"
-        assert stale["disabled"] is True
-        assert stale["ariaDisabled"] == "true"
-
-        browser.navigate(old_url)
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'fresh'")
-        contradictory = {
-            **exact, "snapshot_fingerprint": "f" * 64,
-            "html_href": server.url("must-not-replace.html"),
-        }
-        assert browser.evaluate(
-            "window.taskplaneDashboardApplyHead("
-            f"{_canonical(contradictory).decode()})"
-        ) is False
-        contradictory_state = _dom_state(browser)
-        assert contradictory_state["url"] == old_url
-        assert contradictory_state["freshness"] == "stale"
-        assert contradictory_state["disabled"] is True
-
-        browser.navigate(old_url)
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'fresh'")
-        newer = _publish(root, 8, "snapshot-8")
-        newer_head = _absolute_head(server, newer["delivery"]["current_head"])
-        assert browser.evaluate(
-            f"window.taskplaneDashboardApplyHead({_canonical(newer_head).decode()})"
-        ) is False
-        browser.wait_for(
-            "document.querySelector('#dashboard-snapshot')?.dataset."
-            "browserMarker === 'snapshot-8'")
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'fresh'")
-        replaced = _dom_state(browser)
-        assert replaced["url"] == newer_head["html_href"]
-        assert replaced["marker"] == "snapshot-8"
-        assert replaced["disabled"] is False
-
-        artifact = Path(newer["delivery"]["artifacts"]["html"]["path"])
-        receipt = browser.environment_receipt(
-            fixture_server=config["fixture_server"],
-            snapshot=newer["model"],
-            dashboard_artifact=artifact.read_bytes(),
-            dom=browser.evaluate("document.documentElement.outerHTML"),
-            svg=browser.evaluate(
-                "Array.from(document.querySelectorAll('svg'), "
-                "item => item.outerHTML).join('\\n')"),
-            selectors=config["selectors"],
-        )
-        assert receipt["schema"] == \
-            "taskplane.browser-environment-receipt/v1"
-        assert Path(receipt["executable"]).is_absolute()
-        assert receipt["version"]
-        assert len(receipt["fingerprint"]) == 64
-
-
-def test_real_browser_svg_graphs_and_single_document_are_truthful(tmp_path):
-    config = _json_fixture("environment.json")
-    topology = _json_fixture("topology.json")
-    root = tmp_path / "delivery"
-    published = _publish(root, 9, "topology-9", topology=topology)
-    artifact = Path(published["delivery"]["artifacts"]["html"]["path"])
-    document = artifact.read_text(encoding="utf-8")
-    counter = _DocumentCounter()
-    counter.feed(document)
-    assert counter.doctypes == 1
-    assert counter.tags == {"html": 1, "head": 1, "body": 1}
-
-    with _LoopbackServer(root) as server, _RealBrowser(tmp_path, config) as browser:
-        browser.navigate(server.url(_artifact_relative(root, published)))
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'fresh'")
-        shape = browser.evaluate("""(() => {
-          const design = document.querySelector(
-            "#tp-design-graph svg[data-phase-graph='tp-design-graph']");
-          const plan = document.querySelector(
-            "#tp-plan-task-dag svg[data-phase-graph='tp-plan-task-dag']");
-          return {
-            doctype: document.doctype?.name.toLowerCase(),
-            html: document.querySelectorAll('html').length,
-            head: document.querySelectorAll('head').length,
-            body: document.querySelectorAll('body').length,
-            canonical: document.querySelectorAll(
-              "script[data-taskplane-canonical='true']").length,
-            designSvg: design instanceof SVGSVGElement,
-            designNodes: design?.querySelectorAll('rect').length,
-            designEdges: design?.querySelectorAll('line').length,
-            designDescription: design?.querySelector('desc')?.textContent,
-            planSvg: plan instanceof SVGSVGElement,
-            planNodes: plan?.querySelectorAll('rect').length,
-            planEdges: plan?.querySelectorAll('line').length,
-            planDescription: plan?.querySelector('desc')?.textContent,
-            waves: document.querySelectorAll('#tp-plan-waves li').length,
-            waveApproval: document.querySelector(
-              '#tp-plan-waves')?.dataset.planApproval
-          };
-        })()""")
-        assert shape == {
-            "doctype": "html",
-            "html": 1,
-            "head": 1,
-            "body": 1,
-            "canonical": 1,
-            "designSvg": True,
-            "designNodes": 4,
-            "designEdges": 3,
-            "designDescription": (
-                "4 source nodes and 3 source edges; 4 nodes and 3 edges "
-                "visible in this bounded rendering."
-            ),
-            "planSvg": True,
-            "planNodes": 4,
-            "planEdges": 3,
-            "planDescription": (
-                "4 source nodes and 3 source edges; 4 nodes and 3 edges "
-                "visible in this bounded rendering."
-            ),
-            "waves": 3,
-            "waveApproval": "planned",
-        }
-
-        browser.navigate(artifact.as_uri())
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'unverified'")
-        file_state = _dom_state(browser)
-        assert file_state["disabled"] is True
-        assert "no trusted head bridge" in file_state["reason"]
-        assert browser.evaluate(
-            "document.querySelectorAll('[data-phase-graph]').length"
-        ) == 2
-
-        receipt = browser.environment_receipt(
-            fixture_server=config["fixture_server"],
-            snapshot=published["model"],
-            dashboard_artifact=artifact.read_bytes(),
-            dom=browser.evaluate("document.documentElement.outerHTML"),
-            svg=browser.evaluate(
-                "Array.from(document.querySelectorAll('svg'), "
-                "item => item.outerHTML).join('\\n')"),
-            selectors=config["selectors"],
-        )
-        expected_keys = {
-            "schema", "executable", "version", "flags", "fixture_server",
-            "file_fallback", "snapshot", "dashboard_artifact", "dom", "svg",
-            "selectors", "outcome", "fingerprint",
-        }
-        assert set(receipt) == expected_keys
-        assert all(len(receipt[key]) == 64 for key in (
-            "fixture_server", "file_fallback", "snapshot",
-            "dashboard_artifact", "dom", "svg", "selectors", "fingerprint",
-        ))
-
-
-def test_real_browser_production_refresh_styles_and_shows_dependency_graph(
-        tmp_path, monkeypatch):
-    """The durable production artifact must visibly render its SVG graph."""
-    config = _json_fixture("environment.json")
-    topology = _json_fixture("topology.json")
-    graph = dashboard.render_phase_dependency_graphs(topology)
-    monkeypatch.setattr(
-        dashboard, "report_widget",
-        lambda _workspace: '<main id="dashboard-snapshot">' + graph + '</main>')
-
-    output = {
-        "step": "design",
-        "dashboard_snapshot": {
-            "snapshot": _snapshot_model(
-                10, "styled-topology-10", topology=topology),
-        },
-    }
-    views.refresh_views(str(tmp_path), output)
-    delivery = output["dashboard"]["delivery"]
-    assert delivery["status"] == "published"
-    assert output["dashboard"]["inline"]["path"] == \
-        output["dashboard"]["path"]
-    surfaced = Path(output["dashboard"]["inline"]["path"])
-    artifact = surfaced if surfaced.is_absolute() else tmp_path / surfaced
-    assert artifact.is_file()
-    assert not (tmp_path / ".taskplane" / "dashboard.fragment.html").exists()
-    assert not (tmp_path / ".taskplane" / "dashboard-delivery" /
-                "dashboard.inline.html").exists()
-    root = tmp_path
-
-    with _LoopbackServer(root) as server, _RealBrowser(tmp_path, config) as browser:
-        browser.navigate(server.url(artifact.relative_to(root).as_posix()))
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'fresh'")
-        visible = browser.evaluate("""(() => {
-          const svg = document.querySelector(
-            "#tp-design-graph svg[data-phase-graph='tp-design-graph']");
-          const line = svg?.querySelector('line');
-          const rect = svg?.querySelector('rect');
-          const text = svg?.querySelector('text');
-          const box = svg?.getBoundingClientRect();
-          const section = document.querySelector('#tp-design-graph');
-          return {
-            svgWidth: box?.width || 0,
-            svgHeight: box?.height || 0,
-            sectionHeight: section?.getBoundingClientRect().height || 0,
-            lineStroke: line ? getComputedStyle(line).stroke : 'none',
-            lineWidth: line ? parseFloat(getComputedStyle(line).strokeWidth) : 0,
-            nodeFill: rect ? getComputedStyle(rect).fill : 'none',
-            textFill: text ? getComputedStyle(text).fill : 'none',
-            bodyBackground: getComputedStyle(document.body).backgroundColor
-          };
-        })()""")
-
-    assert visible["svgWidth"] > 100
-    assert visible["svgHeight"] > 100
-    assert visible["sectionHeight"] >= visible["svgHeight"]
-    assert visible["lineStroke"] not in {"none", "rgba(0, 0, 0, 0)"}
-    assert visible["lineWidth"] > 0
-    assert visible["nodeFill"] not in {"none", "rgba(0, 0, 0, 0)"}
-    assert visible["textFill"] not in {"none", "rgba(0, 0, 0, 0)"}
-    assert visible["nodeFill"] != visible["textFill"]
-    assert visible["bodyBackground"] not in {
-        "rgba(0, 0, 0, 0)", "transparent"}
-
-
-def test_real_browser_current_design_dependency_graph_is_visible_and_accessible_at_390_and_768(
-        tmp_path):
-    """Current Design graph stays readable, labelled, and nonzero when compact."""
-    config = _json_fixture("environment.json")
-    topology = _json_fixture("topology.json")
-    root = tmp_path / "delivery"
-    published = _publish(root, 11, "responsive-design-11", topology=topology)
-    artifact = Path(published["delivery"]["artifacts"]["html"]["path"])
-
-    with _LoopbackServer(root) as server, _RealBrowser(tmp_path, config) as browser:
-        browser.navigate(server.url(_artifact_relative(root, published)))
-        browser.wait_for(
-            "document.body.dataset.dashboardFreshness === 'fresh'")
-        observations = {}
-        for width in (390, 768):
-            browser.call("Emulation.setDeviceMetricsOverride", {
-                "width": width, "height": 900, "deviceScaleFactor": 1,
-                "mobile": width == 390,
-            })
-            observations[str(width)] = browser.evaluate("""(() => {
-              const section = document.querySelector('#tp-design-graph');
-              const svg = section?.querySelector(
-                "svg[data-phase-graph='tp-design-graph']");
-              const title = svg?.querySelector('title');
-              const description = svg?.querySelector('desc');
-              const box = svg?.getBoundingClientRect();
-              const sectionBox = section?.getBoundingClientRect();
-              const firstNode = svg?.querySelector('rect');
-              const firstEdge = svg?.querySelector('line');
-              return {
-                viewport: innerWidth,
-                svgWidth: box?.width || 0,
-                svgHeight: box?.height || 0,
-                sectionWidth: sectionBox?.width || 0,
-                sectionClientWidth: section?.clientWidth || 0,
-                sectionScrollWidth: section?.scrollWidth || 0,
-                overflow: Math.max(0, document.documentElement.scrollWidth - innerWidth),
-                title: title?.textContent || '',
-                description: description?.textContent || '',
-                labelledBy: svg?.getAttribute('aria-labelledby') || '',
-                role: svg?.getAttribute('role') || '',
-                nodes: svg?.querySelectorAll('rect').length || 0,
-                edges: svg?.querySelectorAll('line').length || 0,
-                nodeFill: firstNode ? getComputedStyle(firstNode).fill : 'none',
-                edgeStroke: firstEdge ? getComputedStyle(firstEdge).stroke : 'none'
-              };
-            })()""")
-
-    for width, value in observations.items():
-        assert value["viewport"] == int(width)
-        assert value["svgWidth"] > 100
-        assert value["svgHeight"] > 100
-        assert value["overflow"] == 0
-        if int(width) == 390:
-            assert value["sectionScrollWidth"] > value["sectionClientWidth"]
-            assert value["svgWidth"] <= value["sectionScrollWidth"] + 1
-        else:
-            assert value["svgWidth"] <= value["sectionWidth"] + 1
-        assert value["role"] == "img"
-        assert value["labelledBy"]
-        assert "Design" in value["title"]
-        assert "source nodes" in value["description"]
-        assert value["nodes"] > 0
-        assert value["edges"] > 0
-        assert value["nodeFill"] not in {"none", "rgba(0, 0, 0, 0)"}
-        assert value["edgeStroke"] not in {"none", "rgba(0, 0, 0, 0)"}
+    with _LoopbackServer(workspace) as server, _RealBrowser(tmp_path, config) as browser:
+        browser.navigate(server.url(".taskplane/dashboard.html"))
+        browser.wait_for("document.querySelectorAll('.tp-flow .stage').length", 7)
+        assert browser.evaluate("document.querySelector('#decomposition').textContent.includes('Build product')")
+        assert browser.evaluate("document.querySelector('#lenses').textContent.includes('quality')")
+        assert browser.evaluate("document.body.textContent.includes('Verified through retro')")
+        assert browser.evaluate("window.badEvidence === undefined")
+        for width in (390, 768, 1280):
+            browser.call("Emulation.setDeviceMetricsOverride", {"width": width, "height": 1000,
+                                                                  "deviceScaleFactor": 1, "mobile": False})
+            assert browser.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+        assert browser.evaluate("document.querySelector('#dependencies iframe').getBoundingClientRect().height > 300")
+        assert browser.evaluate("document.querySelector('#dependencies iframe').srcdoc.includes('Module dependency graph')")
+        graph = workspace / ".taskplane/graph.html"
+        depgraph.to_html(str(workspace), out=str(graph))
+        browser.navigate(server.url(".taskplane/graph.html"))
+        browser.wait_for("document.querySelectorAll('svg .node').length >= 2")
+        assert browser.evaluate("document.querySelectorAll('svg .edge').length") >= 1
+        assert browser.evaluate("document.querySelector('.node').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); document.querySelector('#inspector').textContent.includes('Depends on')")
+        assert browser.evaluate("getComputedStyle(document.querySelector('.node rect')).strokeWidth") != "0px"

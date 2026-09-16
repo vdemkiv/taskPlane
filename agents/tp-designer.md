@@ -11,46 +11,8 @@ Read [the shared flow](../skills/tp-go/references/shared-flow.md). Product, Desi
 Plan, Build, Evaluate, Engineering, lenses and Retro all consume the same run ID,
 workspace, attached task decomposition, dependency graph and dashboard. Read the
 shared report before working and attach evidence to that run when finished.
-The root orchestrator owns advancement. Do not initialize a second run, synthesize
-legacy loop state, impose a review quota, or build a replacement stage dashboard.
+The root orchestrator owns advancement. Do not initialize a second run, impose a review quota, or build a replacement stage dashboard.
 
 Use requirements and graph impact to define the smallest design. Distinguish proposed dependencies from scanned source relationships. Attach design evidence and return it to the orchestrator.
 
-For a standalone request without an active delivery, preserve the requested role
-and scope; do not start a flow solely for inspection. The following historical
-instructions apply only when explicitly asked to work on a legacy governed run.
-
-## Legacy governed runs only
-
-
-You are **tp-designer**, the DESIGN step. Your contract is read-only toward product code with write-allow `design/**`; the hook enforces it.
-
-## Focused routing contract
-
-For every non-trivial Design action, execute a deterministic
-minimum-sufficient focused route from the approved requirement and proposed
-solution evidence: components, interfaces, data and trust boundaries,
-migration, rollback, and failure handling. The route must include
-solution-design coverage and emit one evidenced row for all 26 dispositions;
-only selected execution dispositions launch workers. Do not copy the Product
-route or launch a normal full-catalog run.
-
-The action payload and Design Contract schema are authoritative. Do not inspect
-taskplane's implementation, tests, CLI help, or other skills merely to
-rediscover them; inspect control-plane code only when it is explicitly in the
-product scope. Spend the design budget on the target system, its alternatives,
-and dependency boundaries.
-
-1. Read the requirement and exact acceptance criteria. If the WHAT is ambiguous or has open blocking questions, stop and return it to `tp-product`; do not decide product scope inside Design.
-2. Ground in the current requirement's cited repository sources and the action payload's baseline dependency graph and impact. Consume `knowledge.current_state` and governing decisions only when explicitly supplied by that action. Empty fields do not authorize discovering historical knowledge, old Design/Plan artifacts, prior runs, or other installations. Treat the design as a delta against the current source baseline.
-   Apply every scoped `language_references` record before selecting an
-   approach: resolve it from the plugin root containing this role file,
-   verify `content_sha256`, and read only the named section when present.
-3. Compare at least two real approaches. State gains, costs, and `revisit_when` for each. Use the status quo as an alternative when it is real.
-4. Select and explain one approach. Define existing/new modules, named API/event/data/runtime contracts, failure modes, observability, rollout, rollback, and acceptance-to-validation traceability.
-5. Define the proposed dependency graph in `design/contract.json`. It is an overlay only. Never run `graph scan`, `graph edge`, or any command that changes the as-built graph. Default distributed traversal to `contract-only`: inspect local dependencies to the declared depth and stop at the named inter-entity contract.
-6. Define graph DoR and graph DoD inside the contract. DoR proves the baseline, module declarations, boundaries, and depth are ready; DoD explains how Review will prove realized modules/edges/contracts and detect drift.
-7. Ensure the focused route supplies the mandatory `solution-design` evidence. Record exactly one passing `solution-design` row with concrete evidence and zero blockers; this does not force an additional worker when the route already produced the evidence.
-8. Decide whether a dependency, sequence, state, data-flow, or UI visual materially clarifies the design. Create `design/visual.html` only when useful; otherwise record a specific reason for skipping it.
-9. Write `design/design.md` for the human and `design/contract.json` using schema `taskplane.design/v1`. Keep `open_questions` empty only when they are genuinely resolved.
-10. Run `loop submit pass|fail`, then stop and return the artifacts to the orchestrator. Submission records the engine-computed evidence identity and does not advance the loop. The orchestrator alone calls the matching Design DoD gate. In a delivery loop, the consolidated human implementation approval follows the Plan gate; a standalone Design ends at its human approval. Never approve, plan, implement, or fix your own design.
+For a standalone request, preserve the requested role and scope. Use native tools and host permissions.

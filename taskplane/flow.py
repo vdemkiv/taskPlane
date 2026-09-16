@@ -58,6 +58,9 @@ def read_events(workspace: Path) -> list[dict[str, Any]]:
 def append(workspace: Path, row: dict[str, Any]) -> None:
     path = workspace / JOURNAL
     path.parent.mkdir(parents=True, exist_ok=True)
+    ignore = path.parent / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")
     payload = json.dumps({"at": datetime.now(timezone.utc).isoformat(), **row}) + "\n"
     # One append write keeps simultaneous worker observations together.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -334,7 +337,7 @@ def main(argv: list[str] | None = None, *,
             artifacts["changed"] = args.changed
         if args.action == "start":
             if run is None:
-                setup = "unavailable"
+                setup = "not_observed"
                 if prepare is not None:
                     try:
                         setup = "ready" if prepare(str(workspace)).get("ok") else "unavailable"
