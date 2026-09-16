@@ -69,11 +69,7 @@ def atomic_json(path: str | os.PathLike[str], value: object, *,
             os.fsync(target.fileno())
         os.replace(temporary, destination)
         try:
-            directory = os.open(destination.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            _fsync_directory(str(destination.parent))
         except OSError:
             if strict_directory_sync:
                 raise

@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -101,8 +102,16 @@ def test_claude_binding_overrides_inherited_codex_session(tmp_path, monkeypatch)
              'session_id': 'claude-session', 'transcript_path': "/tmp/a ' quoted.jsonl"}
     assert flow.hook(event) == {}
     assert not (tmp_path / flow.JOURNAL).exists()
-    result = subprocess.run(['bash', '-c', '. "$1"; printf "%s\n%s" "$TASKPLANE_CLAUDE_SESSION_ID" "$TASKPLANE_CLAUDE_TRANSCRIPT"',
-                             'bash', str(target)], capture_output=True, text=True, check=True)
+    bash = shutil.which('bash')
+    if os.name == 'nt':
+        # Use Git Bash, not the Windows WSL launcher named bash.exe.
+        git = Path(shutil.which('git') or '')
+        bash = next((str(parent / 'bin/bash.exe') for parent in git.parents
+                     if (parent / 'bin/bash.exe').is_file()), bash)
+    assert bash, 'Claude environment binding requires Bash'
+    result = subprocess.run([bash, '-c', '. ./env; printf "%s\n%s" "$TASKPLANE_CLAUDE_SESSION_ID" "$TASKPLANE_CLAUDE_TRANSCRIPT"'],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
     assert result.stdout == "claude-session\n/tmp/a ' quoted.jsonl"
     monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'claude-session')
     monkeypatch.setenv('CODEX_THREAD_ID', 'inherited-codex')
