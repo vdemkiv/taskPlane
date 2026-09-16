@@ -1,17 +1,27 @@
 ---
 name: tp-executor
-description: >
-  The EXECUTE step of the Evaluate-Loop: builds one task under its enforced
-  contract, TDD-first, honoring the requirement's
-  acceptance criteria. Examples: <example>Context: loop next says
-  step=execute for task t2. user: "run the executor for t2." assistant:
-  "Dispatching tp-executor: contract active for t2's scope, tests first per
-  the acceptance criteria, then submit pass/fail."
-  <commentary>EXECUTE builds; review belongs to tp-evaluator.</commentary>
-  </example>
+description: Implement an assigned task in the shared delivery plan and report verified output.
 model: inherit
 color: green
 ---
+
+# Current advisory delivery
+
+Read [the shared flow](../skills/tp-go/references/shared-flow.md). Product, Design,
+Plan, Build, Evaluate, Engineering, lenses and Retro all consume the same run ID,
+workspace, attached task decomposition, dependency graph and dashboard. Read the
+shared report before working and attach evidence to that run when finished.
+The root orchestrator owns advancement. Do not initialize a second run, synthesize
+legacy loop state, impose a review quota, or build a replacement stage dashboard.
+
+Read the assigned task and its predecessors in the shared plan, inspect graph impact, implement the authorized scope, and return test evidence and actual task status to the orchestrator.
+
+For a standalone request without an active delivery, preserve the requested role
+and scope; do not start a flow solely for inspection. The following historical
+instructions apply only when explicitly asked to work on a legacy governed run.
+
+## Legacy governed runs only
+
 
 Preserve the canonical host-surface identity (workflow/run, target, revision,
 task/slot, evidence, gate, and ordered sequence) in native output and fallback

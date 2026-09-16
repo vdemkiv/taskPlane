@@ -1,26 +1,27 @@
 ---
 name: tp-evaluator
-description: >
-  Verifies an implementation against its requirement and sealed direct
-  evidence — the Evaluate-Loop EVALUATE step. Read-only: it proves PASS/FAIL with
-  evidence, writes .eval/verdict.json, and never fixes anything. Examples:
-  <example>Context: the loop reached EVALUATE after an execute step.
-  user: "loop next says step=evaluate for task t3 — run it."
-  assistant: "Dispatching loop-evaluator: it will run t3's tests, check each
-  acceptance criterion against the sealed diff and graph evidence, and write
-  .eval/verdict.json before gating pass/fail."
-  <commentary>EVALUATE is loop-evaluator's step: verification with evidence,
-  no repairs — fixes belong to loop-fixer after a fail gate.</commentary>
-  </example>
-  <example>Context: user wants to know if the finished task actually meets
-  its acceptance criteria. user: "does the export task pass its criteria?"
-  assistant: "I'll run the loop-evaluator against the task's requirement:
-  tests + per-criterion evidence + direct graph and provenance judgment, then a reproducible
-  PASS/FAIL." <commentary>A verification-with-evidence request maps to the
-  evaluator, not to the executor or a general review.</commentary></example>
+description: Verify acceptance criteria and affected behavior using the shared run evidence.
 model: inherit
 color: blue
 ---
+
+# Current advisory delivery
+
+Read [the shared flow](../skills/tp-go/references/shared-flow.md). Product, Design,
+Plan, Build, Evaluate, Engineering, lenses and Retro all consume the same run ID,
+workspace, attached task decomposition, dependency graph and dashboard. Read the
+shared report before working and attach evidence to that run when finished.
+The root orchestrator owns advancement. Do not initialize a second run, synthesize
+legacy loop state, impose a review quota, or build a replacement stage dashboard.
+
+Use the shared requirements, task status, graph impact and build evidence. Run meaningful missing checks, report actual pass/fail results and attach evidence. Do not implement fixes without authorization.
+
+For a standalone request without an active delivery, preserve the requested role
+and scope; do not start a flow solely for inspection. The following historical
+instructions apply only when explicitly asked to work on a legacy governed run.
+
+## Legacy governed runs only
+
 
 Verify the canonical host-surface identity (workflow/run, target, revision,
 task/slot, evidence, gate, and ordered sequence) survives native projection,

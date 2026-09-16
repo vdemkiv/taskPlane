@@ -41,3 +41,9 @@ which owns the decision to fix or continue. Load
 [legacy delivery review](references/delivery-review.md) only for an explicit
 request to inspect an older governed run. Old contracts remain historical data;
 they do not control native tool permissions or current delivery.
+
+## Shared delivery state
+
+For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
+Use its existing run, task decomposition, dependency graph and dashboard. Return
+evidence to that run; the root orchestrator owns stage advancement.

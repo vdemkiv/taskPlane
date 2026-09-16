@@ -1,5 +1,8 @@
 # taskplane
 
+**v2.25.0** — one delivery flow, task decomposition, dependency graph and dashboard
+for Claude and Codex, with native lens usage and advisory telemetry.
+
 [![CI](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml/badge.svg)](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml)
 
 **Carry the goal through to working software.** Taskplane helps Claude and Codex
@@ -26,6 +29,13 @@ that file out of product commits. Token figures are deltas between observed
 native counters, with incomplete coverage explicit. Unknown usage is never zero.
 No prompts, command bodies, or tool responses are copied to this journal.
 Telemetry failures do not block delivery.
+
+Claude and Codex use the same task decomposition, dependency graph and
+`.taskplane/dashboard.html`. Claude's plugin hooks bind its session automatically;
+its usage reader includes cache writes and reads and counts each streamed API
+message once. Lens usage comes from native subagent transcripts. Review indexes
+use Claude's actual `agent_id` (Codex uses its native agent handle). Hosts without
+readable session counters show unavailable coverage while delivery continues.
 
 See [delivery instructions](skills/tp-go/SKILL.md) for the complete procedure.
 Older `loop`, `stage`, contract, and gate commands remain for explicit legacy

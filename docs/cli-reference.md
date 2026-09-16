@@ -135,6 +135,7 @@ not repeated in the tables.
 | `tp.py stage collect-lenses` | collect the exact lens plan saved in a phase startup |
 | `tp.py stage history` | read a bounded page of immutable stage summaries |
 | `tp.py stage prepare-lenses` | dispatch shared lenses for the exact current phase candidate |
+| `tp.py stage read-artifact` | read selected phase input or retained lens evidence |
 | `tp.py stage read-input` | read only the verified input named by a stage startup |
 | `tp.py stage resume` | create a fresh attempt in an active stage root |
 | `tp.py stage reuse` | explicitly authorize non-default artifact reuse |
@@ -815,6 +816,7 @@ Positional arguments:
 | `--force` | flag | replace an in-flight loop (the old loop.json is archived first — without this flag re-init refuses) |
 | `--max-fix-cycles` | MAX_FIX_CYCLES | fix cycles the loop may run before it escalates to the human (default 2) |
 | `--parallel` | flag | execute waves of scope-disjoint tasks concurrently, one governed agent per task |
+| `--phase-tokens-unlimited` | flag | explicitly remove only this new run's per-phase token ceiling; usage, time limits and other checks remain required; needs attributable --by |
 | `--req` | REQ | anchor the loop to a requirement R-id; requires an exact existing requirement |
 | `--reuse-approved-design` | flag | start at Plan from an unchanged completed design-only loop with the same requirement/spec and attributable --by authority |
 | `--spec` | SPEC | path to an existing spec (skips PM) |
@@ -1752,12 +1754,6 @@ A validation or authority failure changes neither stage.
 
 collect the exact lens plan saved in a phase startup
 
-The response retains the plan, collection and validation references, and also
-returns `collection_content` with the full collected results and any explicit
-gaps, plus `lens_dispositions` for all review decisions. Consume those fields
-before Stop. Current-review references are not initial phase input artifacts;
-they do not require an additional `read-artifact` call.
-
 | Flag | Value | What it does |
 | --- | --- | --- |
 | `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
@@ -1781,6 +1777,15 @@ dispatch shared lenses for the exact current phase candidate
 | `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
 
+## `tp.py stage read-artifact`
+
+read selected phase input or retained lens evidence
+
+| Flag | Value | What it does |
+| --- | --- | --- |
+| `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
+| `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
+
 ## `tp.py stage read-input`
 
 read only the verified input named by a stage startup
@@ -1789,21 +1794,6 @@ read only the verified input named by a stage startup
 | --- | --- | --- |
 | `--request` | FILE\|- (required) | closed stage-command JSON object; '-' reads standard input |
 | `--workspace` | WORKSPACE | repo root this command operates on (default: the cwd) |
-
-## `tp.py stage read-artifact`
-
-Read one artifact explicitly selected by the current worker's verified phase
-input. Pass `--request FILE|-` with the closed object
-`{"stage_runtime_dispatch": <unchanged startup envelope>, "references": [<exact reference>]}`.
-The reader rechecks current authority, worker identity, reference membership,
-digest and byte length. It accepts no storage paths or arbitrary lookup.
-
-For a child of retained lens evidence, use a two-reference chain: the selected
-`lens-evidence` reference, followed by its exact `plan`, `collection`, or
-validation reference. The response has `reference`, `projection`, and `content`.
-Normal content is exact. A lens plan has `projection="lens-plan-evidence"` and
-returns phase, binding and all dispositions, excluding old leases and execution
-packets. Collections include the complete results and findings.
 
 ## `tp.py stage resume`
 

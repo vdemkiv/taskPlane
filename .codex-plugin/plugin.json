@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.23.1",
+  "version": "2.25.0",
   "description": "Orchestrator-led software delivery for Claude and Codex, with native tools, practical verification, and advisory progress and token telemetry.",
   "author": {
     "name": "Volodymyr Demkiv",

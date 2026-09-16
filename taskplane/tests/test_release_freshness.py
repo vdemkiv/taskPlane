@@ -65,7 +65,7 @@ def test_current_version_authority_agrees_across_runtime_and_manifests() -> None
 
     for relative in ("README.md", "CHANGELOG.md"):
         body = (ROOT / relative).read_text(encoding="utf-8")
-        assert f"| **v{current}** |" in body
+        assert f"v{current}" in body
 
 
 def test_live_cli_reference_generator_rejects_undocumented_flags() -> None:

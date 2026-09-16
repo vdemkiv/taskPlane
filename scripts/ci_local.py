@@ -219,7 +219,8 @@ def _ci_settings(
     settings_path: str | Path = DEFAULT_SETTINGS_PATH,
 ) -> OperationalSettings:
     try:
-        settings = load_settings(settings_path, environment={})
+        settings = load_settings(settings_path, environment={},
+                                 use_run_snapshot=False, use_project_settings=False)
     except SettingsError as exc:
         raise RunnerError(f"authoritative CI settings were rejected: {exc}") from exc
     if (

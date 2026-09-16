@@ -4075,170 +4075,64 @@ def _esc(s) -> str:
 
 
 _HTML = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Dependency graph — __TITLE__</title>
-<style>
- body{margin:0;font:13px/1.45 -apple-system,'Segoe UI',sans-serif;
-      background:#fcfcfb;color:#1a1a18}
- header{padding:14px 20px 6px}h1{font-size:16px;margin:0 0 2px}
- .sub{color:#6b6b66;font-size:12px}
- .legend{display:flex;gap:14px;padding:6px 20px;font-size:12px;color:#44443f}
- .legend span{display:flex;align-items:center;gap:5px}
- .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
- #wrap{position:relative}svg{display:block;width:100%;height:66vh}
- .lbl{font-size:11px;fill:#44443f;pointer-events:none}
- .lbl.comp{font-size:9px;fill:#6b6b66}
- .edge{stroke:#c9c9c4;stroke-width:1.2;fill:none}
- .edge.rec{stroke-dasharray:4 3}
- .edge.comp{stroke:#a9d4bb;stroke-width:1}
- #tip{position:absolute;background:#fff;border:1px solid #dcdcd7;
-      border-radius:6px;padding:8px 10px;font-size:12px;display:none;
-      box-shadow:0 2px 8px rgba(0,0,0,.08);max-width:320px;pointer-events:none}
- table{border-collapse:collapse;margin:10px 20px 30px;font-size:12px}
- td,th{border:1px solid #e3e3de;padding:4px 10px;text-align:left}
- th{background:#f3f3ef;font-weight:600}
- .imp{color:#b3261e;font-weight:600}.chg{color:#8c3d00;font-weight:600}
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dependency graph — __TITLE__</title><style>
+:root{color-scheme:light dark;--bg:#fff;--panel:#f7f6f3;--ink:#25241f;--muted:#666158;--line:#ddd9d0;--accent:#286657;--changed:#9e4b20}
+@media(prefers-color-scheme:dark){:root{--bg:#171916;--panel:#22251f;--ink:#eeeae1;--muted:#bab8ad;--line:#484b40;--accent:#93cab4;--changed:#e7ac81}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 system-ui,sans-serif}
+header{padding:22px 24px 14px}h1{font-size:20px;letter-spacing:-.4px;margin:0 0 5px}h2{font-size:15px;margin:0 0 12px}.sub,.muted{color:var(--muted);font-size:12px}
+.toolbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-top:14px}.toolbar input{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:8px 10px;max-width:100%}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 270px;border-block:1px solid var(--line)}#wrap{overflow:auto;min-height:350px;background:var(--panel)}svg{display:block;min-width:100%;height:auto}.edge{stroke:var(--line);stroke-width:1.5;fill:none}.edge.selected{stroke:var(--accent);stroke-width:2}.edge.rec{stroke-dasharray:5 4}
+.node rect{fill:var(--bg);stroke:var(--line);stroke-width:1.5}.node:hover rect,.node:focus rect,.node.selected rect{stroke:var(--accent);stroke-width:2}.node{cursor:pointer;outline:none}.node.changed rect{stroke:var(--changed)}.node text{fill:var(--ink);font:12px system-ui;pointer-events:none}.node .meta{font-size:10px;fill:var(--muted)}.node.dim{opacity:.22}
+#inspector{padding:20px;overflow-wrap:anywhere;border-left:1px solid var(--line)}#inspector ul{padding-left:18px;font-size:12px}#inspector button{color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:6px;margin:3px 0;text-align:left;width:100%;cursor:pointer}.tables{padding:22px 24px}.table-wrap{overflow:auto}table{border-collapse:collapse;font-size:12px;width:100%;margin:8px 0 18px}th,td{text-align:left;border-bottom:1px solid var(--line);padding:10px 12px}th{background:var(--panel);font-weight:600}.chg{color:var(--changed)}.imp{color:var(--accent)}
+@media(max-width:1100px){.layout{grid-template-columns:1fr}#inspector{border-left:0;border-top:1px solid var(--line)}}
+@media(max-width:700px){header,.tables{padding:16px}}
 </style></head><body>
-<header><h1>Dependency graph — __TITLE__</h1>
-<div class="sub">__SUB__</div></header>
-<div class="legend">
- <span><i class="dot" style="background:#2a78d6"></i>module</span>
- <span><i class="dot" style="background:#3aa76d"></i>component</span>
- <span><i class="dot" style="background:#4a3aa7"></i>infra&nbsp;(svc:)</span>
- <span><i class="dot" style="background:#eda100"></i>external</span>
- <span><i class="dot" style="background:#e34948"></i>changed</span>
- <span><i class="dot" style="background:#eb6834"></i>impacted (depth 1–3)</span>
- <span>⤍ dashed = agent-recorded edge</span>
-</div>
-<div id="wrap"><svg id="g"></svg><div id="tip"></div></div>
-<h1 style="padding:0 20px;font-size:14px">Impact table</h1>
-__TABLE__
+<header><h1>Dependency graph — __TITLE__</h1><div class="sub">__SUB__</div>
+<div class="toolbar"><label>Find a module <input id="search" type="search" placeholder="Filter module names"></label><span class="muted">Arrow: consumer → dependency · Select a node for details</span></div></header>
+<div class="layout"><div id="wrap"><svg id="g" role="group" aria-label="Module dependency graph"></svg></div><aside id="inspector" aria-live="polite"><h2>Explore dependencies</h2><p class="muted">Select a module to see its dependencies, consumers, and decomposed components.</p></aside></div>
+<section class="tables"><h2>Change impact</h2><div class="table-wrap">__TABLE__</div><details><summary>All dependency edges</summary><div class="table-wrap"><table><thead><tr><th>Consumer</th><th>Dependency</th><th>Relationship</th></tr></thead><tbody id="all-edges"></tbody></table></div></details></section>
 <script>
 const G=__DATA__;
-const W=document.getElementById('g').clientWidth||1200,H=innerHeight*.66;
-const S=Math.min(W,H);
-const nodes=Object.entries(G.modules).map(([id,m],i)=>({id,...m,
-  x:W/2+(S/3)*Math.cos(2*Math.PI*i/Object.keys(G.modules).length),
-  y:H/2+(S/3)*Math.sin(2*Math.PI*i/Object.keys(G.modules).length),vx:0,vy:0}));
+const svg=document.getElementById('g'),NS='http://www.w3.org/2000/svg';
+const nodes=Object.entries(G.modules).map(([id,m])=>({id,...m}));
 const byId=Object.fromEntries(nodes.map(n=>[n.id,n]));
 const edges=G.edges.filter(e=>byId[e.from]&&byId[e.to]);
 const CHANGED=new Set(G.changed||[]),IMPACT=G.impacted||{};
-function color(n){if(CHANGED.has(n.id))return'#e34948';
- if(IMPACT[n.id])return'#eb6834';
- return n.kind==='infra'?'#4a3aa7':n.kind==='external'?'#eda100':'#2a78d6';}
-function r(n){return Math.max(7,Math.min(16,5+Math.sqrt(n.files||1)*2));}
-// tiny force sim
-for(let it=0;it<260;it++){
- for(const e of edges){const a=byId[e.from],b=byId[e.to];
-  let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,f=(d-120)*.008;
-  a.vx+=f*dx/d;a.vy+=f*dy/d;b.vx-=f*dx/d;b.vy-=f*dy/d;}
- for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){
-  const a=nodes[i],b=nodes[j];let dx=b.x-a.x,dy=b.y-a.y,
-  d2=dx*dx+dy*dy||1,f=1800/d2;const d=Math.sqrt(d2);
-  a.vx-=f*dx/d;a.vy-=f*dy/d;b.vx+=f*dx/d;b.vy+=f*dy/d;}
- for(const n of nodes){n.vx+=(W/2-n.x)*.002;n.vy+=(H/2-n.y)*.002;
-  n.x+=n.vx*.72;n.y+=n.vy*.72;n.vx*=.62;n.vy*=.62;
-  n.x=Math.max(30,Math.min(W-30,n.x));n.y=Math.max(26,Math.min(H-26,n.y));}}
-const svg=document.getElementById('g'),NS='http://www.w3.org/2000/svg';
-svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
-function el(t,a){const e=document.createElementNS(NS,t);
- for(const k in a)e.setAttribute(k,a[k]);return e;}
-svg.appendChild(el('defs',{})).innerHTML=
- '<marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" '+
- 'markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="#c9c9c4"/></marker>';
-for(const e of edges){const a=byId[e.from],b=byId[e.to],
- dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,
- x2=b.x-dx/d*(r(b)+3),y2=b.y-dy/d*(r(b)+3);
- const p=el('path',{class:'edge'+(e.recorded?' rec':''),
-  d:`M${a.x} ${a.y}L${x2} ${y2}`,'marker-end':'url(#ar)'});
- svg.appendChild(p);}
-const tip=document.getElementById('tip');
-const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
-function details(n){
- const outs=edges.filter(e=>e.from===n.id).map(e=>`→ ${esc(e.to)} (${esc(e.kind)})`);
- const ins=edges.filter(e=>e.to===n.id).map(e=>`← ${esc(e.from)} (${esc(e.kind)})`);
- return {head:`${esc(n.id)} · ${esc(n.kind)}${n.files?` · ${n.files} file(s)`:''}`+
-   (CHANGED.has(n.id)?' · changed':'')+
-   (IMPACT[n.id]?` · impacted d${IMPACT[n.id]}`:''),
-  edges:outs.concat(ins)};}
-function showTip(n,x,y){const d=details(n);tip.style.display='block';
- tip.style.left=(x+16)+'px';tip.style.top=(y+8)+'px';
- tip.innerHTML=`<b>${esc(n.id)}</b> · ${esc(n.kind)}${n.files?` · ${n.files} file(s)`:''}`+
-  (CHANGED.has(n.id)?' · <b class=chg>changed</b>':'')+
-  (IMPACT[n.id]?` · <b class=imp>impacted d${IMPACT[n.id]}</b>`:'')+
-  `<br>${d.edges.slice(0,9).join('<br>')||'no edges'}`;}
-for(const n of nodes){
- const d=details(n);
- // Keyboard/screen-reader/touch reachable: focusable, labelled, and the
- // details open on focus and click too — not hover-only (which excludes
- // keyboard and touch users entirely).
- const c=el('circle',{cx:n.x,cy:n.y,r:r(n),fill:color(n),
-  stroke:'#fcfcfb','stroke-width':2,cursor:'pointer',tabindex:'0',
-  role:'button','aria-label':d.head+'. '+
-   (d.edges.length?d.edges.length+' edges: '+d.edges.slice(0,9).join('; '):
-    'no edges')});
- c.addEventListener('mousemove',ev=>showTip(n,ev.offsetX,ev.offsetY));
- c.addEventListener('mouseleave',()=>tip.style.display='none');
- c.addEventListener('focus',()=>showTip(n,n.x,n.y));
- c.addEventListener('blur',()=>tip.style.display='none');
- c.addEventListener('click',()=>showTip(n,n.x,n.y));
- c.addEventListener('keydown',ev=>{
-  if(ev.key==='Enter'||ev.key===' '||ev.key==='Spacebar'){
-   ev.preventDefault();showTip(n,n.x,n.y);
-  }else if(ev.key==='Escape')tip.style.display='none';
- });
- svg.appendChild(c);
- const t=el('text',{class:'lbl',x:n.x+r(n)+4,y:n.y+4});
- t.textContent=n.id;svg.appendChild(t);}
-// component LAYER (R-0003, contract:component-map): each component is a
-// small node ringed around its owning module (its module grouping), with a
-// distinct visual class and its component-level edges. An undecomposed
-// graph carries no G.components, so this whole block renders nothing.
 const comps=G.components||[];
-const byComp={},byMod={};
-// E3: the ring gap is NOT a fixed offset any more — every component carries
-// `ring`, the count-scaled gap computed host-side
-// (depgraph.component_ring_gap), so labels on a many-component module stop
-// overlapping. Legacy data without `ring` falls back to the base constant.
-const COMP_RING_BASE=__RING_BASE__;
-const ringOf=c=>(typeof c.ring==='number'&&isFinite(c.ring))?c.ring
- :COMP_RING_BASE;
-for(const c of comps){(byMod[c.module]=byMod[c.module]||[]).push(c);}
-for(const mid in byMod){const m=byId[mid];if(!m)continue;
- byMod[mid].forEach((c,i)=>{const a=2*Math.PI*i/byMod[mid].length,
-  rad=r(m)+ringOf(c);
-  c.x=m.x+rad*Math.cos(a);c.y=m.y+rad*Math.sin(a);
-  byComp[c.id]=c;});}
-for(const c of comps){if(!byComp[c.id])continue;
- for(const d of (c.deps||[])){const t2=byComp[d.to]||byId[d.to];
-  if(!t2)continue;
-  svg.appendChild(el('path',{class:'edge comp',
-   d:`M${c.x} ${c.y}L${t2.x} ${t2.y}`}));}}
-for(const c of comps){if(!byComp[c.id])continue;
- const label=`${esc(c.id)} · component of ${esc(c.module)} · `+
-  `${c.files||0} file(s)${c.symbols?` · ${c.symbols} symbol(s)`:''}`;
- const cc=el('circle',{class:'compnode',cx:c.x,cy:c.y,r:5,fill:'#3aa76d',
-  stroke:'#fcfcfb','stroke-width':1.5,cursor:'pointer',tabindex:'0',
-  role:'button','aria-label':label});
- const show=(x,y)=>{tip.style.display='block';tip.style.left=(x+16)+'px';
-  tip.style.top=(y+8)+'px';tip.innerHTML=`<b>${esc(c.id)}</b> · component`+
-   `<br>${(c.deps||[]).slice(0,9).map(d=>`→ ${esc(d.to)} (${esc(d.kind)})`)
-    .join('<br>')||'no component edges'}`;};
- cc.addEventListener('mousemove',ev=>show(ev.offsetX,ev.offsetY));
- cc.addEventListener('mouseleave',()=>tip.style.display='none');
- cc.addEventListener('focus',()=>show(c.x,c.y));
- cc.addEventListener('blur',()=>tip.style.display='none');
- cc.addEventListener('click',()=>show(c.x,c.y));
- // E3 a11y: same keyboard escape hatch module nodes have — a keyboard user
- // who opened this tooltip can dismiss it without a pointer.
- cc.addEventListener('keydown',ev=>{
-  if(ev.key==='Enter'||ev.key===' '||ev.key==='Spacebar'){
-   ev.preventDefault();show(c.x,c.y);
-  }else if(ev.key==='Escape')tip.style.display='none';
- });
- svg.appendChild(cc);
- const tl=el('text',{class:'lbl comp',x:c.x+7,y:c.y+3});
- tl.textContent=c.id.split('::')[1]||c.id;svg.appendChild(tl);}
-</script></body></html>"""
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function el(t,a){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;}
+// Dependency columns, fixed card spacing, and scrollable canvas keep labels apart.
+const levels=Object.create(null);
+function level(id,trail=new Set()){if(id in levels)return levels[id];if(trail.has(id))return 0;
+ const next=new Set(trail);next.add(id);const deps=edges.filter(e=>e.from===id&&e.to!==id);
+ return levels[id]=Math.min(nodes.length,Math.max(0,...deps.map(e=>level(e.to,next)+1)));}
+nodes.forEach(n=>level(n.id));
+const columns={};nodes.sort((a,b)=>a.id.localeCompare(b.id)).forEach(n=>{(columns[levels[n.id]]??=[]).push(n);});
+const maxLevel=Math.max(0,...Object.values(levels)),height=Math.max(350,...Object.values(columns).map(c=>c.length*100+70));
+const width=Math.max(760,(maxLevel+1)*270+50);svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.style.width='100%';svg.style.minWidth='760px';
+for(const [lev,group] of Object.entries(columns)){group.forEach((n,i)=>{n.x=30+(maxLevel-Number(lev))*270;n.y=35+i*100;});}
+svg.appendChild(el('defs',{})).innerHTML='<marker id="ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="currentColor"/></marker>';
+const edgeElements=[];
+for(const e of edges){const a=byId[e.from],b=byId[e.to],forward=b.x>a.x;
+ const x1=a.x+(forward?220:0),x2=b.x+(forward?0:220),y1=a.y+32,y2=b.y+32,mid=(x1+x2)/2;
+ const p=el('path',{class:'edge'+(e.recorded?' rec':''),d:`M${x1} ${y1} C${mid} ${y1},${mid} ${y2},${x2} ${y2}`,'marker-end':'url(#ar)'});svg.appendChild(p);edgeElements.push([e,p]);}
+const inspector=document.getElementById('inspector');
+function select(n){document.querySelectorAll('.node').forEach(x=>x.classList.toggle('selected',x.dataset.id===n.id));
+ edgeElements.forEach(([e,p])=>p.classList.toggle('selected',e.from===n.id||e.to===n.id));
+ const outs=edges.filter(e=>e.from===n.id),ins=edges.filter(e=>e.to===n.id),children=comps.filter(c=>c.module===n.id);
+ const list=(items,key)=>items.length?'<ul>'+items.map(e=>`<li>${esc(e[key])} <span class="muted">${esc(e.kind)}</span></li>`).join('')+'</ul>':'<p class="muted">None recorded</p>';
+ inspector.innerHTML=`<h2>${esc(n.id)}</h2><p class="muted">${esc(n.kind||'module')} · ${n.files||0} files${CHANGED.has(n.id)?' · changed':''}${IMPACT[n.id]?' · impacted at depth '+IMPACT[n.id]:''}</p><h2>Depends on</h2>${list(outs,'to')}<h2>Used by</h2>${list(ins,'from')}<h2>Decomposition · ${children.length}</h2>`;
+ for(const c of children){const cc=document.createElement('details');cc.innerHTML=`<summary>${esc(c.id)}</summary><p class="muted">${c.files||0} files · ${c.symbols||0} symbols</p>${list((c.deps||[]),'to')}`;cc.addEventListener('keydown',ev=>{if(ev.key==='Escape'){cc.open=false;cc.querySelector('summary').focus();}});inspector.appendChild(cc);}}
+for(const n of nodes){const group=el('g',{class:'node'+(CHANGED.has(n.id)?' changed':''),tabindex:'0',role:'button','aria-label':n.id+' — '+(n.kind||'module')+'; inspect dependencies','data-id':n.id});
+ group.appendChild(el('rect',{x:n.x,y:n.y,width:220,height:64,rx:9}));const title=el('title',{});title.textContent=n.id;group.appendChild(title);
+ const label=el('text',{x:n.x+14,y:n.y+25});label.textContent=n.id.length>28?n.id.slice(0,26)+'…':n.id;group.appendChild(label);
+ const meta=el('text',{x:n.x+14,y:n.y+45,class:'meta'});meta.textContent=(n.kind||'module')+' · '+(n.files||0)+' files'+(CHANGED.has(n.id)?' · changed':IMPACT[n.id]?' · impacted':'');group.appendChild(meta);
+ group.addEventListener('click',()=>select(n));group.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select(n);}});svg.appendChild(group);}
+document.getElementById('search').addEventListener('input',e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('.node').forEach(n=>n.classList.toggle('dim',!n.dataset.id.toLowerCase().includes(q)));});
+document.getElementById('all-edges').innerHTML=edges.map(e=>`<tr><td>${esc(e.from)}</td><td>${esc(e.to)}</td><td>${esc(e.kind)}</td></tr>`).join('');
+</script></body></html>
+"""
 
 
 # E3 (R-0011): component ring geometry. The gap between a module node's
@@ -4341,7 +4235,7 @@ def as_fragment(page: str) -> str:
     )
 
 
-def to_html(
+def html_document(
     ws: str,
     changed_files=None,
     title: str | None = None,
@@ -4434,6 +4328,12 @@ def to_html(
     )
     if fragment:
         html = as_fragment(html)
+    return html
+
+
+def to_html(ws: str, changed_files=None, title: str | None = None,
+            out: str | None = None, focus: int | None = None, fragment: bool = False) -> str:
+    html = html_document(ws, changed_files, title=title, focus=focus, fragment=fragment)
     if out is None:
         import storage as runtime_storage
 

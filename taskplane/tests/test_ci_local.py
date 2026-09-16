@@ -26,6 +26,21 @@ def _runtime(runner):
     )
 
 
+def test_ci_settings_ignore_project_preferences_and_bound_runs(monkeypatch):
+    from taskplane import run_context, settings
+
+    runner = _runner()
+    monkeypatch.setattr(run_context, "current_settings", lambda: ({}, "bound-run"))
+
+    def project_preferences(_workspace):
+        raise AssertionError("CI must not load local project preferences")
+
+    monkeypatch.setattr(settings, "read_project_settings", project_preferences)
+    selected = runner._ci_settings()
+    assert selected.tests.backend == "ci"
+    assert selected.receipt["precedence"] == ["defaults", "file"]
+
+
 def test_pytest_inventory_discovers_checkout_and_ignores_compact_evidence(
     tmp_path, monkeypatch,
 ):

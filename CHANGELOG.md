@@ -1,6 +1,26 @@
 # taskplane changelog
 
-## Unreleased — recovery on the 2.23.1 stateless baseline
+## v2.25.0 — shared delivery flow and native telemetry
+
+- Keep the orchestrator responsible for delivery through Product, Design, Plan,
+  Build, Evaluate, Engineering and Retro. Telemetry advises without blocking
+  tools or imposing a Taskplane token limit.
+- Give every stage the same task decomposition, dependency graph, attached
+  evidence and dashboard. Refresh the dashboard at meaningful progress updates.
+- Render styled dependency columns, module selection, component details and
+  change impact alongside execution and review evidence.
+- Reconcile Codex root and lens counters across native sessions, including final
+  responses. Show missing coverage and host approval usage explicitly.
+- Support Claude session binding, streamed-message deduplication, cache accounting
+  and subagent transcripts in the same flow. Prefer the loaded Claude runtime
+  over stale workspace launchers and validate both host packages.
+- Preserve local test reports outside distributed source and align package
+  regression checks with the advisory delivery path.
+
+The untagged 2.23.1–2.23.10 and 2.24.0 source candidates are superseded by
+this version. Existing tags and historical records remain unchanged.
+
+### Included recovery from the 2.23.1 stateless baseline
 
 - Restore the post-refactor 2.23.1 source baseline, preserving the active v4
   phase runtime and intentional removal of the older runtime and obsolete tests.
@@ -19,7 +39,7 @@
 - Probe quality tools in the same isolated environment used for execution.
   Missing dependencies are reported before evaluation begins.
 
-## Unreleased — project-local execution and inline setup
+### Included project-local execution and inline setup
 
 - Human-approved Product and Design amendments can be recorded during delivery,
   including Build and Review, with superseded scope, work and evidence retained.
@@ -40,9 +60,8 @@
   model and reasoning controls save supported preferences for new runs;
   Advanced exposes individual phase overrides.
 
-The most recent releases are summarized in the README's "What's new" table;
-this file is the authoritative, complete history — if the two ever disagree,
-this file wins.
+The README introduces the current version. This file retains the complete
+version history.
 
 **Release-history truth.** This file is prose, and prose drifts: five
 releases (v2.5.0, v2.5.1, v2.6.0, v2.8.1, v2.8.2) shipped with no tag at
@@ -69,10 +88,10 @@ lens rewrite and never bumped to.
 > v2.18.1 is the tagged local predecessor, and v2.18.2 through v2.18.10 are
 > superseded unreleased candidates. v2.19.0 is an unreleased restored baseline,
 > and v2.19.1 is a reverted unreleased candidate. The forward candidate is
-> v2.23.1, not released. Historical
+> v2.25.0. Historical
 > graph revision `2757822e` remains an attributed inherited limitation: no
 > history rewrite, no re-release of v2.17.20, and no verifier weakening.
-> Preparing, validating, or pushing v2.23.1 to an isolated PR branch is not a tag, upload,
+> Preparing, validating, or pushing v2.25.0 source is not a tag, upload,
 > Marketplace publication, installation, or release claim; those actions
 > retain separate human authority.
 
@@ -89,6 +108,17 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 
 | Version | Highlights |
 | --- | --- |
+| **v2.25.0** | Shared delivery flow, task decomposition, styled dependency graph and dashboard across Claude and Codex; native session and lens usage with advisory telemetry. |
+| **v2.24.0** | **Superseded untagged source candidate.** Native review simplification was prepared on main and then restored to the 2.23.1 baseline. The shared advisory flow and cross-host dashboard now continue in v2.25.0. No version tag or archive release was published. |
+| **v2.23.10** | **Native review and planning recovery.** Restores authenticated child input and failed-attempt retries, adds whole-repository scope, preserves validation failures and actual reviewer starts, and fixes dependency detection and tool cache recovery. |
+| **v2.23.9** | **Shared entry readiness and recovery.** Separates setup from runtime readiness on both hosts, carries Claude startup identity, diagnoses stale engines, and aligns installed-package journey checks. |
+| **v2.23.8** | **Native plugin startup and budget recovery.** Uses the host-selected plugin for hooks and review commands, fixes Claude-only packages and failed setup reporting, and resumes existing tasks after an approved token increase. |
+| **v2.23.7** | **Native Codex integration.** Native command sessions, permission profiles and preview panels with exact TaskPlane evidence binding. Removes the custom file reader and fixes public command launch defaults. |
+| **v2.23.6** | **Shared entry initialization.** Missing setup is repaired once; incompatible read-only file tools refuse activation before a session can be locked. Incident report included. |
+| **v2.23.5** | **Session isolation and fresh-checkout readiness.** Each host conversation owns its contracts, run bindings, meters and review state. Native hook proof follows only the same session across checkouts; clearing a review leaves other sessions intact. |
+| **v2.23.4** | **Automatic standalone review startup.** Prepares the actual checkout launcher and signed native worker contracts; retries preserve leases and evidence. Fresh installed end-to-end validation remains pending. |
+| **v2.23.3** | **Model-led orchestration with strict harness controls.** Disables budget waivers, denies worker control calls, checks fresh hooks on mutations, and safely replays exact phase collection through the existing gate. |
+| **v2.23.2** | **Budget and harness enforcement, simpler onboarding.** Applies phase caps during execution, limits each quick lens to 100,000 native tokens and eight actions, meters every tool, and stops budget-triggered continuation loops. Reuses completed reviews, returns findings inline, and keeps onboarding to initial setup. Includes project-local storage recovery and disables harness bypass. Marketplace packages require loading the updated plugin hooks. |
 | **v2.23.1** | **Onboarding readiness repair.** Uses the shared hook claim guard for event identity, checks the current launcher after reinstall, and follows the same Git-family path as hook execution. The dashboard keeps incomplete setup visibly incomplete. Every session's first request and every installation/update presents onboarding and preserves the original goal. Prompts hook trust before reload, reports failed acknowledgment writes, and bounds Stop reminders without releasing completion gates. Includes focused regression coverage; a fresh-host check remains separate from CI. |
 | **v2.23.0** | **Superseded untagged harness marketplace candidate.** Gives the refactor integrated in [PR #22](https://github.com/vdemkiv/taskPlane/pull/22) a distinct version from the earlier 2.20.0 development builds. Includes stateless phases through Retro, unified lens routing and collection, evolving dependency graphs, dashboard/settings/onboarding wiring, and the cleaned test suite. Package preparation does not claim Marketplace publication. |
 | **v2.20.0** | **Superseded local development version.** Product, Design, Plan, Build, Evaluate, EM review and Retro use the v4 run aggregate and verified artifact handoffs. Independent task phases run in isolated worktrees and join at EM review. Dependency graphs can evolve between phases. Singleton execution, cutover switches and unreleased-state migration are removed; prior v3 runs must be archived. Human plan approval and final sign-off remain. |

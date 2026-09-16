@@ -10,6 +10,9 @@ Workers, when useful and authorized, own bounded tasks. The harness observes;
 it does not approve tool calls, assign mandatory reviewers, or advance stages.
 Native host permissions and the user's scope remain authoritative.
 
+Read [the shared flow](references/shared-flow.md) for the common graph, task,
+evidence and dashboard steps used by every stage and delegated agent.
+
 ## Execute the flow
 
 1. **Product:** identify the requested outcome and concrete acceptance criteria.
@@ -52,7 +55,9 @@ Do not debug the observer as a prerequisite to delivering the user's change.
 
 Hooks record tool metadata, action fingerprints and native token counters locally
 in `.taskplane/flow-events.jsonl`. They do not store command bodies or tool output.
-Native cumulative counters are counted as deltas, with missing coverage explicit.
+Native lineage discovers lens sessions even without child hooks. Root counters
+use the start baseline; child sessions created during the flow count from zero.
+Reports refresh final counters, with native session totals and missing coverage explicit.
 There is no Taskplane token limit. Usage is a measured lower bound from the first
 observation, not a billing total. Hosts without readable native counters show
 unknown usage, not zero. Keep this local telemetry out of product commits.

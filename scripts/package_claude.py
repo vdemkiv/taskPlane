@@ -14,9 +14,8 @@ facts rather than taste:
 
   * `.claude-plugin/plugin.json` AND `marketplace.json` — Claude reads the
     marketplace entry; Codex has no equivalent.
-  * `workflows/**.js` — Dynamic Workflows are a Claude capability. The
-    Task-dispatch path stays mandatory and byte-identical on both hosts, so
-    omitting these on Codex removes an accelerator, never a gate.
+  * `workflows/**.js` — Dynamic Workflows are a Claude capability. They are optional; both hosts use the same
+    advisory delivery runtime and stage instructions.
   * every skill, including `tp-tag`. Claude Tag is a Claude surface; the
     OpenAI archive excludes it because there is nothing there to drive it.
 
@@ -83,6 +82,11 @@ MUST_CONTAIN = (
     "taskplane/taskplane_lite.py",
     "taskplane/loop.py",
     "taskplane/tp.py",
+    "taskplane/flow.py",
+    "taskplane/flow_usage.py",
+    "taskplane/claude_flow_usage.py",
+    "taskplane/flow_dashboard.py",
+    "skills/tp-go/references/shared-flow.md",
     "taskplane/lens.py",
     "taskplane/lens_signals.py",
     "taskplane/stage_entities.py",
@@ -379,8 +383,8 @@ def validate_archive(path: Path, version: str) -> tuple:
                 }
                 require(assignments.get("CURRENT_VERSION") == version,
                         "archive release runtime and manifest versions disagree")
-        require(manifest.get("hostNative") == "../hooks/host-native.json",
-                "Claude manifest must retain supported host-native metadata")
+        require("hostNative" not in manifest,
+                "Claude manifest must use supported fields; host metadata lives in hooks/host-native.json")
         try:
             hook_manifest = json.loads(
                 archive.read(f"{ARCHIVE_ROOT}/hooks/hooks.json"))
@@ -418,8 +422,8 @@ def main(argv=None) -> int:
                 and marketplace["plugins"][0]["version"] == version,
                 "manifest and marketplace versions disagree — the release "
                 "is not single-sourced")
-        require(manifest.get("hostNative") == "../hooks/host-native.json",
-                "Claude manifest must retain supported host-native metadata")
+        require("hostNative" not in manifest,
+                "Claude manifest must use supported fields; host metadata lives in hooks/host-native.json")
         files = package_files()
         name = (f"taskplane-{version}-claude.zip" if args.ext == "zip"
                 else f"taskplane-{version}.plugin")

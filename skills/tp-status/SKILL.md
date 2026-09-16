@@ -15,3 +15,9 @@ acceptance criteria passed; check the cited evidence when making that claim.
 Do not start a flow to answer status. Use legacy `summary` or the
 [legacy status reference](references/delivery-status.md) only when the user asks
 about an older governed run. Distinguish historical gate state from current work.
+
+## Shared delivery state
+
+For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
+Use its existing run, task decomposition, dependency graph and dashboard. Return
+evidence to that run; the root orchestrator owns stage advancement.

@@ -148,6 +148,7 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
             spawn = subagent.get("thread_spawn") if isinstance(subagent, Mapping) else None
             if isinstance(spawn, Mapping):
                 agent_path = str(spawn.get("agent_path") or "").strip() or None
+                parent = parent or str(spawn.get("parent_thread_id") or "").strip() or None
         metadata = {
             "session_id": session_id,
             "root_session_id": root_id,
@@ -161,21 +162,36 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
     raise NativeSessionMeterError("current native session metadata is unavailable")
 
 
-def _latest_counter(tail: bytes, *, at_or_before: float | None = None) -> tuple[dict[str, Any], bytes]:
+def _latest_counter(tail: bytes, *, at_or_before: float | None = None,
+                    session_id: str | None = None,
+                    allow_unsequenced: bool = False) -> tuple[dict[str, Any], bytes]:
     # The first tail record may start mid-line.  It cannot be authenticated as
     # a complete JSON event, so discard it unless the tail begins at byte zero.
     lines = tail.splitlines()
-    for raw in reversed(lines):
+    candidates = []
+    for position, raw in reversed(list(enumerate(lines))):
         if not raw.strip() or len(raw) > MAX_RECORD_BYTES:
             continue
         try:
             row = json.loads(raw)
         except (UnicodeDecodeError, ValueError):
             continue
-        if not isinstance(row, Mapping) or row.get("type") != "event_msg":
+        if not isinstance(row, Mapping):
             continue
         payload = row.get("payload")
-        if not isinstance(payload, Mapping) or payload.get("type") != "token_count":
+        if not isinstance(payload, Mapping):
+            continue
+        native_record = row.get("type") == "token_usage_record"
+        if native_record:
+            if session_id and payload.get("thread_id") != session_id:
+                continue
+            total = payload.get("thread_token_usage")
+        elif row.get("type") == "event_msg" and payload.get("type") == "token_count":
+            info = payload.get("info")
+            total = info.get("total_token_usage") if isinstance(info, Mapping) else None
+        else:
+            continue
+        if not isinstance(total, Mapping):
             continue
         if at_or_before is not None:
             try:
@@ -186,10 +202,6 @@ def _latest_counter(tail: bytes, *, at_or_before: float | None = None) -> tuple[
                 raise NativeSessionMeterError("native counter timestamp requires a timezone")
             if instant.timestamp() > at_or_before:
                 continue
-        info = payload.get("info")
-        total = info.get("total_token_usage") if isinstance(info, Mapping) else None
-        if not isinstance(total, Mapping):
-            continue
         input_tokens = _nonnegative(total.get("input_tokens"), "input_tokens")
         cached = _nonnegative(total.get("cached_input_tokens"), "cached_input_tokens")
         output = _nonnegative(total.get("output_tokens"), "output_tokens")
@@ -203,11 +215,21 @@ def _latest_counter(tail: bytes, *, at_or_before: float | None = None) -> tuple[
         if total_tokens != input_tokens + output:
             raise NativeSessionMeterError("native total tokens do not reconcile")
         ordinal = row.get("ordinal")
+        ordinal_basis = "native"
+        if ordinal is None and allow_unsequenced:
+            if not native_record:
+                continue
+            # Some host review logs omit ordinals. This is usable for advisory
+            # display only; authenticated metering keeps the strict default.
+            ordinal = position
+            ordinal_basis = "bounded tail position"
         if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
             raise NativeSessionMeterError("native counter ordinal is invalid")
-        return {
+        candidate = {
             "ordinal": ordinal,
             "observed_at": str(row.get("timestamp") or ""),
+            "counter_scope": "thread" if native_record else "segment",
+            "ordinal_basis": ordinal_basis,
             "usage": {
                 "input_tokens": input_tokens,
                 "cached_input_tokens": cached,
@@ -217,10 +239,17 @@ def _latest_counter(tail: bytes, *, at_or_before: float | None = None) -> tuple[
                 "total_tokens": total_tokens,
             },
         }, raw
+        candidates.append((native_record, candidate))
+        # Provider thread totals survive resume; legacy token_count can lag.
+        if native_record:
+            return candidate
+    if candidates:
+        return candidates[0][1]
     raise NativeSessionMeterError("native session has no complete token counter")
 
 
-def read_snapshot(path: str, *, at_or_before: float | None = None) -> dict[str, Any]:
+def read_snapshot(path: str, *, at_or_before: float | None = None,
+                  allow_unsequenced: bool = False) -> dict[str, Any]:
     """Read one identity and bounded counter, optionally at an authenticated stop."""
     selected = os.path.realpath(str(path or ""))
     try:
@@ -249,7 +278,9 @@ def read_snapshot(path: str, *, at_or_before: float | None = None) -> dict[str, 
         if not separator:
             raise NativeSessionMeterError("native counter tail contains no complete record")
     metadata, metadata_record = _session_metadata(prefix)
-    counter, counter_record = _latest_counter(tail, at_or_before=at_or_before)
+    counter, counter_record = _latest_counter(tail, at_or_before=at_or_before,
+                                               session_id=metadata["session_id"],
+                                               allow_unsequenced=allow_unsequenced)
     source = {
         "path_fingerprint": hashlib.sha256(selected.encode("utf-8")).hexdigest(),
         "device": int(before.st_dev),
@@ -339,7 +370,7 @@ def derive_session_role(snapshot: Mapping[str, Any]) -> str:
 
 
 def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Sum the latest cumulative counter from every physical segment once."""
+    """Sum sessions once, respecting thread totals versus reset segment counters."""
     latest_by_source: dict[str, dict[str, Any]] = {}
     session_sources: dict[str, set[str]] = {}
     for raw in snapshots:
@@ -383,12 +414,21 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "reasoning_tokens",
         "total_tokens",
     )
+    def session_usage(rows: list[dict[str, Any]]) -> dict[str, int]:
+        thread_rows = [row for row in rows if row.get("counter_scope") == "thread"]
+        if thread_rows:
+            # A provider thread total already includes prior physical segments.
+            latest = max(thread_rows, key=lambda row: row["usage"]["total_tokens"])
+            return {key: int(latest["usage"][key]) for key in usage_keys}
+        return {key: sum(int(row["usage"][key]) for row in rows) for key in usage_keys}
+
+    by_session = {sid: session_usage(rows) for sid, rows in sessions.items()}
     result = {
         "schema": AGGREGATE_SCHEMA,
         "logical_sessions": len(sessions),
         "physical_segments": len(ordered_segments),
         "usage": {
-            key: sum(int(row["usage"][key]) for row in ordered_segments) for key in usage_keys
+            key: sum(usage[key] for usage in by_session.values()) for key in usage_keys
         },
         "sessions": [
             {
@@ -397,7 +437,7 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "root_session_id": rows[-1].get("root_session_id"),
                 "segments": len(rows),
                 "counter_fingerprints": sorted(row["fingerprint"] for row in rows),
-                "total_tokens": sum(int(row["usage"]["total_tokens"]) for row in rows),
+                "total_tokens": by_session[session_id]["total_tokens"],
             }
             for session_id, rows in sorted(sessions.items())
         ],

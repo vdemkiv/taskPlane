@@ -72,7 +72,7 @@ def test_release_manifests_keep_parser_safe_hooks_and_supported_metadata() \
     assert set(hooks) <= SUPPORTED_HOOK_ROOT_FIELDS
     assert "hostNative" not in hooks
     assert "hostNative" not in codex
-    assert claude["hostNative"] == "../hooks/host-native.json"
+    assert "hostNative" not in claude
 
 
 def test_codex_and_claude_archives_execute_the_installed_stage_runtime(

@@ -19,3 +19,9 @@ not authorize implementation. For an already authorized delivery, return the
 criteria to the root orchestrator and continue through
 [delivery](../tp-go/SKILL.md). No contract activation, scoring command, lens quota,
 or telemetry receipt is required to finish Product work.
+
+## Shared delivery state
+
+For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
+Use its existing run, task decomposition, dependency graph and dashboard. Return
+evidence to that run; the root orchestrator owns stage advancement.

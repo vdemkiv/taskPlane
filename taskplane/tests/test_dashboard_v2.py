@@ -276,7 +276,7 @@ class TestDepgraphComponentLayer(unittest.TestCase):
         blob = html.split("const G=", 1)[1].split(";\n", 1)[0]
         return html, json.loads(blob.replace("\\u003c", "<"))
 
-    def test_component_nodes_dismiss_the_tooltip_on_escape(self):
+    def test_component_details_dismiss_on_escape(self):
         html, _data = self._render({"m/a": 2})
         block = html.split("const comps=G.components", 1)[1]
         self.assertIn("cc.addEventListener('keydown'", block)

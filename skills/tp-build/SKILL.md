@@ -18,3 +18,9 @@ implementations or review waves by default.
 Reuse authorization already given. Missing telemetry, a stale legacy run, or a
 review quota must not block authorized implementation. Native host permissions
 remain in force.
+
+## Shared delivery state
+
+For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
+Use its existing run, task decomposition, dependency graph and dashboard. Return
+evidence to that run; the root orchestrator owns stage advancement.

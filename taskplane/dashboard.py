@@ -25,6 +25,7 @@ import depgraph as _dg  # STEP_ROLE, kb.counts, depgraph.summary) instead
 import plan_topology as _pt  # Plan DAG/waves stay owned by one topology model.
 import host_native
 import wave_metrics
+import flow_dashboard as _flow_dashboard
 
 # of re-encoding schemas that then drift.
 import text_runtime as _text
@@ -307,6 +308,15 @@ def _render_pipeline(state, step) -> str:
 
 
 def render(ws: str, out: str | None = None, *, locale: str | None = None) -> str:
+    advisory = _flow_dashboard.model(ws)
+    if advisory:
+        body = standalone_document([_flow_dashboard.render(ws, advisory)], title="Taskplane — delivery")
+        if out is None:
+            out = os.path.join(ws, ".taskplane", "dashboard.html")
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as stream:
+            stream.write(body)
+        return out
     tstats = {}
     all_ev = _read_trace_all(ws, stats=tstats)  # trace parsed ONCE/render
     state = _load_loop(ws)
@@ -5112,6 +5122,9 @@ def headline_loop(ws: str) -> str:
     GOVERNANCE CARRIER: it also discloses a blocked-on-budget run — when the
     contract meter hits its ceiling the headline SAYS so instead of reading
     as an idle loop. Composed from one full template ("headline_loop")."""
+    advisory = _flow_dashboard.model(ws)
+    if advisory:
+        return _flow_dashboard.headline(advisory)
     state = _load_loop(ws)
     if not state:
         return "taskplane: no active loop"
@@ -6031,6 +6044,9 @@ def widget(ws: str) -> str:
     then simple/detailed views. Gate buttons grey out on click (only when the
     chat bridge exists — in the static artifact they reveal the reply to type
     instead). Composition of the named parts from _widget_parts()."""
+    advisory = _flow_dashboard.model(ws)
+    if advisory:
+        return _flow_dashboard.render(ws, advisory)
     p = _widget_parts(ws)
     return (
         p["sr"] + _WIDGET_CSS + f'<div dir="auto" style="padding:0.5rem 0;'
@@ -6063,6 +6079,9 @@ def report_widget(ws: str) -> str:
     the human gate.  The append-only trace is referenced by the journey rather
     than copied hundreds of times into the report.
     """
+    advisory = _flow_dashboard.model(ws)
+    if advisory:
+        return _flow_dashboard.render(ws, advisory)
     p = _widget_parts(ws)
     header = (
         f'<p class="tp-kicker">taskplane · mission control · governed run</p>'
@@ -6843,6 +6862,21 @@ def widget_paged(ws: str, budget: int = PAGE_BUDGET) -> list:
     graph → context, splitting further (journey by visits) when a page is
     still too big. Content leaves a page only via an explicit '+N more'
     marker — never silently. Returns [{"title","html"}]."""
+    advisory = _flow_dashboard.model(ws)
+    if advisory:
+        pages = []
+        for title, body in _flow_dashboard.sections(ws, advisory):
+            fragment = _flow_dashboard.STYLE + '<main class="tp-flow">' + body + '</main>'
+            if _page_bytes(fragment) > budget:
+                # Large evidence/graph sections remain complete in the shared
+                # document; never silently truncate them to fit an inline host.
+                fragment = (
+                    f'<h2>{_esc(title)}</h2><p>This section exceeds the inline display limit. '
+                    f'Open the shared dashboard for the complete graph and evidence.</p>'
+                    f'<p>{_esc(advisory["dashboard"])}</p>'
+                )
+            pages.append({"title": title, "html": fragment})
+        return pages
     full = widget(ws)
     if _page_bytes(full) <= budget:
         return [{"title": "mission control", "html": full}]

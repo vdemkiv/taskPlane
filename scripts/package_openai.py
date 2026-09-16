@@ -1017,6 +1017,13 @@ def _workspace_only_hooks(value: dict) -> dict:
             for hook in row.get("hooks") or []:
                 command = str(hook.get("command") or "")
                 command_windows = str(hook.get("commandWindows") or "")
+                # The shared source prefers the current Claude plugin over a
+                # stale workspace launcher. Codex keeps its own launcher path.
+                if command.startswith('if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then '):
+                    command = command.split('; else ', 1)[1].removesuffix('; fi')
+                windows_prefix = 'setlocal EnableExtensions EnableDelayedExpansion & '
+                if command_windows.startswith(windows_prefix + 'if defined CLAUDE_PLUGIN_ROOT '):
+                    command_windows = windows_prefix + command_windows.split(') else (', 1)[1].removesuffix(')')
                 require(posix_fallback in command,
                         "installed hook lacks the bounded plugin fallback")
                 require(windows_fallback in command_windows,

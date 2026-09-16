@@ -274,12 +274,10 @@ def test_installed_openai_archive_onboards_and_bootstraps_a_fresh_linked_task(
         encoding="utf-8", capture_output=True, env=hook_environment,
     )
     assert hook.returncode == 0, hook.stdout + hook.stderr
-    from taskplane import host_capabilities
-    receipt = json.loads(Path(host_capabilities._receipt_path(
-        str(linked / ".taskplane"), "native",
-        host_capabilities._fingerprint_text("fresh-installed-task"))).read_text(encoding="utf-8"))
-    assert receipt["hook_path"] == "native"
-    assert receipt["event_name"] == "SessionStart"
+    # Current delivery hooks abstain; legacy enforcement receipts are not a
+    # prerequisite for working in a freshly linked task.
+    assert json.loads(hook.stdout) == {}
+    assert not (linked / ".taskplane" / "flow-events.jsonl").exists()
     assert not (user_home / ".taskplane").exists()
     assert not (linked / ".taskplane" / "workspace.json").exists()
 
@@ -467,66 +465,47 @@ print(json.dumps({
     return json.loads(result.stdout)
 
 
-def _run_minimal_installed_loop(package_root: Path, case: Path) -> None:
+def _run_minimal_installed_flow(package_root: Path, case: Path) -> None:
     workspace = case / "workspace"
     workspace.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=workspace, check=True)
-    spec = workspace / "spec.md"
-    spec.write_text("# Installed journey\n\nPreserve package behavior.\n",
-                    encoding="utf-8")
-    (workspace / "README.md").write_text("installed package\n", encoding="utf-8")
     (workspace / "app.py").write_text("VALUE = 'installed'\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md", "spec.md", "app.py"],
-                   cwd=workspace, check=True)
-    subprocess.run([
-        "git", "-c", "user.name=Taskplane", "-c",
-        "user.email=taskplane@example.invalid", "commit", "-qm", "base",
-    ], cwd=workspace, check=True)
-    environment = {
-        "PATH": os.environ.get("PATH", ""),
-        "TASKPLANE_HOME": str(case / "private-store"),
-        "TASKPLANE_SESSION_ID": "isolated-installed-fixture",
-    }
+    (workspace / "test_app.py").write_text("from app import VALUE\nassert VALUE == 'installed'\n", encoding="utf-8")
+    (workspace / "tasks.json").write_text(json.dumps({"tasks": [
+        {"id": "T1", "title": "Installed fixture", "paths": ["app.py"],
+         "dependencies": [], "status": "completed", "verification": "test_app.py"}]}))
+    (workspace / "review.md").write_text("Direct review: fixture source matches its test.\n")
+    environment = {"PATH": os.environ.get("PATH", ""),
+                   "TASKPLANE_HOME": str(case / "private-store")}
     cli = package_root / "taskplane/tp.py"
-    requirement_result = subprocess.run([
-        sys.executable, str(cli), "req", "--workspace", str(workspace),
-        "new", "Installed package remains governable",
-        "--functional", "Initialize Design through the installed runtime",
-        "--acceptance", "A fresh installed Design run emits its governed brief",
-        "--nfr", "security=Keep private run evidence outside the checkout",
-        "--nfr", "architecture=Use the canonical settings and artifact boundaries",
-        "--files", "app.py",
-    ], cwd=case, text=True, encoding="utf-8", capture_output=True,
-       env=environment)
-    assert requirement_result.returncode == 0, (
-        requirement_result.stdout + requirement_result.stderr)
-    requirement_id = json.loads(requirement_result.stdout)["recorded"]
-    initialized = subprocess.run([
-        sys.executable, str(cli), "loop", "--workspace", str(workspace),
-        "init", "--spec", str(spec), "--req", requirement_id,
-        "--design", "--parallel", "--advisory", "--by", "human:fixture",
-        "installed package journey",
-    ], cwd=case, text=True, encoding="utf-8", capture_output=True,
-       env=environment)
-    assert initialized.returncode == 0, initialized.stdout + initialized.stderr
-    state = json.loads(initialized.stdout)
-    assert state["initialized"] is True
-    assert state["step"] == "pm"
 
-    next_action = subprocess.run([
-        sys.executable, str(cli), "loop", "--workspace", str(workspace),
-        "next", "--advisory", "--by", "human:fixture",
-    ], cwd=case, text=True, encoding="utf-8", capture_output=True,
-       env=environment)
-    assert next_action.returncode == 0, next_action.stdout + next_action.stderr
-    action = json.loads(next_action.stdout)
-    assert set(action) == {"schema", "stage_runtime_dispatch", "obligations"}
-    assert action["schema"] == "taskplane.stage-dispatch/v1"
-    assert action["obligations"]["dispatch_allowed"] is True
-    assert action["obligations"]["role"] == "tp-product"
+    def invoke(*args):
+        result = subprocess.run([sys.executable, str(cli), *args], cwd=workspace,
+                                text=True, capture_output=True, env=environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+        value = json.loads(result.stdout)
+        assert value.get("status") != "telemetry_unavailable", value
+        return value
+
+    started = invoke("flow", "start", "--workspace", str(workspace), "--goal", "Installed delivery")
+    assert started["status"] == "active"
+    invoke("graph", "--workspace", str(workspace), "scan", "--decompose")
+    invoke("flow", "attach", "--workspace", str(workspace), "--tasks", "tasks.json", "--evidence", "review.md")
+    tested = subprocess.run([sys.executable, "test_app.py"], cwd=workspace, env=environment)
+    assert tested.returncode == 0
+    for phase in ("product", "design", "plan", "build", "evaluate", "engineering", "retro"):
+        invoke("flow", "progress", "--workspace", str(workspace), "--phase", phase,
+               "--note", "Installed fixture and source test verified")
+    report = invoke("flow", "finish", "--workspace", str(workspace), "--note", "Installed fixture passed")
+    assert report["owner"] == "orchestrator"
+    assert report["status"] == "finished"
+    assert report["tasks"][0]["id"] == "T1"
+    assert len(report["milestones"]) == 7
+    dashboard = (workspace / ".taskplane/dashboard.html").read_text()
+    assert "Task decomposition" in dashboard and "Interactive dependency graph" in dashboard
+    assert not (workspace / ".taskplane/active.json").exists()
 
 
-def test_extracted_marketplace_packages_execute_the_governed_journey(tmp_path):
+def test_extracted_marketplace_packages_execute_the_shared_delivery_journey(tmp_path):
     openai = _script_module("package_openai")
     claude = _script_module("package_claude")
     provenance = _script_module("release_provenance")
@@ -584,4 +563,4 @@ def test_extracted_marketplace_packages_execute_the_governed_journey(tmp_path):
         )
         assert version.returncode == 0, version.stdout + version.stderr
         assert version.stdout.strip() == VERSION
-        _run_minimal_installed_loop(package_root, case / "governed-loop")
+        _run_minimal_installed_flow(package_root, case / "governed-loop")

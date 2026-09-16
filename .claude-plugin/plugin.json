@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.23.1",
-  "description": "AI software-delivery control plane for Claude and Codex: stateless stage handoffs, scoped execution, focused pre-build review, direct Evaluate and Engineering evidence, durable recovery, and human approval.",
+  "version": "2.25.0",
+  "description": "Shared delivery flow for Claude and Codex: product, design, dependency-ordered execution, lens reviews, verification and retro, with one dashboard and advisory token telemetry.",
   "author": {
     "name": "Volodymyr Demkiv"
   },
@@ -23,6 +23,5 @@
     "guardrails"
   ],
   "homepage": "https://github.com/vdemkiv/taskPlane",
-  "repository": "https://github.com/vdemkiv/taskPlane",
-  "hostNative": "../hooks/host-native.json"
+  "repository": "https://github.com/vdemkiv/taskPlane"
 }

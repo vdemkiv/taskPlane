@@ -19,3 +19,9 @@ When implementation is already authorized, continue via
 
 Record useful milestones through delivery telemetry when a flow is active.
 Missing observations are advisory and do not invalidate the design.
+
+## Shared delivery state
+
+For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
+Use its existing run, task decomposition, dependency graph and dashboard. Return
+evidence to that run; the root orchestrator owns stage advancement.

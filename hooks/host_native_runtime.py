@@ -93,9 +93,9 @@ def _load_json(path: Path) -> dict:
 
 
 def discover_host_native_contract(root: Path | str, host: str) -> dict:
-    """Resolve the declaration through the manifest consumed by ``host``."""
+    """Resolve package-owned metadata without unsupported host manifest fields."""
     root = Path(root).resolve()
-    if host == "codex":
+    if host in {"codex", "claude"}:
         return discover_hook_contract(root)
     try:
         manifest_path = root / _HOST_MANIFESTS[host]
