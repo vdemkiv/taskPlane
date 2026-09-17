@@ -1,5 +1,25 @@
 # taskplane changelog
 
+## v2.26.0 — native workflow gates and shared phase evidence
+
+- Restore explicit human acceptance at every Product, Design, Plan, Build,
+  Evaluate, Engineering and Retro checkpoint. Bind observed decisions to the
+  presented evidence, source revision, scope and task prerequisites.
+- Use the shared dependency graph, source component decomposition, task DAG and
+  dashboard in every phase, including standalone Product, Design and Engineering.
+  Preserve findings when Engineering starts a human-approved Product route.
+- Ship cooperative native workflow controls for Codex and Claude, with explicit
+  limits on host authentication, protected storage, tool containment and process
+  tracking. Refuse protected-host execution when its required controls are absent.
+- Harden journal paths and writes, invalidate stale dependency caches, preserve
+  resumed usage baselines and handle literal Git filenames safely. Clarify the
+  local data collected and the limits of the privacy boundary.
+- Validate workflow state against its actual serialized size, preserve private
+  atomic writes, and keep finishing an older run from clearing a newer active run.
+  Strengthen the regression check for temporary-file cleanup after failed sync.
+- Fetch fresh dashboard fixture pages in browser tests so rapid approval updates
+  cannot reuse an earlier HTTP cache response.
+
 ## v2.25.0 — shared delivery flow and native telemetry
 
 - Keep the orchestrator responsible for delivery through Product, Design, Plan,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Taskplane: one advisory delivery flow, graph, and dashboard."""
+"""Taskplane: human-gated delivery, native observations, graph and dashboard."""
 from __future__ import annotations
 
 import argparse
@@ -28,8 +28,15 @@ def _git(workspace: str, *args: str) -> str:
 
 
 def _changed(workspace: str, base: str) -> list[str]:
-    return sorted(set(_git(workspace, "diff", "--name-only", base, "--").splitlines()
-                      + _git(workspace, "ls-files", "--others", "--exclude-standard").splitlines()))
+    return sorted(set(_git_paths(workspace, "diff", "--name-only", "-z", base, "--")
+                      + _git_paths(workspace, "ls-files", "-z", "--others", "--exclude-standard")))
+
+
+def _git_paths(workspace: str, *args: str) -> list[str]:
+    result = subprocess.run(["git", *args], cwd=workspace, capture_output=True)
+    if result.returncode:
+        raise ValueError(os.fsdecode(result.stderr).strip() or "Git could not read this workspace")
+    return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
 
 
 def _version(verify: bool) -> dict[str, Any]:
@@ -49,9 +56,14 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments[:1] == ["flow"]:
         return flow.main(arguments[1:])
+    if arguments and arguments[0] in flow.HOOK_NAMES:
+        if len(arguments) != 1:
+            print(json.dumps({"error": "Named native hooks accept their event on stdin only."}))
+            return 2
+        return flow.run_hook(arguments[0])
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("flow", help="Observe shared delivery; use flow --help for actions")
+    commands.add_parser("flow", help="Human-gated delivery and observations; use flow --help")
     version = commands.add_parser("version", help="Report the installed version")
     version.add_argument("--verify", action="store_true")
     help_command = commands.add_parser("help", help="Show the supported commands")
@@ -134,9 +146,8 @@ def main(argv: list[str] | None = None) -> int:
             report = flow.report(Path(workspace), args.run)
             document = dashboard.standalone_document(
                 [flow_dashboard.render(workspace, report)], title="Taskplane — delivery")
-            output = Path(args.out) if args.out else Path(workspace) / flow.DASHBOARD
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(document, encoding="utf-8")
+            output = Path(args.out) if args.out else storage.runtime_file(workspace, "dashboard.html")
+            primitives.atomic_write_bytes(str(output), document.encode("utf-8"))
             print(str(output.resolve()))
             return 0
         elif args.command == "lens":
@@ -146,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.scope == "repository":
                 if _git(workspace, "diff", "HEAD", "--").strip():
                     raise ValueError("Tracked source differs from HEAD; use a diff review")
-                files = _git(workspace, "ls-files").splitlines()
+                files = _git_paths(workspace, "ls-files", "-z")
             else:
                 files = _changed(workspace, args.base)
             if args.paths:
@@ -157,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
                 (Path(workspace) / filename).resolve().relative_to(Path(workspace))
             if not files:
                 raise ValueError("No selected source; use --scope repository to review tracked source")
-            patch = "" if args.scope == "repository" else _git(workspace, "diff", args.base, "--", *files)
+            patch = "" if args.scope == "repository" else _git(workspace, "--literal-pathspecs", "diff", args.base, "--", *files)
             source = {"head": head, "scope": args.scope, "base": args.base,
                       "files": files, "patch": patch}
             output = Path(storage.tp_dir(workspace)) / "review-source.json"
@@ -165,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             result = {"status": "ready", "source": str(output), "files": len(files)}
         print(json.dumps(result, indent=2))
         return 0
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, primitives.StateError) as exc:
         print(f"taskplane: {exc}", file=sys.stderr)
         return 1
 

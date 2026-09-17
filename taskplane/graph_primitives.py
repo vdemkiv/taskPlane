@@ -11,8 +11,11 @@ import os
 import posixpath
 import re
 
-import glob_match
-import path_roles
+if __package__:
+    from . import glob_match, path_roles
+else:
+    import glob_match
+    import path_roles
 
 _is_test_path = path_roles.is_test_path
 _change_adds_no_test = path_roles.change_adds_no_test

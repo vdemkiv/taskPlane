@@ -1,7 +1,7 @@
-"""Delivery observations, never execution or permission decisions.
+"""Shared observations plus guarded workflow entry points.
 
-The orchestrator owns progress. This journal stores metadata and native token
-counters, not prompts, command text, tool responses, or permission receipts.
+The workspace journal is never approval authority. Mandatory transitions use
+the protected workflow controller; optional usage observation stays advisory.
 """
 from __future__ import annotations
 
@@ -13,19 +13,26 @@ import json
 import os
 from pathlib import Path
 import sys
+import stat
 import uuid
 from typing import Any, Callable
+from taskplane import workflow, workflow_host, depgraph
 
 if __package__:
     from . import native_session_meter as _package_meter
     from . import flow_usage as _package_usage
     from . import claude_flow_usage as _package_claude
+    from . import storage as _package_storage, primitives as _package_primitives
     native_session_meter, flow_usage, claude_flow_usage = _package_meter, _package_usage, _package_claude
+    storage, primitives = _package_storage, _package_primitives
 else:
     import native_session_meter as _flat_meter
     import flow_usage as _flat_usage
     import claude_flow_usage as _flat_claude
+    import storage as _flat_storage
+    import primitives as _flat_primitives
     native_session_meter, flow_usage, claude_flow_usage = _flat_meter, _flat_usage, _flat_claude
+    storage, primitives = _flat_storage, _flat_primitives
 
 
 JOURNAL = ".taskplane/flow-events.jsonl"
@@ -35,13 +42,14 @@ HOOK_NAMES = {
     "screen-skill": "PreToolUse", "screen-render": "PreToolUse",
     "context": "SessionStart", "host-native-check": "SessionStart",
     "subagent-start": "SubagentStart", "subagent-stop": "SubagentStop",
+    "tool-observe": "PostToolUse", "human-input": "UserPromptSubmit",
     "session-verify": "Stop",
 }
 
 
 def read_events(workspace: Path) -> list[dict[str, Any]]:
     try:
-        with (workspace / JOURNAL).open(encoding="utf-8") as stream:
+        with storage.runtime_file(str(workspace), "flow-events.jsonl").open(encoding="utf-8") as stream:
             rows = []
             for line in stream:
                 try:
@@ -56,18 +64,34 @@ def read_events(workspace: Path) -> list[dict[str, Any]]:
 
 
 def append(workspace: Path, row: dict[str, Any]) -> None:
-    path = workspace / JOURNAL
+    path = storage.runtime_file(str(workspace), "flow-events.jsonl")
     path.parent.mkdir(parents=True, exist_ok=True)
-    ignore = path.parent / ".gitignore"
+    ignore = storage.runtime_file(str(workspace), ".gitignore")
     if not ignore.exists():
-        ignore.write_text("*\n", encoding="utf-8")
-    payload = json.dumps({"at": datetime.now(timezone.utc).isoformat(), **row}) + "\n"
-    # One append write keeps simultaneous worker observations together.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.write(fd, payload.encode())
-    finally:
-        os.close(fd)
+        primitives.atomic_write_bytes(str(ignore), b"*\n")
+    payload = (json.dumps({"at": datetime.now(timezone.utc).isoformat(), **row}) + "\n").encode()
+    storage.runtime_file(str(workspace), "flow-events.jsonl.lock")
+    with primitives.file_lock(str(path)):
+        storage.runtime_file(str(workspace), "flow-events.jsonl")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND
+                     | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("Flow journal must be a regular file")
+            if info.st_size:
+                os.lseek(fd, -1, os.SEEK_END)
+                if os.read(fd, 1) != b"\n":
+                    payload = b"\n" + payload
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(fd, remaining)
+                if written <= 0:
+                    raise OSError("Flow journal write made no progress")
+                remaining = remaining[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
 
 def session_id(event: dict[str, Any]) -> str:
@@ -98,19 +122,17 @@ def counter(event: dict[str, Any], session: str) -> dict[str, Any]:
             pass
         return {**identity, "usage": None, "usage_status": "unavailable"}
     path = event.get("transcript_path") or event.get("transcript")
-    if not path and session != "local":
+    candidates: list[str | Path] = [path] if isinstance(path, str) else []
+    if session != "local":
         home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        candidates = list((home / "sessions").glob(f"**/*{session}*.jsonl"))
-        if len(candidates) == 1:
-            path = str(candidates[0])
-    if isinstance(path, str):
+        candidates.extend((home / "sessions").glob(f"**/*{session}*.jsonl"))
+    if candidates:
         try:
-            snapshot = native_session_meter.read_snapshot(path, allow_unsequenced=True)
-            if snapshot["session_id"] == session:
-                return {"usage": snapshot["usage"],
-                        "parent": snapshot.get("parent_session_id"),
-                        "agent": snapshot.get("agent_path"),
-                        "usage_status": "observed"}
+            snapshot = native_session_meter.read_logical_snapshot(candidates, session)
+            return {"usage": snapshot["usage"],
+                    "parent": snapshot.get("parent_session_id"),
+                    "agent": snapshot.get("agent_path"),
+                    "usage_status": "partial" if snapshot["partial"] else "observed"}
         except (OSError, ValueError):
             pass
     return {"usage": None, "usage_status": "unavailable"}
@@ -158,6 +180,7 @@ def summarize(rows: list[dict[str, Any]], run: dict[str, Any]) -> dict[str, Any]
         for field, value in first.items():
             usage[field] += max(0, max(c[field] for c in counters) - value)
     milestones = [row for row in unique if row.get("kind") == "progress"]
+    entry_phase = run.get("phase") or (milestones[0].get("phase") if milestones else None) or "product"
     last_progress = max((i for i, row in enumerate(unique)
                          if row.get("kind") in {"start", "progress"}), default=0)
     recent = unique[last_progress + 1:]
@@ -180,7 +203,8 @@ def summarize(rows: list[dict[str, Any]], run: dict[str, Any]) -> dict[str, Any]
         "status": "finished" if any(r.get("kind") == "finish" for r in unique) else "active",
         "outcome": next((r.get("note") for r in reversed(unique)
                          if r.get("kind") == "finish"), None),
-        "phase": milestones[-1].get("phase") if milestones else "product",
+        "entry_phase": entry_phase,
+        "phase": milestones[-1].get("phase") if milestones else entry_phase,
         "milestones": [{"phase": r.get("phase"), "note": r.get("note"),
                         "at": r.get("at")} for r in milestones],
         "started_at": run.get("at"),
@@ -203,12 +227,29 @@ def artifact(workspace: Path, value: str) -> Path:
     return path
 
 
-def report(workspace: Path, run_id: str | None = None) -> dict[str, Any] | None:
+def _controller(workspace: Path, root: str, profile: str = "native_workflow") -> workflow_host.Controller:
+    return workflow_host.Controller(workspace, root,
+        workflow_host.installed_adapter("claude" if claude_session({}) else "codex", profile))
+
+
+def report(workspace: Path, run_id: str | None = None, *,
+           governor: workflow_host.Controller | None = None) -> dict[str, Any] | None:
     rows = read_events(workspace)
     run = next((r for r in reversed(rows) if r.get("kind") == "start"
                 and (not run_id or r.get("run") == run_id)), None)
+    controller = governor or _controller(workspace, str(run["session"]) if run else session_id({}))
+    try:
+        governed = controller.report(run_id or (str(run["run"]) if run else None))
+    except workflow.Refusal as exc:
+        governed = {**exc.result(), "authority_verified": False}
     if not run:
-        return None
+        if not governed.get("visits"):
+            return None
+        # Rebuild a derived view after a durable decision/start but lost rendering.
+        # This does not fabricate a historical observation or human decision.
+        run = {"kind": "start", "run": governed["run"], "session": governed["root"],
+               "phase": governed["visits"][0]["phase"], "goal": governed.get("goal", ""),
+               "at": governed.get("started_at")}
     result = summarize(rows, run)
     result["dashboard"] = str(workspace.resolve() / DASHBOARD)
     attachments: dict[str, Any] = {}
@@ -249,10 +290,17 @@ def report(workspace: Path, run_id: str | None = None) -> dict[str, Any] | None:
         result.update(flow_usage.reconcile(run, rows, expected))
     except (OSError, ValueError, TypeError, KeyError):
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
+    result["workflow"] = governed
+    result["observation_status"] = result["status"]
+    if governed.get("visits"):
+        result["phase"] = governed["phase"]
+        result["status"] = governed["status"]
+    else:
+        result["status"] = "legacy_unverified"
     return result
 
 
-def hook(event: dict[str, Any]) -> dict[str, Any]:
+def _observe_hook(event: dict[str, Any]) -> dict[str, Any]:
     claude_flow_usage.bind_session(event)
     workspace = Path(event.get("cwd") or os.getcwd())
     rows = read_events(workspace)
@@ -285,109 +333,198 @@ def hook(event: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def run_hook(command: str | None = None) -> int:
+def hook(event: dict[str, Any], *,
+         governor: workflow_host.Controller | None = None) -> dict[str, Any]:
+    workspace = Path(event.get("cwd") or os.getcwd())
+    legacy = active_run(read_events(workspace), session_id(event), event.get("parent_session_id"))
+    controller = governor or _controller(workspace, str(legacy["session"]) if legacy else session_id(event))
+    name = event.get("hook_event_name")
+    guarded = controller.report()
+    # Protected state is checked independently of the deletable workspace journal.
+    run = guarded.get("run") or (legacy or {}).get("run")
+    if guarded.get("workflow_available") and guarded.get("run"):
+        controller.observe(event, str(run))
+        if name == "Stop" and not controller.adapter.can_seal(guarded):
+            return {"systemMessage": "Taskplane is waiting for process quiescence before sealing. No phase has advanced; unknown host coverage remains explicit."}
+    guarded_run = guarded.get("run") or (run if controller.adapter.profile == "protected_host" else None)
+    if guarded_run and name == "PreToolUse":
+        controller.guard(event, str(run))
+    if run and name == "UserPromptSubmit":
+        if not guarded.get("workflow_available") or not guarded.get("run"):
+            return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
+                    "Taskplane approval remains unverified; this prompt does not authorize a workflow transition."}}
+        if guarded.get("status") == "awaiting_human_approval":
+            reference = controller.adapter.prompt_reference(event, guarded)
+            if reference:
+                controller.apply("decide", str(run), expected_revision=guarded["revision"], native_reference=reference)
+            else:
+                return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
+                        "Taskplane: record the actual human response with its presented checkpoint and conversation provenance. This prompt alone has not advanced the workflow."}}
     try:
-        event = json.load(sys.stdin)
-        if not isinstance(event, dict):
-            event = {}
+        return _observe_hook(event)
+    except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+        return {}  # Only optional observations abstain on failure.
+
+
+def run_hook(command: str | None = None, *,
+             governor: workflow_host.Controller | None = None) -> int:
+    event: dict[str, Any] = {}
+    try:
+        # A named host command identifies the error contract even if JSON parsing
+        # fails. Keep event object-shaped until validation succeeds.
         if command:
-            event.setdefault("hook_event_name", HOOK_NAMES[command])
-        result = hook(event)
-    except Exception:
-        # A telemetry failure must never become an execution failure.
-        result = {}
+            event["hook_event_name"] = HOOK_NAMES[command]
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict):
+            raise ValueError("Hook event must be an object")
+        if command:
+            payload["hook_event_name"] = event["hook_event_name"]
+        event = payload
+        result = hook(event, governor=governor)
+    except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
+        reason = exc.detail if isinstance(exc, workflow.Refusal) else "Taskplane hook input/state is invalid."
+        if event.get("hook_event_name") == "PreToolUse":
+            result = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                      "permissionDecision": "deny", "permissionDecisionReason": reason}}
+            print(json.dumps(result))
+            return 0  # Native deny JSON, not approval.
+        if event.get("hook_event_name") == "Stop":
+            print(json.dumps({"systemMessage": reason}))
+            return 0  # Waiting/errors must not create forced-continuation loops.
+        print(json.dumps({"decision": "block", "reason": reason}))
+        return 2
     print(json.dumps(result))
     return 0
 
 
 def main(argv: list[str] | None = None, *,
-         prepare: Callable[[str], dict[str, Any]] | None = None) -> int:
+         prepare: Callable[[str], dict[str, Any]] | None = None,
+         governor: workflow_host.Controller | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach", "hook"])
+    parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
+                                           "submit", "decide", "advance", "hook"])
     parser.add_argument("--workspace", default=os.getcwd())
     parser.add_argument("--goal", default="")
-    parser.add_argument("--phase", default="")
+    parser.add_argument("--phase", default="", type=str.lower)
+    parser.add_argument("--standalone", action="store_true")
     parser.add_argument("--note", default="")
-    parser.add_argument("--run", help="Select an existing run for report or evidence attachment")
-    parser.add_argument("--tasks", help="Workspace-relative task decomposition JSON")
-    parser.add_argument("--reviews", help="Workspace-relative lens review index JSON")
-    parser.add_argument("--evidence", action="append", default=[], help="Workspace-relative evidence file")
-    parser.add_argument("--changed", action="append", default=[], help="Workspace-relative changed path for impact analysis")
+    parser.add_argument("--run")
+    parser.add_argument("--tasks")
+    parser.add_argument("--reviews")
+    parser.add_argument("--output", help="Phase output JSON for submit")
+    parser.add_argument("--native-event", default="", help="Opaque native event reference; never approval text")
+    parser.add_argument("--profile", choices=["native_workflow", "protected_host"], default="native_workflow")
+    parser.add_argument("--scope", help="Exact phase scope JSON for native workflow start")
+    parser.add_argument("--request-reference", default="", help="Reference to the actual user request")
+    parser.add_argument("--decision-json", default="", help="Observed decision envelope; never host authentication")
+    parser.add_argument("--expected-revision", type=int)
+    parser.add_argument("--evidence", action="append", default=[])
+    parser.add_argument("--changed", action="append", default=[])
     args = parser.parse_args(argv)
     if args.action == "hook":
-        return run_hook()
+        return run_hook(governor=governor)
+    observation_errors: list[str] = []
     try:
-        workspace = Path(args.workspace)
+        workspace = Path(args.workspace).resolve()
         rows = read_events(workspace)
         session = session_id({})
         run = active_run(rows, session, counter({}, session).get("parent"))
         if args.action in {"report", "attach"}:
             run = next((r for r in reversed(rows) if r.get("kind") == "start"
                         and (not args.run or r.get("run") == args.run)), None)
+        controller = governor or _controller(workspace, str(run["session"]) if run else session, args.profile)
+        # A protected binding can outlive every workspace projection.
+        protected = controller.report()
+        if protected.get("run") and (run is None or args.action not in {"report", "attach"}):
+            run = next((r for r in reversed(rows) if r.get("kind") == "start"
+                        and r.get("run") == protected["run"]), None) or {
+                            "kind": "start", "run": protected["run"], "session": protected["root"],
+                            "phase": protected["visits"][0]["phase"], "goal": protected.get("goal", ""),
+                            "at": protected.get("started_at")}
+        if args.run and args.action not in {"report", "attach"}:
+            workflow.require(run and args.run == run["run"], "state_unavailable", "Run does not match the active binding.")
         artifacts: dict[str, Any] = {}
         for key in ("tasks", "reviews"):
             if getattr(args, key):
-                artifacts[key] = str(artifact(workspace, getattr(args, key)).relative_to(workspace.resolve()))
+                artifacts[key] = str(artifact(workspace, getattr(args, key)).relative_to(workspace))
         if args.evidence:
-            artifacts["evidence"] = [str(artifact(workspace, p).relative_to(workspace.resolve()))
-                                     for p in args.evidence]
+            artifacts["evidence"] = [str(artifact(workspace, p).relative_to(workspace)) for p in args.evidence]
         if args.changed:
             for path in args.changed:
-                (workspace / path).resolve().relative_to(workspace.resolve())
+                (workspace / path).resolve().relative_to(workspace)
             artifacts["changed"] = args.changed
         if args.action == "start":
-            if run is None:
-                setup = "not_observed"
-                if prepare is not None:
-                    try:
-                        setup = "ready" if prepare(str(workspace)).get("ok") else "unavailable"
-                    except Exception:
-                        pass  # Native hook setup is optional observation, never a gate.
-                run = {"kind": "start", "run": uuid.uuid4().hex, "session": session,
-                       "at": datetime.now(timezone.utc).isoformat(),
-                       "goal": args.goal[:2000], "hook_setup": setup,
-                       "artifacts": artifacts, **counter({}, session)}
+            from . import workflow_evidence
+            scope = workflow_evidence.object_file(workspace, args.scope) if args.scope else None
+            state = controller.start({"entry": args.phase or "product", "standalone": args.standalone,
+                                      "goal": args.goal, "native_reference": args.native_event,
+                                      "scope": scope, "request_reference": args.request_reference})
+            if not any(r.get("kind") == "start" and r.get("run") == state["run"] for r in rows):
+                graph = depgraph.scan(str(workspace), decompose=True)
+                workflow.require(not depgraph.scan_quality(graph).get("degraded"),
+                                 "invalid_evidence", "Repair the source graph before preparing a checkpoint.")
+                if "tasks" not in artifacts:
+                    task_path = storage.runtime_file(str(workspace), "tasks.json")
+                    primitives.atomic_json(task_path, {"tasks": [{
+                        "id": "SCOPE", "title": args.goal or "Prepare the requested outcome",
+                        "owner": state["root"], "dependencies": [], "status": "working",
+                        "paths": state["scope"]["paths"][workflow.current(state)["phase"]],
+                        "criteria": state["scope"]["criteria"],
+                        "verification": "Produce criterion evidence and request human stage acceptance."}]})
+                    artifacts["tasks"] = str(task_path.relative_to(workspace))
+                run = {"kind": "start", "run": state["run"], "session": state["root"],
+                       "at": state.get("started_at"), "goal": state.get("goal", args.goal),
+                       "phase": workflow.current(state)["phase"], "artifacts": artifacts,
+                       "hook_setup": "host_adapter", **counter({}, session)}
                 append(workspace, run)
-                rows.append(run)
-        elif args.action != "report" and run is not None:
-            row = {"kind": args.action, "run": run["run"], "session": session,
-                   "phase": args.phase[:80], "note": args.note[:1000],
-                   "artifacts": artifacts, **counter({}, session)}
-            if args.action == "attach":
-                row = {"kind": "attach", "run": run["run"], "session": run["session"],
-                       "artifacts": artifacts}
-            append(workspace, row)
-            rows.append(row)
-        if args.action == "report" and run is None:
-            run = next((row for row in reversed(rows) if row.get("kind") == "start"), None)
-        result = report(workspace, run["run"]) if run else None
-        if result and run and args.action in {"progress", "finish", "attach"} and result.get("sessions"):
-            append(workspace, {"kind": "usage", "run": run["run"], "session": run["session"],
-                               "measurement": {k: result[k] for k in
-                                               ("sessions", "tokens", "native_tokens", "token_coverage")}})
-        if result and args.action != "report":
+        elif args.action in {"submit", "decide", "advance", "finish"}:
+            workflow.require(run, "state_unavailable", "No active workflow binding.")
+            assert run is not None
+            state = controller.apply(args.action, str(run["run"]),
+                expected_revision=args.expected_revision, output=args.output or "",
+                tasks=args.tasks or "", phase=args.phase,
+                native_reference=args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
             try:
-                if __package__:
-                    from . import dashboard as _package_dashboard
-                    from . import flow_dashboard as _package_flow_dashboard
-                    dashboard, flow_dashboard = _package_dashboard, _package_flow_dashboard
-                else:
-                    import dashboard as _flat_dashboard
-                    import flow_dashboard as _flat_flow_dashboard
-                    dashboard, flow_dashboard = _flat_dashboard, _flat_flow_dashboard
-                target = workspace / DASHBOARD
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(dashboard.standalone_document(
-                    [flow_dashboard.render(str(workspace), result)], title="Taskplane — delivery"),
-                    encoding="utf-8")
-            except (OSError, ValueError, TypeError, KeyError):
-                result["evidence_errors"].append("Dashboard refresh unavailable; delivery continues")
-        print(json.dumps(result if result else {
-            "mode": "advisory", "status": "no_observations", "tokens": None}, indent=2))
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        print(json.dumps({"mode": "advisory", "status": "telemetry_unavailable",
-                          "error": type(exc).__name__, "tokens": None}))
-    return 0
+                append(workspace, {"kind": args.action, "run": run["run"], "session": run["session"],
+                                   "phase": workflow.current(state)["phase"], "note": args.note[:1000],
+                                   "artifacts": artifacts})
+            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                # The authoritative action has already committed. Observation
+                # failure cannot turn its actual result into a rejected command.
+                observation_errors.append("Workflow action committed; optional journal recording unavailable.")
+        elif args.action in {"progress", "attach"}:
+            workflow.require(run, "state_unavailable", "No run to attach observations to.")
+            assert run is not None
+            if args.action == "progress" and args.phase:
+                current_phase = protected.get("phase") or summarize(rows, run)["phase"]
+                if args.phase != current_phase:
+                    raise workflow.Refusal("approval_required", "Progress cannot advance a phase. Use the explicit advance action after human approval.")
+            append(workspace, {"kind": args.action, "run": run["run"], "session": run["session"],
+                               "phase": args.phase[:80], "note": args.note[:1000],
+                               "artifacts": artifacts, **counter({}, session)})
+        result = report(workspace, str(run["run"]) if run else args.run, governor=controller)
+        if result:
+            result["evidence_errors"].extend(observation_errors)
+        if result and run and args.action != "report":
+            try:
+                if result.get("sessions"):
+                    append(workspace, {"kind": "usage", "run": run["run"], "session": run["session"],
+                        "measurement": {k: result[k] for k in ("sessions", "tokens", "native_tokens", "token_coverage")}})
+                from taskplane import dashboard, flow_dashboard
+                document = dashboard.standalone_document([flow_dashboard.render(str(workspace), result)],
+                                                         title="Taskplane — delivery")
+                primitives.atomic_write_bytes(str(storage.runtime_file(str(workspace), "dashboard.html")), document.encode())
+            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                result["evidence_errors"].append("Optional observations or dashboard refresh unavailable.")
+        print(json.dumps(result if result else controller.availability(), indent=2))
+        return 0
+    except workflow.Refusal as exc:
+        print(json.dumps(exc.result(), indent=2))
+        return 2
+    except (OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
+        print(json.dumps({"status": "blocked", "reason": "state_unavailable",
+                          "detail": str(exc), "tokens": None}))
+        return 2
 
 
 if __name__ == "__main__":

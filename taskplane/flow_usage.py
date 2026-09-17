@@ -62,26 +62,17 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None) -> tuple[list[dic
         meta = segments[0] if segments else {}
         role = ('orchestrator' if sid == root else 'host_approval_review'
                 if meta.get('thread_source') == 'guardian_review' else 'lens')
-        snapshots = []
         errors = []
-        for segment in segments:
-            try:
-                snapshots.append(meter.read_snapshot(str(segment['path']), at_or_before=cutoff, allow_unsequenced=True))
-            except (OSError, ValueError):
+        try:
+            snapshot = meter.read_logical_snapshot(
+                [segment['path'] for segment in segments], sid, at_or_before=cutoff)
+            native = snapshot['usage']
+            if snapshot['partial']:
                 errors.append('native counter unavailable')
-        # thread_token_usage is cumulative over a logical thread, unlike old
-        # token_count-only resumed segments. Deduplicate by logical identity.
-        thread_snapshots = [s for s in snapshots if s.get('counter_scope') == 'thread']
-        if thread_snapshots:
-            native = max((s['usage'] for s in thread_snapshots), key=lambda x: x['total_tokens'])
-        elif snapshots:
-            try:
-                native = meter.aggregate(snapshots)['usage']
-            except ValueError:
-                native = None
-                errors.append('segment counters could not be reconciled')
-        else:
+        except (OSError, ValueError):
             native = None
+            if segments:
+                errors.append('segment counters could not be reconciled')
         baseline = run.get('usage') if sid == root else None
         usage = ({k: max(0, v - (baseline or {}).get(k, 0)) for k, v in native.items()}
                  if native and (sid != root or baseline is not None) else None)

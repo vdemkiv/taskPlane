@@ -1,7 +1,8 @@
-"""One advisory run view for every delivery stage and native agent."""
+"""One shared view of protected decisions and separately labelled observations."""
 from __future__ import annotations
 
 from html import escape
+import json
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,50 @@ def headline(m: dict[str, Any]) -> str:
     return f"taskplane: {m['status']} · {m['phase']} · {len(m['tasks'])} tasks · {len(m['reviews'])} lens reviews · {_number((m.get('tokens') or {}).get('total_tokens'))} flow tokens"
 
 
+def _workflow(m: dict[str, Any]) -> str:
+    authority = m.get('workflow') or {}
+    visits = authority.get('visits') or []
+    html = '<section id="workflow"><div class="section-head"><h2>01 / Workflow</h2><span class="muted">Work, evidence and human decisions</span></div><div class="stages">'
+    details = ''
+    if visits:
+        details = '<p class="muted">Authorized route: ' + _e(' → '.join(v['phase'].title() for v in visits if not v.get('superseded'))) + '</p>'
+        if any(v.get('superseded') for v in visits):
+            details += '<p class="muted">Visit history: ' + _e(' → '.join(v['phase'].title() for v in visits)) + '</p>'
+        for i, visit in enumerate(visits):
+            phase = visit['phase']
+            anchor = 'phase-' + phase + '-' + visit['id']
+            decision = visit['decision']
+            packet = visit.get('packet')
+            superseded = visit.get('superseded')
+            active = i == authority['index'] and not authority.get('finished')
+            work = 'Produced' if packet else 'In progress' if active else 'Not started'
+            validated = 'Stale' if decision == 'stale' else 'Validated' if packet else 'Not submitted'
+            human = decision.replace('_', ' ').capitalize()
+            style = 'recorded' if decision == 'approved' and not superseded else 'current' if active else 'pending'
+            suffix = ' · Superseded history' if superseded else ''
+            html += f'<a class="stage {style}" href="#{_e(anchor)}"><strong>{_e(phase.title())}</strong><small>Work: {_e(work)}<br>Evidence: {_e(validated)}<br>Human decision: {_e(human + suffix)}</small></a>'
+            details += f'<details id="{_e(anchor)}"><summary>{_e(phase.title())} · {_e(human + suffix)}</summary><p>Visit {_e(visit["id"])}</p>'
+            if packet:
+                details += f'<p>Checkpoint {_e(packet.get("checkpoint"))}</p><p class="muted">Evidence validated against the submitted scope. Validation does not establish that every criterion passed.</p>'
+                decisions = [d for d in authority.get('decisions', {}).values()
+                             if d.get('binding', {}).get('visit') == visit['id']]
+                for d in decisions:
+                    details += f'<p class="muted">Human event {_e(d.get("event_id"))} · {_e(d.get("choice"))} · reviewed revision {_e(d.get("binding", {}).get("revision"))} · packet {_e(d.get("binding", {}).get("manifest_digest"))}</p>'
+                details += '<pre>' + _e(json.dumps(packet.get('output', {}), indent=2)) + '</pre>'
+            details += '</details>'
+    else:
+        history = [m.get('entry_phase') or 'product'] + [n.get('phase') for n in m['milestones']]
+        order = list(dict.fromkeys([p for p in history if p in PHASES] + list(PHASES)))
+        for phase in order:
+            notes = [n for n in m['milestones'] if n.get('phase') == phase]
+            html += f'<a class="stage pending" href="#phase-{phase}"><strong>{phase.title()}</strong><small>Work: {"Recorded" if notes else "Not recorded"}<br>Evidence: Unverified<br>Human decision: Unverified</small></a>'
+            details += f'<details id="phase-{phase}"><summary>{phase.title()} · {len(notes)} recorded updates</summary>'
+            details += ''.join(f'<div class="note"><span class="muted">{_e(n.get("at"))}</span><p>{_e(n.get("note"))}</p></div>' for n in notes) or '<p class="muted">No milestone recorded. Completion is not inferred.</p>'
+            details += '</details>'
+        details = '<p class="muted">Legacy observations are unverified. Progress, task completion and finish notes do not establish human acceptance.</p>' + details
+    return html + '</div>' + details + '</section>'
+
+
 def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
     tasks, reviews = m['tasks'], m['reviews']
     usage = m.get('tokens') or {}
@@ -67,22 +112,29 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
 <h1>{_e(m.get('goal'))}</h1><p class="muted">Owner: orchestrator · Started {_e(m.get('started_at'))} · Finished {_e(m.get('finished_at'))}</p></header>'''
     if m.get('outcome'):
         header += f'<div class="outcome"><strong>Recorded outcome</strong><p>{_e(m["outcome"])}</p></div>'
+    authority = m.get('workflow') or {}
+    if authority.get('profile') == 'native_workflow' and authority.get('workflow_available'):
+        header += '<div class="outcome" role="status"><strong>Workflow gates active; host-wide protection unavailable</strong><p>Decisions use observed conversation provenance and local state. Native permissions govern tools; complete containment and process census are unavailable.</p></div>'
+    elif not authority.get('authority_verified'):
+        header += f'<div class="outcome" role="status"><strong>Host governance unverified</strong><p>{_e(authority.get("detail") or "No protected decision record is available. Historical observations remain visible.")}</p></div>'
+    else:
+        header += '<p class="muted">Human decisions come from protected host records. This dashboard is a read-only snapshot and cannot grant approval.</p>'
+    native = authority.get('native_observations') or {}
+    capabilities = authority.get('capabilities') or {}
+    header += '<details id="native-support"><summary>Native host support</summary>'
+    header += f'<p class="muted">Host: {_e(capabilities.get("host") or native.get("host"))} · Plugin: {_e(native.get("plugin_version"))}. Discovery and hook activity do not grant approval.</p>'
+    header += '<div class="table-wrap"><table><thead><tr><th>Protection</th><th>Current adapter evidence</th></tr></thead><tbody>'
+    for key, label in [('protected_store', 'Protected approval storage'), ('human_origin', 'Human approval source'),
+                       ('tool_containment', 'Tool scope enforcement'), ('process_tracking', 'Process revocation')]:
+        value = capabilities.get(key)
+        status = 'Confirmed by adapter' if value is True else 'Unverified' if value is False else 'Unknown'
+        header += f'<tr><td>{label}</td><td>{status}</td></tr>'
+    header += '</tbody></table></div></details>'
     header += '<nav aria-label="Dashboard sections">'+''.join(f'<a href="#{key}">{name}</a>' for key, name in [('workflow','Workflow'),('decomposition','Tasks'),('dependencies','Dependency graph'),('lenses','Lenses'),('telemetry','Tokens'),('evidence','Evidence')])+'</nav>'
     header += '<div class="metrics">'+''.join(f'<div class="metric"><span class="muted">{label}</span><b>{value}</b></div>' for label,value in [('Tasks complete',f'{completed} / {len(tasks)}'),('Lens reviews',str(len(reviews))),('Flow tokens',_number(usage.get('total_tokens'))),('Measured sessions',str(coverage.get('measured_sessions',0)))])+'</div>'
     for error in m.get('evidence_errors',[]):
         header += f'<p role="status">{_e(error)}</p>'
-    stages = '<section id="workflow"><div class="section-head"><h2>01 / Workflow</h2><span class="muted">All stages, one run</span></div><div class="stages">'
-    for phase in PHASES:
-        notes = [n for n in m['milestones'] if n.get('phase') == phase]
-        state = 'current' if m['status'] == 'active' and m['phase'] == phase else 'recorded' if notes else 'pending'
-        stages += f'<a class="stage {state}" href="#phase-{phase}"><strong>{phase.title()}</strong><small>{"Evidence recorded" if notes else "Current" if state == "current" else "Not recorded"}</small></a>'
-    stages += '</div>'
-    for phase in PHASES:
-        notes = [n for n in m['milestones'] if n.get('phase') == phase]
-        stages += f'<details id="phase-{phase}"><summary>{phase.title()} <span class="muted">· {len(notes)} recorded updates</span></summary>'
-        stages += ''.join(f'<div class="note"><span class="muted">{_e(n.get("at"))}</span><p>{_e(n.get("note"))}</p></div>' for n in notes) or '<p class="muted">No milestone recorded. Completion is not inferred.</p>'
-        stages += '</details>'
-    stages += '</section>'
+    stages = _workflow(m)
     plan = '<section id="decomposition"><div class="section-head"><h2>02 / Task decomposition</h2><span class="muted">Dependencies and execution evidence</span></div>'
     if tasks:
         plan += '<div class="task-chain">'+''.join(f'<span>{_e(t.get("id"))} ← {_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "No prerequisites")}</span>' for t in tasks)+'</div>'
@@ -106,7 +158,8 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
     except (OSError, ValueError, KeyError, TypeError):
         graph += '<p class="muted">Dependency graph unavailable. Run graph scan for this workspace.</p>'
     graph += '</section>'
-    session_map = {s['agent']:s for s in m.get('sessions',[])}
+    session_map = {identity:s for s in m.get('sessions',[])
+                   for identity in (s['agent'], s.get('session')) if identity}
     lenses = '<section id="lenses"><div class="section-head"><h2>04 / Lens reviews</h2><span class="muted">Native reviewers and their evidence</span></div><div class="review-grid">'
     for r in reviews:
         session = session_map.get(r.get('agent'),{})

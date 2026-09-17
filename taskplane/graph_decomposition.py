@@ -85,7 +85,11 @@ import os
 import posixpath
 import re
 
-import graph_primitives
+if __package__:
+    from . import graph_primitives, path_roles
+else:
+    import graph_primitives
+    import path_roles
 
 CANDIDATE_MIN_FILES = 8  # module decomposes with >= this many code files…
 BIG_FILE_LINES = 600  # …or any single code file >= this many lines
@@ -583,8 +587,6 @@ def _parse_components_yaml(text: str) -> dict:
     LOOP_OWNED. Unknown floor keys are dropped here, as before; an
     unsupported line SHAPE still raises so the caller fails open.
     """
-    import path_roles
-
     cfg = path_roles.parse_components_yaml(text)
     return {k: v for k, v in cfg["floors"].items() if k in _FLOOR_KEYS}
 

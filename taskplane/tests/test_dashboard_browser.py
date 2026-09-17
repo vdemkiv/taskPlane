@@ -334,6 +334,10 @@ class _RealBrowser:
             target = next(item for item in targets if item.get("type") == "page")
             self.ws = _WebSocket(str(target["webSocketDebuggerUrl"]))
             self.call("Page.enable")
+            # Fixture HTML can change twice within HTTP's timestamp resolution.
+            # Fetch current bytes so conditional caching cannot hide a decision.
+            self.call("Network.enable")
+            self.call("Network.setCacheDisabled", {"cacheDisabled": True})
             self.call("Runtime.enable")
         except BrowserInfrastructureError:
             self._stop_process()
@@ -476,16 +480,23 @@ class _DocumentCounter(HTMLParser):
 
 
 def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, monkeypatch):
-    from taskplane import depgraph, flow, tp
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
+    from taskplane import depgraph, flow, workflow as w
+    from taskplane.tests.test_workflow_host import controller, native
+    from taskplane.tests.test_workflow_delivery import output
+    c, host, initial = controller(tmp_path)
+    workspace = c.workspace
+    def command(*args):
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            return flow.main([*args, "--workspace", str(workspace)], governor=c)
     for name, content in {"src/api/main.py": "from src.data import store\n",
                           "src/data/store.py": "VALUE = 1\n"}.items():
         path = workspace / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
-    monkeypatch.setenv("CODEX_THREAD_ID", "browser-root")
-    assert tp.main(["flow", "start", "--workspace", str(workspace), "--goal", "Ship a small product"]) == 0
+    monkeypatch.setenv("CODEX_THREAD_ID", "root")
+    assert command("start", "--goal", "Ship a small product") == 0
     depgraph.scan(str(workspace), decompose=True)
     (workspace / "tasks.json").write_text(json.dumps({"tasks": [
         {"id": "T1", "title": "Build product", "dependencies": [],
@@ -493,16 +504,30 @@ def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, mo
     (workspace / "review.md").write_text('<script>window.badEvidence=true</script> Reviewed dependency impact')
     (workspace / "reviews.json").write_text(json.dumps([{"lens": "quality", "agent": "/root/quality",
         "phase": "engineering", "evidence": "review.md"}]))
-    assert tp.main(["flow", "attach", "--workspace", str(workspace), "--tasks", "tasks.json",
-                    "--reviews", "reviews.json", "--evidence", "review.md"]) == 0
-    for phase in ("product", "design", "plan", "build", "evaluate", "engineering", "retro"):
-        assert tp.main(["flow", "progress", "--workspace", str(workspace), "--phase", phase,
-                        "--note", f"{phase} evidence recorded"]) == 0
-    assert tp.main(["flow", "finish", "--workspace", str(workspace), "--note", "Verified through retro"]) == 0
+    for i, phase in enumerate(w.PHASES):
+        s = c.report()
+        target = output(c, s)
+        assert command("submit", "--output", target, "--tasks", "tasks.json", "--expected-revision", str(s["revision"])) == 0
+        s = c.report()
+        key = native(host, s, key="browser-human-"+phase)
+        assert command("decide", "--native-event", key, "--expected-revision", str(s["revision"])) == 0
+        s = c.report()
+        if phase != "retro":
+            assert command("advance", "--phase", w.PHASES[i+1], "--expected-revision", str(s["revision"])) == 0
+    assert command("finish", "--expected-revision", str(s["revision"]), "--note", "Verified through retro") == 0
+    tasks = json.loads((workspace/"tasks.json").read_text())
+    tasks["tasks"][0]["title"] = "Build product"
+    (workspace/"tasks.json").write_text(json.dumps(tasks))
+    depgraph.scan(str(workspace), decompose=True)
+    assert command("attach", "--run", initial["run"], "--tasks", "tasks.json", "--reviews", "reviews.json", "--evidence", "review.md") == 0
     config = _json_fixture("environment.json")
     with _LoopbackServer(workspace) as server, _RealBrowser(tmp_path, config) as browser:
         browser.navigate(server.url(".taskplane/dashboard.html"))
         browser.wait_for("document.querySelectorAll('.tp-flow .stage').length", 7)
+        assert browser.evaluate("document.querySelectorAll('.stage.recorded').length") == 7
+        assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Human decision: Approved')")
+        assert browser.evaluate("document.querySelector('#native-support').textContent.includes('Process revocation')")
+        assert browser.evaluate("document.querySelectorAll('#native-support tbody tr').length") == 4
         assert browser.evaluate("document.querySelector('#decomposition').textContent.includes('Build product')")
         assert browser.evaluate("document.querySelector('#lenses').textContent.includes('quality')")
         assert browser.evaluate("document.body.textContent.includes('Verified through retro')")
@@ -520,3 +545,23 @@ def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, mo
         assert browser.evaluate("document.querySelectorAll('svg .edge').length") >= 1
         assert browser.evaluate("document.querySelector('.node').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); document.querySelector('#inspector').textContent.includes('Depends on')")
         assert browser.evaluate("getComputedStyle(document.querySelector('.node rect')).strokeWidth") != "0px"
+        # Render the actual shipped local profile, without a trusted test owner.
+        from taskplane.tests.test_native_workflow_cli import create, cli, output as local_output
+        from taskplane.tests.test_workflow_local import decision
+        local_workspace = workspace/'native-example'
+        create(local_workspace)
+        local_state = cli(local_workspace, 'codex', 'start', '--standalone', '--phase', 'product',
+                          '--scope', '.taskplane/scope.json', '--request-reference', 'browser/test-request')['workflow']
+        local_target = local_output(local_workspace, local_state)
+        local_state = cli(local_workspace, 'codex', 'submit', '--output', local_target,
+                          '--tasks', 'tasks.json', '--expected-revision', str(local_state['revision']))['workflow']
+        browser.navigate(server.url('native-example/.taskplane/dashboard.html'))
+        browser.wait_for("document.body.textContent.includes('Workflow gates active; host-wide protection unavailable')")
+        assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Awaiting human approval')")
+        assert browser.evaluate("[...document.querySelectorAll('#native-support tbody tr')].every(r => r.textContent.includes('Unverified'))")
+        local_state = cli(local_workspace, 'codex', 'decide', '--decision-json', json.dumps(decision(local_state)),
+                          '--expected-revision', str(local_state['revision']))['workflow']
+        cli(local_workspace, 'codex', 'finish', '--expected-revision', str(local_state['revision']))
+        browser.navigate(server.url('native-example/.taskplane/dashboard.html'))
+        browser.wait_for("document.querySelector('#workflow').textContent.includes('Human decision: Approved')")
+        assert browser.evaluate("document.body.textContent.includes('host-wide protection unavailable')")

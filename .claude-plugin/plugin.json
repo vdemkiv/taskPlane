@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.25.0",
-  "description": "Shared delivery flow for Claude and Codex: product, design, dependency-ordered execution, lens reviews, verification and retro, with one dashboard and advisory token telemetry.",
+  "version": "2.26.0",
+  "description": "Human-gated delivery for Codex and Claude with shared dependency graphs, source and task decomposition, one dashboard, and explicit native host limits.",
   "author": {
     "name": "Volodymyr Demkiv"
   },

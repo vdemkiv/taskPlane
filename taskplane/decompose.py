@@ -10,9 +10,13 @@ importing depgraph or lens_signals.
 """
 from __future__ import annotations
 
-import graph_decomposition as _engine
-import graph_primitives
-import path_roles
+if __package__:
+    from . import graph_decomposition as _engine
+    from . import graph_primitives, path_roles
+else:
+    import graph_decomposition as _engine
+    import graph_primitives
+    import path_roles
 
 
 # Public constants and long-standing direct helpers.

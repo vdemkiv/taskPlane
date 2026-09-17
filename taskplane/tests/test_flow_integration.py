@@ -72,7 +72,7 @@ def test_missing_reviewer_is_unknown_not_zero_and_artifacts_are_run_scoped(tmp_p
     assert len(flow.report(ws,'shared')['reviews'])==1
     outside=tmp_path/'outside.md';outside.write_text('private')
     flow.main(['attach','--workspace',str(ws),'--run','shared','--evidence','../outside.md'])
-    assert json.loads(capsys.readouterr().out)['status']=='telemetry_unavailable'
+    assert json.loads(capsys.readouterr().out)['status']=='blocked'
     assert 'outside.md' not in (ws/flow.JOURNAL).read_text()
 
 
@@ -88,6 +88,7 @@ def test_native_thread_counter_wins_over_stale_legacy_summary(tmp_path):
 
 def test_child_progress_uses_existing_flow_and_shared_dashboard(tmp_path,monkeypatch,capsys):
     ws,sessions,run=setup_run(tmp_path,monkeypatch)
+    flow.append(ws,{'kind':'progress','run':'shared','session':'root','phase':'engineering','note':'Historical observation, no approval'})
     native(sessions/'child.jsonl','child',40,parent='root',at='2026-09-01T00:00:02Z')
     monkeypatch.setenv('CODEX_THREAD_ID','child')
     (ws/'review.md').write_text('Reviewed shared T1 dependency scope')
@@ -121,7 +122,7 @@ def test_dashboard_displays_shared_tasks_lenses_stages_graph_and_escaped_evidenc
     assert all('id="phase-'+p+'"' in page for p in ('product','design','plan','build','evaluate','engineering','retro'))
     assert 'srcdoc=' in page and 'Module dependency graph' in page
     assert 'Unknown tokens' not in page
-    assert 'finished' in page
+    assert 'legacy_unverified' in page
 
 
 def test_resumed_thread_totals_are_not_double_counted(tmp_path):

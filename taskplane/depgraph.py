@@ -40,10 +40,13 @@ import re
 import stat
 import time
 
-import graph_decomposition
-import glob_match
-import graph_primitives
-import storage as runtime_storage
+if __package__:
+    from . import graph_decomposition, glob_match, graph_primitives, path_roles
+else:
+    import graph_decomposition
+    import glob_match
+    import graph_primitives
+    import path_roles
 
 if __package__:
     from . import primitives as tp, storage as project_storage, audit_projection
@@ -221,12 +224,12 @@ def scanner_cache_version(*, decompose: bool = False) -> str:
     cached = _SCANNER_CACHE_VERSION.get(bool(decompose))
     if cached is None:
         try:
-            sources = [__file__, graph_primitives.__file__]
+            sources = [__file__, graph_primitives.__file__, path_roles.__file__, glob_match.__file__]
             if decompose:
                 sources.extend(
                     (
                         graph_decomposition.__file__,
-                        os.path.join(os.path.dirname(__file__), "lens_signals.py"),
+                        os.path.join(os.path.dirname(__file__), "..", "lenses", "catalog.json"),
                     )
                 )
             digest = hashlib.sha256()
@@ -873,8 +876,6 @@ def load_excludes(ws: str) -> tuple[list, str | None]:
     must never silently narrow the graph, because a narrowed graph is a
     narrowed blast radius, and that fails toward LESS review.
     """
-    import path_roles
-
     path = os.path.join(ws, "components.yaml")
     if not os.path.exists(path):
         return [], None
@@ -1237,12 +1238,11 @@ def _scan_source_coverage(
     return coverage
 
 
-def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> dict:
-    scan_started_at = time.monotonic()
-    prev = load(ws)
+def _scan_inventory(ws: str):
+    """One enumeration policy for scanning and checkpoint freshness."""
     files, code_files, artifact_files = {}, [], []
     excludes, exclude_err = load_excludes(ws)
-    import path_roles as _pr
+    _pr = path_roles
 
     listed = _git_candidates(ws)
     if listed is not None:
@@ -1284,6 +1284,57 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
                     artifact_files.append(rel)
                 files[rel] = True
 
+    return files, code_files, artifact_files, excludes, exclude_err
+
+
+def source_inputs(ws: str, *, inventory=None) -> dict:
+    """Content and resolution inputs consumed by the source dependency scanner.
+
+    Root checkpoint documents are separately sealed by workflow evidence; their
+    content does not create source dependencies. Their names still participate
+    in resolution. Runtime observations follow the scanner's existing exclusions.
+    """
+    files, code, artifacts, excludes, error = inventory or _scan_inventory(ws)
+    inputs = set(code) | set(artifacts)
+    inputs.update(p for p in files if posixpath.basename(p) in
+                  {"package.json", "go.mod", "pom.xml", "Gemfile", "components.yaml"}
+                  or p.endswith(".csproj") or re.search(r"docker-compose[^/]*\.ya?ml$", p))
+    content = {}
+    for rel in sorted(inputs):
+        full = os.path.join(ws, rel)
+        try:
+            if os.path.commonpath([os.path.realpath(ws), os.path.realpath(full)]) != os.path.realpath(ws):
+                raise OSError("Source input escapes workspace")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            with os.fdopen(os.open(full, flags), "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise OSError("Source input must be a regular file")
+                digest = hashlib.sha256()
+                for block in iter(lambda: stream.read(64 * 1024), b""):
+                    digest.update(block)
+                content[rel] = digest.hexdigest()
+        except OSError:
+            content[rel] = None
+    return {"schema": "taskplane.source-scan-inputs/v1", "files": sorted(files),
+            "content": content, "excludes": excludes, "exclude_error": error,
+            "components": _components_file_fingerprint(ws),
+            "scanner": scanner_cache_version(decompose=True)}
+
+
+def source_inputs_current(ws: str, graph: dict) -> bool:
+    """Missing/unreadable/stale source input evidence requires a fresh scan."""
+    before = (graph.get("meta") or {}).get("source_inputs")
+    return (isinstance(before, dict) and before == source_inputs(ws)
+            and all(value is not None for value in before["content"].values()))
+
+
+def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> dict:
+    scan_started_at = time.monotonic()
+    prev = load(ws)
+    inventory = _scan_inventory(ws)
+    files, code_files, artifact_files, excludes, exclude_err = inventory
+    inputs = source_inputs(ws, inventory=inventory)
+    previous_inputs = (prev.get("meta") or {}).get("source_inputs") or {}
     # D-0007: what the repo CALLS its own modules, before anything is named.
     # Every id minted below this line goes through `_mod`, so the scan cannot
     # end up with one call site using the declared id and another the guess.
@@ -1336,6 +1387,14 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
                 for pkg in _java_declared(sources[rel]):
                     pkg_map.setdefault(pkg, _mod(rel))
 
+    resolution_fingerprint = _canonical_fingerprint({
+        "files": sorted(files), "manifests": manifests,
+        "namespaces": ns_map, "packages": pkg_map,
+        "scanner": scanner_cache_version(),
+    })
+    resolution_unchanged = (
+        (prev.get("meta") or {}).get("resolution_fingerprint") == resolution_fingerprint
+    )
     file_entries, edges = {}, set()
     base_failures: list[dict] = []
     ref_rows: list = []  # (file, module, [resolved target files])
@@ -1350,13 +1409,12 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
             mtime_ns = st.st_mtime_ns
         except OSError:
             size = mtime = mtime_ns = None
-        # Nanosecond-mtime+size short-circuit: an unchanged file keeps its
-        # cached hash,
-        # imports AND edges WITHOUT being re-read or re-hashed. This is what
-        # makes a rescan scale with the DIFF, not the whole tree — on a big
-        # repo the em-gate true-up and retro no longer re-hash every file.
+        # Reuse parsed imports/edges only when both content and resolution
+        # inputs match, including edits that retain the same size and mtime.
         if (
             cached
+            and resolution_unchanged
+            and previous_inputs.get("content", {}).get(rel) == inputs["content"].get(rel)
             and size is not None
             and cached.get("size") == size
             and cached.get("mtime_ns") == mtime_ns
@@ -1398,6 +1456,8 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
         parse_failure = None
         if (
             cached
+            and resolution_unchanged
+            and previous_inputs.get("content", {}).get(rel) == inputs["content"].get(rel)
             and cached.get("hash") == digest
             and "refs" in cached
             and (not rel.endswith(".py") or cached.get("parse_checked") is True)
@@ -1483,6 +1543,8 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
             size = mtime = mtime_ns = None
         if (
             cached
+            and resolution_unchanged
+            and previous_inputs.get("content", {}).get(rel) == inputs["content"].get(rel)
             and size is not None
             and cached.get("size") == size
             and cached.get("mtime_ns") == mtime_ns
@@ -1636,6 +1698,8 @@ def _scan_locked(ws: str, into: dict | None = None, decompose: bool = False) -> 
     if exclude_err:
         scanners_meta["exclude_error"] = exclude_err
     meta: dict = {"scanners": scanners_meta} if scanners_meta else {}
+    meta["resolution_fingerprint"] = resolution_fingerprint
+    meta["source_inputs"] = inputs
     # D-0007: PUBLISH the map, do not just use it. Anything that turns a
     # changed FILE into a module id — impact, completion, lens routing —
     # must resolve it the way the scan did, or it looks up `packages/ui` in
@@ -2614,9 +2678,7 @@ def to_html(ws: str, changed_files=None, title: str | None = None,
             out: str | None = None, focus: int | None = None, fragment: bool = False) -> str:
     html = html_document(ws, changed_files, title=title, focus=focus, fragment=fragment)
     if out is None:
-        import storage as runtime_storage
-
-        out = runtime_storage.dependency_graph_visual_path(ws)
+        out = project_storage.dependency_graph_visual_path(ws)
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)

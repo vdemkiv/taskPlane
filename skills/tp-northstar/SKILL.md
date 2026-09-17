@@ -13,3 +13,7 @@ concrete next action. Keep the note proportionate to the decision.
 This is advisory and does not authorize code changes. For an active delivery,
 follow [the shared flow](../tp-go/references/shared-flow.md), inspect its dependencies
 and task decomposition, and attach the note to the same run and dashboard.
+
+The shared flow requires explicit human approval at each phase checkpoint. Use
+the dependency graph with source component decomposition, task DAG and shared
+dashboard throughout. Unsupported host authority must be reported, never bypassed.

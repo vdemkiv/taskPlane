@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.25.0",
-  "description": "Orchestrator-led software delivery for Claude and Codex, with native tools, practical verification, and advisory progress and token telemetry.",
+  "version": "2.26.0",
+  "description": "Human-gated delivery for Codex and Claude with shared dependency graphs, source and task decomposition, one dashboard, and explicit native host limits.",
   "author": {
     "name": "Volodymyr Demkiv",
     "email": "vdemkiv@gmail.com",
@@ -22,23 +22,22 @@
   "interface": {
     "displayName": "taskplane",
     "shortDescription": "Deliver, measure, improve",
-    "longDescription": "The orchestrator carries the requested outcome through Product, Design when needed, Plan, Build, verification, and handoff. Native tools and host permissions govern execution. Local telemetry records progress, activity, and available native token counters; advisory signals highlight repetition and possible overengineering without blocking the flow or imposing a token cap.",
+    "longDescription": "Product, Design, Plan, Build, Evaluate, Engineering and Retro each require explicit human acceptance. Native workflow gates validate evidence, bind observed decisions to exact checkpoints and check covered scope paths. One dependency graph, source components, task DAG and dashboard serve every phase. Host-wide protection remains unavailable; token usage is advisory.",
     "developerName": "Volodymyr Demkiv",
     "category": "Developer Tools",
     "capabilities": [
-      "Execute authorized work through verified output",
-      "Keep the orchestrator accountable for delivery",
-      "Record meaningful progress and native token observations",
-      "Flag repeated actions and possible overengineering as advice",
-      "Review source and designs with proportionate evidence",
-      "Preserve native host permissions and user decisions"
+      "Require explicit human phase acceptance",
+      "Bind observed decisions to reviewed evidence and scope",
+      "Share dependency graphs, source components and task plans",
+      "Show workflow progress and native host limits honestly",
+      "Record available token usage as advisory evidence"
     ],
     "websiteURL": "https://github.com/vdemkiv/taskPlane",
     "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/vdemkiv/taskPlane/blob/main/TERMS.md",
     "defaultPrompt": [
-      "taskplane design this feature before implementation and show me the key choices.",
-      "taskplane build this feature and ask me only for material decisions.",
+      "taskplane design this feature and present the Design checkpoint.",
+      "taskplane build this feature through human-approved stages.",
       "taskplane review this branch without changing code."
     ],
     "brandColor": "#2563EB",

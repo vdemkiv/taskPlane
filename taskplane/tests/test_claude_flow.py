@@ -159,6 +159,7 @@ def test_claude_cli_start_does_not_install_codex_launcher(tmp_path):
     result = subprocess.run([sys.executable, str(ROOT / 'taskplane/tp.py'), 'flow', 'start',
                              '--workspace', str(tmp_path), '--goal', 'Claude delivery'],
         capture_output=True, text=True, env={**os.environ, 'TASKPLANE_CLAUDE_SESSION_ID': 'root'})
-    assert result.returncode == 0
-    assert json.loads(result.stdout)['status'] == 'active'
+    assert result.returncode == 2
+    assert json.loads(result.stdout)['status'] == 'blocked'
+    assert json.loads(result.stdout)['reason'] == 'invalid_evidence'  # An exact scope is required.
     assert not (tmp_path / '.taskplane/codex-hook.py').exists()

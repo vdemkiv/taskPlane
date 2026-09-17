@@ -21,6 +21,11 @@ remain in force.
 
 ## Shared delivery state
 
-For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
-Use its existing run, task decomposition, dependency graph and dashboard. Return
-evidence to that run; the root orchestrator owns stage advancement.
+Follow [the shared flow](../tp-go/references/shared-flow.md) for every execution.
+Use the shared run, task decomposition, dependency graph and dashboard, including
+work originating in a standalone phase. Return evidence to that run; the root
+orchestrator owns stage advancement.
+
+The shared flow requires explicit human approval at each phase checkpoint. Use
+the dependency graph with source component decomposition, task DAG and shared
+dashboard throughout. Unsupported host authority must be reported, never bypassed.

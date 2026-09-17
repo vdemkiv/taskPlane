@@ -9,6 +9,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "taskplane"))
 
 
+def pytest_addoption(parser):
+    parser.addoption("--taskplane-archive-dir", default=None,
+                     help="Verify these existing build archives instead of fresh temporary packages")
+
+
 @pytest.fixture(autouse=True)
 def isolated_hosts(tmp_path, monkeypatch):
     for key in list(os.environ):

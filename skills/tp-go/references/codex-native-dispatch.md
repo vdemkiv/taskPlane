@@ -18,3 +18,14 @@ results are not successful completion. Telemetry records available activity and
 usage; missing observations never prevent collection or progress.
 
 Native host permissions and the user’s scope remain authoritative.
+
+Workers cannot accept checkpoints or broaden writes. Use the accepted phase scope
+and join known live work before sealing. Native-workflow scope checks apply to
+covered structured tools and auditable source effects; they do not certify opaque
+commands or host-wide process containment. Return requested changes as evidence;
+only human acceptance can authorize a new visit.
+
+Observed handles retain their visit and revision. Known terminal or stale handles
+cannot receive input through a covered hook. Unknown coverage stays visible.
+Protected-host handles additionally require native process identity and complete
+revocation proof. No Stop/cancel observation manufactures approval or process exit.

@@ -140,7 +140,11 @@ def file_lock(path: str, *, timeout: float = 10.0) -> Iterator[None]:
     # time from the fallback path).
     lf = None
     try:
-        lf = open(lock_path, "a+b")
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_APPEND
+                             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
+        lf = os.fdopen(descriptor, "a+b")
+        if not stat.S_ISREG(os.fstat(lf.fileno()).st_mode):
+            raise OSError("state lock must be a regular file")
         lock_file(lf)
     except (ImportError, OSError):
         if lf is not None:
@@ -390,17 +394,18 @@ def _ensure_self_ignored(d: str) -> None:
     """The runtime dir ignores itself — a worker's `git add -A` must never
     commit local observations, and merges must never collide on them."""
     gi = os.path.join(d, '.gitignore')
+    if any(p.is_symlink() for p in (Path(gi), *Path(gi).parents)):
+        raise ValueError('Runtime ignore file cannot follow symlinks')
     if not os.path.isdir(d):
         return
     body = ''
     try:
-        with open(gi, encoding='utf-8') as f:
+        fd = os.open(gi, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+        with os.fdopen(fd, encoding='utf-8') as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise ValueError('Runtime ignore file must be regular')
             body = f.read()
-    except OSError:
+    except FileNotFoundError:
         body = ''
     if '*' not in body.splitlines():
-        try:
-            with open(gi, 'w', encoding='utf-8', newline='') as f:
-                f.write('*\n')
-        except OSError:
-            pass
+        atomic_write_bytes(gi, b'*\n')

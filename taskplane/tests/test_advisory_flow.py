@@ -30,10 +30,10 @@ def test_native_counters_are_deltas_and_private_content_is_not_recorded(tmp_path
     run = start(tmp_path)
     transcript = tmp_path / "native.jsonl"
     _write_segment(transcript, session_id="root", total=1000, cached=100, output=100)
-    assert flow.hook(event(tmp_path, transcript, tool_use_id="a")) == {}
+    assert flow._observe_hook(event(tmp_path, transcript, tool_use_id="a")) == {}
     _write_segment(transcript, session_id="root", total=1400, cached=200, output=150)
-    flow.hook(event(tmp_path, transcript, tool_use_id="b"))
-    flow.hook(event(tmp_path, transcript, tool_use_id="b"))
+    flow._observe_hook(event(tmp_path, transcript, tool_use_id="b"))
+    flow._observe_hook(event(tmp_path, transcript, tool_use_id="b"))
     result = flow.summarize(flow.read_events(tmp_path), run)
     assert result["tokens"]["total_tokens"] == 400
     assert result["tokens"]["cached_input_tokens"] == 100
@@ -46,7 +46,7 @@ def test_missing_usage_is_unknown_and_repetition_is_only_advice(tmp_path):
     run = start(tmp_path)
     result = {}
     for i in range(4):
-        result = flow.hook(event(tmp_path, tool_use_id=str(i)))
+        result = flow._observe_hook(event(tmp_path, tool_use_id=str(i)))
     assert "advisory" in result["hookSpecificOutput"]["additionalContext"]
     assert "permissionDecision" not in json.dumps(result)
     report = flow.summarize(flow.read_events(tmp_path), run)
@@ -56,10 +56,10 @@ def test_missing_usage_is_unknown_and_repetition_is_only_advice(tmp_path):
 
 def test_unrelated_sessions_and_finished_runs_are_inert(tmp_path):
     start(tmp_path)
-    assert flow.hook(event(tmp_path, session_id="unrelated")) == {}
+    assert flow._observe_hook(event(tmp_path, session_id="unrelated")) == {}
     assert len(flow.read_events(tmp_path)) == 1
     flow.append(tmp_path, {"kind": "finish", "run": "run-1", "session": "root"})
-    assert flow.hook(event(tmp_path)) == {}
+    assert flow._observe_hook(event(tmp_path)) == {}
     assert len(flow.read_events(tmp_path)) == 2
 
 
@@ -67,9 +67,9 @@ def test_child_counter_attaches_to_parent_flow(tmp_path):
     run = start(tmp_path)
     transcript = tmp_path / "child.jsonl"
     _write_segment(transcript, session_id="child", parent="root", total=500, output=50)
-    flow.hook(event(tmp_path, transcript, session_id="child"))
+    flow._observe_hook(event(tmp_path, transcript, session_id="child"))
     _write_segment(transcript, session_id="child", parent="root", total=900, output=80)
-    flow.hook(event(tmp_path, transcript, session_id="child"))
+    flow._observe_hook(event(tmp_path, transcript, session_id="child"))
     report = flow.summarize(flow.read_events(tmp_path), run)
     assert report["tokens"]["total_tokens"] == 400
     assert report["token_coverage"]["unmeasured_sessions"] == 1
@@ -77,10 +77,10 @@ def test_child_counter_attaches_to_parent_flow(tmp_path):
 
 def test_malformed_events_and_storage_errors_never_block(tmp_path, capsys):
     with patch("sys.stdin", io.StringIO("not json")):
-        assert flow.run_hook() == 0
-    assert json.loads(capsys.readouterr().out) == {}
+        assert flow.run_hook() == 2
+    assert json.loads(capsys.readouterr().out)["decision"] == "block"
     start(tmp_path)
-    with patch("sys.stdin", io.StringIO(json.dumps(event(tmp_path)))), \
+    with patch("sys.stdin", io.StringIO(json.dumps(event(tmp_path, hook_event_name="PostToolUse")))), \
             patch.object(flow, "append", side_effect=PermissionError):
         assert flow.run_hook() == 0
     assert json.loads(capsys.readouterr().out) == {}
@@ -98,28 +98,27 @@ def test_installed_hook_commands_abstain_without_workspace_setup(tmp_path):
             assert json.loads(result.stdout) == {}
 
 
-def test_progress_drives_report_without_gate_or_token_ceiling(tmp_path, capsys):
+def test_progress_is_observation_and_cannot_accept_a_stage(tmp_path, capsys):
+    start(tmp_path)
     with patch.dict(os.environ, {"CODEX_THREAD_ID": "root"}):
-        for args in (["start", "--goal", "deliver"],
-                     ["progress", "--phase", "build", "--note", "implementation ready"],
-                     ["finish", "--note", "tests passed"]):
-            assert flow.main([*args, "--workspace", str(tmp_path)]) == 0
-            report = json.loads(capsys.readouterr().out)
-    assert report["status"] == "finished"
-    assert report["phase"] == "build"
-    assert report["owner"] == "orchestrator"
-    assert report["milestones"][0]["note"] == "implementation ready"
-    assert report["outcome"] == "tests passed"
+        assert flow.main(["progress", "--phase", "product", "--note", "work produced",
+                          "--workspace", str(tmp_path)]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["status"] == "legacy_unverified"
+        for action in (["progress", "--phase", "build"], ["finish"]):
+            assert flow.main([*action, "--workspace", str(tmp_path)]) == 2
+            assert json.loads(capsys.readouterr().out)["reason"] in {"approval_required", "state_unavailable"}
+    assert not any(row["kind"] == "finish" for row in flow.read_events(tmp_path))
 
 
 def test_large_usage_and_activity_only_generate_advice(tmp_path):
     run = start(tmp_path)
     transcript = tmp_path / "native.jsonl"
     _write_segment(transcript, session_id="root", total=1000, output=100)
-    flow.hook(event(tmp_path, transcript, tool_use_id="baseline"))
+    flow._observe_hook(event(tmp_path, transcript, tool_use_id="baseline"))
     _write_segment(transcript, session_id="root", total=2_000_000, output=100_000)
     for i in range(25):
-        response = flow.hook(event(tmp_path, transcript, tool_use_id=str(i)))
+        response = flow._observe_hook(event(tmp_path, transcript, tool_use_id=str(i)))
         assert "permissionDecision" not in json.dumps(response)
         assert response.get("decision") != "block"
     report = flow.summarize(flow.read_events(tmp_path), run)

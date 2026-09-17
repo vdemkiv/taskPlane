@@ -244,6 +244,41 @@ def read_snapshot(path: str, *, at_or_before: float | None = None,
     snapshot["fingerprint"] = _fingerprint(snapshot)
     return snapshot
 
+def read_logical_snapshot(paths: Sequence[str | Path], session_id: str, *,
+                          at_or_before: float | None = None) -> dict[str, Any]:
+    """Reconcile physical segments for one proven native task identity.
+
+    A cumulative thread counter covers earlier segments. Legacy segment counters
+    require every matching segment to be readable before they form a baseline.
+    """
+    snapshots = []
+    errors = 0
+    for path in sorted({str(Path(p).resolve()) for p in paths}):
+        try:
+            snapshot = read_snapshot(path, at_or_before=at_or_before, allow_unsequenced=True)
+            if snapshot["session_id"] != session_id:
+                continue
+            snapshots.append(snapshot)
+        except (OSError, ValueError):
+            errors += 1
+    if not snapshots:
+        raise NativeSessionMeterError("native task has no readable matching counter")
+    parents = {s.get("parent_session_id") for s in snapshots if s.get("parent_session_id")}
+    agents = {s.get("agent_path") for s in snapshots if s.get("agent_path")}
+    if len(parents) > 1 or len(agents) > 1:
+        raise NativeSessionMeterError("native task segment lineage disagrees")
+    thread = [s for s in snapshots if s.get("counter_scope") == "thread"]
+    if thread:
+        usage = max(thread, key=lambda s: s["usage"]["total_tokens"])["usage"]
+    elif errors:
+        raise NativeSessionMeterError("legacy task segments are incomplete")
+    else:
+        usage = aggregate(snapshots)["usage"]
+    return {"session_id": session_id, "usage": usage,
+            "parent_session_id": next(iter(parents), None),
+            "agent_path": next(iter(agents), None), "partial": bool(errors)}
+
+
 def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate a detached native session snapshot."""
     if not isinstance(value, Mapping) or value.get("schema") != SNAPSHOT_SCHEMA:

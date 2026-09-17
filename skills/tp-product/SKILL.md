@@ -10,18 +10,29 @@ intended user behavior, scope, acceptance criteria, material dependencies, and
 unresolved decisions. Reuse settled answers and keep the artifact proportionate
 to the task. Write a document when requested or useful for downstream work.
 
+Follow [the shared flow](../tp-go/references/shared-flow.md) even for Product-only
+work. Start/reuse the relevant run at Product, inspect the dependency graph and
+source decomposition, record a proportionate task decomposition, attach criteria,
+and render the shared dashboard. If Engineering initiated the work, use its findings
+and evidence to define the problem and acceptance criteria; preserve finding IDs
+and prior decisions rather than restarting discovery.
+
 Distinguish product readiness from delivered implementation. A completed spec
 means the outcome is defined; it does not mean the product has been built or
 validated. Surface only questions that materially affect the result.
 
 Use native tools for inspection and document authoring. Product-only work does
 not authorize implementation. For an already authorized delivery, return the
-criteria to the root orchestrator and continue through
-[delivery](../tp-go/SKILL.md). No contract activation, scoring command, lens quota,
-or telemetry receipt is required to finish Product work.
+criteria and dashboard to the human for Product checkpoint approval before
+continuing through [delivery](../tp-go/SKILL.md). Reuse a valid prior acceptance.
+A completed document or telemetry receipt cannot authorize advancement.
 
 ## Shared delivery state
 
-For an active delivery, follow [the shared flow](../tp-go/references/shared-flow.md).
-Use its existing run, task decomposition, dependency graph and dashboard. Return
-evidence to that run; the root orchestrator owns stage advancement.
+Standalone and delivery Product use the same run, task decomposition, dependency
+graph and dashboard defaults. Return evidence to that run; the root orchestrator
+owns stage advancement and respects Product-only scope.
+
+The shared flow requires explicit human approval at each phase checkpoint. Use
+the dependency graph with source component decomposition, task DAG and shared
+dashboard throughout. Unsupported host authority must be reported, never bypassed.

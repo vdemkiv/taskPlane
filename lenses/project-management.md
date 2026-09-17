@@ -35,10 +35,13 @@ Minor = worth fixing, doesn't gate. Prefer the smallest suggestion that resolves
 ## How this lens runs
 
 Apply this lens where it helps verify the requested outcome. Product, Design,
-Plan, Build, Evaluate, Engineering and Retro share one task decomposition,
-dependency graph and dashboard. Use native tools and host permissions.
+Plan, Build, Evaluate, Engineering and Retro share a task DAG,
+dependency graph with source component decomposition and dashboard. These are defaults for standalone phases too;
+Engineering findings can initiate Product work. Use native tools and host permissions.
 Delegate only when authorized and useful. There is no mandatory lens count,
-sealed brief, lease, submission receipt or Taskplane token cap.
+separate phase worker or Taskplane token cap. Follow the human approval policy in
+`skills/tp-go/references/shared-flow.md`: every phase needs explicit human checkpoint
+acceptance. Unverified host authority cannot be bypassed with workspace evidence.
 
 
 ## Shared review evidence
@@ -46,4 +49,5 @@ sealed brief, lease, submission receipt or Taskplane token cap.
 Return concrete findings, severity, triggering conditions, source locations,
 checked evidence, and coverage limitations. Use `agents/tp-lens.md` and attach
 this evidence to the existing run and review index. The root orchestrator
-integrates results and advances delivery.
+integrates results and requests human acceptance of the phase checkpoint.
+Review findings do not grant write scope or approve delivery.
