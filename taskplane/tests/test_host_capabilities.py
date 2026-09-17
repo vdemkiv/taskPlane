@@ -18,6 +18,12 @@ def executable(tmp_path, monkeypatch):
 
 def test_fixed_profile_roundtrip_and_shell_effects_refuse(tmp_path, monkeypatch):
     ws, cli = executable(tmp_path, monkeypatch)
+    if h.os.name != 'posix':
+        # This restored profile deliberately uses /bin/sh and is POSIX-only.
+        assert h.codex_readonly_runtime(str(ws)) is None
+        with pytest.raises(ValueError, match='unavailable'):
+            h.codex_readonly_command(['python3', '-c', 'print(1)'], str(ws))
+        return
     request = h.codex_readonly_command(['python3', '-c', 'print("$HOME; $(id)")'], str(ws))
     assert h.is_codex_readonly_invocation('exec_command', request, str(ws))
     assert not h.is_codex_readonly_invocation('Bash', {'command':request['cmd']}, str(ws))

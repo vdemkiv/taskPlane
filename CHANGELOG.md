@@ -19,6 +19,9 @@
   Strengthen the regression check for temporary-file cleanup after failed sync.
 - Fetch fresh dashboard fixture pages in browser tests so rapid approval updates
   cannot reuse an earlier HTTP cache response.
+- Keep generated lens files byte-identical across platforms and make portability
+  tests respect the POSIX-only sandbox profile, native Windows directory flushes,
+  and the distinction between POSIX mode bits and Windows ACLs.
 
 ## v2.25.0 — shared delivery flow and native telemetry
 

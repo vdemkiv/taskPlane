@@ -1,6 +1,7 @@
 """Real local adapter tests; observations are cooperative, not host attestation."""
 from copy import deepcopy
 import json
+import os
 import pytest
 from taskplane import workflow as w, workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_evidence import prepare
@@ -228,6 +229,12 @@ def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_pa
         return original(fd)
     with monkeypatch.context() as patch:
         patch.setattr(primitives.os, 'fsync', fail_sync)
+        if failure_call == 2 and os.name == 'nt':
+            # Windows flushes directory handles through its native API.
+            def fail_directory(path):
+                calls.append(path)
+                raise OSError('simulated directory flush failure')
+            patch.setattr(primitives, '_flush_windows_directory', fail_directory)
         with pytest.raises(w.Refusal, match='not acknowledged'):
             c._write(target, candidate)
     assert len(calls) == failure_call
@@ -240,6 +247,7 @@ def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_pa
 
 
 @pytest.mark.parametrize('profile', ['local', 'protected'])
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX mode bits and umask; Windows uses ACLs')
 def test_control_state_remains_private_under_permissive_umask(tmp_path, profile):
     import os
     import stat

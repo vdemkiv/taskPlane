@@ -183,7 +183,7 @@ def main():
             content += "\n\n" + USAGE + "\n\n" + VERDICT + "\n"
         else:
             content = build(lz)
-        with open(path, "w") as stream:
+        with open(path, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(content.rstrip() + "\n")
     print(f"wrote {len(cat['lenses'])} prompts with one shared protocol")
 
