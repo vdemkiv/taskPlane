@@ -466,7 +466,7 @@ class Harness:
         if tool in {'Write', 'Edit', 'write_file', 'edit_file'}:
             targets = [args.get('file_path') or args.get('path')]
         elif tool == 'apply_patch':
-            patch = args.get('input', args.get('patch', ''))
+            patch = args.get('command', args.get('input', args.get('patch', '')))
             if isinstance(patch, str):
                 targets = [line.split(': ', 1)[1] for line in patch.splitlines()
                            if line.startswith(('*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: '))]

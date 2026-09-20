@@ -2,6 +2,8 @@
 
 ## v2.27.0 — onboarding, autonomous approvals and execution harness
 
+- Accept Codex native `apply_patch` hook payloads (`tool_input.command`) while retaining bootstrap, phase-scope and sealed-checkpoint enforcement. The installed-host test exposed a contract mismatch hidden by synthetic fixtures.
+
 - Document current Codex/Claude installation, first-task onboarding and post-installation hook review/trust, replacing retired setup commands.
 - Keep manual phase approval as the default; add explicit run-bound automatic approval policies, evidence-backed conditions, separate policy decisions, revocation and replay protection.
 - Publish native dashboard snapshots for an exact run, with phase/visit and cumulative token coverage, static-refresh instructions, captured graph/task context and workspace-bound graph provenance.

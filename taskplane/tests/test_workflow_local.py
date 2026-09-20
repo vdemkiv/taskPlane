@@ -587,3 +587,26 @@ def test_bare_execution_directive_keeps_its_requested_route(tmp_path,prompt,entr
     assert harness.read()['entry']==entry
     assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
+
+
+@pytest.mark.parametrize('key', ['command', 'input', 'patch'])
+def test_codex_patch_payload_preserves_bootstrap_and_phase_scope(tmp_path, key):
+    from taskplane import flow
+    base={'cwd':str(tmp_path),'thread_id':'root','hook_event_name':'UserPromptSubmit',
+          'prompt':'Use taskplane to define product requirements.'}
+    flow.hook(base)
+    def patch(*paths):
+        return {'tool_name':'apply_patch','tool_input':{key:'*** Begin Patch\n'+''.join(
+            '*** Add File: '+path+'\n+{}\n' for path in paths)+'*** End Patch'}}
+    allowed='.taskplane/bootstrap/scope.json'
+    flow.hook(base|{'hook_event_name':'PreToolUse',**patch(allowed)})
+    for bad in ('app.py','.taskplane/workflow-forged.json','.taskplane/bootstrap/../../app.py'):
+        with pytest.raises(w.Refusal):
+            flow.hook(base|{'hook_event_name':'PreToolUse',**patch(allowed,bad)})
+    c,s=setup(tmp_path)
+    c.guard(patch('product.json'),s['run'])
+    with pytest.raises(w.Refusal,match='outside'):
+        c.guard(patch('product.json','app.py'),s['run'])
+    s=submit(c,s)
+    with pytest.raises(w.Refusal,match='sealed'):
+        c.guard(patch('product.json'),s['run'])

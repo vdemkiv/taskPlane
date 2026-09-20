@@ -547,12 +547,18 @@ def test_measurement_clock_distinguishes_coverage(tmp_path,monkeypatch,case):
 
 def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt=None,standalone=True):
     """Start with declared hooks before fixture evidence or skill/start calls."""
-    import shlex
+    import shlex,shutil
     workspace.mkdir(parents=True,exist_ok=True)
     default_prompt=prompt is None
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     env={k:v for k,v in os.environ.items() if not k.startswith(('CODEX_','CLAUDE_','TASKPLANE_','PLUGIN_ROOT'))}
     env.update(PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
+    bash=shutil.which('bash')
+    if os.name == 'nt':
+        # Windows' bash.exe may be a WSL launcher with no distribution installed.
+        git=Path(shutil.which('git') or '')
+        bash=next((str(parent/'bin/bash.exe') for parent in git.parents
+                   if (parent/'bin/bash.exe').is_file()),None)
     if host=='claude':env.update(CLAUDE_PLUGIN_ROOT=str(root),CLAUDE_ENV_FILE=str(workspace/'.taskplane/fixture-env'))
     else:env.update(PLUGIN_ROOT=str(root),CODEX_THREAD_ID='root')
     identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
@@ -570,7 +576,8 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
         assert before.get('hookSpecificOutput',{}).get('permissionDecision')!='deny',before
         if host=='claude':
             # Exercise the actual SessionStart exports rather than injecting a test root.
-            argv=['bash','-c','. "$1"; shift; exec "$@"','fixture','.taskplane/fixture-env',*words]
+            assert bash, 'The Claude adapter fixture requires Git Bash on Windows'
+            argv=[bash,'-c','. "$1"; shift; exec "$@"','fixture','.taskplane/fixture-env',*words]
         else:argv=words
         proc=subprocess.run(argv,cwd=workspace,env=env,capture_output=True,text=True)
         assert proc.returncode==code,(proc.stdout,proc.stderr)
@@ -583,7 +590,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     assert not list((workspace/'.taskplane').glob('workflow-*.json'))
     patch='*** Begin Patch\n*** Update File: app.py\n@@\n-value = 1\n+value = 2\n*** End Patch'
     payload={'tool_name':'Write','tool_input':{'file_path':str(workspace/'app.py'),'content':'value=2'}} if host=='claude' else {
-        'tool_name':'apply_patch','tool_input':{'input':patch}}
+        'tool_name':'apply_patch','tool_input':{'command':patch}}
     assert hook('PreToolUse',**payload)['hookSpecificOutput']['permissionDecision']=='deny'
     assert hook('Stop')['decision']=='block'
     assert 'decision' not in hook('Stop',stop_hook_active=True)
@@ -598,7 +605,9 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     # Native reads and exact bootstrap metadata writes remain possible.
     assert 'permissionDecision' not in hook('PreToolUse',tool_name='Read',tool_input={'file_path':str(workspace/'app.py')}).get('hookSpecificOutput',{})
     scope=workspace/'.taskplane/bootstrap/scope.json';scope.parent.mkdir()
-    assert 'permissionDecision' not in hook('PreToolUse',tool_name='Write',tool_input={'file_path':str(scope),'content':'scope fixture'}).get('hookSpecificOutput',{})
+    bootstrap={'tool_name':'Write','tool_input':{'file_path':str(scope),'content':'scope fixture'}} if host=='claude' else {
+        'tool_name':'apply_patch','tool_input':{'command':'*** Begin Patch\n*** Add File: .taskplane/bootstrap/scope.json\n+{}\n*** End Patch'}}
+    assert 'permissionDecision' not in hook('PreToolUse',**bootstrap).get('hookSpecificOutput',{})
     scope.write_bytes((workspace/'.taskplane/scope.json').read_bytes())
     command('wait','--note','Need the requested revision from the user')
     assert 'waiting for user input' in hook('Stop')['systemMessage']

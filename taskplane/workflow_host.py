@@ -446,7 +446,7 @@ class Controller:
         elif tool in ("Write", "Edit", "write_file", "edit_file"):
             self._paths([args.get("file_path") or args.get("path")], allowed)
         elif tool == "apply_patch":
-            patch = args.get("input", args.get("patch", ""))
+            patch = args.get("command", args.get("input", args.get("patch", "")))
             w.require(isinstance(patch, str), "scope_violation", "Invalid structured patch.")
             targets = [line.split(": ", 1)[1] for line in patch.splitlines()
                        if line.startswith(("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "))]
