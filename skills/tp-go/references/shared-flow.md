@@ -5,19 +5,67 @@ with source component decomposition, a task DAG and `.taskplane/dashboard.html`.
 This applies to standalone Product, Design and Engineering as well as full delivery.
 Help and status are read-only: they never initialize or advance a workflow.
 
-## Human acceptance and authority
+## Harness activation and dashboard handoff
 
-Full delivery has seven separate checkpoints in this order: Product → Design →
+The harness is mandatory for every execution entry, including standalone work and
+resumed stages. Direct Taskplane execution prompts, named execution skills and
+native reads of installed execution skill files select a session/workspace-bound
+initialization gate. For indirect or unsupported host invocation paths, explicitly
+run the installed `flow activate --workspace PATH --phase ENTRY --request-reference
+REF` first. Read `flow report`: reuse the matching active visit or initialize the
+requested scope. Help/status and quoted examples do not activate. Activation grants
+neither phase approval nor implementation scope.
+
+Without an active run, prepare exact scope/evidence under `.taskplane/bootstrap/`,
+then `flow start --scope FILE --request-reference REF`. Standalone code review uses
+`--standalone --phase engineering`; Product/Design have equivalent standalone
+entries. Full delivery starts at Product. Never manufacture earlier acceptances or
+force a seven-phase route for review-only work. Every resumed phase retains its
+existing run and approvals. Loading another skill cannot grant a different phase.
+
+Before initialization, covered implementation and opaque commands are denied.
+Native reads/searches, questions, installed execution-skill loads, exact Taskplane
+setup commands, `pwd`, `rg --files`, `cat` and structured bootstrap-file writes
+remain available. Arbitrary shell commands are not bootstrap exceptions. After a
+run starts, the ordinary profile still relies on native permissions and source
+audits for opaque shell effects; this is not host-wide containment.
+
+At each checkpoint, submit evidence, regenerate the native dashboard for the exact
+run/visit/revision, provide its link and use the host's permitted opening surface.
+Record the actual outcome with `flow present --workspace PATH --run ID --evidence
+.taskplane/dashboard.html --presentation linked --note TEXT`. Choose `linked` for
+an artifact link or queued open, `verified` only after observing the rendered view,
+and `blocked` for a presentation restriction with an accessible artifact fallback.
+This is an observed handoff, not host attestation or approval. A later phase/revision
+requires a fresh handoff. Never create a replacement dashboard.
+
+Stop requests one corrective continuation for missing initialization, phase output
+or dashboard handoff, including read-only reviews. `stop_hook_active` prevents an
+endless loop. When actual user input is needed, use the native question tool or
+`flow wait --workspace PATH --note <actual-missing-input>`, then state the question.
+A wait never approves anything or weakens write checks. New input or further tool
+work clears it, and another phase/revision cannot reuse it. Do not call unfinished
+work complete when Stop reports a blocker.
+
+Readiness distinguishes selected-but-uninitialized from active. A manifest, lock
+file or manually executed hook cannot prove the host loaded and invoked all hooks.
+Keep installed version, actual event evidence and live display limits explicit.
+Disabled or unloaded hooks cannot enforce these cooperative checks.
+
+## Acceptance and authority
+
+By default, full delivery has seven separate human checkpoints in this order: Product → Design →
 Plan → Build → Evaluate → Engineering → Retro. Produce concrete phase output,
 validate it, present its evidence and shared dashboard, then wait for explicit
-human approval of that checkpoint before advancing. Stop after each phase; a
+human approval of that checkpoint before advancing. In manual mode, stop after each phase; a
 broad request to implement the goal is not acceptance of future unseen outputs.
+Explicit additional instructions can authorize automatic decisions under the policy below.
 Reuse an existing approval only while its root, run, visit, revision, scope and
 artifact binding remain valid. Never ask again for the same valid checkpoint.
 Work produced, evidence validated and human approved are distinct states.
 
-The orchestrator prepares work and requests transitions. It cannot approve its own
-output. Progress notes, task completion, dashboard edits, workspace receipts and
+The orchestrator prepares work and requests transitions. It cannot manufacture
+human approval or authorize its own automatic policy. Progress notes, task completion, dashboard edits, workspace receipts and
 hook-shaped input do not grant authority. Native host permissions remain separate.
 The shipped default is `native_workflow`: the Controller enforces required evidence,
 explicit checkpoint decisions and covered scope paths using versioned local state.
@@ -63,7 +111,7 @@ and do not silently migrate old observation journals into accepted decisions.
    kind, schema, phase, visit, task IDs and criterion IDs. Required files must exist.
    Seal normative artifacts and verification inputs; graph/tasks context is copied
    into the profile-bound checkpoint. Refreshing token counters does not stale approval.
-5. Present the result and dashboard link, name gaps and wait for the human decision.
+5. Present the result and dashboard link, name gaps and resolve the applicable human or policy decision.
    Changes requested or rejection returns to the current scope for correction and
    a new checkpoint. Cancellation grants no continuation. Stale normative artifacts
    or verified source invalidate affected acceptance and descendants while retaining
@@ -120,3 +168,61 @@ stdin. Unknown coverage is reported, not claimed quiescent. Protected-host submi
 still requires the complete native process proof. Graph, task and dashboard evidence
 are mandatory in both profiles. Use [CLI contracts](../../../docs/cli-reference.md)
 for exact start/decision inputs and profile-specific limits.
+
+
+## Explicit autonomous authorization
+
+Manual approval remains the default. When the user explicitly requests automatic
+phase approvals with additional instructions, record `taskplane.approval-policy/v1`
+through `flow policy` with the actual message reference/excerpt, current run/scope,
+allowed phases, mandatory stop phases and conditions. Repeat the interpreted policy
+in the dashboard. Do not ask another enablement question when that instruction is
+clear. Generic implementation requests, tool events and previous runs never opt in.
+
+After producing and sealing each phase, inspect the active policy. If it permits
+this phase, prepare `taskplane.policy-assessment/v1` against the exact pending
+checkpoint and policy digest, with every condition assessed and supported by sealed
+files. The original instructions always remain an observed condition. Use
+`flow auto-decide`, then `advance`/`finish` only on success. Unknown/failed conditions,
+missing evidence, source drift, new scope/route or known live work pause continuation.
+Do not spin on an unchanged refusal. Stop phases require the human checkpoint.
+
+The Controller checks phase evidence, ordering, scope, eligibility and required
+passing results. Free-text instructions need an honest evidence-backed assessment;
+they are not mechanically proven natural-language predicates. Optional telemetry
+is advisory unless the user makes it a required condition. Policy decisions must
+say automatic=true and human=false, retain policy version/digest and assessments,
+and never reuse a fabricated human approval excerpt.
+
+On “return to manual approval” or explicit revocation, record a fresh manual policy.
+Human rejection/changes/cancellation or evidence drift suspends automatic approval;
+fresh authorization is needed to resume. Existing decisions keep their historical
+policy provenance. New or repaired visits and material scope changes still require
+human authorization. Native permissions, hook trust and protected_host requirements
+remain independent.
+
+Workers only prepare evidence. The root resolves acceptance using this shared policy;
+human-checkpoint instructions in role/lens guidance describe the default manual
+mode and do not override an explicitly authorized policy supported by the Controller.
+No worker independently enables autonomy, broadens scope or creates an extra route.
+
+## Dashboard delivery and measurement
+
+Use the installed native dashboard command with the exact run and execution checkout.
+Do not create a replacement dashboard, use an unrelated latest run, or treat a
+second hidden/old tab as presentation. Link the generated artifact at Product and
+every checkpoint; request opening/focus via the host and verify visible identity
+where allowed. Track generated, opening requested and visibly verified separately.
+A denied browser action has an artifact-link fallback, never a bypass server.
+
+Every meaningful milestone regenerates the same selected snapshot. Static mode
+labels unmonitored freshness: refresh the existing tab after regeneration and compare
+its timestamp. Keep historical snapshots independently accessible. All task, approval,
+evidence, graph and token sections use the same captured run identity.
+
+Show current phase/visit tokens separately from run totals. Preserve work/review/
+follow-up intervals, repeated visits and coverage; missing/reset/late counters remain
+unknown or unallocated. Never estimate a Product count from a legacy run total.
+Graph views disclose scanned checkout/input fingerprints, dirty-file freshness,
+coverage, scoped/full context and edge provenance. Planned task paths are not proof
+of implemented source relationships; keep execution prerequisites separate.

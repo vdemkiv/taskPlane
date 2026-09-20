@@ -26,7 +26,7 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
                      if p.is_file() and "__pycache__" not in p.parts)
     files.update((ROOT / "taskplane").glob("*.py"))
     files.update(p for p in (ROOT / "lenses").rglob("*") if p.suffix == ".md" or p.name == "catalog.json")
-    files.update(ROOT / "docs" / name for name in ("cli-reference.md", "lens-catalog.md"))
+    files.update(ROOT / "docs" / name for name in ("cli-reference.md", "lens-catalog.md", "onboarding.md"))
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"Package member must be a regular file: {path}")

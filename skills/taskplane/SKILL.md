@@ -5,6 +5,13 @@ description: Route requests to review code, design a change, implement work, ins
 
 # Taskplane
 
+Before substantive work, resolve this installed plugin's runtime and run
+`flow activate --workspace <checkout> --phase taskplane --request-reference <actual-user-request>`.
+Inspect `flow report`: reuse the matching active visit or initialize the appropriate
+scoped run before continuing. This requirement includes standalone work and resumed
+stages; loading a skill alone grants no phase approval. See the shared flow for
+bootstrap, native dashboard handoff and legitimate user waits.
+
 Route the requested work directly. Product, Design, and Engineering always use the
 shared dependency graph, task decomposition, and dashboard, including standalone
 requests. Read [the shared flow](../tp-go/references/shared-flow.md) for these defaults.
@@ -24,8 +31,9 @@ without a verified owner. Never substitute one profile for the other.
 - Explicit installation, setup, or configuration diagnostics: read
   [CLI reference](../../docs/cli-reference.md).
 
-Product, Design, Plan, Build, Evaluate, Engineering and Retro each require explicit
-human approval of their concrete output before advancement. Engineering can be the entry point: its findings can define subsequent
+Product, Design, Plan, Build, Evaluate, Engineering and Retro each require acceptance
+of their concrete output before advancement: human approval by default, or a valid
+explicitly authorized policy decision under the shared flow. Engineering can be the entry point: its findings can define subsequent
 Product scope, Design, and implementation when authorized. Keep native execution,
 permissions, waiting, and session identity with the
 host. Load only the selected workflow's references; don't recite internal setup or

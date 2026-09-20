@@ -15,7 +15,10 @@ from scripts import package_plugin
 from taskplane.tests.test_workflow_host import FixtureHost, controller, native
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_delivery import output
-from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs
+from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, exercise_repeated_repair_capacity, shipped_execution_prompts
+from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
+from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide
+from taskplane.tests.test_workflow_autonomy import exercise_autonomous, exercise_nonconsent_cli
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -66,18 +69,33 @@ def test_generated_archives_match_verified_source(tmp_path, request):
             archive.extractall(extracted)
         # The ordinary shipped profile must work without the protected fixture.
         exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
+        exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),
+                            'claude' if host=='claude' else 'codex', root=extracted)
+        for entry in ('product','design','engineering'):
+            exercise_harness_entry((tmp_path/(host+'-entry-'+entry)).resolve(),
+                                   'claude' if host=='claude' else 'codex',entry,root=extracted)
+        for name,prompt,phase,standalone in shipped_execution_prompts():
+            exercise_harness_entry((tmp_path/(host+'-shipped-'+name)).resolve(),
+                                   'claude' if host=='claude' else 'codex',phase,root=extracted,
+                                   prompt=prompt,standalone=standalone)
+        exercise_nonconsent_cli((tmp_path/(host+'-nonconsent')).resolve(),
+                                'claude' if host=='claude' else 'codex', root=extracted)
+        exercise_counter_freshness((tmp_path/(host+'-counter-freshness')).resolve(),
+                                   'claude' if host=='claude' else 'codex', root=extracted)
         exercise_state_repairs((tmp_path/(host+'-state-repairs')).resolve(),
                                'claude' if host=='claude' else 'codex', root=extracted)
+        exercise_repeated_repair_capacity((tmp_path/(host+'-repeated-repairs')).resolve(),
+                                         'claude' if host=='claude' else 'codex', root=extracted)
         # The child interpreter sees only the extracted runtime and the standard library.
         # Test-only adapter code is embedded here, never exported by either package.
-        helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output))
+        helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, task_observation_checkpoint, exercise_dashboard_publication_order))
         script = '''import sys, json, io
 from pathlib import Path
 from copy import deepcopy
 from contextlib import redirect_stdout
 from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
-from taskplane import flow, workflow as w, workflow_host as h
+from taskplane import flow, workflow as w, workflow_host as h, workflow_local as local
 assert Path(flow.__file__).resolve().is_relative_to(Path(sys.argv[1]))
 ''' + helpers + '''
 temp = Path(sys.argv[2]); temp.mkdir()
@@ -192,6 +210,25 @@ import os
 os.environ['TASKPLANE_TEST_APPROVAL'] = 'approved'
 with redirect_stdout(io.StringIO()):
     assert flow.main(['start', '--workspace', str(c.workspace)]) == 2
+# EV-F02: exercise the extracted native adapter with progress and normative edits.
+task_ws = temp/'task-observations'; task_ws.mkdir()
+c, task_state, task_relative = task_observation_checkpoint(task_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
+task_file=task_ws/task_relative
+task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='working';task_file.write_text(json.dumps(task_data))
+assert not c.report().get('invalidation_pending')
+task_data['tasks'][0]['owner']='different';task_file.write_text(json.dumps(task_data))
+assert c.report().get('invalidation_pending')
+legacy_ws = temp/'legacy-task-observations'; legacy_ws.mkdir()
+c, task_state, task_relative = task_observation_checkpoint(legacy_ws, legacy=True, host='claude' if sys.argv[3]=='claude' else 'codex')
+assert not c.report().get('invalidation_pending')
+task_file=legacy_ws/task_relative;task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='working';task_file.write_text(json.dumps(task_data))
+assert c.report().get('invalidation_pending')
+print('EV-F02 progress, normative and legacy packet regressions passed')
+publication_ws = temp/'publication-order'; publication_ws.mkdir()
+c, publication_state, _ = task_observation_checkpoint(publication_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
+for select in (False, True):
+    exercise_dashboard_publication_order(c, publication_state, select=select)
+print('ENG-F01 concurrent publication regressions passed')
 print('seven accepted fixture checkpoints; production authority refused')
 print('EV-F01 EV-F02 EV-F03 archive regressions passed')
 print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
@@ -202,6 +239,8 @@ print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
                                  str(tmp_path/(host+'-behavior')), host],
                                 cwd=tmp_path, capture_output=True, text=True)
         assert result.returncode == 0, result.stdout + result.stderr
+        assert 'EV-F02 progress, normative and legacy packet regressions passed' in result.stdout
+        assert 'ENG-F01 concurrent publication regressions passed' in result.stdout
         assert 'seven accepted fixture checkpoints; production authority refused' in result.stdout
         assert 'EV-F01 EV-F02 EV-F03 archive regressions passed' in result.stdout
         assert 'EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed' in result.stdout

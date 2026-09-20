@@ -5,6 +5,13 @@ description: Define the requested product outcome, scope, acceptance criteria, a
 
 # Define what should be built
 
+Before substantive work, resolve this installed plugin's runtime and run
+`flow activate --workspace <checkout> --phase tp-product --request-reference <actual-user-request>`.
+Inspect `flow report`: reuse the matching active visit or initialize the appropriate
+scoped run before continuing. This requirement includes standalone work and resumed
+stages; loading a skill alone grants no phase approval. See the shared flow for
+bootstrap, native dashboard handoff and legitimate user waits.
+
 Use the user's request and relevant existing product context. State the problem,
 intended user behavior, scope, acceptance criteria, material dependencies, and
 unresolved decisions. Reuse settled answers and keep the artifact proportionate
@@ -23,7 +30,7 @@ validated. Surface only questions that materially affect the result.
 
 Use native tools for inspection and document authoring. Product-only work does
 not authorize implementation. For an already authorized delivery, return the
-criteria and dashboard to the human for Product checkpoint approval before
+criteria and dashboard for Product checkpoint acceptance under the shared policy before
 continuing through [delivery](../tp-go/SKILL.md). Reuse a valid prior acceptance.
 A completed document or telemetry receipt cannot authorize advancement.
 
@@ -33,6 +40,7 @@ Standalone and delivery Product use the same run, task decomposition, dependency
 graph and dashboard defaults. Return evidence to that run; the root orchestrator
 owns stage advancement and respects Product-only scope.
 
-The shared flow requires explicit human approval at each phase checkpoint. Use
+The shared flow defaults to explicit human approval at each phase checkpoint.
+A recorded, explicit run policy may authorize automatic approval as described there. Use
 the dependency graph with source component decomposition, task DAG and shared
 dashboard throughout. Unsupported host authority must be reported, never bypassed.

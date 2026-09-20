@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping, cast
 import uuid
 
 from . import primitives, storage, workflow as w, workflow_evidence as evidence
-from . import host_capabilities, host_native, command_runtime, workflow_local
+from . import host_capabilities, host_native, command_runtime, workflow_local, workflow_approval
 
 
 class HostAdapter:
@@ -276,12 +276,12 @@ class Controller:
     def _write(self, target: Path, db: dict[str, Any]) -> None:
         try:
             self.adapter.validate_path(self.workspace, target)
-            raw = (json.dumps(db, sort_keys=True, indent=2, ensure_ascii=True,
+            raw = (json.dumps(db, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
                               allow_nan=False) + "\n").encode("utf-8")
             w.require(len(raw) <= workflow_local.MAX_BYTES,
                       "state_unavailable", "Workflow store exceeds its size limit.")
             # Match the measured encoding while retaining the private-file writer.
-            primitives.atomic_json(target, db, sort_keys=True, indent=2, ensure_ascii=True,
+            primitives.atomic_json(target, db, sort_keys=True, indent=None, ensure_ascii=True,
                                    trailing_newline=True, strict_directory_sync=True)
         except (OSError, ValueError, primitives.StateError) as exc:
             raise w.Refusal("state_unavailable", f"Control state was not acknowledged: {exc}") from None
@@ -346,7 +346,18 @@ class Controller:
             w.require(db["active"] == run or action == "finish" and run in db["runs"],
                       "state_unavailable", "Mutation must address the bound active run.")
             s = db["runs"][run]
-            if action == "decide":
+            policy_request: dict[str, Any] = {}
+            if action == "policy":
+                w.require(len(native_reference.encode()) <= 32768, "invalid_evidence", "Policy exceeds its size bound.")
+                try:
+                    policy_request = json.loads(native_reference)
+                except ValueError:
+                    raise w.Refusal("invalid_evidence", "Supply a policy JSON envelope.") from None
+                w.require(isinstance(policy_request, dict), "invalid_evidence", "Policy must be an object.")
+            if action == "auto-decide":
+                assessment = evidence.object_file(self.workspace, output)
+                verified = workflow_approval.automatic_decision(s, assessment)
+            elif action == "decide":
                 packet = w.current(s)["packet"]
                 w.require(packet, "approval_required", "No submitted human checkpoint.")
                 # The selected adapter validates protected or observed provenance.
@@ -356,8 +367,9 @@ class Controller:
                 verified = {k: native[k] for k in ("event_id", "human", "automatic", "choice", "binding", "assurance", "provenance") if k in native}
             else:
                 verified = {}
-            replay = action == "decide" and verified.get("event_id") in s["decisions"]
-            w.require(replay or expected_revision == s["revision"], "stale_checkpoint", "Expected state revision changed.")
+            replay = action in ("decide", "auto-decide") and verified.get("event_id") in s["decisions"]
+            policy_replay = action == "policy" and policy_request.get("event_id") in s.get("policy_events", {})
+            w.require(replay or policy_replay or expected_revision == s["revision"], "stale_checkpoint", "Expected state revision changed.")
             drift = evidence.changed(self.workspace, s, skip_current=action == "submit")
             if drift:
                 db["runs"][run] = w.invalidate(s, *drift)
@@ -366,12 +378,14 @@ class Controller:
             self.adapter.before_action(s, action)
             if replay:
                 return w.decide(s, verified)
-            if action in ("advance", "finish", "submit"):
+            if action in ("advance", "finish", "submit", "auto-decide"):
                 w.require(self.adapter.can_seal(s),
                           "scope_violation", "Live tool processes must stop before sealing or revoking a phase grant.")
             operations: dict[str, Callable[[], dict[str, Any]]] = {
                 "submit": lambda: w.submit(s, evidence.seal(self.workspace, s, output, tasks)),
                 "decide": lambda: w.decide(s, verified),
+                "auto-decide": lambda: w.decide(s, verified),
+                "policy": lambda: workflow_approval.authorize(s, policy_request),
                 "advance": lambda: w.advance(s, phase),
                 "finish": lambda: w.finish(s),
             }
@@ -407,7 +421,11 @@ class Controller:
         tool = event.get("tool_name") or event.get("tool")
         args = event.get("tool_input", {})
         w.require(isinstance(args, dict), "scope_violation", "Unrecognized tool arguments.")
-        if tool in ("Read", "read_file", "list_files", "search_files"):
+        if self.adapter.profile == "native_workflow" and (
+                tool in workflow_local.QUESTION_TOOLS or workflow_local.execution_entry(event)
+                or tool == "Skill" and args.get("skill") in {"taskplane:tp-help", "taskplane:tp-status"}):
+            return  # Loading a skill or asking the user grants no source write or phase transition.
+        if tool in workflow_local.READ_TOOLS:
             value = args.get("file_path") or args.get("path")
             if value:
                 w.require(isinstance(value, str), "scope_violation", "Invalid read path.")
@@ -428,7 +446,7 @@ class Controller:
         elif tool in ("Write", "Edit", "write_file", "edit_file"):
             self._paths([args.get("file_path") or args.get("path")], allowed)
         elif tool == "apply_patch":
-            patch = args.get("input", args.get("patch", ""))
+            patch = args.get("command", args.get("input", args.get("patch", "")))
             w.require(isinstance(patch, str), "scope_violation", "Invalid structured patch.")
             targets = [line.split(": ", 1)[1] for line in patch.splitlines()
                        if line.startswith(("*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "))]

@@ -528,14 +528,15 @@ def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, mo
         assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Human decision: Approved')")
         assert browser.evaluate("document.querySelector('#native-support').textContent.includes('Process revocation')")
         assert browser.evaluate("document.querySelectorAll('#native-support tbody tr').length") == 4
-        assert browser.evaluate("document.querySelector('#decomposition').textContent.includes('Build product')")
+        assert browser.evaluate("document.querySelector('#decomposition').textContent.includes('T1')")
+        assert not browser.evaluate("document.querySelector('#decomposition').textContent.includes('Build product')")
         assert browser.evaluate("document.querySelector('#lenses').textContent.includes('quality')")
         assert browser.evaluate("document.body.textContent.includes('Verified through retro')")
         assert browser.evaluate("window.badEvidence === undefined")
         for width in (390, 768, 1280):
             browser.call("Emulation.setDeviceMetricsOverride", {"width": width, "height": 1000,
                                                                   "deviceScaleFactor": 1, "mobile": False})
-            assert browser.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+            assert browser.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), browser.evaluate("JSON.stringify([...document.querySelectorAll('body *')].filter(e=>!e.closest('.table-wrap')&&e.getBoundingClientRect().right>innerWidth+1).map(e=>[e.tagName,e.className,e.getBoundingClientRect().right]).slice(0,20))")
         assert browser.evaluate("document.querySelector('#dependencies iframe').getBoundingClientRect().height > 300")
         assert browser.evaluate("document.querySelector('#dependencies iframe').srcdoc.includes('Module dependency graph')")
         graph = workspace / ".taskplane/graph.html"
@@ -565,3 +566,120 @@ def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, mo
         browser.navigate(server.url('native-example/.taskplane/dashboard.html'))
         browser.wait_for("document.querySelector('#workflow').textContent.includes('Human decision: Approved')")
         assert browser.evaluate("document.body.textContent.includes('host-wide protection unavailable')")
+
+
+def test_native_snapshot_tokens_policy_graph_and_static_reload(tmp_path, monkeypatch):
+    """Independent synthetic fixture; never serves the user's denied file dashboard."""
+    from copy import deepcopy
+    from taskplane import depgraph, flow, flow_dashboard
+    from taskplane.tests.test_workflow_local import setup, submit
+    from taskplane.tests.test_workflow_autonomy import set_policy, auto
+    workspace=tmp_path/'fixture';workspace.mkdir()
+    c,state=setup(workspace,standalone=True)
+    monkeypatch.setenv('CODEX_THREAD_ID','root')
+    flow.append(workspace,{'kind':'start','run':state['run'],'session':'root','phase':'product',
+                           'goal':'Synthetic dashboard journey','at':state['started_at']})
+    state=set_policy(c,state);state=submit(c,state);state=auto(c,state)
+    model=flow.report(workspace,state['run'],governor=c)
+    visit=state['visits'][0]['id']
+    model['tokens']={'input_tokens':120,'cached_input_tokens':100,'uncached_input_tokens':20,'output_tokens':30,'total_tokens':150}
+    model['token_coverage']={'measured_sessions':1,'unmeasured_sessions':1,'partial_sessions':1,'discovery_errors':2,'basis':'Synthetic run boundary'}
+    model['sessions']=[{'session':'root','agent':'orchestrator','role':'orchestrator','status':'measured',
+        'measured_at':'2026-09-17T00:01:00+00:00','usage':model['tokens']}]
+    model['phase_usage']={'visits':{visit:{'phase':'product','tokens':{'total_tokens':100},'buckets':{'work':{'total_tokens':80},'review':{'total_tokens':20}},'status':'partial'}},
+        'phases':{'product':{'tokens':{'total_tokens':100},'status':'partial'}},'unallocated':{'total_tokens':50},
+        'gaps':['Synthetic missing child boundary'],'measurement_at':'2026-09-17T00:01:00+00:00'}
+    target=flow.publish_dashboard(workspace,state['run'],governor=c,supplied=model,select=True)
+    config=_json_fixture('environment.json')
+    with _LoopbackServer(workspace) as server, _RealBrowser(tmp_path,config) as browser:
+        browser.navigate(server.url('.taskplane/dashboard.html'))
+        assert browser.evaluate("document.querySelector('.metrics').textContent.includes('Current visit tokens100')")
+        assert browser.evaluate("document.querySelector('.metrics').textContent.includes('Run tokens150')")
+        assert browser.evaluate("document.querySelector('.metrics').getBoundingClientRect().top < 700")
+        assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Automatically approved')")
+        assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('Discovery errors: 2')")
+        assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('Unallocated run usage: 50')")
+        assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('Synthetic missing child boundary')")
+        assert browser.evaluate("document.querySelector('#snapshot-identity').textContent.includes('"+state['run']+"')")
+        assert browser.evaluate("document.querySelectorAll('#dependencies iframe').length") == 2
+        assert browser.evaluate("document.querySelector('#dependencies').textContent.includes('Planned task scope')")
+        # Actual rendered graph uses the captured model even if live graph files later differ.
+        doc=flow_dashboard.graph_document(model['graph'],['app.py'],planned=True)
+        graph_path=workspace/'captured-fixture.html';graph_path.write_text(doc)
+        browser.navigate(server.url('captured-fixture.html'))
+        browser.wait_for("document.querySelectorAll('svg .node').length > 0")
+        assert browser.evaluate("document.querySelector('.node').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); document.querySelector('#inspector').textContent.includes('planned scope')")
+        browser.navigate(server.url('.taskplane/dashboard.html'))
+        old_identity=browser.evaluate("document.querySelector('#snapshot-identity').textContent")
+        updated=deepcopy(model);updated['tokens']=None;updated['phase_usage']={'gaps':['No phase boundaries'], 'visits':{}}
+        from datetime import datetime,timezone
+        updated['snapshot']['captured_at']=updated['snapshot']['generated_at']=datetime.now(timezone.utc).isoformat()
+        flow.publish_dashboard(workspace,state['run'],governor=c,supplied=updated,select=True)
+        assert browser.evaluate("document.querySelector('#snapshot-identity').textContent")==old_identity
+        assert browser.evaluate("document.body.textContent.includes('freshness is not monitored')")
+        browser.evaluate("document.querySelector('#snapshot-identity button').click()")
+        browser.wait_for("document.querySelector('#snapshot-identity').textContent.includes("+json.dumps(updated['snapshot']['generated_at'])+")")
+        assert browser.evaluate("document.querySelector('.metrics').textContent.includes('Run tokensUnknown')")
+        assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('No phase boundaries')")
+        for width in (390,768,1280):
+            browser.call('Emulation.setDeviceMetricsOverride',{'width':width,'height':1000,'deviceScaleFactor':1,'mobile':False})
+            assert browser.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), browser.evaluate("JSON.stringify([...document.querySelectorAll('body *')].filter(e=>!e.closest('.table-wrap')&&e.getBoundingClientRect().right>innerWidth+1).map(e=>[e.tagName,e.className,e.getBoundingClientRect().right]).slice(0,20))")
+        # EV-F01: actual DOM labels distinguish saved data from read attempts.
+        old_time='2026-09-17T00:01:00+00:00';attempt='2026-09-17T00:03:00+00:00'
+        for coverage in ('fresh','recorded','mixed','unavailable'):
+            clock_model=deepcopy(model)
+            root_session=deepcopy(model['sessions'][0])
+            root_session.update(status='measured' if coverage=='fresh' else 'recorded; native counter unavailable',
+                                measured_at=attempt if coverage=='fresh' else old_time)
+            clock_model['sessions']=[root_session]
+            if coverage=='mixed':
+                clock_model['sessions'].append({'session':'child','agent':'child','role':'lens','status':'measured','measured_at':attempt,
+                    'usage':{'input_tokens':0,'cached_input_tokens':0,'uncached_input_tokens':0,'output_tokens':5,'total_tokens':5}})
+            if coverage=='unavailable':root_session.update(status='unavailable',usage=None,measured_at=None)
+            values=[session['usage'] for session in clock_model['sessions'] if session['usage'] is not None]
+            clock_model['tokens']={key:sum(value.get(key,0) for value in values) for key in values[0]} if values else None
+            clock_model['token_coverage']['discovery_errors']=0
+            clock_model['usage_measurement']=flow.usage_measurement(clock_model,attempt)
+            clock_model['phase_usage']={'visits':{},'gaps':['Synthetic timestamp fixture']}
+            clock_data=clock_model['usage_measurement']
+            clock_model['snapshot'].update(measurement_at=clock_data['measured_at'],measurement_status=coverage,
+                measurement_oldest_at=clock_data['oldest_at'],measurement_newest_at=clock_data['newest_at'],measurement_attempted_at=attempt)
+            clock_model['snapshot']['captured_at']=clock_model['snapshot']['generated_at']=datetime.now(timezone.utc).isoformat()
+            flow.publish_dashboard(workspace,state['run'],governor=c,supplied=clock_model,select=True)
+            browser.navigate(server.url('.taskplane/dashboard.html')+'?coverage='+coverage)
+            expected=attempt if coverage=='fresh' else old_time if coverage=='recorded' else 'Unknown'
+            assert browser.evaluate("document.querySelector('#usage-measurement').textContent.includes("+json.dumps('Counter measurement: '+expected+' · Coverage: '+coverage)+")")
+            assert browser.evaluate("document.querySelector('#usage-measurement').textContent.includes("+json.dumps('Last read attempt: '+attempt)+")")
+            assert browser.evaluate("document.querySelector('#snapshot-identity').textContent.includes("+json.dumps('Counter measurement: '+expected)+")")
+            if coverage=='mixed':
+                assert browser.evaluate("document.querySelector('#usage-measurement').textContent.includes("+json.dumps(old_time+' → '+attempt)+")")
+        # This fixture verifies DOM behavior; it does not claim the host opened a user's task.
+
+
+def test_concurrent_dashboard_refresh_keeps_newer_visible_state(tmp_path):
+    from taskplane.tests.test_workflow_local import setup
+    from taskplane.tests.test_native_workflow_cli import exercise_dashboard_publication_order
+    workspace=tmp_path/'concurrent';workspace.mkdir()
+    c,state=setup(workspace)
+    target,model=exercise_dashboard_publication_order(c,state,select=True)
+    with _LoopbackServer(workspace) as server, _RealBrowser(tmp_path,_json_fixture('environment.json')) as browser:
+        browser.navigate(server.url('.taskplane/dashboard.html'))
+        assert browser.evaluate("document.querySelector('.metrics').textContent.includes('Run tokens200')")
+        assert browser.evaluate("document.querySelector('#snapshot-identity').textContent.includes("+json.dumps(model['snapshot']['generated_at'])+")")
+        selection=json.loads(target.with_suffix('.selection.json').read_text())
+        assert selection['digest']==model['snapshot']['digest']
+
+
+
+def test_standalone_review_harness_hands_off_native_dashboard(tmp_path):
+    from taskplane.tests.test_native_workflow_cli import exercise_harness_entry
+    workspace=(tmp_path/'standalone-review').resolve()
+    state=exercise_harness_entry(workspace,'claude','engineering')
+    with _LoopbackServer(workspace) as server, _RealBrowser(tmp_path,_json_fixture('environment.json')) as browser:
+        browser.navigate(server.url('.taskplane/dashboard.html'))
+        assert browser.evaluate("document.querySelectorAll('.tp-flow .stage').length")==1
+        assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Engineering')")
+        assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Awaiting human approval')")
+        assert browser.evaluate("document.querySelector('#snapshot-identity').textContent.includes("+json.dumps(state['run'])+")")
+        assert browser.evaluate("document.querySelector('#decomposition') !== null")
+        assert browser.evaluate("document.querySelector('#dependencies iframe') !== null")
