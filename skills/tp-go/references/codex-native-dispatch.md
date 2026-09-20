@@ -23,7 +23,8 @@ Workers cannot accept checkpoints or broaden writes. Use the accepted phase scop
 and join known live work before sealing. Native-workflow scope checks apply to
 covered structured tools and auditable source effects; they do not certify opaque
 commands or host-wide process containment. Return requested changes as evidence;
-only human acceptance can authorize a new visit.
+route amendments require human acceptance. Normal phase acceptance follows the
+root’s recorded manual/autonomous policy; workers never grant it independently.
 
 Observed handles retain their visit and revision. Known terminal or stale handles
 cannot receive input through a covered hook. Unknown coverage stays visible.

@@ -82,13 +82,15 @@ def accepted_plan(state: dict[str, Any]) -> dict[str, Any]:
     plans = [v for v in state["visits"][:state["index"]]
              if v["phase"] == "plan" and not v["superseded"]]
     require(plans and plans[-1]["decision"] == "approved" and plans[-1]["packet"],
-            "approval_required", "A current human-accepted Plan is required for Build or repair.")
+            "approval_required", "A current accepted Plan is required for Build or repair.")
     return dict(plans[-1])
 
 
 def validate_state(state: dict[str, Any]) -> None:
     """Reject structurally corrupt protected records without inventing repairs."""
+    from . import workflow_approval as approval
     validate_scope(state["scope"])
+    approval.validate_history(state)
     require(type(state["revision"]) is int and state["revision"] >= 0
             and type(state["index"]) is int and isinstance(state["visits"], list)
             and 0 <= state["index"] < len(state["visits"])
@@ -114,7 +116,7 @@ def validate_state(state: dict[str, Any]) -> None:
                 and all(isinstance(packet.get(k), dict) for k in ("manifest", "source_manifest", "context", "output")),
                 "state_unavailable", "Invalid protected packet.")
         if stage["decision"] in ("approved", "changes_requested", "rejected", "cancelled"):
-            require(any(isinstance(d, dict) and d.get("human") is True and d.get("automatic") is False
+            require(any(isinstance(d, dict) and approval.decision_authorized(state, d)
                         and d.get("choice") == stage["decision"] and isinstance(d.get("binding"), dict)
                         and d["binding"].get("visit") == stage["id"]
                         and d["binding"].get("manifest_digest") == content_fingerprint(packet)
@@ -148,8 +150,12 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     """Consume a profile-validated decision; adapters own its stated assurance."""
     event_id = verified.get("event_id")
     require(isinstance(event_id, str) and event_id, "unsupported_authority", "Native event identity is missing.")
-    require(verified.get("human") is True and verified.get("automatic") is False,
-            "unsupported_authority", "Only explicit human decisions can be consumed.")
+    from . import workflow_approval as approval
+    require(approval.decision_authorized(state, verified),
+            "unsupported_authority", "Decision needs explicit human approval or a valid run-bound policy.")
+    if verified.get("kind") == "policy":
+        require(approval.automatic_decision(state, verified["assessment"]) == verified,
+                "invalid_evidence", "Automatic decision does not match the validated assessment.")
     if state.get("profile") == "native_workflow":
         require(verified.get("assurance") == "observed" and isinstance(verified.get("provenance"), dict),
                 "invalid_evidence", "Native workflow decisions must disclose observed provenance.")
@@ -173,6 +179,8 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     stage["decision"] = choice
     stage["work"] = "ready" if choice == "approved" else "working"
     s["decisions"][event_id] = deepcopy(verified)
+    if choice != "approved" or stage["packet"].get("route_change"):
+        approval.suspend(s, "Human intervention or route change requires renewed automatic authorization.")
     if choice == "approved" and stage["phase"] == "plan":
         # The accepted Plan narrows the outer requested scope to actual Build grants.
         s["scope"]["paths"]["build"] = list(stage["packet"]["output"]["write_scope"])
@@ -215,7 +223,7 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
 def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
     require(not state["finished"], "approval_required", "The accepted route cannot be reopened by progress.")
     stage = current(state)
-    require(stage["decision"] == "approved", "approval_required", f"Human {stage['phase']} approval is required.")
+    require(stage["decision"] == "approved", "approval_required", f"Human or authorized policy approval for {stage['phase']} is required.")
     next_index = next((i for i in range(state["index"] + 1, len(state["visits"]))
                        if not state["visits"][i]["superseded"]), None)
     require(next_index is not None, "approval_required", "No next phase is authorized; finish the accepted scope.")
@@ -230,7 +238,7 @@ def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
 
 def finish(state: dict[str, Any]) -> dict[str, Any]:
     require(all(v["superseded"] or v["decision"] == "approved" for v in state["visits"]),
-            "approval_required", "Every required stage visit needs current human acceptance.")
+            "approval_required", "Every required stage visit needs current human acceptance or valid policy acceptance.")
     s = deepcopy(state)
     if not s["finished"]:
         s["finished"] = True
@@ -248,5 +256,7 @@ def invalidate(state: dict[str, Any], visit_id: str, reason: str) -> dict[str, A
     s["index"] = first
     s["finished"] = False
     s["revision"] += 1
+    from . import workflow_approval as approval
+    approval.suspend(s, "Evidence drift requires renewed authorization: " + reason)
     s["history"].append({"invalidated_visit": visit_id, "reason": reason})
     return s

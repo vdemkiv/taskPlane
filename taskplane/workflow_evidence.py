@@ -12,6 +12,9 @@ from . import workflow as w
 from .depgraph import GRAPH_SCAN_QUALITY_SCHEMA, scan_quality, source_inputs_current
 from .primitives import content_fingerprint
 
+TASK_OBSERVATIONS = {"status", "started_at", "completed_at", "updated_at", "elapsed_seconds"}
+TASK_DEFINITIONS = "taskplane.task-definitions/v1"
+
 EMPTY_LIST_FIELDS = {"non_goals", "dependencies", "finding_references", "known_gaps",
                      "findings", "source_locations", "remaining_risk", "unknowns_and_failures",
                      "deferred_items_and_owners"}
@@ -68,11 +71,20 @@ def object_file(root: Path, relative: str) -> dict[str, Any]:
     return dict(data)
 
 
-def manifest(root: Path, paths: list[str], *, allow_missing: bool = False) -> dict[str, Any]:
+def manifest(root: Path, paths: list[str], *, allow_missing: bool = False,
+             task_path: str | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for relative in sorted(set(paths)):
         target = path(root, relative)
-        result[relative] = None if allow_missing and not target.exists() else content_fingerprint(read(root, relative))
+        if allow_missing and not target.exists():
+            result[relative] = None
+        elif relative == task_path:
+            data = object_file(root, relative)
+            rows = task_dag(data, [])
+            normalized = {**data, "tasks": [{k:v for k,v in row.items() if k not in TASK_OBSERVATIONS} for row in rows]}
+            result[relative] = {"schema": TASK_DEFINITIONS, "digest": content_fingerprint(normalized)}
+        else:
+            result[relative] = content_fingerprint(read(root, relative))
     return result
 
 
@@ -137,11 +149,10 @@ def build_task_map(state: dict[str, Any], tasks: list[dict[str, Any]], value: An
     approved = task_dag({"tasks": plan["task_dag"]}, criteria)
     # Only observations may change without renewed Plan acceptance. Unknown fields
     # remain normative, so adding a new scope/verification field cannot evade this check.
-    observations = {"status", "started_at", "completed_at", "updated_at", "elapsed_seconds"}
 
     def definitions(rows: list[dict[str, Any]]) -> dict[str, Any]:
         return {t["id"]: {**{k: v for k, v in t.items()
-                             if k not in observations | {"criteria", "acceptance_criteria"}},
+                             if k not in TASK_OBSERVATIONS | {"criteria", "acceptance_criteria"}},
                           "criteria": task_criteria(t)} for t in rows}
 
     w.require(definitions(tasks) == definitions(approved), "invalid_evidence",
@@ -285,14 +296,19 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
                   "invalid_evidence", "Invalid route amendment.")
         if change["kind"] == "delivery":
             valid_scope(root, change.get("scope", {}))
+    receipt_path = root / ".taskplane/graph-receipt.json"
+    receipt = object_file(root, ".taskplane/graph-receipt.json") if receipt_path.exists() else None
+    if receipt and (receipt.get("workspace") != str(root.resolve())
+                    or receipt.get("graph_digest") != content_fingerprint(graph)):
+        receipt = None
     return {"checkpoint": uuid.uuid4().hex, "phase": phase, "visit": stage["id"],
-            "output": output, "manifest": manifest(root, files),
+            "output": output, "manifest": manifest(root, files, task_path=tasks_path),
             "source_manifest": manifest(root, state["scope"]["paths"]["build"] +
-                                        state["scope"].get("verification_inputs", []), allow_missing=True)
+                                        state["scope"].get("verification_inputs", []), allow_missing=True, task_path=tasks_path)
                                if phase in ("build", "evaluate", "engineering") else {},
             # Context is sealed in the protected packet; shared views can refresh without
             # invalidating approved normative artifacts merely because telemetry changed.
-            "context": {"graph": graph, "tasks": tasks, "dashboard_digest": content_fingerprint(dashboard)},
+            "context": {"graph": graph, "graph_receipt": receipt, "tasks": tasks, "tasks_path": tasks_path, "dashboard_digest": content_fingerprint(dashboard)},
             "route_change": change}
 
 
@@ -304,7 +320,17 @@ def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) ->
         for field in ("manifest", "source_manifest"):
             before = packet[field]
             try:
-                after = manifest(root, list(before), allow_missing=field == "source_manifest")
+                after = {}
+                for relative, expected in before.items():
+                    normalized = isinstance(expected, dict)
+                    w.require(not normalized or (expected.get("schema") == TASK_DEFINITIONS
+                              and set(expected) == {"schema", "digest"}
+                              and relative == packet.get("context", {}).get("tasks_path")),
+                              "invalid_evidence", "Unknown or misplaced task fingerprint.")
+                    # Legacy byte fingerprints retain their exact original contract.
+                    # Only a fresh, explicitly sealed packet can use normalization.
+                    after.update(manifest(root, [relative], allow_missing=field == "source_manifest",
+                                          task_path=relative if normalized else None))
             except w.Refusal:
                 return stage["id"], "Approved or submitted evidence is missing or outside its safe path."
             if before != after:

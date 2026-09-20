@@ -1,6 +1,6 @@
 {
   "name": "taskplane-marketplace",
-  "description": "taskplane — the AI software-delivery control plane for designing, building, and reviewing with proof across Claude and Codex.",
+  "description": "Taskplane delivery with explicit approval policies, evidence, native dashboards and advisory usage.",
   "owner": {
     "name": "Volodymyr Demkiv",
     "email": "vdemkiv@gmail.com"
@@ -9,8 +9,8 @@
     {
       "name": "taskplane",
       "source": ".",
-      "description": "Shared delivery flow for Claude and Codex: product, design, dependency-ordered execution, lens reviews, verification and retro, with one dashboard and advisory token telemetry.",
-      "version": "2.26.0",
+      "description": "Manual checkpoints or explicitly authorized automatic phase approvals, with scope checks, one dashboard, phase token coverage and source graph provenance.",
+      "version": "2.27.0",
       "homepage": "https://github.com/vdemkiv/taskPlane",
       "repository": "https://github.com/vdemkiv/taskPlane",
       "license": "Apache-2.0",
@@ -29,5 +29,5 @@
       ]
     }
   ],
-  "version": "2.26.0"
+  "version": "2.27.0"
 }

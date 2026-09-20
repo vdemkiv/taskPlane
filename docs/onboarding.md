@@ -1,268 +1,191 @@
-# Onboarding (`tp onboard`) — the full setup
+# Taskplane onboarding
 
-This is the complete onboarding reference: what `tp onboard` checks before it
-hands you to a governed run, the Claude and Codex host-specific paths, the
-knowledge storage / sharing-mode choice, and the two setup decisions (model
-tiers and context storage) that decide how efficiently the whole system runs. The
-README's [Onboarding summary](../README.md) covers the short version.
+Follow [installation and hook trust](../README.md#installation) first. This guide
+matches the current `taskplane/tp.py` CLI. Older references to `tp onboard`, `tp init`,
+inline setup forms, workspace hook launchers, storage-plan migration or consolidated
+pre-implementation approval describe retired workflows; those commands are not
+available in this runtime.
 
-## Readiness checks
+## Choose the installed runtime and project
 
-Say **taskplane help** for the tour, or just state a goal — `taskplane` routes
-it after onboarding on the first request in a host session and after each install,
-reinstall, or update. This includes Review, Status, and Help in an existing
-repository. Existing knowledge or run state never substitutes for setup.
-TaskPlane retains your original request and continues it when ready, without
-asking you to state the goal again. `tp onboard` shows the
-onboarding dashboard and won't hand you to a governed run until the prerequisite
-checks are green for a local target. A repository URL or pull request first
-runs the automatic repository precondition, which creates a verified managed
-checkout and then applies these checks there:
+1. Use a host with local plugin execution and Python 3.10+. Install and enable
+   Taskplane from the permitted catalog. Codex users start a new task/session after
+   installation; Claude Code users follow plugin activation/reload instructions.
+2. Open the intended local repository. Confirm the actual checkout and working
+   directory, particularly when the host creates a worktree. Ask the host to acquire
+   remote code separately if needed; Taskplane does not silently initialize Git,
+   commit a baseline, migrate knowledge or acquire a repository during help/status.
+3. Locate the loaded skill's plugin directory. It contains `taskplane/tp.py`,
+   `skills/`, the host manifest and `hooks/hooks.json`. Verify with
+   `python3 /actual/plugin/taskplane/tp.py version --verify` and `help --md`.
+4. Keep a run's state in its original checkout. `.taskplane/` contains local workflow
+   state, its initialization marker, graph data, the journal and dashboard snapshots.
+   An external dashboard publication target does not move the workflow.
 
-1. **A real folder to work in** — connect/open your project (an empty
-   scratch dir or the session root is refused: a contract scoped there
-   would govern everything).
-2. **A git commit to diff against** — the gates fail closed without a
-   snapshot. For a new local folder, taskplane asks permission to initialize
-   and commit it, then resumes the same run.
-3. **`tp init`** — scaffolds the four context docs
-   (`product.md` / `tech-stack.md` / `workflow.md` / `current-state.md`),
-   scans the dependency graph, and creates the knowledge base under the
-   project's ignored `.taskplane/` by default.
+A source clone and an installed cached plugin are different copies. Editing the
+clone does not update the running plugin. Verify the package source/version before
+using new commands; the version parity check validates manifest agreement, not the
+identity of every unreleased source change.
 
-   **Before authorizing `tp init` in a brownfield repository, check for a
-   tracked legacy `knowledge/` directory.** On a personal plan, initialization
-   moves that directory into the ignored private project store, runs `git rm --cached`
-   to untrack its contents, and adds `knowledge/` to `.gitignore`. On a Team or
-   Enterprise plan, the shared store remains in-repo under
-   `.taskplane-kb/knowledge/`. Review the full
-   [legacy knowledge migration contract](state-spec.md#migration-from-an-in-repo-knowledge-base)
-   before approving this repository-changing step.
+## Review and trust hook definitions
 
-   **Fill `current-state.md` first on a brownfield project.** It is the
-   as-built inventory — what already runs, what data/integrations exist,
-   what hardware is in place. Once filled, it is injected into every task
-   brief (`knowledge.current_state`), and the design lenses (architecture,
-   trade-offs, services selection, time-to-market) ground their reviews in
-   it: a design is judged as a *delta against what exists*, and
-   **reinventing an existing component or contradicting as-built reality is
-   a blocker-class finding**. Record the big as-built choices as accepted
-   decisions too (`tp decision new "<title>" --modules <globs>`) so they
-   govern future work automatically.
+Taskplane bundles these event handlers:
 
-## Claude onboarding
+| Host event | Installed entry point | Expected responsibility |
+| --- | --- | --- |
+| SessionStart | `context` | Discover runtime/session readiness and existing workflow. |
+| PreToolUse | `screen` | Apply active workflow checks to covered tools. |
+| PostToolUse | `tool-observe` | Observe tool activity and known process handles. |
+| SubagentStart / SubagentStop | `subagent-start` / `subagent-stop` | Observe actual native child identities when delegation is authorized. |
+| UserPromptSubmit | `human-input` | Consume a complete observed decision/policy envelope when supplied. Plain prompt text does not establish checkpoint binding. |
+| Stop | `session-verify` | Report pending work or missing quiescence without forcing an approval loop. |
 
-1. Install taskplane through the path allowed by your account. Personal users
-   can add the GitHub marketplace; Team/Enterprise members install from their
-   organization's catalog or an allowed file upload. The README's
-   [Install section](../README.md#install) has the exact decision tree.
-2. In Claude Code, run `/reload-plugins` after installation. In Claude Chat or
-   Cowork, start a new conversation if the newly installed skills are not yet
-   visible.
-3. Open/attach a local target, or name a repository URL or pull request in the
-   prompt. Prompt **"set up taskplane"** or **"use taskplane for …"**.
-4. If a prerequisite needs authentication, a tool, storage access, or local
-   initialization, answer taskplane's exact prompt. It resumes this run; it
-   does not send you to an external terminal or new conversation.
-5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
-   is **shared in the repository** (`team`/`enterprise`). This is storage and
-   collaboration policy, not a model choice.
-6. Let taskplane initialize the context documents. On an existing project,
-   fill `current-state.md` first so Product and Design reason from the as-built
-   system rather than inventing a parallel one.
-7. State the goal. Product, optional Design, and Plan pass mechanical evidence
-   gates and are presented in one consolidated pre-implementation
-   authorization packet. taskplane stops for that authorization, final
-   sign-off, and named exceptional boundaries; Claude never self-approves them.
+Inspect the manifest and commands before trusting them. The hook command should
+resolve the installed plugin root and invoke its Python runtime. Do not duplicate
+these definitions in project config or restore a retired `.taskplane/codex-hook.py`.
 
-Claude Code loads taskplane's bundled hook after plugin reload. Chat/Cowork
-still uses the same engine-owned state, graph, evidence, and human gates, while
-tool interception remains limited to what that host exposes. Keep Claude's own
-permissions and sandbox controls enabled.
+In Codex CLI, use `/hooks` to review, trust and enable the Taskplane definitions.
+Changed definitions need renewed review; a previously trusted version does not
+cover new bytes. Desktop controls depend on the installed host version. Managed
+sources follow policy. See [Codex hook review](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+In Claude Code, use `/hooks` and `/plugin` to inspect the effective configuration
+and loading errors, and satisfy the host's project trust and permission prompts.
 
-## Codex onboarding
+There are four separate decisions: install/enable a plugin, trust its hooks, approve
+a phase (or authorize a run policy), and grant a native tool permission. None of
+these implies all the others. Taskplane never recommends disabling host permissions
+as a setup step.
 
-1. Install and enable **taskplane** from the published plugin directory: in the
-   desktop app use **Codex → Plugins**; in Codex CLI use `/plugins`. Then start
-   a **new** Codex task/session. The GitHub marketplace commands in the README
-   remain the development/catalog fallback.
-2. For local code, make the repository the working folder. You may instead
-   name a repository URL or pull request; taskplane acquires and verifies a
-   managed checkout automatically inside the current environment.
-3. Prompt **"set up taskplane"** or **"use taskplane for …"**. The plugin runs
-   `tp onboard --json` and presents the onboarding dashboard before routing
-   the request. Use the inline form to configure the project, private or shared
-   knowledge, and project context. Execution storage is the project's ignored
-   `.taskplane/` folder. Setup can restore the ignored local
-   `.taskplane/codex-hook.py` launcher. The enabled plugin supplies the hooks;
-   setup never adds another set to `.codex/hooks.json`. A new task is required
-   only if the plugin's initial host hook loading still requires it, never for
-   checkout/auth/storage recovery.
-   A linked Codex worktree reuses the primary checkout's validated bridge via
-   Git's common directory until onboarding creates its own ignored local copy;
-   it does not depend on plugin-root environment variables being inherited.
-   Reinstallation restores a missing launcher before trusting an earlier session
-   receipt. Onboarding checks the same Git-family launcher path the hooks use.
-4. Submit the inline setup form. The controls send the selected values to the
-   current conversation; the engine validates and applies them, then refreshes
-   actual readiness. Sending the form is not proof that setup succeeded. If the
-   host cannot submit it, the same structured request is available in chat.
-   Host permission decisions remain in the host's own controls.
-5. Choose whether taskplane knowledge stays **private/local** (`personal`) or
-   is **shared in the repository** (`team`/`enterprise`). This is a storage
-   choice; it is not tied to the name of your ChatGPT or Codex subscription.
-6. Let taskplane initialize the context documents, then fill
-   `current-state.md` first for an existing project. State the goal; taskplane
-   will stop at one consolidated pre-implementation authorization and final
-   sign-off (plus a named exceptional boundary such as A/B selection or
-   material authority change).
+## Verify the first task
 
-For each phase, Codex receives the current bounded startup envelope and the
-exact host dispatch fields. The worker uses `stage read-input` to consume its
-pinned phase definition and selected immutable artifacts. It does not inherit
-predecessor conversations, mutable execution state or sibling workspaces.
-Parallel Build, Fix and Evaluate tasks retain separate bindings and evidence;
-EM receives all accepted evaluations at the join, and sign-off leads to Retro.
-Plugin `SubagentStart`/`SubagentStop` hooks bind exact child contracts and
-terminalize/quarantine them while adding bounded context and lifecycle traces; the
-PreToolUse screen and evidence gates remain authoritative. For a long run you
-may start Goal mode with `/goal`; it changes neither permissions nor gates.
+Ask: **“Use taskplane to design a small change in this checkout and show the Product
+output with the Taskplane dashboard.”** Check the following before proceeding:
 
-When inline HTML widgets are unavailable, Codex still relays the plain-text
-`HEADLINE:` and provides the managed run's dashboard by reference (legacy
-unmanaged workspaces use `.taskplane/dashboard.html`). The governance state
-and human gates do not depend on widget support.
+- The loaded skill/runtime comes from the installed plugin and reports consistent
+  manifest versions. `taskplane help` alone should not initialize a workflow.
+- The host's hook view shows Taskplane enabled/trusted, and its hook activity or
+  diagnostics show a real event from this task. Named-hook commands run manually
+  are diagnostics, not proof the host invoked them.
+- The run starts at the requested Product/standalone entry with the right goal,
+  checkout, source components, task DAG and criterion IDs. Status reports
+  `workflow_available: true` when the ordinary local profile is usable.
+- The agent provides the actual `.taskplane/dashboard.html` link for this run and
+  requests opening it using the host's permitted surface. Verify the visible run
+  and phase. A queued open, generated HTML or old tab is not proof of display.
+- Tokens have measured/partial/unavailable coverage and a baseline. Missing native
+  logs stay Unknown. Earlier work without phase boundaries cannot be reconstructed.
+- Manual mode waits for the Product output's human acceptance. A hook event or
+  completed task row does not count as acceptance.
 
-The plugin's hooks pass through an event-claim guard, which executes an event
-once and replays its result for duplicates. Onboarding consumes actual hook
-receipts; a plugin manifest or a launcher file alone does not prove execution.
-Legacy repository-hook receipts remain readable, but setup does not create
-duplicate registrations. Launcher setup removes only recognized generated
-TaskPlane project-hook commands and preserves unrelated hook entries. Records remain isolated by host session and checkout.
+The ordinary profile intentionally shows **Workflow gates active; host-wide
+protection unavailable**. Discovery of a plugin/executable/session is observational;
+it does not certify protected storage, independent human origin, full tool
+containment or complete process tracking.
 
-The dashboard and plain-text headline use the same setup actions. A missing or
-unrecognized action stays incomplete. When execution is missing, review, trust,
-and enable TaskPlane hooks in Codex settings before retrying onboarding. Newly
-installed or changed hooks can require another trust review. A receipt records
-past execution, not the current position of Codex's hook toggles. Only if trusted,
-enabled hooks still need initial loading should a new task be suggested.
-Neither a missing load nor a missing event claim shows a Start action.
+## Verify harness activation
 
-If a human ends an obsolete review, `tp clear --approved-by <human> --workspace
-<checkout>` releases its contract without approving that review. This recovery
-command remains reachable through the hook. Artifact acknowledgments report
-storage failures with the exact ledger path; authorize that store through the
-host and retry, then check `tp ack --status`. Stop reminders do not retry an
-unchanged obligation indefinitely. Submission and completion evidence gates
-remain enforced, and clearing a contract preserves the review's history.
+Ask: **“Use Taskplane to review this code without starting a delivery flow.”**
+Expect one Engineering visit with its source graph, tasks and native dashboard.
+The harness is required even when the seven-phase flow was not selected. Product
+and Design have standalone entries; existing runs resume their matching phase.
 
-## Host setup at a glance
+For an indirect host invocation, the execution skill first runs:
 
-| Host | Activate the plugin | Repository step | Reload boundary |
-| --- | --- | --- | --- |
-| Claude Code | GitHub or managed marketplace | Open a local repo or name a repo/PR URL | `/reload-plugins` |
-| Claude Chat / Cowork | Personal or organization plugin catalog | Attach the folder in Cowork when local files are required | New conversation if needed |
-| ChatGPT desktop Codex | Published Plugins directory | Open local code or name a repo/PR URL | One new task only for initial hook load |
-| Codex CLI | `/plugins` marketplace tab | Run from local code or name a repo/PR URL | One new session only for initial hook load |
+```sh
+python3 /actual/plugin/taskplane/tp.py flow activate --workspace /project --phase engineering --request-reference conversation/message-id
+python3 /actual/plugin/taskplane/tp.py flow report --workspace /project
+```
 
-## Knowledge storage and sharing mode
+`initialization_required` means Taskplane is selected but no run exists. Prepare
+exact scope under `.taskplane/bootstrap/`, then start with `--standalone --phase
+engineering --scope .taskplane/bootstrap/scope.json --request-reference REF`.
+A full delivery starts at Product. Scope names actual output paths and criteria;
+a new Build still requires accepted prerequisites.
 
-Onboarding asks one question first: *keep taskplane knowledge private/local,
-or share it with the team in the repository?* (`tp share plan
-personal|team|enterprise` — or `tp init --plan …`). `personal` keeps every
-decision, requirement and loop state in your ignored project store (`.taskplane/`).
-`team`/`enterprise` moves the store into the repo (`.taskplane-kb/`,
-committed — also compatible with Claude Tag), so the whole team shares one
-registry and a fresh clone inherits it with zero setup. Both are changeable
-any time. And on a team plan you can still work **privately**: `tp share set
-private` keeps your work in your own store while you explore, and when you're
-ready to make it visible — like pushing commits — `tp share push [--ids
-0001,0002]` publishes the selected decisions into the shared store (then
-commit `.taskplane-kb/`). `tp share status` shows your current mode and
-unpublished count.
+Verify separately: installed runtime identity, a real host-triggered hook, active
+harness binding, and the correct native dashboard/open outcome. A workflow lock
+alone does not prove these. Restore a missing/corrupt binding in the original task;
+never borrow another session's run. Claude's SessionStart exports its native
+session and transcript to the host environment file; Codex retains its task ID.
 
-## Models (cost routing)
+Before initialization, covered source writes and opaque commands are denied.
+Read/search/question tools and structured `.taskplane/bootstrap/` writes remain
+available, along with exact installed setup commands and simple bootstrap reads
+(`pwd`, `rg --files`, `cat`). Resolve start failures before completing a review.
+After initialization the existing phase checks apply; native permissions and later
+source audits still govern opaque shell effects.
 
-Lens routing is stage-owned. Product and Design use focused routes; Plan uses
-three or four quick lenses for non-trivial work. Build, Fix, Evaluate,
-Engineering and Retro launch zero lens workers. Routed phases retain all 26
-dispositions, and later phases consume the sealed results.
+After submission, provide the exact native dashboard link and record the outcome:
 
-Models and reasoning come from the canonical
-[operational settings](configuration.md), including a separate Retro entry.
-All phases inherit the session model by default and request `high` reasoning;
-there is no implicit Claude model pin. Environment tier aliases remain
-compatibility inputs, while each current phase role selects its own settings.
-`tp onboard --json` reports those phase settings, the effective digest and the
-validated phase registry.
+```sh
+python3 /actual/plugin/taskplane/tp.py flow present --workspace /project --run RUN_ID --evidence .taskplane/dashboard.html --presentation linked --note 'Provided the artifact link and opening is queued with display unverified'
+```
 
-The registry and its skill links must validate before readiness. A mismatch
-returns `repair_phase_configuration`; use one consistent installed build rather
-than borrowing another version's files. A declared run manifest must also match
-the current checkout. Recover only that binding through the named action.
-Existing runs keep their sealed settings; onboarding never adopts old Plan or
-Design artifacts as inputs to a fresh Product phase.
+Use `verified` only after observing the rendered view, or `blocked` with the host
+restriction and artifact fallback. The receipt binds the run, visit and revision
+without approving anything. A new revision needs a fresh handoff. Stop catches
+missing setup, unsubmitted phase output and missing handoff, including read-only
+reviews, without forcing repeated continuation.
 
-## Context storage (token efficiency)
+For real missing input, ask through the native question tool or use `flow wait
+--workspace /project --note 'Need the requested comparison revision'` and state the
+question. This records a wait, not completion; all write/approval checks remain.
+New user input or further tool work clears it.
 
-Fill all **four context docs** with your project's reality:
+If no hook activity appears, inspect the effective host settings and plugin loading
+errors. A manual hook command is a diagnostic, not evidence Desktop executed it.
 
-- `current-state.md` records what is already built and running; fill it first
-  for a brownfield repository.
-- `product.md` records the user, problem, boundaries, and Direction / north star
-  that `tp-northstar` measures against.
-- `tech-stack.md` records the languages, frameworks, services, and technical
-  constraints.
-- `workflow.md` records how the team builds, tests, reviews, and releases.
+## Select an approval mode
 
-From then on decisions, requirements, tracked debt, and the dependency graph
-accumulate in an **ignored per-project store**
-(`.taskplane/projects/<key>/` — `tp kb where` shows the resolved path).
-Every loop step recalls only the
-few records *relevant to the task at hand* instead of re-reading the repo or
-replaying history, so context stays small and the token bill goes down as
-the project's memory grows. Where that store lives is plan-aware: on a
-personal plan it stays under ignored `.taskplane/` (nothing to commit or push);
-on a Team/Enterprise plan shared knowledge lives at
-`.taskplane-kb/` and is committed deliberately so the team shares one
-registry. Either way `kb lint` — a marker scan enforced fail-closed at the
-DoD and engineering-review gates — keeps prompt text and pricing out of it,
-and the zero-token dependency graph answers blast-radius questions without
-spending model calls at all.
+Manual mode needs no setup. Review the concrete checkpoint and use `approve`,
+`approved`, `Changes requested: <reason>`, `reject` or `cancel`.
 
-Existing runs retain their recorded storage location. Selecting project-local
-execution does not move or reset an active run. An unused preflight binding may
-be explicitly replaced after the engine verifies that no execution has started;
-the previous binding is retained for audit. An active run requires its named
-recovery or migration action.
+For autonomous continuation, give explicit additional instructions, for example:
 
-For explicit setup, `tp onboard --execution-storage project --json` selects the
-project's `.taskplane/` home. `tp onboard --install-launcher --json` restores
-only the local launcher. `--install-codex-hooks` remains a compatibility alias
-for that same operation; it never registers a project hook copy. Inline form
-submissions use `tp onboard --apply-setup - --json` with the structured JSON on
-stdin. Context edits carry the previously observed digest, so stale forms cannot
-silently overwrite newer project context. Effective phase model and reasoning
-settings are editable: use common choices for all phases, or open Advanced for
-individual overrides. Preferences are saved in ignored `.taskplane/settings.json`
-and apply to new runs. Existing runs retain their exact sealed settings.
-Environment overrides still take priority and are disclosed in the form.
-Use `inherit` or a model ID available in the current host; dispatch checks host
-availability. Reasoning choices come from the existing settings validator.
+> For this task, auto-approve Product, Design, Plan and Build after required checks
+> pass. Stop before Evaluate. Pause for failed or unknown conditions and scope changes.
 
-A failed save retains the entered values in the returned report and offers
-Retry save. Render that report directly so its error and edits remain visible;
-a fresh readiness check intentionally reloads the saved values. If another
-save changed the settings, refresh and reapply your edits.
+The orchestrator records the real message, normalized phases/stops/conditions and
+scope under `flow policy`. Inspect the dashboard's interpretation. The original
+instructions are always an observed condition that must have sealed evidence and
+an explanation at each automatic decision. Unclear consent or ambiguous conditions
+require clarification; no generic implementation request opts in.
 
-The existing action-budget gate displays used/allowed actions and asks for an
-explicit grant before work continues. The existing `loop resolve limits-advisory`
-continuation requires human approval and is labelled **Ignore limits for this
-run only — advisory**. It is never persisted as a setup preference or a default
-for future runs. An unavailable continuation stays paused.
+Automatic approval requires submitted evidence, current scope and revision, no known
+live work, and passing conditions. It does not authorize scope expansion, extra
+visits or protected-host capabilities. Say **“Return to manual approval”** to revoke.
+Human intervention and evidence drift suspend continuation. A pause is not an
+invitation to repeat unchanged automatic-decision attempts.
 
-The T-01 implementation owner must correct or revert the affected changes if
-any core journey fails before delivery acceptance. Use the focused onboarding
-checks and existing phase gates; earlier drafts are not completion evidence.
+## Recover the dashboard and graph
 
-Then you're governed from the first task.
+Regenerate with the exact `--workspace` and `--run`, then refresh the existing tab.
+Compare its generation time with the new result. Static mode does not monitor
+freshness or fetch updated state automatically. Per-generation snapshots remain
+available as `snapshot-*.html` and `snapshot-*.json` under `.taskplane/`.
+
+The graph shows observed source relationships, with planned scope or actual changes
+explicitly identified. Task prerequisites appear separately. The default focus is
+two hops; Full repository contains omitted nodes. A current label requires a
+workspace-bound scan receipt and matching source/resolution inputs, including dirty
+files. Run `graph --workspace PATH scan --decompose --strict` when needed, then
+regenerate. A matching Git commit alone does not establish freshness. Aggregate
+component evidence does not imply an exact source-line witness.
+
+When browser presentation is denied, report the limitation and provide the file
+link. Do not route the same denied artifact through an alternate server or surface.
+Keep generated, opening requested and visibly verified as distinct observations.
+
+## Updating and diagnosing failures
+
+Update from the same permitted source, reload as directed, verify the installed
+runtime, review changed hooks and repeat first-task checks. Keep active workflow
+state intact. If a package changes supported schemas, follow its documented migration;
+do not silently copy or reset the old control store.
+
+For missing skills, check installation and session loading. For skipped hooks,
+check current trust/enablement and plugin-root/Python resolution. For wrong views,
+check run and checkout before regenerating. For unavailable usage, inspect coverage
+and native log access. For state/source audit errors, preserve evidence and correct
+the named issue; a refused operation is not an approval. See
+[CLI contracts and coverage limits](cli-reference.md).

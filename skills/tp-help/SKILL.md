@@ -10,12 +10,17 @@ or a command's `--help` output. Do not run onboarding, inventory tools, activate
 contract, or render a setup dashboard just to explain the product.
 
 Ordinary code review uses native tools and [engineering](../tp-engineering/SKILL.md).
-The orchestrator prepares delivery; humans accept each phase checkpoint. Hooks
+The orchestrator prepares delivery; humans accept checkpoints by default.
+Explicit user instructions can authorize run-bound automatic phase approvals. Hooks
 separate mandatory workflow refusals from advisory usage. The default native_workflow
 profile uses local state and observed human provenance. Host-wide protections are
 unavailable; protected_host requires a verified owner. Native permissions remain separate. Use `flow report`
 for human decisions, recorded milestones and available token usage.
 For actual setup or a concrete installation failure, consult
-[CLI reference](../../docs/cli-reference.md).
+[onboarding](../../docs/onboarding.md) and [CLI reference](../../docs/cli-reference.md).
 Explain only the requested concept; load no full manuals or hook manifests as a tour.
 For a question about phase policy, consult [the shared flow](../tp-go/references/shared-flow.md).
+
+Explain that plugin installation, hook trust, phase acceptance and host tool permissions
+are separate. Automatic mode requires explicit additional instructions; show a concise
+example and how to return to manual mode when requested.

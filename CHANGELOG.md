@@ -1,5 +1,16 @@
 # taskplane changelog
 
+## v2.27.0 — onboarding, autonomous approvals and execution harness
+
+- Document current Codex/Claude installation, first-task onboarding and post-installation hook review/trust, replacing retired setup commands.
+- Keep manual phase approval as the default; add explicit run-bound automatic approval policies, evidence-backed conditions, separate policy decisions, revocation and replay protection.
+- Publish native dashboard snapshots for an exact run, with phase/visit and cumulative token coverage, static-refresh instructions, captured graph/task context and workspace-bound graph provenance.
+- Validate manual/autonomous native journeys, negative authorization cases, snapshot isolation, counter gaps and extracted Codex/Claude packages.
+
+- Activate the harness before initialization for shipped execution prompts, skills and standalone reviews; enforce current phase evidence and native dashboard handoff on completion and resume.
+- Preserve complete checkpoint history with compact storage under the existing limit; distinguish saved counter times, task observations and current dashboard publication.
+- Include the onboarding guide in both distributable packages.
+
 ## v2.26.0 — native workflow gates and shared phase evidence
 
 - Restore explicit human acceptance at every Product, Design, Plan, Build,

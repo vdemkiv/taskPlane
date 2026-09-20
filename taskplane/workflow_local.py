@@ -10,12 +10,13 @@ from datetime import datetime
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
 import stat
 import sys
-from typing import Any
+from typing import Any, cast
 
 from . import primitives, storage, workflow as w, workflow_evidence as evidence
 
@@ -221,7 +222,7 @@ class LocalWorkflow:
             return False
         if (len(words) < 4 or Path(shutil.which(words[0]) or "/nonexistent").resolve() != Path(sys.executable).resolve()
                 or (self.workspace/words[1]).resolve() != Path(__file__).with_name("tp.py").resolve()
-                or words[2] != "flow" or words[3] not in {"report", "decide", "advance", "finish"}):
+                or words[2] != "flow" or words[3] not in {"report", "decide", "advance", "finish", "policy", "auto-decide", "activate", "present", "wait"}):
             return False
         # An exact control command still goes through the Controller checks.
         if "--workspace" not in words:
@@ -263,3 +264,242 @@ class LocalWorkflow:
                       "scope_violation", "Observed handle cannot reopen or cross grants.")
         handles[key] = {"visit": w.current(state)["id"], "revision": state["revision"],
                         "state": new_state}
+
+
+EXECUTION_ENTRIES = {'taskplane', 'tp-go', 'tp-tag', 'tp-build', 'tp-product',
+                     'tp-design', 'tp-engineering', 'tp-northstar'}
+READ_TOOLS = {'Read', 'read_file', 'list_files', 'search_files', 'Grep', 'Glob'}
+QUESTION_TOOLS = {'AskUserQuestion', 'request_user_input', 'request_user_input_async'}
+
+
+def command_words(event: dict[str, Any]) -> list[str]:
+    args = event.get('tool_input', {})
+    command = args.get('cmd', args.get('command', '')) if isinstance(args, dict) else ''
+    if not isinstance(command, str) or any(c in command for c in ';&|<>$`\n\r'):
+        return []
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def execution_entry(event: dict[str, Any]) -> str | None:
+    """Recognize explicit execution selection, never arbitrary mentions or approval."""
+    args = event.get('tool_input', {})
+    if not isinstance(args, dict):
+        return None
+    tool = event.get('tool_name') or event.get('tool')
+    if tool == 'Skill':
+        name = args.get('skill', '')
+        if isinstance(name, str) and name.startswith('taskplane:') and name[10:] in EXECUTION_ENTRIES:
+            return name[10:]
+    # Codex can load skills through a native read instead of a Skill event.
+    paths = [args.get('file_path') or args.get('path')] if tool in READ_TOOLS else []
+    words = command_words(event) if tool in {'Bash', 'exec_command'} else []
+    if words and words[0] == 'cat':
+        paths += words[1:]
+    for value in paths:
+        if isinstance(value, str):
+            path = Path(value)
+            for entry in EXECUTION_ENTRIES:
+                if path.is_absolute() and path.resolve() == Path(__file__).resolve().parents[1]/'skills'/entry/'SKILL.md':
+                    return entry
+    if event.get('hook_event_name') != 'UserPromptSubmit':
+        return None
+    prompt = event.get('prompt', '')
+    if not isinstance(prompt, str):
+        return None
+    # Only a direct prefix is an activation signal. Quoted examples and questions
+    # are not interpreted as execution instructions. No text here grants consent.
+    text = prompt.strip().casefold()
+    match = re.match(r'^(?:\$|/)(?:taskplane:)?(tp-[a-z]+|taskplane)\b', text)
+    if match:
+        return match[1] if match[1] in EXECUTION_ENTRIES else None
+    # The menu and README also use bare directives. Route by their leading
+    # action, so a Build request mentioning design/review keeps its full route.
+    bare = re.match(r'^(?:please\s+)?taskplane\s+(build|implement|design|review|audit|product)\b', text)
+    if bare:
+        return {'design': 'tp-design', 'review': 'tp-engineering',
+                'audit': 'tp-engineering', 'product': 'tp-product'}.get(bare[1], 'taskplane')
+    tagged = re.match(r'^\[@taskplane\]\(plugin://taskplane[^)]*\)', text)
+    direct = re.match(r'^(?:please\s+)?(?:use|run|invoke|start|resume)\s+(?:the\s+)?taskplane\b', text)
+    if not (tagged or direct):
+        return None
+    prefix = tagged or direct
+    assert prefix is not None
+    tail = text[prefix.end():].strip(' :,-')
+    if re.match(r'^(?:to\s+)?(?:help|status|explain|show\s+(?:the\s+)?status)\b', tail):
+        return None
+    if re.search(r'\b(review|audit)\b', tail):
+        return 'tp-engineering'
+    if re.search(r'\bdesign\b', tail):
+        return 'tp-design'
+    if re.search(r'\b(product|requirements|specification)\b', tail):
+        return 'tp-product'
+    return 'taskplane'
+
+
+class Harness:
+    """Observed session engagement; separate from phase grants and host authority."""
+
+    def __init__(self, workspace: Path, root: str):
+        self.workspace, self.root = workspace.resolve(), root
+        key = hashlib.sha256(root.encode()).hexdigest()[:32]
+        self.path = storage.runtime_file(str(self.workspace), f'harness-{key}.json')
+
+    def read(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {}
+        w.require(self.path.stat().st_size <= 16384, 'state_unavailable', 'Harness record exceeds its size bound.')
+        data = json.loads(self.path.read_text())
+        w.require(isinstance(data, dict) and data.get('schema') == 'taskplane.harness/v1'
+                  and data.get('workspace') == str(self.workspace) and data.get('root') == self.root,
+                  'state_unavailable', 'Harness identity is corrupt; restore this session record before continuing.')
+        return cast(dict[str, Any], data)
+
+    def update(self, **values: Any) -> dict[str, Any]:
+        with primitives.file_lock(str(self.path)):
+            data = self.read() or {'schema': 'taskplane.harness/v1', 'workspace': str(self.workspace), 'root': self.root}
+            data.update(values)
+            primitives.atomic_json(self.path, data, strict_directory_sync=True)
+            return data
+
+    def select(self, entry: str, reference: str, state: dict[str, Any]) -> None:
+        w.require(entry in EXECUTION_ENTRIES or entry in w.PHASES, 'invalid_evidence', 'Choose a Taskplane execution entry.')
+        w.require(isinstance(reference, str) and 0 < len(reference) <= 512, 'invalid_evidence', 'Identify the execution request.')
+        previous = self.read()
+        active = state.get('run') if state.get('visits') and not state.get('finished') else None
+        values: dict[str, Any] = {'entry': entry, 'request_reference': reference, 'selected': True, 'waiting': None}
+        if previous.get('run') != active:
+            values.update(run=active, presentation=None)
+        self.update(**values)
+
+    def bind(self, state: dict[str, Any]) -> None:
+        previous = self.read()
+        if previous.get('run') != state['run'] or not previous.get('selected'):
+            self.update(selected=True, entry=previous.get('entry', w.current(state)['phase']),
+                        run=state['run'], waiting=None, presentation=None)
+
+    def binding(self, state: dict[str, Any]) -> dict[str, Any]:
+        return {'run': state.get('run'), 'visit': w.current(state)['id'] if state.get('visits') else None,
+                'revision': state.get('revision')}
+
+    def wait(self, state: dict[str, Any], reason: str) -> None:
+        w.require(self.read().get('selected'), 'state_unavailable', 'No Taskplane execution selected.')
+        w.require(isinstance(reason, str) and 0 < len(reason.strip()) <= 2048, 'invalid_evidence', 'Describe the missing user input.')
+        self.update(waiting={'binding': self.binding(state), 'reason': reason.strip()})
+
+    def readiness(self, state: dict[str, Any]) -> dict[str, Any]:
+        data = self.read()
+        active = bool(state.get('visits') and not state.get('finished'))
+        return {'status': 'active' if active else 'initialization_required' if data.get('selected') and not state.get('finished') else 'inactive',
+                'hook_observed': bool(data.get('hook_observed')), 'entry': data.get('entry'),
+                'binding': self.binding(state), 'presentation': data.get('presentation'),
+                'assurance': 'observed; not host authentication'}
+
+    def guidance(self, state: dict[str, Any]) -> str:
+        if not state.get('visits'):
+            entry = self.read().get('entry', 'taskplane')
+            phase = {'tp-engineering': 'engineering', 'tp-northstar': 'engineering',
+                     'tp-design': 'design', 'tp-product': 'product'}.get(entry)
+            route = f'--standalone --phase {phase}' if phase else 'the requested route (Product for full delivery)'
+            return ('Taskplane selected; initialization required before implementation or completing the review. '
+                    'Prepare exact scope/evidence under .taskplane/bootstrap/, then run the installed tp.py flow start with '
+                    f'{route}, --scope and --request-reference. Read/search, loading skills, asking the user and exact '
+                    'Taskplane setup commands remain available. Standalone review does not require seven delivery phases.')
+        stage = w.current(state)
+        return (f'Taskplane harness active: run {state["run"]}, {stage["phase"]} visit {stage["id"]}, revision {state["revision"]}. '
+                f'Use the native dashboard at {self.workspace / ".taskplane/dashboard.html"}. '
+                'After submitting phase evidence, provide the exact dashboard link/open result and record flow present. '
+                'A queued open is not verified display. If user input is needed, record flow wait --note with the actual reason.')
+
+    def bootstrap_command(self, event: dict[str, Any]) -> bool:
+        words = command_words(event)
+        if words == ['pwd'] or words == ['rg', '--files']:
+            return True
+        if words and words[0] == 'cat' and len(words) > 1 and all(not p.startswith('-') for p in words[1:]):
+            return True
+        if (len(words) < 3 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
+                or (self.workspace/words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()):
+            return False
+        if words[2] in {'help', 'version'}:
+            return True
+        if '--workspace' not in words:
+            return False
+        index = words.index('--workspace') + 1
+        if index >= len(words) or (self.workspace/words[index]).resolve() != self.workspace:
+            return False
+        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'start', 'report', 'wait'})
+                or words[2] == 'graph' and 'scan' in words[3:]
+                or words[2:4] == ['review', 'start'])
+
+    def guard_bootstrap(self, event: dict[str, Any], state: dict[str, Any]) -> None:
+        tool = event.get('tool_name') or event.get('tool')
+        args = event.get('tool_input', {})
+        w.require(isinstance(args, dict), 'scope_violation', self.guidance(state))
+        if tool in READ_TOOLS | QUESTION_TOOLS or execution_entry(event):
+            return
+        if tool == 'Skill' and args.get('skill') in {'taskplane:tp-help', 'taskplane:tp-status'}:
+            return
+        if tool in {'Bash', 'exec_command'} and self.bootstrap_command(event):
+            return
+        targets = []
+        if tool in {'Write', 'Edit', 'write_file', 'edit_file'}:
+            targets = [args.get('file_path') or args.get('path')]
+        elif tool == 'apply_patch':
+            patch = args.get('input', args.get('patch', ''))
+            if isinstance(patch, str):
+                targets = [line.split(': ', 1)[1] for line in patch.splitlines()
+                           if line.startswith(('*** Add File: ', '*** Update File: ', '*** Delete File: ', '*** Move to: '))]
+        for value in targets:
+            w.require(isinstance(value, str), 'scope_violation', self.guidance(state))
+            path = Path(value)
+            if path.is_absolute() and path.is_relative_to(self.workspace):
+                value = str(path.relative_to(self.workspace))
+            w.require(value.startswith('.taskplane/bootstrap/'), 'scope_violation', self.guidance(state))
+            evidence.path(self.workspace, value)
+        w.require(bool(targets), 'scope_violation', self.guidance(state))
+
+    def present(self, state: dict[str, Any], artifact: str, outcome: str, note: str) -> None:
+        w.require(state.get('visits'), 'state_unavailable', 'Initialize the harness before dashboard handoff.')
+        w.require(outcome in {'linked', 'verified', 'blocked'} and 0 < len(note.strip()) <= 2048,
+                  'invalid_evidence', 'Record the actual link/open outcome and its evidence or limitation.')
+        target = evidence.path(self.workspace, artifact)
+        w.require(target.name == 'dashboard.html' or re.fullmatch(r'snapshot-[a-f0-9-]+\.html', target.name),
+                  'invalid_evidence', 'Use the native dashboard or its immutable snapshot.')
+        if target.name == 'dashboard.html':
+            selection = json.loads(target.with_suffix('.selection.json').read_text())
+            immutable = Path(selection['snapshot'])
+            w.require(immutable.is_relative_to(self.workspace/'.taskplane'), 'invalid_evidence', 'Foreign dashboard snapshot.')
+            immutable = evidence.path(self.workspace, str(immutable.relative_to(self.workspace)))
+            w.require(target.read_bytes() == immutable.read_bytes(), 'stale_checkpoint', 'Dashboard bytes differ from selected snapshot.')
+        else:
+            immutable = target
+        model_path = evidence.path(self.workspace, str(immutable.with_suffix('.json').relative_to(self.workspace)))
+        snapshot = json.loads(model_path.read_text()).get('snapshot', {})
+        expected = self.binding(state)
+        w.require(all(snapshot.get(k) == v for k,v in expected.items()) and snapshot.get('workspace') == str(self.workspace)
+                  and snapshot.get('root') == self.root and not snapshot.get('historical'),
+                  'stale_checkpoint', 'Regenerate the native dashboard for the current run, visit and revision.')
+        self.update(presentation={'binding': expected, 'artifact': str(immutable), 'outcome': outcome,
+                                  'note': note.strip(), 'assurance': 'observed', 'digest': hashlib.sha256(immutable.read_bytes()).hexdigest()}, waiting=None)
+
+    def stop(self, event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        data = self.read()
+        if not data.get('selected') or state.get('finished') or state.get('status') == 'cancelled':
+            return {}
+        waiting = data.get('waiting') or {}
+        if waiting.get('binding') == self.binding(state):
+            return {'systemMessage': 'Taskplane waiting for user input: ' + waiting['reason']}
+        if not state.get('visits'):
+            reason = self.guidance(state)
+        elif state.get('invalidation_pending'):
+            reason = 'Taskplane evidence is stale; resolve the current phase before reporting completion.'
+        elif w.current(state)['decision'] in {'not_requested', 'changes_requested', 'rejected', 'stale'}:
+            reason = 'Taskplane phase evidence is not submitted. Submit the review/current phase and present its native dashboard before completing.'
+        elif (data.get('presentation') or {}).get('binding') != self.binding(state):
+            reason = 'Taskplane dashboard handoff is missing for this checkpoint. Link/open the current native dashboard and record flow present with the actual outcome.'
+        else:
+            return {}
+        # One corrective continuation, never a forced loop while the user waits.
+        return {'systemMessage': reason} if event.get('stop_hook_active') else {'decision': 'block', 'reason': reason}

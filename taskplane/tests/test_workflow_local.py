@@ -173,7 +173,7 @@ def test_native_prompt_needs_envelope_and_journal_failure_keeps_decision(tmp_pat
     monkeypatch.setattr(flow,"_observe_hook",failed)
     value=decision(s);value["source"]["kind"]="native_prompt";value["recorder"]="native_prompt_hook"
     event["taskplane_decision"]=value
-    assert flow.hook(event)=={}
+    assert "harness active" in flow.hook(event)["hookSpecificOutput"]["additionalContext"]
     resumed=h.Controller(c.workspace,"root",h.installed_adapter("codex"))
     assert resumed.report()["status"]=="approved"
     assert resumed.report()["phase"]=="product"
@@ -210,6 +210,35 @@ def check_store_byte_boundary(c, monkeypatch, payload, margin):
 def test_local_persisted_byte_boundary_preserves_readable_state(tmp_path, monkeypatch, payload, margin):
     c, _ = setup(tmp_path)
     check_store_byte_boundary(c, monkeypatch, payload, margin)
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_compact_write_reads_legacy_state_and_preserves_prior_acceptance(tmp_path, host):
+    c, s = setup(tmp_path)
+    s = decide(c, submit(c, s))
+    c = h.Controller(c.workspace, c.root, h.installed_adapter(host))
+    target = c.adapter.control_path(c.workspace, c.root)
+    accepted = json.loads(target.read_bytes())
+    legacy = (json.dumps(accepted, sort_keys=True, indent=2, ensure_ascii=True) + '\n').encode()
+    target.write_bytes(legacy)
+    assert c.report()['status'] == 'approved'
+    assert target.read_bytes() == legacy  # Reading does not rewrite old evidence.
+    s = c.apply('advance', s['run'], expected_revision=s['revision'], phase='design')
+    s = submit(c, s)
+    raw = target.read_bytes()
+    persisted = json.loads(raw)
+    assert raw == (json.dumps(persisted, sort_keys=True, separators=(',', ':'),
+                              ensure_ascii=True, allow_nan=False) + '\n').encode()
+    assert len(raw) < len((json.dumps(persisted, sort_keys=True, indent=2) + '\n').encode())
+    old = accepted['runs'][s['run']]
+    current = persisted['runs'][s['run']]
+    assert current['decisions'] == old['decisions']
+    assert current['visits'][0] == old['visits'][0]
+    assert current['scope'] == old['scope']
+    resumed = h.Controller(c.workspace, c.root, h.installed_adapter(host)).report()
+    assert resumed['status'] == 'awaiting_human_approval' and resumed['revision'] == s['revision']
+    assert not resumed.get('invalidation_pending')
+    assert target.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize('failure_call', [1, 2])
@@ -315,3 +344,209 @@ def test_local_historical_finish_preserves_active_run_and_refusals(tmp_path):
         c.apply('finish', a['run'], expected_revision=stale['revision'])
     assert target.read_bytes() == before
     assert c.report()['run'] == b['run'] and c.report()['revision'] == b['revision']
+
+
+def task_observation_checkpoint(workspace, *, legacy=False, host="codex"):
+    """Accepted native Build with the shared task file in its approved write scope."""
+    from unittest.mock import patch
+    from taskplane import workflow_evidence as evidence, depgraph
+    state,_,_=prepare(workspace)
+    (workspace/'build-check.txt').write_text('Fixture Build check passed')
+    (workspace/'check.txt').write_text('Observed fixture check result')
+    task_path='.taskplane/tasks.json'
+    state['scope']['paths']['build'].append(task_path)
+    c=h.Controller(workspace.resolve(),'root',h.installed_adapter(host))
+    s=c.start({'scope':state['scope'],'request_reference':'test/EV-F02'})
+    raw_manifest=evidence.manifest
+    for phase in ('product','design','plan','build'):
+        _,out,tasks=prepare(workspace,phase)
+        tasks['tasks'][0]['paths'].append(task_path)
+        (workspace/task_path).write_text(json.dumps(tasks))
+        out.update(run=s['run'],visit=w.current(s)['id'])
+        if phase=='plan':out.update(write_scope=state['scope']['paths']['build'],task_dag=tasks['tasks'])
+        (workspace/(phase+'.json')).write_text(json.dumps(out))
+        depgraph.scan(str(workspace),decompose=True,strict=True)
+        # Construct an old byte-manifest packet at creation time, never rewrite
+        # an accepted packet or its decision to simulate an upgrade.
+        def manifest_before_repair(root,paths,*,allow_missing=False,**kwargs):
+            return raw_manifest(root,paths,allow_missing=allow_missing)
+        with patch.object(evidence,'manifest',manifest_before_repair if legacy else raw_manifest):
+            s=c.apply('submit',s['run'],expected_revision=s['revision'],output=phase+'.json',tasks=task_path)
+        s=decide(c,s,decision(s,event='human-'+phase))
+        s=c.apply('advance',s['run'],expected_revision=s['revision'],phase=w.PHASES[w.PHASES.index(phase)+1])
+    return c,s,task_path
+
+
+@pytest.mark.parametrize('field,value',[('status','working'),('started_at','2026-09-17T20:00:00Z'),('completed_at',None),('updated_at','2026-09-17T20:00:01Z'),('elapsed_seconds',1.5)])
+def test_task_observation_edits_do_not_stale_accepted_build(tmp_path,field,value):
+    c,s,relative=task_observation_checkpoint(tmp_path)
+    store=c.adapter.control_path(c.workspace,c.root);before=store.read_bytes()
+    path=tmp_path/relative;tasks=json.loads(path.read_text());tasks['tasks'][0][field]=value;path.write_text(json.dumps(tasks))
+    report=c.report()
+    assert not report.get('invalidation_pending') and report['status']=='not_requested'
+    assert next(v for v in report['visits'] if v['phase']=='build')['decision']=='approved'
+    assert store.read_bytes()==before
+
+
+@pytest.mark.parametrize('field,value',[('owner','different'),('dependencies',['unknown']),('paths',['other.py']),('criteria',['AC2']),('verification','Different check'),('title','Different instruction'),('extra_scope',['other.py'])])
+def test_task_definition_edits_still_stale_accepted_build(tmp_path,field,value):
+    c,s,relative=task_observation_checkpoint(tmp_path)
+    path=tmp_path/relative;tasks=json.loads(path.read_text());tasks['tasks'][0][field]=value;path.write_text(json.dumps(tasks))
+    assert c.report().get('invalidation_pending')
+
+
+@pytest.mark.parametrize('change',['wrapper','missing','malformed','source'])
+def test_task_manifest_preserves_other_evidence_checks(tmp_path,change):
+    c,s,relative=task_observation_checkpoint(tmp_path)
+    path=tmp_path/relative
+    if change=='wrapper':
+        tasks=json.loads(path.read_text());tasks['instructions']='New requirement';path.write_text(json.dumps(tasks))
+    elif change=='missing':path.unlink()
+    elif change=='malformed':path.write_text('{')
+    else:(tmp_path/'app.py').write_text('value = 99\n')
+    assert c.report().get('invalidation_pending')
+
+
+def test_legacy_task_manifest_remains_strict_without_rewriting_acceptance(tmp_path):
+    c,s,relative=task_observation_checkpoint(tmp_path,legacy=True)
+    store=c.adapter.control_path(c.workspace,c.root);before=store.read_bytes()
+    assert not c.report().get('invalidation_pending')
+    path=tmp_path/relative;tasks=json.loads(path.read_text());tasks['tasks'][0]['status']='working';path.write_text(json.dumps(tasks))
+    assert c.report().get('invalidation_pending')
+    assert store.read_bytes()==before
+
+
+@pytest.mark.parametrize('entry',['taskplane','tp-go','tp-tag','tp-build','tp-product','tp-design','tp-engineering','tp-northstar'])
+def test_execution_selection_requires_harness_before_writes_and_completion(tmp_path,entry):
+    from taskplane import flow
+    event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
+           'tool_name':'Skill','tool_input':{'skill':'taskplane:'+entry}}
+    selected=flow.hook(event)
+    assert 'Taskplane' in selected['hookSpecificOutput']['additionalContext']
+    with pytest.raises(w.Refusal,match='initializ'):
+        flow.hook(event|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}})
+    stopped=flow.hook(event|{'hook_event_name':'Stop'})
+    assert stopped['decision']=='block' and 'initializ' in stopped['reason']
+    assert 'decision' not in flow.hook(event|{'hook_event_name':'Stop','stop_hook_active':True})
+    assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
+
+
+@pytest.mark.parametrize('prompt',[
+    'What is Taskplane?', 'Use taskplane help', 'Use taskplane status',
+    'Document "Use taskplane to review code." in README.',
+    '> Use taskplane to review code.', '```text\nUse taskplane to review code.\n```',
+    'Do not use taskplane for this review.', 'Example: Use taskplane to review code.',
+    'taskplane help', 'taskplane status', 'taskplane is a workflow plugin.',
+    'Document "taskplane build this feature" as an example.',
+    '> taskplane build this feature', '```text\ntaskplane build this feature\n```',
+    'Do not taskplane build this feature.', 'taskplaner build this feature',
+])
+def test_harness_does_not_activate_for_nonexecution_requests(tmp_path,prompt):
+    from taskplane import flow
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':prompt})=={}
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})=={}
+
+
+@pytest.mark.parametrize('prompt',[
+    'Use taskplane to review this code.', 'Use Taskplane to design a change.',
+    '$tp-engineering review this code', '/taskplane:tp-product define the outcome',
+    '[@taskplane](plugin://taskplane@openai-curated-remote) review this code',
+])
+def test_execution_prompt_arms_session_bound_gate(tmp_path,prompt):
+    from taskplane import flow
+    result=flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':prompt})
+    assert 'initializ' in result['hookSpecificOutput']['additionalContext']
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'unrelated','hook_event_name':'Stop'})=={}
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})['decision']=='block'
+
+
+def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
+    from taskplane import flow
+    c,s=setup(tmp_path)
+    event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'SessionStart','source':'resume'}
+    run=s['run']
+    for i,phase in enumerate(w.PHASES):
+        result=flow.hook(event,governor=c)
+        assert phase+' visit' in result['hookSpecificOutput']['additionalContext']
+        assert run in result['hookSpecificOutput']['additionalContext']
+        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+        s=submit(c,s)
+        page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
+        harness=local.Harness(c.workspace,c.root)
+        harness.present(c.report(),str(page.relative_to(c.workspace)),'linked','Fixture link provided without display assertion')
+        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)=={}
+        s=decide(c,s,decision(s,event='resume-human-'+phase))
+        s=c.apply('advance' if i<6 else 'finish',run,expected_revision=s['revision'],phase=w.PHASES[i+1] if i<6 else '')
+    assert len(s['decisions'])==7 and s['finished']
+    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)=={}
+    selected=flow.hook(event|{'hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review the next change.'},governor=c)
+    assert 'initialization required' in selected['hookSpecificOutput']['additionalContext']
+    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+
+
+@pytest.mark.parametrize('bad',['source','metadata','escape','shell','compound','foreign_workspace','symlink'])
+def test_harness_bootstrap_does_not_grant_source_or_state_access(tmp_path,bad):
+    import shlex,sys
+    from pathlib import Path
+    from taskplane import flow
+    base={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review code.'}
+    flow.hook(base)
+    path='app.py'
+    if bad=='metadata':path='.taskplane/workflow-forged.json'
+    if bad=='escape':path='.taskplane/bootstrap/../../app.py'
+    if bad=='symlink':
+        (tmp_path/'.taskplane/bootstrap').mkdir()
+        (tmp_path/'.taskplane/bootstrap/link').symlink_to(tmp_path)
+        path='.taskplane/bootstrap/link/app.py'
+    tool={'tool_name':'Write','tool_input':{'file_path':str(tmp_path/path),'content':'source'}}
+    if bad in {'shell','compound','foreign_workspace'}:
+        cmd='python3 -c "print(1)"'
+        if bad=='compound':cmd='cat app.py; touch app.py'
+        if bad=='foreign_workspace':cmd=shlex.join([sys.executable,str(Path(flow.__file__).with_name('tp.py')),'flow','start','--workspace',str(tmp_path.parent)])
+        tool={'tool_name':'Bash','tool_input':{'command':cmd}}
+    with pytest.raises(w.Refusal):flow.hook(base|{'hook_event_name':'PreToolUse',**tool})
+
+
+def test_harness_installed_skill_read_is_an_execution_entry(tmp_path):
+    from pathlib import Path
+    from taskplane import flow
+    path=Path(flow.__file__).resolve().parents[1]/'skills/tp-engineering/SKILL.md'
+    event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse','tool_name':'Read','tool_input':{'file_path':str(path)}}
+    assert 'initialization required' in flow.hook(event)['hookSpecificOutput']['additionalContext']
+    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
+
+
+def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
+    from taskplane import flow
+    c,s=setup(tmp_path);harness=local.Harness(c.workspace,c.root)
+    harness.bind(s)
+    harness.wait(c.report(),'Need a comparison revision')
+    assert 'waiting' in harness.stop({},c.report())['systemMessage']
+    s=submit(c,s)
+    assert harness.stop({},c.report())['decision']=='block'
+    page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
+    harness.present(c.report(),str(page.relative_to(c.workspace)),'blocked','Fixture link available and host opening unavailable')
+    assert harness.stop({},c.report())=={}
+    changed=deepcopy(c.report());changed['run']='another-run'
+    with pytest.raises(w.Refusal,match='current run'):harness.present(changed,str(page.relative_to(c.workspace)),'verified','An incorrect claim')
+    assert harness.stop({},changed)['decision']=='block'
+    raw=harness.read();raw['workspace']='foreign';harness.path.write_text(json.dumps(raw))
+    with pytest.raises(w.Refusal,match='identity'):harness.read()
+
+
+@pytest.mark.parametrize('prompt,entry',[
+    ('taskplane build a design tool and review the result.','taskplane'),
+    ('Taskplane implement this feature with a product specification.','taskplane'),
+    ('Please taskplane design the review page.','tp-design'),
+    ('taskplane review the product design.','tp-engineering'),
+    ('taskplane audit this implementation.','tp-engineering'),
+    ('taskplane product define acceptance criteria.','tp-product'),
+])
+def test_bare_execution_directive_keeps_its_requested_route(tmp_path,prompt,entry):
+    from taskplane import flow
+    event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':prompt}
+    flow.hook(event)
+    harness=local.Harness(tmp_path,'root')
+    assert harness.read()['entry']==entry
+    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
+    assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))

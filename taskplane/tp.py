@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "taskplane"))
 
-from taskplane import dashboard, depgraph, flow, graph_primitives, primitives, storage
+from taskplane import depgraph, flow, graph_primitives, primitives, storage
 
 
 def _git(workspace: str, *args: str) -> str:
@@ -120,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "graph":
             if args.action == "scan":
                 data = depgraph.scan(workspace, decompose=args.decompose)
+                flow.record_scan(Path(workspace), data)
                 result = {"modules": len(data["modules"]), "edges": len(data["edges"]),
                           "files": len(data["files"]), "stored": depgraph._path(workspace)}
                 if args.decompose:
@@ -142,13 +143,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(depgraph.to_html(workspace, files, out=args.out, focus=args.focus))
                     return 0
         elif args.command == "dashboard":
-            from taskplane import flow_dashboard
-            report = flow.report(Path(workspace), args.run)
-            document = dashboard.standalone_document(
-                [flow_dashboard.render(workspace, report)], title="Taskplane — delivery")
-            output = Path(args.out) if args.out else storage.runtime_file(workspace, "dashboard.html")
-            primitives.atomic_write_bytes(str(output), document.encode("utf-8"))
-            print(str(output.resolve()))
+            output = flow.publish_dashboard(Path(workspace), args.run,
+                output=Path(args.out) if args.out else None, select=bool(args.run))
+            print(str(output))
             return 0
         elif args.command == "lens":
             result = graph_primitives.route_verdicts(workspace, args.files.split(","), stage=args.stage)

@@ -5,6 +5,13 @@ description: Design how a requested change should work before implementation, wi
 
 # Design the requested change
 
+Before substantive work, resolve this installed plugin's runtime and run
+`flow activate --workspace <checkout> --phase tp-design --request-reference <actual-user-request>`.
+Inspect `flow report`: reuse the matching active visit or initialize the appropriate
+scoped run before continuing. This requirement includes standalone work and resumed
+stages; loading a skill alone grants no phase approval. See the shared flow for
+bootstrap, native dashboard handoff and legitimate user waits.
+
 Inspect the relevant requirements and current code with native tools. Reuse
 existing decisions. Describe the smallest workable approach, the interfaces and
 data it changes, meaningful alternatives, risks, and how success will be tested.
@@ -19,7 +26,7 @@ Keep detail proportionate to the change. Do not require a lens quota, signed
 artifact, or separate designer. The root
 orchestrator owns the handoff and assesses readiness from the actual design.
 A design-only request ends with the design; it does not authorize implementation.
-Present the design and wait for human approval of this checkpoint before continuing
+Present the design and resolve this checkpoint through the shared approval policy before continuing
 via [delivery](../tp-go/SKILL.md). Reuse an existing valid Design approval.
 
 Record useful milestones and refresh the shared dashboard throughout Design.
@@ -31,6 +38,7 @@ Standalone and delivery Design use the same run, task decomposition, dependency
 graph and dashboard defaults. Return evidence to that run; the root orchestrator
 owns stage advancement and respects Design-only scope.
 
-The shared flow requires explicit human approval at each phase checkpoint. Use
+The shared flow defaults to explicit human approval at each phase checkpoint.
+A recorded, explicit run policy may authorize automatic approval as described there. Use
 the dependency graph with source component decomposition, task DAG and shared
 dashboard throughout. Unsupported host authority must be reported, never bypassed.

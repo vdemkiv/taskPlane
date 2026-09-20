@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.26.0",
-  "description": "Human-gated delivery for Codex and Claude with shared dependency graphs, source and task decomposition, one dashboard, and explicit native host limits.",
+  "version": "2.27.0",
+  "description": "Shared delivery with manual checkpoints by default, explicitly authorized automatic phase approvals, one native dashboard, phase token coverage and source graph provenance.",
   "author": {
     "name": "Volodymyr Demkiv"
   },

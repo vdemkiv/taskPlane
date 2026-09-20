@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.26.0",
-  "description": "Human-gated delivery for Codex and Claude with shared dependency graphs, source and task decomposition, one dashboard, and explicit native host limits.",
+  "version": "2.27.0",
+  "description": "Shared delivery workflow with manual checkpoints, explicitly authorized autonomous approvals, native dashboards and advisory token usage.",
   "author": {
     "name": "Volodymyr Demkiv",
     "email": "vdemkiv@gmail.com",
@@ -22,23 +22,23 @@
   "interface": {
     "displayName": "taskplane",
     "shortDescription": "Deliver, measure, improve",
-    "longDescription": "Product, Design, Plan, Build, Evaluate, Engineering and Retro each require explicit human acceptance. Native workflow gates validate evidence, bind observed decisions to exact checkpoints and check covered scope paths. One dependency graph, source components, task DAG and dashboard serve every phase. Host-wide protection remains unavailable; token usage is advisory.",
+    "longDescription": "Product, Design, Plan, Build, Evaluate, Engineering and Retro share validated evidence, source components, a task DAG and one dashboard. Human checkpoints are the default; explicit run-bound instructions can authorize automatic phase approvals with conditions and stops. Show selected-run identity, phase usage and graph provenance. Native permissions and hook trust remain separate; host-wide protection is unavailable.",
     "developerName": "Volodymyr Demkiv",
     "category": "Developer Tools",
     "capabilities": [
-      "Require explicit human phase acceptance",
-      "Bind observed decisions to reviewed evidence and scope",
-      "Share dependency graphs, source components and task plans",
-      "Show workflow progress and native host limits honestly",
-      "Record available token usage as advisory evidence"
+      "Use manual checkpoints or explicitly authorized automatic phase approval",
+      "Bind human and policy decisions to reviewed evidence and scope",
+      "Share source graphs, components, task plans and one dashboard",
+      "Show run identity, phase token coverage and snapshot freshness",
+      "Preserve native permissions and explicit hook trust"
     ],
     "websiteURL": "https://github.com/vdemkiv/taskPlane",
     "privacyPolicyURL": "https://github.com/vdemkiv/taskPlane/blob/main/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/vdemkiv/taskPlane/blob/main/TERMS.md",
     "defaultPrompt": [
       "taskplane design this feature and present the Design checkpoint.",
-      "taskplane build this feature through human-approved stages.",
-      "taskplane review this branch without changing code."
+      "taskplane build this feature with manual phase approval.",
+      "taskplane build this feature; for this task auto-approve phases after required checks pass, pause on failures or scope changes, and stop before Retro."
     ],
     "brandColor": "#2563EB",
     "logo": "./assets/taskplane-logo.svg",
