@@ -103,7 +103,11 @@ def usage_details(m: dict[str, Any]) -> str:
     return html
 
 
-def _evidence(ws: str, path: str, model: dict[str, Any] | None = None) -> str:
+def _evidence(ws: str, path: Any, model: dict[str, Any] | None = None) -> str:
+    if isinstance(path, list):
+        return ''.join('<p>'+_e(item)+'</p>'+_evidence(ws,item,model) for item in path)
+    if not isinstance(path, str):
+        return '<p class="muted">Evidence path unavailable in this review.</p>'
     if model is not None and "snapshot" in model:
         captured = model.get("evidence_previews", {}).get(path)
         if captured:

@@ -10,6 +10,8 @@
 - Activate the harness before initialization for shipped execution prompts, skills and standalone reviews; enforce current phase evidence and native dashboard handoff on completion and resume.
 - Preserve complete checkpoint history with compact storage under the existing limit; distinguish saved counter times, task observations and current dashboard publication.
 - Include the onboarding guide in both distributable packages.
+- Keep the sealed-checkpoint dashboard current when reviews contain multiple evidence paths; permit the native dashboard handoff with quoted punctuation while continuing to reject shell chaining and arbitrary output paths.
+- Exercise the declared Windows launcher during harness initialization and resume; normalize bootstrap paths and keep POSIX permission assertions separate from Windows storage checks.
 
 ## v2.26.0 — native workflow gates and shared phase evidence
 

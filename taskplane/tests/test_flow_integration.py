@@ -101,6 +101,23 @@ def test_child_progress_uses_existing_flow_and_shared_dashboard(tmp_path,monkeyp
     assert r['dashboard']==str(ws/flow.DASHBOARD)
 
 
+def test_dashboard_renders_multiple_review_evidence_paths_from_immutable_snapshot(tmp_path,monkeypatch,capsys):
+    from taskplane import flow_dashboard
+    ws,_,_=setup_run(tmp_path,monkeypatch)
+    (ws/'one.md').write_text('First <finding>')
+    (ws/'two.md').write_text('Second finding')
+    (ws/'reviews.json').write_text(json.dumps({'reviews':[
+        {'lens':'quality','agent':'root','evidence':['one.md','two.md']}]}))
+    assert flow.main(['attach','--workspace',str(ws),'--reviews','reviews.json',
+                      '--evidence','one.md','--evidence','two.md'])==0
+    result=json.loads(capsys.readouterr().out)
+    assert not any('dashboard refresh' in error for error in result['evidence_errors'])
+    page=(ws/flow.DASHBOARD).read_text()
+    assert 'First &lt;finding&gt;' in page and 'Second finding' in page
+    (ws/'one.md').write_text('Changed after snapshot')
+    assert 'Changed after snapshot' not in flow_dashboard.render(str(ws),result)
+
+
 def test_dashboard_displays_shared_tasks_lenses_stages_graph_and_escaped_evidence(tmp_path,monkeypatch,capsys):
     ws,sessions,run=setup_run(tmp_path,monkeypatch)
     tasks={'tasks':[{'id':'T1','title':'Core','status':'complete','dependencies':[],'paths':['src/a.py']},

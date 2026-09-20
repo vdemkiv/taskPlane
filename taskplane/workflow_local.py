@@ -212,20 +212,25 @@ class LocalWorkflow:
         return json.dumps(value) if isinstance(value, dict) else None
 
     def control_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
-        args = event.get("tool_input", {})
-        command = args.get("cmd", args.get("command", ""))
-        if not isinstance(command, str) or any(c in command for c in ";&|<>$`\n\r"):
-            return False
-        try:
-            words = shlex.split(command)
-        except ValueError:
-            return False
+        words = runtime_words(event)
         if (len(words) < 4 or Path(shutil.which(words[0]) or "/nonexistent").resolve() != Path(sys.executable).resolve()
-                or (self.workspace/words[1]).resolve() != Path(__file__).with_name("tp.py").resolve()
-                or words[2] != "flow" or words[3] not in {"report", "decide", "advance", "finish", "policy", "auto-decide", "activate", "present", "wait"}):
+                or (self.workspace/words[1]).resolve() != Path(__file__).with_name("tp.py").resolve()):
+            return False
+        if words[2] == "dashboard":
+            # A sealed checkpoint can refresh its native view, never an arbitrary output.
+            options = words[3:]
+            if len(options) % 2 or len(set(options[::2])) != len(options[::2]):
+                return False
+            values = dict(zip(options[::2], options[1::2]))
+            return (set(values) <= {"--workspace", "--run", "--out"}
+                    and (self.workspace/values.get("--workspace", "/nonexistent")).resolve() == self.workspace
+                    and values.get("--run", state["run"]) == state["run"]
+                    and (self.workspace/values.get("--out", ".taskplane/dashboard.html")).absolute()
+                        == self.workspace/".taskplane/dashboard.html")
+        if words[2] != "flow" or words[3] not in {"report", "decide", "advance", "finish", "policy", "auto-decide", "activate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
-        if "--workspace" not in words:
+        if words.count("--workspace") != 1:
             return False
         index = words.index("--workspace") + 1
         return index < len(words) and (self.workspace/words[index]).resolve() == self.workspace
@@ -275,12 +280,26 @@ QUESTION_TOOLS = {'AskUserQuestion', 'request_user_input', 'request_user_input_a
 def command_words(event: dict[str, Any]) -> list[str]:
     args = event.get('tool_input', {})
     command = args.get('cmd', args.get('command', '')) if isinstance(args, dict) else ''
-    if not isinstance(command, str) or any(c in command for c in ';&|<>$`\n\r'):
+    if not isinstance(command, str) or any(c in command for c in '$`\n\r'):
         return []
     try:
-        return shlex.split(command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|<>()')
+        lexer.whitespace_split = True
+        lexer.commenters = ''
+        words = list(lexer)
+        # Punctuation inside an ordinary quoted note is data, not a shell operator.
+        return [] if any(re.fullmatch(r'[;&|<>()]+', word) for word in words) else words
     except ValueError:
         return []
+
+
+def runtime_words(event: dict[str, Any]) -> list[str]:
+    words = command_words(event)
+    # Declared Windows hooks use this exact launcher selector. The launcher and
+    # a PATH-selected Python can resolve to different installed interpreters.
+    if os.name == 'nt' and words[:2] == ['py', '-3']:
+        return [sys.executable, *words[2:]]
+    return words
 
 
 def execution_entry(event: dict[str, Any]) -> str | None:
@@ -414,7 +433,7 @@ class Harness:
                 'A queued open is not verified display. If user input is needed, record flow wait --note with the actual reason.')
 
     def bootstrap_command(self, event: dict[str, Any]) -> bool:
-        words = command_words(event)
+        words = runtime_words(event)
         if words == ['pwd'] or words == ['rg', '--files']:
             return True
         if words and words[0] == 'cat' and len(words) > 1 and all(not p.startswith('-') for p in words[1:]):

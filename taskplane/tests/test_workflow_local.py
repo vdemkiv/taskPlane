@@ -133,6 +133,29 @@ def test_structured_scope_and_exact_control_command_at_gate(tmp_path):
     with pytest.raises(w.Refusal,match="sealed"):c.guard({"tool_name":"exec_command","tool_input":{"cmd":command+"; touch app.py"}},s["run"])
 
 
+@pytest.mark.parametrize('tool,key', [('Bash','command'),('exec_command','cmd')])
+def test_sealed_checkpoint_allows_quoted_handoff_and_only_its_native_dashboard(tmp_path,tool,key):
+    import shlex,sys
+    from pathlib import Path
+    c,s=setup(tmp_path);s=submit(c,s)
+    prefix=[sys.executable,str(Path(h.__file__).with_name('tp.py'))]
+    present=shlex.join([*prefix,'flow','present','--workspace',str(c.workspace),
+        '--evidence','.taskplane/dashboard.html','--presentation','linked',
+        '--note','Dashboard linked; display unavailable (not verified)'])
+    c.guard({'tool_name':tool,'tool_input':{key:present}},s['run'])
+    board=[*prefix,'dashboard','--workspace',str(c.workspace),'--run',s['run']]
+    for extra in ([],['--out','.taskplane/dashboard.html']):
+        c.guard({'tool_name':tool,'tool_input':{key:shlex.join(board+extra)}},s['run'])
+    for suffix in ('; touch app.py',' && touch app.py',' | cat',' > app.py','\ntouch app.py',' "$(touch app.py)"',' `touch app.py`'):
+        with pytest.raises(w.Refusal):
+            c.guard({'tool_name':tool,'tool_input':{key:present+suffix}},s['run'])
+    for args in (board+['--out','app.html'],board+['--workspace',str(c.workspace.parent)],
+                 [*prefix,'dashboard','--workspace',str(c.workspace),'--run','foreign']):
+        with pytest.raises(w.Refusal):
+            c.guard({'tool_name':tool,'tool_input':{key:shlex.join(args)}},s['run'])
+    assert not c.report()['decisions'] and c.report()['revision']==s['revision']
+
+
 def test_local_concurrent_replay_commits_one_decision(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     c,s=setup(tmp_path);s=submit(c,s);value=decision(s)
@@ -238,7 +261,8 @@ def test_compact_write_reads_legacy_state_and_preserves_prior_acceptance(tmp_pat
     resumed = h.Controller(c.workspace, c.root, h.installed_adapter(host)).report()
     assert resumed['status'] == 'awaiting_human_approval' and resumed['revision'] == s['revision']
     assert not resumed.get('invalidation_pending')
-    assert target.stat().st_mode & 0o777 == 0o600
+    if os.name == 'posix':
+        assert target.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize('failure_call', [1, 2])

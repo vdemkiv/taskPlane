@@ -218,7 +218,8 @@ def exercise_repeated_repair_capacity(workspace, host, root=ROOT):
     assert largest_pretty > 8 * 1024 * 1024 > largest_compact
     assert state['finished'] and len(state['decisions']) == len(previous_packets) == 11
     assert sum('route_change' in item for item in state['history']) == 2
-    assert store.stat().st_mode & 0o777 == 0o600
+    if os.name == 'posix':
+        assert store.stat().st_mode & 0o777 == 0o600
     return {'host':host, 'checkpoints':11, 'repair_routes':2, 'largest_pretty_bytes':largest_pretty,
             'largest_compact_bytes':largest_compact, 'prior_packets_and_decisions_preserved':True}
 
@@ -561,18 +562,19 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
                             input=json.dumps(data),capture_output=True,text=True)
         assert proc.returncode==0,(proc.stdout,proc.stderr)
         return json.loads(proc.stdout)
-    def command(*args,code=0):
-        words=[sys.executable,str(root/'taskplane/tp.py'),'flow',*args,'--workspace',str(workspace)]
+    def command(*args,code=0,cli_entry='flow'):
+        launcher=['py','-3'] if os.name == 'nt' else [sys.executable]
+        words=[*launcher,str(root/'taskplane/tp.py'),cli_entry,*args,'--workspace',str(workspace)]
         key='command' if host=='claude' else 'cmd';tool='Bash' if host=='claude' else 'exec_command'
         before=hook('PreToolUse',tool_name=tool,tool_input={key:shlex.join(words)})
         assert before.get('hookSpecificOutput',{}).get('permissionDecision')!='deny',before
         if host=='claude':
             # Exercise the actual SessionStart exports rather than injecting a test root.
-            argv=['bash','-c','. "$1"; shift; exec "$@"','fixture',env['CLAUDE_ENV_FILE'],*words]
+            argv=['bash','-c','. "$1"; shift; exec "$@"','fixture','.taskplane/fixture-env',*words]
         else:argv=words
         proc=subprocess.run(argv,cwd=workspace,env=env,capture_output=True,text=True)
         assert proc.returncode==code,(proc.stdout,proc.stderr)
-        return json.loads(proc.stdout)
+        return json.loads(proc.stdout) if cli_entry == 'flow' else proc.stdout.strip()
     assert hook('SessionStart')=={}
     prompt=prompt or {'engineering':'Use taskplane to review this code without a delivery flow.',
             'design':'Use taskplane to design this change.', 'product':'Use taskplane to define product requirements.'}[phase]
@@ -619,11 +621,20 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     assert 'phase evidence is not submitted' in hook('Stop')['reason']
     # Record a real link-only fixture handoff; submitting a new revision invalidates it.
     command('present','--evidence','.taskplane/dashboard.html','--presentation','linked','--note','Fixture artifact linked without claiming host display')
+    (workspace/'.taskplane/fixture-reviews.json').write_text(json.dumps({'reviews':[
+        {'lens':'quality','agent':'root','evidence':['check.txt','build-check.txt']}]}))
+    attached=command('attach','--reviews','.taskplane/fixture-reviews.json','--evidence','check.txt','--evidence','build-check.txt')
+    assert not attached['evidence_errors']
     target=output(workspace,state)
-    state=command('submit','--output',target,'--tasks','tasks.json','--expected-revision',str(state['revision']))['workflow']
+    submitted=command('submit','--output',target,'--tasks','tasks.json','--expected-revision',str(state['revision']))
+    assert not submitted['evidence_errors']
+    state=submitted['workflow']
+    selection=json.loads((workspace/'.taskplane/dashboard.selection.json').read_text())
+    assert selection['revision']==state['revision']
     assert 'handoff is missing' in hook('Stop')['reason']
+    assert command('--run',state['run'],cli_entry='dashboard')==str(workspace/'.taskplane/dashboard.html')
     command('present','--evidence','.taskplane/dashboard.html','--presentation','blocked',
-            '--note','Fixture artifact linked but host display unavailable')
+            '--note','Fixture artifact linked; host display unavailable (unverified)')
     assert hook('Stop')=={}
     report=command('report','--run',state['run'])
     assert report['harness']['status']=='active'
