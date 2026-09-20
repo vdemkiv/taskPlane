@@ -557,7 +557,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
     def hook(event,**payload):
         data={'hook_event_name':event,'cwd':str(workspace),'transcript_path':str(workspace/'fixture-log.jsonl'),**identity,**payload}
-        proc=subprocess.run(hooks[event][0]['hooks'][0]['command'],shell=True,cwd=workspace,env=env,
+        proc=subprocess.run(hooks[event][0]['hooks'][0]['commandWindows' if os.name == 'nt' else 'command'],shell=True,cwd=workspace,env=env,
                             input=json.dumps(data),capture_output=True,text=True)
         assert proc.returncode==0,(proc.stdout,proc.stderr)
         return json.loads(proc.stdout)

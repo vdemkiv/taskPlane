@@ -455,7 +455,8 @@ class Harness:
             w.require(isinstance(value, str), 'scope_violation', self.guidance(state))
             path = Path(value)
             if path.is_absolute() and path.is_relative_to(self.workspace):
-                value = str(path.relative_to(self.workspace))
+                path = path.relative_to(self.workspace)
+            value = path.as_posix()
             w.require(value.startswith('.taskplane/bootstrap/'), 'scope_violation', self.guidance(state))
             evidence.path(self.workspace, value)
         w.require(bool(targets), 'scope_violation', self.guidance(state))

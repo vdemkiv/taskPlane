@@ -507,6 +507,19 @@ def test_harness_bootstrap_does_not_grant_source_or_state_access(tmp_path,bad):
     with pytest.raises(w.Refusal):flow.hook(base|{'hook_event_name':'PreToolUse',**tool})
 
 
+@pytest.mark.parametrize('absolute', [False, True])
+def test_harness_bootstrap_accepts_native_metadata_paths(tmp_path, absolute):
+    from pathlib import Path
+    from taskplane import flow
+    base={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review code.'}
+    flow.hook(base)
+    path=Path('.taskplane/bootstrap/scope.json')
+    if absolute:path=tmp_path/path
+    result=flow.hook(base|{'hook_event_name':'PreToolUse','tool_name':'Write',
+                         'tool_input':{'file_path':str(path),'content':'scope'}})
+    assert result.get('hookSpecificOutput',{}).get('permissionDecision') != 'deny'
+
+
 def test_harness_installed_skill_read_is_an_execution_entry(tmp_path):
     from pathlib import Path
     from taskplane import flow
