@@ -665,6 +665,7 @@ def shipped_execution_prompts():
     """Use the actual UI/documentation contract instead of test-only phrasings."""
     prompts=json.loads((ROOT/'.codex-plugin/plugin.json').read_text())['interface']['defaultPrompt']
     assert len(prompts)==3, 'Give every shipped menu prompt an explicit route expectation'
+    assert all(len(prompt)<=128 for prompt in prompts), 'Codex ignores menu prompts longer than 128 characters'
     readme=(ROOT/'README.md').read_text()
     first_task=readme.split('## First task and installed runtime verification',1)[1].split('```text\n',1)[1].split('```',1)[0].strip()
     ordinary=readme.split('Ordinary instructions such as `',1)[1].split('`',1)[0]

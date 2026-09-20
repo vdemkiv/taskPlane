@@ -1,5 +1,6 @@
 """Advisory runs share evidence, graph and actual native lens usage."""
 import json
+import pytest
 from datetime import datetime
 from pathlib import Path
 
@@ -171,7 +172,8 @@ def test_unsequenced_host_records_are_advisory_only(tmp_path):
     assert advisory['ordinal_basis']=='bounded tail position'
 
 
-def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,monkeypatch):
+@pytest.mark.parametrize("thread_environment", [True, False])
+def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,monkeypatch,thread_environment):
     ws,sessions,_=setup_run(tmp_path,monkeypatch)
     monkeypatch.setenv('CLAUDE_PLUGIN_ROOT','/installed/taskplane')
     for key in ('CLAUDECODE','TASKPLANE_CLAUDE_SESSION_ID','CLAUDE_SESSION_ID'):
@@ -180,8 +182,10 @@ def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,mon
     event={'hook_event_name':'PostToolUse','session_id':'root','cwd':str(ws),
            'transcript_path':str(sessions/'root.jsonl'),'tool_name':'Bash',
            'tool_input':{'command':'cat app.py'}}
+    if not thread_environment:monkeypatch.delenv('CODEX_THREAD_ID')
     assert not flow.claude_session(event)
-    assert not flow.claude_session({})
+    if thread_environment:assert not flow.claude_session({})
+    assert flow._controller(ws,'root',event=event).adapter.name == 'codex'
     assert flow._observe_hook(event)=={}
     observed=flow.read_events(ws)[-1]
     assert observed['kind']=='hook' and observed.get('host')!='claude'

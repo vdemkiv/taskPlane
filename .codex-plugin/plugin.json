@@ -38,7 +38,7 @@
     "defaultPrompt": [
       "taskplane design this feature and present the Design checkpoint.",
       "taskplane build this feature with manual phase approval.",
-      "taskplane build this feature; for this task auto-approve phases after required checks pass, pause on failures or scope changes, and stop before Retro."
+      "taskplane build this feature; auto-approve phases after checks pass, pause on failures or scope changes, stop before Retro."
     ],
     "brandColor": "#2563EB",
     "logo": "./assets/taskplane-logo.svg",

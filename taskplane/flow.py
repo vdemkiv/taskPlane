@@ -108,6 +108,12 @@ def claude_session(event: dict[str, Any]) -> bool:
         return bool(event["host"] == "claude")
     if event.get("thread_id"):
         return False
+    transcript = event.get("transcript_path") or event.get("transcript")
+    if isinstance(transcript, str):
+        home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).resolve()
+        path = Path(transcript).resolve()
+        if any(path.is_relative_to(home / folder) for folder in ("sessions", "archived_sessions")):
+            return False  # Native hooks can omit CODEX_THREAD_ID from their environment.
     if (os.environ.get("CLAUDECODE") or os.environ.get("TASKPLANE_CLAUDE_SESSION_ID")
             or os.environ.get("CLAUDE_SESSION_ID")):
         return True
@@ -237,9 +243,10 @@ def artifact(workspace: Path, value: str) -> Path:
     return path
 
 
-def _controller(workspace: Path, root: str, profile: str = "native_workflow") -> workflow_host.Controller:
+def _controller(workspace: Path, root: str, profile: str = "native_workflow",
+                *, event: dict[str, Any] | None = None) -> workflow_host.Controller:
     return workflow_host.Controller(workspace, root,
-        workflow_host.installed_adapter("claude" if claude_session({}) else "codex", profile))
+        workflow_host.installed_adapter("claude" if claude_session(event or {}) else "codex", profile))
 
 
 def usage_point(state: dict[str, Any], measurement: dict[str, Any], *,
@@ -656,7 +663,7 @@ def hook(event: dict[str, Any], *,
          governor: workflow_host.Controller | None = None) -> dict[str, Any]:
     workspace = Path(event.get("cwd") or os.getcwd()).resolve()
     legacy = active_run(read_events(workspace), session_id(event), event.get("parent_session_id"))
-    controller = governor or _controller(workspace, str(legacy["session"]) if legacy else session_id(event))
+    controller = governor or _controller(workspace, str(legacy["session"]) if legacy else session_id(event), event=event)
     name = event.get("hook_event_name")
     guarded = controller.report()
     harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" else None
