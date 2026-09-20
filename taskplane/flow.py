@@ -104,9 +104,18 @@ def session_id(event: dict[str, Any]) -> str:
 
 
 def claude_session(event: dict[str, Any]) -> bool:
-    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CLAUDECODE")
-                or os.environ.get("TASKPLANE_CLAUDE_SESSION_ID")
-                or os.environ.get("CLAUDE_SESSION_ID") or event.get("host") == "claude")
+    if event.get("host") in {"codex", "claude"}:
+        return bool(event["host"] == "claude")
+    if event.get("thread_id"):
+        return False
+    if (os.environ.get("CLAUDECODE") or os.environ.get("TASKPLANE_CLAUDE_SESSION_ID")
+            or os.environ.get("CLAUDE_SESSION_ID")):
+        return True
+    # Codex exports CLAUDE_PLUGIN_ROOT for hook compatibility. It is not a
+    # transcript-format signal when an actual Codex session is available.
+    if os.environ.get("CODEX_THREAD_ID"):
+        return False
+    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT"))
 
 
 def counter(event: dict[str, Any], session: str) -> dict[str, Any]:

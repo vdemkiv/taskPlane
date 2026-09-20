@@ -2,6 +2,7 @@
 
 ## v2.27.0 — onboarding, autonomous approvals and execution harness
 
+- Keep Codex hook token counters on the Codex transcript reader when the host also exports `CLAUDE_PLUGIN_ROOT` for compatibility.
 - Accept Codex native `apply_patch` hook payloads (`tool_input.command`) while retaining bootstrap, phase-scope and sealed-checkpoint enforcement. The installed-host test exposed a contract mismatch hidden by synthetic fixtures.
 
 - Document current Codex/Claude installation, first-task onboarding and post-installation hook review/trust, replacing retired setup commands.

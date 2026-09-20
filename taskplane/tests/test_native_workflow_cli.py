@@ -560,7 +560,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
         bash=next((str(parent/'bin/bash.exe') for parent in git.parents
                    if (parent/'bin/bash.exe').is_file()),None)
     if host=='claude':env.update(CLAUDE_PLUGIN_ROOT=str(root),CLAUDE_ENV_FILE=str(workspace/'.taskplane/fixture-env'))
-    else:env.update(PLUGIN_ROOT=str(root),CODEX_THREAD_ID='root')
+    else:env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),CODEX_THREAD_ID='root')
     identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
     def hook(event,**payload):
         data={'hook_event_name':event,'cwd':str(workspace),'transcript_path':str(workspace/'fixture-log.jsonl'),**identity,**payload}

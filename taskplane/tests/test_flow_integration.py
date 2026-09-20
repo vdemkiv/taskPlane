@@ -169,3 +169,26 @@ def test_unsequenced_host_records_are_advisory_only(tmp_path):
     advisory=meter.read_snapshot(str(path),allow_unsequenced=True)
     assert advisory['usage']['total_tokens']==20
     assert advisory['ordinal_basis']=='bounded tail position'
+
+
+def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,monkeypatch):
+    ws,sessions,_=setup_run(tmp_path,monkeypatch)
+    monkeypatch.setenv('CLAUDE_PLUGIN_ROOT','/installed/taskplane')
+    for key in ('CLAUDECODE','TASKPLANE_CLAUDE_SESSION_ID','CLAUDE_SESSION_ID'):
+        monkeypatch.delenv(key,raising=False)
+    native(sessions/'root.jsonl','root',140)
+    event={'hook_event_name':'PostToolUse','session_id':'root','cwd':str(ws),
+           'transcript_path':str(sessions/'root.jsonl'),'tool_name':'Bash',
+           'tool_input':{'command':'cat app.py'}}
+    assert not flow.claude_session(event)
+    assert not flow.claude_session({})
+    assert flow._observe_hook(event)=={}
+    observed=flow.read_events(ws)[-1]
+    assert observed['kind']=='hook' and observed.get('host')!='claude'
+    assert observed['usage_status']=='observed' and observed['usage']['total_tokens']==140
+    assert flow.report(ws)['tokens']['total_tokens']==40
+    # An explicit host identity remains stronger than inherited environment.
+    assert flow.claude_session({'host':'claude'})
+    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID','nested-claude')
+    assert flow.claude_session({})
+    assert not flow.claude_session({'thread_id':'root'})
