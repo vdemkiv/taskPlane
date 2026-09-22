@@ -25,7 +25,10 @@ def cli(workspace,host,*args,root=ROOT,code=0):
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
     env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
                PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
-    argv=[sys.executable,str(root/'taskplane/tp.py'),'flow',*args,'--workspace',str(workspace)]
+    # Match the declared Windows hook launcher; py -3 may select a different
+    # installed interpreter from the one running pytest.
+    python=['py','-3'] if os.name=='nt' else [sys.executable]
+    argv=[*python,str(root/'taskplane/tp.py'),'flow',*args,'--workspace',str(workspace)]
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     def hook(name, **extra):
         event={'hook_event_name':name,'cwd':str(workspace),'session_id':'root','thread_id':'root',
