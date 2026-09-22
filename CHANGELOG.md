@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.29.0 — harness lifecycle repairs
+
+- Keep current Changes requested and Rejected checkpoints editable across multiple corrections and resubmission, while preserving accepted evidence and packet history.
+- Preserve observed command identity across approval revisions. Allow same-visit polling, interruption and terminal observations without allowing new code on stale grants or reopening terminal handles.
+- Resolve transcript ancestry and observed child-start links before the first child scope check.
+- Route bare, plugin-tagged and direct Taskplane requests by their leading action, so later design or review wording cannot override Build.
+- Exercise these repairs and negative boundaries against source and both extracted plugin packages, including correction through declared native hooks.
+
 ## v2.28.0 — product guidance and reliable workflow recovery
 
 - Restore the product purpose, animated overview and practical design/build/review/status examples. Keep installation and hook trust concise, and include the animation and editable source in both packages.

@@ -314,7 +314,12 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
 
 def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) -> tuple[str, str] | None:
     for stage in state["visits"]:
-        if stage["superseded"] or stage["decision"] == "stale" or not stage["packet"] or skip_current and stage["id"] == w.current(state)["id"]:
+        # A native negative decision reopens this visit for correction. Its old
+        # packet remains history; protected-host revocation semantics stay intact.
+        editable = stage["id"] == w.current(state)["id"] and (
+            skip_current or state.get("profile") == "native_workflow"
+            and stage["decision"] in ("changes_requested", "rejected"))
+        if stage["superseded"] or stage["decision"] == "stale" or not stage["packet"] or editable:
             continue
         packet = stage["packet"]
         for field in ("manifest", "source_manifest"):

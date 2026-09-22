@@ -90,6 +90,15 @@ still refuse drift. New runs require their own approvals. This recovery is for
 `native_workflow`; it does not reset corrupt stores, disable hooks or admit a
 `protected_host` owner.
 
+After `Changes requested` or `Rejected`, the current visit permits repeated
+in-scope corrections and ordinary `flow submit` resubmission. The prior packet
+remains in history. Accepted predecessors and sealed current outputs still detect
+drift; cancellation does not open a correction grant.
+
+Bare, plugin-tagged and direct `Use/Run Taskplane` requests use the leading action
+to select the route. For example, `build export with design and engineering review`
+selects full delivery in each form. Help and status requests remain non-executing.
+
 In manual mode, after submission `flow report` exposes `workflow.pending_checkpoint`. Present the
 output to the user, wait for their actual response and supply this envelope through
 `--decision-json` (properly shell-quoted, or passed as one subprocess argument):
@@ -170,8 +179,11 @@ only their visible source effects audited afterward.
 
 PostToolUse `exec_command`/`Bash`/`write_stdin` responses with structured `session_id`
 and `exit_code` fields update observed handles. Known running work blocks sealing.
-Terminal or stale handles reject observed input; unsupported response shapes and a
-complete process census remain unknown. Protected-host command tracking separately
+Handles retain their original visit and grant revision. Later approval or policy
+revisions in that same visit permit empty polls, interruption and terminal
+observations, but never new code on a stale grant. Unknown, terminal, future-revision
+or old-visit handles reject input, and terminal handles cannot reopen. Unsupported
+response shapes and a complete process census remain unknown. Protected-host command tracking separately
 requires actual identity, cancellation/revocation and complete quiescence proof.
 Cancellation requests never manufacture termination.
 

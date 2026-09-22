@@ -154,11 +154,39 @@ def counter(event: dict[str, Any], session: str) -> dict[str, Any]:
     return {"usage": None, "usage_status": "unavailable"}
 
 
+def observed_parent(event: dict[str, Any], session: str) -> str | None:
+    """Read native lineage independently of whether usage has been emitted yet."""
+    if claude_session(event):
+        return None  # Claude ancestry comes from parent fields and child-start events.
+    path = event.get("transcript_path") or event.get("transcript")
+    candidates = [Path(path)] if isinstance(path, str) else []
+    if session != "local":
+        home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+        candidates.extend((home / "sessions").glob(f"**/*{session}*.jsonl"))
+    parents: set[str] = set()
+    for candidate in candidates:
+        try:
+            fd = os.open(candidate, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                # Share the canonical metadata parser, but require no token counter.
+                metadata, _ = native_session_meter._session_metadata(
+                    stream.read(native_session_meter.MAX_METADATA_BYTES))
+            if metadata["session_id"] == session and metadata.get("parent_session_id"):
+                parents.add(str(metadata["parent_session_id"]))
+        except (OSError, ValueError):
+            continue
+    return next(iter(parents)) if len(parents) == 1 else None
+
+
 def active_run(rows: list[dict[str, Any]], session: str, parent: str | None = None) -> dict[str, Any] | None:
     owners = {session, parent} - {None}
     for row in reversed(rows):
-        if row.get("session") in owners:
-            owners.add(row.get("root"))
+        root = row.get("root")
+        if isinstance(root, str) and root and (row.get("session") in owners or (
+                row.get("event") == "SubagentStart" and row.get("child") in owners)):
+            owners.add(root)
     closed = {row.get("run") for row in rows if row.get("kind") == "finish"}
     return next((row for row in reversed(rows)
                  if row.get("kind") == "start" and row.get("session") in owners
@@ -662,10 +690,24 @@ def _observe_hook(event: dict[str, Any]) -> dict[str, Any]:
 def hook(event: dict[str, Any], *,
          governor: workflow_host.Controller | None = None) -> dict[str, Any]:
     workspace = Path(event.get("cwd") or os.getcwd()).resolve()
-    legacy = active_run(read_events(workspace), session_id(event), event.get("parent_session_id"))
-    controller = governor or _controller(workspace, str(legacy["session"]) if legacy else session_id(event), event=event)
-    name = event.get("hook_event_name")
+    rows, session = read_events(workspace), session_id(event)
+    parent = event.get("parent_session_id")
+    legacy = active_run(rows, session, parent)
+    controller = governor or _controller(workspace, session, event=event)
     guarded = controller.report()
+    # A task's own active binding survives a missing journal and takes precedence
+    # over ancestry. Only an otherwise unbound child inherits its parent's guard.
+    if not guarded.get("run") and governor is None:
+        if legacy is None:
+            try:
+                parent = observed_parent(event, session) or parent
+            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                pass
+            legacy = active_run(rows, session, parent)
+        if legacy or parent:
+            controller = _controller(workspace, str(legacy["session"] if legacy else parent), event=event)
+            guarded = controller.report()
+    name = event.get("hook_event_name")
     harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" else None
     selected = workflow_local.execution_entry(event)
     if harness:

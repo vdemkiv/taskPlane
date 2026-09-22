@@ -498,9 +498,9 @@ class Controller:
                 return
             if tool == "write_stdin" and args.get("chars", "") in ("", "\x03"):
                 record = state.get("observed_handles", {}).get(str(args.get("session_id", "")), {})
-                if record.get("read_only"):
+                if record:
                     self.adapter.guard_input(event, state)
-                    return  # Poll or interrupt an observed diagnostic, never send it new code.
+                    return  # Drain known work across revisions without sending new code.
             if workflow_local.bootstrap_write(self.workspace, event, state):
                 return  # Fresh recovery scope only; never overwrite sealed evidence.
         w.require(not state.get("invalidation_pending"), "stale_checkpoint",

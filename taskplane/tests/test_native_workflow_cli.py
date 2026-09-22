@@ -87,6 +87,33 @@ def output(workspace,state,change=None):
     return path
 
 
+def exercise_correction_cli(workspace, host, root=ROOT):
+    create(workspace)
+    state=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/review-correction',root=root)['workflow']
+    target=output(workspace,state)
+    state=cli(workspace,host,'submit','--output',target,'--tasks','tasks.json',
+              '--expected-revision',str(state['revision']),root=root)['workflow']
+    for index, choice in enumerate(('Changes requested', 'Rejected')):
+        handoff(workspace,host,root=root)
+        old_checkpoint=w.current(state)['packet']['checkpoint']
+        state=cli(workspace,host,'decide','--decision-json',json.dumps(decision(state,text=choice,event=f'correction-{index}')),
+                  '--expected-revision',str(state['revision']),root=root)['workflow']
+        for edit in range(2):
+            data=json.loads((workspace/target).read_text())
+            data['scope']=f'Correction {index}, edit {edit}'
+            (workspace/target).write_text(json.dumps(data))
+            report=cli(workspace,host,'report',root=root)['workflow']
+            assert not report.get('invalidation_pending')
+        state=cli(workspace,host,'submit','--output',target,'--tasks','tasks.json',
+                  '--expected-revision',str(state['revision']),root=root)['workflow']
+        assert any(row.get('packet',{}).get('checkpoint')==old_checkpoint for row in state['history'])
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_native_correction_resubmission(tmp_path, host):
+    exercise_correction_cli(tmp_path/'workspace',host)
+
+
 def exercise(workspace,host,root=ROOT):
     create(workspace)
     report=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/user-request',root=root)

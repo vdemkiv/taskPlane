@@ -325,8 +325,11 @@ class LocalWorkflow:
         args = event.get("tool_input", {})
         handle = str(args.get("session_id", ""))
         record = state["observed_handles"].get(handle)
+        safe_input = args.get("chars", "") in ("", "\x03")
         w.require(record is not None and record["state"] == "running"
-                  and record["visit"] == w.current(state)["id"] and record["revision"] == state["revision"],
+                  and record["visit"] == w.current(state)["id"]
+                  and record["revision"] <= state["revision"]
+                  and (safe_input or record["revision"] == state["revision"]),
                   "scope_violation", "Observed input handle is unknown, terminal or belongs to an old phase grant.")
 
     def observe_state(self, event: dict[str, Any], state: dict[str, Any]) -> None:
@@ -347,10 +350,11 @@ class LocalWorkflow:
         terminal = type(response.get("exit_code")) is int
         new_state = ("completed" if response["exit_code"] == 0 else "failed") if terminal else "running"
         if previous:
-            w.require(previous["visit"] == w.current(state)["id"] and previous["revision"] == state["revision"]
+            w.require(previous["visit"] == w.current(state)["id"] and previous["revision"] <= state["revision"]
                       and (previous["state"] == "running" or previous["state"] == new_state),
                       "scope_violation", "Observed handle cannot reopen or cross grants.")
-        handles[key] = {"visit": w.current(state)["id"], "revision": state["revision"],
+        handles[key] = {"visit": previous["visit"] if previous else w.current(state)["id"],
+                        "revision": previous["revision"] if previous else state["revision"],
                         "state": new_state,
                         "read_only": previous.get("read_only", False) if previous else readonly_command(event)}
 
@@ -511,6 +515,10 @@ def execution_entry(event: dict[str, Any]) -> str | None:
     tail = text[prefix.end():].strip(' :,-')
     if re.match(r'^(?:to\s+)?(?:help|status|explain|show\s+(?:the\s+)?status)\b', tail):
         return None
+    leading = re.match(r'^(?:to\s+)?(build|implement|design|review|audit|product)\b', tail)
+    if leading:
+        return {'design': 'tp-design', 'review': 'tp-engineering',
+                'audit': 'tp-engineering', 'product': 'tp-product'}.get(leading[1], 'taskplane')
     if re.search(r'\b(review|audit)\b', tail):
         return 'tp-engineering'
     if re.search(r'\bdesign\b', tail):

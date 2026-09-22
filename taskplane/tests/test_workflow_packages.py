@@ -19,6 +19,8 @@ from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, exe
 from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
 from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide, present
 from taskplane.tests.test_workflow_autonomy import exercise_autonomous, exercise_nonconsent_cli
+from taskplane.tests.test_native_workflow_cli import exercise_correction_cli
+from taskplane.tests import test_harness_review_regressions as review_regressions
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -94,16 +96,23 @@ def test_generated_archives_match_verified_source(tmp_path, request):
                                'claude' if host=='claude' else 'codex', root=extracted)
         exercise_repeated_repair_capacity((tmp_path/(host+'-repeated-repairs')).resolve(),
                                          'claude' if host=='claude' else 'codex', root=extracted)
+        exercise_correction_cli((tmp_path/(host+'-review-correction')).resolve(),
+                                'claude' if host=='claude' else 'codex', root=extracted)
         # The child interpreter sees only the extracted runtime and the standard library.
         # Test-only adapter code is embedded here, never exported by either package.
         helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
-        script = '''import sys, json, io
+        helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
+            'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
+            'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
+        script = '''import sys, json, io, shlex
+from datetime import datetime, timezone
 from pathlib import Path
 from copy import deepcopy
 from contextlib import redirect_stdout
 from unittest.mock import patch
 sys.path.insert(0, sys.argv[1])
 from taskplane import flow, workflow as w, workflow_host as h, workflow_local as local
+from taskplane import workflow_approval as approval
 assert Path(flow.__file__).resolve().is_relative_to(Path(sys.argv[1]))
 ''' + helpers + '''
 temp = Path(sys.argv[2]); temp.mkdir()
@@ -240,6 +249,10 @@ print('ENG-F01 concurrent publication regressions passed')
 print('seven accepted fixture checkpoints; production authority refused')
 print('EV-F01 EV-F02 EV-F03 archive regressions passed')
 print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
+for exercise_review in (exercise_correction, exercise_handles, exercise_child_lineage):
+    exercise_review(temp/exercise_review.__name__)
+exercise_routing()
+print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
 '''
         harness = tmp_path/(host+'-harness.py')
         harness.write_text(script)
@@ -252,6 +265,7 @@ print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
         assert 'seven accepted fixture checkpoints; production authority refused' in result.stdout
         assert 'EV-F01 EV-F02 EV-F03 archive regressions passed' in result.stdout
         assert 'EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed' in result.stdout
+        assert 'HR-01 HR-02 HR-03 HR-04 archive regressions passed' in result.stdout
 
 
 def test_package_receipt_distinguishes_bytes_from_commit_and_unrelated_dirt(tmp_path, monkeypatch):
