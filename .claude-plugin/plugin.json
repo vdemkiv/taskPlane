@@ -1,7 +1,7 @@
 {
   "name": "taskplane",
-  "version": "2.27.0",
-  "description": "Shared delivery with manual checkpoints by default, explicitly authorized automatic phase approvals, one native dashboard, phase token coverage and source graph provenance.",
+  "version": "2.28.0",
+  "description": "Design, build and review software with Claude or Codex, keeping requirements, dependencies, implementation and verification connected.",
   "author": {
     "name": "Volodymyr Demkiv"
   },

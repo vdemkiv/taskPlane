@@ -17,7 +17,7 @@ from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_delivery import output
 from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, exercise_repeated_repair_capacity, shipped_execution_prompts
 from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
-from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide
+from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide, present
 from taskplane.tests.test_workflow_autonomy import exercise_autonomous, exercise_nonconsent_cli
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,9 +61,17 @@ def test_generated_archives_match_verified_source(tmp_path, request):
         assert sidecar['sha256'] == hashlib.sha256(target.read_bytes()).hexdigest()
         extracted = tmp_path/host
         with zipfile.ZipFile(target) as archive:
+            assert set(sidecar['member_sha256']) == set(archive.namelist())
             for name in archive.namelist():
                 assert not Path(name).is_absolute() and '..' not in Path(name).parts
                 assert archive.read(name) == (ROOT/name).read_bytes(), name
+                assert sidecar['member_sha256'][name] == hashlib.sha256(archive.read(name)).hexdigest()
+            for link in re.findall(r'!?\[[^\]]*\]\(([^)]+)\)', archive.read('README.md').decode()):
+                path = link.split('#', 1)[0]
+                if path and not re.match(r'\w+://', path):
+                    assert path in archive.namelist(), f'Broken packaged README link: {path}'
+            assert 'docs/assets/taskplane-cowork-flow.gif' in archive.namelist()
+            assert 'docs/assets/taskplane-flow-source.html' in archive.namelist()
             assert 'taskplane/workflow_host.py' in archive.namelist()
             assert 'hooks/hooks.json' in archive.namelist()
             archive.extractall(extracted)
@@ -88,7 +96,7 @@ def test_generated_archives_match_verified_source(tmp_path, request):
                                          'claude' if host=='claude' else 'codex', root=extracted)
         # The child interpreter sees only the extracted runtime and the standard library.
         # Test-only adapter code is embedded here, never exported by either package.
-        helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, task_observation_checkpoint, exercise_dashboard_publication_order))
+        helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
         script = '''import sys, json, io
 from pathlib import Path
 from copy import deepcopy
@@ -244,3 +252,35 @@ print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
         assert 'seven accepted fixture checkpoints; production authority refused' in result.stdout
         assert 'EV-F01 EV-F02 EV-F03 archive regressions passed' in result.stdout
         assert 'EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed' in result.stdout
+
+
+def test_package_receipt_distinguishes_bytes_from_commit_and_unrelated_dirt(tmp_path, monkeypatch):
+    def git(*args):
+        return subprocess.run(['git', *args], cwd=tmp_path, check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git('init')
+    git('config', 'user.email', 'fixture@example.invalid')
+    git('config', 'user.name', 'Package fixture')
+    (tmp_path/'member.txt').write_bytes(b'committed member')
+    git('add', 'member.txt')
+    git('commit', '-m', 'fixture')
+    monkeypatch.setattr(package_plugin, 'ROOT', tmp_path)
+    exact = package_plugin.source_identity({'member.txt': b'committed member'})
+    assert exact['matches_source_commit'] is True
+    assert exact['source_member_differences'] == []
+    (tmp_path/'unrelated.txt').write_text('not packaged')
+    dirty = package_plugin.source_identity({'member.txt': b'committed member'})
+    assert dirty['source_dirty'] is True and dirty['matches_source_commit'] is True
+    different = package_plugin.source_identity({'member.txt': b'candidate', 'new.txt': b'new'})
+    assert different['source_commit'] == git('rev-parse', 'HEAD')
+    assert different['matches_source_commit'] is False
+    assert different['source_member_differences'] == ['member.txt', 'new.txt']
+
+
+def test_package_receipt_without_git_has_unknown_commit_parity(tmp_path, monkeypatch):
+    monkeypatch.setattr(package_plugin, 'ROOT', tmp_path)
+    receipt = package_plugin.source_identity({'file': b'bytes'})
+    assert receipt['source_commit'] is None
+    assert receipt['source_dirty'] is None
+    assert receipt['matches_source_commit'] is None
+    assert receipt['source_member_differences'] is None

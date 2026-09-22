@@ -36,8 +36,10 @@ Record the actual outcome with `flow present --workspace PATH --run ID --evidenc
 .taskplane/dashboard.html --presentation linked --note TEXT`. Choose `linked` for
 an artifact link or queued open, `verified` only after observing the rendered view,
 and `blocked` for a presentation restriction with an accessible artifact fallback.
-This is an observed handoff, not host attestation or approval. A later phase/revision
-requires a fresh handoff. Never create a replacement dashboard.
+This is an observed handoff, not host attestation or approval. The immutable
+checkpoint handoff survives an approval-only revision increment. A new packet,
+policy/scope change, repair visit or stale source requires a fresh handoff. Automatic
+approval, advance and finish enforce it even without Stop. Never create a replacement dashboard.
 
 Stop requests one corrective continuation for missing initialization, phase output
 or dashboard handoff, including read-only reviews. `stop_hook_active` prevents an
@@ -117,6 +119,16 @@ and do not silently migrate old observation journals into accepted decisions.
    or verified source invalidate affected acceptance and descendants while retaining
    history. Finish only after every required visit, including Retro, is accepted.
 
+If the user explicitly asks to start over, preserve the prior findings and create
+a fresh scope under `.taskplane/bootstrap/`. Read the active run/revision and use
+`flow start --replace-run OLD_ID --expected-revision N --scope FILE
+--request-reference REF` in the same workspace. This supersedes the previous run
+without accepting it, retains its evidence, and selects a new native dashboard.
+Never copy approvals or autonomous policy into the new run. Sealed/stale evidence
+does not prevent this control action; exact CLI help/status, read-only diagnostics
+and fresh bootstrap proposals remain available. Do not ask the user to disable
+hooks or reopen the old checkpoint merely to start the run they requested.
+
 | Phase | Required output |
 | --- | --- |
 | Product | Scope, stable acceptance criteria, non-goals, dependencies, task outline, finding references |
@@ -182,8 +194,10 @@ clear. Generic implementation requests, tool events and previous runs never opt 
 After producing and sealing each phase, inspect the active policy. If it permits
 this phase, prepare `taskplane.policy-assessment/v1` against the exact pending
 checkpoint and policy digest, with every condition assessed and supported by sealed
-files. The original instructions always remain an observed condition. Use
-`flow auto-decide`, then `advance`/`finish` only on success. Unknown/failed conditions,
+files. The original instructions always remain an observed condition. Pass the
+bounded assessment directly with `flow auto-decide --assessment-json JSON`; do not
+write a new assessment file after sealing. Present the native checkpoint first,
+then use `advance`/`finish` only on success. Unknown/failed conditions,
 missing evidence, source drift, new scope/route or known live work pause continuation.
 Do not spin on an unchanged refusal. Stop phases require the human checkpoint.
 
@@ -226,3 +240,13 @@ unknown or unallocated. Never estimate a Product count from a legacy run total.
 Graph views disclose scanned checkout/input fingerprints, dirty-file freshness,
 coverage, scoped/full context and edge provenance. Planned task paths are not proof
 of implemented source relationships; keep execution prerequisites separate.
+
+
+For an inventory-limit refusal, use the read-only `flow diagnose` operation before
+choosing a recovery checkout. It reports bounded metadata and partial coverage;
+source audit limits stay unchanged. Native HEAD worktree recovery retains original
+files and validates the observed destination before allowing bounded setup there.
+That checkout still needs its own initialized workflow and exact scope. Exact
+Taskplane native administration remains outside phase prerequisites, subject to the
+user's explicit instruction and host permissions. Never turn this into a generic
+shell/cache-write exception or an invented approval.

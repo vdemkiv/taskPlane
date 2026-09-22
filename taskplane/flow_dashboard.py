@@ -134,6 +134,10 @@ def _workflow(m: dict[str, Any]) -> str:
     details = ''
     if visits:
         details = '<p class="muted">Authorized route: ' + _e(' → '.join(v['phase'].title() for v in visits if not v.get('superseded'))) + '</p>'
+        if authority.get('superseded_by'):
+            details += '<p class="muted">Historical run. Replaced by ' + _e(authority['superseded_by']) + '. Previous decisions are preserved; this run has no active grants.</p>'
+        elif authority.get('replaces'):
+            details += '<p class="muted">New run carrying context from ' + _e(authority['replaces']['run']) + '. Approvals were not carried over.</p>'
         if any(v.get('superseded') for v in visits):
             details += '<p class="muted">Visit history: ' + _e(' → '.join(v['phase'].title() for v in visits)) + '</p>'
         for i, visit in enumerate(visits):
@@ -142,7 +146,7 @@ def _workflow(m: dict[str, Any]) -> str:
             decision = visit['decision']
             packet = visit.get('packet')
             superseded = visit.get('superseded')
-            active = i == authority['index'] and not authority.get('finished')
+            active = i == authority['index'] and not authority.get('finished') and not authority.get('superseded_by')
             work = 'Produced' if packet else 'In progress' if active else 'Not started'
             validated = 'Stale' if decision == 'stale' else 'Validated' if packet else 'Not submitted'
             records = [d for d in authority.get("decisions", {}).values()
