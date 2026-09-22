@@ -40,7 +40,8 @@ def auto(c, s, value=None, revision=None):
                    assessment_json=json.dumps(value or assessment(s)))
 
 
-@pytest.mark.parametrize('raw', ['', '[1]', 'null', '{', ' ' * (65536 + 1)])
+@pytest.mark.parametrize('raw', ['', '[1]', 'null', '{', ' ' * (65536 + 1)],
+                         ids=['empty', 'array', 'null', 'malformed', 'oversized'])
 def test_inline_assessment_is_bounded_object(tmp_path, raw):
     c,s=setup(tmp_path);s=set_policy(c,s);s=submit(c,s)
     with pytest.raises(w.Refusal, match='JSON object|64 KiB'):

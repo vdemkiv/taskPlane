@@ -18,7 +18,8 @@ import shutil
 import stat
 import subprocess
 import sys
-from urllib.parse import urlsplit, unquote
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 from typing import Any, cast
 
 from . import primitives, storage, workflow as w, workflow_evidence as evidence
@@ -833,7 +834,7 @@ class Harness:
                 return False
             try:
                 parsed = urlsplit(url)
-                value = unquote(parsed.path)
+                value = url2pathname(parsed.path)
                 canonical = Path(value).as_uri()
             except ValueError:
                 return False
