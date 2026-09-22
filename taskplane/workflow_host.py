@@ -291,6 +291,8 @@ class Controller:
         with primitives.file_lock(str(target)):
             authorized = None
             if not self.adapter.state_exists():
+                w.require(not request.get("replace_run"), "state_unavailable",
+                          "No initialized run exists to replace.")
                 authorized = self.adapter.verify_start(self.workspace, self.root, request)
                 evidence.valid_scope(self.workspace, authorized["scope"])
                 # Validate route before creating the durable initialization marker.
@@ -298,8 +300,37 @@ class Controller:
                             entry=authorized["entry"], standalone=authorized["standalone"])
                 self.adapter.initialize()
             db = self._read(target)
-            if db["active"]:
-                return deepcopy(db["runs"][db["active"]])
+            replaced = None
+            replace_run = request.get("replace_run")
+            if replace_run:
+                w.require(self.adapter.profile == "native_workflow", "unsupported_authority",
+                          "Run replacement requires a native workflow; protected host recovery is owner-controlled.")
+                previous = db["runs"].get(replace_run)
+                revision = request.get("expected_revision")
+                w.require(previous and type(revision) is int, "stale_checkpoint",
+                          "Replacement requires the previous --replace-run and --expected-revision.")
+                assert isinstance(revision, int)
+                # A retry can recover a lost response, never replace a different active run.
+                if previous.get("superseded_by") == db["active"] and db["active"]:
+                    active = db["runs"][db["active"]]
+                    w.require(previous["revision"] == revision + 1
+                              and active.get("request_provenance", {}).get("reference") == request.get("request_reference")
+                              and active["scope"] == request.get("scope"),
+                              "stale_checkpoint", "Conflicting run replacement retry.")
+                    return deepcopy(active)
+                w.require(db["active"] == replace_run and previous["revision"] == revision,
+                          "stale_checkpoint", "The run or revision selected for replacement changed.")
+                w.require(self.adapter.can_seal(previous), "scope_violation",
+                          "Live tool processes must stop before replacing a run.")
+                replaced = deepcopy(previous)
+            elif db["active"]:
+                active = db["runs"][db["active"]]
+                w.require((not request.get("request_reference") or request["request_reference"] ==
+                           active.get("request_provenance", {}).get("reference"))
+                          and (not request.get("scope") or request["scope"] == active["scope"]),
+                          "approval_required", "Another run is active. To start a new scope, explicitly use "
+                          "--replace-run and --expected-revision with the new user request reference.")
+                return deepcopy(active)
             authorized = authorized or self.adapter.verify_start(self.workspace, self.root, request)
             evidence.valid_scope(self.workspace, authorized["scope"])
             s = w.new_state(str(self.workspace), self.root, uuid.uuid4().hex, authorized["scope"],
@@ -307,6 +338,16 @@ class Controller:
             s.update(goal=str(authorized.get("goal", request.get("goal", ""))),
                      started_at=datetime.now(timezone.utc).isoformat(), profile=self.adapter.profile)
             self.adapter.state_created(s, authorized)
+            if replaced is not None:
+                # Commit preservation, grant revocation and the fresh baseline atomically.
+                # Replacement is not acceptance, cancellation or a migration of approvals.
+                replaced["superseded_by"] = s["run"]
+                replaced["revision"] += 1
+                workflow_approval.suspend(replaced, "User requested a new run.")
+                replaced["history"].append({"replaced_by": s["run"],
+                    "request_reference": authorized["request_reference"], "at": s["started_at"]})
+                s["replaces"] = {"run": replaced["run"], "revision": request["expected_revision"]}
+                db["runs"][replaced["run"]] = replaced
             db["runs"][s["run"]] = s
             db["active"] = s["run"]
             self._write(target, db)
@@ -326,7 +367,7 @@ class Controller:
                 return {**self.availability(), "status": "no_workflow"}
             w.require(key in db["runs"], "state_unavailable", "The requested run has no protected binding.")
             s = deepcopy(db["runs"][key])
-            changed = evidence.changed(self.workspace, s)
+            changed = None if s.get("superseded_by") else evidence.changed(self.workspace, s)
             if changed:
                 revision = s["revision"]
                 s = w.invalidate(s, *changed)
@@ -335,17 +376,23 @@ class Controller:
                 s["invalidation_pending"] = True
             return {**s, **self.availability(), **self.adapter.decorate(s), "phase": w.current(s)["phase"],
                     "pending_checkpoint": w.binding(s, w.current(s)["packet"])
-                        if w.current(s)["decision"] == "awaiting_human_approval" else None,
-                    "status": "accepted" if s["finished"] else w.current(s)["decision"]}
+                        if not s.get("superseded_by") and w.current(s)["decision"] == "awaiting_human_approval" else None,
+                    "status": "superseded" if s.get("superseded_by") else
+                              "accepted" if s["finished"] else w.current(s)["decision"]}
 
     def apply(self, action: str, run: str, *, expected_revision: int | None = None,
-              output: str = "", tasks: str = "", phase: str = "", native_reference: str = "") -> dict[str, Any]:
+              output: str = "", tasks: str = "", phase: str = "", native_reference: str = "",
+              assessment_json: str | None = None) -> dict[str, Any]:
+        w.require(assessment_json is None or action == "auto-decide", "invalid_evidence",
+                  "Inline assessment applies only to auto-decide.")
         target = self._path()
         with primitives.file_lock(str(target)):
             db = self._read(target)
             w.require(db["active"] == run or action == "finish" and run in db["runs"],
                       "state_unavailable", "Mutation must address the bound active run.")
             s = db["runs"][run]
+            w.require(not s.get("superseded_by"), "state_unavailable",
+                      "This run was replaced; its evidence is historical and its grants are revoked.")
             policy_request: dict[str, Any] = {}
             if action == "policy":
                 w.require(len(native_reference.encode()) <= 32768, "invalid_evidence", "Policy exceeds its size bound.")
@@ -355,7 +402,7 @@ class Controller:
                     raise w.Refusal("invalid_evidence", "Supply a policy JSON envelope.") from None
                 w.require(isinstance(policy_request, dict), "invalid_evidence", "Policy must be an object.")
             if action == "auto-decide":
-                assessment = evidence.object_file(self.workspace, output)
+                assessment = workflow_approval.read_assessment(self.workspace, output, assessment_json)
                 verified = workflow_approval.automatic_decision(s, assessment)
             elif action == "decide":
                 packet = w.current(s)["packet"]
@@ -370,12 +417,19 @@ class Controller:
             replay = action in ("decide", "auto-decide") and verified.get("event_id") in s["decisions"]
             policy_replay = action == "policy" and policy_request.get("event_id") in s.get("policy_events", {})
             w.require(replay or policy_replay or expected_revision == s["revision"], "stale_checkpoint", "Expected state revision changed.")
-            drift = evidence.changed(self.workspace, s, skip_current=action == "submit")
+            negative = (action == "decide" and self.adapter.profile == "native_workflow"
+                        and verified.get("choice") in {"changes_requested", "rejected", "cancelled"})
+            # An exactly bound negative response accepts no evidence. Source drift must
+            # still block approvals/transitions, but cannot veto the user's correction.
+            if negative and replay:
+                return w.decide(s, verified)
+            drift = None if negative else evidence.changed(self.workspace, s, skip_current=action == "submit")
             if drift:
                 db["runs"][run] = w.invalidate(s, *drift)
                 self._write(target, db)
                 raise w.Refusal("stale_checkpoint", drift[1])
-            self.adapter.before_action(s, action)
+            if not negative:
+                self.adapter.before_action(s, action)
             if replay:
                 return w.decide(s, verified)
             if action in ("advance", "finish", "submit", "auto-decide"):
@@ -416,6 +470,7 @@ class Controller:
         state = self.report(run)
         w.require(state.get("workflow_available"), "unsupported_authority", state.get("detail", "Host guard unavailable."))
         w.require(state.get("visits"), "state_unavailable", "No active workflow grant.")
+        w.require(not state.get("superseded_by"), "scope_violation", "The replaced run has no active grants.")
         w.require(not state.get("finished"), "scope_violation", "The route has ended; its write grants are revoked.")
         stage = w.current(state)
         tool = event.get("tool_name") or event.get("tool")
@@ -434,6 +489,20 @@ class Controller:
             return
         if tool in ("Bash", "exec_command") and self.adapter.control_action(event, state):
             return
+        if self.adapter.profile == "native_workflow":
+            harness = workflow_local.Harness(self.workspace, self.root)
+            if (harness.dashboard_opener(event, state) or harness.recovery_action(event, state)
+                    or harness.recovery_setup(event, state)):
+                return
+            if tool in ("Bash", "exec_command") and workflow_local.readonly_command(event):
+                return
+            if tool == "write_stdin" and args.get("chars", "") in ("", "\x03"):
+                record = state.get("observed_handles", {}).get(str(args.get("session_id", "")), {})
+                if record.get("read_only"):
+                    self.adapter.guard_input(event, state)
+                    return  # Poll or interrupt an observed diagnostic, never send it new code.
+            if workflow_local.bootstrap_write(self.workspace, event, state):
+                return  # Fresh recovery scope only; never overwrite sealed evidence.
         w.require(not state.get("invalidation_pending"), "stale_checkpoint",
                   "Evidence drift must revoke the prior phase grant before further writes.")
         w.require(stage["decision"] in ("not_requested", "changes_requested", "rejected", "stale"),

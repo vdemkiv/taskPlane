@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+import json
+from pathlib import Path
 import re
 from typing import Any
 
@@ -15,6 +17,36 @@ from .primitives import content_fingerprint
 
 SCHEMA = "taskplane.approval-policy/v1"
 ASSESSMENT = "taskplane.policy-assessment/v1"
+ASSESSMENT_LIMIT = 64 * 1024
+
+
+def read_assessment(workspace: Path, filename: str = "", inline: str | None = None) -> dict[str, Any]:
+    """Accept a bounded control payload without permitting sealed workspace writes."""
+    from . import workflow_evidence as evidence
+    import os
+    import stat
+    w.require(bool(filename) != (inline is not None), "invalid_evidence",
+              "Supply exactly one assessment file or inline JSON object.")
+    if inline is not None:
+        raw = inline.encode("utf-8")
+    else:
+        target = evidence.path(workspace, filename)
+        try:
+            fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                w.require(stat.S_ISREG(info.st_mode) and info.st_size <= ASSESSMENT_LIMIT,
+                          "invalid_evidence", "Assessment must be a regular file of at most 64 KiB.")
+                raw = stream.read(ASSESSMENT_LIMIT + 1)
+        except OSError as exc:
+            raise w.Refusal("invalid_evidence", f"Assessment unavailable: {filename}") from exc
+    w.require(len(raw) <= ASSESSMENT_LIMIT, "invalid_evidence", "Assessment exceeds 64 KiB.")
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise w.Refusal("invalid_evidence", "Assessment must be a JSON object.") from None
+    w.require(isinstance(value, dict), "invalid_evidence", "Assessment must be a JSON object.")
+    return dict(value)
 
 
 def policy_binding(state: dict[str, Any]) -> dict[str, Any]:

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Taskplane — from a goal to a verified result</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf2f8;color:#14283f;font-family:Arial,Helvetica,sans-serif}main{width:1160px;height:808px;padding:42px 48px;background:radial-gradient(ellipse at 95% 0%,#dceaff,transparent 50%),#f5f8fc;overflow:hidden}.brand{display:flex;align-items:center;justify-content:space-between;font-size:24px;font-weight:750}.mark{display:inline-grid;place-items:center;background:#2563eb;color:white;width:38px;height:38px;border-radius:10px;margin-right:12px;font-size:23px}.tag{font-size:12px;letter-spacing:2px;color:#537091;font-weight:700}h1{font-size:43px;line-height:1.13;letter-spacing:-1.3px;margin:34px 0 12px;max-width:970px}p{font-size:21px;line-height:1.5;margin:0;color:#506782}.content{height:420px;margin-top:28px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:white;border:1px solid #d9e3f0;border-radius:18px;padding:25px 28px;min-height:158px;box-shadow:0 4px 14px #14345405}.eyebrow{font-size:12px;color:#2563eb;letter-spacing:1.6px;font-weight:700;margin-bottom:12px}h2{font-size:25px;letter-spacing:-.4px;margin:0 0 9px}.card p{font-size:18px}.small{font-size:16px;color:#5e7187;line-height:1.55}.row{display:flex;align-items:center;gap:16px}.pill{padding:9px 16px;background:#e8effb;color:#23519c;border-radius:24px;font-size:15px;font-weight:700;white-space:nowrap}.arrow{color:#87a1c2;font-size:26px}.outcome{background:#17395e;color:white;border-radius:18px;padding:30px 32px;margin-bottom:24px}.outcome h2{font-size:29px}.outcome p{color:#d8e6f6;font-size:19px}.steps{display:flex;gap:9px;margin:23px 0 27px}.step{background:white;border:1px solid #d4dfed;border-top:4px solid #2563eb;border-radius:10px;flex:1;padding:21px 5px;text-align:center;font-size:17px;font-weight:700;min-width:0}.step span{display:block;font-size:12px;color:#7590ae;margin-bottom:11px}.wide{padding:21px 25px;border:1px solid #d3deec;border-radius:16px;background:white;margin-top:13px}.wide h2{font-size:21px;margin-bottom:5px}.wide p{font-size:17px}.choice{padding:33px;min-height:236px}.choice h2{font-size:28px}.choice .pill{display:inline-block;margin-top:20px}.note{padding:18px 24px;border-radius:12px;background:#e6edf7;margin-top:20px;font-size:17px;line-height:1.5;color:#3b5471}.footer{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #d5e0ed;padding-top:21px;font-size:15px;color:#526c88}.dots{display:flex;gap:7px}.dot{width:22px;height:5px;border-radius:3px;background:#d3deee}.dot.active{background:#2563eb;width:40px}.number{font-size:13px;font-weight:700;color:#617b99}.accent{color:#2563eb}strong{color:#1d3755}@media(prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+<main aria-label="Taskplane product overview, not a workflow dashboard">
+  <div class="brand"><span><span class="mark">t</span>taskplane</span><span class="tag">SOFTWARE DELIVERY, MADE CLEAR</span></div>
+  <h1 id="title"></h1><p id="subtitle"></p><div id="content" class="content"></div>
+  <div class="footer"><span>Design, build, and review with a clear plan and evidence.</span><div class="dots" id="dots"></div><span id="number" class="number"></span></div>
+</main>
+<script>
+const scenes=[
+ {title:'One task. A clear way forward.',subtitle:'Tell Taskplane what you need in Claude or Codex.',html:`<div class="grid">
+ <div class="card"><div class="eyebrow">DESIGN</div><h2>Think through a change</h2><p>“Design safe order cancellation before we build it.”</p></div>
+ <div class="card"><div class="eyebrow">BUILD</div><h2>Turn a goal into working code</h2><p>“Build CSV export for the monthly report.”</p></div>
+ <div class="card"><div class="eyebrow">REVIEW</div><h2>Find what needs attention</h2><p>“Review this branch against main; do not change code.”</p></div>
+ <div class="card"><div class="eyebrow">STATUS</div><h2>See where the work stands</h2><p>“Show progress, remaining work and available usage.”</p></div></div>`},
+ {title:'Agree on the outcome before building.',subtitle:'Keep the requirement connected to decisions, dependencies and checks.',html:`<div class="outcome"><div class="eyebrow" style="color:#a9c8ff">EXAMPLE GOAL</div><h2>Export the monthly report as CSV</h2><p>Preserve permissions and the existing report format. Verify the result.</p></div>
+ <div class="row" style="justify-content:center;margin:33px 0"><span class="pill">Report data</span><span class="arrow">→</span><span class="pill">Export format</span><span class="arrow">→</span><span class="pill">Download action</span><span class="arrow">→</span><span class="pill">Verification</span></div>
+ <div class="wide"><h2>Know what “done” means</h2><p>Clear scope · affected components · observable acceptance criteria</p></div>`},
+ {title:'Carry the decisions through delivery.',subtitle:'Each stage produces a result you can inspect.',html:`<div class="eyebrow">FULL DELIVERY</div><div class="steps">${['Product','Design','Plan','Build','Evaluate','Engineering','Retro'].map((s,i)=>`<div class="step"><span>0${i+1}</span>${s}</div>`).join('')}</div>
+ <div class="wide"><h2>Only need a design?</h2><p>Get the design, dependencies and validation plan. Stop at that result.</p></div>
+ <div class="wide"><h2>Only need a review?</h2><p>Get findings and supporting evidence. A review does not authorize code changes.</p></div>`},
+ {title:'See the work and the evidence together.',subtitle:'Follow the current task in Taskplane’s own dashboard.',html:`<div class="grid">
+ <div class="card"><div class="eyebrow">DIRECTION</div><h2>Scope & decisions</h2><p>What was requested, agreed and changed.</p></div>
+ <div class="card"><div class="eyebrow">PROGRESS</div><h2>Tasks & dependencies</h2><p>Completed work, prerequisites and what remains.</p></div>
+ <div class="card"><div class="eyebrow">CONFIDENCE</div><h2>Checks & findings</h2><p>What passed, what failed and what needs review.</p></div>
+ <div class="card"><div class="eyebrow">VISIBILITY</div><h2>Available usage</h2><p>Current-run measurements. Missing data stays unknown.</p></div></div>`},
+ {title:'Choose how the work moves forward.',subtitle:'Keep control of the decisions that matter to you.',html:`<div class="grid">
+ <div class="card choice"><div class="eyebrow">DEFAULT</div><h2>Review each stage</h2><p>Inspect the result, approve it or ask for changes.</p><span class="pill">Your decision at each checkpoint</span></div>
+ <div class="card choice"><div class="eyebrow">WITH EXPLICIT PERMISSION</div><h2>Authorize automatic approval</h2><p>Set conditions and required stops for this run.</p><span class="pill">Continue when your conditions pass</span></div></div>
+ <div class="note"><strong>Pause when needed.</strong> Failed checks, uncertain results and scope changes need attention. Return to manual approval whenever you choose.</div>`}
+];
+window.setScene=function(index){const i=((index%scenes.length)+scenes.length)%scenes.length,s=scenes[i];document.querySelector('#title').textContent=s.title;document.querySelector('#subtitle').textContent=s.subtitle;document.querySelector('#content').innerHTML=s.html;document.querySelector('#number').textContent=`${i+1} / ${scenes.length}`;document.querySelector('#dots').innerHTML=scenes.map((_,n)=>`<span class="dot ${n===i?'active':''}"></span>`).join('');document.documentElement.dataset.scene=String(i);return i;};
+const query=new URLSearchParams(location.search);let current=window.setScene(Number(query.get('frame')||0));
+if(!query.has('frame')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)setInterval(()=>{current=window.setScene(current+1);},4200);
+</script>
+</html>

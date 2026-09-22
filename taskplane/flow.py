@@ -670,6 +670,8 @@ def hook(event: dict[str, Any], *,
     selected = workflow_local.execution_entry(event)
     if harness:
         harness.update(hook_observed=True)
+        if name == "PostToolUse":
+            harness.observe_recovery(event, guarded)
         if selected:
             selection_reference = str(event.get("tool_use_id") or event.get("call_id") or event.get("turn_id") or
                             "observed/" + hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest())[:512]
@@ -765,7 +767,7 @@ def main(argv: list[str] | None = None, *,
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "present", "wait"])
+                                           "activate", "present", "wait", "diagnose"])
     parser.add_argument("--workspace", default=os.getcwd())
     parser.add_argument("--goal", default="")
     parser.add_argument("--phase", default="", type=str.lower)
@@ -782,16 +784,32 @@ def main(argv: list[str] | None = None, *,
     parser.add_argument("--decision-json", default="", help="Observed decision envelope; never host authentication")
     parser.add_argument("--policy-json", default="", help="Observed user policy envelope; never host authentication")
     parser.add_argument("--presentation", choices=["linked", "verified", "blocked"])
-    parser.add_argument("--assessment", help="Sealed-evidence condition assessment for auto-decide")
+    assessments = parser.add_mutually_exclusive_group()
+    assessments.add_argument("--assessment", help="Assessment JSON file for auto-decide (at most 64 KiB)")
+    assessments.add_argument("--assessment-json", help="Inline assessment JSON for auto-decide (at most 64 KiB)")
     parser.add_argument("--expected-revision", type=int)
+    parser.add_argument("--replace-run", help="Explicitly replace this active native run, preserving its evidence; start only")
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     args = parser.parse_args(argv)
+    if args.replace_run and args.action != "start":
+        parser.error("--replace-run applies only to flow start")
+    if (args.assessment is not None or args.assessment_json is not None) and args.action != "auto-decide":
+        parser.error("assessment options apply only to flow auto-decide")
     if args.action == "hook":
         return run_hook(governor=governor)
     observation_errors: list[str] = []
     try:
         workspace = Path(args.workspace).resolve()
+        if args.action == "diagnose":
+            diagnostics = workflow_local.diagnose(workspace)
+            try:
+                state = (governor or _controller(workspace, session_id({}), args.profile)).report()
+                diagnostics["workflow"] = {k: state.get(k) for k in ("run", "revision", "phase", "status")}
+            except (workflow.Refusal, OSError, ValueError, TypeError, KeyError) as exc:
+                diagnostics["workflow_error"] = str(exc)
+            print(json.dumps(diagnostics, indent=2))
+            return 0
         rows = read_events(workspace)
         session = session_id({})
         run = active_run(rows, session, counter({}, session).get("parent"))
@@ -853,8 +871,12 @@ def main(argv: list[str] | None = None, *,
                                  "scope_violation", "The selected standalone task requires --standalone --phase " + str(standalone_phase))
             state = controller.start({"entry": args.phase or "product", "standalone": args.standalone,
                                       "goal": args.goal, "native_reference": args.native_event,
-                                      "scope": scope, "request_reference": args.request_reference})
+                                      "scope": scope, "request_reference": args.request_reference,
+                                      "replace_run": args.replace_run, "expected_revision": args.expected_revision})
             if harness:
+                if args.replace_run:
+                    harness.select("tp-" + (args.phase or "product") if args.standalone else "tp-go",
+                                   args.request_reference, state)
                 harness.bind(state)
             if not any(r.get("kind") == "start" and r.get("run") == state["run"] for r in rows):
                 graph = depgraph.scan(str(workspace), decompose=True)
@@ -886,7 +908,7 @@ def main(argv: list[str] | None = None, *,
             assert run is not None
             state = controller.apply(args.action, str(run["run"]),
                 expected_revision=args.expected_revision, output=(args.assessment if args.action == "auto-decide" else args.output) or "",
-                tasks=args.tasks or "", phase=args.phase,
+                tasks=args.tasks or "", phase=args.phase, assessment_json=args.assessment_json,
                 native_reference=args.policy_json if args.action == "policy" else args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
             if harness and state.get("finished"):
                 harness.update(selected=False, waiting=None)

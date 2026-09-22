@@ -7,6 +7,7 @@ from copy import deepcopy
 import json
 import inspect
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -22,10 +23,46 @@ def cli(workspace,host,*args,root=ROOT,code=0):
     env={k:v for k,v in os.environ.items() if k not in {
         'CODEX_THREAD_ID','CODEX_SESSION_ID','TASKPLANE_CLAUDE_SESSION_ID','CLAUDE_SESSION_ID'}}
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
-    result=subprocess.run([sys.executable,'-B',str(root/'taskplane/tp.py'),'flow',*args,
-                           '--workspace',str(workspace)],cwd=workspace,env=env,capture_output=True,text=True)
+    env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
+               PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
+    argv=[sys.executable,str(root/'taskplane/tp.py'),'flow',*args,'--workspace',str(workspace)]
+    hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
+    def hook(name, **extra):
+        event={'hook_event_name':name,'cwd':str(workspace),'session_id':'root','thread_id':'root',
+               'tool_name':'exec_command','tool_input':{'cmd':shlex.join(argv)},**extra}
+        command=hooks[name][0]['hooks'][0]['commandWindows' if os.name=='nt' else 'command']
+        result=subprocess.run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),
+                              capture_output=True,text=True)
+        assert result.returncode==0,(result.stdout,result.stderr)
+        return json.loads(result.stdout)
+    before=hook('PreToolUse')
+    if before.get('hookSpecificOutput',{}).get('permissionDecision')=='deny':
+        assert code==2,before
+        return {**before,'hook_refusal':True}  # The denied operation is never executed.
+    result=subprocess.run(argv,cwd=workspace,env=env,capture_output=True,text=True)
     assert result.returncode==code,(result.stdout,result.stderr)
+    hook('PostToolUse',tool_response={'exit_code':result.returncode})
     return json.loads(result.stdout)
+
+
+def handoff(workspace,host,root=ROOT):
+    # Exercise the declared opener guard using the real native target shape.
+    # The queued tool result is a fixture, never a live-display assertion.
+    env={**os.environ,'PLUGIN_ROOT':str(root),'CLAUDE_PLUGIN_ROOT':str(root),
+         'CODEX_THREAD_ID':'root','TASKPLANE_CLAUDE_SESSION_ID':'root',
+         'PATH':str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH']}
+    hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
+    for name in ('PreToolUse','PostToolUse'):
+        event={'hook_event_name':name,'cwd':str(workspace),'thread_id':'root','session_id':'root',
+               'tool_name':'mcp__codex_app__open_in_codex',
+               'tool_input':{'target':{'type':'browser','url':(workspace/'.taskplane/dashboard.html').as_uri()}}}
+        if name=='PostToolUse':event['tool_response']={'status':'queued','threadId':'root'}
+        command=hooks[name][0]['hooks'][0]['commandWindows' if os.name=='nt' else 'command']
+        r=subprocess.run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),capture_output=True,text=True)
+        assert r.returncode==0,(r.stdout,r.stderr)
+        assert json.loads(r.stdout).get('hookSpecificOutput',{}).get('permissionDecision')!='deny',r.stdout
+    cli(workspace,host,'present','--evidence','.taskplane/dashboard.html','--presentation','linked',
+        '--note','Fixture native artifact linked; visual host verification unavailable.',root=root)
 
 
 def create(workspace):
@@ -51,12 +88,14 @@ def exercise(workspace,host,root=ROOT):
     create(workspace)
     report=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/user-request',root=root)
     state=report['workflow'];assert state['workflow_available'] and not state['authority_verified']
+    handoff(workspace,host,root=root)  # Progress view before sealing cannot satisfy the submitted checkpoint.
     for i,phase in enumerate(w.PHASES):
         assert state['phase']==phase
         if phase=='build':(workspace/'app.py').write_text('value = 2\n')
         target=output(workspace,state)
         state=cli(workspace,host,'submit','--output',target,'--tasks','tasks.json',
                   '--expected-revision',str(state['revision']),root=root)['workflow']
+        handoff(workspace,host,root=root)
         cli(workspace,host,'finish','--expected-revision',str(state['revision']),root=root,code=2)
         value=decision(state,event='test-human-'+phase)
         bad=deepcopy(value);bad['source']['automatic']=True
@@ -114,6 +153,7 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     (workspace/target).write_bytes(small)
     accepted = cli(workspace,host,'submit','--output',target,'--tasks','tasks.json',
                    '--expected-revision',str(state['revision']),root=root)['workflow']
+    handoff(workspace,host,root=root)
     assert accepted['status'] == 'awaiting_human_approval'
     replay_ws = workspace.parent/(workspace.name+'-replay')
     scope = create(replay_ws)
@@ -122,6 +162,7 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     target = output(replay_ws,a)
     a = cli(replay_ws,host,'submit','--output',target,'--tasks','tasks.json',
             '--expected-revision',str(a['revision']),root=root)['workflow']
+    handoff(replay_ws,host,root=root)
     a = cli(replay_ws,host,'decide','--decision-json',json.dumps(decision(a)),
             '--expected-revision',str(a['revision']),root=root)['workflow']
     a = cli(replay_ws,host,'finish','--expected-revision',str(a['revision']),root=root)['workflow']
@@ -189,6 +230,7 @@ def exercise_repeated_repair_capacity(workspace, host, root=ROOT):
         (workspace/target).write_text(json.dumps(out))
         state = cli(workspace, host, 'submit', '--output', target, '--tasks', 'tasks.json',
                     '--expected-revision', str(state['revision']), root=root)['workflow']
+        handoff(workspace,host,root=root)
         state = cli(workspace, host, 'decide', '--decision-json',
                     json.dumps(decision(state, event=f'fixture-capacity-{index}')),
                     '--expected-revision', str(state['revision']), root=root)['workflow']
@@ -241,6 +283,7 @@ def test_standalone_scope_cannot_silently_grant_build(tmp_path,phase):
               '--request-reference','test/standalone')['workflow']
     target=output(ws,state)
     state=cli(ws,'codex','submit','--output',target,'--tasks','tasks.json','--expected-revision',str(state['revision']))['workflow']
+    handoff(ws,'codex')
     state=cli(ws,'codex','decide','--decision-json',json.dumps(decision(state)),
               '--expected-revision',str(state['revision']))['workflow']
     cli(ws,'codex','advance','--phase','build','--expected-revision',str(state['revision']),code=2)
@@ -253,6 +296,7 @@ def test_engineering_findings_can_start_product_with_accepted_extension(tmp_path
               '--request-reference','test/findings')['workflow']
     target=output(ws,state,{'kind':'delivery','scope':scope})
     state=cli(ws,'codex','submit','--output',target,'--tasks','tasks.json','--expected-revision',str(state['revision']))['workflow']
+    handoff(ws,'codex')
     state=cli(ws,'codex','decide','--decision-json',json.dumps(decision(state)),
               '--expected-revision',str(state['revision']))['workflow']
     state=cli(ws,'codex','advance','--phase','product','--expected-revision',str(state['revision']))['workflow']
@@ -667,13 +711,13 @@ def shipped_execution_prompts():
     assert len(prompts)==3, 'Give every shipped menu prompt an explicit route expectation'
     assert all(len(prompt)<=128 for prompt in prompts), 'Codex ignores menu prompts longer than 128 characters'
     readme=(ROOT/'README.md').read_text()
-    first_task=readme.split('## First task and installed runtime verification',1)[1].split('```text\n',1)[1].split('```',1)[0].strip()
-    ordinary=readme.split('Ordinary instructions such as `',1)[1].split('`',1)[0]
+    first_task=readme.split('### Try a small real change',1)[1].split('```text\n',1)[1].split('```',1)[0].strip()
+    autonomous=readme.split('### Working autonomously',1)[1].split('```text\n',1)[1].split('```',1)[0].strip()
     return [('menu-design',prompts[0],'design',True),
-            ('menu-manual-build',prompts[1],'product',False),
-            ('menu-autonomous-build',prompts[2],'product',False),
-            ('readme-manual-build',ordinary,'product',False),
-            ('readme-complete-first-task',first_task,None,True)]
+            ('menu-build',prompts[1],'product',False),
+            ('menu-review',prompts[2],'engineering',True),
+            ('readme-autonomous-build',autonomous,'product',False),
+            ('readme-complete-first-task',first_task,'product',False)]
 
 
 @pytest.mark.parametrize('host',['codex','claude'])

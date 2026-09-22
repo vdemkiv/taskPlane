@@ -8,6 +8,7 @@ Invoke `python3 <plugin>/taskplane/tp.py` with one of these commands.
 | `flow present --workspace PATH --run ID --evidence .taskplane/dashboard.html --presentation OUTCOME --note TEXT` | Record the actual native dashboard handoff for this visit/revision |
 | `flow wait --workspace PATH --note TEXT` | Record actual missing user input while retaining write and approval checks |
 | `flow start --workspace PATH --scope FILE --request-reference REF [--standalone --phase PHASE] --goal TEXT` | Start or reuse an explicitly scoped native workflow |
+| `flow start --workspace PATH --replace-run OLD_ID --expected-revision N --scope FILE --request-reference REF --goal TEXT` | Replace an active native run on explicit user request; retain the previous evidence and begin with fresh approvals |
 | `flow progress --workspace PATH --phase PHASE --note TEXT` | Record same-phase observations; phase changes require guarded advance |
 | `flow attach --workspace PATH --tasks FILE --reviews FILE --evidence FILE` | Attach shared tasks and evidence |
 | `flow report --workspace PATH [--run ID]` | Read profile-bound decisions, separate observations and native token coverage |
@@ -56,6 +57,38 @@ to exact workspace-relative file lists), and optional `verification_inputs`. Use
 during a phase in that phase's scope. Scope and decision envelopes are data, never
 executable configuration. Start requires the actual user's request reference and
 does not accept any future phase.
+
+### Start again without losing the previous run
+
+When the user explicitly requests a new run, read the current run ID and revision
+with `flow report`. Prepare the new exact scope under `.taskplane/bootstrap/` using
+fresh filenames, then call `flow start` with `--replace-run OLD_ID`,
+`--expected-revision N`, the new `--scope`, and the actual `--request-reference`.
+Use the same workspace. Carry useful prior findings and documents into the new
+scope as evidence; do not copy approvals or policy authorization.
+
+Replacement works with sealed or stale evidence and unrelated source changes.
+The previous run becomes historical with status `superseded`, keeping its packets,
+decisions and a link to the replacement. Its grants are revoked. The new run starts
+at Product (or the explicitly requested standalone entry) with a fresh source
+baseline, empty decisions and manual approval policy. This does not approve or
+finish the old run. The native dashboard selects the new run. A matching retry is
+idempotent; a wrong run/revision, invalid scope or known running process refuses
+without replacing the active run. Stop known processes before retrying.
+
+Sealed/stale checkpoints still permit exact installed recovery/status/help
+commands, `pwd`, plain `cat`, a bounded set of non-executing `rg` options, and fresh
+structured bootstrap-file writes. Sealed evidence, shell operators, output
+redirection, executable search helpers and ordinary implementation writes remain
+guarded. A changed request without `--replace-run` no longer silently returns the
+old run. Existing scope remains in force until replacement commits.
+
+A correctly bound human `Changes requested`, `Rejected` or `Cancelled` response
+can be recorded even when source or submitted evidence has changed. It accepts
+no evidence and does not reset the source baseline; approvals and transitions
+still refuse drift. New runs require their own approvals. This recovery is for
+`native_workflow`; it does not reset corrupt stores, disable hooks or admit a
+`protected_host` owner.
 
 In manual mode, after submission `flow report` exposes `workflow.pending_checkpoint`. Present the
 output to the user, wait for their actual response and supply this envelope through
@@ -171,7 +204,8 @@ not enable an unattended scheduler, alter permissions, or provide protected-host
 | Command | Contract |
 | --- | --- |
 | `flow policy --workspace PATH --run ID --policy-json JSON --expected-revision N` | Record, replace or revoke observed user authorization. This never accepts a phase. |
-| `flow auto-decide --workspace PATH --run ID --assessment FILE --expected-revision N` | Assess one submitted checkpoint under its current policy; commit a policy decision or pause. |
+| `flow auto-decide --workspace PATH --run ID --assessment-json JSON --expected-revision N` | Assess a submitted checkpoint inline after sealing; commit an eligible policy decision or pause. |
+| `flow diagnose --workspace PATH` | Inspect bounded source metadata and workflow readiness without initializing or modifying a run. |
 
 Read the current report first. A policy envelope has this shape; **replace every
 example identifier, timestamp and instruction with actual observed data**:
@@ -221,7 +255,9 @@ No policy field is evaluated as shell code. Conditions the runtime cannot interp
 mechanically stay observed, with that limitation visible.
 
 Submit the phase normally. Read the **new** `pending_checkpoint` and policy digest,
-then write an assessment inside the checkout, typically under `.taskplane/`:
+present its native dashboard, then pass the assessment as `--assessment-json` to
+`flow auto-decide`. This control operation needs no post-seal file write. Quote JSON
+as literal data; do not interpolate user instructions into shell code:
 
 ```json
 {
@@ -239,6 +275,11 @@ then write an assessment inside the checkout, typically under `.taskplane/`:
 }
 ```
 
+The inline payload must be a JSON object of at most **64 KiB**. Existing
+`--assessment FILE` input remains supported under the same bound; it reads an
+already prepared file and does not grant permission to create or edit it after
+sealing. The two inputs are mutually exclusive and apply only to `auto-decide`.
+
 Include exactly every policy condition. Evidence paths must be in the submitted
 packet's sealed manifest; attachment alone is insufficient. Each condition needs
 an explanation and at least one existing sealed evidence file. `fail` or `unknown`
@@ -248,7 +289,11 @@ checks without unresolved gaps, passing Evaluate criteria without failures/unkno
 and no explicit high/critical/P0/P1 Engineering blocker. Automatic acceptance cannot
 approve route amendments or widen scope. Plan may narrow the outer Build grant.
 
-After `auto-decide` succeeds, use `advance` or `finish` separately. The stored decision
+Automatic decisions, advancement and finish require the current native handoff,
+even if there is no intervening Stop. A matching presentation survives only the
+approval-only revision increment; policy/scope changes, new packets, repairs and
+stale source require a fresh handoff. After `auto-decide` succeeds, use `advance`
+or `finish` separately. The stored decision
 has `kind: policy`, `human: false`, `automatic: true`, its policy ID/version/digest,
 checkpoint binding and assessment. Human decision envelopes retain their existing
 semantics; do not manufacture an “approved” excerpt for an automatic decision.
@@ -325,3 +370,36 @@ output or missing current handoff. A repeated stop emits a message to avoid loop
 New user input/further tools clear it; a different visit/revision cannot reuse it.
 Unloaded/disabled hooks remain outside these cooperative guarantees. No live hook
 trust or native permission is changed.
+
+
+## Bounded diagnosis and recovery controls
+
+`flow diagnose --workspace PATH` inspects at most 20,000 directory entries without
+hashing source content or initializing a workflow. It reports the unchanged
+20,000-file/512 MiB source-audit limits, inspected counts and bytes, the ten largest
+inspected regular files, bounded issues and completeness. An incomplete walk does
+not claim a complete size estimate. A damaged workflow is reported separately from
+metadata diagnosis; diagnosis does not repair or reset its store.
+
+The exact Codex native dashboard opener accepts the selected local dashboard or
+current immutable snapshot. It remains a view operation before and after sealing;
+other URLs, paths, threads and terminal/review targets receive no exemption. A
+queued open remains linked/unverified. The stored presentation binds checkpoint,
+visit, scope and evidence plus HTML/model digests. Legacy receipts need a fresh
+presentation. Negative human decisions and explicit replacement remain available
+when presentation cannot succeed.
+
+Native `create_worktree` recovery accepts HEAD and a valid optional name. A bound
+PreToolUse/PostToolUse pair must identify the actual returned workspace, matching
+Git common directory, HEAD and project subpath before bounded setup is allowed
+there. Unknown/failed/foreign results grant no destination access. Only fresh
+bootstrap scope files and exact setup/status/diagnostic commands are admitted;
+implementation needs that checkout's own initialized workflow and accepted scope.
+The original checkout and its uncommitted work stay intact.
+
+The exact native Taskplane uninstall operation has no phase prerequisite, including
+at stale checkpoints. The orchestrator still needs the user's explicit request,
+and the host controls permission. Other plugins, arbitrary cache writes and shell
+administration are not exceptions. A native admin event is not proof of user
+consent or a workflow approval. Runtime updates must be checked against the actual
+loaded plugin root; use diagnosis and bound replacement instead of erasing history.

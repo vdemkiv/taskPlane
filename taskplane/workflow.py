@@ -143,6 +143,7 @@ def submit(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
         s["history"].append({"visit": stage["id"], "packet": stage["packet"], "decision": stage["decision"]})
     stage.update(packet=deepcopy(packet), work="ready", decision="awaiting_human_approval")
     s["revision"] += 1
+    stage["packet_revision"] = s["revision"]
     return s
 
 

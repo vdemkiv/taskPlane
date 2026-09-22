@@ -1,5 +1,19 @@
 # taskplane changelog
 
+## v2.28.0 — product guidance and reliable workflow recovery
+
+- Restore the product purpose, animated overview and practical design/build/review/status examples. Keep installation and hook trust concise, and include the animation and editable source in both packages.
+- Accept bounded inline autonomous assessments so a submitted checkpoint does not require an otherwise prohibited file write.
+- Require an exact native dashboard handoff before automatic approval, advance or finish, including standalone phases. Preserve the handoff across an approval-only revision change and allow the exact native opener.
+- Keep metadata-only diagnosis, exact Taskplane administration and observed clean-checkout recovery available without loosening implementation scope or changing user hook settings.
+- Record per-member package hashes and whether the packaged bytes match the named source commit. A version label or dirty working tree is no longer treated as proof of installed parity.
+- Close operation-path test gaps: invoke declared PreToolUse/PostToolUse commands around phase journeys, verify continuous transitions without relying on Stop, and distinguish extracted-package results from live desktop enforcement.
+
+- Start a new explicitly requested run with `flow start --replace-run` even when the old checkpoint is sealed or stale. Preserve its evidence, revoke its grants, and select a fresh native dashboard without carrying over approvals.
+- Record exactly bound human changes/rejection/cancellation despite source drift; continue to reject approval or advancement over changed evidence.
+- Keep bounded diagnostics, CLI help and fresh recovery-scope preparation available at checkpoints. Reject shell chaining, implementation writes, stale replacement requests and replacement while known processes are running.
+- Cover recovery at all seven delivery checkpoints, standalone entries, declared Codex hooks and the extracted Codex package. Document the root cause and missing regression coverage.
+
 ## v2.27.0 — onboarding, autonomous approvals and execution harness
 
 - Keep the autonomous build menu prompt within Codex’s supported length so it is shown after installation.

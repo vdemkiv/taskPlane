@@ -18,12 +18,67 @@ def setup(workspace, *, entry="product", standalone=False):
     return c,s
 
 
-def submit(c,s):
+def present(c, s):
+    from taskplane import flow
+    flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
+    local.Harness(c.workspace,c.root).present(s,'.taskplane/dashboard.html','linked','Fixture native artifact link; no visual-host claim.')
+
+
+def submit(c,s, *, presentation=True):
     phase=w.current(s)["phase"]
     _,out,_=prepare(c.workspace,phase)
     out.update(run=s["run"],visit=w.current(s)["id"])
     (c.workspace/(phase+".json")).write_text(json.dumps(out))
-    return c.apply("submit",s["run"],expected_revision=s["revision"],output=phase+".json",tasks="tasks.json")
+    submitted=c.apply("submit",s["run"],expected_revision=s["revision"],output=phase+".json",tasks="tasks.json")
+    if presentation: present(c,submitted)
+    return submitted
+
+
+@pytest.mark.parametrize('standalone', [False, True])
+def test_handoff_required_at_transition_and_survives_only_approval_revision(tmp_path, standalone):
+    c,s=setup(tmp_path,standalone=standalone);s=submit(c,s,presentation=False)
+    harness=local.Harness(tmp_path,c.root)
+    accepted=decide(c,s)
+    action='finish' if standalone else 'advance'
+    with pytest.raises(w.Refusal,match='dashboard handoff'):
+        c.apply(action,s['run'],expected_revision=accepted['revision'],phase='design')
+    # Present the submitted revision, then consume the actual approval-only increment.
+    present(c,accepted)
+    assert harness.presentation_valid(accepted)
+    assert c.apply(action,s['run'],expected_revision=accepted['revision'],phase='design')
+
+
+def test_shown_checkpoint_survives_approval_but_not_tampered_snapshot(tmp_path):
+    c,s=setup(tmp_path);s=submit(c,s);harness=local.Harness(tmp_path,c.root)
+    receipt=harness.read()['presentation'];accepted=decide(c,s)
+    assert harness.presentation_valid(accepted)
+    from pathlib import Path
+    Path(receipt['artifact']).write_text('changed')
+    with pytest.raises(w.Refusal,match='dashboard handoff'):
+        c.apply('advance',s['run'],expected_revision=accepted['revision'],phase='design')
+
+
+def test_native_opener_is_exact_and_never_visual_verification(tmp_path):
+    c,s=setup(tmp_path);s=submit(c,s);harness=local.Harness(tmp_path,c.root)
+    target=(tmp_path/'.taskplane/dashboard.html').as_uri()
+    event={'tool_name':'mcp__codex_app__open_in_codex','tool_input':{'target':{'type':'browser','url':target}}}
+    c.guard(event,s['run'])
+    assert harness.read()['presentation']['outcome']=='linked'
+    for bad in [target+'?other',target+'#other','https://example.org/', 'file:', 'file:relative',
+                'file://[invalid',target.replace('dashboard.html','../README.md')]:
+        event['tool_input']['target']['url']=bad
+        with pytest.raises(w.Refusal):c.guard(event,s['run'])
+    event['tool_input']={'target':{'type':'file','path':str(tmp_path/'.taskplane/dashboard.html')},'threadId':'other'}
+    with pytest.raises(w.Refusal):c.guard(event,s['run'])
+
+
+def test_control_json_allows_literal_conditions_but_never_shell_expansion():
+    import shlex
+    words=['python3','tp.py','flow','auto-decide','--assessment-json',json.dumps({'instruction':'Keep $5 and `literal code`; do not change it.'})]
+    assert local.command_words({'tool_input':{'cmd':shlex.join(words)}})==words
+    for command in ['python3 tp.py "$(touch unexpected)"','python3 tp.py `touch unexpected`',
+                    'python3 tp.py; touch unexpected','python3 tp.py\ntouch unexpected']:
+        assert local.command_words({'tool_input':{'cmd':command}})==[]
 
 
 def decision(s, *, text="Approved", event="message-1"):
@@ -396,6 +451,7 @@ def task_observation_checkpoint(workspace, *, legacy=False, host="codex"):
             return raw_manifest(root,paths,allow_missing=allow_missing)
         with patch.object(evidence,'manifest',manifest_before_repair if legacy else raw_manifest):
             s=c.apply('submit',s['run'],expected_revision=s['revision'],output=phase+'.json',tasks=task_path)
+        present(c,s)
         s=decide(c,s,decision(s,event='human-'+phase))
         s=c.apply('advance',s['run'],expected_revision=s['revision'],phase=w.PHASES[w.PHASES.index(phase)+1])
     return c,s,task_path
@@ -559,7 +615,7 @@ def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     harness.bind(s)
     harness.wait(c.report(),'Need a comparison revision')
     assert 'waiting' in harness.stop({},c.report())['systemMessage']
-    s=submit(c,s)
+    s=submit(c,s,presentation=False)
     assert harness.stop({},c.report())['decision']=='block'
     page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
     harness.present(c.report(),str(page.relative_to(c.workspace)),'blocked','Fixture link available and host opening unavailable')

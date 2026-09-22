@@ -1,6 +1,6 @@
 {
   "name": "taskplane-marketplace",
-  "description": "Taskplane delivery with explicit approval policies, evidence, native dashboards and advisory usage.",
+  "description": "Design, build and review software with Claude or Codex, keeping requirements, dependencies, implementation and verification connected.",
   "owner": {
     "name": "Volodymyr Demkiv",
     "email": "vdemkiv@gmail.com"
@@ -9,25 +9,20 @@
     {
       "name": "taskplane",
       "source": ".",
-      "description": "Manual checkpoints or explicitly authorized automatic phase approvals, with scope checks, one dashboard, phase token coverage and source graph provenance.",
-      "version": "2.27.0",
+      "description": "Turn software goals into clear plans, working code and reviews backed by evidence with Claude or Codex.",
+      "version": "2.28.0",
       "homepage": "https://github.com/vdemkiv/taskPlane",
       "repository": "https://github.com/vdemkiv/taskPlane",
       "license": "Apache-2.0",
       "keywords": [
-        "governance",
         "software-delivery",
+        "software-design",
+        "code-review",
         "ai-agents",
-        "task-contract",
-        "evaluate-loop",
-        "lenses",
-        "solution-design",
-        "parallel-agents",
-        "definition-of-done",
-        "audit",
-        "guardrails"
+        "dependency-graph",
+        "verification"
       ]
     }
   ],
-  "version": "2.27.0"
+  "version": "2.28.0"
 }

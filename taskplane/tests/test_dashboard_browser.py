@@ -560,6 +560,9 @@ def test_shared_delivery_dashboard_and_graph_work_in_a_real_browser(tmp_path, mo
         browser.wait_for("document.body.textContent.includes('Workflow gates active; host-wide protection unavailable')")
         assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Awaiting human approval')")
         assert browser.evaluate("[...document.querySelectorAll('#native-support tbody tr')].every(r => r.textContent.includes('Unverified'))")
+        cli(local_workspace, 'codex', 'present', '--evidence', '.taskplane/dashboard.html',
+            '--presentation', 'verified', '--note',
+            'Chrome verified the current native Product checkpoint and unavailable host protections.')
         local_state = cli(local_workspace, 'codex', 'decide', '--decision-json', json.dumps(decision(local_state)),
                           '--expected-revision', str(local_state['revision']))['workflow']
         cli(local_workspace, 'codex', 'finish', '--expected-revision', str(local_state['revision']))

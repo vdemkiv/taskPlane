@@ -1,6 +1,6 @@
 # Taskplane onboarding
 
-Follow [installation and hook trust](../README.md#installation) first. This guide
+Follow [installation and hook trust](../README.md#install-and-run-your-first-task) first. This guide
 matches the current `taskplane/tp.py` CLI. Older references to `tp onboard`, `tp init`,
 inline setup forms, workspace hook launchers, storage-plan migration or consolidated
 pre-implementation approval describe retired workflows; those commands are not
@@ -58,7 +58,7 @@ as a setup step.
 
 ## Verify the first task
 
-Ask: **“Use taskplane to design a small change in this checkout and show the Product
+Ask: **“Use taskplane to design a small change in this checkout and show the Design
 output with the Taskplane dashboard.”** Check the following before proceeding:
 
 - The loaded skill/runtime comes from the installed plugin and reports consistent
@@ -66,7 +66,7 @@ output with the Taskplane dashboard.”** Check the following before proceeding:
 - The host's hook view shows Taskplane enabled/trusted, and its hook activity or
   diagnostics show a real event from this task. Named-hook commands run manually
   are diagnostics, not proof the host invoked them.
-- The run starts at the requested Product/standalone entry with the right goal,
+- The run starts at the requested standalone Design entry with the right goal,
   checkout, source components, task DAG and criterion IDs. Status reports
   `workflow_available: true` when the ordinary local profile is usable.
 - The agent provides the actual `.taskplane/dashboard.html` link for this run and
@@ -74,7 +74,7 @@ output with the Taskplane dashboard.”** Check the following before proceeding:
   and phase. A queued open, generated HTML or old tab is not proof of display.
 - Tokens have measured/partial/unavailable coverage and a baseline. Missing native
   logs stay Unknown. Earlier work without phase boundaries cannot be reconstructed.
-- Manual mode waits for the Product output's human acceptance. A hook event or
+- Manual mode waits for the Design output's human acceptance. A hook event or
   completed task row does not count as acceptance.
 
 The ordinary profile intentionally shows **Workflow gates active; host-wide
@@ -122,10 +122,11 @@ python3 /actual/plugin/taskplane/tp.py flow present --workspace /project --run R
 ```
 
 Use `verified` only after observing the rendered view, or `blocked` with the host
-restriction and artifact fallback. The receipt binds the run, visit and revision
-without approving anything. A new revision needs a fresh handoff. Stop catches
-missing setup, unsubmitted phase output and missing handoff, including read-only
-reviews, without forcing repeated continuation.
+restriction and artifact fallback. The receipt binds the run, visit, checkpoint,
+scope and artifact digests without approving anything. A matching handoff survives
+the approval-only revision increment. A new output, policy change, repair or stale
+evidence needs a fresh handoff. Automatic approval, advance and finish check it
+even without Stop; Stop also catches unfinished standalone reviews.
 
 For real missing input, ask through the native question tool or use `flow wait
 --workspace /project --note 'Need the requested comparison revision'` and state the
@@ -189,3 +190,19 @@ check run and checkout before regenerating. For unavailable usage, inspect cover
 and native log access. For state/source audit errors, preserve evidence and correct
 the named issue; a refused operation is not an approval. See
 [CLI contracts and coverage limits](cli-reference.md).
+
+
+For a workspace that exceeds the source inventory limit, use
+`python3 /actual/plugin/taskplane/tp.py flow diagnose --workspace /project`.
+Inspect its partial/complete label and largest inspected files. A native clean
+HEAD worktree can provide a supported recovery checkout; uncommitted work remains
+in the original. Initialize the new checkout's own exact scope. Do not delete user
+files, silently exclude source, or disable hooks as the normal recovery route.
+For a sealed or stale active run, the explicit replacement command in the
+[CLI guide](cli-reference.md#start-again-without-losing-the-previous-run) preserves
+history and starts fresh without copying approvals or automatic authorization.
+
+After an update, compare the actual loaded runtime, skills and hook command bytes
+with the release archive. Catalog version, package creation, installed-file parity,
+live host invocation and visible display are separate checks. A queued tab or a
+manually invoked hook does not establish the latter two.

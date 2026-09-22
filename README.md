@@ -1,241 +1,118 @@
 # taskplane
 
-**v2.27.0 source tree** — a shared delivery workflow for Codex and Claude, with
-product decisions, a dependency graph, task decomposition, evidence, and one dashboard.
-Version 2.27.0 adds explicitly authorized autonomous approvals
-and improve dashboard identity and phase token accounting. Check your installed
-runtime: an older cached package does not acquire changes made in this checkout.
+**Design, build, and review AI-assisted software with a clear plan and evidence that it works.**
 
-[![CI](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml/badge.svg)](https://github.com/vdemkiv/taskPlane/actions/workflows/ci.yml)
+Taskplane coordinates software delivery in Claude and Codex. Give it a goal: it helps define the outcome, understand the affected code, plan the work, implement it, and verify the result. Requirements, decisions, dependencies and review findings stay connected throughout the task.
 
-Taskplane takes a concrete goal through **Product → Design → Plan → Build →
-Evaluate → Engineering → Retro**. Manual approval is the default. You can explicitly
-authorize automatic phase approvals for one run, with additional instructions and
-mandatory stops. Both modes validate the same evidence, scope and phase order.
-Native tool permissions and hook trust remain separate.
+It is for developers and teams who use coding agents for more than a one-off edit and want to understand what is being built, why, and whether it is ready.
 
-## Installation
+![Taskplane workflow overview: design, build, review and status](docs/assets/taskplane-cowork-flow.gif)
 
-### Prerequisites
+*Choose a task, agree on the outcome, and follow the work through verified results. Review each stage yourself or authorize automatic continuation with your conditions.*
 
-- A host that supports local plugin skills and lifecycle hooks: Codex desktop/CLI
-  or Claude Code. Account and organization policy must allow the plugin.
-- Python **3.10 or newer** on the host's command path: `python3 --version` on
-  macOS/Linux, or `py -3 --version` on Windows. The shipped runtime uses the standard library.
-- Git and a local project folder accessible to the host. Open the intended checkout
-  before starting delivery; repository acquisition is a separate host operation.
-- Read/write access to the project's `.taskplane/` runtime directory. Keep it local
-  and ignored by Git. It holds workflow decisions and observations; do not delete it
-  to get past a checkpoint.
+## Why Taskplane
+
+Long coding tasks can lose the original requirement, overlook a dependency, or finish with a claim that has little verification behind it. Taskplane keeps the work connected:
+
+- **Agree on the outcome before building.** Turn a request into a clear scope and observable acceptance criteria.
+- **Understand the effects of a change.** Use the source dependency graph and component map to inform planning and review.
+- **Carry decisions into implementation.** Keep the design, task plan and implementation tied to the same goal.
+- **Know what was verified.** Link completed work to test results and review findings, and make gaps visible.
+- **See where the work stands.** One dashboard shows progress, dependencies, open findings and available token usage.
+
+## Four prompts are enough
+
+| What you need | Ask Taskplane | What you get |
+| --- | --- | --- |
+| Design a change | `taskplane design safe order cancellation before we build it` | A design with trade-offs, affected components and a validation plan. |
+| Build a feature | `taskplane build CSV export for the monthly report` | A planned implementation with verification and review tied to the agreed outcome. |
+| Review code | `taskplane review this branch against main; do not change code` | Actionable findings, source locations and supporting evidence. |
+| Check progress | `taskplane status` | The current stage, remaining work, responsible owner and available usage. |
+
+Use `taskplane help` to see the available routes. You do not need to choose review lenses or operate Taskplane's internal commands yourself.
+
+## From a goal to working software
+
+A full delivery follows **Product → Design → Plan → Build → Evaluate → Engineering → Retro**:
+
+| Stage | The question it answers |
+| --- | --- |
+| Product | What should change, for whom, and how will we know it worked? |
+| Design | How should it work, and what choices or dependencies matter? |
+| Plan | What needs doing, in what order, and how will it be checked? |
+| Build | What implementation delivers the agreed result? |
+| Evaluate | Does the implementation meet each acceptance criterion? |
+| Engineering | What correctness, design, security or maintenance risks remain? |
+| Retro | What was delivered, learned or deliberately left for later? |
+
+You can also request Product, Design or Engineering review on its own. A review request does not authorize changing the code. Existing review findings can become the inputs to a later delivery, so repairs remain connected to the problems they address.
+
+By default, you review each stage's concrete result and approve it before the next stage. Ask for changes when the result needs correcting. Taskplane keeps the accepted decisions and evidence with the run.
+
+### Working autonomously
+
+Give explicit permission and useful boundaries when you want Taskplane to continue between stages:
+
+```text
+taskplane build CSV export for the monthly report.
+For this run, auto-approve phases after the required checks pass.
+Keep the existing report format and permissions. Pause on a failed check,
+uncertain result or scope change. Stop before Retro for my review.
+```
+
+The dashboard shows those instructions and which stages may continue automatically. Say **"Return to manual approval"** to take back each checkpoint. Automatic continuation still needs the phase's evidence and your conditions to pass.
+
+## Install and run your first task
+
+You need Python **3.10 or newer**, Git, a local project folder and a Claude Code or Codex installation that supports plugins. Your organization must permit the plugin. Check Python with `python3 --version` on macOS/Linux or `py -3 --version` on Windows.
 
 ### Codex
 
-1. Open **Plugins** in the desktop app, or enter `/plugins` in Codex CLI.
-2. Find **taskplane**, inspect its source and installed components, and install/enable
-   the version offered by your permitted catalog. If it is absent, ask your workspace
-   administrator to supply an approved catalog/package.
-3. Start a new task/session in your project so the plugin skills load.
-4. Complete **Trust the hooks** below before relying on interception or observations.
+1. Open **Plugins** in the desktop app, or `/plugins` in Codex CLI.
+2. Install and enable **taskplane** from your permitted marketplace. If your organization manages plugins, use its catalog or ask an administrator to add the package.
+3. Review and trust Taskplane's hook definitions once after installation, and again when definitions change. Codex CLI exposes this under `/hooks`; desktop controls depend on the host version.
+4. Start a new task in your project so the installed skills load.
 
-The current CLI also supports `codex plugin list` and
-`codex plugin add taskplane@MARKETPLACE`, where `MARKETPLACE` is the exact catalog
-name reported by `list`. Use `codex plugin add --help` for your installed CLI; do not
-assume a GitHub repository is already a configured Codex marketplace.
-See the [official plugin installation guide](https://learn.chatgpt.com/docs/plugins).
+For a configured CLI marketplace, `codex plugin list` shows the available entries and `codex plugin add taskplane@MARKETPLACE` installs the selected one. Confirm the loaded version when updating; a catalog label alone does not prove which package a current task is using.
 
 ### Claude Code
 
-In Claude Code, add this repository's marketplace and install its plugin:
+Where your organization allows adding a marketplace:
 
 ```text
 /plugin marketplace add vdemkiv/taskPlane
 /plugin install taskplane@taskplane-marketplace
 ```
 
-Choose the installation scope your organization permits. Use `/plugin` to check
-Installed and Errors. Follow the install summary; run `/reload-plugins` if activation
-is requested. Then open the intended local project and inspect the loaded hooks.
-For a managed installation, use your organization's catalog instead of adding one.
-These commands follow [Claude Code's marketplace instructions](https://code.claude.com/docs/en/discover-plugins).
+Follow the installation's activation or reload instructions, inspect `/plugin` for errors and `/hooks` for the loaded definitions, and accept the host's project trust prompts as appropriate. Managed users install through their organization's catalog.
 
-A chat surface without local filesystem, process and hook support cannot provide
-the complete local workflow. Do not infer those capabilities from a visible skill.
+### Try a small real change
 
-## Trust the hooks after installation
-
-**Installing or enabling the plugin does not automatically trust Codex hooks.**
-
-1. Inspect the installed `hooks/hooks.json` and the commands it invokes. Taskplane
-   uses the installed `taskplane/tp.py` entry points; it does not need a copied
-   project launcher or duplicate hook registration.
-2. In Codex CLI, open **`/hooks`**. Review each Taskplane definition, trust it and
-   confirm it is enabled. In the desktop app, use the available hook review/settings
-   controls; labels may differ by host version. Managed hooks follow administrator policy.
-3. When an update changes a hook definition, review and trust the new definition.
-   Codex binds trust to the current definition hash and skips untrusted changes.
-4. In Claude Code, inspect `/hooks`, plugin loading errors and project trust/permission
-   prompts. Use that host's controls rather than assuming Codex's trust UI applies.
-5. Verify actual hook activity on a fresh task as described in
-   [onboarding](docs/onboarding.md#verify-the-first-task). A manifest or a successful
-   manual Python command proves availability, not that the host ran a lifecycle hook.
-
-See [OpenAI's hook trust documentation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
-Hook trust permits those hook commands to run. It does not approve Taskplane phases,
-authorize autonomous mode, or change native tool permissions.
-
-## Harness activation, including standalone reviews
-
-Every Taskplane execution uses the harness, including standalone code review and
-resumed stages. A review starts an Engineering run with a source graph, tasks and
-the native dashboard. Product and Design can also run standalone; the seven-phase
-flow is not required for a review-only task.
-
-Supported execution prompts and skill entries select an initialization gate. If
-setup is skipped, covered implementation and premature review completion are
-blocked. Help/status remain read-only. Indirect invocations explicitly activate the
-harness before scope preparation. Activation never approves a phase or enables
-autonomy. The agent records the native dashboard link/open result at every
-checkpoint, and clearly reports queued or blocked presentation.
-
-See [harness setup and recovery](docs/onboarding.md#verify-harness-activation),
-including legitimate user waits and checking actual host-triggered hooks.
-
-## First task and installed runtime verification
-
-Open your project, attach/invoke the Taskplane plugin, and ask:
+Open your repository and ask:
 
 ```text
-Use taskplane to describe its available commands and check the installed version.
-Then design a small change to this project; show the Product output and Taskplane dashboard.
+taskplane build a CSV export for the monthly report.
+First show me the proposed scope, acceptance criteria and Taskplane dashboard.
 ```
 
-`taskplane help` and `taskplane status` inspect existing state without starting a run.
-A delivery request starts a scoped run. Product, Design and Engineering also support
-standalone work, using the same source graph, task DAG and dashboard.
+Taskplane should clarify the result, identify affected components and show the first stage in its own dashboard. Review the scope and reply `approved` or `Changes requested: ...`. Continue with the same task so the decisions and evidence remain connected.
 
-Resolve `TASKPLANE_PLUGIN` to the **actual installed directory** reported by the host
-or the loaded skill path (the directory containing `taskplane/tp.py`). Do not select
-a cache directory by sorting version names or use a stale workspace launcher.
-For example, after setting that path in your shell:
+For detailed setup, version checks, updates and troubleshooting, see [Onboarding](docs/onboarding.md). Taskplane's controls use the host's available integration; normal host permissions remain in effect.
 
-```sh
-python3 "$TASKPLANE_PLUGIN/taskplane/tp.py" version --verify
-python3 "$TASKPLANE_PLUGIN/taskplane/tp.py" help --md
-```
+## Follow the work
 
-Use `py -3` in place of `python3` on Windows. The version check must return `ok: true`.
-In the first delivery run, verify the dashboard's goal, checkout, task/run identity,
-phase, source graph and available token measurements. See
-[the full onboarding checklist](docs/onboarding.md) for evidence and recovery.
+The shared dashboard lives at `.taskplane/dashboard.html`. It brings together the current goal and stage, task dependencies, the source graph, review findings and verification evidence.
 
-## Manual and autonomous delivery
+Available token measurements help you understand the work already done. Missing measurements are shown as unknown, not zero. Phase and run usage must refer to the same run. The dashboard is a snapshot: regenerate it after progress, then refresh the view. Always check that its goal and checkout match the task you are following.
 
-Ordinary instructions such as `taskplane build this feature` retain human checkpoints.
-At each checkpoint, review the concrete output and reply `approve` or `approved`.
-To correct or stop it, use `Changes requested: ...`, `reject`, or `cancel`.
-The current human-response parser does not recognize every natural-language synonym.
-Valid existing approvals are reused while their evidence and scope remain unchanged.
+## Learn more
 
-To authorize automatic approvals, put explicit additional instructions in the request:
-
-```text
-Use taskplane to implement the settings page. For this task, run autonomously and
- auto-approve phases after required checks pass. Stay within the agreed scope;
- pause for failures, unknown verification, or scope changes. Stop before Retro
- so I can review the final outcome.
-```
-
-Taskplane records the actual instruction, run/scope binding, allowed phases, mandatory
-stops and conditions. It shows the interpreted policy on the dashboard. Clear consent
-does not require another redundant enablement prompt. Ambiguous instructions stay
-manual until clarified. A request to implement autonomous mode is not itself consent
-to run autonomously.
-
-Every phase still produces and submits evidence. Automatic approvals are labelled
-**policy decisions**, with the authorizing policy version and condition assessment;
-they are never represented as human responses. Required evidence, phase order,
-Build scope and passing checks are enforced. Additional user conditions require
-an evidence-backed assessment; unknown conditions pause. Optional usage gaps alone
-do not block approval unless your instructions make usage a required condition.
-
-To stop automatic continuation, say **“Return to manual approval.”** Rejection,
-requested changes, cancellation or evidence drift suspends the policy. Resuming
-automatic approval requires a fresh explicit authorization. Restarting the host
-preserves the run's current policy; authorization never carries into a different run.
-External publishing, installation/trust changes and native permission prompts still
-follow the host and the user's authorized scope.
-
-The engine interface is `flow policy`, `flow submit`, `flow auto-decide`, then
-`flow advance` (or `finish`). These are separate guarded operations, not an unattended
-background scheduler. See [policy JSON and CLI contracts](docs/cli-reference.md#automatic-approval-policy).
-
-## Read the Taskplane dashboard
-
-The shared entry is **`.taskplane/dashboard.html`**. Every phase uses Taskplane's
-existing renderer; no separate Product page replaces it. The agent links it and
-requests opening through a permitted host surface. Generated, opening requested,
-and visibly verified are different states. If opening is blocked, use the artifact
-link; a queued request is not confirmation that it appeared.
-
-- **Identity:** check the goal, run, task, execution checkout, phase/visit, workflow
-  revision, generation time and data observation time. The publication location can
-  differ from the execution checkout; this does not merge their state.
-- **Tokens:** current visit and cumulative run usage are separate. The detail table
-  includes input, cached/uncached input, output, coverage and gaps. Phase totals
-  combine visits; work, review and post-completion follow-up have distinct intervals.
-  Missing/reset/late session boundaries remain unknown or unallocated. Old runs do
-  not receive invented retrospective phase counts. Host approval-review usage is
-  separate. Cached input is already in input and reasoning is already in output;
-  these figures are not billing estimates.
-- **Freshness:** this is a static snapshot. Regenerate it after meaningful progress,
-  then reload the open tab. Reload alone does not collect new data. Per-generation
-  HTML/JSON snapshots preserve historical views.
-- **Graph:** the default view shows affected components and two dependency hops;
-  Full repository retains the wider graph. Source relationships and task prerequisites
-  are separate. Planned scope is labelled separately from actual changes. Inspect
-  scan identity, dirty-input freshness, coverage and edge evidence before relying on it.
-
-To regenerate a particular run rather than accidentally inspecting another task:
-
-```sh
-python3 "$TASKPLANE_PLUGIN/taskplane/tp.py" flow report --workspace /path/to/project --run RUN_ID
-python3 "$TASKPLANE_PLUGIN/taskplane/tp.py" dashboard --workspace /path/to/project --run RUN_ID
-```
-
-Without `--run`, commands use the current task's binding. They do not pick an unrelated
-latest run. An explicit historical view uses its recorded context.
-
-## Updates and troubleshooting
-
-Update through the host's installed-plugin manager or permitted marketplace. Reload
-as directed, verify the installed runtime, review changed hooks, and repeat the first-task
-checks. Do not mix skills from one cache version with another runtime or delete an
-active run to install an update. New source features need a package built from this tree.
-
-| Symptom | Next step |
-| --- | --- |
-| Skill missing | Confirm installation/enabled state and start the required new session or reload. |
-| Hooks skipped or needing review | Inspect `/hooks`, trust the current definitions and check enablement. |
-| Python/plugin root unavailable | Confirm Python on the host command path and the actual installed plugin directory. |
-| Dashboard shows an earlier task | Compare run and checkout, regenerate with explicit `--run`, then refresh the same file. |
-| Tokens say Unknown | Check native session coverage and baseline; no estimate replaces missing counters. |
-| Graph is stale | Run `graph --workspace PATH scan --decompose --strict`, then regenerate the dashboard. |
-| Automatic approval pauses | Inspect policy version, stop phases, condition evidence, source drift and failed/unknown checks. |
-| Workflow store missing/corrupt | Preserve it and report the exact error; automatic reset is refused. |
+- [Onboarding and troubleshooting](docs/onboarding.md)
+- [CLI reference](docs/cli-reference.md)
+- [Engineering review lenses](docs/lens-catalog.md)
+- [Release history](CHANGELOG.md)
+- [Privacy](PRIVACY.md) and [Apache-2.0 license](LICENSE)
 
 ## Development
 
-From a source checkout, install the pinned developer dependencies with
-`python3 -m pip install -r requirements-dev.lock` in a virtual environment.
-Run `python3 scripts/ci_local.py` for tests, Ruff, mypy, version parity and both
-packages. Add `--browser` for the real-browser suite; missing browser infrastructure
-is a failure, not a successful skipped check. Archives go to `dist/` by default;
-individual packaging scripts support `--output-dir`.
-
-The default `native_workflow` uses observed provenance and local state. The local
-account can edit both; this is not host authentication or containment. Covered
-structured hooks check scope, and transitions audit source effects. An explicitly
-requested `protected_host` still refuses without a verified owner. Details and
-limits are in [CLI reference](docs/cli-reference.md),
-[shared delivery policy](skills/tp-go/references/shared-flow.md), and
-[the lens catalog](docs/lens-catalog.md).
+Install the pinned developer dependencies from `requirements-dev.lock` in a virtual environment. Run `python3 scripts/ci_local.py` for the standard checks; add `--browser` for the browser suite. Build the Codex upload archive with `python3 scripts/package_openai.py`. Generated packages go to `dist/`.

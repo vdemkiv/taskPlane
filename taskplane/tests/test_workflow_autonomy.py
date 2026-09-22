@@ -6,8 +6,8 @@ import json
 import pytest
 
 from taskplane import workflow as w, workflow_approval as approval, workflow_host as h
-from taskplane.tests.test_workflow_local import setup, submit, decision, decide
-from taskplane.tests.test_native_workflow_cli import cli, create, output, ROOT
+from taskplane.tests.test_workflow_local import setup, submit, decision, decide, present
+from taskplane.tests.test_native_workflow_cli import cli, create, output, ROOT, handoff
 
 
 def authorization(s, mode='autonomous', event='policy-user-1'):
@@ -36,9 +36,26 @@ def set_policy(c, s, request=None):
 
 
 def auto(c, s, value=None, revision=None):
-    target = '.taskplane/assessment.json'
-    (c.workspace/target).write_text(json.dumps(value or assessment(s)))
-    return c.apply('auto-decide', s['run'], expected_revision=s['revision'] if revision is None else revision, output=target)
+    return c.apply('auto-decide', s['run'], expected_revision=s['revision'] if revision is None else revision,
+                   assessment_json=json.dumps(value or assessment(s)))
+
+
+@pytest.mark.parametrize('raw', ['', '[1]', 'null', '{', ' ' * (65536 + 1)])
+def test_inline_assessment_is_bounded_object(tmp_path, raw):
+    c,s=setup(tmp_path);s=set_policy(c,s);s=submit(c,s)
+    with pytest.raises(w.Refusal, match='JSON object|64 KiB'):
+        c.apply('auto-decide',s['run'],expected_revision=s['revision'],assessment_json=raw)
+    assert c.report()['status']=='awaiting_human_approval'
+
+
+def test_file_assessment_remains_bounded_and_exclusive(tmp_path):
+    from taskplane.workflow_approval import read_assessment
+    p=tmp_path/'assessment.json';p.write_text('{}'+' '*65534)
+    assert read_assessment(tmp_path,p.name)=={}
+    assert read_assessment(tmp_path,inline=p.read_text())=={}
+    p.write_text(p.read_text()+' ')
+    with pytest.raises(w.Refusal,match='64 KiB'):read_assessment(tmp_path,p.name)
+    with pytest.raises(w.Refusal,match='exactly one'):read_assessment(tmp_path,p.name,'{}')
 
 
 @pytest.mark.parametrize('bad', ['implicit', 'negated', 'actor', 'tool', 'automatic', 'foreign', 'scope', 'stale', 'conditions', 'future'])
@@ -130,6 +147,7 @@ def test_default_manual_and_policy_does_not_approve(tmp_path):
     with pytest.raises(w.Refusal): auto(c,s,{'schema':approval.ASSESSMENT,'binding':w.binding(s,w.current(s)['packet'])})
     s=set_policy(c,s)
     assert w.current(s)['decision']=='awaiting_human_approval' and not s['decisions']
+    present(c,s)
     accepted=auto(c,s)
     d=next(iter(accepted['decisions'].values()))
     assert d['kind']=='policy' and not d['human'] and d['automatic']
@@ -237,13 +255,14 @@ def exercise_autonomous(workspace, host, root=ROOT):
         state=cli(workspace,host,'submit','--output',target,'--tasks','tasks.json',
                   '--expected-revision',str(state['revision']),root=root)['workflow']
         if phase=='design':
-            (workspace/'.taskplane/assessment.json').write_text(json.dumps(assessment(state)))
-            cli(workspace,host,'auto-decide','--assessment','.taskplane/assessment.json',
+            cli(workspace,host,'auto-decide','--assessment-json',json.dumps(assessment(state)),
                 '--expected-revision',str(state['revision']),root=root,code=2)
             state=cli(workspace,host,'policy','--policy-json',json.dumps(authorization(state,event='resume-user')),
                       '--expected-revision',str(state['revision']),root=root)['workflow']
-        (workspace/'.taskplane/assessment.json').write_text(json.dumps(assessment(state)))
-        state=cli(workspace,host,'auto-decide','--assessment','.taskplane/assessment.json',
+        cli(workspace,host,'auto-decide','--assessment-json',json.dumps(assessment(state)),
+            '--expected-revision',str(state['revision']),root=root,code=2)
+        handoff(workspace,host,root=root)
+        state=cli(workspace,host,'auto-decide','--assessment-json',json.dumps(assessment(state)),
                   '--expected-revision',str(state['revision']),root=root)['workflow']
         if phase!='retro':
             state=cli(workspace,host,'advance','--phase',w.PHASES[i+1],
