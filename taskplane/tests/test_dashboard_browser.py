@@ -590,8 +590,14 @@ def test_native_snapshot_tokens_policy_graph_and_static_reload(tmp_path, monkeyp
     model['sessions']=[{'session':'root','agent':'orchestrator','role':'orchestrator','status':'measured',
         'measured_at':'2026-09-17T00:01:00+00:00','usage':model['tokens']}]
     model['phase_usage']={'visits':{visit:{'phase':'product','tokens':{'total_tokens':100},'buckets':{'work':{'total_tokens':80},'review':{'total_tokens':20}},'status':'partial'}},
-        'phases':{'product':{'tokens':{'total_tokens':100},'status':'partial'}},'unallocated':{'total_tokens':50},
-        'gaps':['Synthetic missing child boundary'],'measurement_at':'2026-09-17T00:01:00+00:00'}
+        'phases':{'product':{'tokens':{'total_tokens':100},'status':'partial'}},'unallocated':{'total_tokens':25},
+        'gaps':['Synthetic missing child boundary'],'measurement_at':'2026-09-17T00:01:00+00:00',
+        'accounting':{'run':{'total_tokens':150},'phase':{'total_tokens':100},
+            'non_phase':{'total_tokens':25},'unresolved':{'total_tokens':25},'reconciled':True},
+        'non_phase':{'follow_up':{'tokens':{'total_tokens':25},'status':'measured'}},
+        'pre_run':{'tokens':{'total_tokens':1000},'included_in_run':False,'basis':'Synthetic earlier task context'},
+        'intervals':[{'session':'child-fixture','category':'unresolved','tokens':{'total_tokens':25},
+            'reason':'late_session','coverage':'amount_known','from':None,'to':'2026-09-17T00:01:00Z'}]}
     target=flow.publish_dashboard(workspace,state['run'],governor=c,supplied=model,select=True)
     config=_json_fixture('environment.json')
     with _LoopbackServer(workspace) as server, _RealBrowser(tmp_path,config) as browser:
@@ -601,8 +607,14 @@ def test_native_snapshot_tokens_policy_graph_and_static_reload(tmp_path, monkeyp
         assert browser.evaluate("document.querySelector('.metrics').getBoundingClientRect().top < 700")
         assert browser.evaluate("document.querySelector('#workflow').textContent.includes('Automatically approved')")
         assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('Discovery errors: 2')")
-        assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('Unallocated run usage: 50')")
+        assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('Unallocated run usage: 25')")
         assert browser.evaluate("document.querySelector('#telemetry').textContent.includes('Synthetic missing child boundary')")
+        assert browser.evaluate("document.querySelector('#usage-accounting').textContent.includes('Outside phases: 25')")
+        assert browser.evaluate("document.querySelector('#usage-accounting').textContent.includes('Before this run (excluded from run total): 1,000')")
+        browser.evaluate("document.querySelector('#usage-accounting summary').click()")
+        assert browser.evaluate("document.querySelector('#usage-accounting details').open")
+        assert browser.evaluate("document.querySelector('#usage-accounting table').textContent.includes('late_session')")
+        assert browser.evaluate("document.querySelector('#usage-accounting table').textContent.includes('child-fixture')")
         assert browser.evaluate("document.querySelector('#snapshot-identity').textContent.includes('"+state['run']+"')")
         assert browser.evaluate("document.querySelectorAll('#dependencies iframe').length") == 2
         assert browser.evaluate("document.querySelector('#dependencies').textContent.includes('Planned task scope')")

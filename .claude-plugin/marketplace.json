@@ -10,7 +10,7 @@
       "name": "taskplane",
       "source": ".",
       "description": "Turn software goals into clear plans, working code and reviews backed by evidence with Claude or Codex.",
-      "version": "2.30.0",
+      "version": "2.31.0",
       "homepage": "https://github.com/vdemkiv/taskPlane",
       "repository": "https://github.com/vdemkiv/taskPlane",
       "license": "Apache-2.0",
@@ -24,5 +24,5 @@
       ]
     }
   ],
-  "version": "2.30.0"
+  "version": "2.31.0"
 }

@@ -30,14 +30,11 @@ MAX_SOURCE_FILES = 20000
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
 EXCLUDED = {".git", ".taskplane", ".venv", "venv", "node_modules", "__pycache__",
             ".pytest_cache", ".mypy_cache", ".ruff_cache"}
-CHOICES = {"approve": "approved", "approved": "approved", "reject": "rejected",
-           "rejected": "rejected", "request changes": "changes_requested",
-           "changes requested": "changes_requested", "cancel": "cancelled", "cancelled": "cancelled"}
 
 
 def choice(text: str) -> str | None:
-    value = text.strip().lower().rstrip(".! ")
-    return CHOICES.get(value) or (CHOICES.get(value.split(":", 1)[0]) if ":" in value else None)
+    from .workflow_approval import conversational_choice
+    return conversational_choice(text)
 
 
 def timestamp(value: Any) -> datetime:
@@ -270,11 +267,22 @@ class LocalWorkflow:
                   and isinstance(excerpt, str) and 0 < len(excerpt) <= 512
                   and recorder in {"root_orchestrator", "native_prompt_hook"}
                   and value.get("choice") == choice(excerpt) and choice(excerpt) is not None,
-                  "invalid_evidence", "An explicit human choice, event and recorder are required.")
+                  "invalid_evidence", "The response or its human provenance is unclear. Ask what the user wants to do with this checkpoint; no exact wording is required.")
         observed = timestamp(source.get("observed_at"))
         expected = prior[event_id]["binding"] if event_id in prior else expected
         w.require(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
                   "stale_checkpoint", "Observed decision has a stale or foreign checkpoint binding.")
+        from .workflow_approval import decision_phase
+        named_phase = decision_phase(excerpt)
+        if named_phase:
+            # Resolve the named visit under the Controller's existing store lock.
+            # A correct binding cannot turn 'Build approved' into Product consent.
+            supplied = value.get("binding") or {}
+            db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
+            run = db.get("runs", {}).get(supplied.get("run"), {})
+            stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
+            w.require(stage.get("phase") == named_phase, "invalid_evidence",
+                      "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         if value.get("checkpoint_explicit") is not True:
             presentation = value.get("presentation")
             w.require(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]

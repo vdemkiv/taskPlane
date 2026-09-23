@@ -58,20 +58,80 @@ def _text(value: Any, maximum: int = 4096) -> bool:
     return isinstance(value, str) and bool(value.strip()) and len(value) <= maximum
 
 
+def decision_text(excerpt: str) -> str:
+    """Remove quoted examples and normalize presentation, not user provenance."""
+    text = excerpt.casefold().replace("’", "'")
+    text = re.sub(r'```[\s\S]*?```|`[^`]*`|“[^”]*”|"[^"]*"|(?<!\w)\'[^\'\n]+\'(?!\w)', ' ', text)
+    return ' '.join(line.strip() for line in text.splitlines() if not line.lstrip().startswith('>'))
+
+
+def decision_phase(excerpt: str) -> str | None:
+    phases = '|'.join(w.PHASES)
+    text = decision_text(excerpt)
+    match = re.search(r'\b(' + phases + r')\s+(?:phase\s+)?(?:is\s+)?(?:approved|accepted)\b', text)
+    if not match:
+        match = re.search(r'\b(?:approve|accept)\s+(?:the\s+)?(?:(?:this|current)\s+)?(' + phases + r')\b', text)
+    return match[1] if match else None
+
+
+def conversational_choice(excerpt: str) -> str | None:
+    """Recognize explicit everyday decisions; ambiguity requires clarification.
+
+    This only classifies an observed response. The adapter still verifies its
+    human source, the presented checkpoint, ordering and exact binding.
+    """
+    text = re.sub(r'\s+', ' ', decision_text(excerpt)).strip()
+    qualifiers = re.sub(r'\s+', ' ', excerpt.casefold().replace("’", "'")).strip()
+    # Quotation cannot hide a qualification to an otherwise affirmative prefix.
+    if not text or '?' in qualifiers or re.search(
+        r"\b(?:if|unless|until|when|after|before|once|provided|assuming|hypothetically|example|would|might|maybe|perhaps|subject to|as long as)\b", qualifiers
+    ):
+        return None
+    # A later qualification/negation must not be hidden by an affirmative prefix.
+    if re.search(r"\b(?:but|however|except|yet|no|not|never|don't|cannot|can't|shouldn't|without)\b", qualifiers):
+        return None
+    lead = re.sub(r'^(?:please\s+)?(?:i\s+)?', '', text).rstrip('.! ')
+    dissent = {
+        'cancelled': r'(?:cancel(?:led)?|stop|abort)',
+        'rejected': r'(?:reject(?:ed)?|decline(?:d)?)',
+        'changes_requested': r'(?:changes? requested|request changes|needs? (?:changes|revisions)|fix (?:the )?issues|revise)',
+    }
+    choices = {choice for choice, pattern in dissent.items()
+               if re.match(r'^' + pattern + r'\b', lead)}
+    phase = r'(?:' + '|'.join(w.PHASES) + r')'
+    approval = (r'^(?:(?:' + phase + r'\s+(?:phase\s+)?(?:is\s+)?)?'
+                r'(?:approv(?:e|ed)|accept(?:ed)?|apparoved|apprvoed)|'
+                r'(?:looks?|sounds?) (?:good|great)|lgtm|go ahead|proceed|continue|'
+                r'yes|yep|yeah|ok(?:ay)?|ship it)\b')
+    if re.match(approval, lead):
+        choices.add('approved')
+    # Every recognized dissent form also qualifies an affirmative prefix.
+    # Quoting that qualification cannot hide it from the mixed-decision check.
+    conflict = any(re.search(r'\b' + pattern + r'\b', qualifiers) for pattern in dissent.values())
+    if 'approved' in choices and conflict:
+        return None
+    # "Yes, explain ..." or "continue reviewing" is not acceptance of an output.
+    if 'approved' in choices and re.search(
+        r'\b(?:explain|review(?:ing)?|investigat\w*|research|discuss|consider|approved by|implement an? option|add an? (?:option|feature))\b', text
+    ):
+        return None
+    return next(iter(choices)) if len(choices) == 1 else None
+
+
 def affirmative_consent(excerpt: str) -> bool:
     """Recognize direct approval instructions, not arbitrary natural-language intent.
 
     Quoted examples are not instructions. Unsupported or contradictory wording
     stays manual; the recorder must still interpret and assess every condition.
     """
-    text = excerpt.casefold().replace("’", "'")
-    text = re.sub(r'```[\s\S]*?```|`[^`]*`|“[^”]*”|"[^"]*"|(?<!\w)\'[^\'\n]+\'(?!\w)', ' ', text)
-    text = ' '.join(line for line in text.splitlines() if not line.lstrip().startswith('>'))
+    text = decision_text(excerpt)
     if '?' in text:
         return False
     clauses = [re.sub(r'\s+', ' ', clause).strip() for clause in re.split(r'[.;!]', text)]
     approval_term = r'\b(?:auto[ -]?approv\w*|automatic\w*\s+(?:phase\s+)?approv\w*|autonomous)\b'
-    for clause in clauses:
+    # Quoted contradictory instructions also need clarification, even though a
+    # quoted positive example can never supply authorization by itself.
+    for clause in re.split(r'[.;!]', excerpt.casefold().replace("’", "'")):
         if re.search(r'\bmanual\s+(?:phase\s+)?approval\b', clause):
             return False
         if re.search(approval_term, clause) and (
@@ -81,11 +141,18 @@ def affirmative_consent(excerpt: str) -> bool:
             return False
     # Match an imperative (or explicit authorization) at a sentence boundary.
     # Feature requests such as "implement an option to ..." cannot match.
-    prefix = r'^(?:for this (?:task|run),?\s+)?(?:please\s+)?'
+    prefix = r'^(?:now[, ]+)?(?:for this (?:task|run|release|workflow),?\s+)?(?:please\s+)?'
     actor = r'(?:(?:i (?:explicitly )?authorize (?:you|taskplane) to|run autonomously and)\s+)?'
     verb = r'(?:auto[ -]?approve|automatically approve)\s+'
     target = r'(?:all\s+|the\s+|each\s+)?(?:phases?\b|phase transitions?\b|product\b|design\b|plan\b|build\b|evaluate\b|engineering\b|retro\b)'
-    return any(re.search(prefix + actor + verb + target, clause) is not None for clause in clauses)
+    direct = prefix + actor + verb + target
+    request = prefix + r'(?:(?:i (?:want|need|would like)(?: you)? to|you may)\s+)?'
+    workflow = (request + r'(?:start|run|execute|proceed with)\s+(?:an?\s+|the\s+|this\s+)?'
+                r'(?:full\s+)?(?:auto[ -]?approved|automatically approved|autonomous)\s+'
+                r'(?:full\s+)?(?:workflow|flow|run|delivery)\b')
+    automatic_phases = request + r'(?:run|execute)\s+(?:all\s+)?(?:release\s+)?phases\s+automatically\b'
+    return any(re.search(pattern, clause) is not None for clause in clauses
+               for pattern in (direct, workflow, automatic_phases))
 
 
 def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
@@ -127,7 +194,7 @@ def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     normalized = excerpt.casefold()
     if mode == "autonomous":
         w.require(affirmative_consent(excerpt), "approval_required",
-                  "Use an affirmative run instruction such as 'For this task, auto-approve phases after required checks pass.' Negative, quoted, feature-only or ambiguous wording stays manual.")
+                  "Automatic approval intent is unclear. Ask whether the user wants automatic phase approvals for this run, and preserve their answer in their own words. Negative, quoted or feature-only wording stays manual.")
     else:
         w.require(re.search(r"manual|(?:stop|disable|revoke|cancel).*(?:auto|automatic)", normalized),
                   "approval_required", "Preserve an explicit instruction to stop or return to manual approval.")

@@ -317,78 +317,10 @@ def usage_measurement(measurement: dict[str, Any], attempted_at: str) -> dict[st
 
 def phase_usage(rows: list[dict[str, Any]], state: dict[str, Any],
                 measurement: dict[str, Any]) -> dict[str, Any]:
-    """Attribute comparable native counters; absent boundaries remain unallocated."""
+    """Derived, reconciled attribution; native evidence and approval stay unchanged."""
     points = [r for r in rows if r.get("run") == state["run"] and r.get("kind") == "usage_boundary"]
-    result: dict[str, Any] = {"visits": {}, "phases": {}, "status": "unknown", "gaps": [],
-                             "basis": "Observed work, review and post-completion intervals; unavailable boundaries are not estimated."}
-    clock = measurement.get("usage_measurement", {})
-    result["measurement_at"] = clock.get("measured_at")
-    result["measurement_attempted_at"] = clock.get("attempted_at")
-    result["measurement_status"] = clock.get("status", "unavailable")
-    if not points:
-        result["gaps"] = ["No phase boundaries were recorded for this run; phase attribution is unavailable."]
-        result["unallocated"] = measurement.get("tokens")
-        return result
     endpoint = usage_point(state, measurement, previous_revision=state["revision"])
-    points = points + [endpoint]
-    totals: dict[str, int] = {}
-    seen: set[str] = set()
-    for before, after in zip(points, points[1:]):
-        identity = primitives.content_fingerprint([before, after])
-        if identity in seen:
-            continue
-        seen.add(identity)
-        visit = result["visits"].setdefault(before["visit"], {"phase": before["phase"], "tokens": {},
-                                                              "buckets": {}, "status": "measured"})
-        if after.get("previous_revision") != before["revision"]:
-            visit["status"] = "partial"
-            result["gaps"].append("Missing transition observation after revision " + str(before["revision"]))
-            continue
-        old = {s.get("session"): s for s in before.get("sessions", []) if s.get("session")}
-        new = {s.get("session"): s for s in after.get("sessions", []) if s.get("session")}
-        if not old and not new:
-            visit["status"] = "unknown"
-            result["gaps"].append("No readable session counters for " + before["visit"])
-        for sid in old.keys() | new.keys():
-            a, b = old.get(sid, {}), new.get(sid, {})
-            if a.get("role") == "host_approval_review" or b.get("role") == "host_approval_review":
-                continue
-            start, end = a.get("native_usage"), b.get("native_usage")
-            valid = (isinstance(start, dict) and isinstance(end, dict) and bool(start)
-                     and set(start) == set(end) and a.get("role") == b.get("role")
-                     and a.get("status") == b.get("status") == "measured"
-                     and all(type(start[k]) is int and type(end[k]) is int and end[k] >= start[k] for k in start))
-            if not valid:
-                visit["status"] = "partial"
-                result["gaps"].append(f"{sid}: missing, reset, late-discovered or partial counters at {after.get('observed_at')}")
-                continue
-            bucket = visit["buckets"].setdefault(before["bucket"], {})
-            for key in start:
-                delta = end[key] - start[key]
-                for target in (totals, visit["tokens"], bucket):
-                    target[key] = target.get(key, 0) + delta
-    for visit in result["visits"].values():
-        phase = result["phases"].setdefault(visit["phase"], {"tokens": {}, "status": "measured"})
-        for key, value in visit["tokens"].items():
-            phase["tokens"][key] = phase["tokens"].get(key, 0) + value
-        if visit["status"] != "measured":
-            phase["status"] = "partial"
-    run_total = measurement.get("tokens")
-    comparable = (isinstance(run_total, dict) and all(type(v) is int and v >= 0 for v in run_total.values())
-                  and all(run_total.get(k, -1) >= v for k,v in totals.items()))
-    result["unallocated"] = {k:v-totals.get(k, 0) for k,v in run_total.items()} if comparable and isinstance(run_total, dict) else None
-    if not comparable:
-        result["gaps"].append("Run counters cannot reconcile attributed usage; possible counter reset or missing run baseline.")
-    elif any(result["unallocated"].values()):
-        result["gaps"].append("Known run usage includes unallocated intervals or sessions.")
-    result["status"] = "partial" if result["gaps"] else "measured"
-    if measurement.get("token_coverage", {}).get("discovery_errors"):
-        result["gaps"].append("Native session discovery has errors; additional coverage is unknown.")
-        result["status"] = "partial"
-    result["gaps"] = list(dict.fromkeys(result["gaps"]))
-    result["attributed"] = totals or None
-    result["baseline_at"] = points[0].get("observed_at")
-    return result
+    return flow_usage.phase_accounting(points, endpoint, state, measurement)
 
 
 def record_scan(workspace: Path, graph: dict[str, Any]) -> None:
@@ -524,7 +456,8 @@ def report(workspace: Path, run_id: str | None = None, *,
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
     measured_at = datetime.now(timezone.utc).isoformat()
     for measured in result.get("sessions", []):
-        if str(measured.get("status", "")).startswith("recorded"):
+        if (str(measured.get("status", "")).startswith("recorded")
+                or measured.get("measurement_source") == "run_boundary"):
             measured["measured_at"] = measurement_time(measured.get("measured_at"))
         else:
             measured["measured_at"] = measured_at if measured.get("usage") and measured.get("native_usage") else None

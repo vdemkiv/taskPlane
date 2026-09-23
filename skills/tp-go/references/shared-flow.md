@@ -74,6 +74,12 @@ explicit checkpoint decisions and covered scope paths using versioned local stat
 The orchestrator records the actual human message with source reference, recorder,
 explicit choice, presentation/ordering evidence and exact checkpoint binding. A
 brief approval applies only to the single unchanged checkpoint already shown.
+Interpret clear ordinary-language decisions in context and retain the actual
+excerpt. Conversational wording is supported; never demand an exact phrase or a
+100% string match. If intent, conditions or the intended checkpoint are unclear,
+ask a normal clarification. Named phases, provenance, ordering and stale evidence
+checks still apply. Explicit requests for an auto-approved full workflow can
+authorize a run policy; generic implementation requests cannot.
 Known automation, timeout, cleanup and tool-result events do not approve. When
 ordering cannot be established, the response must identify its checkpoint.
 
@@ -237,6 +243,12 @@ evidence, graph and token sections use the same captured run identity.
 Show current phase/visit tokens separately from run totals. Preserve work/review/
 follow-up intervals, repeated visits and coverage; missing/reset/late counters remain
 unknown or unallocated. Never estimate a Product count from a legacy run total.
+Use the usage ledger to explain unresolved amounts by session, interval and reason.
+An unchanged visit across a missing revision can establish phase ownership, while
+its work/review split remains unsegmented. Keep post-run follow-up outside phases
+and show pre-run lifetime usage separately from the run's measured expenditure.
+Reconciled known totals do not imply complete native discovery or precise activity
+labels when observations are missing.
 Graph views disclose scanned checkout/input fingerprints, dirty-file freshness,
 coverage, scoped/full context and edge provenance. Planned task paths are not proof
 of implemented source relationships; keep execution prerequisites separate.

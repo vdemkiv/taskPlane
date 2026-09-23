@@ -85,15 +85,42 @@ def graph_document(view: dict[str, Any], paths: list[str], *, planned: bool, ful
 def usage_details(m: dict[str, Any]) -> str:
     usage = m.get('phase_usage', {})
     html = '<h3>Phase and visit accounting</h3><p class="muted">' + _e(usage.get('basis', 'Phase boundaries unavailable for this run.')) + '</p>'
-    html += '<div class="table-wrap"><table><thead><tr><th>Phase / visit</th><th>Work</th><th>Review</th><th>Follow-up</th><th>Total</th><th>Coverage</th></tr></thead><tbody>'
+    html += '<div class="table-wrap"><table><thead><tr><th>Phase / visit</th><th>Work</th><th>Review</th><th>Unsegmented</th><th>Total</th><th>Coverage</th></tr></thead><tbody>'
     for identity, visit in usage.get('visits', {}).items():
         html += '<tr><td>'+_e(visit['phase'])+'<br><code>'+_e(identity)+'</code></td>'
-        html += ''.join('<td>'+_number(visit.get('buckets', {}).get(k, {}).get('total_tokens'))+'</td>' for k in ('work','review','follow_up'))
+        html += ''.join('<td>'+_number(visit.get('buckets', {}).get(k, {}).get('total_tokens'))+'</td>' for k in ('work','review','unsegmented'))
         html += '<td>'+_number(visit.get('tokens', {}).get('total_tokens'))+'</td><td>'+_e(visit['status'])+'</td></tr>'
     html += '</tbody></table></div>'
     for phase, value in usage.get('phases', {}).items():
         html += '<p>'+_e(phase.title())+' across visits: '+_number(value.get('tokens', {}).get('total_tokens'))+' · '+_e(value['status'])+'</p>'
     html += '<p>Unallocated run usage: '+_number((usage.get('unallocated') or {}).get('total_tokens'))+'</p>'
+    accounting = usage.get('accounting', {})
+    if accounting:
+        html += '<div id="usage-accounting"><h3>Where measured tokens went</h3>'
+        for key, label in [('phase', 'Phase execution'), ('non_phase', 'Outside phases'), ('unresolved', 'Unresolved attribution'), ('run', 'Measured run total')]:
+            amount = (accounting.get(key) or {}).get('total_tokens')
+            if amount is None and accounting.get('reconciled') and accounting.get(key) == {}:
+                amount = 0  # Empty reconciled buckets are known zero, not missing telemetry.
+            html += '<p>'+label+': '+_number(amount)+'</p>'
+        html += '<p>Reconciliation: '+('All measured run tokens accounted for' if accounting.get('reconciled') else 'Incomplete or inconsistent counters')+'</p>'
+        html += '<p class="muted">Unsegmented usage belongs to a known phase; its work/review split is unknown. Unresolved usage has an amount but insufficient phase evidence.</p>'
+        html += '<h4>Outside phases</h4>'
+        for key, value in usage.get('non_phase', {}).items():
+            html += '<p>'+_e(key.replace('_', ' ').capitalize())+': '+_number(value.get('tokens', {}).get('total_tokens'))+'</p>'
+        pre_run = usage.get('pre_run', {})
+        html += '<p>Before this run (excluded from run total): '+_number((pre_run.get('tokens') or {}).get('total_tokens'))+'</p><p class="muted">'+_e(pre_run.get('basis', ''))+'</p>'
+        intervals = usage.get('intervals', [])
+        html += '<details><summary>Usage intervals and reasons ('+str(len(intervals))+')</summary><div class="table-wrap"><table><thead><tr><th>Session / interval</th><th>Activity / phase</th><th>Total</th><th>Uncached input</th><th>Output</th><th>Reason / coverage</th></tr></thead><tbody>'
+        for item in intervals[:200]:
+            value = item.get('tokens') or {}
+            html += '<tr><td><code>'+_e(item.get('session') or 'Unknown session')+'</code><br>'+_e(item.get('from') or 'Unknown start')+' → '+_e(item.get('to') or 'Unknown end')+'</td>'
+            html += '<td>'+_e(item.get('category'))+' / '+_e(item.get('phase') or item.get('bucket') or 'Unknown phase')+'<br>'+_e(item.get('visit') or '')+'</td>'
+            html += ''.join('<td>'+_number(value.get(k))+'</td>' for k in ('total_tokens', 'uncached_input_tokens', 'output_tokens'))
+            html += '<td>'+_e(item.get('reason') or 'Observed boundary interval')+'<br>'+_e(item.get('coverage'))+'</td></tr>'
+        html += '</tbody></table></div></details>'
+        if len(intervals) > 200:
+            html += '<p class="muted">Showing 200 intervals; the complete interval ledger is retained in the run report.</p>'
+        html += '</div>'
     html += ''.join('<p class="muted">'+_e(gap)+'</p>' for gap in usage.get('gaps', []))
     clock = m.get('usage_measurement', {})
     html += '<div id="usage-measurement" class="muted"><p>Boundary baseline: '+_e(usage.get('baseline_at'))+'</p>'

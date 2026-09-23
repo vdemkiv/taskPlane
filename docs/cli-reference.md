@@ -129,8 +129,11 @@ output to the user, wait for their actual response and supply this envelope thro
 
 Example identifiers and times above are placeholders; never copy them as actual
 provenance. Choices are `approved`, `changes_requested`, `rejected` or `cancelled`.
-The excerpt must express that choice explicitly (for example `Changes requested:`
-followed by a reason). A brief approval needs presentation identity and earlier
+The excerpt must express a clear choice in the user's own words. Conversational
+responses such as “looks good, proceed”, “go ahead”, “build approved” and “fix
+issues” are supported; no exact phrase is required. A named phase must match the
+bound visit. Questions, conditions, negations, quoted examples and contradictory
+responses require clarification in ordinary language. A brief approval needs presentation identity and earlier
 presentation time. If ordering is unavailable, use `checkpoint_explicit: true` and
 an actual response such as `Approve: <checkpoint ID>`; the response must itself
 name the checkpoint. Automatic, assistant/tool, timeout/cleanup, ambiguous, stale
@@ -254,8 +257,11 @@ The orchestrator normalizes only what the user authorized. `policy_binding(state
 in `workflow_approval.py` derives the binding from the current report/state; do not
 invent digests. For an instruction received before `start`, also supply
 `request_reference` equal to that run's original request reference. A later message
-must have an observed time within the run. Consent must explicitly mention automatic
-approval; generic requests such as “build this” are not accepted as opt-in.
+must have an observed time within the run. Consent must explicitly request automatic
+approval or an automatically approved workflow. Requests such as “run an auto-approved
+full workflow” are supported, including task, run and release wording. Generic requests
+such as “build this” are not accepted as opt-in. If intent is unclear, ask whether
+the user wants automatic phase approvals; never require a prescribed exact response.
 
 The stored policy adds an immutable ID/version/digest, the authorized scope and a
 mandatory `user_instructions` condition containing the original excerpt. Additional
@@ -352,6 +358,26 @@ Existing native readers reconcile run totals and identify actual children; host
 approval-review remains separate. Read failures retain recorded counters with older
 measurement times. No early phase boundary means no retrospective phase estimate.
 Counter/discovery gaps are visible; optional telemetry cannot erase a committed decision.
+
+The derived `phase_usage` ledger includes per-session intervals, counter amounts,
+phase/visit where known, activity category, reason and coverage. Its `accounting`
+object reconciles measured run tokens into `phase`, `non_phase` and `unresolved`.
+The compact command summary exposes these totals and a verified reference to the
+complete ledger; the native dashboard shows the same breakdown and interval detail.
+Cached input is part of input, and reasoning is part of output: neither is added
+again. These counters are not a monetary estimate.
+
+A missing revision between monotonic measured counters in the same visit can
+recover that phase's tokens in an `unsegmented` bucket; it cannot recover the
+work/review split. Missing transitions across visits, saved/partial boundaries,
+late sessions and resets retain explicit unresolved reasons and known amounts.
+Post-completion `follow_up` is outside phase totals. `pre_run` is the root native
+lifetime baseline before this run, excluded from run totals; its activity is not
+inferred. Missing amounts remain unknown. The next run's observed start baseline
+closes the previous root interval, preserving historical totals if the transcript
+counter later falls outside the reader's bounded window. Legacy observations are
+not rewritten, and incomplete discovery remains partial even when known totals
+reconcile.
 
 ## Execution entry and readiness
 

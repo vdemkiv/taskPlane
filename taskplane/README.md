@@ -11,6 +11,13 @@ usage, coverage and graph provenance. Static HTML requires regeneration and relo
 Missing telemetry never becomes zero or permission. Protected-host capabilities
 remain unavailable without a verified integration.
 
+Usage reports reconcile measured tokens into phase execution, non-phase follow-up
+and explained unresolved intervals, with session and boundary provenance. A missing
+revision inside one visit preserves phase ownership but leaves the work/review split
+unknown. Historical root totals can close against the next run's observed baseline.
+Conversational approval wording is supported with the same checkpoint, provenance
+and ordering checks; unclear intent gets a normal clarification, not a magic phrase.
+
 Run `python3 scripts/ci_local.py` for non-browser tests, quality checks and both host
 packages. Add `--browser` for independent rendered dashboard fixtures. Package tests
 exercise manual and autonomous journeys from the extracted Codex/Claude runtimes.

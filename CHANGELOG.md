@@ -1,5 +1,14 @@
 # taskplane changelog
 
+## v2.31.0 — explained token accounting and conversational approvals
+
+- Reconcile measured tokens into phase activity, activity outside phases, or explicitly unresolved intervals, with session, boundary and reason details in reports and the dashboard.
+- Recover skipped observations within the same phase visit without inventing a work/review split. Keep missing cross-phase boundaries, partial counters and counter resets visible as unresolved.
+- Separate pre-run usage and post-completion follow-up, deduplicate observations, and preserve legacy usage fields. A recorded historical replay attributes 3,756,746 formerly unallocated tokens to Build; this is improved attribution, not token savings.
+- Accept clear ordinary-language phase approvals and explicit automatic-workflow instructions, including common approval typos. Ask natural clarification for questions, conditions, conflicting instructions or unclear intent without demanding an exact phrase.
+- Preserve checkpoint, phase, provenance and presentation binding. Mixed responses such as “Approved. Needs changes.” cannot silently approve a phase.
+- Cover accounting conservation, historical boundaries, approval ambiguity, native workflow integration and the dashboard with regression checks.
+
 ## v2.30.0 — bounded context and safe verification reuse
 
 - Return bounded structured summaries for routine workflow commands, with explicit full-output access for clients that need the complete state.

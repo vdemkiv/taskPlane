@@ -91,6 +91,11 @@ def summary(store: Store, payload: dict[str, Any], action: str,
                            "tokens": payload.get("token_coverage", "unknown")},
               "errors": {"blocking": blocking, "reason": payload.get("reason"),
                          **collection(store, errors, "errors", 0)}, "details": details}
+    accounting = payload.get("phase_usage", {}).get("accounting")
+    if accounting:
+        result["usage_accounting"] = {**accounting,
+            "intervals": len(payload["phase_usage"].get("intervals", [])),
+            "details": store.put("usage-accounting", payload["phase_usage"])}
     if len(encode(result)) > COMMAND_BYTES:
         for field in ("tokens", "native_tokens", "token_coverage"):
             if result[field] is not None:
@@ -102,12 +107,12 @@ def summary(store: Store, payload: dict[str, Any], action: str,
     if state.get("visits"):
         from .context_handoff import binding as current_binding
         references = [details]
-        for field in (result["errors"], result["coverage"], result["context"],
+        for section in (result["errors"], result["coverage"], result["context"], result.get("usage_accounting"),
                       result["tokens"], result["native_tokens"], result["token_coverage"]):
-            if not isinstance(field, dict):
+            if not isinstance(section, dict):
                 continue
-            if field.get("details"):
-                references.append(field["details"])
+            if section.get("details"):
+                references.append(section["details"])
         read_binding = current_binding(state)
         if context and context.get("source_key"):
             read_binding["source_key"] = context["source_key"]
