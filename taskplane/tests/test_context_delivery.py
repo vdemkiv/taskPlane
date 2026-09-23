@@ -460,10 +460,13 @@ def delivery(workspace, host='codex'):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
     (workspace/'.taskplane').mkdir(exist_ok=True)
-    pricing = sorted(str(p.relative_to(fixture/'tree-b')) for p in (fixture/'tree-b').rglob('*.py'))
+    pricing = sorted(p.relative_to(fixture/'tree-b').as_posix() for p in (fixture/'tree-b').rglob('*.py'))
+    # Graph/reuse keys use '/', while the native source audit uses str(Path).
+    # Keep each boundary's representation without broadening the write grant.
+    scope_pricing = [str(Path(p)) for p in pricing]
     scope = {'criteria': ['AC-DISCOUNT'], 'paths': {phase: [f'.taskplane/{phase}.json'] for phase in w.PHASES},
              'verification_inputs': pricing}
-    scope['paths']['build'] += pricing + ['.taskplane/check.txt']
+    scope['paths']['build'] += scope_pricing + ['.taskplane/check.txt']
     tasks = {'tasks': [{'id': 'DISCOUNT', 'phase': 'build', 'dependencies': [], 'owner': 'fixture-root',
                        'criteria': ['AC-DISCOUNT'], 'paths': scope['paths']['build'],
                        'verification': 'Frozen pricing tests and exact before-tax arithmetic'}]}
@@ -524,7 +527,7 @@ def delivery(workspace, host='codex'):
                        write_scope=scope['paths']['build'], acceptance_coverage={'AC-DISCOUNT': ['DISCOUNT']},
                        integration_order=['DISCOUNT'])
         if phase == 'build':
-            out.update(change_inventory=pricing, task_acceptance_map={'AC-DISCOUNT': ['DISCOUNT']},
+            out.update(change_inventory=scope_pricing, task_acceptance_map={'AC-DISCOUNT': ['DISCOUNT']},
                        build_checks=[{'name': 'Frozen pricing tests', 'status': 'pass',
                                       'evidence': '.taskplane/check.txt', 'reuse_ref': verification}])
         if phase == 'evaluate':

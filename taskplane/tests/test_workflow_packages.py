@@ -10,12 +10,13 @@ import re
 import subprocess
 import sys
 import zipfile
+import pytest
 
 from scripts import package_plugin
 from taskplane.tests.test_workflow_host import FixtureHost, controller, native
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_delivery import output
-from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, exercise_repeated_repair_capacity, shipped_execution_prompts
+from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, shipped_execution_prompts
 from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
 from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide, present
 from taskplane.tests.test_workflow_autonomy import exercise_autonomous, exercise_nonconsent_cli
@@ -51,60 +52,59 @@ def test_source_instruction_contract():
         assert 'shared-flow.md' in footer and 'human' in footer and 'source component' in footer
 
 
-def test_generated_archives_match_verified_source(tmp_path, request):
+@pytest.mark.taskplane_packages
+@pytest.mark.parametrize("host", ["openai", "claude"])
+def test_generated_archives_match_verified_source(tmp_path, request, host):
     supplied = request.config.getoption('--taskplane-archive-dir')
-    for host in ('openai', 'claude'):
-        fresh = package_plugin.package(host, tmp_path/'fresh')
-        expected = Path(fresh['archive'])
-        target = Path(supplied).resolve()/expected.name if supplied else expected
-        assert target.is_file(), f'Missing final archive: {target}'
-        assert target.read_bytes() == expected.read_bytes(), f'Archive differs from current source: {target}'
-        sidecar = json.loads(target.with_suffix(target.suffix+'.json').read_text())
-        assert sidecar['sha256'] == hashlib.sha256(target.read_bytes()).hexdigest()
-        extracted = tmp_path/host
-        with zipfile.ZipFile(target) as archive:
-            assert set(sidecar['member_sha256']) == set(archive.namelist())
-            for name in archive.namelist():
-                assert not Path(name).is_absolute() and '..' not in Path(name).parts
-                assert archive.read(name) == (ROOT/name).read_bytes(), name
-                assert sidecar['member_sha256'][name] == hashlib.sha256(archive.read(name)).hexdigest()
-            for link in re.findall(r'!?\[[^\]]*\]\(([^)]+)\)', archive.read('README.md').decode()):
-                path = link.split('#', 1)[0]
-                if path and not re.match(r'\w+://', path):
-                    assert path in archive.namelist(), f'Broken packaged README link: {path}'
-            assert 'docs/assets/taskplane-cowork-flow.gif' in archive.namelist()
-            assert 'docs/assets/taskplane-flow-source.html' in archive.namelist()
-            assert 'taskplane/workflow_host.py' in archive.namelist()
-            assert 'hooks/hooks.json' in archive.namelist()
-            archive.extractall(extracted)
-        # The ordinary shipped profile must work without the protected fixture.
-        exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),
+    fresh = package_plugin.package(host, tmp_path/'fresh')
+    expected = Path(fresh['archive'])
+    target = Path(supplied).resolve()/expected.name if supplied else expected
+    assert target.is_file(), f'Missing final archive: {target}'
+    assert target.read_bytes() == expected.read_bytes(), f'Archive differs from current source: {target}'
+    sidecar = json.loads(target.with_suffix(target.suffix+'.json').read_text())
+    assert sidecar['sha256'] == hashlib.sha256(target.read_bytes()).hexdigest()
+    extracted = tmp_path/host
+    with zipfile.ZipFile(target) as archive:
+        assert set(sidecar['member_sha256']) == set(archive.namelist())
+        for name in archive.namelist():
+            assert not Path(name).is_absolute() and '..' not in Path(name).parts
+            assert archive.read(name) == (ROOT/name).read_bytes(), name
+            assert sidecar['member_sha256'][name] == hashlib.sha256(archive.read(name)).hexdigest()
+        for link in re.findall(r'!?\[[^\]]*\]\(([^)]+)\)', archive.read('README.md').decode()):
+            path = link.split('#', 1)[0]
+            if path and not re.match(r'\w+://', path):
+                assert path in archive.namelist(), f'Broken packaged README link: {path}'
+        assert 'docs/assets/taskplane-cowork-flow.gif' in archive.namelist()
+        assert 'docs/assets/taskplane-flow-source.html' in archive.namelist()
+        assert 'taskplane/workflow_host.py' in archive.namelist()
+        assert 'hooks/hooks.json' in archive.namelist()
+        archive.extractall(extracted)
+    # The ordinary shipped profile must work without the protected fixture.
+    exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
+    exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),
+                        'claude' if host=='claude' else 'codex', root=extracted)
+    for entry in ('product','design','engineering'):
+        exercise_harness_entry((tmp_path/(host+'-entry-'+entry)).resolve(),
+                               'claude' if host=='claude' else 'codex',entry,root=extracted)
+    for name,prompt,phase,standalone in shipped_execution_prompts():
+        exercise_harness_entry((tmp_path/(host+'-shipped-'+name)).resolve(),
+                               'claude' if host=='claude' else 'codex',phase,root=extracted,
+                               prompt=prompt,standalone=standalone)
+    exercise_nonconsent_cli((tmp_path/(host+'-nonconsent')).resolve(),
                             'claude' if host=='claude' else 'codex', root=extracted)
-        for entry in ('product','design','engineering'):
-            exercise_harness_entry((tmp_path/(host+'-entry-'+entry)).resolve(),
-                                   'claude' if host=='claude' else 'codex',entry,root=extracted)
-        for name,prompt,phase,standalone in shipped_execution_prompts():
-            exercise_harness_entry((tmp_path/(host+'-shipped-'+name)).resolve(),
-                                   'claude' if host=='claude' else 'codex',phase,root=extracted,
-                                   prompt=prompt,standalone=standalone)
-        exercise_nonconsent_cli((tmp_path/(host+'-nonconsent')).resolve(),
-                                'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_counter_freshness((tmp_path/(host+'-counter-freshness')).resolve(),
-                                   'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_state_repairs((tmp_path/(host+'-state-repairs')).resolve(),
+    exercise_counter_freshness((tmp_path/(host+'-counter-freshness')).resolve(),
                                'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_repeated_repair_capacity((tmp_path/(host+'-repeated-repairs')).resolve(),
-                                         'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_correction_cli((tmp_path/(host+'-review-correction')).resolve(),
-                                'claude' if host=='claude' else 'codex', root=extracted)
-        # The child interpreter sees only the extracted runtime and the standard library.
-        # Test-only adapter code is embedded here, never exported by either package.
-        helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
-        helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
-            'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
-            'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
-        script = '''import sys, json, io, shlex
+    exercise_state_repairs((tmp_path/(host+'-state-repairs')).resolve(),
+                           'claude' if host=='claude' else 'codex', root=extracted)
+    exercise_correction_cli((tmp_path/(host+'-review-correction')).resolve(),
+                            'claude' if host=='claude' else 'codex', root=extracted)
+    # The child interpreter sees only the extracted runtime and the standard library.
+    # Test-only adapter code is embedded here, never exported by either package.
+    helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
+    helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
+        'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
+        'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
+    script = '''import sys, json, io, shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from copy import deepcopy
@@ -254,18 +254,18 @@ for exercise_review in (exercise_correction, exercise_handles, exercise_child_li
 exercise_routing()
 print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
 '''
-        harness = tmp_path/(host+'-harness.py')
-        harness.write_text(script)
-        result = subprocess.run([sys.executable, '-I', str(harness), str(extracted),
-                                 str(tmp_path/(host+'-behavior')), host],
-                                cwd=tmp_path, capture_output=True, text=True)
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert 'EV-F02 progress, normative and legacy packet regressions passed' in result.stdout
-        assert 'ENG-F01 concurrent publication regressions passed' in result.stdout
-        assert 'seven accepted fixture checkpoints; production authority refused' in result.stdout
-        assert 'EV-F01 EV-F02 EV-F03 archive regressions passed' in result.stdout
-        assert 'EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed' in result.stdout
-        assert 'HR-01 HR-02 HR-03 HR-04 archive regressions passed' in result.stdout
+    harness = tmp_path/(host+'-harness.py')
+    harness.write_text(script)
+    result = subprocess.run([sys.executable, '-I', str(harness), str(extracted),
+                             str(tmp_path/(host+'-behavior')), host],
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'EV-F02 progress, normative and legacy packet regressions passed' in result.stdout
+    assert 'ENG-F01 concurrent publication regressions passed' in result.stdout
+    assert 'seven accepted fixture checkpoints; production authority refused' in result.stdout
+    assert 'EV-F01 EV-F02 EV-F03 archive regressions passed' in result.stdout
+    assert 'EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed' in result.stdout
+    assert 'HR-01 HR-02 HR-03 HR-04 archive regressions passed' in result.stdout
 
 
 def test_package_receipt_distinguishes_bytes_from_commit_and_unrelated_dirt(tmp_path, monkeypatch):

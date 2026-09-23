@@ -17,12 +17,14 @@ def collection(store: Store, values: list[Any], kind: str, limit: int = 4) -> di
 
 def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
          criteria: list[str], authority: dict[str, Any], inputs: list[dict[str, Any]],
-         coverage: dict[str, Any]) -> dict[str, Any]:
+         coverage: dict[str, Any], *,
+         _prepared_refs: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     w.require(phase in PHASE_BYTES, "invalid_context", "Unknown context phase.")
     refs: dict[str, dict[str, Any]] = {}
     bodies: dict[str, Any] = {}
     for item in sorted(inputs, key=lambda x: (not x.get("required", True), x["id"])):
-        ref = store.put(item.get("kind", "input"), item["body"])
+        ref = (_prepared_refs[item["id"]] if _prepared_refs is not None
+               else store.put(item.get("kind", "input"), item["body"]))
         refs[item["id"]] = ref
         bodies[item["id"]] = item["body"]
     required = [{"id": item["id"], "ref": refs[item["id"]]}

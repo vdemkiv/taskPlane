@@ -25,26 +25,9 @@ def cli(workspace,host,*args,root=ROOT,code=0):
         # Every body is returned through the selected shipped runtime's CLI.
         prepared = cli(workspace, host, 'context', root=root)
         returned = cli(workspace, host, 'context', '--consume', prepared['handoff_ref']['sha256'], root=root)
-        def references(value):
-            if isinstance(value, dict):
-                if value.get('schema') == 'taskplane.context-reference/v1':
-                    yield value['sha256']
-                else:
-                    for child in value.values(): yield from references(child)
-            elif isinstance(value, list):
-                for child in value: yield from references(child)
-        pending = list(references(returned['view']['required_inputs']))
-        visited = set(returned['context_receipt']['consumed_inputs'])
-        while pending and returned['remaining_required']:
-            sha = pending.pop()
-            if sha in visited: continue
-            visited.add(sha)
-            first = cli(workspace, host, 'context', '--read', sha, root=root)
-            returned = first
-            pending.extend(references(first['page']['data']))
-            for page in range(1, first['page']['pages']):
-                returned = cli(workspace, host, 'context', '--read', sha, '--page', str(page), root=root)
-                pending.extend(references(returned['page']['data']))
+        while returned['remaining_required']:
+            returned = cli(workspace, host, 'context', '--read-required', prepared['handoff_ref']['sha256'], root=root)
+            assert returned['pages'], 'Required-body delivery made no progress'
         assert returned['remaining_required'] == 0
         target = workspace/args[args.index('--output')+1]
         data = json.loads(target.read_text()); data['context_receipt'] = returned['context_receipt']
@@ -326,6 +309,7 @@ def exercise_repeated_repair_capacity(workspace, host, root=ROOT):
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.taskplane_capacity
 def test_native_repeated_repair_history_fits_without_losing_evidence(tmp_path, host):
     exercise_repeated_repair_capacity((tmp_path/'repairs').resolve(), host)
 

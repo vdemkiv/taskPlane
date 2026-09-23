@@ -8,7 +8,7 @@ from typing import Any
 import uuid
 
 from . import depgraph, primitives, workflow as w, workflow_evidence as evidence
-from .context import Store, digest, encode, signed
+from .context import Store, digest, encode, signed, OBJECT_LIMIT, PAGE_LIMIT, REFERENCE_SCHEMA
 from .context_views import PHASE_BYTES, collection, view
 
 CONTRACT = "bounded/v1"
@@ -30,7 +30,7 @@ def text_body(raw: bytes) -> dict[str, Any]:
 
 def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[list[dict[str, Any]], list[str], list[str], dict[str, Any]]:
     phase = w.current(state)["phase"]
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = state.get("initial_context_tasks", [])
     accepted: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
     for visit in state["visits"][:state["index"]]:
@@ -61,15 +61,15 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
                 continue  # Task definitions are selected separately; observations are not normative.
             items.append({"id": "artifact/" + relative, "kind": "accepted-artifact",
                           "body": {"path": relative, **text_body(raw)}})
-    default_tasks = workspace / ".taskplane/tasks.json"
-    if not rows and default_tasks.exists():
-        rows = evidence.object_file(workspace, ".taskplane/tasks.json").get("tasks", [])
+    # A workspace-global task file may belong to a different run. Initial tasks
+    # are frozen by start; accepted packets provide their later definitions.
     selected = [row for row in rows if row.get("phase", phase) == phase]
     if task:
         selected = [row for row in selected if row["id"] == task]
         w.require(selected, "invalid_context", "Task is not part of this current phase.")
     criteria = sorted({c for row in selected for c in evidence.task_criteria(row)}) or state["scope"]["criteria"]
-    paths = sorted({p for row in selected for p in row.get("paths", [])}) if selected else state["scope"]["paths"][phase]
+    paths = (sorted({p for row in selected for p in row.get("paths", [])}
+                    & set(state["scope"]["paths"][phase])) if selected else state["scope"]["paths"][phase])
     items.insert(0, {"id": "requirements-and-scope", "kind": "requirements",
                     "body": {"goal": state.get("goal", ""), "criteria": criteria, "phase": phase, "paths": paths,
                              "tasks": [{k:v for k,v in row.items() if k not in evidence.TASK_OBSERVATIONS}
@@ -117,11 +117,14 @@ class Session:
         self.binding = binding(state)
         self.phase = w.current(state)["phase"]
         self.items, task_ids, criteria, metadata = inputs(self.workspace, state, task)
+        self.input_refs = {item["id"]: self.store.put(item.get("kind", "input"), item["body"])
+                           for item in self.items}
         self.view = view(self.store, self.binding, self.phase, task_ids, criteria,
-                         metadata["authority"], self.items, metadata["coverage"])
+                         metadata["authority"], self.items, metadata["coverage"],
+                         _prepared_refs=self.input_refs)
         self.view_ref = self.store.put("context-view", self.view)
         self.read_binding = {**self.binding, "source_key": self.view["source_key"]}
-        self.required = [{"id": item["id"], "ref": self.store.put(item.get("kind", "input"), item["body"])}
+        self.required = [{"id": item["id"], "ref": self.input_refs[item["id"]]}
                          for item in self.items if item.get("required", True)]
         self.handoff = signed({"schema": "taskplane.context-handoff/v1", "binding": self.binding,
                                "view_ref": self.view_ref,
@@ -129,7 +132,7 @@ class Session:
                                "accepted_inputs": collection(self.store, metadata["authority"]["accepted_inputs"], "accepted-inputs", 0),
                                "unknowns": metadata["coverage"], "exclusions": EXCLUSIONS})
         self.handoff_ref = self.store.put("context-handoff", self.handoff)
-        self.refs = [self.store.put(item.get("kind", "input"), item["body"]) for item in self.items]
+        self.refs = list(self.input_refs.values())
         self.refs += [self.view_ref, self.handoff_ref, self.view["authority_ref"]]
         for field in (self.view["references"], self.view["required_inputs"], self.handoff["accepted_inputs"]):
             if field.get("details"):
@@ -158,13 +161,13 @@ class Session:
         return value
 
     def _deliver(self, payload: dict[str, Any], seen: set[str],
-                 page: tuple[str, int, int] | None = None, *, limit: int = 16384) -> dict[str, Any]:
+                 page: tuple[str, int, int] | None = None, *, limit: int = 16384,
+                 page_updates: list[tuple[str, int, int]] | None = None) -> dict[str, Any]:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with primitives.file_lock(str(self.ledger_path)):
             ledger = self.ledger()
             seen |= set(ledger["seen"])
-            if page:
-                key, number, total = page
+            for key, number, total in ([page] if page else []) + (page_updates or []):
                 pages = sorted(set(ledger["pages"].get(key, [])) | {number})
                 ledger["pages"][key] = pages
                 if pages == list(range(total)):
@@ -202,7 +205,8 @@ class Session:
         seen = set()
         for item in self.items:
             if item["id"] in self.view["inline"]:
-                seen |= self.store.descendants(self.store.put(item.get("kind", "input"), item["body"]))
+                ref = self.input_refs[item["id"]]
+                seen |= self.required_trees[ref["sha256"]] if ref["sha256"] in self.required_trees else self.store.descendants(ref)
         response = self._deliver({"schema": "taskplane.context-consumption/v1", "view": self.view}, seen,
                                  limit=PHASE_BYTES[self.phase])
         w.require(len(encode(response)) <= PHASE_BYTES[self.phase], "context_overflow", "Consumed view exceeds phase budget.")
@@ -219,6 +223,37 @@ class Session:
                                 (key, page, result["pages"]) if section is None else None)
         w.require(len(encode(response)) <= 16384, "context_overflow", "Read envelope exceeds its page budget.")
         return response
+
+    def read_required(self, key: str) -> dict[str, Any]:
+        """Return a bounded prefix of missing required pages, never just their IDs."""
+        w.require(key == self.handoff_ref["sha256"], "invalid_context", "Stale or foreign handoff.")
+        ledger = self.ledger()
+        missing = sorted(set().union(*self.required_trees.values()) - set(ledger["seen"]))
+        pages: list[dict[str, Any]] = []
+        updates: list[tuple[str, int, int]] = []
+        payload = {"schema": "taskplane.context-read-batch/v1", "handoff_ref": self.handoff_ref, "pages": pages}
+        # Reserve the largest possible receipt envelope before committing any
+        # page. The final serializer also enforces the exact byte limit.
+        reserve = {"remaining_required": len(self.required), "context_receipt": {
+            "receipt": {"schema": REFERENCE_SCHEMA, "kind": "delivery-receipt",
+                        "sha256": "0" * 64, "source_key": "0" * 64, "bytes": OBJECT_LIMIT},
+            "consumed_inputs": sorted(self.required_trees)}}
+        full = False
+        for sha in missing:
+            first = self.store.page(sha)
+            for number in range(first["pages"]):
+                if number in ledger["pages"].get(sha, []):
+                    continue
+                page = first if number == 0 else self.store.page(sha, number)
+                if len(pages) == 64 or len(encode({**payload, **reserve, "pages": [*pages, page]})) >= PAGE_LIMIT:
+                    full = True
+                    break
+                pages.append(page)
+                updates.append((sha, number, page["pages"]))
+            if full:
+                break
+        w.require(not missing or pages, "context_overflow", "No required page fits the batch response budget.")
+        return self._deliver(payload, set(), page_updates=updates, limit=PAGE_LIMIT)
 
     def validate(self, value: Any) -> None:
         w.require(isinstance(value, dict) and isinstance(value.get("receipt"), dict),
@@ -238,12 +273,6 @@ class Session:
 def consume_required(session: Session) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Programmatic consumer using the same public operations; retain every returned body."""
     responses = [session.consume(session.handoff_ref["sha256"])]
-    for item in session.required:
-        for key in sorted(session.store.descendants(item["ref"])):
-            if key in session.ledger()["seen"]:
-                continue
-            first = session.read(key)
-            responses.append(first)
-            for page in range(1, first["page"]["pages"]):
-                responses.append(session.read(key, page))
+    while responses[-1]["remaining_required"]:
+        responses.append(session.read_required(session.handoff_ref["sha256"]))
     return responses[-1]["context_receipt"], responses

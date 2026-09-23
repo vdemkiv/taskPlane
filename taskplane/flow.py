@@ -782,8 +782,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     context_read = parser.add_mutually_exclusive_group()
     context_read.add_argument("--consume", help="Consume the current handoff SHA-256")
     context_read.add_argument("--read", help="Read a current verified reference SHA-256")
+    context_read.add_argument("--read-required", help="Return a bounded batch of missing required pages for this handoff SHA-256")
     parser.add_argument("--section")
-    parser.add_argument("--page", type=int, default=0)
+    parser.add_argument("--page", type=int)
     parser.add_argument("--workspace", default=os.getcwd())
     parser.add_argument("--goal", default="")
     parser.add_argument("--phase", default="", type=str.lower)
@@ -808,9 +809,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     args = parser.parse_args(argv)
-    if (args.task or args.consume or args.read or args.section or args.page) and args.action != "context":
+    if any(value is not None for value in (args.task, args.consume, args.read, args.read_required, args.section, args.page)) and args.action != "context":
         parser.error("context selection options apply only to flow context")
-    if (args.section or args.page) and not args.read:
+    if (args.section is not None or args.page is not None) and args.read is None:
         parser.error("--section and --page require --read")
     workspace = Path(args.workspace).resolve()
     protected: dict[str, Any] = {}
@@ -848,7 +849,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         if args.action == "context":
             from .context import encode
             context_result = controller.context(args.run, task=args.task, consume=args.consume,
-                                        read=args.read, page=args.page, section=args.section)
+                                        read=args.read, page=args.page if args.page is not None else 0, section=args.section,
+                                        read_required=args.read_required)
             print(encode(context_result).decode("utf-8"))
             return 0
         if protected.get("run") and (run is None or args.action not in {"report", "attach"}):
@@ -903,7 +905,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                                  "scope_violation", "The selected standalone task requires --standalone --phase " + str(standalone_phase))
             state = controller.start({"entry": args.phase or "product", "standalone": args.standalone,
                                       "goal": args.goal, "native_reference": args.native_event,
-                                      "scope": scope, "request_reference": args.request_reference,
+                                      "scope": scope, "request_reference": args.request_reference, "tasks": args.tasks,
                                       "replace_run": args.replace_run, "expected_revision": args.expected_revision})
             if harness:
                 if args.replace_run:

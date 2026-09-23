@@ -197,12 +197,12 @@ class Store:
         pending = [ref]
         while pending:
             current = pending.pop()
-            self.node(current)  # Validate metadata even when another edge reused the same digest.
+            node = self.node(current)  # Validate metadata even when another edge reused the same digest.
             if current["sha256"] in seen:
                 continue
             w.require(len(seen) < 20000, "context_overflow", "Context reference tree is too large.")
             seen.add(current["sha256"])
-            pending.extend(self.children(self.node(current)))
+            pending.extend(self.children(node))
         return seen
 
     def page(self, key: str, page: int = 0, section: str | None = None) -> dict[str, Any]:
