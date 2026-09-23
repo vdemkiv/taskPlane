@@ -54,7 +54,7 @@ def test_product_runs_through_retro_with_graph_lenses_and_dashboard(tmp_path):
                                    "--workspace", str(workspace), "--phase", phase],
                                   env={**os.environ, "CODEX_THREAD_ID": "e2e-root"}, capture_output=True, text=True)
         assert rejected.returncode == 2
-    report = json.loads(run_cli(workspace, "flow", "report", "--workspace", str(workspace)))
+    report = json.loads(run_cli(workspace, "flow", "report", "--full", "--workspace", str(workspace)))
     assert report["phase"] == "product" and report["status"] == "legacy_unverified"
     assert len(report["milestones"]) == 0
     page = (workspace / ".taskplane/dashboard.html").read_text()

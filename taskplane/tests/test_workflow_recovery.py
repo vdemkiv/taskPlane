@@ -301,7 +301,7 @@ def exercise_declared_recovery(workspace, root, entry="product"):
 
     def run(*args, code=0):
         launcher = ["py", "-3"] if os.name == "nt" else [sys.executable]
-        argv = [*launcher, str(root / "taskplane/tp.py"), "flow", *args, "--workspace", str(workspace)]
+        argv = [*launcher, str(root / "taskplane/tp.py"), "flow", *args, "--full", "--workspace", str(workspace)]
         guarded = hook("PreToolUse", tool_name="exec_command", tool_input={"cmd": shlex.join(argv)})
         assert guarded.get("hookSpecificOutput", {}).get("permissionDecision") != "deny", guarded
         result = subprocess.run(argv, cwd=workspace, env=env, text=True, capture_output=True)

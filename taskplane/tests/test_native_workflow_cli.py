@@ -20,6 +20,35 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 def cli(workspace,host,*args,root=ROOT,code=0):
+    if args[0] == 'submit' and code == 0:
+        # A legitimate fixture producer refreshes its receipt after corrections.
+        # Every body is returned through the selected shipped runtime's CLI.
+        prepared = cli(workspace, host, 'context', root=root)
+        returned = cli(workspace, host, 'context', '--consume', prepared['handoff_ref']['sha256'], root=root)
+        def references(value):
+            if isinstance(value, dict):
+                if value.get('schema') == 'taskplane.context-reference/v1':
+                    yield value['sha256']
+                else:
+                    for child in value.values(): yield from references(child)
+            elif isinstance(value, list):
+                for child in value: yield from references(child)
+        pending = list(references(returned['view']['required_inputs']))
+        visited = set(returned['context_receipt']['consumed_inputs'])
+        while pending and returned['remaining_required']:
+            sha = pending.pop()
+            if sha in visited: continue
+            visited.add(sha)
+            first = cli(workspace, host, 'context', '--read', sha, root=root)
+            returned = first
+            pending.extend(references(first['page']['data']))
+            for page in range(1, first['page']['pages']):
+                returned = cli(workspace, host, 'context', '--read', sha, '--page', str(page), root=root)
+                pending.extend(references(returned['page']['data']))
+        assert returned['remaining_required'] == 0
+        target = workspace/args[args.index('--output')+1]
+        data = json.loads(target.read_text()); data['context_receipt'] = returned['context_receipt']
+        target.write_text(json.dumps(data))
     env={k:v for k,v in os.environ.items() if k not in {
         'CODEX_THREAD_ID','CODEX_SESSION_ID','TASKPLANE_CLAUDE_SESSION_ID','CLAUDE_SESSION_ID'}}
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
@@ -28,7 +57,7 @@ def cli(workspace,host,*args,root=ROOT,code=0):
     # Match the declared Windows hook launcher; py -3 may select a different
     # installed interpreter from the one running pytest.
     python=['py','-3'] if os.name=='nt' else [sys.executable]
-    argv=[*python,str(root/'taskplane/tp.py'),'flow',*args,'--workspace',str(workspace)]
+    argv=[*python,str(root/'taskplane/tp.py'),'flow',*args,'--full','--workspace',str(workspace)]
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     def hook(name, **extra):
         event={'hook_event_name':name,'cwd':str(workspace),'session_id':'root','thread_id':'root',
@@ -645,6 +674,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     def command(*args,code=0,cli_entry='flow'):
         launcher=['py','-3'] if os.name == 'nt' else [sys.executable]
         words=[*launcher,str(root/'taskplane/tp.py'),cli_entry,*args,'--workspace',str(workspace)]
+        if cli_entry == 'flow': words.append('--full')
         key='command' if host=='claude' else 'cmd';tool='Bash' if host=='claude' else 'exec_command'
         before=hook('PreToolUse',tool_name=tool,tool_input={key:shlex.join(words)})
         assert before.get('hookSpecificOutput',{}).get('permissionDecision')!='deny',before

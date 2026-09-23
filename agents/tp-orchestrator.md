@@ -25,3 +25,27 @@ Use the restored native session/command integration only through its admitted
 host owner. Keep raw hook observations separate from decisions. The human scope
 and exact checkpoint remain binding; the native_workflow profile does not activate unsupported protection
 with a workspace record or a supplied actor label.
+
+## Consume bounded context
+
+After activation, start, advancement or resumption, use the installed runtime's
+`flow context --workspace <checkout> --run <run>` and consume the returned
+handoff with `--consume <handoff-ref-sha256>`. Use `--task <current-task-id>` for
+focused work. Read every omitted required input using `--read <ref-sha256>`;
+follow index children and page cursors until all required bodies are returned.
+A fresh consumer receives these bodies, scoped source and relevant findings;
+do not copy the predecessor conversation or tool history into its instructions.
+No context operation authorizes dispatch or a phase transition.
+
+For phase submission, obtain a current whole-phase receipt (without `--task`)
+and include the returned `context_receipt` object in the phase output. Renew it
+after source, scope, revision or accepted input changes. New bounded/v1 runs
+reject missing, partial, foreign or stale receipts. Legacy runs keep their
+original evidence contract. A receipt proves returned data, not model attention.
+
+Routine command summaries preserve the current gate and reference full details.
+Expand specific references when needed; request `--full` only for a consumer that
+requires the complete legacy report. Native dashboards retain complete evidence.
+Reuse a prior passing check only when its verification record matches current
+source/dependency, tests, runtime, environment, command and criteria fingerprints.
+Retain failed/unknown results and findings; reuse never transfers approval.

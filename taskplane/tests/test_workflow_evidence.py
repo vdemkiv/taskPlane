@@ -52,6 +52,17 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
         s["visits"][w.PHASES.index("plan")] = w.current(plan_state)
         s["decisions"] = plan_state["decisions"]
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    # Existing native fixture clients now explicitly consume their current inputs.
+    # Pure state-machine fixtures remain legacy data and need no retroactive receipt.
+    from taskplane import workflow_host
+    from taskplane.context_handoff import Session, consume_required
+    controller = workflow_host.Controller(tmp_path, "root", workflow_host.installed_adapter("codex"))
+    if controller.adapter.state_exists():
+        active = controller.report()
+        if active.get("context_contract") and w.current(active)["phase"] == phase:
+            receipt, returned = consume_required(Session(tmp_path, active))
+            assert returned and receipt["consumed_inputs"]
+            out["context_receipt"] = receipt
     return s, out, tasks
 
 

@@ -183,6 +183,9 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
                   "invalid_evidence", f"{phase} output needs substantive {field}.")
     criteria = state["scope"]["criteria"]
     w.require(output.get("criteria") == criteria, "invalid_evidence", "Output must identify the accepted criteria.")
+    if state.get("context_contract"):
+        from .context_handoff import Session
+        Session(root, state).validate(output.get("context_receipt"))
     tasks = task_dag(object_file(root, tasks_path), criteria)
     files = [output_path]
     for t in tasks:

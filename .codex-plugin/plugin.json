@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.29.0",
+  "version": "2.30.0",
   "description": "Turn software goals into clear plans, working code and reviews backed by evidence with Claude or Codex.",
   "author": {
     "name": "Volodymyr Demkiv",

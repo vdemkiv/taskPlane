@@ -380,6 +380,28 @@ class Controller:
                     "status": "superseded" if s.get("superseded_by") else
                               "accepted" if s["finished"] else w.current(s)["decision"]}
 
+    def context(self, run: str | None = None, *, task: str | None = None,
+                consume: str | None = None, read: str | None = None,
+                page: int = 0, section: str | None = None) -> dict[str, Any]:
+        """Current-binding derived data only; never writes a workflow decision."""
+        from .context_handoff import Session
+        state = self.report(run)
+        w.require(state.get("run") and not state.get("invalidation_pending"),
+                  "invalid_context", "Repair the current workflow binding before consuming context.")
+        with primitives.file_lock(str(self._path())):
+            db = self._read(self._path())
+            w.require(db["active"] == state["run"]
+                      and db["runs"][state["run"]]["revision"] == state["revision"],
+                      "invalid_context", "Context requires the unchanged active run.")
+            session = Session(self.workspace, state, task)
+            w.require(not (consume and read), "invalid_context", "Choose consume or read.")
+            if consume:
+                return session.consume(consume)
+            if read:
+                return session.read(read, page, section)
+            return {"schema": "taskplane.context-preparation/v1", "binding": session.binding,
+                    **session.descriptor()}
+
     def apply(self, action: str, run: str, *, expected_revision: int | None = None,
               output: str = "", tasks: str = "", phase: str = "", native_reference: str = "",
               assessment_json: str | None = None) -> dict[str, Any]:

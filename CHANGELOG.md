@@ -1,5 +1,14 @@
 # taskplane changelog
 
+## v2.30.0 — bounded context and safe verification reuse
+
+- Return bounded structured summaries for routine workflow commands, with explicit full-output access for clients that need the complete state.
+- Persist canonical context and phase handoffs with scoped views, verified references, explicit budgets and deduplicated shared evidence.
+- Reuse passing checks only when their relevant source, command, environment and runtime evidence still matches. Treat unverified external dependencies as ineligible and preserve independent phase approvals.
+- Wire the context interface into delivery and review instructions and both packaged host workflows.
+- Migrate legacy recovery test clients to explicit full output so their recovery journeys remain compatible with the compact default.
+- Verify a matched seven-phase delivery fixture with 79.8% fewer context bytes across three paired repetitions. This is a deterministic byte measurement, not a claim about live model-token or cost savings; the distinct original canonical-input benchmark remains below its required reduction target.
+
 ## v2.29.0 — harness lifecycle repairs
 
 - Keep current Changes requested and Rejected checkpoints editable across multiple corrections and resubmission, while preserving accepted evidence and packet history.

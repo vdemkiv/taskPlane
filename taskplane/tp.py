@@ -55,7 +55,7 @@ def _version(verify: bool) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments[:1] == ["flow"]:
-        return flow.main(arguments[1:])
+        return flow.main(arguments[1:], compact=True)
     if arguments and arguments[0] in flow.HOOK_NAMES:
         if len(arguments) != 1:
             print(json.dumps({"error": "Named native hooks accept their event on stdin only."}))

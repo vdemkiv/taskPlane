@@ -116,3 +116,9 @@ Available token measurements help you understand the work already done. Missing 
 ## Development
 
 Install the pinned developer dependencies from `requirements-dev.lock` in a virtual environment. Run `python3 scripts/ci_local.py` for the standard checks; add `--browser` for the browser suite. Build the Codex upload archive with `python3 scripts/package_openai.py`. Generated packages go to `dist/`.
+
+Taskplane now supplies bounded phase context and command summaries. Use
+`flow context` to consume current required inputs; new runs require the returned
+receipt in phase evidence. Complete reports remain available with `--full`.
+See [context optimization](docs/cli-reference.md#bounded-context-transport) for receipt semantics,
+verification reuse, and the distinction between transport bytes and billed tokens.

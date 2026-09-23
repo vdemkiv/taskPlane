@@ -38,6 +38,9 @@ def exercise_correction(root):
             (workspace/'product.json').write_text(json.dumps(data))
             assert not c.report().get('invalidation_pending')
         refused(lambda: c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, s['run']), 'scope_violation')
+        from taskplane.context_handoff import Session, consume_required
+        data['context_receipt'], _ = consume_required(Session(workspace, c.report()))
+        (workspace/'product.json').write_text(json.dumps(data))
         command = shlex.join([sys.executable, str(Path(flow.__file__).with_name('tp.py')), 'flow', 'submit',
                               '--workspace', str(workspace), '--output', 'product.json', '--tasks', 'tasks.json',
                               '--expected-revision', str(s['revision'])])

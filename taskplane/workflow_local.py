@@ -203,8 +203,10 @@ class LocalWorkflow:
                 "request_reference": reference}
 
     def state_created(self, state: dict[str, Any], request: dict[str, Any]) -> None:
+        from .context_handoff import CONTRACT
         state.update(profile=PROFILE, source_baseline=inventory(self.workspace), observed_handles={},
-                     request_provenance={"reference": request["request_reference"], "assurance": "observed"})
+                     request_provenance={"reference": request["request_reference"], "assurance": "observed"},
+                     context_contract=CONTRACT)
 
     def decorate(self, state: dict[str, Any]) -> dict[str, Any]:
         return {"coverage": {"structured_hook_paths": "checked when observed", "source_drift": "audited",
@@ -214,6 +216,9 @@ class LocalWorkflow:
                                        if r["state"] == "running"]}
 
     def validate_state(self, state: dict[str, Any]) -> None:
+        from .context_handoff import CONTRACT
+        w.require(state.get("context_contract", CONTRACT) == CONTRACT,
+                  "state_unavailable", "Unsupported context contract.")
         w.require(state.get("profile") == PROFILE and isinstance(state.get("source_baseline"), dict)
                   and isinstance(state.get("observed_handles"), dict), "state_unavailable", "Invalid local workflow state.")
         for handle, record in state["observed_handles"].items():
@@ -310,7 +315,7 @@ class LocalWorkflow:
                         == self.workspace/".taskplane/dashboard.html")
         if words[2:] in (["version"], ["version", "--verify"], ["help"], ["--help"], ["flow", "--help"]):
             return True
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "decide", "advance", "finish", "policy", "auto-decide", "activate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "decide", "advance", "finish", "policy", "auto-decide", "activate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         if words.count("--workspace") != 1:
@@ -598,6 +603,8 @@ class Harness:
                     'Taskplane setup commands remain available. Standalone review does not require seven delivery phases.')
         stage = w.current(state)
         return (f'Taskplane harness active: run {state["run"]}, {stage["phase"]} visit {stage["id"]}, revision {state["revision"]}. '
+                'Use flow context to obtain and consume the current handoff; read every required input before phase submission. '
+                'Context receipts prove returned data, never approval or model attention. '
                 f'Use the native dashboard at {self.workspace / ".taskplane/dashboard.html"}. '
                 'After submitting phase evidence, provide the exact dashboard link/open result and record flow present. '
                 'A queued open is not verified display. If user input is needed, record flow wait --note with the actual reason.')

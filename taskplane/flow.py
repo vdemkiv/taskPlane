@@ -803,13 +803,54 @@ def run_hook(command: str | None = None, *,
     return 0
 
 
-def main(argv: list[str] | None = None, *,
+def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = False) -> None:
+    """Bound shipped CLI transport while preserving full Python reports and hook envelopes."""
+    from .context import Store, encode
+    from .context_handoff import Session
+    from .context_views import summary
+    if full:
+        print(json.dumps(payload, indent=2))
+        return
+    state = payload.get("workflow", payload)
+    context: dict[str, Any] = {"status": "not_applicable"}
+    try:
+        if state.get("visits") and not state.get("finished") and not payload.get("historical"):
+            context = Session(workspace, state).descriptor()
+    except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
+        context = {"status": "unavailable", "reason": str(exc)[:512],
+                   "next_action": "Repair context storage and retry flow context; do not replay a committed action."}
+    try:
+        result = summary(Store(workspace), payload, action, context)
+    except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError):
+        # Serialization is after the authoritative commit. Preserve its result
+        # even when derived storage is unavailable, without dumping full history.
+        stage = workflow.current(state) if state.get("visits") else {}
+        result = {"schema": "taskplane.command-summary/v1", "action": action,
+                  "status": state.get("status", "unknown"),
+                  "binding": {k: state.get(k) for k in ("workspace", "root", "run", "revision", "pending_checkpoint")},
+                  "phase": stage.get("phase"), "approval": {"status": stage.get("decision")},
+                  "next_action": "Read the native dashboard or use --full. Do not replay a committed action.",
+                  "context": context, "artifacts": {"dashboard": payload.get("dashboard")},
+                  "coverage": {"details": "unavailable"}, "details": None,
+                  "errors": {"reason": payload.get("reason"), "detail": str(payload.get("detail", ""))[:512],
+                             "transport": "Derived context storage unavailable."}}
+    print(encode(result).decode("utf-8"))
+
+
+def main(argv: list[str] | None = None, *, compact: bool = False,
          prepare: Callable[[str], dict[str, Any]] | None = None,
          governor: workflow_host.Controller | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "present", "wait", "diagnose"])
+                                           "activate", "present", "wait", "diagnose", "context"])
+    parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
+    parser.add_argument("--task", help="Current phase task ID for context selection")
+    context_read = parser.add_mutually_exclusive_group()
+    context_read.add_argument("--consume", help="Consume the current handoff SHA-256")
+    context_read.add_argument("--read", help="Read a current verified reference SHA-256")
+    parser.add_argument("--section")
+    parser.add_argument("--page", type=int, default=0)
     parser.add_argument("--workspace", default=os.getcwd())
     parser.add_argument("--goal", default="")
     parser.add_argument("--phase", default="", type=str.lower)
@@ -834,6 +875,16 @@ def main(argv: list[str] | None = None, *,
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     args = parser.parse_args(argv)
+    if (args.task or args.consume or args.read or args.section or args.page) and args.action != "context":
+        parser.error("context selection options apply only to flow context")
+    if (args.section or args.page) and not args.read:
+        parser.error("--section and --page require --read")
+    workspace = Path(args.workspace).resolve()
+    protected: dict[str, Any] = {}
+    def show(payload: dict[str, Any]) -> None:
+        if payload.get("reason") and protected.get("run"):
+            payload = {**payload, "workflow": {**protected, "status": payload["status"]}}
+        emit(payload, workspace, args.action, full=args.full or not compact)
     if args.replace_run and args.action != "start":
         parser.error("--replace-run applies only to flow start")
     if (args.assessment is not None or args.assessment_json is not None) and args.action != "auto-decide":
@@ -850,7 +901,7 @@ def main(argv: list[str] | None = None, *,
                 diagnostics["workflow"] = {k: state.get(k) for k in ("run", "revision", "phase", "status")}
             except (workflow.Refusal, OSError, ValueError, TypeError, KeyError) as exc:
                 diagnostics["workflow_error"] = str(exc)
-            print(json.dumps(diagnostics, indent=2))
+            show(diagnostics)
             return 0
         rows = read_events(workspace)
         session = session_id({})
@@ -861,6 +912,12 @@ def main(argv: list[str] | None = None, *,
         controller = governor or _controller(workspace, str(run["session"]) if run else session, args.profile)
         # A protected binding can outlive every workspace projection.
         protected = controller.report()
+        if args.action == "context":
+            from .context import encode
+            context_result = controller.context(args.run, task=args.task, consume=args.consume,
+                                        read=args.read, page=args.page, section=args.section)
+            print(encode(context_result).decode("utf-8"))
+            return 0
         if protected.get("run") and (run is None or args.action not in {"report", "attach"}):
             run = next((r for r in reversed(rows) if r.get("kind") == "start"
                         and r.get("run") == protected["run"]), None) or {
@@ -890,8 +947,8 @@ def main(argv: list[str] | None = None, *,
             else:
                 workflow.require(len(args.evidence) == 1, "invalid_evidence", "Supply exactly one native dashboard --evidence path.")
                 harness.present(protected, args.evidence[0], args.presentation or "", args.note)
-            print(json.dumps({"workflow": protected, "harness": harness.readiness(protected),
-                              "guidance": harness.guidance(protected)}, indent=2))
+            show({"workflow": protected, "harness": harness.readiness(protected),
+                  "guidance": harness.guidance(protected)})
             return 0
         before_measurement: dict[str, Any] | None = None
         measured_at = datetime.now(timezone.utc).isoformat()
@@ -998,16 +1055,16 @@ def main(argv: list[str] | None = None, *,
         if result and harness and not result.get("historical"):
             result["harness"] = harness.readiness(controller.report())
         empty = {**controller.report(), "harness": harness.readiness(protected)} if harness else controller.availability()
-        print(json.dumps(result if result else empty, indent=2))
+        show(result if result else empty)
         return 0
     except workflow.Refusal as exc:
-        print(json.dumps(exc.result(), indent=2))
+        show(exc.result())
         return 2
     except (OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
-        print(json.dumps({"status": "blocked", "reason": "state_unavailable",
-                          "detail": str(exc), "tokens": None}))
+        show({"status": "blocked", "reason": "state_unavailable",
+              "detail": str(exc), "tokens": None})
         return 2
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(compact=True))
