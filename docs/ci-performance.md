@@ -34,6 +34,10 @@ invocations reduces eight capacity executions to two designated combinations;
 it does not certify the unexecuted full-capacity combinations. The full local suite
 still runs both source capacity parameters.
 
+The delivery fixture uses POSIX paths for graph and verification keys, and native
+`Path` strings for its exact write scope and change inventory. This matches each
+existing runtime boundary on Windows without broadening the scope check.
+
 Examples:
 
 ```sh
