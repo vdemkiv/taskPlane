@@ -12,18 +12,105 @@ concurrency:
 env:
   PYTHONUTF8: "1"
 jobs:
-  tests:
-    name: tests (python 3.12)
-    runs-on: ubuntu-latest
+  portability:
+    name: portability preflight (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.12", cache: pip}
       - name: Install test dependencies
+        shell: bash
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests
+      - run: python scripts/ci_local.py --check tests --suite portability --junitxml reports/portability.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: portability-${{ matrix.os }}
+          path: reports/portability.xml
+          if-no-files-found: error
+  suites:
+    name: ${{ matrix.suite }} (${{ matrix.os }})
+    needs: portability
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        suite: [core, native]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "3.12", cache: pip}
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
+      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --junitxml reports/${{ matrix.suite }}.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: ${{ matrix.suite }}-${{ matrix.os }}
+          path: reports/*.xml
+          if-no-files-found: error
+  archive-journeys:
+    name: archive ${{ matrix.host }} (${{ matrix.os }})
+    needs: portability
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        host: [codex, claude]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "3.12", cache: pip}
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
+      - run: python scripts/ci_local.py --check tests --suite packages --host ${{ matrix.host }} --junitxml reports/archive.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: archive-${{ matrix.host }}-${{ matrix.os }}
+          path: reports/archive.xml
+          if-no-files-found: error
+  capacity:
+    name: full capacity ${{ matrix.host }} (${{ matrix.os }})
+    needs: portability
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, host: codex}
+          - {os: windows-latest, host: claude}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "3.12", cache: pip}
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
+      - run: python scripts/ci_local.py --check tests --suite capacity --host ${{ matrix.host }} --junitxml reports/capacity.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: capacity-${{ matrix.host }}-${{ matrix.os }}
+          path: reports/capacity.xml
+          if-no-files-found: error
   quality-package:
     name: quality + package + release provenance
     runs-on: ubuntu-latest
@@ -50,7 +137,13 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check browser
+      - run: python scripts/ci_local.py --check browser --junitxml reports/browser.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: dashboard-browser
+          path: reports/browser.xml
+          if-no-files-found: error
   interpreter-import:
     name: interpreter import (${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -64,16 +157,23 @@ jobs:
       - run: python -m compileall -q taskplane scripts
       - run: python taskplane/tp.py --help
       - run: python taskplane/tp.py flow --help
+  tests:
+    name: tests (python 3.12)
+    if: always()
+    needs: [portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, interpreter-import]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI suite
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 -c 'import json, os; results = json.loads(os.environ["RESULTS"]); assert all(job["result"] == "success" for job in results.values()), results'
   native-portability:
     name: native portability (windows)
-    runs-on: windows-latest
+    if: always()
+    needs: [portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, interpreter-import]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "3.12"}
-      - name: Install test dependencies
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
-          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests
+      - name: Require every CI suite
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 -c 'import json, os; results = json.loads(os.environ["RESULTS"]); assert all(job["result"] == "success" for job in results.values()), results'

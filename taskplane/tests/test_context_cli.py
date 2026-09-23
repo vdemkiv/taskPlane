@@ -52,3 +52,33 @@ def test_derived_storage_failure_preserves_committed_status(tmp_path, monkeypatc
     result = json.loads(capsys.readouterr().out)
     assert result['status'] == 'approved' and result['binding']['revision'] == 4
     assert result['details'] is None and 'Do not replay' in result['next_action']
+
+
+def test_cli_initial_tasks_and_batch_selection(tmp_path):
+    create(tmp_path)
+    tasks = {'tasks':[{'id':'OWN','phase':'product','owner':'root','dependencies':[],
+                       'paths':['product.json'],'criteria':['AC1'],'verification':'Read required bodies'}]}
+    (tmp_path/'initial.json').write_text(json.dumps(tasks))
+    result, _ = command(tmp_path, 'start', '--scope', '.taskplane/scope.json', '--tasks', 'initial.json', '--request-reference', 'fixture/initial')
+    prepared, _ = command(tmp_path, 'context', '--task', 'OWN')
+    batch, size = command(tmp_path, 'context', '--task', 'OWN', '--read-required', prepared['handoff_ref']['sha256'])
+    assert size < 16384 and batch['schema'] == 'taskplane.context-read-batch/v1'
+    assert batch['pages'] and batch['remaining_required'] == 0
+    full, _ = command(tmp_path, 'report', '--full')
+    assert full['workflow']['decisions'] == {}
+    assert full['workflow']['initial_context_tasks'][0]['id'] == 'OWN'
+    failed, _ = command(tmp_path, 'context', '--read-required', '0'*64, code=2)
+    assert failed['errors']['blocking']
+
+
+@pytest.mark.parametrize('args', [
+    ['context','--read-required','0'*64,'--page','0'],
+    ['context','--read-required','0'*64,'--section',''],
+    ['report','--read-required',''],
+    ['context','--read-required','0'*64,'--consume','0'*64],
+])
+def test_batch_arguments_never_silently_ignore_selectors(tmp_path, args):
+    result = subprocess.run([sys.executable, str(ROOT/'taskplane/tp.py'), 'flow', *args,
+                             '--workspace',str(tmp_path)],capture_output=True,text=True)
+    assert result.returncode == 2 and 'error:' in result.stderr
+    assert not (tmp_path/'.taskplane').exists()

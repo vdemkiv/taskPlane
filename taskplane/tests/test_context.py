@@ -14,7 +14,7 @@ from taskplane.workflow import Refusal
     '界λ' * 10000,
     [{'id': str(i), 'body': 'retain exact body ' * 50} for i in range(120)],
     {str(i): {'body': 'value' * 100, 'number': i} for i in range(150)},
-])
+], ids=['small-object', 'large-unicode', 'list-pages', 'mapping-pages'])
 def test_immutable_tree_roundtrip_and_explicit_pages(tmp_path, value):
     store = Store(tmp_path)
     ref = store.put('fixture', value, 'same-source')

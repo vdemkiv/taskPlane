@@ -460,7 +460,7 @@ def delivery(workspace, host='codex'):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(source.read_bytes())
     (workspace/'.taskplane').mkdir(exist_ok=True)
-    pricing = sorted(str(p.relative_to(fixture/'tree-b')) for p in (fixture/'tree-b').rglob('*.py'))
+    pricing = sorted(p.relative_to(fixture/'tree-b').as_posix() for p in (fixture/'tree-b').rglob('*.py'))
     scope = {'criteria': ['AC-DISCOUNT'], 'paths': {phase: [f'.taskplane/{phase}.json'] for phase in w.PHASES},
              'verification_inputs': pricing}
     scope['paths']['build'] += pricing + ['.taskplane/check.txt']

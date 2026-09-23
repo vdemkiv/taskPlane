@@ -286,6 +286,35 @@ class Controller:
         except (OSError, ValueError, primitives.StateError) as exc:
             raise w.Refusal("state_unavailable", f"Control state was not acknowledged: {exc}") from None
 
+    def _initial_tasks(self, request: dict[str, Any], scope: dict[str, Any]) -> list[dict[str, Any]]:
+        """Freeze requested data, not a workspace-global source of authority."""
+        relative = request.get("tasks")
+        if not relative:
+            return []
+        w.require(isinstance(relative, str), "invalid_evidence", "Initial tasks need a workspace file path.")
+        rows = evidence.task_dag(evidence.object_file(self.workspace, relative), scope["criteria"])
+        allowed = {path for paths in scope["paths"].values() for path in paths}
+        for row in rows:
+            phase = row.get("phase")
+            w.require(phase is None or phase in w.PHASES, "invalid_evidence", "Initial task has an unknown phase.")
+            paths = set(scope["paths"][phase]) if phase else allowed
+            w.require(set(row["paths"]) <= paths and set(evidence.task_criteria(row)) <= set(scope["criteria"]),
+                      "scope_violation", "Initial task paths and criteria must stay within the requested scope.")
+        frozen = [{k: deepcopy(v) for k, v in row.items() if k not in evidence.TASK_OBSERVATIONS} for row in rows]
+        from .context import encode
+        w.require(len(encode(frozen)) <= 65536, "invalid_evidence", "Initial task snapshot exceeds 64 KiB.")
+        return frozen
+
+    def _check_start_tasks(self, state: dict[str, Any], request: dict[str, Any]) -> None:
+        if request.get("tasks"):
+            requested = self._initial_tasks(request, state["scope"])
+            initial = state.get("initial_context_tasks", [])
+            # Existing starts also refresh dashboard evidence. With no initial
+            # task definitions, scoped display rows cannot replace the empty
+            # snapshot; context keeps using the run's scope until submission.
+            w.require(not initial or requested == initial,
+                      "stale_checkpoint", "Start retry cannot replace the run's initial tasks.")
+
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
         target = self._path()
         with primitives.file_lock(str(target)):
@@ -295,6 +324,7 @@ class Controller:
                           "No initialized run exists to replace.")
                 authorized = self.adapter.verify_start(self.workspace, self.root, request)
                 evidence.valid_scope(self.workspace, authorized["scope"])
+                self._initial_tasks(request, authorized["scope"])
                 # Validate route before creating the durable initialization marker.
                 w.new_state(str(self.workspace), self.root, "validate", authorized["scope"],
                             entry=authorized["entry"], standalone=authorized["standalone"])
@@ -317,6 +347,7 @@ class Controller:
                               and active.get("request_provenance", {}).get("reference") == request.get("request_reference")
                               and active["scope"] == request.get("scope"),
                               "stale_checkpoint", "Conflicting run replacement retry.")
+                    self._check_start_tasks(active, request)
                     return deepcopy(active)
                 w.require(db["active"] == replace_run and previous["revision"] == revision,
                           "stale_checkpoint", "The run or revision selected for replacement changed.")
@@ -330,13 +361,15 @@ class Controller:
                           and (not request.get("scope") or request["scope"] == active["scope"]),
                           "approval_required", "Another run is active. To start a new scope, explicitly use "
                           "--replace-run and --expected-revision with the new user request reference.")
+                self._check_start_tasks(active, request)
                 return deepcopy(active)
             authorized = authorized or self.adapter.verify_start(self.workspace, self.root, request)
             evidence.valid_scope(self.workspace, authorized["scope"])
             s = w.new_state(str(self.workspace), self.root, uuid.uuid4().hex, authorized["scope"],
                             entry=authorized["entry"], standalone=authorized["standalone"])
             s.update(goal=str(authorized.get("goal", request.get("goal", ""))),
-                     started_at=datetime.now(timezone.utc).isoformat(), profile=self.adapter.profile)
+                     started_at=datetime.now(timezone.utc).isoformat(), profile=self.adapter.profile,
+                     initial_context_tasks=self._initial_tasks(request, authorized["scope"]))
             self.adapter.state_created(s, authorized)
             if replaced is not None:
                 # Commit preservation, grant revocation and the fresh baseline atomically.
@@ -381,8 +414,9 @@ class Controller:
                               "accepted" if s["finished"] else w.current(s)["decision"]}
 
     def context(self, run: str | None = None, *, task: str | None = None,
-                consume: str | None = None, read: str | None = None,
-                page: int = 0, section: str | None = None) -> dict[str, Any]:
+                 consume: str | None = None, read: str | None = None,
+                 page: int = 0, section: str | None = None,
+                 read_required: str | None = None) -> dict[str, Any]:
         """Current-binding derived data only; never writes a workflow decision."""
         from .context_handoff import Session
         state = self.report(run)
@@ -394,11 +428,16 @@ class Controller:
                       and db["runs"][state["run"]]["revision"] == state["revision"],
                       "invalid_context", "Context requires the unchanged active run.")
             session = Session(self.workspace, state, task)
-            w.require(not (consume and read), "invalid_context", "Choose consume or read.")
+            w.require(sum(value is not None for value in (consume, read, read_required)) <= 1,
+                      "invalid_context", "Choose consume, read or read-required.")
+            w.require(read is not None or (page == 0 and section is None),
+                      "invalid_context", "Page and section require a single-reference read.")
             if consume:
                 return session.consume(consume)
             if read:
                 return session.read(read, page, section)
+            if read_required is not None:
+                return session.read_required(read_required)
             return {"schema": "taskplane.context-preparation/v1", "binding": session.binding,
                     **session.descriptor()}
 
