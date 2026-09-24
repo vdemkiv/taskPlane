@@ -70,6 +70,14 @@ public issue.
 
 ## Release packaging
 
+Every delivery of product fixes or improvements must bump the version before
+the marketplace is updated. Use a new version above the latest published version;
+never replace a published package with changed product bytes under the same version.
+Keep `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and both the
+top-level and plugin-entry versions in `.claude-plugin/marketplace.json` aligned.
+Record the changes under that version in `CHANGELOG.md` and run
+`python3 taskplane/tp.py version --verify` before packaging.
+
 `python3 scripts/package_openai.py` builds the deterministic OpenAI
 marketplace zip into the gitignored `dist/`; CI validates the build and its
 reproducibility on every push.
