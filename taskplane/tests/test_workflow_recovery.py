@@ -52,7 +52,8 @@ def test_deactivate_refuses_active_workflows_without_changing_grants(tmp_path,ca
 
 
 @pytest.mark.parametrize('reference,reason', [('', 'reason'), ('ref', ' '),
-                                            (' ' * 512 + 'ref', 'reason'), ('ref', ' ' * 2048 + 'reason')])
+                                            (' ' * 512 + 'ref', 'reason'), ('ref', ' ' * 2048 + 'reason')],
+                         ids=['empty-reference', 'blank-reason', 'oversized-reference', 'oversized-reason'])
 def test_deactivate_bounds_recorded_input_without_changing_selection(tmp_path,reference,reason):
     from taskplane import workflow_local as local
     harness=local.Harness(tmp_path,'root')
