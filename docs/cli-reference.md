@@ -5,6 +5,7 @@ Invoke `python3 <plugin>/taskplane/tp.py` with one of these commands.
 | Command | Purpose |
 | --- | --- |
 | `flow activate --workspace PATH --phase ENTRY --request-reference REF` | Select the session harness without starting or approving a run |
+| `flow deactivate --workspace PATH --request-reference REF --note REASON` | Explicitly clear a native selection with no active run; refuses active/protected workflows and preserves all approvals |
 | `flow present --workspace PATH --run ID --evidence .taskplane/dashboard.html --presentation OUTCOME --note TEXT` | Record the actual native dashboard handoff for this visit/revision |
 | `flow wait --workspace PATH --note TEXT` | Record actual missing user input while retaining write and approval checks |
 | `flow start --workspace PATH --scope FILE --request-reference REF [--standalone --phase PHASE] --goal TEXT` | Start or reuse an explicitly scoped native workflow |
@@ -393,6 +394,19 @@ See [onboarding](onboarding.md#verify-harness-activation) for supported setup to
 Standalone review uses `start --standalone --phase engineering`; Product/Design
 also have standalone starts. Existing phases retain their valid scope and approval
 bindings. Activation cannot grant Build or opt into autonomous decisions.
+
+After a run finishes, rereading an installed execution skill file preserves its
+completed binding and allows follow-up work. An explicit execution prompt, native
+Skill invocation or `activate` still selects a new workflow; a fresh session's
+first execution skill read still requires initialization.
+
+If a native session was selected without starting a run, use
+`flow deactivate --workspace PATH --request-reference REF --note REASON` with the
+actual request reference and recovery reason. This clears only that uninitialized
+selection and records the observation. It refuses active runs, including sealed
+checkpoints, and protected-host workflows. It never changes approval policy,
+accepts a phase or rewrites workflow history. Active work must finish or use the
+explicit retirement control instead.
 
 `report` includes observed `harness` readiness (inactive, initialization_required,
 active), hook observation, current binding and presentation receipt. `present`

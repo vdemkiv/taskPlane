@@ -14,6 +14,55 @@ from taskplane import flow, workflow as w, workflow_host as h
 from taskplane.tests.test_workflow_local import setup, submit, decide, decision
 
 
+def test_deactivate_recovers_uninitialized_selection_without_mutating_history(tmp_path,capsys):
+    from taskplane import workflow_local as local
+    c,s=setup(tmp_path,standalone=True)
+    s=decide(c,submit(c,s));c.apply('finish',s['run'],expected_revision=s['revision'])
+    harness=local.Harness(tmp_path,c.root)
+    harness.select('taskplane','fixture/passive-read',c.report())  # Legacy poisoned selection.
+    before=c._path().read_bytes()
+    args=['deactivate','--workspace',str(tmp_path),'--request-reference','fixture/user-recover','--note','Finished work; clear stale selection']
+    harness.guard_bootstrap(runtime('flow',*args),c.report())
+    assert flow.main(args,governor=c)==0
+    capsys.readouterr()
+    record=harness.read()
+    assert not record['selected'] and record['deactivation']['request_reference']=='fixture/user-recover'
+    assert c._path().read_bytes()==before
+    flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
+               'tool_name':'exec_command','tool_input':{'cmd':'gh auth status'}},governor=c)
+    harness.select('taskplane','fixture/new-request',c.report())
+    assert flow.main(['deactivate','--workspace',str(tmp_path)],governor=c)==2
+    assert harness.read()['selected']
+    with pytest.raises(w.Refusal,match='Protected'):
+        harness.deactivate({'profile':'protected_host'},'fixture/user','No owner available')
+    assert harness.read()['selected'] and c._path().read_bytes()==before
+
+
+@pytest.mark.parametrize('sealed',[False,True])
+def test_deactivate_refuses_active_workflows_without_changing_grants(tmp_path,capsys,sealed):
+    from taskplane import workflow_local as local
+    c,s=setup(tmp_path)
+    if sealed:s=submit(c,s)
+    harness=local.Harness(tmp_path,c.root);harness.bind(s)
+    before=c._path().read_bytes()
+    assert flow.main(['deactivate','--workspace',str(tmp_path),'--request-reference','fixture/user',
+                      '--note','Cannot exit an active workflow'],governor=c)==2
+    assert 'active workflow' in capsys.readouterr().out
+    assert harness.read()['selected'] and c._path().read_bytes()==before
+
+
+@pytest.mark.parametrize('reference,reason', [('', 'reason'), ('ref', ' '),
+                                            (' ' * 512 + 'ref', 'reason'), ('ref', ' ' * 2048 + 'reason')])
+def test_deactivate_bounds_recorded_input_without_changing_selection(tmp_path,reference,reason):
+    from taskplane import workflow_local as local
+    harness=local.Harness(tmp_path,'root')
+    harness.select('taskplane','fixture/selection',{'profile':'native_workflow'})
+    before=harness.path.read_bytes()
+    with pytest.raises(w.Refusal,match='reference and reason'):
+        harness.deactivate({'profile':'native_workflow'},reference,reason)
+    assert harness.path.read_bytes()==before
+
+
 @pytest.mark.parametrize('initialized', [False, True])
 def test_oversized_source_diagnosis_does_not_initialize_or_hash(tmp_path, initialized, monkeypatch):
     from taskplane import workflow_local as local

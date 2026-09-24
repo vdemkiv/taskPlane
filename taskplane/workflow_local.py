@@ -324,7 +324,7 @@ class LocalWorkflow:
                         == self.workspace/".taskplane/dashboard.html")
         if words[2:] in (["version"], ["version", "--verify"], ["help"], ["--help"], ["flow", "--help"]):
             return True
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         if words.count("--workspace") != 1:
@@ -487,7 +487,7 @@ def bootstrap_write(workspace: Path, event: dict[str, Any], state: dict[str, Any
     return True
 
 
-def execution_entry(event: dict[str, Any]) -> str | None:
+def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> str | None:
     """Recognize explicit execution selection, never arbitrary mentions or approval."""
     args = event.get('tool_input', {})
     if not isinstance(args, dict):
@@ -502,7 +502,7 @@ def execution_entry(event: dict[str, Any]) -> str | None:
     words = command_words(event) if tool in {'Bash', 'exec_command'} else []
     if words and words[0] == 'cat':
         paths += words[1:]
-    for value in paths:
+    for value in paths if allow_skill_read else []:
         if isinstance(value, str):
             path = Path(value)
             for entry in EXECUTION_ENTRIES:
@@ -587,6 +587,19 @@ class Harness:
         if previous.get('run') != state['run'] or not previous.get('selected'):
             self.update(selected=True, entry=previous.get('entry', w.current(state)['phase']),
                         run=state['run'], waiting=None, presentation=None)
+
+    def deactivate(self, state: dict[str, Any], reference: str, reason: str) -> None:
+        """Clear only uninitialized engagement; never alter a workflow grant."""
+        w.require(state.get('profile') == 'native_workflow', 'unsupported_authority',
+                  'Protected workflow engagement requires its trusted owner.')
+        w.require(not state.get('run') and not state.get('visits'), 'approval_required',
+                  'Cannot deactivate an active workflow; finish or explicitly retire it first.')
+        w.require(isinstance(reference, str) and bool(reference.strip()) and len(reference) <= 512
+                  and isinstance(reason, str) and bool(reason.strip()) and len(reason) <= 2048,
+                  'invalid_evidence', 'Deactivation needs an actual request reference and reason.')
+        self.update(selected=False, waiting=None, presentation=None,
+                    deactivation={'request_reference': reference, 'reason': reason,
+                                  'assurance': 'observed; no approval or workflow mutation'})
 
     def binding(self, state: dict[str, Any]) -> dict[str, Any]:
         return {'run': state.get('run'), 'visit': w.current(state)['id'] if state.get('visits') else None,
@@ -737,7 +750,7 @@ class Harness:
         index = words.index('--workspace') + 1
         if index >= len(words) or (self.workspace/words[index]).resolve() != self.workspace:
             return False
-        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'start', 'report', 'diagnose', 'wait'})
+        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'wait'})
                 or words[2] == 'graph' and 'scan' in words[3:]
                 or words[2:4] == ['review', 'start'])
 

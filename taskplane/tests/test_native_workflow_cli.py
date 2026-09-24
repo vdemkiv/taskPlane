@@ -89,6 +89,25 @@ def create(workspace):
     return initial['scope']
 
 
+@pytest.mark.parametrize('host',['codex','claude'])
+def test_native_deactivate_only_uninitialized_engagement(tmp_path,host):
+    create(tmp_path)
+    cli(tmp_path,host,'activate','--phase','taskplane','--request-reference','fixture/select')
+    cli(tmp_path,host,'deactivate',code=2)
+    result=cli(tmp_path,host,'deactivate','--request-reference','fixture/user-recover',
+               '--note','Clear inactive selection')
+    assert result['harness']['status']=='inactive'
+    state=cli(tmp_path,host,'start','--standalone','--phase','product',
+              '--scope','.taskplane/scope.json','--request-reference','fixture/new-work')['workflow']
+    result=cli(tmp_path,host,'deactivate','--request-reference','fixture/user',
+               '--note','Active work must retain its guard',code=2)
+    assert result['reason']=='approval_required' and 'active workflow' in result['detail']
+    after=cli(tmp_path,host,'report')['workflow']
+    assert after['run']==state['run'] and after['revision']==state['revision']
+    cli(tmp_path,host,'deactivate','--profile','protected_host',
+        '--request-reference','fixture/user','--note','Cannot downgrade',code=2)
+
+
 def output(workspace,state,change=None):
     phase=w.current(state)['phase']
     _,out,_=prepare(workspace,phase)

@@ -647,6 +647,12 @@ def hook(event: dict[str, Any], *,
         harness.update(hook_observed=True)
         if name == "PostToolUse":
             harness.observe_recovery(event, guarded)
+        if selected and not guarded.get("run") and not workflow_local.execution_entry(event, allow_skill_read=False):
+            # A passive reread is not a new user request. Check completion before
+            # select() can erase the historical binding needed for cleanup.
+            previous_run = harness.read().get("run")
+            if previous_run and controller.report(previous_run).get("finished"):
+                selected = None
         if selected:
             selection_reference = str(event.get("tool_use_id") or event.get("call_id") or event.get("turn_id") or
                             "observed/" + hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest())[:512]
@@ -776,7 +782,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "present", "wait", "diagnose", "context", "retire"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "context", "retire"])
     parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
     parser.add_argument("--task", help="Current phase task ID for context selection")
     context_read = parser.add_mutually_exclusive_group()
@@ -872,11 +878,13 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 (workspace / path).resolve().relative_to(workspace)
             artifacts["changed"] = args.changed
         harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" else None
-        if args.action in {"activate", "present", "wait"}:
+        if args.action in {"activate", "deactivate", "present", "wait"}:
             workflow.require(harness is not None, "unsupported_authority", "Harness observations do not admit a protected host owner.")
             assert harness is not None
             if args.action == "activate":
                 harness.select(args.phase or "taskplane", args.request_reference, protected)
+            elif args.action == "deactivate":
+                harness.deactivate(protected, args.request_reference, args.note)
             elif args.action == "wait":
                 harness.wait(protected, args.note)
             else:

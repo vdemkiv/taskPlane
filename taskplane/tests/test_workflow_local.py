@@ -609,6 +609,43 @@ def test_harness_installed_skill_read_is_an_execution_entry(tmp_path):
     assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
 
 
+@pytest.mark.parametrize('tool', ['Read', 'exec_command'])
+def test_completed_run_passive_skill_reread_preserves_followup_access(tmp_path, tool):
+    from pathlib import Path
+    import shlex
+    from taskplane import flow
+    c,s=setup(tmp_path,standalone=True)
+    harness=local.Harness(tmp_path,c.root);harness.bind(s)
+    s=decide(c,submit(c,s));s=c.apply('finish',s['run'],expected_revision=s['revision'])
+    before=c._path().read_bytes()
+    path=Path(flow.__file__).resolve().parents[1]/'skills/taskplane/SKILL.md'
+    args={'file_path':str(path)} if tool=='Read' else {'cmd':shlex.join(['cat',str(path)])}
+    event={'cwd':str(tmp_path),'session_id':'root','tool_name':tool,'tool_input':args}
+    for _ in range(2):
+        for name in ('PreToolUse','PostToolUse'):
+            flow.hook(event|{'hook_event_name':name},governor=c)
+    assert not harness.read()['selected'] and harness.read()['run']==s['run']
+    followup=event|{'hook_event_name':'PreToolUse','tool_name':'exec_command','tool_input':{'cmd':'gh auth status'}}
+    flow.hook(followup,governor=c)
+    assert c._path().read_bytes()==before
+    flow.hook(event|{'hook_event_name':'UserPromptSubmit','tool_input':{},
+                    'prompt':'Use taskplane to review the next change.'},governor=c)
+    flow.hook(event|{'hook_event_name':'PreToolUse'},governor=c)
+    with pytest.raises(w.Refusal,match='initializ'):
+        flow.hook(followup,governor=c)
+
+
+def test_completed_run_explicit_skill_invocation_still_requires_initialization(tmp_path):
+    from taskplane import flow
+    c,s=setup(tmp_path,standalone=True)
+    harness=local.Harness(tmp_path,c.root);harness.bind(s)
+    s=decide(c,submit(c,s));c.apply('finish',s['run'],expected_revision=s['revision'])
+    event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
+           'tool_name':'Skill','tool_input':{'skill':'taskplane:tp-build'}}
+    assert 'initialization required' in flow.hook(event,governor=c)['hookSpecificOutput']['additionalContext']
+    assert harness.read()['selected'] and harness.read()['run'] is None
+
+
 def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     from taskplane import flow
     c,s=setup(tmp_path);harness=local.Harness(c.workspace,c.root)
