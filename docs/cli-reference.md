@@ -408,6 +408,10 @@ checkpoints, and protected-host workflows. It never changes approval policy,
 accepts a phase or rewrites workflow history. Active work must finish or use the
 explicit retirement control instead.
 
+Harness updates check the complete serialized JSON against the 16 KiB read limit
+before replacing the record. Unicode escaping and existing fields count toward
+that limit; an oversized update leaves the previous valid record untouched.
+
 `report` includes observed `harness` readiness (inactive, initialization_required,
 active), hook observation, current binding and presentation receipt. `present`
 validates the current native dashboard identity and stores its immutable artifact

@@ -569,6 +569,9 @@ class Harness:
         with primitives.file_lock(str(self.path)):
             data = self.read() or {'schema': 'taskplane.harness/v1', 'workspace': str(self.workspace), 'root': self.root}
             data.update(values)
+            # Match atomic_json's encoding, indentation and trailing newline.
+            w.require(len(json.dumps(data, sort_keys=True, indent=2, allow_nan=False).encode('utf-8')) + 1 <= 16384,
+                      'invalid_evidence', 'Harness update exceeds its size bound.')
             primitives.atomic_json(self.path, data, strict_directory_sync=True)
             return data
 

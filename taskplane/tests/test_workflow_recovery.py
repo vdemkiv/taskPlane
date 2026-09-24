@@ -64,6 +64,35 @@ def test_deactivate_bounds_recorded_input_without_changing_selection(tmp_path,re
     assert harness.path.read_bytes()==before
 
 
+@pytest.mark.parametrize('reason,padding', [('\U0001f512' * 2048, 0), ('x' * 2048, 14000)],
+                         ids=['unicode-expansion', 'combined-record-size'])
+def test_deactivate_rejects_oversized_json_without_replacing_valid_state(tmp_path,reason,padding):
+    from taskplane import workflow_local as local
+    harness=local.Harness(tmp_path,'root')
+    harness.select('taskplane','fixture/selection',{'profile':'native_workflow'})
+    harness.update(padding='x' * padding)
+    before=harness.path.read_bytes()
+    with pytest.raises(w.Refusal,match='size bound'):
+        harness.deactivate({'profile':'native_workflow'},'fixture/recovery',reason)
+    assert harness.path.read_bytes()==before
+    assert harness.read()['selected']
+
+
+def test_harness_update_admits_exact_byte_limit_and_preserves_it_on_overflow(tmp_path):
+    from taskplane import workflow_local as local
+    harness=local.Harness(tmp_path,'root')
+    harness.select('taskplane','fixture/selection',{'profile':'native_workflow'})
+    harness.update(padding='')
+    padding='x' * (16384-harness.path.stat().st_size)
+    harness.update(padding=padding)
+    before=harness.path.read_bytes()
+    assert len(before)==16384 and harness.read()['padding']==padding
+    with pytest.raises(w.Refusal,match='size bound'):
+        harness.update(padding=padding+'x')
+    assert harness.path.read_bytes()==before
+    assert harness.read()['selected']
+
+
 @pytest.mark.parametrize('initialized', [False, True])
 def test_oversized_source_diagnosis_does_not_initialize_or_hash(tmp_path, initialized, monkeypatch):
     from taskplane import workflow_local as local

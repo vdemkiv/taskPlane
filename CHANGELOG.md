@@ -299,6 +299,7 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 - Discover archived native sessions and verified fork lineage with scoped error diagnostics.
 - Recognize explicit end-to-end auto-approval wording; expose policy bindings in compact results and expand safe diagnostic grammar.
 - Preserve completed-run follow-up access when installed execution skills are reread; add explicit native deactivation for uninitialized selections without changing approvals or active-run guards.
+- Bound complete serialized harness updates before atomic replacement, preserving valid state on Unicode or combined-field overflow.
 - Reject indirect package symlinks and mismatched versions, disable persisted CI checkout credentials, and add repeatable security checks.
 
 These changes are development source until release/version/platform/loaded-runtime evidence is recorded.
