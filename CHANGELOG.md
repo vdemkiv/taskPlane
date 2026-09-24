@@ -1,5 +1,10 @@
 # taskplane changelog
 
+## v2.31.1 — context performance and release identity
+
+- Package the merged context batching and per-run task isolation fixes under a distinct version for reliable marketplace update resolution and tracking.
+- Include the merged Windows portability and partitioned CI improvements. Runtime and CI code are unchanged from the verified main build.
+
 ## v2.31.0 — explained token accounting and conversational approvals
 
 - Reconcile measured tokens into phase activity, activity outside phases, or explicitly unresolved intervals, with session, boundary and reason details in reports and the dashboard.
