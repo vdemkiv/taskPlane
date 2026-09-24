@@ -200,21 +200,22 @@ class LocalWorkflow:
                 "request_reference": reference}
 
     def state_created(self, state: dict[str, Any], request: dict[str, Any]) -> None:
-        from .context_handoff import CONTRACT
+        from .context_handoff import SEMANTIC_CONTRACT
         state.update(profile=PROFILE, source_baseline=inventory(self.workspace), observed_handles={},
                      request_provenance={"reference": request["request_reference"], "assurance": "observed"},
-                     context_contract=CONTRACT)
+                     context_contract=SEMANTIC_CONTRACT)
 
     def decorate(self, state: dict[str, Any]) -> dict[str, Any]:
         return {"coverage": {"structured_hook_paths": "checked when observed", "source_drift": "audited",
                 "opaque_commands": "host permissions; effects not contained", "process_census": "unknown",
-                "late_stdin": "checked only when observed"},
+                "late_stdin": "checked only when observed",
+                 "delegation": "unsupported: no scoped native worker adapter; use attributed root review"},
                 "known_live_handles": [h for h,r in state.get("observed_handles", {}).items()
                                        if r["state"] == "running"]}
 
     def validate_state(self, state: dict[str, Any]) -> None:
-        from .context_handoff import CONTRACT
-        w.require(state.get("context_contract", CONTRACT) == CONTRACT,
+        from .context_handoff import CONTRACT, SEMANTIC_CONTRACT
+        w.require(state.get("context_contract", CONTRACT) in {CONTRACT, SEMANTIC_CONTRACT},
                   "state_unavailable", "Unsupported context contract.")
         w.require(state.get("profile") == PROFILE and isinstance(state.get("source_baseline"), dict)
                   and isinstance(state.get("observed_handles"), dict), "state_unavailable", "Invalid local workflow state.")
@@ -323,7 +324,7 @@ class LocalWorkflow:
                         == self.workspace/".taskplane/dashboard.html")
         if words[2:] in (["version"], ["version", "--verify"], ["help"], ["--help"], ["flow", "--help"]):
             return True
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "decide", "advance", "finish", "policy", "auto-decide", "activate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         if words.count("--workspace") != 1:
@@ -425,14 +426,19 @@ def readonly_command(event: dict[str, Any]) -> bool:
     words = command_words(event)
     if words == ['pwd']:
         return True
+    if words and words[0] == 'ls':
+        return all(not word.startswith('-') or word in {'-l', '-a', '-la', '-al', '-d', '-ld', '-1'} for word in words[1:])
+    if words in (['date'], ['date', '-u'], ['date', '-Iseconds']):
+        return True
     if words and words[0] == 'cat':
         return len(words) > 1 and all(not value.startswith('-') for value in words[1:])
     if not words or words[0] != 'rg':
         return False
     flags = {'-n', '--line-number', '-l', '--files-with-matches', '--files', '--hidden',
              '-i', '--ignore-case', '-F', '--fixed-strings', '-S', '--smart-case',
-             '--no-heading', '--no-messages', '--count', '-c'}
-    values = {'-g', '--glob', '-t', '--type', '-m', '--max-count', '-e', '--regexp'}
+             '--no-heading', '--no-messages', '--count', '-c', '--no-ignore', '--no-ignore-vcs'}
+    values = {'-g', '--glob', '-t', '--type', '-m', '--max-count', '-e', '--regexp',
+              '-A', '--after-context', '-B', '--before-context', '-C', '--context'}
     index = 1
     while index < len(words):
         word = words[index]

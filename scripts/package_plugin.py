@@ -4,11 +4,32 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def read_member(path: Path) -> bytes:
+    """Reject indirect symlinks before any package input is read."""
+    root = ROOT.resolve()
+    relative = path.relative_to(root)
+    cursor = root
+    for part in relative.parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise ValueError(f"Package member cannot follow a symlink: {path}")
+    if not path.resolve().is_relative_to(root):
+        raise ValueError(f"Package member escapes source root: {path}")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError(f"Package member must be regular: {path}")
+        return stream.read()
 
 
 def source_identity(members: dict[str, bytes]) -> dict:
@@ -30,7 +51,7 @@ def source_identity(members: dict[str, bytes]) -> dict:
     differences = []
     for name, data in members.items():
         blob = b"blob " + str(len(data)).encode() + b"\0" + data
-        digest = hashlib.sha256(blob) if len(revision) == 64 else hashlib.sha1(blob)
+        digest = hashlib.sha256(blob) if len(revision) == 64 else hashlib.sha1(blob, usedforsecurity=False)
         if blobs.get(name) != digest.hexdigest():
             differences.append(name)
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
@@ -45,13 +66,21 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
     if host not in {"openai", "claude"}:
         raise ValueError("unknown plugin host")
     manifest_dir = ".codex-plugin" if host == "openai" else ".claude-plugin"
-    manifest = json.loads((ROOT / manifest_dir / "plugin.json").read_text())
+    manifest = json.loads(read_member(ROOT / manifest_dir / "plugin.json"))
     version = manifest["version"]
+    if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
+        raise ValueError("Package version must be a safe semantic version")
+    for other in (".codex-plugin", ".claude-plugin"):
+        target_manifest = ROOT / other / "plugin.json"
+        if target_manifest.exists() and json.loads(read_member(target_manifest)).get("version") != version:
+            raise ValueError("Codex and Claude package versions disagree")
     suffix = extension or ("zip" if host == "openai" else "plugin")
     if suffix not in {"zip", "plugin"}:
         raise ValueError("package extension must be zip or plugin")
     files = {ROOT / name for name in ("README.md", "CHANGELOG.md", "LICENSE", "PRIVACY.md", "TERMS.md")}
     for directory in (manifest_dir, "hooks", "assets", "skills", "agents"):
+        if (ROOT / directory).is_symlink():
+            raise ValueError(f"Package directory cannot be a symlink: {directory}")
         files.update(p for p in (ROOT / directory).rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts)
     files.update((ROOT / "taskplane").glob("*.py"))
@@ -62,7 +91,7 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
     for path in files:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"Package member must be a regular file: {path}")
-    members = {path.relative_to(ROOT).as_posix(): path.read_bytes() for path in sorted(files)}
+    members = {path.relative_to(ROOT).as_posix(): read_member(path) for path in sorted(files)}
     identity = source_identity(members)
     output_dir.mkdir(parents=True, exist_ok=True)
     name = f"taskplane-{version}-openai.zip" if host == "openai" else f"taskplane-{version}.{suffix}"
@@ -76,6 +105,9 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
     result = {"host": host, "version": version, "archive": str(target.resolve()),
               "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
               **identity, "members": len(members),
+              "release_readiness": {"source_identity": "matched" if identity["matches_source_commit"] else "unverified_or_changed",
+                                    "platform_ci": "not_observed", "installed_runtime": "not_observed",
+                                    "publish_ready": False},
               "member_sha256": {name: hashlib.sha256(data).hexdigest()
                                 for name, data in members.items()}}
     target.with_suffix(target.suffix + ".json").write_text(json.dumps(result, indent=2) + "\n")

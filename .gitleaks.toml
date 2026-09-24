@@ -1,0 +1,10 @@
+title = "Taskplane secrets policy"
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic public OpenPGP fingerprint in historical release fixture; not key material"
+condition = "AND"
+paths = ['''^taskplane/tests/test_em_h1_release\.py$''']
+regexTarget = "secret"
+regexes = ['''^0123456789ABCDEF0123456789ABCDEF01234567$''']

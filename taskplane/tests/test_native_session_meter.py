@@ -154,3 +154,20 @@ def test_missing_counter_and_backwards_same_segment_refuse_instead_of_zero(
         match="physical-segment counter moved backwards",
     ):
         native_session_meter.aggregate([older, newer])
+def test_verified_fork_history_requires_own_thread_counter(tmp_path):
+    p = tmp_path/'fork.jsonl'
+    _write_segment(p, session_id='child', total=1000, parent='parent')
+    rows = [json.loads(line) for line in p.read_text().splitlines()]
+    rows[0]['payload']['history_base'] = {'thread_id':'parent','end_ordinal_exclusive':99,'end_byte_offset':100}
+    p.write_text('\n'.join(json.dumps(row) for row in rows)+'\n')
+    with pytest.raises(ValueError, match='current-thread counter'):
+        native_session_meter.read_snapshot(p)
+    own = {'input_tokens':7,'cached_input_tokens':2,'output_tokens':3,'reasoning_output_tokens':1,'total_tokens':10}
+    rows.append({'type':'token_usage_record','timestamp':'2026-09-01T00:00:10Z','ordinal':10,
+                 'payload':{'thread_id':'child','thread_token_usage':own}})
+    p.write_text('\n'.join(json.dumps(row) for row in rows)+'\n')
+    assert native_session_meter.read_snapshot(p)['usage']['total_tokens'] == 10
+    rows[0]['payload']['history_base']['thread_id'] = 'foreign'
+    p.write_text('\n'.join(json.dumps(row) for row in rows)+'\n')
+    with pytest.raises(ValueError, match='identity'):
+        native_session_meter.read_snapshot(p)

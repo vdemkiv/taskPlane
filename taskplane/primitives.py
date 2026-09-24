@@ -389,7 +389,9 @@ def load_json(path: str, default: Any=_LOAD_RAISE, *, what: str='state file') ->
         raise StateError(path, f'unreadable {what} ({e})') from None
 
 def _run(cmd: Any, cwd: Any, shell: Any=False, timeout: Any=600, env: Any=None) -> Any:
-    return subprocess.run(cmd, cwd=cwd, shell=shell, capture_output=True, text=True, timeout=timeout, env=env, encoding='utf-8', errors='replace')
+    if shell or isinstance(cmd, (str, bytes)):
+        raise ValueError('Taskplane subprocesses require argv and cannot execute a shell')
+    return subprocess.run(cmd, cwd=cwd, shell=False, capture_output=True, text=True, timeout=timeout, env=env, encoding='utf-8', errors='replace')
 def _ensure_self_ignored(d: str) -> None:
     """The runtime dir ignores itself — a worker's `git add -A` must never
     commit local observations, and merges must never collide on them."""

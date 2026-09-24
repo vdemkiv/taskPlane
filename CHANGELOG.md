@@ -291,3 +291,13 @@ recounting archived traces, reruns, canceled heads, render output, or DOM state.
 | **v1.1.0** | **Dashboard v2** — auto-rendered on every gate and step; clickable loop rail + step journey with per-step execution and decision details; full acceptance criteria and execution plan shown for review; always-on stats with the agent → model table. |
 | **v1.0.1** | Dispatch verification (`tp loop verify-dispatch` + opt-in Task-dispatch hook), FUSE-safe store cleanup, richer task statuses (`done`/`external` satisfy dependencies), model-tier setup in onboarding. |
 | **v1.0.0** | First public release — enforced task contracts (PreToolUse hook), human-gated Evaluate-Loop, context-routed lens catalog, requirements engine, external per-project knowledge base, model tiers, on-demand north-star review. |
+
+## Unreleased — 36-hour usage remediation
+
+- Preserve inactive workflow history with bounded immutable retention and explicit retirement without acceptance.
+- Size context batches against prospective receipts, prevent oversized consume envelopes, and introduce compatible semantic handoffs for new runs.
+- Discover archived native sessions and verified fork lineage with scoped error diagnostics.
+- Recognize explicit end-to-end auto-approval wording; expose policy bindings in compact results and expand safe diagnostic grammar.
+- Reject indirect package symlinks and mismatched versions, disable persisted CI checkout credentials, and add repeatable security checks.
+
+These changes are development source until release/version/platform/loaded-runtime evidence is recorded.

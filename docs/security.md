@@ -1,0 +1,9 @@
+# Security verification
+
+Run `python scripts/security_checks.py` for offline runtime-execution and CI credential checks; CI runs this gate and the complete scanner suite using the hash-pinned Linux/Python 3.13 requirements-ci.txt lock and a checksum-pinned Gitleaks binary. Run `python scripts/security_checks.py --scanners` locally to require Gitleaks, Semgrep, Zizmor, pip-audit and Bandit. Missing tools return unknown and fail the requested scanner gate. Scanner installation is an explicit environment step; no script silently downloads tools. The two local Semgrep rules protect dynamic execution boundaries; they are not a complete SAST review. Broader Python/GitHub Actions packs were run during intake and retain their warnings/timeouts in the audit artifact.
+
+The dependency audit covers both active quality-lock entries and extracted test-lock entries. Runtime is standard-library-only. Gitleaks scans Git history with redaction; its sole allowlist is an exact synthetic public OpenPGP fingerprint in one historical fixture. Never allowlist a real credential: revoke/rotate it and investigate its exposure. Bandit medium/high alerts and Zizmor findings fail the optional suite.
+
+Package inputs must be regular files within the source root, with no symlink ancestors. Both host manifests must agree on a safe semantic version. Packages retain SHA256 member/archive evidence and explicitly report platform CI and installed runtime as not observed. They never infer release readiness from local build success. Concurrent hostile mutation by the local account is outside the cooperative host threat model.
+
+Workflow archives are immutable verified data. Only the live controller index can select a run, and archival or retirement never grants acceptance. Missing/corrupt references fail closed. Historical counters that cannot be reconciled remain unknown.

@@ -54,3 +54,7 @@ requires the complete legacy report. Native dashboards retain complete evidence.
 Reuse a prior passing check only when its verification record matches current
 source/dependency, tests, runtime, environment, command and criteria fingerprints.
 Retain failed/unknown results and findings; reuse never transfers approval.
+
+## Adapter availability
+
+Check workflow coverage before dispatch. The current cooperative adapter reports native delegation unsupported because it cannot bind worker writes to a verified task scope. Do not work around a rejected agent tool with a shell subprocess or new user-owned task. Root review may produce attributed findings, but it is not independent review; any required independent gate remains a disclosed coverage limitation.

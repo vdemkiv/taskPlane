@@ -5,6 +5,8 @@ from typing import Any
 from datetime import datetime
 import json
 import os
+import stat
+import hashlib
 from pathlib import Path
 
 if __package__:
@@ -26,22 +28,40 @@ def _time(value: Any) -> float | None:
         return None
 
 
-def _codex_sessions(run: dict[str, Any], cutoff: float | None) -> tuple[list[dict[str, Any]], int]:
+def _codex_sessions(run: dict[str, Any], cutoff: float | None,
+                    diagnostics: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], int]:
     root = run['session']
     started = _time(run.get('at'))
-    home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex'))) / 'sessions'
+    home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
     metadata = []
-    discovery_errors = 0
-    for path in home.glob('**/*.jsonl'):
+    failures = []
+    paths = sorted({p for folder in ('sessions', 'archived_sessions')
+                    for p in (home / folder).glob('**/*.jsonl')})
+    for path in paths:
+        prefix = b''
         try:
-            with path.open('rb') as stream:
-                # Session metadata is the leading record, not the conversation.
+            if any(p.is_symlink() for p in (path, *path.parents)):
+                raise ValueError('symlinked native metadata')
+            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+            with os.fdopen(fd, 'rb') as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError('native metadata is not regular')
                 prefix = stream.readline(meter.MAX_METADATA_BYTES)
             item, _ = meter._session_metadata(prefix)
             item['path'] = path
             metadata.append(item)
-        except (OSError, ValueError):
-            discovery_errors += 1
+        except (OSError, ValueError) as exc:
+            try:
+                row = json.loads(prefix)
+                payload = row.get('payload', {}) if isinstance(row, dict) else {}
+            except (ValueError, UnicodeError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            failures.append({'session': payload.get('id'),
+                'parent': payload.get('forked_from_id') or payload.get('parent_thread_id'),
+                'path_fingerprint': hashlib.sha256(str(path).encode()).hexdigest(),
+                'reason': str(exc)[:200]})
     ids = {root}
     selected = []
     while True:
@@ -54,6 +74,14 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None) -> tuple[list[dic
         if found == ids:
             break
         ids = found
+    discovery_errors = 0
+    for failure in failures:
+        related = failure['session'] in ids or failure['parent'] in ids
+        unknown = not failure['session']
+        failure['scope'] = 'run_lineage' if related else 'unclassified' if unknown else 'unrelated_inventory'
+        discovery_errors += int(related or unknown)
+    if diagnostics is not None:
+        diagnostics.extend(failures)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in selected:
         grouped.setdefault(item['session_id'], []).append(item)
@@ -76,11 +104,15 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None) -> tuple[list[dic
                 errors.append('segment counters could not be reconciled')
         baseline = run.get('usage') if sid == root else None
         usage = ({k: max(0, v - (baseline or {}).get(k, 0)) for k, v in native.items()}
-                 if native and (sid != root or baseline is not None) else None)
+                  if native and (sid != root or baseline is not None) else None)
+        if native and baseline and any(v < baseline.get(k, 0) for k, v in native.items()):
+            usage = None
+            errors.append('native counter moved below run baseline; reset attribution is unknown')
         sessions.append({'session': sid, 'agent': meta.get('agent_path') or role,
                          'role': role, 'usage': usage, 'native_usage': native,
                          'status': 'partial' if errors else 'measured' if usage else 'unavailable',
-                         'basis': 'start baseline' if sid == root else 'child created during flow'})
+                         'basis': 'start baseline' if sid == root else 'child created during flow',
+                         'errors': errors})
     return sessions, discovery_errors
 
 
@@ -97,10 +129,11 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
              and started is not None and (_time(e.get('at')) or 0) > started]
     boundary = min(later, key=lambda e: _time(e.get('at')) or 0) if later else None
     cutoff = _time(boundary.get('at')) if boundary else None
+    diagnostics: list[dict[str, Any]] = []
     if run.get('host') == 'claude':
         sessions, discovery_errors = claude.sessions(run, events, cutoff)
     else:
-        sessions, discovery_errors = _codex_sessions(run, cutoff)
+        sessions, discovery_errors = _codex_sessions(run, cutoff, diagnostics)
     saved: dict[str, Any] = next((e.get('measurement', {}) for e in reversed(events)
                   if e.get('run') == run['run'] and e.get('kind') == 'usage'), {})
     by_session = {s['session']: s for s in sessions}
@@ -140,6 +173,9 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
                                'unmeasured_sessions': sum(s['usage'] is None for s in delivery),
                                'partial_sessions': sum(s['status'] == 'partial' for s in delivery),
                                'discovery_errors': discovery_errors,
+                                'inventory_errors': len(diagnostics),
+                                'discovery_diagnostics': diagnostics[:32],
+                                'diagnostics_omitted': max(0, len(diagnostics) - 32),
                                'basis': 'Root delta from flow start; full usage of children created during flow. Includes final responses and recovery until the next run in the same task. Host approval review shown separately.'}}
 
 

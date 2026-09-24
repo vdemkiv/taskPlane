@@ -537,3 +537,13 @@ Derived-context failure after a committed transition reports unavailable context
 while preserving the actual transition result. Repair storage and request context
 again; do not replay a committed decision. Context data carries no workflow
 approval authority. The existing controller store limit is unchanged.
+
+## Retention and retirement
+
+Native workflow stores retain their 8 MiB limit. Above a 4 MiB watermark, inactive finished, superseded or explicitly retired runs move to immutable SHA-256-verified context archives before the reduced index is atomically committed. Active work is never deleted or implicitly accepted. `flow report --run ID` resolves historical records and exposes `storage` (bytes, limit, remaining capacity and archive count); `flow diagnose` includes capacity without initializing a run. Protected-host storage remains owner-controlled.
+
+`flow retire --workspace PATH --run ID --expected-revision N --request-reference ACTUAL_USER_MESSAGE --note REASON` revokes an obsolete native run without accepting its pending checkpoint. It requires the unchanged active binding and no observed live command. Existing decisions and evidence remain historical; a new run needs its own scope and authorization. Use replacement when a new scope should immediately supersede old work. Never manufacture an approval to silence Stop.
+
+New native runs use `bounded/v2`: all normative predecessor outputs and report/design/plan artifacts remain required. Verification, raw-log and explicitly supporting bodies remain accessible by bound verified references. Declare `required_for: ["engineering"]` (or other phases) on an artifact to require its full body downstream. Unknown artifact kinds remain required. Existing `bounded/v1` runs retain full inherited-body requirements. Neither contract removes the host conversation or proves attention. Compact summaries expose the current policy digest, conditions, allowed phases and stops for automatic assessments.
+
+Safe diagnostics include plain `ls` with basic listing flags, `date`/`date -u`, and `rg` context/no-ignore options. Shell operators, rg preprocessing/helpers and arbitrary programs remain outside this diagnostic exception. Native worker dispatch remains unsupported by the current cooperative adapter; coverage reports that restriction. Use attributed root review and report the absence of independent review; do not invent a worker or bypass the guard.

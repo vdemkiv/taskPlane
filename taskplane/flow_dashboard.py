@@ -161,6 +161,12 @@ def _workflow(m: dict[str, Any]) -> str:
     details = ''
     if visits:
         details = '<p class="muted">Authorized route: ' + _e(' → '.join(v['phase'].title() for v in visits if not v.get('superseded'))) + '</p>'
+        details += '<p class="muted">Checkpoint decisions below are current state. Sealed documents retain their original wording, including earlier pending labels. Produced artifacts, accepted checkpoints, published packages and loaded runtimes are separate outcomes.</p>'
+        if authority.get('retired'):
+            details += '<p class="muted">Retired without acceptance: ' + _e(authority['retired'].get('reason')) + '. No active grants remain.</p>'
+        storage = authority.get('storage')
+        if storage:
+            details += '<p class="muted">Workflow storage: ' + _e(storage.get('bytes')) + ' / ' + _e(storage.get('limit_bytes')) + ' bytes; ' + _e(storage.get('archived_runs')) + ' archived runs. Historical approval records are preserved.</p>'
         if authority.get('superseded_by'):
             details += '<p class="muted">Historical run. Replaced by ' + _e(authority['superseded_by']) + '. Previous decisions are preserved; this run has no active grants.</p>'
         elif authority.get('replaces'):
@@ -173,7 +179,7 @@ def _workflow(m: dict[str, Any]) -> str:
             decision = visit['decision']
             packet = visit.get('packet')
             superseded = visit.get('superseded')
-            active = i == authority['index'] and not authority.get('finished') and not authority.get('superseded_by')
+            active = i == authority['index'] and not authority.get('finished') and not authority.get('superseded_by') and not authority.get('retired')
             work = 'Produced' if packet else 'In progress' if active else 'Not started'
             validated = 'Stale' if decision == 'stale' else 'Validated' if packet else 'Not submitted'
             records = [d for d in authority.get("decisions", {}).values()

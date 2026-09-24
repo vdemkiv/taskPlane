@@ -286,3 +286,9 @@ requires the complete legacy report. Native dashboards retain complete evidence.
 Reuse a prior passing check only when its verification record matches current
 source/dependency, tests, runtime, environment, command and criteria fingerprints.
 Retain failed/unknown results and findings; reuse never transfers approval.
+
+## Capacity and transport recovery
+
+Inspect report storage or `flow diagnose` before recovery. Native stores automatically archive inactive terminal history above the retention watermark; they never delete active work or approval records. `flow retire` requires an actual user request reference, reason and current revision; it ends grants without accepting output. New runs use semantic bounded/v2 handoffs, while bounded/v1 preserves its existing required bodies. Normative output/report bodies remain required; supporting verification/log bodies stay behind verified references and must be opened whenever needed to assess a criterion. `required_for` declares mandatory downstream body reads.
+
+Compact summaries include the policy digest and condition list. Assess these against sealed output; do not expand a whole report solely to retrieve that binding. Reuse the existing native dashboard view. Queued opening is linked, never visibly verified. Native delegation coverage is explicit: when no scoped worker adapter is available, preserve the refusal and real reviewer identity; do not claim an independent lens passed.

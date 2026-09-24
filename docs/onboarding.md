@@ -206,3 +206,9 @@ After an update, compare the actual loaded runtime, skills and hook command byte
 with the release archive. Catalog version, package creation, installed-file parity,
 live host invocation and visible display are separate checks. A queued tab or a
 manually invoked hook does not establish the latter two.
+
+## Repeated runs and honest completion
+
+Keep one native dashboard file per workspace and ask the host to focus its existing view. A queued open proves only a linked handoff. Record visibly verified display only after observing the rendered run/visit/revision. Sealed report wording can remain “pending” after acceptance; the dashboard projects the actual checkpoint decisions without rewriting historical evidence.
+
+Use `flow report` storage capacity and `flow diagnose` before recovery. Supported retention preserves inactive history. Retire obsolete work only with the actual user request reference; retirement grants no approval. A package build does not prove hosted Windows/Linux checks or that an existing task loaded a new plugin version.

@@ -196,3 +196,27 @@ def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,mon
     monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID','nested-claude')
     assert flow.claude_session({})
     assert not flow.claude_session({'thread_id':'root'})
+def test_archived_sessions_and_unrelated_metadata_errors_are_scoped(tmp_path, monkeypatch):
+    ws, sessions, run = setup_run(tmp_path, monkeypatch)
+    archive = sessions.parent/'archived_sessions'; archive.mkdir()
+    native(archive/'lens.jsonl', 'lens', 90, parent='root', at='2026-09-01T00:00:02Z')
+    native(sessions/'broken.jsonl', 'unrelated', 999)
+    path = sessions/'broken.jsonl'
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[0]['payload']['history_base'] = {'thread_id': 'wrong', 'end_ordinal_exclusive': 1, 'end_byte_offset': 1}
+    path.write_text('\n'.join(json.dumps(row) for row in rows)+'\n')
+    result = flow_usage.reconcile(run, [])
+    assert next(s for s in result['sessions'] if s['session'] == 'lens')['usage']['total_tokens'] == 90
+    assert result['token_coverage']['discovery_errors'] == 0
+    assert result['token_coverage']['inventory_errors'] == 1
+    assert result['token_coverage']['discovery_diagnostics'][0]['scope'] == 'unrelated_inventory'
+
+
+def test_counter_reset_is_unknown_not_zero(tmp_path, monkeypatch):
+    _, sessions, run = setup_run(tmp_path, monkeypatch)
+    native(sessions/'root.jsonl', 'root', 40)
+    result = flow_usage.reconcile(run, [])
+    root = next(s for s in result['sessions'] if s['session'] == 'root')
+    assert root['usage'] is None and root['status'] == 'partial'
+    assert 'reset' in root['errors'][0]
+    assert result['tokens'] is None

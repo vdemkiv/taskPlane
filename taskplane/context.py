@@ -43,6 +43,17 @@ class Store:
                   "invalid_context", "Context IDs must be SHA-256 digests.")
         return evidence.path(self.workspace, f".taskplane/context-v1/objects/{key}.json")
 
+    def reference(self, kind: str, value: Any) -> dict[str, Any]:
+        """Compute the exact tree reference without writing preview objects."""
+        class Preview(Store):
+            def _object(self, kind: str, data: Any, source_key: str, form: str) -> dict[str, Any]:
+                raw = encode({"schema": "taskplane.context-object/v1", "kind": kind,
+                              "source_key": source_key, "form": form, "data": data})
+                w.require(len(raw) <= OBJECT_LIMIT, "context_overflow", "Canonical context node is oversized.")
+                return {"schema": REFERENCE_SCHEMA, "kind": kind,
+                        "sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw), "source_key": source_key}
+        return Preview(self.workspace).put(kind, value)
+
     def _object(self, kind: str, data: Any, source_key: str, form: str) -> dict[str, Any]:
         value = {"schema": "taskplane.context-object/v1", "kind": kind,
                  "source_key": source_key, "form": form, "data": data}

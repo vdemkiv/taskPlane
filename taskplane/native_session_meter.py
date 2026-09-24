@@ -65,10 +65,12 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
         root_id = str(payload.get("session_id") or session_id).strip()
         if not session_id or not root_id:
             raise NativeSessionMeterError("native session identity is missing")
+        declared_parent = str(payload.get("forked_from_id") or payload.get("parent_thread_id") or "").strip()
         history = payload.get("history_base")
         if history is not None and (
             not isinstance(history, Mapping)
-            or history.get("thread_id") != session_id
+            or history.get("thread_id") not in {session_id, declared_parent}
+            or not history.get("thread_id")
             or any(
                 type(history.get(field)) is not int or history[field] < 0
                 for field in ("end_ordinal_exclusive", "end_byte_offset")
@@ -96,6 +98,7 @@ def _session_metadata(prefix: bytes) -> tuple[dict[str, Any], bytes]:
             "agent_path": agent_path,
             "started_at": str(payload.get("timestamp") or row.get("timestamp") or ""),
             "resumed": isinstance(payload.get("history_base"), Mapping),
+            "forked_history": isinstance(history, Mapping) and history.get("thread_id") != session_id,
         }
         return metadata, raw
     raise NativeSessionMeterError("current native session metadata is unavailable")
@@ -218,6 +221,8 @@ def read_snapshot(path: str, *, at_or_before: float | None = None,
     counter, counter_record = _latest_counter(tail, at_or_before=at_or_before,
                                                session_id=metadata["session_id"],
                                                allow_unsequenced=allow_unsequenced)
+    if metadata.get("forked_history") and counter.get("counter_scope") != "thread":
+        raise NativeSessionMeterError("forked history needs a current-thread counter; inherited legacy usage is unknown")
     source = {
         "path_fingerprint": hashlib.sha256(selected.encode("utf-8")).hexdigest(),
         "device": int(before.st_dev),

@@ -127,3 +127,23 @@ def test_original_request_enables_policy_without_changing_its_words(tmp_path):
     accepted = set_policy(c, s, request)
     assert accepted['approval_policy']['provenance']['excerpt'] == request['excerpt']
     assert not accepted['decisions']  # Consent configures policy; unseen output is not accepted.
+@pytest.mark.parametrize('excerpt', [
+    'Start end to end flow with auto-approval.',
+    'Run a full workflow with auto approval.',
+    '[@taskplane](plugin://taskplane@openai-curated-remote) use 36-hour audit and retrospective document as an input and start end to end flow with auto-approval. we need to address and resolve all the issues. additionally run security lens and include its findings into the scope.',
+])
+def test_explicit_end_to_end_policy_consent(excerpt):
+    from taskplane.workflow_approval import affirmative_consent
+    assert affirmative_consent(excerpt)
+
+
+@pytest.mark.parametrize('excerpt', [
+    'Add an option to start end to end flow with auto-approval.',
+    'Do not start end to end flow with auto-approval.',
+    'Example: start end to end flow with auto-approval.',
+    '"Start end to end flow with auto-approval."',
+    'Start end to end flow with auto-approval. Keep manual approval.',
+])
+def test_end_to_end_policy_keeps_negative_and_quoted_guards(excerpt):
+    from taskplane.workflow_approval import affirmative_consent
+    assert not affirmative_consent(excerpt)

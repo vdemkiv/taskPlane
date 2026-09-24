@@ -125,6 +125,7 @@ def affirmative_consent(excerpt: str) -> bool:
     stays manual; the recorder must still interpret and assess every condition.
     """
     text = decision_text(excerpt)
+    text = re.sub(r'^\s*(?:\[@taskplane\]\(plugin://[^)]+\)|@taskplane)\s*', '', text)
     if '?' in text:
         return False
     clauses = [re.sub(r'\s+', ' ', clause).strip() for clause in re.split(r'[.;!]', text)]
@@ -151,8 +152,11 @@ def affirmative_consent(excerpt: str) -> bool:
                 r'(?:full\s+)?(?:auto[ -]?approved|automatically approved|autonomous)\s+'
                 r'(?:full\s+)?(?:workflow|flow|run|delivery)\b')
     automatic_phases = request + r'(?:run|execute)\s+(?:all\s+)?(?:release\s+)?phases\s+automatically\b'
+    end_to_end = (request + r'(?:use\s+[^.;!]{1,512}\s+as (?:an? )?input and\s+)?'
+                  r'(?:start|run|execute)\s+(?:an?\s+|the\s+)?(?:end[ -]to[ -]end|full)\s+'
+                  r'(?:flow|workflow|delivery)\s+with\s+auto[ -]?approval\b')
     return any(re.search(pattern, clause) is not None for clause in clauses
-               for pattern in (direct, workflow, automatic_phases))
+               for pattern in (direct, workflow, automatic_phases, end_to_end))
 
 
 def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:

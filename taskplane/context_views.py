@@ -47,7 +47,12 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
         if any(refs[other]["sha256"] == refs[key]["sha256"] for other in inline):
             continue
         candidate = {**result, "inline": {**inline, key: bodies[key]}}
-        if len(encode(signed(candidate))) <= PHASE_BYTES[phase] - 4096:
+        returned = {refs[row['id']]['sha256'] for row in inputs
+                    if row.get('required', True) and row['id'] in candidate['inline']}
+        # Leave room both for this consume receipt and for a later maximum-size
+        # page. Hundreds of tiny inline roots otherwise strand omitted bodies.
+        reserve = max(4096, 1024 + 67 * len(returned))
+        if len(returned) <= 100 and len(encode(signed(candidate))) <= PHASE_BYTES[phase] - reserve:
             inline[key] = bodies[key]
     result["inline"] = inline
     result["omissions"] = [{"reason": "Read verified input references for bodies outside the inline budget.",
@@ -80,12 +85,17 @@ def summary(store: Store, payload: dict[str, Any], action: str,
     details = store.put("command-result", payload)
     result: dict[str, Any] = {"schema": "taskplane.command-summary/v1", "action": action, "status": status,
               "reason": payload.get("reason"), "detail": str(payload.get("detail", ""))[:512],
+               "storage": state.get("storage"), "archived": state.get("archived", False),
               "binding": binding, "phase": phase, "run": state.get("run"),
               "revision": state.get("revision"),
               "tokens": payload.get("tokens"), "native_tokens": payload.get("native_tokens"),
               "token_coverage": payload.get("token_coverage"),
               "approval": {"status": stage.get("decision", status), "decisions": len(state.get("decisions", {})),
-                           "policy_mode": state.get("approval_policy", {}).get("mode", "manual")},
+                           "policy_mode": state.get("approval_policy", {}).get("mode", "manual"),
+                           "policy_digest": state.get("approval_policy", {}).get("digest"),
+                           "conditions": state.get("approval_policy", {}).get("conditions", []),
+                           "allowed_phases": state.get("approval_policy", {}).get("allowed_phases", []),
+                           "stop_phases": state.get("approval_policy", {}).get("stop_phases", [])},
               "next_action": next_action, "context": context or {"status": "not_prepared"},
               "artifacts": {"dashboard": payload.get("dashboard"), "details": details},
               "coverage": {"workflow": state.get("coverage", {}),

@@ -267,6 +267,8 @@ class Controller:
                 self.adapter.validate_state(s)
             w.require(db["active"] is None or db["active"] in db["runs"],
                       "state_unavailable", "Active workflow binding is missing.")
+            from . import workflow_retention
+            workflow_retention.validate_index(db)
             return dict(db)
         except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
             if isinstance(exc, w.Refusal):
@@ -276,10 +278,13 @@ class Controller:
     def _write(self, target: Path, db: dict[str, Any]) -> None:
         try:
             self.adapter.validate_path(self.workspace, target)
+            from . import workflow_retention
+            db = workflow_retention.compact(self.workspace, db)
             raw = (json.dumps(db, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
                               allow_nan=False) + "\n").encode("utf-8")
             w.require(len(raw) <= workflow_local.MAX_BYTES,
-                      "state_unavailable", "Workflow store exceeds its size limit.")
+                      "state_unavailable", "Active workflow data exceeds its 8 MiB size limit after history retention. "
+                      "Inspect flow report storage; explicitly retire or replace obsolete work. History was not deleted.")
             # Match the measured encoding while retaining the private-file writer.
             primitives.atomic_json(target, db, sort_keys=True, indent=None, ensure_ascii=True,
                                    trailing_newline=True, strict_directory_sync=True)
@@ -336,6 +341,9 @@ class Controller:
                 w.require(self.adapter.profile == "native_workflow", "unsupported_authority",
                           "Run replacement requires a native workflow; protected host recovery is owner-controlled.")
                 previous = db["runs"].get(replace_run)
+                if previous is None and replace_run in db.get("archives", {}):
+                    from . import workflow_retention
+                    previous = workflow_retention.read(self.workspace, db, replace_run)
                 revision = request.get("expected_revision")
                 w.require(previous and type(revision) is int, "stale_checkpoint",
                           "Replacement requires the previous --replace-run and --expected-revision.")
@@ -397,10 +405,13 @@ class Controller:
             db = self._read(target)
             key = run or db["active"]
             if key is None:
-                return {**self.availability(), "status": "no_workflow"}
-            w.require(key in db["runs"], "state_unavailable", "The requested run has no protected binding.")
-            s = deepcopy(db["runs"][key])
-            changed = None if s.get("superseded_by") else evidence.changed(self.workspace, s)
+                from . import workflow_retention
+                return {**self.availability(), "status": "no_workflow",
+                        "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES)}
+            from . import workflow_retention
+            archived = key in db.get("archives", {})
+            s = workflow_retention.read(self.workspace, db, key)
+            changed = None if archived or s.get("superseded_by") or s.get("retired") else evidence.changed(self.workspace, s)
             if changed:
                 revision = s["revision"]
                 s = w.invalidate(s, *changed)
@@ -408,9 +419,10 @@ class Controller:
                 s["revision"] = revision
                 s["invalidation_pending"] = True
             return {**s, **self.availability(), **self.adapter.decorate(s), "phase": w.current(s)["phase"],
+                    "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES), "archived": archived,
                     "pending_checkpoint": w.binding(s, w.current(s)["packet"])
-                        if not s.get("superseded_by") and w.current(s)["decision"] == "awaiting_human_approval" else None,
-                    "status": "superseded" if s.get("superseded_by") else
+                        if not s.get("superseded_by") and not s.get("retired") and w.current(s)["decision"] == "awaiting_human_approval" else None,
+                    "status": "retired" if s.get("retired") else "superseded" if s.get("superseded_by") else
                               "accepted" if s["finished"] else w.current(s)["decision"]}
 
     def context(self, run: str | None = None, *, task: str | None = None,
@@ -452,6 +464,28 @@ class Controller:
             w.require(db["active"] == run or action == "finish" and run in db["runs"],
                       "state_unavailable", "Mutation must address the bound active run.")
             s = db["runs"][run]
+            if action == "retire":
+                w.require(self.adapter.profile == "native_workflow", "unsupported_authority",
+                          "Protected run retirement requires its trusted owner.")
+                w.require(expected_revision == s["revision"], "stale_checkpoint", "Expected state revision changed.")
+                w.require(self.adapter.can_seal(s), "scope_violation", "Stop live work before retirement.")
+                try:
+                    request = json.loads(native_reference)
+                except (ValueError, TypeError):
+                    raise w.Refusal("invalid_evidence", "Retirement needs an actual request reference and reason.") from None
+                w.require(isinstance(request, dict) and all(isinstance(request.get(k), str)
+                          and 0 < len(request[k].strip()) <= 2048 for k in ("request_reference", "reason")),
+                          "invalid_evidence", "Retirement needs an actual request reference and reason.")
+                updated = deepcopy(s)
+                updated["retired"] = {**request, "at": datetime.now(timezone.utc).isoformat(),
+                                      "accepted": False, "assurance": "observed"}
+                updated["history"].append({"retired": updated["retired"]})
+                updated["revision"] += 1
+                workflow_approval.suspend(updated, "User retired this run; no acceptance granted.")
+                db["runs"][run], db["active"] = updated, None
+                self._write(target, db)
+                return deepcopy(updated)
+            w.require(not s.get("retired"), "state_unavailable", "Retired workflows have no active grants.")
             w.require(not s.get("superseded_by"), "state_unavailable",
                       "This run was replaced; its evidence is historical and its grants are revoked.")
             policy_request: dict[str, Any] = {}
@@ -532,6 +566,7 @@ class Controller:
         w.require(state.get("workflow_available"), "unsupported_authority", state.get("detail", "Host guard unavailable."))
         w.require(state.get("visits"), "state_unavailable", "No active workflow grant.")
         w.require(not state.get("superseded_by"), "scope_violation", "The replaced run has no active grants.")
+        w.require(not state.get("retired"), "scope_violation", "The retired run has no active grants.")
         w.require(not state.get("finished"), "scope_violation", "The route has ended; its write grants are revoked.")
         stage = w.current(state)
         tool = event.get("tool_name") or event.get("tool")

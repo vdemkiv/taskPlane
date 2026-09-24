@@ -26,7 +26,7 @@ def test_default_commands_context_and_full_details(tmp_path):
     assert size <= 16384 and start['schema'] == 'taskplane.command-summary/v1'
     assert start['context']['status'] == 'ready'
     full, _ = command(tmp_path, 'report', '--full')
-    assert full['workflow']['context_contract'] == 'bounded/v1'
+    assert full['workflow']['context_contract'] == 'bounded/v2'
     report, size = command(tmp_path, 'report')
     assert Store(tmp_path).resolve(report['details'])['workflow']['run'] == start['run']
     detail, size = command(tmp_path, 'context', '--read', report['details']['sha256'])

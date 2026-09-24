@@ -187,7 +187,7 @@ def active_run(rows: list[dict[str, Any]], session: str, parent: str | None = No
         if isinstance(root, str) and root and (row.get("session") in owners or (
                 row.get("event") == "SubagentStart" and row.get("child") in owners)):
             owners.add(root)
-    closed = {row.get("run") for row in rows if row.get("kind") == "finish"}
+    closed = {row.get("run") for row in rows if row.get("kind") in {"finish", "retire"}}
     return next((row for row in reversed(rows)
                  if row.get("kind") == "start" and row.get("session") in owners
                  and row.get("run") not in closed), None)
@@ -776,7 +776,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "present", "wait", "diagnose", "context"])
+                                           "activate", "present", "wait", "diagnose", "context", "retire"])
     parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
     parser.add_argument("--task", help="Current phase task ID for context selection")
     context_read = parser.add_mutually_exclusive_group()
@@ -832,7 +832,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             diagnostics = workflow_local.diagnose(workspace)
             try:
                 state = (governor or _controller(workspace, session_id({}), args.profile)).report()
-                diagnostics["workflow"] = {k: state.get(k) for k in ("run", "revision", "phase", "status")}
+                diagnostics["workflow"] = {k: state.get(k) for k in ("run", "revision", "phase", "status", "storage")}
             except (workflow.Refusal, OSError, ValueError, TypeError, KeyError) as exc:
                 diagnostics["workflow_error"] = str(exc)
             show(diagnostics)
@@ -937,14 +937,14 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                     append(workspace, usage_point(state, initial, observed_at=measured_at))
                 except (OSError, ValueError, primitives.StateError):
                     observation_errors.append("Run started; initial phase observation unavailable.")
-        elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide"}:
+        elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide", "retire"}:
             workflow.require(run, "state_unavailable", "No active workflow binding.")
             assert run is not None
             state = controller.apply(args.action, str(run["run"]),
                 expected_revision=args.expected_revision, output=(args.assessment if args.action == "auto-decide" else args.output) or "",
                 tasks=args.tasks or "", phase=args.phase, assessment_json=args.assessment_json,
-                native_reference=args.policy_json if args.action == "policy" else args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
-            if harness and state.get("finished"):
+                native_reference=json.dumps({"request_reference": args.request_reference, "reason": args.note}) if args.action == "retire" else args.policy_json if args.action == "policy" else args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
+            if harness and (state.get("finished") or state.get("retired")):
                 harness.update(selected=False, waiting=None)
             try:
                 append(workspace, {"kind": args.action, "run": run["run"], "session": run["session"],

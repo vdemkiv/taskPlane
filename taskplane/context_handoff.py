@@ -8,10 +8,11 @@ from typing import Any
 import uuid
 
 from . import depgraph, primitives, workflow as w, workflow_evidence as evidence
-from .context import Store, digest, encode, signed, OBJECT_LIMIT, PAGE_LIMIT, REFERENCE_SCHEMA
+from .context import Store, digest, encode, signed, PAGE_LIMIT
 from .context_views import PHASE_BYTES, collection, view
 
 CONTRACT = "bounded/v1"
+SEMANTIC_CONTRACT = "bounded/v2"
 EXCLUSIONS = ["predecessor_conversation", "predecessor_tool_history", "private_runtime",
               "secret_values", "executable_approval"]
 
@@ -33,6 +34,8 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
     rows: list[dict[str, Any]] = state.get("initial_context_tasks", [])
     accepted: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
+    semantic = state.get("context_contract") == SEMANTIC_CONTRACT
+    artifact_ids: set[str] = set()
     for visit in state["visits"][:state["index"]]:
         packet = visit.get("packet")
         if visit.get("superseded") or visit["decision"] != "approved" or not packet:
@@ -50,6 +53,9 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
                 items.append({"id": f"verification/{visit['id']}/{number}", "kind": "verification",
                               "body": inherited(workspace, check["reuse_ref"])})
         for relative in sorted(packet["manifest"]):
+            if semantic and relative in artifact_ids:
+                continue
+            artifact_ids.add(relative)
             raw = evidence.read(workspace, relative)
             try:
                 document = json.loads(raw)
@@ -59,7 +65,14 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
                 continue  # The exact normative body is already represented above.
             if relative == packet.get("context", {}).get("tasks_path"):
                 continue  # Task definitions are selected separately; observations are not normative.
-            items.append({"id": "artifact/" + relative, "kind": "accepted-artifact",
+            # v2 keeps every normative output required. Supporting bytes remain
+            # accessible through bound, digest-verified refs; authors can mark a
+            # particular artifact required for specific downstream phases.
+            declaration: dict[str, Any] = next((a for a in packet["output"].get("artifacts", [])
+                                if a.get("path") == relative), {})
+            required = (not semantic or declaration.get("kind") not in {"verification", "supporting", "raw-log"}
+                        or phase in declaration.get("required_for", []))
+            items.append({"id": "artifact/" + relative, "kind": "accepted-artifact", "required": required,
                           "body": {"path": relative, **text_body(raw)}})
     # A workspace-global task file may belong to a different run. Initial tasks
     # are frozen by start; accepted packets provide their later definitions.
@@ -104,7 +117,7 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
     coverage = {"graph": "current" if current_graph else "unknown_or_stale",
                 "request_text": "supplied" if state.get("goal") else "not_recorded",
                 "untrusted_bodies": True, "host_conversation": "not_removed",
-                "model_attention": "unobservable"}
+                "model_attention": "unobservable", "supporting_artifacts": "referenced" if semantic else "required"}
     return items, [row["id"] for row in selected], criteria, {"authority": authority, "coverage": coverage}
 
 
@@ -160,44 +173,51 @@ class Session:
         w.require(value.get("binding") == self.binding, "invalid_context", "Foreign delivery receipt binding.")
         return value
 
+    def _preview(self, payload: dict[str, Any], ledger: dict[str, Any], seen: set[str],
+                 updates: list[tuple[str, int, int]], *, event_id: str,
+                 persist: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+        from copy import deepcopy
+        ledger = deepcopy(ledger)
+        seen = seen | set(ledger["seen"])
+        for key, number, total in updates:
+            pages = sorted(set(ledger["pages"].get(key, [])) | {number})
+            ledger["pages"][key] = pages
+            if pages == list(range(total)):
+                seen.add(key)
+        returned = sorted(key for key, nodes in self.required_trees.items() if nodes <= seen)
+        receipt: dict[str, Any] = {"schema": "taskplane.context-delivery-receipt/v1",
+            "binding": self.binding, "handoff_digest": self.handoff["digest"],
+            "view_digest": self.view["digest"], "returned_refs": returned,
+            "returned_bytes": ledger["returned_bytes"], "event_id": event_id,
+            "status": "returned", "model_attention": "unobservable"}
+        response: dict[str, Any] = {**payload, "remaining_required": len(self.required_trees) - len(returned)}
+        for _ in range(4):
+            reference = (self.store.put if persist else self.store.reference)("delivery-receipt", receipt)
+            response["context_receipt"] = {"receipt": reference, "consumed_inputs": returned}
+            total_bytes = ledger["returned_bytes"] + len(encode(response))
+            if total_bytes == receipt["returned_bytes"]:
+                break
+            receipt["returned_bytes"] = total_bytes
+        else:
+            raise w.Refusal("invalid_context", "Receipt byte accounting did not converge.")
+        ledger.update(seen=sorted(seen), returned_bytes=receipt["returned_bytes"])
+        ledger["receipts"].append(reference["sha256"])
+        return response, ledger
+
     def _deliver(self, payload: dict[str, Any], seen: set[str],
                  page: tuple[str, int, int] | None = None, *, limit: int = 16384,
                  page_updates: list[tuple[str, int, int]] | None = None) -> dict[str, Any]:
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with primitives.file_lock(str(self.ledger_path)):
-            ledger = self.ledger()
-            seen |= set(ledger["seen"])
-            for key, number, total in ([page] if page else []) + (page_updates or []):
-                pages = sorted(set(ledger["pages"].get(key, [])) | {number})
-                ledger["pages"][key] = pages
-                if pages == list(range(total)):
-                    seen.add(key)
-            returned = sorted(key for key, nodes in self.required_trees.items() if nodes <= seen)
-            returned = sorted(set(returned))
-            receipt: dict[str, Any] = {"schema": "taskplane.context-delivery-receipt/v1",
-                "binding": self.binding, "handoff_digest": self.handoff["digest"],
-                "view_digest": self.view["digest"], "returned_refs": returned,
-                "returned_bytes": ledger["returned_bytes"], "event_id": "returned/" + uuid.uuid4().hex,
-                "status": "returned", "model_attention": "unobservable"}
-            response: dict[str, Any] = {**payload, "remaining_required": len({x['ref']['sha256'] for x in self.required}) - len(returned)}
-            # Account for the receipt envelope too; digest values have a fixed width.
-            for _ in range(4):
-                reference = self.store.put("delivery-receipt", receipt)
-                response["context_receipt"] = {"receipt": reference, "consumed_inputs": returned}
-                total_bytes = ledger["returned_bytes"] + len(encode(response))
-                if total_bytes == receipt["returned_bytes"]:
-                    break
-                receipt["returned_bytes"] = total_bytes
-            else:
-                raise w.Refusal("invalid_context", "Receipt byte accounting did not converge.")
-            # A rejected envelope was never returned. Do not let it add seen
-            # bodies or issued receipts to the delivery ledger.
+            response, ledger = self._preview(payload, self.ledger(), seen,
+                ([page] if page else []) + (page_updates or []), event_id="returned/" + uuid.uuid4().hex,
+                persist=True)
+            # Preview may create immutable objects, but only a returned response
+            # commits delivery. A refusal cannot grant a receipt or advance pages.
             w.require(len(encode(response)) < limit, "context_overflow", "Returned context exceeds its envelope budget.")
-            ledger.update(seen=sorted(seen), returned_bytes=receipt["returned_bytes"])
-            ledger["receipts"].append(reference["sha256"])
             w.require(len(ledger["receipts"]) <= 10000, "context_overflow", "Current delivery event limit reached.")
             primitives.atomic_json(self.ledger_path, ledger)
-            self.store.register(self.read_binding, [reference])
+            self.store.register(self.read_binding, [response["context_receipt"]["receipt"]])
             return response
 
     def consume(self, key: str) -> dict[str, Any]:
@@ -229,23 +249,26 @@ class Session:
         w.require(key == self.handoff_ref["sha256"], "invalid_context", "Stale or foreign handoff.")
         ledger = self.ledger()
         missing = sorted(set().union(*self.required_trees.values()) - set(ledger["seen"]))
+        first_pages = {sha: self.store.page(sha) for sha in missing}
+        # Return large nodes while the completed-root receipt is still small.
+        # Otherwise a late large node can be stranded behind hundreds of roots.
+        missing.sort(key=lambda sha: (-len(encode(first_pages[sha])), sha))
         pages: list[dict[str, Any]] = []
         updates: list[tuple[str, int, int]] = []
         payload = {"schema": "taskplane.context-read-batch/v1", "handoff_ref": self.handoff_ref, "pages": pages}
-        # Reserve the largest possible receipt envelope before committing any
-        # page. The final serializer also enforces the exact byte limit.
-        reserve = {"remaining_required": len(self.required), "context_receipt": {
-            "receipt": {"schema": REFERENCE_SCHEMA, "kind": "delivery-receipt",
-                        "sha256": "0" * 64, "source_key": "0" * 64, "bytes": OBJECT_LIMIT},
-            "consumed_inputs": sorted(self.required_trees)}}
+        # Size the receipt for precisely the candidate pages, not every eventual
+        # root. Hash/event values have fixed widths; byte counts are converged by
+        # the same serializer as delivery. This never updates the read ledger.
         full = False
         for sha in missing:
-            first = self.store.page(sha)
+            first = first_pages[sha]
             for number in range(first["pages"]):
                 if number in ledger["pages"].get(sha, []):
                     continue
                 page = first if number == 0 else self.store.page(sha, number)
-                if len(pages) == 64 or len(encode({**payload, **reserve, "pages": [*pages, page]})) >= PAGE_LIMIT:
+                candidate, _ = self._preview({**payload, "pages": [*pages, page]}, ledger, set(),
+                    [*updates, (sha, number, page["pages"])], event_id="returned/" + "0" * 32)
+                if len(pages) == 64 or len(encode(candidate)) >= PAGE_LIMIT:
                     full = True
                     break
                 pages.append(page)

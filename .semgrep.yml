@@ -1,0 +1,17 @@
+rules:
+  - id: taskplane-no-shell-execution
+    languages: [python]
+    severity: ERROR
+    message: Runtime subprocesses must use argv without shell execution.
+    pattern: subprocess.$METHOD(..., shell=True, ...)
+    paths:
+      exclude: [/taskplane/tests/]
+  - id: taskplane-no-eval
+    languages: [python]
+    severity: ERROR
+    message: Untrusted workflow or context data must never be evaluated.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+    paths:
+      exclude: [/taskplane/tests/]

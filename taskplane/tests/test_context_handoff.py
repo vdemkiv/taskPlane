@@ -8,6 +8,48 @@ from taskplane.context_handoff import Session, consume_required
 from taskplane.tests.test_workflow_evidence import prepare
 
 
+def many_artifacts(tmp_path, contract='bounded/v1', count=201):
+    state, output, _ = prepare(tmp_path)
+    output['artifacts'] = []
+    for i in range(count):
+        name = f'evidence-{i:03}.txt'
+        (tmp_path/name).write_text(f'Observed evidence {i}: ' + 'x' * (3100 if i % 17 == 0 else 30))
+        output['artifacts'].append({'path': name, 'kind': 'verification', 'schema': 'text/v1',
+            'phase': 'product', 'visit': w.current(state)['id'], 'criteria': ['AC1'], 'tasks': ['T1']})
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    state = w.submit(state, e.seal(tmp_path, state, 'product.json', 'tasks.json'))
+    # Trusted pure-state fixture, never a native user observation.
+    state = w.decide(state, {'event_id': 'fixture', 'human': True, 'automatic': False,
+        'choice': 'approved', 'binding': w.binding(state, w.current(state)['packet'])})
+    state = w.advance(state, 'design'); state['context_contract'] = contract
+    return state
+
+
+def test_203_required_inputs_never_reserve_unreturned_roots(tmp_path):
+    state = many_artifacts(tmp_path)
+    session = Session(tmp_path, state)
+    assert len(session.required) == 203
+    receipt, responses = consume_required(session)
+    session.validate(receipt)
+    assert all(len(encode(r)) < (32768 if 'view' in r else 16384) for r in responses)
+    assert all(r['pages'] for r in responses[1:])
+    assert state['decisions'] == session.state['decisions']
+
+
+def test_semantic_context_keeps_normative_output_and_supporting_references(tmp_path):
+    state = many_artifacts(tmp_path, 'bounded/v2')
+    session = Session(tmp_path, state)
+    assert len(session.required) == 2
+    receipt, _ = consume_required(session); session.validate(receipt)
+    assert len([i for i in session.items if i['kind'] == 'accepted-artifact']) == 201
+    assert all(i.get('required') is False for i in session.items if i['kind'] == 'accepted-artifact')
+    accepted = next(i['body'] for i in session.items if i['kind'] == 'accepted-output')
+    assert accepted['acceptance_criteria'][0]['id'] == 'AC1'
+    ref = session.input_refs['artifact/evidence-000.txt']
+    assert session.read(ref['sha256'])['page']['untrusted_data'] is True
+
+
 @pytest.mark.parametrize('phase', w.PHASES)
 def test_fresh_phase_consumer_requires_receipt(tmp_path, phase):
     state, output, _ = prepare(tmp_path, phase, plan_fixture=phase == 'build')

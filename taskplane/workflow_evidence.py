@@ -292,6 +292,9 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
                   and set(ref["criteria"]) <= set(criteria)
                   and set(ref["tasks"]) <= {t["id"] for t in tasks},
                   "invalid_evidence", "Artifact reference lacks phase/visit/kind/schema/task/criterion provenance.")
+        required_for = ref.get("required_for", [])
+        w.require(isinstance(required_for, list) and all(p in w.PHASES for p in required_for),
+                  "invalid_evidence", "Artifact required_for must name downstream phases.")
         files.append(ref["path"])
     change = output.get("route_change")
     if change:
