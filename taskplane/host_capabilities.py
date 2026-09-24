@@ -189,5 +189,60 @@ def inspect_native(host: str, workspace: Path, session: str) -> dict[str, Any]:
             "plugin_outside_workspace": not plugin.is_relative_to(workspace.resolve()),
             "session_present": bool(session and session != "unknown"),
             "readonly_executable_found": executable is not None,
+            "runtime_identity": runtime_identity(),
             "authority_verified": False,
             "detail": "Discovery is observational. No native issuer, protected store or complete process/tool boundary is certified."}
+
+
+def runtime_identity() -> dict[str, Any]:
+    """Identity of this executing runtime; a manifest alone does not prove hook loading."""
+    import hashlib
+    root = Path(__file__).resolve().parents[1]
+    members = {}
+    for name in ('taskplane/tp.py', 'taskplane/flow.py', 'taskplane/workflow_host.py',
+                 'taskplane/workflow_local.py', 'taskplane/worker_runtime.py',
+                 'taskplane/context_handoff.py', 'hooks/hooks.json'):
+        target = root/name
+        members[name] = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
+    return {'root': str(root), 'member_sha256': members,
+            'basis': 'executing Python module path and file bytes; observation, not host attestation'}
+
+
+def worker_identities(parent: str, *, canonical_name: str | None = None,
+                      task_name: str | None = None, since: str) -> list[dict[str, str]]:
+    """Match returned native names to actual IDs using bounded native lineage.
+
+    No prompt/env-supplied root override and no latest-child guess. Ambiguous
+    records yield no binding. This remains observed local metadata, not attestation.
+    """
+    from datetime import datetime
+    import stat
+    from . import native_session_meter as meter
+    home = Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))
+    found: dict[str, dict[str, str]] = {}
+    cutoff = datetime.fromisoformat(since.replace('Z', '+00:00'))
+    count = 0
+    for folder in ('sessions', 'archived_sessions'):
+        for path in (home/folder).glob('**/*.jsonl'):
+            count += 1
+            if count > 20000:
+                return []
+            try:
+                if any(p.is_symlink() for p in (path, *path.parents)):
+                    continue
+                with path.open('rb') as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        continue
+                    meta, _ = meter._session_metadata(stream.readline(meter.MAX_METADATA_BYTES))
+                name = meta.get('agent_path')
+                born = datetime.fromisoformat(meta['started_at'].replace('Z', '+00:00'))
+                if (meta.get('parent_session_id') == parent and born >= cutoff and name
+                        and (name == canonical_name if canonical_name else name.rsplit('/', 1)[-1] == task_name)):
+                    value = dict(worker_id=meta['session_id'], canonical_name=name, parent=parent,
+                                 started_at=meta['started_at'])
+                    if value['worker_id'] in found and found[value['worker_id']] != value:
+                        return []
+                    found[value['worker_id']] = value
+            except (OSError, ValueError, TypeError):
+                continue
+    return list(found.values()) if len(found) == 1 else []

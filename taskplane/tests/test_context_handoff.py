@@ -252,3 +252,38 @@ def test_display_tasks_on_start_retry_do_not_replace_empty_snapshot(tmp_path):
     with pytest.raises(w.Refusal, match='scope'):
         c.start({**request, 'tasks': 'tasks.json'})
     assert c.report()['initial_context_tasks'] == []
+
+
+def test_published_tasks_are_frozen_and_generation_invalidates_receipts(tmp_path):
+    state, _, tasks = prepare(tmp_path, 'build', plan_fixture=True)
+    state['initial_context_tasks'] = []
+    before = Session(tmp_path, state)
+    receipt, _ = consume_required(before)
+    frozen = e.freeze_tasks(tmp_path, state, tasks)
+    state.update(task_context={'visit': w.current(state)['id'], 'tasks': frozen}, task_generation=1)
+    task = frozen[0]['id']
+    assert Session(tmp_path, state, task).view['task_ids']['items'] == [task]
+    tasks['tasks'][0]['paths'] = ['foreign.py']
+    assert e.context_tasks(state)[0]['paths'] != ['foreign.py']
+    with pytest.raises(w.Refusal): Session(tmp_path, state).validate(receipt)
+    with pytest.raises(w.Refusal): e.freeze_tasks(tmp_path, state, tasks)
+
+
+def test_worker_snapshot_receipt_is_per_attempt_and_stable_during_output_edits(tmp_path):
+    state, _, tasks = prepare(tmp_path, 'build', plan_fixture=True)
+    state['initial_context_tasks'] = e.freeze_tasks(tmp_path, state, tasks)
+    task = tasks['tasks'][0]['id']
+    root = Session(tmp_path, state, task)
+    root_receipt, _ = consume_required(root)
+    consumer = dict(worker_id='native-child', grant_id='g', attempt=1, task_id=task, task_generation=0)
+    worker = Session(tmp_path, state, task, consumer=consumer, snapshot=root.frozen)
+    with pytest.raises(w.Refusal): worker.validate(root_receipt)
+    receipt, _ = consume_required(worker)
+    (tmp_path/'app.py').write_text('worker_output = 1\n')
+    Session(tmp_path, state, task, consumer=consumer, snapshot=root.frozen).validate(receipt)
+    for key, value in [('worker_id', 'other'), ('grant_id', 'other'), ('attempt', 2)]:
+        with pytest.raises(w.Refusal):
+            Session(tmp_path, state, task, consumer={**consumer, key:value}, snapshot=root.frozen).validate(receipt)
+    state['revision'] += 1
+    with pytest.raises(w.Refusal):
+        Session(tmp_path, state, task, consumer=consumer, snapshot=root.frozen)

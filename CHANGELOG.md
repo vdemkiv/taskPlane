@@ -1,5 +1,17 @@
 # taskplane changelog
 
+## v2.31.3 — scoped native worker restoration
+
+- Add native task reservations, observed identity binding, worker context receipts,
+  lifecycle joins and verified root result acceptance under the existing harness.
+- Admit ready independent work up to observed capacity, without a default two-worker cap.
+- Publish late task definitions through an explicit run-bound context update.
+- Record denied/error hook outcomes and early returns without weakening refusals.
+- Account for reused guardian/worker intervals and retain missing/reset coverage.
+- Expose worker attempts, scheduling reasons and hook outcomes in the shared dashboard.
+  Package checks and contract fixtures remain distinct from actual loaded-runtime
+  activation and live parallel evidence.
+
 ## v2.31.2 — usage remediation, security and workflow recovery
 
 - Preserve inactive workflow history with bounded immutable retention and explicit retirement without acceptance.

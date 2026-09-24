@@ -292,3 +292,12 @@ Retain failed/unknown results and findings; reuse never transfers approval.
 Inspect report storage or `flow diagnose` before recovery. Native stores automatically archive inactive terminal history above the retention watermark; they never delete active work or approval records. `flow retire` requires an actual user request reference, reason and current revision; it ends grants without accepting output. New runs use semantic bounded/v2 handoffs, while bounded/v1 preserves its existing required bodies. Normative output/report bodies remain required; supporting verification/log bodies stay behind verified references and must be opened whenever needed to assess a criterion. `required_for` declares mandatory downstream body reads.
 
 Compact summaries include the policy digest and condition list. Assess these against sealed output; do not expand a whole report solely to retrieve that binding. Reuse the existing native dashboard view. Queued opening is linked, never visibly verified. Native delegation coverage is explicit: when no scoped worker adapter is available, preserve the refusal and real reviewer identity; do not claim an independent lens passed.
+
+## Scoped native workers
+
+When authorized, use the installed native dispatch protocol: root prepares a run-bound
+task grant, the observed worker claims its identity and consumes its own task context,
+and root verifies the joined result before satisfying dependencies. Fill observed
+capacity with useful independent work; two is only the minimum live acceptance test.
+Workers return evidence and cannot operate root phase controls or publish task definitions.
+Require actual loaded-runtime and native execution evidence for live claims.

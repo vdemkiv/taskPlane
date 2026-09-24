@@ -202,3 +202,15 @@ def test_dashboard_distinguishes_known_empty_bucket_from_unknown():
     result['accounting']['reconciled'] = False
     result['accounting']['non_phase'] = None
     assert 'Outside phases: Unknown' in flow_dashboard.usage_details({'phase_usage': result})
+def test_claude_reused_worker_charges_only_current_messages(tmp_path, monkeypatch):
+    from taskplane.tests.test_claude_flow import setup, write, message
+    from taskplane import flow
+    workspace, path = setup(tmp_path, monkeypatch)
+    child = path.with_suffix('') / 'subagents/agent-reused.jsonl'
+    write(child, [message('old', agent='reused'),
+                  message('current', agent='reused', at='2026-09-15T00:00:04Z')])
+    report = flow.report(workspace)
+    session = next(s for s in report['sessions'] if s['session'] == 'reused')
+    assert session['usage']['total_tokens'] == 142
+    assert session['native_usage']['total_tokens'] == 284
+    assert session['status'] == 'measured'

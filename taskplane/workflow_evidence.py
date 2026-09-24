@@ -143,6 +143,45 @@ def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
     return list(index.values())
 
 
+def task_definitions(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Canonical task authority; progress never changes an execution grant."""
+    return {t["id"]: {**{k: v for k, v in t.items()
+                         if k not in TASK_OBSERVATIONS | {"criteria", "acceptance_criteria"}},
+                      "criteria": task_criteria(t)} for t in rows}
+
+
+def context_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = state.get("initial_context_tasks", [])
+    for stage in state["visits"][:state["index"]]:
+        if stage["decision"] == "approved" and not stage.get("superseded") and stage.get("packet"):
+            rows = stage["packet"].get("context", {}).get("tasks", rows)
+    update = state.get("task_context", {})
+    if update.get("visit") == w.current(state)["id"]:
+        rows = update["tasks"]
+    return list(rows)
+
+
+def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate an explicit run-bound publication without consulting global files."""
+    from copy import deepcopy
+    rows = task_dag(data, state["scope"]["criteria"])
+    for row in rows:
+        phase = row.get("phase", w.current(state)["phase"])
+        w.require(phase in state["scope"]["paths"], "invalid_evidence", "Unknown task phase.")
+        w.require(set(row["paths"]) <= set(state["scope"]["paths"][phase])
+                  and set(task_criteria(row)) <= set(state["scope"]["criteria"]),
+                  "scope_violation", "Task publication exceeds accepted paths or criteria.")
+        for relative in row["paths"]:
+            path(root, relative)
+    if w.current(state)["phase"] == "build":
+        approved = w.accepted_plan(state)["packet"]["output"]["task_dag"]
+        w.require(task_definitions(rows) == task_definitions(approved), "invalid_evidence",
+                  "Build task definitions must match the human-accepted Plan.")
+    frozen = list(deepcopy(task_definitions(rows)).values())
+    w.require(len(json.dumps(frozen).encode()) <= 65536, "invalid_evidence", "Task snapshot exceeds 64 KiB.")
+    return frozen
+
+
 def build_task_map(state: dict[str, Any], tasks: list[dict[str, Any]], value: Any,
                    criteria: list[str]) -> None:
     plan = w.accepted_plan(state)["packet"]["output"]
@@ -150,12 +189,7 @@ def build_task_map(state: dict[str, Any], tasks: list[dict[str, Any]], value: An
     # Only observations may change without renewed Plan acceptance. Unknown fields
     # remain normative, so adding a new scope/verification field cannot evade this check.
 
-    def definitions(rows: list[dict[str, Any]]) -> dict[str, Any]:
-        return {t["id"]: {**{k: v for k, v in t.items()
-                             if k not in TASK_OBSERVATIONS | {"criteria", "acceptance_criteria"}},
-                          "criteria": task_criteria(t)} for t in rows}
-
-    w.require(definitions(tasks) == definitions(approved), "invalid_evidence",
+    w.require(task_definitions(tasks) == task_definitions(approved), "invalid_evidence",
               "Build task definitions must match the human-accepted Plan; only progress observations may change.")
     criterion_map(value, criteria, "Build task/acceptance map")
     for criterion, mapped in value.items():

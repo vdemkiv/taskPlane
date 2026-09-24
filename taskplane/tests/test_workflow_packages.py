@@ -77,6 +77,9 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
         assert 'docs/assets/taskplane-cowork-flow.gif' in archive.namelist()
         assert 'docs/assets/taskplane-flow-source.html' in archive.namelist()
         assert 'taskplane/workflow_host.py' in archive.namelist()
+        assert 'taskplane/worker_runtime.py' in archive.namelist()
+        dispatch = archive.read('skills/tp-go/references/codex-native-dispatch.md').decode()
+        assert 'operation prepare' in dispatch and 'minimum live acceptance test' in dispatch
         assert 'hooks/hooks.json' in archive.namelist()
         archive.extractall(extracted)
     # The ordinary shipped profile must work without the protected fixture.

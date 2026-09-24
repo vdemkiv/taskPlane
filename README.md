@@ -12,6 +12,13 @@ It is for developers and teams who use coding agents for more than a one-off edi
 
 ## Why Taskplane
 
+Authorized native workers share the run, accepted task plan and dashboard. Ready
+independent tasks can run concurrently up to observed host capacity; dependent
+tasks wait for verified results. Two overlapping workers is a minimum live
+acceptance test, not a scheduling limit. Each worker consumes its own bounded
+context and receives exact task paths. See the
+[native worker protocol](skills/tp-go/references/codex-native-dispatch.md).
+
 Long coding tasks can lose the original requirement, overlook a dependency, or finish with a claim that has little verification behind it. Taskplane keeps the work connected:
 
 - **Agree on the outcome before building.** Turn a request into a clear scope and observable acceptance criteria.

@@ -1,5 +1,27 @@
 # Taskplane CLI
 
+## Scoped native workers and task publication
+
+`flow worker --operation prepare|claim|accept-result|status|capacity|abandon` operates
+on the existing run. Supply `--workspace` and `--run`; root mutations also require
+`--expected-revision`. Prepare/result commands use `--task`; claim/result/abandon
+use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
+Preparation needs `capacity` with `host_slots`, `includes_root`, and an actual
+observed source `reference`. Optional configured/resource limits narrow capacity.
+No default two-worker limit is applied.
+
+Result JSON contains `outputs` (task-owned paths) and `checks` (objects with `name`,
+`status: "pass"`, `evidence`). A native result needs a joined attempt, delivered
+worker context, unchanged inputs and no running child command. Root task results
+omit `--grant` and retain root provenance. See the packaged
+[native dispatch protocol](../skills/tp-go/references/codex-native-dispatch.md).
+
+`flow attach --tasks FILE --update-context --run RUN --expected-revision N` publishes
+validated definitions for that run and unsealed visit. Plain attach remains
+observational. Updates require quiescence, freeze definitions, increment generation
+and revision, and invalidate old receipts. Identical retries are idempotent.
+Accepted Build definitions cannot be changed through attachment.
+
 Invoke `python3 <plugin>/taskplane/tp.py` with one of these commands.
 
 | Command | Purpose |

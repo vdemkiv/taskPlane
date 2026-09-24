@@ -54,7 +54,7 @@ def transcript(session: str, event: dict[str, Any]) -> Path | None:
 
 
 def read_snapshot(path: Path, session: str, *, agent: str | None = None,
-                  cutoff: float | None = None) -> dict[str, Any]:
+                  cutoff: float | None = None, start: float | None = None) -> dict[str, Any]:
     messages: dict[str, dict[str, int] | None] = {}
     started = None
     matched = False
@@ -75,6 +75,8 @@ def read_snapshot(path: Path, session: str, *, agent: str | None = None,
             if at is not None:
                 started = at if started is None else min(started, at)
             if cutoff is not None and (at is None or at >= cutoff):
+                continue
+            if start is not None and (at is None or at < start):
                 continue
             message = row.get('message')
             if row.get('type') != 'assistant' or not isinstance(message, dict):
@@ -111,6 +113,7 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
     root = run['session']
     path = transcript(root, run)
     candidates: dict[str, Path | None] = {root: path}
+    observed = set(run.get('worker_sessions', []))
     if path:
         for child in path.with_suffix('').glob('subagents/agent-*.jsonl'):
             candidates[child.stem.removeprefix('agent-')] = child
@@ -118,6 +121,7 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
     for event in events:
         if event.get('run') == run['run'] and event.get('child'):
             child = event['child']
+            observed.add(child)
             candidates.setdefault(child, None)
             if event.get('agent_transcript_path'):
                 candidates[child] = Path(event['agent_transcript_path']).expanduser()
@@ -132,17 +136,31 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
         except (OSError, ValueError):
             errors += 1
         born = snapshot.get('started')
-        if sid != root and born is not None and started is not None and born < started:
-            continue
         if sid != root and born is not None and cutoff is not None and born >= cutoff:
             continue
         native = snapshot.get('usage')
         baseline = run.get('usage') if sid == root else {}
         usage = ({k: max(0, v - baseline.get(k, 0)) for k, v in native.items()}
                  if native is not None and baseline is not None else None)
+        if native is not None and baseline is not None and any(v < baseline.get(k, 0) for k, v in native.items()):
+            usage = None
+            snapshot['partial'] = True
+        if sid != root and born is not None and started is not None and born < started and source:
+            try:
+                interval = read_snapshot(source, root, agent=sid, cutoff=cutoff, start=started)
+                usage = interval['usage']
+                snapshot['partial'] = snapshot.get('partial') or interval['partial']
+                if usage is None and not interval['partial'] and sid not in observed:
+                    continue  # An old inactive child is not part of this run.
+            except (OSError, ValueError):
+                errors += 1
+                usage = None
+                snapshot['partial'] = True
         result.append({'session': sid, 'agent': 'orchestrator' if sid == root else sid,
                        'role': 'orchestrator' if sid == root else 'lens',
                        'usage': usage, 'native_usage': native,
                        'status': 'partial' if snapshot.get('partial') else 'measured' if usage else 'unavailable',
-                       'basis': 'start baseline' if sid == root else 'child created during flow'})
+                       'basis': 'start baseline' if sid == root else 'owned message interval [start, end)',
+                       'attribution_schema': 'taskplane.owned-interval/v1' if sid != root else None,
+                       'interval': {'start': started, 'end_exclusive': cutoff} if sid != root else None})
     return result, errors

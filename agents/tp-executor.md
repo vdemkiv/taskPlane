@@ -25,3 +25,12 @@ Native commands and later stdin must retain their accepted phase grant and
 process identity. Cancellation revokes input; actual native termination must be
 verified before sealing output. Report unknown ownership without resuming or
 reassigning the process from workspace data.
+
+## Native worker assignment
+
+When this role runs as an authorized native worker, claim the observed grant in the
+existing run and consume every required task-focused input before execution. A root
+receipt cannot satisfy worker context. Stay within assigned paths; return evidence
+to the root for verification and result acceptance. Do not operate root workflow
+controls or create another run. Follow the packaged native dispatch protocol;
+missing identity, context or lifecycle coverage remains unresolved.

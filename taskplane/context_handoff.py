@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,8 @@ EXCLUSIONS = ["predecessor_conversation", "predecessor_tool_history", "private_r
 
 def binding(state: dict[str, Any]) -> dict[str, Any]:
     return {**{key: state[key] for key in ("workspace", "root", "run", "revision")},
-            "visit": w.current(state)["id"], "scope_digest": primitives.content_fingerprint(state["scope"])}
+            "visit": w.current(state)["id"], "scope_digest": primitives.content_fingerprint(state["scope"]),
+            **({"task_generation": state["task_generation"]} if "task_generation" in state else {})}
 
 
 def text_body(raw: bytes) -> dict[str, Any]:
@@ -31,7 +33,7 @@ def text_body(raw: bytes) -> dict[str, Any]:
 
 def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[list[dict[str, Any]], list[str], list[str], dict[str, Any]]:
     phase = w.current(state)["phase"]
-    rows: list[dict[str, Any]] = state.get("initial_context_tasks", [])
+    rows = evidence.context_tasks(state)
     accepted: list[dict[str, Any]] = []
     items: list[dict[str, Any]] = []
     semantic = state.get("context_contract") == SEMANTIC_CONTRACT
@@ -40,7 +42,6 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
         packet = visit.get("packet")
         if visit.get("superseded") or visit["decision"] != "approved" or not packet:
             continue
-        rows = packet.get("context", {}).get("tasks", rows)
         accepted.append({"visit": visit["id"], "phase": visit["phase"],
                          "checkpoint": packet["checkpoint"], "evidence_digest": digest(packet)})
         # Preserve the normative predecessor output and referenced artifact bodies,
@@ -80,6 +81,16 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
     if task:
         selected = [row for row in selected if row["id"] == task]
         w.require(selected, "invalid_context", "Task is not part of this current phase.")
+        for dependency in selected[0].get("dependencies", []):
+            result = state.get("task_results", {}).get(dependency)
+            if not result:
+                continue  # Earlier-phase evidence is already supplied above.
+            items.append({"id": "prerequisite/" + dependency, "kind": "prerequisite-result",
+                          "body": {"task": dependency, "result": deepcopy(result)}})
+            for relative in result.get("outputs", result.get("manifest", {})):
+                items.append({"id": "prerequisite-artifact/" + dependency + "/" + relative,
+                              "kind": "prerequisite-artifact",
+                              "body": {"path": relative, **text_body(evidence.read(workspace, relative))}})
     criteria = sorted({c for row in selected for c in evidence.task_criteria(row)}) or state["scope"]["criteria"]
     paths = (sorted({p for row in selected for p in row.get("paths", [])}
                     & set(state["scope"]["paths"][phase])) if selected else state["scope"]["paths"][phase])
@@ -122,14 +133,29 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
 
 
 class Session:
-    def __init__(self, workspace: Path, state: dict[str, Any], task: str | None = None):
+    def __init__(self, workspace: Path, state: dict[str, Any], task: str | None = None, *,
+                 consumer: dict[str, Any] | None = None, snapshot: dict[str, Any] | None = None):
         w.require(state.get("run") and state.get("visits") and not state.get("superseded_by"),
                   "invalid_context", "Context requires the current bound run.")
         self.workspace, self.state = workspace.resolve(), state
         self.store = Store(self.workspace)
         self.binding = binding(state)
         self.phase = w.current(state)["phase"]
-        self.items, task_ids, criteria, metadata = inputs(self.workspace, state, task)
+        if snapshot is None:
+            self.items, task_ids, criteria, metadata = inputs(self.workspace, state, task)
+        else:
+            w.require(snapshot.get("binding") == self.binding and snapshot.get("task") == task,
+                      "invalid_context", "Frozen task inputs belong to another grant revision.")
+            self.items, task_ids, criteria, metadata = deepcopy(snapshot["inputs"])
+        self.frozen = {"binding": deepcopy(self.binding), "task": task,
+                       "inputs": deepcopy([self.items, task_ids, criteria, metadata])}
+        if consumer is not None:
+            w.require(set(consumer) == {"worker_id", "grant_id", "attempt", "task_id", "task_generation"}
+                      and consumer["task_id"] == task and bool(consumer["worker_id"])
+                      and consumer["task_generation"] == state.get("task_generation", 0),
+                      "invalid_context", "Worker context needs its bound consumer identity.")
+            self.binding = {**self.binding, "consumer": deepcopy(consumer)}
+            metadata["authority"] = {**metadata["authority"], "binding": self.binding}
         self.input_refs = {item["id"]: self.store.put(item.get("kind", "input"), item["body"])
                            for item in self.items}
         self.view = view(self.store, self.binding, self.phase, task_ids, criteria,

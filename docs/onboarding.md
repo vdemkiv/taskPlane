@@ -212,3 +212,13 @@ manually invoked hook does not establish the latter two.
 Keep one native dashboard file per workspace and ask the host to focus its existing view. A queued open proves only a linked handoff. Record visibly verified display only after observing the rendered run/visit/revision. Sealed report wording can remain “pending” after acceptance; the dashboard projects the actual checkpoint decisions without rewriting historical evidence.
 
 Use `flow report` storage capacity and `flow diagnose` before recovery. Supported retention preserves inactive history. Retire obsolete work only with the actual user request reference; retirement grants no approval. A package build does not prove hosted Windows/Linux checks or that an existing task loaded a new plugin version.
+
+## Scoped native execution
+
+Native workers use the existing run and accepted task definitions. Root prepares
+grants with observed host capacity, binds actual native identities, and verifies
+joined results before dependent tasks start. Workers claim their own context and
+exact task paths; root phase controls remain separate. There is no default two-worker
+cap. See the [native dispatch protocol](../skills/tp-go/references/codex-native-dispatch.md)
+and [CLI contracts](cli-reference.md). An edited checkout or package build does not
+prove that the host loaded its hooks; verify actual runtime identity before live dispatch.

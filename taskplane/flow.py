@@ -235,8 +235,8 @@ def summarize(rows: list[dict[str, Any]], run: dict[str, Any]) -> dict[str, Any]
         warnings.append("20+ tool calls since reported progress: check the next deliverable and simplify.")
     if repetitions and max(repetitions.values()) >= 4:
         warnings.append("The same action was attempted 4+ times since progress: change approach or report the real blocker.")
-    dispatches = sum(row.get("tool", "").split("__")[-1] in
-                     {"spawn_agent", "Task", "Agent"} for row in tools)
+    from .worker_runtime import SPAWN
+    dispatches = sum(row.get("tool") in SPAWN for row in tools)
     if dispatches >= 6:
         warnings.append("6+ agent dispatches since progress: check whether the reviews justify their cost.")
     if usage.get("total_tokens", 0) >= 100_000 and not milestones:
@@ -255,6 +255,10 @@ def summarize(rows: list[dict[str, Any]], run: dict[str, Any]) -> dict[str, Any]
         "finished_at": next((r.get("at") for r in reversed(unique)
                              if r.get("kind") == "finish"), None),
         "tool_calls": sum(r.get("event") == "PreToolUse" for r in unique),
+        "hook_outcomes": {"attempted": sum(r.get("event") == "PreToolUse" for r in unique),
+                          **{outcome: sum(r.get("outcome") == outcome for r in unique)
+                             for outcome in ("admitted", "denied", "error", "observed")},
+                          "coverage": "approximate" if any(r.get("kind") == "hook" and not r.get("call_id") for r in unique) else "identified"},
         "tokens": dict(usage) if measured else None,
         "token_coverage": {"measured_sessions": measured, "unmeasured_sessions": unmeasured,
                            "basis": "delta between first and latest observed native counters; lower bound"},
@@ -272,9 +276,9 @@ def artifact(workspace: Path, value: str) -> Path:
 
 
 def _controller(workspace: Path, root: str, profile: str = "native_workflow",
-                *, event: dict[str, Any] | None = None) -> workflow_host.Controller:
+                *, event: dict[str, Any] | None = None, principal: str | None = None) -> workflow_host.Controller:
     return workflow_host.Controller(workspace, root,
-        workflow_host.installed_adapter("claude" if claude_session(event or {}) else "codex", profile))
+        workflow_host.installed_adapter("claude" if claude_session(event or {}) else "codex", profile), principal=principal)
 
 
 def usage_point(state: dict[str, Any], measurement: dict[str, Any], *,
@@ -451,7 +455,9 @@ def report(workspace: Path, run_id: str | None = None, *,
     expected += [str(r["child"]) for r in rows if r.get("run") == run["run"] and r.get("child")]
     result["observed_tokens"] = result["tokens"]
     try:
-        result.update(flow_usage.reconcile(run, rows, expected))
+        bound_run = {**run, "worker_sessions": sorted({r['worker_id'] for r in governed.get('workers', {}).values()
+                                                     if r.get('worker_id')})}
+        result.update(flow_usage.reconcile(bound_run, rows, expected))
     except (OSError, ValueError, TypeError, KeyError):
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
     measured_at = datetime.now(timezone.utc).isoformat()
@@ -587,15 +593,19 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
     raise workflow.Refusal("stale_checkpoint", "Dashboard inputs changed during publication; regenerate the selected run.")
 
 
-def _observe_hook(event: dict[str, Any]) -> dict[str, Any]:
+def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: str | None = None) -> dict[str, Any]:
     claude_flow_usage.bind_session(event)
     workspace = Path(event.get("cwd") or os.getcwd())
     rows = read_events(workspace)
     if not rows:
         return {}
     session = session_id(event)
-    observation = counter(event, session)
-    run = active_run(rows, session, observation.get("parent") or event.get("parent_session_id"))
+    try:
+        observation = counter(event, session)
+    except (OSError, ValueError, TypeError, KeyError):
+        observation = {"usage": None, "usage_status": "unavailable"}
+    parent = event.get("parent_session_id") or observation.get("parent") or observed_parent(event, session)
+    run = active_run(rows, session, parent)
     if run is None:
         return {}
     name = str(event.get("hook_event_name") or "unknown")
@@ -604,7 +614,18 @@ def _observe_hook(event: dict[str, Any]) -> dict[str, Any]:
         [tool, event.get("tool_input")], sort_keys=True).encode()).hexdigest()
     row = {"kind": "hook", "run": run["run"], "root": run["session"],
            "session": session, "event": name, "tool": tool, "action": action,
-           "call_id": event.get("tool_use_id") or event.get("call_id"), **observation}
+           "call_id": str(event.get("tool_use_id") or event.get("call_id") or "")[:512] or None,
+           "outcome": outcome, "reason_category": reason,
+           "coverage": "identified" if event.get("tool_use_id") or event.get("call_id") else "approximate",
+           "host_reported_session": event.get("host_reported_session", session),
+           "environment_session": os.environ.get("CODEX_THREAD_ID"),
+           "identity_basis": event.get("identity_basis", "host event/session fallback"),
+           "identity_observation": {k: event[k][:200] for k in ("thread_id", "session_id", "parent_session_id", "agent_id",
+               "subagent_id", "agent_type", "parent_tool_call_id") if isinstance(event.get(k), str)},
+           "binding_observation": event.get("taskplane_observed_binding"),
+           **observation}
+    from .host_capabilities import runtime_identity
+    row['runtime_identity'] = runtime_identity()
     if name in {"SubagentStart", "SubagentStop"} and event.get("agent_id"):
         row["child"] = str(event["agent_id"])[:200]
         if claude_session(event) and event.get("agent_transcript_path"):
@@ -620,14 +641,23 @@ def _observe_hook(event: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def hook(event: dict[str, Any], *,
+def _hook(event: dict[str, Any], *,
          governor: workflow_host.Controller | None = None) -> dict[str, Any]:
     workspace = Path(event.get("cwd") or os.getcwd()).resolve()
     rows, session = read_events(workspace), session_id(event)
     parent = event.get("parent_session_id")
     legacy = active_run(rows, session, parent)
-    controller = governor or _controller(workspace, session, event=event)
+    if governor is None:
+        parent = observed_parent(event, session) or parent
+    if parent:
+        event['parent_session_id'] = parent
+    controller = governor or _controller(workspace, str(parent or session), event=event, principal=session)
     guarded = controller.report()
+    if governor is None and parent and not guarded.get('run'):
+        own = _controller(workspace, session, event=event)
+        own_state = own.report()
+        if own_state.get('run'):
+            controller, guarded = own, own_state
     # A task's own active binding survives a missing journal and takes precedence
     # over ancestry. Only an otherwise unbound child inherits its parent's guard.
     if not guarded.get("run") and governor is None:
@@ -638,10 +668,12 @@ def hook(event: dict[str, Any], *,
                 pass
             legacy = active_run(rows, session, parent)
         if legacy or parent:
-            controller = _controller(workspace, str(legacy["session"] if legacy else parent), event=event)
+            controller = _controller(workspace, str(legacy["session"] if legacy else parent), event=event, principal=session)
             guarded = controller.report()
     name = event.get("hook_event_name")
-    harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" else None
+    event["taskplane_observed_binding"] = {"root": controller.root, "principal": controller.principal,
+                                           "profile": controller.adapter.profile}
+    harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" and controller.principal == controller.root else None
     selected = workflow_local.execution_entry(event)
     if harness:
         harness.update(hook_observed=True)
@@ -675,6 +707,7 @@ def hook(event: dict[str, Any], *,
     run = guarded.get("run") or (legacy or {}).get("run")
     if guarded.get("workflow_available") and guarded.get("run"):
         controller.observe(event, str(run))
+        guarded = controller.report(str(run))
         if name == "Stop" and not controller.adapter.can_seal(guarded):
             return {"systemMessage": "Taskplane is waiting for process quiescence before sealing. No phase has advanced; unknown host coverage remains explicit."}
     guarded_run = guarded.get("run") or (run if controller.adapter.profile == "protected_host" else None)
@@ -684,7 +717,7 @@ def hook(event: dict[str, Any], *,
         stopped = harness.stop(event, guarded)
         if stopped:
             return stopped
-    if run and name == "UserPromptSubmit":
+    if run and name == "UserPromptSubmit" and controller.principal == controller.root:
         if not guarded.get("workflow_available") or not guarded.get("run"):
             return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
                     "Taskplane approval remains unverified; this prompt does not authorize a workflow transition."}}
@@ -701,19 +734,66 @@ def hook(event: dict[str, Any], *,
             else:
                 return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
                         "Taskplane: record the actual human response with its presented checkpoint and conversation provenance. This prompt alone has not advanced the workflow."}}
-    try:
-        result = _observe_hook(event)
-    except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-        result = {}  # Only optional observations abstain on failure.
+    result: dict[str, Any] = {}
     if harness and harness.read().get("selected") and (selected or name in {"SessionStart", "UserPromptSubmit"}):
         output = result.setdefault("hookSpecificOutput", {"hookEventName": name})
         output["additionalContext"] = harness.guidance(guarded) + " " + output.get("additionalContext", "")
     return result
 
 
+def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = None) -> dict[str, Any]:
+    """Observe all exits, including denials. Optional journaling never grants access."""
+    outcome, reason = "observed", None
+    result: dict[str, Any] = {}
+    try:
+        # Desktop child tool hooks use session_id for the parent and agent_id
+        # for the actor. Lifecycle hooks instead name the child being observed.
+        # Resolve the actor before root exemptions; never guess by recent work.
+        native_session = os.environ.get("CODEX_THREAD_ID")
+        reported = session_id(event)
+        if (governor is None and not claude_session(event)
+                and event.get("hook_event_name") not in {"SubagentStart", "SubagentStop"}):
+            actor = event.get("agent_id")
+            if actor is not None and actor != "":
+                workflow.require(isinstance(actor, str) and 0 < len(actor) <= 200 and actor.strip() == actor,
+                                 "scope_violation", "Invalid native child actor identity.")
+                assert isinstance(actor, str)
+                parent = observed_parent(event, actor)
+                workflow.require(parent and reported in {actor, parent}
+                                 and event.get("parent_session_id") in {None, parent}
+                                 and native_session in {None, reported, actor},
+                                 "scope_violation", "Native child actor needs unambiguous matching lineage.")
+                event = {**event, "host_reported_session": reported, "thread_id": actor,
+                         "parent_session_id": parent, "identity_basis": "host agent_id and matching native lineage"}
+            elif (native_session and native_session != reported
+                    and observed_parent({}, native_session) == reported):
+                event = {**event, "host_reported_session": reported, "thread_id": native_session,
+                         "parent_session_id": reported, "identity_basis": "native environment and matching session lineage"}
+        result = _hook(event, governor=governor)
+        if event.get("hook_event_name") == "PreToolUse":
+            outcome = "admitted"
+        return result
+    except workflow.Refusal as exc:
+        outcome, reason = "denied", exc.reason
+        raise
+    except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+        outcome, reason = "error", "invalid_input_or_state"
+        raise
+    finally:
+        try:
+            advice = _observe_hook(event, outcome=outcome, reason=reason)
+            if advice and outcome != "denied":
+                output = result.setdefault("hookSpecificOutput", {"hookEventName": event.get("hook_event_name")})
+                output["additionalContext"] = (output.get("additionalContext", "") + " " +
+                    advice.get("hookSpecificOutput", {}).get("additionalContext", "")).strip()
+        except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+            pass
+
+
 def run_hook(command: str | None = None, *,
              governor: workflow_host.Controller | None = None) -> int:
     event: dict[str, Any] = {}
+    dispatched = False
     try:
         # A named host command identifies the error contract even if JSON parsing
         # fails. Keep event object-shaped until validation succeeds.
@@ -725,8 +805,14 @@ def run_hook(command: str | None = None, *,
         if command:
             payload["hook_event_name"] = event["hook_event_name"]
         event = payload
+        dispatched = True
         result = hook(event, governor=governor)
     except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
+        if not dispatched:
+            try:
+                _observe_hook(event, outcome="error", reason="malformed_hook_input")
+            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                pass  # Recording failure never replaces the original denial.
         reason = exc.detail if isinstance(exc, workflow.Refusal) else "Taskplane hook input/state is invalid."
         if event.get("hook_event_name") == "PreToolUse":
             result = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -782,7 +868,11 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "context", "retire"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "context", "retire", "worker"])
+    parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
+    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity"])
+    parser.add_argument("--grant", default="")
+    parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")
     parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
     parser.add_argument("--task", help="Current phase task ID for context selection")
     context_read = parser.add_mutually_exclusive_group()
@@ -815,8 +905,14 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     args = parser.parse_args(argv)
-    if any(value is not None for value in (args.task, args.consume, args.read, args.read_required, args.section, args.page)) and args.action != "context":
+    if args.task is not None and args.action not in {"context", "worker"}:
+        parser.error("--task applies to context or worker")
+    if any(value is not None for value in (args.consume, args.read, args.read_required, args.section, args.page)) and args.action != "context":
         parser.error("context selection options apply only to flow context")
+    if args.update_context and (args.action != "attach" or not args.tasks or not args.run):
+        parser.error("--update-context requires attach --tasks and --run")
+    if (args.operation or args.grant or args.worker_json) and args.action != "worker":
+        parser.error("worker options apply only to flow worker")
     if (args.section is not None or args.page is not None) and args.read is None:
         parser.error("--section and --page require --read")
     workspace = Path(args.workspace).resolve()
@@ -849,9 +945,27 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         if args.action in {"report", "attach"}:
             run = next((r for r in reversed(rows) if r.get("kind") == "start"
                         and (r.get("run") == args.run if args.run else r.get("session") == session)), None)
-        controller = governor or _controller(workspace, str(run["session"]) if run else session, args.profile)
+        parent = observed_parent({}, session)
+        controller = governor or _controller(workspace, str(parent or (run["session"] if run else session)), args.profile, principal=session)
         # A protected binding can outlive every workspace projection.
         protected = controller.report()
+        if governor is None and parent and not protected.get('run'):
+            own = _controller(workspace, session, args.profile)
+            own_state = own.report()
+            if own_state.get('run'):
+                controller, protected = own, own_state
+        if controller.principal != controller.root:
+            workflow.require(args.action == "context" or args.action == "worker" and args.operation == "claim",
+                             "scope_violation", "Worker CLI is limited to claim and scoped context.")
+        if args.action == "worker":
+            from .context import encode
+            workflow.require(args.run and args.operation and len((args.worker_json or "{}").encode()) <= 65536,
+                             "invalid_evidence", "Worker operation needs run and operation with bounded JSON.")
+            request = json.loads(args.worker_json or "{}")
+            workflow.require(isinstance(request, dict), "invalid_evidence", "Worker JSON must be an object.")
+            print(encode(controller.worker(args.run, args.operation, revision=args.expected_revision,
+                task=args.task or "", grant=args.grant, request=request)).decode("utf-8"))
+            return 0
         if args.action == "context":
             from .context import encode
             context_result = controller.context(args.run, task=args.task, consume=args.consume,
@@ -965,6 +1079,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         elif args.action in {"progress", "attach"}:
             workflow.require(run, "state_unavailable", "No run to attach observations to.")
             assert run is not None
+            if args.update_context:
+                controller.update_tasks(args.run, args.expected_revision, args.tasks)
             if args.action == "progress" and args.phase:
                 current_phase = protected.get("phase") or summarize(rows, run)["phase"]
                 if args.phase != current_phase:
@@ -984,6 +1100,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
                 observation_errors.append("Action committed; phase boundary observation unavailable.")
         result = report(workspace, str(run["run"]) if run else args.run, governor=controller)
+        if result and args.action == "attach" and args.tasks:
+            result["task_context_update"] = ("published run-bound definitions" if args.update_context else
+                "Observational attachment only. Publish definitions with attach --tasks FILE --update-context --run RUN --expected-revision N.")
         if result:
             result["evidence_errors"].extend(observation_errors)
         if result and run and args.action != "report":
