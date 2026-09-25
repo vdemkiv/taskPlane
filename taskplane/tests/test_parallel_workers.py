@@ -58,3 +58,71 @@ def test_root_prerequisite_fingerprints_are_rechecked_before_native_launch(tmp_p
     item=reserve(c,s,'T1')
     (tmp_path/'T0.md').write_text('changed after verification')
     with pytest.raises(w.Refusal,match='prerequisites changed'):launch(c,s,item)
+
+
+@pytest.mark.parametrize('change', ['edit', 'delete', 'legacy'])
+def test_root_declared_source_freshness_matches_native_results(tmp_path, change):
+    import json
+    c, s = setup(tmp_path, count=1, scoped_input=True)
+    rows = json.loads((tmp_path/'tasks.json').read_text())
+    rows['tasks'][0]['owner'] = 'root'
+    (tmp_path/'.taskplane/root-tasks.json').write_text(json.dumps(rows))
+    s = c.update_tasks(s['run'], s['revision'], '.taskplane/root-tasks.json')
+    (tmp_path/'T0.md').write_text('unchanged verification report')
+    c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', request=dict(
+        outputs=['T0.md'], checks=[dict(name='inspection',status='pass',evidence='T0.md')]))
+    assert wr.result_valid(tmp_path, c.report(), 'T0')
+    item = reserve(c, s, 'DEP')
+    state = c.report()
+    if change == 'legacy':
+        state['task_results']['T0'].pop('input_contract', None)
+        assert not wr.result_valid(tmp_path, state, 'T0')
+        return
+    # The prepared reader must be joined before the authorized source edit.
+    c.worker(s['run'], 'abandon', revision=s['revision'], grant=item['grant']['grant_id'])
+    c.guard(dict(tool_name='Write', tool_input={'path':'input.py'}), s['run'])
+    if change == 'edit': (tmp_path/'input.py').write_text('value = 2\n')
+    else: (tmp_path/'input.py').unlink()
+    assert not wr.result_valid(tmp_path, c.report(), 'T0')
+    with pytest.raises(w.Refusal, match='prerequisites'): reserve(c, s, 'DEP')
+    # Preserve the real prepared attempt in the pre-edit snapshot to exercise launch recheck.
+    row = item['grant']
+    with pytest.raises(w.Refusal, match='prerequisites changed'):
+        wr.admit(state, dict(tool_name='spawn_agent', call_id='after-drift',
+            tool_input=dict(task_name=row['task_name'], message=item['message'], fork_turns='none')))
+
+
+@pytest.mark.parametrize('owned', [False, True])
+def test_root_empty_and_owned_input_manifests_are_current(tmp_path, owned):
+    import json
+    c, s = setup(tmp_path, count=1, scoped_input=True)
+    rows = json.loads((tmp_path/'tasks.json').read_text())
+    rows['tasks'][0]['owner'] = 'root'
+    if owned: rows['tasks'][0]['paths'].append('input.py')
+    else: (tmp_path/'input.py').unlink()
+    (tmp_path/'.taskplane/root-tasks.json').write_text(json.dumps(rows))
+    s = c.update_tasks(s['run'], s['revision'], '.taskplane/root-tasks.json')
+    (tmp_path/'T0.md').write_text('root output')
+    result = c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', request=dict(
+        outputs=['T0.md'], checks=[dict(name='inspect',status='pass',evidence='T0.md')]))
+    assert result['input_manifest'] == {} and result['input_contract'] == 'declared-source/v1'
+    assert wr.result_valid(tmp_path, c.report(), 'T0')
+    assert reserve(c, s, 'DEP')['grant']['state'] == 'prepared'
+
+
+def test_root_source_drift_invalidates_transitive_accepted_dependents(tmp_path):
+    import json
+    c, s = setup(tmp_path, count=1, scoped_input=True)
+    rows = json.loads((tmp_path/'tasks.json').read_text())
+    for row in rows['tasks']: row['owner'] = 'root'
+    (tmp_path/'.taskplane/root-tasks.json').write_text(json.dumps(rows))
+    s = c.update_tasks(s['run'], s['revision'], '.taskplane/root-tasks.json')
+    for task in ['T0', 'DEP']:
+        (tmp_path/(task+'.md')).write_text('unchanged output')
+        c.worker(s['run'], 'accept-result', revision=s['revision'], task=task, request=dict(
+            outputs=[task+'.md'], checks=[dict(name='inspect',status='pass',evidence=task+'.md')]))
+    assert wr.result_valid(tmp_path, c.report(), 'DEP')
+    c.guard(dict(tool_name='Write', tool_input={'path':'input.py'}), s['run'])
+    (tmp_path/'input.py').write_text('value = 2\n')
+    assert not wr.result_valid(tmp_path, c.report(), 'T0')
+    assert not wr.result_valid(tmp_path, c.report(), 'DEP')

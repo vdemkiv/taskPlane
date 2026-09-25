@@ -47,6 +47,8 @@ def visit(phase: str) -> dict[str, Any]:
 
 def validate_scope(scope: dict[str, Any]) -> None:
     require(isinstance(scope, dict), "invalid_evidence", "Scope must be an object.")
+    require(scope.get("execution_contract") in (None, "native-default/v1"),
+            "invalid_evidence", "Unknown execution contract.")
     criteria = scope.get("criteria")
     require(isinstance(criteria, list) and criteria and
             all(isinstance(c, str) and c.strip() for c in criteria) and len(set(criteria)) == len(criteria),

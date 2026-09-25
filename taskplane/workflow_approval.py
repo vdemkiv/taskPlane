@@ -126,7 +126,33 @@ def affirmative_consent(excerpt: str) -> bool:
     """
     text = decision_text(excerpt)
     text = re.sub(r'^\s*(?:\[@taskplane\]\(plugin://[^)]+\)|@taskplane)\s*', '', text)
-    if '?' in text:
+    if '?' in excerpt or re.search(r'\b(?:if|unless|until|when|once|provided|assuming|hypothetically|maybe|perhaps|subject to|as long as)\b', excerpt.casefold()):
+        return False
+    # A required check can qualify autonomy; a future human decision cannot.
+    # Inspect the whole instruction so an affirmative prefix cannot hide a later
+    # request to wait, including a separate sentence or quoted qualification.
+    decision_action = (r'(?:approv(?:e[sd]?|ing|al)|confirm(?:s|ed|ing|ation)?'
+                       r'|authori[sz](?:e[sd]?|ing|ation)|consent(?:s|ed|ing)?)')
+    human_decision = (r'\b(?:(?:i|we|you|the (?:user|reviewer))\s+'
+                      r'(?:(?:have|has|had|will|explicitly|manually)\s+)*' + decision_action +
+                      r'|(?:my|our|your|human|user|manual|reviewer(?:\'s)?)\s+'
+                      r'(?:approval|confirmation|authorization|consent))\b')
+    original = excerpt.casefold().replace("’", "'")
+    # A human decision can also be the subject of a requirement: "my approval
+    # is required" or "with my approval required first". Keep the predicate
+    # explicit so "my approval is not required" does not create a requirement.
+    human_requirement = (human_decision + r'\s+'
+                         r'(?:(?:is|remains|will be|must be)\s+)?(?:still\s+)?'
+                         r'(?:required|needed|necessary|mandatory)\b')
+    # Punctuation is not a reliable end to a qualification (for example Dr.,
+    # or a condition continued after a semicolon/newline). Scan the original
+    # instruction through its end before considering any affirmative prefix.
+    # Checks passing and named phase stops alone contain no decision action.
+    if (re.search(r'\b(?:after|before)\b[\s\S]*\b' + decision_action + r'\b', original)
+            or re.search(r'\b(?:wait|await|ask|pending)\b'
+                         r'[\s\S]*\b' + decision_action + r'\b', original)
+            or re.search(r'\b(?:require|need|obtain|get)\b[\s\S]*' + human_decision, original)
+            or re.search(human_requirement, original)):
         return False
     clauses = [re.sub(r'\s+', ' ', clause).strip() for clause in re.split(r'[.;!]', text)]
     approval_term = r'\b(?:auto[ -]?approv\w*|automatic\w*\s+(?:phase\s+)?approv\w*|autonomous)\b'
@@ -149,12 +175,12 @@ def affirmative_consent(excerpt: str) -> bool:
     direct = prefix + actor + verb + target
     request = prefix + r'(?:(?:i (?:want|need|would like)(?: you)? to|you may)\s+)?'
     workflow = (request + r'(?:start|run|execute|proceed with)\s+(?:an?\s+|the\s+|this\s+)?'
-                r'(?:full\s+)?(?:auto[ -]?approved|automatically approved|autonomous)\s+'
+                r'(?:(?:full|end[ -]to[ -]end)\s+)?(?:auto[ -]?approved|automatically approved|autonomous)\s+'
                 r'(?:full\s+)?(?:workflow|flow|run|delivery)\b')
     automatic_phases = request + r'(?:run|execute)\s+(?:all\s+)?(?:release\s+)?phases\s+automatically\b'
     end_to_end = (request + r'(?:use\s+[^.;!]{1,512}\s+as (?:an? )?input and\s+)?'
-                  r'(?:start|run|execute)\s+(?:an?\s+|the\s+)?(?:end[ -]to[ -]end|full)\s+'
-                  r'(?:flow|workflow|delivery)\s+with\s+auto[ -]?approval\b')
+                  r'(?:start|run|execute|proceed with)\s+(?:an?\s+|the\s+)?(?:(?:full\s+)?end[ -]to[ -]end|full)\s+'
+                  r'(?:flow|workflow|delivery)\s+with\s+auto[ -]?approv(?:al|e)\b')
     return any(re.search(pattern, clause) is not None for clause in clauses
                for pattern in (direct, workflow, automatic_phases, end_to_end))
 

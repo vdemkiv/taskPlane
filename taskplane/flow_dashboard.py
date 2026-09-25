@@ -280,9 +280,12 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         limit = (workers.get('capacity') or {}).get('effective_limit')
         plan += '<h3>Native worker execution</h3><p>Available execution limit: '+_e(limit if limit is not None else 'Unknown')+' · Pending '+_e(workers.get('pending',0))+' · Live '+_e(workers.get('live',0))+' · Accepted results '+_e(workers.get('accepted',0))+'.</p>'
         plan += '<p class="muted">Concurrency follows ready work and observed capacity. Two workers is the minimum live acceptance test, not a default limit. Status observations are separate from verified task results.</p>'
-        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Native identity</th><th>Attempt</th><th>State</th></tr></thead><tbody>'
+        counts, cost = workers.get('counts', {}), workers.get('context_cost', {})
+        plan += '<p>Reserved '+_e(counts.get('reserved', 'Unknown'))+' · Started '+_e(counts.get('launched', 'Unknown'))+' · Retries '+_e(counts.get('retries', 'Unknown'))+' · Failed '+_e(counts.get('failed', 'Unknown'))+'.</p>'
+        plan += '<p>Context delivered: '+_e(cost.get('returned_bytes', 'Unknown'))+' bytes in '+_e(cost.get('responses', 'Unknown'))+' responses. '+_e(cost.get('unknown_attempts', 'Unknown'))+' attempts have no delivery measurement. These are context bytes, not tokens or Codex allowance.</p>'
+        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Native identity</th><th>Attempt</th><th>State</th><th>Purpose</th><th>Retry reason</th><th>Startup</th></tr></thead><tbody>'
         for worker in workers.get('attempts',[]):
-            plan += '<tr>'+''.join('<td>'+_e(worker.get(k) or 'Unknown')+'</td>' for k in ('task_id','worker_id','attempt','state'))+'</tr>'
+            plan += '<tr>'+''.join('<td>'+_e(worker.get(k) or 'Unknown')+'</td>' for k in ('task_id','worker_id','attempt','state','purpose','retry_reason'))+'<td>'+_e((worker.get('readiness') or {}).get('status', 'Unknown'))+'</td></tr>'
         plan += '</tbody></table></div>'
         plan += '<details><summary>Ready tasks and waiting reasons</summary><pre>'+_e(json.dumps(workers.get('scheduling',[]),indent=2))+'</pre></details>'
     outcomes = m.get('hook_outcomes')
@@ -307,13 +310,25 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
     session_map = {identity:s for s in m.get('sessions',[])
                    for identity in (s['agent'], s.get('session')) if identity}
     lenses = '<section id="lenses"><div class="section-head"><h2>04 / Lens reviews</h2><span class="muted">Native reviewers and their evidence</span></div><div class="review-grid">'
+    coverage_labels = {"native_verified": "Independent review verified", "serial_scope": "Serial review",
+                       "unavailable": "Native workers unavailable", "native_pending": "Independent review pending",
+                       "legacy_unverified": "Independent coverage unverified"}
+    for lens_record in m.get("review_coverage", []):
+        label = coverage_labels.get(lens_record.get("status"), "Independent coverage unverified")
+        lenses += '<article class="review"><h3>'+_e(lens_record.get("lens"))+'</h3><p>'+_e(label)+' · '+_e(lens_record.get("reviewer") or "No verified reviewer")+'</p>'
+        lenses += '<details><summary>Review evidence</summary><p>Task '+_e(lens_record.get("task_id"))+' · Grant '+_e(lens_record.get("grant") or "None")+'</p>'
+        lenses += '<p>'+_e(lens_record.get("rationale") or "")+' '+_e(lens_record.get("reference") or lens_record.get("execution_reference") or "")+'</p>'
+        for output_path in lens_record.get("outputs", []):
+            lenses += _evidence(ws, output_path, m)
+        lenses += '</details></article>'
     for r in reviews:
         session = session_map.get(r.get('agent'),{})
         lenses += f'<article class="review"><div class="topline"><h3>{_e(r.get("lens","Review"))}</h3><span class="pill">{_e(r.get("phase","review"))}</span></div><p class="muted">{_e(r.get("agent"))}</p><p>{_number((session.get("usage") or {}).get("total_tokens"))} tokens · {_e(session.get("status","unavailable"))}</p>'
+        lenses += '<p class="muted">'+_e(coverage_labels.get(r.get('coverage_status'), 'Independent coverage unverified'))+'</p>'
         if r.get('evidence'):
             lenses += f'<details><summary>Review findings and disposition</summary>{_evidence(ws,r["evidence"],m)}</details>'
         lenses += '</article>'
-    lenses += '</div>' + ('<p class="muted">No review index attached to this run.</p>' if not reviews else '') + '</section>'
+    lenses += '</div>' + ('<p class="muted">No review index attached to this run.</p>' if not reviews and not m.get('review_coverage') else '') + '</section>'
     tokens = '<section id="telemetry"><div class="section-head"><h2>05 / Token usage</h2><span class="muted">Native counters · no token gate</span></div>'
     tokens += f'<p class="muted">{_e(coverage.get("basis"))}</p><p>{_number(coverage.get("measured_sessions"))} measured · {_number(coverage.get("unmeasured_sessions"))} unmeasured · {_number(coverage.get("partial_sessions"))} partial sessions</p>'
     tokens += usage_details(m)

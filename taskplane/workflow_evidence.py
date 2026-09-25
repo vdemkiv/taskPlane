@@ -107,11 +107,38 @@ def task_criteria(task: dict[str, Any]) -> list[str]:
     return list(ids)
 
 
+def execution_fields(rows: list[dict[str, Any]], *, required: bool = False,
+                     phase: str | None = None, root: str | None = None) -> None:
+    lenses: set[str] = set()
+    for row in rows:
+        mode = row.get("execution")
+        w.require(mode in ("native_required", "root") or not required and "execution" not in row,
+                  "invalid_evidence", f"Task {row.get('id')} needs valid execution metadata.")
+        if mode == "root":
+            w.require(all(isinstance(row.get(key), str) and row[key].strip()
+                          for key in ("execution_reason", "execution_reference")),
+                      "invalid_evidence", "Root execution needs its reason and exception reference.")
+            if root is not None:
+                w.require(row.get("owner") in {"root", root}, "invalid_evidence",
+                          "Root execution conflicts with native ownership.")
+        else:
+            w.require(not any(key in row for key in ("execution_reason", "execution_reference")),
+                      "invalid_evidence", "Root execution exception conflicts with native or untyped execution.")
+        if "review_lens" in row:
+            lens = row["review_lens"]
+            w.require(isinstance(lens, str) and lens.strip() and lens not in lenses
+                      and mode in {"native_required", "root"}
+                      and (row.get("phase", phase) in (None, "engineering")), "invalid_evidence",
+                      "Each review_lens needs one typed Engineering task and unique lens ID.")
+            lenses.add(lens)
+
+
 def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
     tasks = data.get("tasks")
     w.require(isinstance(tasks, list) and tasks and all(isinstance(t, dict) for t in tasks),
               "invalid_evidence", "A shared task decomposition is required.")
     assert isinstance(tasks, list)
+    execution_fields(tasks)
     index: dict[str, dict[str, Any]] = {}
     covered: set[str] = set()
     for t in tasks:
@@ -122,6 +149,17 @@ def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
                   "invalid_evidence", f"Task {key} needs prerequisite IDs.")
         w.require(isinstance(t.get("paths"), list) and all(isinstance(p, str) for p in t["paths"]),
                   "invalid_evidence", f"Task {key} needs declared paths.")
+        for field in ("read_inputs", "readiness_after"):
+            if field in t:
+                value = t[field]
+                w.require(isinstance(value, list) and all(isinstance(p, str) and p for p in value)
+                          and len(value) == len(set(value)), "invalid_evidence", f"Task {key} has invalid {field}.")
+        if "context_budget_bytes" in t:
+            w.require(type(t["context_budget_bytes"]) is int and 16384 <= t["context_budget_bytes"] <= 1048576,
+                      "invalid_evidence", "Task context budget must be between 16 KiB and 1 MiB.")
+        if "purpose" in t:
+            w.require(isinstance(t["purpose"], str) and 0 < len(t["purpose"].strip()) <= 512,
+                      "invalid_evidence", "Task purpose must be a short nonempty description.")
         covered.update(task_criteria(t))
         index[key] = t
     visiting: set[str] = set()
@@ -132,7 +170,11 @@ def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
         if key in visited:
             return
         visiting.add(key)
-        for dep in index[key]["dependencies"]:
+        for dep in [*index[key]["dependencies"], *index[key].get("readiness_after", [])]:
+            if dep in index[key].get("readiness_after", []):
+                w.require(dep in index and index[dep].get("phase") == index[key].get("phase")
+                          and index[dep].get("execution") != "root", "invalid_evidence",
+                          "Readiness must name a native task in the same phase.")
             walk(dep)
         visiting.remove(key)
         visited.add(key)
@@ -161,10 +203,21 @@ def context_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
     return list(rows)
 
 
+def read_inputs(state: dict[str, Any], definition: dict[str, Any]) -> list[str]:
+    """One source-selection contract for delivery, freshness and scheduling.
+
+    Absence retains conservative legacy coverage; an explicit list is frozen
+    task authority. Owned paths are added by the consumer, never read dependencies.
+    """
+    return list(definition.get("read_inputs", state["scope"].get("verification_inputs", [])))
+
+
 def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate an explicit run-bound publication without consulting global files."""
     from copy import deepcopy
     rows = task_dag(data, state["scope"]["criteria"])
+    execution_fields(rows, required=state["scope"].get("execution_contract") == "native-default/v1",
+                     phase=w.current(state)["phase"], root=state["root"])
     for row in rows:
         phase = row.get("phase", w.current(state)["phase"])
         w.require(phase in state["scope"]["paths"], "invalid_evidence", "Unknown task phase.")
@@ -173,6 +226,12 @@ def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> lis
                   "scope_violation", "Task publication exceeds accepted paths or criteria.")
         for relative in row["paths"]:
             path(root, relative)
+        allowed_reads = set(state["scope"].get("verification_inputs", [])) | set(state["scope"]["paths"].get("build", []))
+        if "read_inputs" in row:
+            w.require(set(row["read_inputs"]) <= allowed_reads, "scope_violation",
+                      "Task read inputs must be declared run verification or Build paths.")
+            for relative in row["read_inputs"]:
+                path(root, relative)
     if w.current(state)["phase"] == "build":
         approved = w.accepted_plan(state)["packet"]["output"]["task_dag"]
         w.require(task_definitions(rows) == task_definitions(approved), "invalid_evidence",
@@ -201,6 +260,69 @@ def build_task_map(state: dict[str, Any], tasks: list[dict[str, Any]], value: An
                   "invalid_evidence", "Build map must name approved Build tasks associated with that criterion.")
 
 
+def native_lens_conflicts(tasks: list[dict[str, Any]], results: dict[str, Any]) -> set[str]:
+    """Find all selected lens tasks sharing one actual accepted reviewer."""
+    reviewers: dict[str, list[str]] = {}
+    for row in tasks:
+        if row.get("execution") == "native_required" and row.get("review_lens"):
+            reviewer = results.get(row["id"], {}).get("worker_id")
+            if reviewer:
+                reviewers.setdefault(reviewer, []).append(row["id"])
+    return {task_id for group in reviewers.values() if len(group) > 1 for task_id in group}
+
+
+def execution_evidence(root: Path, state: dict[str, Any], tasks: list[dict[str, Any]],
+                       output: dict[str, Any]) -> list[str]:
+    """Frozen execution requirements must be discharged by actual current results."""
+    from . import worker_runtime as workers
+    frozen = context_tasks(state)
+    contracted = state["scope"].get("execution_contract") == "native-default/v1"
+    typed = any("execution" in row or "review_lens" in row for row in [*tasks, *frozen])
+    if not contracted and not typed:
+        return []  # Historical untyped evidence has no invented native requirement.
+    execution_fields(tasks, required=contracted, phase=w.current(state)["phase"], root=state["root"])
+    w.require(task_definitions(tasks) == task_definitions(frozen), "invalid_evidence",
+              "Execution task definitions must match the published frozen context.")
+    phase = w.current(state)["phase"]
+    selected = [row for row in frozen if row.get("phase", phase) == phase]
+    files: list[str] = []
+    for row in selected:
+        if row.get("execution") == "native_required":
+            capacity = state.get("worker_capacity", {})
+            reason = " Native unavailable: " + str(capacity.get("reason")) if capacity.get("status") == "unavailable" else ""
+            result = state.get("task_results", {}).get(row["id"], {})
+            w.require(workers.native_result_valid(root, state, row["id"], result)
+                      and workers.result_valid(root, state, row["id"]), "invalid_evidence",
+                      f"Task {row['id']} needs a fresh accepted native result." + reason)
+            files.extend(state["task_results"][row["id"]]["manifest"])
+    if phase != "engineering":
+        return files
+    lenses = {row["review_lens"]: row for row in selected if "review_lens" in row}
+    coverage = output.get("lens_coverage")
+    w.require(isinstance(coverage, list) and all(isinstance(row, dict) and isinstance(row.get("lens"), str) for row in coverage),
+              "invalid_evidence", "Engineering needs typed lens coverage.")
+    assert isinstance(coverage, list)
+    w.require(len(coverage) == len(lenses) and {row.get("lens") for row in coverage} == set(lenses)
+              and (bool(lenses) or not contracted), "invalid_evidence",
+              "Lens coverage must identify every frozen Engineering lens exactly once.")
+    conflicts = native_lens_conflicts(selected, state.get("task_results", {}))
+    for claim in coverage:
+        row = lenses[claim["lens"]]
+        w.require(claim.get("task_id") == row["id"] and substantive(claim.get("rationale")),
+                  "invalid_evidence", "Lens coverage needs its frozen task and rationale.")
+        if row["execution"] == "native_required":
+            result = state["task_results"][row["id"]]
+            w.require(claim.get("status") == "native_verified"
+                      and claim.get("grant") == result["grant"] and claim.get("reviewer") == result["worker_id"]
+                      and row["id"] not in conflicts, "invalid_evidence",
+                      "Native lens coverage requires the accepted grant and distinct actual worker identities.")
+        else:
+            w.require(claim.get("status") == "serial_scope" and claim.get("reviewer") == state["root"]
+                      and claim.get("execution_reference") == row["execution_reference"] and not claim.get("grant"),
+                      "invalid_evidence", "Serial lens coverage must identify the root and frozen exception reference.")
+    return files
+
+
 def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -> dict[str, Any]:
     valid_scope(root, state["scope"])
     stage = w.current(state)
@@ -221,7 +343,7 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
         from .context_handoff import Session
         Session(root, state).validate(output.get("context_receipt"))
     tasks = task_dag(object_file(root, tasks_path), criteria)
-    files = [output_path]
+    files = [output_path, *execution_evidence(root, state, tasks, output)]
     for t in tasks:
         for p in t["paths"]:
             path(root, p)
@@ -343,6 +465,7 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
         receipt = None
     return {"checkpoint": uuid.uuid4().hex, "phase": phase, "visit": stage["id"],
             "output": output, "manifest": manifest(root, files, task_path=tasks_path),
+            "execution_evidence": "native-results/v1" if any("execution" in row for row in tasks) else None,
             "source_manifest": manifest(root, state["scope"]["paths"]["build"] +
                                         state["scope"].get("verification_inputs", []), allow_missing=True, task_path=tasks_path)
                                if phase in ("build", "evaluate", "engineering") else {},

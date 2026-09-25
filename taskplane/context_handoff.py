@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 from copy import deepcopy
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 import uuid
@@ -18,10 +19,28 @@ EXCLUSIONS = ["predecessor_conversation", "predecessor_tool_history", "private_r
               "secret_values", "executable_approval"]
 
 
+def consumed_inputs(keys: list[str]) -> list[str] | dict[str, Any]:
+    """Bound receipt metadata; the immutable receipt retains every returned root."""
+    if len(keys) <= 64:
+        return keys
+    return {"schema": "taskplane.consumed-inputs/v1", "count": len(keys), "sha256": digest(keys)}
+
+
 def binding(state: dict[str, Any]) -> dict[str, Any]:
     return {**{key: state[key] for key in ("workspace", "root", "run", "revision")},
             "visit": w.current(state)["id"], "scope_digest": primitives.content_fingerprint(state["scope"]),
             **({"task_generation": state["task_generation"]} if "task_generation" in state else {})}
+
+
+def context_action(workspace: Path, run: str, task: str | None = None, *,
+                   operation: str | None = None, key: str | None = None) -> str:
+    """An executable logical command retaining exactly this consumer's selectors."""
+    args = ["flow", "context", "--workspace", str(workspace.resolve()), "--run", run]
+    if task is not None:
+        args += ["--task", task]
+    if operation is not None and key is not None:
+        args += ["--" + operation, key]
+    return shlex.join(args)
 
 
 def text_body(raw: bytes) -> dict[str, Any]:
@@ -71,7 +90,7 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
             # particular artifact required for specific downstream phases.
             declaration: dict[str, Any] = next((a for a in packet["output"].get("artifacts", [])
                                 if a.get("path") == relative), {})
-            required = (not semantic or declaration.get("kind") not in {"verification", "supporting", "raw-log"}
+            required = (not semantic or declaration.get("kind") not in {"verification", "supporting", "raw-log", "source"}
                         or phase in declaration.get("required_for", []))
             items.append({"id": "artifact/" + relative, "kind": "accepted-artifact", "required": required,
                           "body": {"path": relative, **text_body(raw)}})
@@ -98,7 +117,9 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
                     "body": {"goal": state.get("goal", ""), "criteria": criteria, "phase": phase, "paths": paths,
                              "tasks": [{k:v for k,v in row.items() if k not in evidence.TASK_OBSERVATIONS}
                                        for row in selected]}})
-    source_paths = sorted(set(paths) | set(state["scope"].get("verification_inputs", [])))
+    declared_reads = ({p for row in selected for p in evidence.read_inputs(state, row)}
+                      if selected else set(state["scope"].get("verification_inputs", [])))
+    source_paths = sorted(set(paths) | declared_reads)
     for relative in source_paths:
         if relative.startswith(".taskplane/"):
             continue
@@ -113,6 +134,7 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
         if isinstance(value, dict) and (value.get("schema") == "taskplane.phase-output/v1" or "tasks" in value):
             continue  # Avoid making an output/receipt depend on its own bytes.
         items.append({"id": "source/" + relative, "kind": "source", "required": False,
+                      "priority": 0 if any("read_inputs" in row and relative in row["read_inputs"] for row in selected) else 1,
                       "body": {"path": relative, **text_body(raw)}})
     graph = depgraph.load(str(workspace))
     current_graph = bool(graph) and depgraph.source_inputs_current(str(workspace), graph)
@@ -137,7 +159,7 @@ class Session:
                  consumer: dict[str, Any] | None = None, snapshot: dict[str, Any] | None = None):
         w.require(state.get("run") and state.get("visits") and not state.get("superseded_by"),
                   "invalid_context", "Context requires the current bound run.")
-        self.workspace, self.state = workspace.resolve(), state
+        self.workspace, self.state, self.task = workspace.resolve(), state, task
         self.store = Store(self.workspace)
         self.binding = binding(state)
         self.phase = w.current(state)["phase"]
@@ -187,8 +209,21 @@ class Session:
         return {"status": "ready", "contract": self.state.get("context_contract", "legacy"),
                 "source_key": self.view["source_key"],
                 "handoff_ref": self.handoff_ref, "view_ref": self.view_ref,
-                "required_inputs": len(self.required), "phase": self.phase,
-                "next_action": "flow context --consume " + self.handoff_ref["sha256"]}
+                "required_inputs": len(self.required), "phase": self.phase, "preflight": self.preflight(),
+                "next_action": context_action(self.workspace, self.state["run"], self.task,
+                    operation="drain" if self.task and any(row["id"] == self.task and "read_inputs" in row
+                        for row in evidence.context_tasks(self.state)) else "consume", key=self.handoff_ref["sha256"])}
+
+    def preflight(self) -> dict[str, Any]:
+        required = {item["ref"]["sha256"]: item for item in self.required}
+        nodes = set().union(*self.required_trees.values()) if self.required_trees else set()
+        bodies = {self.input_refs[item["id"]]["sha256"]: item["body"] for item in self.items}
+        sizes = sorted(({"id": item["id"], "bytes": len(encode(bodies[key]))} for key, item in required.items()),
+                       key=lambda item: (-item["bytes"], item["id"]))
+        return {"required_roots": len(required), "required_body_bytes": sum(item["bytes"] for item in sizes),
+                "required_pages": sum(self.store.page(key)["pages"] for key in nodes),
+                "supporting_roots": sum(not item.get("required", True) for item in self.items),
+                "largest_required": sizes[:5], "basis": "Unique required bodies; page envelopes add transport cost."}
 
     def ledger(self) -> dict[str, Any]:
         if not self.ledger_path.exists():
@@ -217,9 +252,15 @@ class Session:
             "returned_bytes": ledger["returned_bytes"], "event_id": event_id,
             "status": "returned", "model_attention": "unobservable"}
         response: dict[str, Any] = {**payload, "remaining_required": len(self.required_trees) - len(returned)}
+        if payload.get("schema") == "taskplane.context-drain/v1":
+            response["done"] = response["remaining_required"] == 0
+            response["next_action"] = None
+        if response["remaining_required"]:
+            response["next_action"] = context_action(self.workspace, self.state["run"], self.task,
+                operation="drain" if "done" in response else "read-required", key=self.handoff_ref["sha256"])
         for _ in range(4):
             reference = (self.store.put if persist else self.store.reference)("delivery-receipt", receipt)
-            response["context_receipt"] = {"receipt": reference, "consumed_inputs": returned}
+            response["context_receipt"] = {"receipt": reference, "consumed_inputs": consumed_inputs(returned)}
             total_bytes = ledger["returned_bytes"] + len(encode(response))
             if total_bytes == receipt["returned_bytes"]:
                 break
@@ -270,7 +311,11 @@ class Session:
         w.require(len(encode(response)) <= 16384, "context_overflow", "Read envelope exceeds its page budget.")
         return response
 
-    def read_required(self, key: str) -> dict[str, Any]:
+    def drain(self, key: str) -> dict[str, Any]:
+        """Bound the combined bodies and receipt, not each page independently."""
+        return self.read_required(key, _drain=True)
+
+    def read_required(self, key: str, *, _drain: bool = False) -> dict[str, Any]:
         """Return a bounded prefix of missing required pages, never just their IDs."""
         w.require(key == self.handoff_ref["sha256"], "invalid_context", "Stale or foreign handoff.")
         ledger = self.ledger()
@@ -281,7 +326,9 @@ class Session:
         missing.sort(key=lambda sha: (-len(encode(first_pages[sha])), sha))
         pages: list[dict[str, Any]] = []
         updates: list[tuple[str, int, int]] = []
-        payload = {"schema": "taskplane.context-read-batch/v1", "handoff_ref": self.handoff_ref, "pages": pages}
+        limit = 32768 if _drain else PAGE_LIMIT
+        payload = {"schema": "taskplane.context-drain/v1" if _drain else "taskplane.context-read-batch/v1",
+                   "handoff_ref": self.handoff_ref, "pages": pages}
         # Size the receipt for precisely the candidate pages, not every eventual
         # root. Hash/event values have fixed widths; byte counts are converged by
         # the same serializer as delivery. This never updates the read ledger.
@@ -294,7 +341,7 @@ class Session:
                 page = first if number == 0 else self.store.page(sha, number)
                 candidate, _ = self._preview({**payload, "pages": [*pages, page]}, ledger, set(),
                     [*updates, (sha, number, page["pages"])], event_id="returned/" + "0" * 32)
-                if len(pages) == 64 or len(encode(candidate)) >= PAGE_LIMIT:
+                if len(pages) == 64 or len(encode(candidate)) >= limit:
                     full = True
                     break
                 pages.append(page)
@@ -302,7 +349,7 @@ class Session:
             if full:
                 break
         w.require(not missing or pages, "context_overflow", "No required page fits the batch response budget.")
-        return self._deliver(payload, set(), page_updates=updates, limit=PAGE_LIMIT)
+        return self._deliver(payload, set(), page_updates=updates, limit=limit)
 
     def validate(self, value: Any) -> None:
         w.require(isinstance(value, dict) and isinstance(value.get("receipt"), dict),
@@ -315,7 +362,10 @@ class Session:
                   and value["receipt"]["sha256"] in self.ledger()["receipts"],
                   "invalid_context", "Receipt was not returned for this current handoff.")
         required = sorted({item["ref"]["sha256"] for item in self.required})
-        w.require(receipt.get("returned_refs") == required and value.get("consumed_inputs") == required,
+        # Exact legacy lists remain valid, including receipts issued before this
+        # compact representation. Neither form can replace the bound ledger proof.
+        w.require(receipt.get("returned_refs") == required
+                  and value.get("consumed_inputs") in (required, consumed_inputs(required)),
                   "invalid_context", "Required inherited context has not been returned to the consumer.")
 
 

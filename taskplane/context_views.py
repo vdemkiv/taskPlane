@@ -22,7 +22,7 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
     w.require(phase in PHASE_BYTES, "invalid_context", "Unknown context phase.")
     refs: dict[str, dict[str, Any]] = {}
     bodies: dict[str, Any] = {}
-    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x["id"])):
+    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
         ref = (_prepared_refs[item["id"]] if _prepared_refs is not None
                else store.put(item.get("kind", "input"), item["body"]))
         refs[item["id"]] = ref
@@ -30,7 +30,8 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
     required = [{"id": item["id"], "ref": refs[item["id"]]}
                 for item in inputs if item.get("required", True)]
     required.sort(key=lambda x: x["id"])
-    source_key = digest({"binding": binding, "refs": refs, "authority": authority})
+    source_key = digest({"binding": binding, "refs": refs, "authority": authority,
+                         "delivery": [(item["id"], item.get("required", True), item.get("priority", 1)) for item in inputs]})
     result: dict[str, Any] = {"schema": "taskplane.context-view/v1", "binding": binding,
               "source_key": source_key, "phase": phase,
               "task_ids": collection(store, task_ids, "task-ids", 16),
@@ -41,7 +42,7 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
               "omissions": [], "coverage": coverage,
               "budget": {"limit_bytes": PHASE_BYTES[phase], "overflow": False}}
     inline: dict[str, Any] = {}
-    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x["id"])):
+    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
         key = item["id"]
         # Repeated bodies are referenced once, not repeatedly supplied inline.
         if any(refs[other]["sha256"] == refs[key]["sha256"] for other in inline):

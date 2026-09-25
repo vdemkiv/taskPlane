@@ -10,6 +10,31 @@ Preparation needs `capacity` with `host_slots`, `includes_root`, and an actual
 observed source `reference`. Optional configured/resource limits narrow capacity.
 No default two-worker limit is applied.
 
+New scopes created through the execution skills must declare
+`execution_contract: "native-default/v1"`. Publish every task with
+`execution: "native_required"` or `execution: "root"`; root exceptions require
+`execution_reason` and `execution_reference`. Each selected Engineering lens has
+one unique `review_lens` task and a distinct native worker unless an explicit
+serial scope applies. Typed requirements are enforced even in unmarked existing
+runs. Untyped historical scopes retain their original evidence contract.
+
+All current-phase native-required tasks need fresh accepted joined native results
+before sealing. Engineering `lens_coverage` additionally binds `lens`, `task_id`,
+`reviewer`, `grant`, `status: "native_verified"` and `rationale` to the actual
+accepted attempt. Root exceptions use `status: "serial_scope"`, the actual root
+reviewer and their frozen `execution_reference`. Missing, duplicate, foreign or
+reused reviewer identities refuse. Task progress cannot downgrade frozen execution
+requirements. Capacity may record `status: "unavailable"`, zero effective slots,
+an observed `reason` and `reference`; this reports a blocker, never success.
+
+Claim/context responses emit an exact `next_action`. Prefix only the installed
+runtime launcher; preserve its workspace/run/task arguments and shell quoting.
+Continue with emitted `--read-required HANDOFF_SHA` actions until all required
+bodies are delivered. Root result acceptance captures `input_contract:
+"declared-source/v1"` and declared read-source fingerprints, excluding owned output
+paths; legacy root results require reacceptance before dependency reuse.
+
+
 Result JSON contains `outputs` (task-owned paths) and `checks` (objects with `name`,
 `status: "pass"`, `evidence`). A native result needs a joined attempt, delivered
 worker context, unchanged inputs and no running child command. Root task results
@@ -586,4 +611,42 @@ Native workflow stores retain their 8 MiB limit. Above a 4 MiB watermark, inacti
 
 New native runs use `bounded/v2`: all normative predecessor outputs and report/design/plan artifacts remain required. Verification, raw-log and explicitly supporting bodies remain accessible by bound verified references. Declare `required_for: ["engineering"]` (or other phases) on an artifact to require its full body downstream. Unknown artifact kinds remain required. Existing `bounded/v1` runs retain full inherited-body requirements. Neither contract removes the host conversation or proves attention. Compact summaries expose the current policy digest, conditions, allowed phases and stops for automatic assessments.
 
-Safe diagnostics include plain `ls` with basic listing flags, `date`/`date -u`, and `rg` context/no-ignore options. Shell operators, rg preprocessing/helpers and arbitrary programs remain outside this diagnostic exception. Native worker dispatch remains unsupported by the current cooperative adapter; coverage reports that restriction. Use attributed root review and report the absence of independent review; do not invent a worker or bypass the guard.
+Safe diagnostics include plain `ls` with basic listing flags, `date`/`date -u`, and `rg` context/no-ignore options. Shell operators, rg preprocessing/helpers and arbitrary programs remain outside this diagnostic exception. The cooperative adapter supports scoped native dispatch through the prepare/claim/context/join/result protocol above. Observe loaded capability and record real unavailability; required native tasks cannot be replaced by root labels.
+
+
+## Scoped native delivery controls
+
+For every new native task, declare exact `read_inputs` from the run verification
+inputs or accepted Build paths, a concise `purpose`, and `context_budget_bytes`
+(default 128 KiB of unique required bodies). Include source dependencies and tests
+needed for the conclusion; narrow inputs must not hide a relevant dependency.
+Missing read inputs retain conservative legacy coverage. Inspect preparation's
+`context_preflight` before launch. Declare source/log/test detail artifacts as
+`source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
+reports normative. Use `required_for` when supporting bodies are mandatory.
+
+Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+then observe its successful claim, complete context and matching automatic pre/post
+hook pair before preparing the rest of the cohort. Scoped preparation enforces
+this automatically; `readiness_after` can name an additional same-phase startup
+prerequisite. Release remaining ready work together while the first task works.
+Do not use throwaway probes or relaunch unchanged failures. A repeated scoped
+attempt needs `retry_reason` naming the observed defect or changed input.
+
+Execute the exact returned context action. New scoped workers use `--drain`, which
+returns at most 32 KiB including bodies and receipt. Return every response to the
+consumer, then follow `next_action` only while `remaining_required` is nonzero.
+Terminal responses have `done: true` and no action. Accumulate all subprocess/tool
+chunks until exit before parsing; never parse a running handle's partial output.
+Keep the combined response budget large enough and use bounded long waits (up to
+60 seconds between user updates), not repeated short model-facing polls.
+
+After a narrow repair, repeat affected checks and reviewers only. Unchanged
+scoped results remain fresh within their original binding; across visits use
+independently fingerprinted check evidence and a fresh scoped delta review.
+Never transfer approval, worker identity or a context receipt to another binding.
+Inspect attempt purposes, retry causes and delivered bytes in worker status and
+the dashboard. Delivered bytes, native tokens and Codex allowance are different
+measurements; no allowance saving can be inferred from byte counts alone.
+
+`flow context --drain HANDOFF_SHA` is mutually exclusive with consume/read/read-required. It returns schema `taskplane.context-drain/v1`, pages, receipt, remaining_required, done and next_action (null on completion). Required preflight budgets count unique serialized body bytes; page and receipt overhead is reported separately by actual delivery.

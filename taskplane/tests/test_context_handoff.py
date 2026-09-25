@@ -287,3 +287,79 @@ def test_worker_snapshot_receipt_is_per_attempt_and_stable_during_output_edits(t
     state['revision'] += 1
     with pytest.raises(w.Refusal):
         Session(tmp_path, state, task, consumer=consumer, snapshot=root.frozen)
+
+
+@pytest.mark.parametrize('count', [80, 500])
+def test_drain_returns_all_required_pages_once_with_combined_budget(tmp_path, count):
+    state = many_artifacts(tmp_path, 'bounded/v2', count=count)
+    for artifact in state['visits'][0]['packet']['output']['artifacts']:
+        artifact['required_for'] = ['design']
+    from taskplane import worker_runtime
+    task = dict(id='LARGE', phase='design', owner='native', execution='native_required',
+                paths=['design.json'], read_inputs=[], dependencies=[], criteria=['AC1'],
+                verification=['Read all required context'], purpose='Required root boundary',
+                context_budget_bytes=1024 * 1024)
+    state['scope']['paths']['design'] = ['design.json']
+    state['task_context'] = {'visit': w.current(state)['id'], 'tasks': [task]}
+    grant = worker_runtime.prepare(tmp_path, state, 'LARGE',
+        {'capacity': {'host_slots': 2, 'includes_root': True, 'reference': 'fixture'}})
+    assert grant['context_preflight']['required_roots'] == count + 2
+    session = Session(tmp_path, state, 'LARGE')
+    assert session.preflight()['required_roots'] == count + 2
+    assert session.preflight()['required_body_bytes'] < 1024 * 1024
+    pages = set()
+    for _ in range(100):
+        response = session.drain(session.handoff_ref['sha256'])
+        assert len(encode(response)) <= 32768
+        for page in response['pages']:
+            key = (page['sha256'], page['page'])
+            assert key not in pages
+            pages.add(key)
+        if response['done']:
+            assert response['next_action'] is None
+            session.validate(response['context_receipt'])
+            break
+        assert response['pages'] and '--drain ' in response['next_action']
+        with pytest.raises(w.Refusal):
+            session.validate(response['context_receipt'])
+    else:
+        pytest.fail('drain made no bounded progress')
+    assert pages
+    terminal = session.drain(session.handoff_ref['sha256'])
+    assert terminal['pages'] == [] and terminal['done'] and terminal['next_action'] is None
+    assert len(encode(terminal)) < 32768
+    session.validate(terminal['context_receipt'])
+    compact = terminal['context_receipt']['consumed_inputs']
+    assert compact['count'] == count + 2
+    for key, value in [('count', 1), ('sha256', '0' * 64)]:
+        forged = deepcopy(terminal['context_receipt'])
+        forged['consumed_inputs'][key] = value
+        with pytest.raises(w.Refusal):
+            session.validate(forged)
+    # Previously issued exact-list receipts remain compatible, while a partial
+    # list or a complete summary attached to a partial receipt cannot pass.
+    exact = session.store.resolve(terminal['context_receipt']['receipt'])['returned_refs']
+    session.validate({**terminal['context_receipt'], 'consumed_inputs': exact})
+    with pytest.raises(w.Refusal):
+        session.validate({**terminal['context_receipt'], 'consumed_inputs': exact[:-1]})
+    assert len(encode(session.read(exact[0]))) < 16384
+
+
+def test_large_required_receipt_stays_bounded_with_legacy_reads(tmp_path):
+    session = Session(tmp_path, many_artifacts(tmp_path, count=500))
+    receipt, responses = consume_required(session)
+    session.validate(receipt)
+    assert receipt['consumed_inputs']['count'] == 502
+    assert all(len(encode(r)) < (32768 if 'view' in r else 16384) for r in responses)
+
+
+def test_explicit_source_artifact_support_and_required_override(tmp_path):
+    state = many_artifacts(tmp_path, 'bounded/v2', count=2)
+    artifact = state['visits'][0]['packet']['output']['artifacts'][0]
+    artifact['kind'] = 'source'
+    optional = Session(tmp_path, state)
+    assert not next(i for i in optional.items if i['id'] == 'artifact/' + artifact['path'])['required']
+    artifact['required_for'] = ['design']
+    required = Session(tmp_path, state)
+    assert next(i for i in required.items if i['id'] == 'artifact/' + artifact['path'])['required']
+    assert optional.view['source_key'] != required.view['source_key']

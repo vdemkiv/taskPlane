@@ -80,6 +80,166 @@ def test_explicit_automatic_workflow_language(text):
 
 
 @pytest.mark.parametrize('text', [
+    'proceed with end to end auto-approved flow to fix all',
+    'Please proceed with end-to-end auto-approved workflow to fix all.',
+    'run full end to end flow with auto-approve',
+])
+def test_rca_automatic_workflow_word_order(text):
+    assert approval.affirmative_consent(text)
+
+
+@pytest.mark.parametrize('text', [
+    'Do not proceed with end to end auto-approved flow to fix all',
+    'proceed with end to end auto-approved flow if I approve later',
+    '"proceed with end to end auto-approved flow to fix all"',
+    'Example: proceed with end to end auto-approved flow to fix all',
+    'proceed with end to end auto-approved flow. Keep manual approval.',
+    'proceed with end to end auto-approved flow unless tests fail',
+])
+def test_rca_automatic_wording_does_not_hide_nonconsent(text):
+    assert not approval.affirmative_consent(text)
+
+
+@pytest.mark.parametrize('text', [
+    'proceed with end to end auto-approved flow after I approve it',
+    'proceed with end to end auto-approved flow, but wait for my approval before proceeding',
+    'Auto-approve all phases. Wait for my approval before proceeding.',
+    'Auto-approve all phases after our approval.',
+    'Auto-approve all phases before the reviewer confirms. Wait for approval.',
+    'Auto-approve all phases. "Wait for my approval" is required.',
+    'Auto-approve all phases after\nI have approved it.',
+    'Auto-approve all phases. Wait for\nmy approval.',
+])
+def test_future_human_decision_prevents_automatic_authorization(tmp_path, text):
+    assert not approval.affirmative_consent(text)
+    c, s = setup(tmp_path)
+    request = authorization(s)
+    request['excerpt'] = text
+    with pytest.raises(w.Refusal, match='intent is unclear'):
+        set_policy(c, s, request)
+    assert not c.report().get('approval_policy')
+
+
+@pytest.mark.parametrize('position', ['after', 'before'])
+@pytest.mark.parametrize('qualification', [
+    'the reviewer approves', 'the user confirms', 'the reviewer authorizes',
+    'I have approved it', 'the reviewer has confirmed', 'we have authorized it',
+    'Jane has approved it', 'approval is granted', 'the reviewer gives consent',
+])
+def test_temporal_decision_forms_cannot_enable_policy(tmp_path, position, qualification):
+    # Each case stands alone; no separate wait clause may mask its failure.
+    text = f'Auto-approve all phases {position} {qualification}.'
+    assert not approval.affirmative_consent(text)
+    c, s = setup(tmp_path)
+    before = deepcopy(s)
+    request = authorization(s)
+    request['excerpt'] = text
+    with pytest.raises(w.Refusal, match='intent is unclear'):
+        set_policy(c, s, request)
+    assert s == before
+    assert not c.report().get('approval_policy')
+    assert not c.report()['decisions']
+
+
+@pytest.mark.parametrize('text', [
+    'Auto-approve all phases after required checks pass.',
+    'Auto-approve all phases after required checks pass. Stop before Retro.',
+    'Now I need to run full workflow with auto-approval.',
+    'proceed with end to end auto-approved flow to fix all',
+    'Auto-approve all phases. Stop before Retro.',
+    'Auto-approve all phases. My approval is not required.',
+    'Auto-approve all phases. Our approval is no longer required.',
+    'Auto-approve all phases. Your confirmation is not necessary.',
+])
+def test_check_qualifications_and_phase_stops_keep_explicit_consent(tmp_path, text):
+    assert approval.affirmative_consent(text)
+    c, s = setup(tmp_path)
+    request = authorization(s)
+    request['excerpt'] = text
+    if 'Stop before Retro' in text:
+        request['stop_phases'] = ['retro']
+    request['conditions'] = [{'id': 'tests', 'kind': 'required_check',
+                              'instruction': 'Required checks must pass.', 'check': 'tests'}]
+    accepted = set_policy(c, s, request)
+    policy = accepted['approval_policy']
+    assert policy['provenance']['excerpt'] == text
+    assert policy['provenance']['source'] == request['source']
+    assert policy['conditions'][1:] == request['conditions']
+    assert policy['stop_phases'] == request['stop_phases']
+    assert not accepted['decisions']
+
+
+@pytest.mark.parametrize('separator', ['.', ';', '!'])
+@pytest.mark.parametrize('qualification', [
+    ' after Dr{separator} Jane has approved it.',
+    ' before Dr{separator} Jane confirms.',
+    ' after{separator}\napproval is granted.',
+    '. Wait for Dr{separator} Jane to approve.',
+    '. Await{separator} the reviewer confirmation.',
+    '. Ask Dr{separator} Jane for authorization.',
+    '. Pending{separator}\nour approval.',
+    '. Obtain{separator}\nmy approval before proceeding.',
+    '. We need{separator}\nmy approval before proceeding.',
+])
+def test_punctuation_cannot_discard_human_conditions(tmp_path, separator, qualification):
+    text = 'Auto-approve all phases' + qualification.format(separator=separator)
+    assert not approval.affirmative_consent(text)
+    c, s = setup(tmp_path)
+    before = deepcopy(s)
+    request = authorization(s)
+    request['excerpt'] = text
+    original_request = deepcopy(request)
+    with pytest.raises(w.Refusal, match='intent is unclear'):
+        set_policy(c, s, request)
+    assert s == before and request == original_request
+    assert not c.report().get('approval_policy')
+    assert not c.report()['decisions']
+
+
+@pytest.mark.parametrize('possessive', ['my', 'our', 'your'])
+@pytest.mark.parametrize('separator', ['. ', '\n'])
+@pytest.mark.parametrize('qualification', [
+    '{possessive} approval is required before proceeding.',
+    'With {possessive} approval required first.',
+])
+def test_subject_first_human_requirement_refuses_policy(tmp_path, possessive, separator, qualification):
+    text = 'Auto-approve all phases' + separator + qualification.format(possessive=possessive)
+    assert not approval.affirmative_consent(text)
+    c, s = setup(tmp_path)
+    before = deepcopy(s)
+    request = authorization(s)
+    request['excerpt'] = text
+    original_request = deepcopy(request)
+    with pytest.raises(w.Refusal, match='intent is unclear'):
+        set_policy(c, s, request)
+    assert s == before and request == original_request
+    assert not c.report().get('approval_policy')
+    assert not c.report()['decisions']
+
+
+@pytest.mark.parametrize('text', [
+    'proceed with end to end auto-approved flow to fix all. My approval is required before proceeding.',
+    'Auto-approve all phases, with my approval required first.',
+    'Auto-approve all phases. Our confirmation remains necessary.',
+    'Auto-approve all phases. Your authorization will be required.',
+    'Auto-approve all phases. My consent is still needed.',
+    'Auto-approve all phases. Reviewer approval must be mandatory.',
+])
+def test_subject_first_requirement_forms_preserve_state(tmp_path, text):
+    assert not approval.affirmative_consent(text)
+    c, s = setup(tmp_path)
+    before = deepcopy(s)
+    request = authorization(s)
+    request['excerpt'] = text
+    original_request = deepcopy(request)
+    with pytest.raises(w.Refusal, match='intent is unclear'):
+        set_policy(c, s, request)
+    assert s == before and request == original_request
+    assert not c.report().get('approval_policy')
+    assert not c.report()['decisions']
+
+
+@pytest.mark.parametrize('text', [
     'Implement an auto-approved full workflow option.',
     'Do not run an auto-approved workflow.', 'Run an autonomous workflow?',
     'If I decide later, run an auto-approved workflow.',
@@ -132,9 +292,15 @@ def test_original_request_enables_policy_without_changing_its_words(tmp_path):
     'Run a full workflow with auto approval.',
     '[@taskplane](plugin://taskplane@openai-curated-remote) use 36-hour audit and retrospective document as an input and start end to end flow with auto-approval. we need to address and resolve all the issues. additionally run security lens and include its findings into the scope.',
 ])
-def test_explicit_end_to_end_policy_consent(excerpt):
-    from taskplane.workflow_approval import affirmative_consent
-    assert affirmative_consent(excerpt)
+def test_explicit_end_to_end_policy_consent(tmp_path, excerpt):
+    assert approval.affirmative_consent(excerpt)
+    c, s = setup(tmp_path)
+    request = authorization(s)
+    request['excerpt'] = excerpt
+    accepted = set_policy(c, s, request)
+    assert accepted['approval_policy']['provenance']['excerpt'] == excerpt
+    assert accepted['approval_policy']['provenance']['source'] == request['source']
+    assert not accepted['decisions']
 
 
 @pytest.mark.parametrize('excerpt', [

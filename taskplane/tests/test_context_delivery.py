@@ -626,3 +626,29 @@ if __name__ == '__main__':
     result = benchmark(args.benchmark_contract, args.output)
     print(json.dumps({'status': result['status'], 'records': len(result['records'])}))
     raise SystemExit(0 if result['status'] == 'pass' else 1)
+
+
+def test_command_output_waits_for_terminal_and_keeps_partial_chunks():
+    from taskplane.context_delivery import CommandOutput, continuation
+    collector = CommandOutput()
+    assert collector.feed('{"remaining_') is None
+    assert collector.feed('required":0}') is None
+    response = collector.feed('', exit_code=0)
+    assert response == {'remaining_required': 0}
+    assert continuation(response) is None
+
+
+def test_command_output_checks_combined_budget_and_terminal_errors():
+    import pytest
+    from taskplane.context_delivery import CommandOutput, continuation
+    collector = CommandOutput(1024)
+    collector.feed('x' * 700)
+    with pytest.raises(ValueError, match='Combined'):
+        collector.feed('y' * 400, exit_code=0)
+    with pytest.raises(ValueError, match='failed'):
+        CommandOutput().feed('{}', exit_code=2)
+    with pytest.raises(ValueError, match='continuation'):
+        continuation({'remaining_required': 1})
+    with pytest.raises(ValueError, match='Conflicting'):
+        continuation({'remaining_required': 0, 'done': False})
+    assert continuation({'remaining_required': 1, 'next_action': 'flow context --run bound --drain abc'})

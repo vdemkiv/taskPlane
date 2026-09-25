@@ -23,8 +23,8 @@ and maintain the shared dashboard. Standalone code review starts with `--standal
    repository request includes its tracked source and needs no artificial diff.
    Reuse an available checkout; acquire or transfer source only when it is unavailable.
 2. Inspect relevant source with native file, search, and command tools. Follow the
-   host's permissions and agent lifecycle. Use supporting tools or agents only when
-   the task warrants them and the user or applicable instructions authorize them.
+   host's permissions and agent lifecycle. Select useful independent lenses and apply the native dispatch default below,
+   respecting explicit serial constraints and observed capacity.
 3. Report concrete findings with severity, triggering conditions, file locations,
    and consequences. Distinguish confirmed defects from questions and missing evidence.
    Reuse applicable CI results. Run additional checks only for a specific evidence gap
@@ -86,9 +86,62 @@ Retain failed/unknown results and findings; reuse never transfers approval.
 
 ## Scoped native workers
 
-When authorized, use the installed native dispatch protocol: root prepares a run-bound
-task grant, the observed worker claims its identity and consumes its own task context,
-and root verifies the joined result before satisfying dependencies. Fill observed
-capacity with useful independent work; two is only the minimum live acceptance test.
-Workers return evidence and cannot operate root phase controls or publish task definitions.
-Require actual loaded-runtime and native execution evidence for live claims.
+Native dispatch is the default for useful independent work under this skill.
+Every new run scope must declare `execution_contract: "native-default/v1"`; this
+is mandatory in this entry flow. Publish typed `execution: "native_required"`
+tasks for ready independent work and one worker per selected Engineering lens,
+with a unique `review_lens` on each lens task. This instruction authorizes that
+bounded delegation; do not ask again solely because the user did not name agents.
+
+Explicit user serial/no-delegation constraints take priority. Dependencies,
+read/write conflicts and trivial scope can justify `execution: "root"` with a
+substantive `execution_reason` and `execution_reference`. Root lens coverage is
+`serial_scope`, never native independence. Observe host capacity, launch ready
+independent tasks together and refill slots as prerequisites complete. Limited
+capacity queues distinct workers; reusing one identity for several lenses does
+not satisfy independence. An unavailable adapter needs an observed reason/reference;
+required native tasks remain incomplete and block sealing.
+
+Use the installed prepare/claim/context/join/result protocol. Execute the exact
+returned `next_action` with the installed runtime launcher; it retains workspace,
+run and task. Follow `--read-required` actions until `remaining_required` is zero.
+Workers return scoped evidence. Only the root verifies and accepts joined fresh
+results and advances phases under the existing approval policy. `native_verified`
+lens coverage binds `task_id`, `grant` and the actual worker `reviewer`; labels alone
+cannot satisfy frozen requirements. Historical untyped evidence stays unverified.
+
+
+## Efficient native startup and context
+
+For every new native task, declare exact `read_inputs` from the run verification
+inputs or accepted Build paths, a concise `purpose`, and `context_budget_bytes`
+(default 128 KiB of unique required bodies). Include source dependencies and tests
+needed for the conclusion; narrow inputs must not hide a relevant dependency.
+Missing read inputs retain conservative legacy coverage. Inspect preparation's
+`context_preflight` before launch. Declare source/log/test detail artifacts as
+`source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
+reports normative. Use `required_for` when supporting bodies are mandatory.
+
+Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+then observe its successful claim, complete context and matching automatic pre/post
+hook pair before preparing the rest of the cohort. Scoped preparation enforces
+this automatically; `readiness_after` can name an additional same-phase startup
+prerequisite. Release remaining ready work together while the first task works.
+Do not use throwaway probes or relaunch unchanged failures. A repeated scoped
+attempt needs `retry_reason` naming the observed defect or changed input.
+
+Execute the exact returned context action. New scoped workers use `--drain`, which
+returns at most 32 KiB including bodies and receipt. Return every response to the
+consumer, then follow `next_action` only while `remaining_required` is nonzero.
+Terminal responses have `done: true` and no action. Accumulate all subprocess/tool
+chunks until exit before parsing; never parse a running handle's partial output.
+Keep the combined response budget large enough and use bounded long waits (up to
+60 seconds between user updates), not repeated short model-facing polls.
+
+After a narrow repair, repeat affected checks and reviewers only. Unchanged
+scoped results remain fresh within their original binding; across visits use
+independently fingerprinted check evidence and a fresh scoped delta review.
+Never transfer approval, worker identity or a context receipt to another binding.
+Inspect attempt purposes, retry causes and delivered bytes in worker status and
+the dashboard. Delivered bytes, native tokens and Codex allowance are different
+measurements; no allowance saving can be inferred from byte counts alone.
