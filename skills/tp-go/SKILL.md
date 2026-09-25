@@ -87,3 +87,39 @@ and root verifies the joined result before satisfying dependencies. Fill observe
 capacity with useful independent work; two is only the minimum live acceptance test.
 Workers return evidence and cannot operate root phase controls or publish task definitions.
 Require actual loaded-runtime and native execution evidence for live claims.
+
+
+## Efficient native startup and context
+
+For every new native task, declare exact `read_inputs` from the run verification
+inputs or accepted Build paths, a concise `purpose`, and `context_budget_bytes`
+(default 128 KiB of unique required bodies). Include source dependencies and tests
+needed for the conclusion; narrow inputs must not hide a relevant dependency.
+Missing read inputs retain conservative legacy coverage. Inspect preparation's
+`context_preflight` before launch. Declare source/log/test detail artifacts as
+`source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
+reports normative. Use `required_for` when supporting bodies are mandatory.
+
+Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+then observe its successful claim, complete context and matching automatic pre/post
+hook pair before preparing the rest of the cohort. Scoped preparation enforces
+this automatically; `readiness_after` can name an additional same-phase startup
+prerequisite. Release remaining ready work together while the first task works.
+Do not use throwaway probes or relaunch unchanged failures. A repeated scoped
+attempt needs `retry_reason` naming the observed defect or changed input.
+
+Execute the exact returned context action. New scoped workers use `--drain`, which
+returns at most 32 KiB including bodies and receipt. Return every response to the
+consumer, then follow `next_action` only while `remaining_required` is nonzero.
+Terminal responses have `done: true` and no action. Accumulate all subprocess/tool
+chunks until exit before parsing; never parse a running handle's partial output.
+Keep the combined response budget large enough and use bounded long waits (up to
+60 seconds between user updates), not repeated short model-facing polls.
+
+After a narrow repair, repeat affected checks and reviewers only. Unchanged
+scoped results remain fresh within their original binding; across visits use
+independently fingerprinted check evidence and a fresh scoped delta review.
+Never transfer approval, worker identity or a context receipt to another binding.
+Inspect attempt purposes, retry causes and delivered bytes in worker status and
+the dashboard. Delivered bytes, native tokens and Codex allowance are different
+measurements; no allowance saving can be inferred from byte counts alone.

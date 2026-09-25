@@ -1,5 +1,23 @@
 # taskplane changelog
 
+## v2.31.4 — native workers and bounded context
+
+- Scope native read inputs and freshness per task, with conservative legacy fallback.
+- Preflight required context, drain bounded bodies, require explicit history isolation and observed startup before cohort release.
+- Expose retries and context cost; accept clear end-to-end automatic-approval wording.
+- Bound consumed-root receipt metadata for large contexts and retain full receipt validation.
+- Reject future human-approval conditions while allowing required-check conditions.
+
+- Require typed native execution in new-run guidance, with one distinct worker per
+  selected review lens and explicit serial exceptions. Seal frozen requirements
+  against fresh joined results instead of accepting reviewer labels.
+- Preserve exact workspace/run/task context continuations and current locked
+  lifecycle state during delivery.
+- Route independently bound forks to their own runs while retaining actual worker
+  parent authority; fingerprint root verification inputs like native inputs.
+- Keep unavailable capacity and legacy unverified coverage explicit. Source and
+  package fixtures do not certify an actually loaded host runtime.
+
 ## v2.31.3 — scoped native worker restoration
 
 - Add native task reservations, observed identity binding, worker context receipts,

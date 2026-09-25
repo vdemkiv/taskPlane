@@ -1,8 +1,29 @@
 # Native delegation
 
-Delegate only when authorized and a bounded task can usefully run independently.
-The orchestrator retains responsibility for integrating the result and completing
-the user's flow. A separate worker for every stage is not required.
+Native dispatch is the default for useful independent work under this skill.
+Every new run scope must declare `execution_contract: "native-default/v1"`; this
+is mandatory in this entry flow. Publish typed `execution: "native_required"`
+tasks for ready independent work and one worker per selected Engineering lens,
+with a unique `review_lens` on each lens task. This instruction authorizes that
+bounded delegation; do not ask again solely because the user did not name agents.
+
+Explicit user serial/no-delegation constraints take priority. Dependencies,
+read/write conflicts and trivial scope can justify `execution: "root"` with a
+substantive `execution_reason` and `execution_reference`. Root lens coverage is
+`serial_scope`, never native independence. Observe host capacity, launch ready
+independent tasks together and refill slots as prerequisites complete. Limited
+capacity queues distinct workers; reusing one identity for several lenses does
+not satisfy independence. An unavailable adapter needs an observed reason/reference;
+required native tasks remain incomplete and block sealing.
+
+Use the installed prepare/claim/context/join/result protocol. Execute the exact
+returned `next_action` with the installed runtime launcher; it retains workspace,
+run and task. Follow `--read-required` actions until `remaining_required` is zero.
+Workers return scoped evidence. Only the root verifies and accepts joined fresh
+results and advances phases under the existing approval policy. `native_verified`
+lens coverage binds `task_id`, `grant` and the actual worker `reviewer`; labels alone
+cannot satisfy frozen requirements. Historical untyped evidence stays unverified.
+
 
 Give the worker the shared root workspace, run ID, attached task ID, graph and
 dashboard paths. Require [the shared flow](shared-flow.md), so the worker reads
@@ -103,8 +124,10 @@ Workers cannot operate root controls, publish tasks, start a run or delegate.
 The root uses `--operation accept-result --task ID --grant GRANT` with the current
 revision and `--worker-json` containing `outputs` and `checks`. Each check has a
 name, `status: "pass"` and an existing evidence path. Native attempts must be
-joined, context consumed and child commands stopped. Root-owned prerequisites
-use the same result operation without a grant or fictional worker ID. Read and
+joined, context consumed and child commands stopped. Explicit root-owned prerequisites
+use the same result operation without a grant or fictional worker ID. Root results
+pin the same declared source inputs as native attempts. Legacy root results without
+`input_contract: "declared-source/v1"` require reacceptance before reuse. Read and
 verify actual outputs first; assertions in check records are not independent proof.
 
 `--operation status` shows attempts and ready/waiting reasons. `capacity` updates
@@ -125,3 +148,39 @@ is also used only with matching native child lineage when the actor field is abs
 Native final status is an observation, not a measured execution interval. Live
 overlap evidence must use actual task-start/end records; delayed polling alone
 cannot prove overlap. Keep Claude contract tests distinct from live Claude coverage.
+
+
+## Efficient native startup and context
+
+For every new native task, declare exact `read_inputs` from the run verification
+inputs or accepted Build paths, a concise `purpose`, and `context_budget_bytes`
+(default 128 KiB of unique required bodies). Include source dependencies and tests
+needed for the conclusion; narrow inputs must not hide a relevant dependency.
+Missing read inputs retain conservative legacy coverage. Inspect preparation's
+`context_preflight` before launch. Declare source/log/test detail artifacts as
+`source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
+reports normative. Use `required_for` when supporting bodies are mandatory.
+
+Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+then observe its successful claim, complete context and matching automatic pre/post
+hook pair before preparing the rest of the cohort. Scoped preparation enforces
+this automatically; `readiness_after` can name an additional same-phase startup
+prerequisite. Release remaining ready work together while the first task works.
+Do not use throwaway probes or relaunch unchanged failures. A repeated scoped
+attempt needs `retry_reason` naming the observed defect or changed input.
+
+Execute the exact returned context action. New scoped workers use `--drain`, which
+returns at most 32 KiB including bodies and receipt. Return every response to the
+consumer, then follow `next_action` only while `remaining_required` is nonzero.
+Terminal responses have `done: true` and no action. Accumulate all subprocess/tool
+chunks until exit before parsing; never parse a running handle's partial output.
+Keep the combined response budget large enough and use bounded long waits (up to
+60 seconds between user updates), not repeated short model-facing polls.
+
+After a narrow repair, repeat affected checks and reviewers only. Unchanged
+scoped results remain fresh within their original binding; across visits use
+independently fingerprinted check evidence and a fresh scoped delta review.
+Never transfer approval, worker identity or a context receipt to another binding.
+Inspect attempt purposes, retry causes and delivered bytes in worker status and
+the dashboard. Delivered bytes, native tokens and Codex allowance are different
+measurements; no allowance saving can be inferred from byte counts alone.

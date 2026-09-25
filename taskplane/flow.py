@@ -281,6 +281,31 @@ def _controller(workspace: Path, root: str, profile: str = "native_workflow",
         workflow_host.installed_adapter("claude" if claude_session(event or {}) else "codex", profile), principal=principal)
 
 
+def select_controller(workspace: Path, actor: str, parent: str | None, *,
+                      profile: str = "native_workflow", event: dict[str, Any] | None = None,
+                      legacy: dict[str, Any] | None = None,
+                      governor: workflow_host.Controller | None = None) -> tuple[workflow_host.Controller, dict[str, Any]]:
+    """Exact observed worker bindings outrank own runs; ordinary ancestry does not."""
+    if governor is not None:
+        return governor, governor.report()
+    own = _controller(workspace, actor, profile, event=event)
+    own_state = own.report()
+    inherited = _controller(workspace, parent, profile, event=event, principal=actor) if parent and parent != actor else None
+    inherited_state = inherited.report() if inherited else {}
+    from .worker_runtime import find
+    if inherited is not None and find(inherited_state, actor) is not None:
+        return inherited, inherited_state
+    if own_state.get("run"):
+        return own, own_state
+    if inherited is not None and inherited_state.get("run"):
+        return inherited, inherited_state
+    if legacy or inherited is not None:
+        fallback = _controller(workspace, str(legacy["session"] if legacy else parent),
+                               profile, event=event, principal=actor)
+        return fallback, fallback.report()
+    return own, own_state
+
+
 def usage_point(state: dict[str, Any], measurement: dict[str, Any], *,
                 observed_at: str | None = None, previous_revision: int | None = None) -> dict[str, Any]:
     stage = workflow.current(state)
@@ -479,6 +504,9 @@ def report(workspace: Path, run_id: str | None = None, *,
             partial_sessions=sum(s.get("status") != "measured" for s in delivery))
     result["usage_measurement"] = usage_measurement(result, measured_at)
     result["evidence_previews"] = captured.get("evidence", {})
+    result["review_coverage"] = governed.get("worker_status", {}).get("lens_coverage", [])
+    for review in result["reviews"]:
+        review["coverage_status"] = "legacy_unverified"
     result["workflow"] = governed
     result["observation_status"] = result["status"]
     if governed.get("visits"):
@@ -646,33 +674,19 @@ def _hook(event: dict[str, Any], *,
     workspace = Path(event.get("cwd") or os.getcwd()).resolve()
     rows, session = read_events(workspace), session_id(event)
     parent = event.get("parent_session_id")
-    legacy = active_run(rows, session, parent)
     if governor is None:
         parent = observed_parent(event, session) or parent
     if parent:
         event['parent_session_id'] = parent
-    controller = governor or _controller(workspace, str(parent or session), event=event, principal=session)
-    guarded = controller.report()
-    if governor is None and parent and not guarded.get('run'):
-        own = _controller(workspace, session, event=event)
-        own_state = own.report()
-        if own_state.get('run'):
-            controller, guarded = own, own_state
-    # A task's own active binding survives a missing journal and takes precedence
-    # over ancestry. Only an otherwise unbound child inherits its parent's guard.
-    if not guarded.get("run") and governor is None:
-        if legacy is None:
-            try:
-                parent = observed_parent(event, session) or parent
-            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                pass
-            legacy = active_run(rows, session, parent)
-        if legacy or parent:
-            controller = _controller(workspace, str(legacy["session"] if legacy else parent), event=event, principal=session)
-            guarded = controller.report()
+    legacy = active_run(rows, session, parent)
+    controller, guarded = select_controller(workspace, session, parent, event=event,
+                                            legacy=legacy, governor=governor)
     name = event.get("hook_event_name")
     event["taskplane_observed_binding"] = {"root": controller.root, "principal": controller.principal,
                                            "profile": controller.adapter.profile}
+    # Overwrite caller data with the package actually executing this automatic hook.
+    from .host_capabilities import runtime_identity
+    event["taskplane_runtime_identity"] = runtime_identity()
     harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" and controller.principal == controller.root else None
     selected = workflow_local.execution_entry(event)
     if harness:
@@ -839,13 +853,17 @@ def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = 
     state = payload.get("workflow", payload)
     context: dict[str, Any] = {"status": "not_applicable"}
     try:
-        if state.get("visits") and not state.get("finished") and not payload.get("historical"):
+        if action == "context" and payload.get("reason"):
+            context = {"status": "blocked", "next_action": payload.get("next_action")}
+        elif state.get("visits") and not state.get("finished") and not payload.get("historical"):
             context = Session(workspace, state).descriptor()
     except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
         context = {"status": "unavailable", "reason": str(exc)[:512],
                    "next_action": "Repair context storage and retry flow context; do not replay a committed action."}
     try:
         result = summary(Store(workspace), payload, action, context)
+        if payload.get("next_action"):
+            result["next_action"] = payload["next_action"]
     except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError):
         # Serialization is after the authoritative commit. Preserve its result
         # even when derived storage is unavailable, without dumping full history.
@@ -879,6 +897,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     context_read.add_argument("--consume", help="Consume the current handoff SHA-256")
     context_read.add_argument("--read", help="Read a current verified reference SHA-256")
     context_read.add_argument("--read-required", help="Return a bounded batch of missing required pages for this handoff SHA-256")
+    context_read.add_argument("--drain", help="Return up to 32 KiB of missing required bodies, with explicit terminal state")
     parser.add_argument("--section")
     parser.add_argument("--page", type=int)
     parser.add_argument("--workspace", default=os.getcwd())
@@ -907,7 +926,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     args = parser.parse_args(argv)
     if args.task is not None and args.action not in {"context", "worker"}:
         parser.error("--task applies to context or worker")
-    if any(value is not None for value in (args.consume, args.read, args.read_required, args.section, args.page)) and args.action != "context":
+    if any(value is not None for value in (args.consume, args.read, args.read_required, args.drain, args.section, args.page)) and args.action != "context":
         parser.error("context selection options apply only to flow context")
     if args.update_context and (args.action != "attach" or not args.tasks or not args.run):
         parser.error("--update-context requires attach --tasks and --run")
@@ -946,14 +965,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             run = next((r for r in reversed(rows) if r.get("kind") == "start"
                         and (r.get("run") == args.run if args.run else r.get("session") == session)), None)
         parent = observed_parent({}, session)
-        controller = governor or _controller(workspace, str(parent or (run["session"] if run else session)), args.profile, principal=session)
-        # A protected binding can outlive every workspace projection.
-        protected = controller.report()
-        if governor is None and parent and not protected.get('run'):
-            own = _controller(workspace, session, args.profile)
-            own_state = own.report()
-            if own_state.get('run'):
-                controller, protected = own, own_state
+        controller, protected = select_controller(workspace, session, parent, profile=args.profile,
+                                                  legacy=run, governor=governor)
         if controller.principal != controller.root:
             workflow.require(args.action == "context" or args.action == "worker" and args.operation == "claim",
                              "scope_violation", "Worker CLI is limited to claim and scoped context.")
@@ -970,7 +983,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             from .context import encode
             context_result = controller.context(args.run, task=args.task, consume=args.consume,
                                         read=args.read, page=args.page if args.page is not None else 0, section=args.section,
-                                        read_required=args.read_required)
+                                        read_required=args.read_required, drain=args.drain)
             print(encode(context_result).decode("utf-8"))
             return 0
         if protected.get("run") and (run is None or args.action not in {"report", "attach"}):
@@ -1120,7 +1133,19 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         show(result if result else empty)
         return 0
     except workflow.Refusal as exc:
-        show(exc.result())
+        failure = exc.result()
+        if args.action == "context":
+            from .context_handoff import context_action
+            task_id, context_run = args.task, args.run or protected.get("run", "")
+            if "controller" in locals() and controller.principal != controller.root:
+                from .worker_runtime import find
+                worker = find(protected, controller.principal)
+                task_id = worker["task_id"] if worker else task_id
+                context_run = protected.get("run", context_run)
+            failure["next_action"] = (context_action(Path(args.workspace), context_run, task_id)
+                if task_id is not None or "controller" not in locals() or controller.principal == controller.root
+                else "Report the missing current worker binding to the bound parent.")
+        show(failure)
         return 2
     except (OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
         show({"status": "blocked", "reason": "state_unavailable",

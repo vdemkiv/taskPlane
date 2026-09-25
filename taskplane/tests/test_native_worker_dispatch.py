@@ -36,6 +36,14 @@ def test_desktop_child_actor_guards_scope_and_records_actual_binding(tmp_path, m
     flow.hook({**event, 'call_id':'parent-progress', 'tool_name':'collaborationsend_message',
                'tool_input':{'target':'/root', 'message':'Scoped progress'}})
     flow.hook({**event, 'hook_event_name':'PostToolUse', 'call_id':'own-write'})
+    # Hook entry derives executing bytes itself; caller-provided runtime identity
+    # cannot replace them. A matched automatic pair combines with claim/context.
+    readiness_event = {**event, 'call_id':'readiness-pair', 'taskplane_runtime_identity':{'member_sha256':{'forged':'value'}}}
+    flow.hook(readiness_event)
+    flow.hook({**readiness_event, 'hook_event_name':'PostToolUse'})
+    readiness = wr.readiness(c.report()['workers'][item['grant']['grant_id']])
+    assert readiness['status'] == 'ready'
+    assert readiness['runtime_root'] == str(Path(__file__).resolve().parents[2])
     rows = [r for r in flow.read_events(workspace) if r.get('kind') == 'hook']
     assert all(r['session'] == 'native-0' for r in rows)
     assert all(r['binding_observation']['principal'] == 'native-0' for r in rows)
@@ -198,3 +206,53 @@ def test_opaque_followup_without_visible_grant_remains_refused(tmp_path):
     with pytest.raises(w.Refusal,match='prepared grant'):
         c.guard({'tool_name':'collaborationfollowup_task','call_id':'opaque-followup',
                  'tool_input':{'target':'native-0','message':'opaque host-owned message bytes'}},s['run'])
+
+
+@pytest.mark.parametrize('journal', [True, False])
+def test_independently_bound_fork_uses_own_cli_and_hook_authority(tmp_path, monkeypatch, capsys, journal):
+    from taskplane import flow, workflow_host as h
+    c, s = setup(tmp_path, count=1)
+    own_scope = json.loads(json.dumps(s['scope']))
+    own_scope['paths']['product'] = ['own.md']
+    child = h.Controller(tmp_path, 'fork', h.installed_adapter('codex'))
+    own = child.start(dict(scope=own_scope, entry='product', standalone=True, request_reference='fixture/own-request'))
+    monkeypatch.setenv('CODEX_THREAD_ID', 'fork')
+    monkeypatch.setattr(flow, 'observed_parent', lambda event, actor: 'root' if actor == 'fork' else None)
+    if journal:
+        flow.append(tmp_path, dict(kind='start', run=s['run'], session='root', phase='product'))
+    for extra in ([], ['--run', own['run']]):
+        assert flow.main(['report','--workspace',str(tmp_path),*extra]) == 0
+        assert json.loads(capsys.readouterr().out)['workflow']['run'] == own['run']
+    event = dict(host='codex', session_id='fork', cwd=str(tmp_path), hook_event_name='PreToolUse',
+                 tool_name='Write', call_id='fork-write', tool_input={'path':'own.md'})
+    flow.hook(event)
+    with pytest.raises(w.Refusal): flow.hook({**event, 'tool_input':{'path':'T0.md'}})
+    observed = event['taskplane_observed_binding']
+    assert observed['root'] == observed['principal'] == 'fork'
+    if journal:
+        assert flow.read_events(tmp_path)[-1]['binding_observation']['root'] == 'fork'
+
+
+def test_dual_bound_real_worker_keeps_parent_authority(tmp_path, monkeypatch, capsys):
+    from taskplane import flow, workflow_host as h
+    c, s = setup(tmp_path, count=1)
+    child = h.Controller(tmp_path, 'native-0', h.installed_adapter('codex'))
+    own_scope = json.loads(json.dumps(s['scope'])); own_scope['paths']['product'] = ['own.md']
+    own = child.start(dict(scope=own_scope, entry='product', standalone=True, request_reference='fixture/own'))
+    item = reserve(c, s); launch(c, s, item)
+    consume(c, s, item['grant'], 'native-0')
+    monkeypatch.setenv('CODEX_THREAD_ID', 'native-0')
+    monkeypatch.setattr(flow, 'observed_parent', lambda event, actor: 'root' if actor == 'native-0' else None)
+    for action in [['report'], ['report','--run',own['run']], ['advance','--phase','design'],
+                   ['attach','--tasks','tasks.json','--update-context','--run',own['run']]]:
+        assert flow.main([*action,'--workspace',str(tmp_path)]) == 2
+        assert json.loads(capsys.readouterr().out)['reason'] == 'scope_violation'
+    event = dict(host='codex', cwd=str(tmp_path), session_id='native-0', hook_event_name='PreToolUse',
+                 tool_name='Write', tool_input={'path':'T0.md'})
+    flow.hook(event)
+    assert event['taskplane_observed_binding']['root'] == 'root'
+    with pytest.raises(w.Refusal): flow.hook({**event,'tool_input':{'path':'own.md'}})
+    c.observe(dict(hook_event_name='SubagentStop', agent_id='native-0'), s['run'])
+    with pytest.raises(w.Refusal): flow.hook(event)
+    assert flow.main(['report','--workspace',str(tmp_path)]) == 2
+    capsys.readouterr()

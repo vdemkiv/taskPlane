@@ -430,7 +430,7 @@ class Controller:
     def context(self, run: str | None = None, *, task: str | None = None,
                  consume: str | None = None, read: str | None = None,
                  page: int = 0, section: str | None = None,
-                 read_required: str | None = None) -> dict[str, Any]:
+                 read_required: str | None = None, drain: str | None = None) -> dict[str, Any]:
         """Current-binding derived data only; never writes a workflow decision."""
         from .context_handoff import Session
         state = self.report(run)
@@ -441,6 +441,9 @@ class Controller:
             w.require(db["active"] == state["run"]
                       and db["runs"][state["run"]]["revision"] == state["revision"],
                       "invalid_context", "Context requires the unchanged active run.")
+            state = db["runs"][state["run"]]
+            w.require(evidence.changed(self.workspace, state) is None, "invalid_context",
+                      "Accepted evidence changed before context delivery.")
             from . import worker_runtime as workers
             worker = workers.find(state, self.principal) if self.principal != self.root else None
             if self.principal != self.root:
@@ -451,8 +454,8 @@ class Controller:
                 session = workers.worker_session(self.workspace, state, worker)
             else:
                 session = Session(self.workspace, state, task)
-            w.require(sum(value is not None for value in (consume, read, read_required)) <= 1,
-                      "invalid_context", "Choose consume, read or read-required.")
+            w.require(sum(value is not None for value in (consume, read, read_required, drain)) <= 1,
+                      "invalid_context", "Choose consume, read, read-required or drain.")
             w.require(read is not None or (page == 0 and section is None),
                       "invalid_context", "Page and section require a single-reference read.")
             if consume:
@@ -461,13 +464,19 @@ class Controller:
                 result = session.read(read, page, section)
             elif read_required is not None:
                 result = session.read_required(read_required)
+            elif drain is not None:
+                result = session.drain(drain)
             else:
                 result = {"schema": "taskplane.context-preparation/v1", "binding": session.binding,
                           **session.descriptor()}
-            if worker is not None and result.get("remaining_required") == 0:
-                session.validate(result["context_receipt"])
+            if worker is not None and "context_receipt" in result:
                 record = db["runs"][state["run"]]["workers"][worker["grant_id"]]
-                record.update(context_receipt=result["context_receipt"], state="running")
+                receipt = session.store.resolve(result["context_receipt"]["receipt"])
+                record["context_delivery"] = {"returned_bytes": receipt["returned_bytes"],
+                    "responses": len(session.ledger()["receipts"]), "remaining_required": result["remaining_required"]}
+                if result.get("remaining_required") == 0:
+                    session.validate(result["context_receipt"])
+                    record.update(context_receipt=result["context_receipt"], state="running")
                 self._write(self._path(), db)
             return result
 
@@ -511,6 +520,8 @@ class Controller:
                 assert row is not None
                 workers.current(state, row)
                 w.require(row["state"] in {"bootstrapping", "running"}, "scope_violation", "Worker is not live.")
+                row.setdefault("claimed_at", workers.now())
+                self._write(target, db)
                 return {"grant_id": grant, "task_id": row["task_id"], "context": workers.worker_session(self.workspace, state, row).descriptor()}
             w.require(self.principal == self.root, "scope_violation", "Workers cannot schedule or accept task results.")
             if operation == "status":

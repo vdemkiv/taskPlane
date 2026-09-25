@@ -301,3 +301,19 @@ def test_package_receipt_without_git_has_unknown_commit_parity(tmp_path, monkeyp
     assert receipt['source_dirty'] is None
     assert receipt['matches_source_commit'] is None
     assert receipt['source_member_differences'] is None
+
+
+def test_native_default_instruction_contract():
+    sources = ['skills/taskplane/SKILL.md', 'skills/tp-engineering/SKILL.md',
+               'skills/tp-go/references/shared-flow.md', 'skills/tp-go/references/codex-native-dispatch.md']
+    for name in sources:
+        text = (ROOT/name).read_text()
+        assert 'execution_contract: "native-default/v1"' in text, name
+        assert 'one worker per selected' in text, name
+        assert 'native_required' in text and 'serial_scope' in text, name
+        assert 'Explicit user serial/no-delegation constraints take priority' in text, name
+        assert 'Observe host capacity' in text and 'prerequisites' in text, name
+        assert 'required native tasks remain incomplete and block sealing' in text, name
+        assert 'returned `next_action`' in text and 'Only the root verifies' in text, name
+        assert 'When authorized, use the installed native dispatch protocol' not in text, name
+    assert 'Native worker dispatch remains unsupported by the current cooperative adapter' not in (ROOT/'docs/cli-reference.md').read_text()

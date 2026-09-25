@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.31.3",
+  "version": "2.31.4",
   "description": "Design, build and review software with Claude or Codex, keeping requirements, dependencies, implementation and verification connected.",
   "author": {
     "name": "Volodymyr Demkiv"
