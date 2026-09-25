@@ -275,6 +275,19 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         plan += '</tbody></table></div>'
     else:
         plan += '<p class="muted">No task decomposition attached to this run.</p>'
+    workers = (m.get('workflow') or {}).get('worker_status', {})
+    if workers:
+        limit = (workers.get('capacity') or {}).get('effective_limit')
+        plan += '<h3>Native worker execution</h3><p>Available execution limit: '+_e(limit if limit is not None else 'Unknown')+' · Pending '+_e(workers.get('pending',0))+' · Live '+_e(workers.get('live',0))+' · Accepted results '+_e(workers.get('accepted',0))+'.</p>'
+        plan += '<p class="muted">Concurrency follows ready work and observed capacity. Two workers is the minimum live acceptance test, not a default limit. Status observations are separate from verified task results.</p>'
+        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Native identity</th><th>Attempt</th><th>State</th></tr></thead><tbody>'
+        for worker in workers.get('attempts',[]):
+            plan += '<tr>'+''.join('<td>'+_e(worker.get(k) or 'Unknown')+'</td>' for k in ('task_id','worker_id','attempt','state'))+'</tr>'
+        plan += '</tbody></table></div>'
+        plan += '<details><summary>Ready tasks and waiting reasons</summary><pre>'+_e(json.dumps(workers.get('scheduling',[]),indent=2))+'</pre></details>'
+    outcomes = m.get('hook_outcomes')
+    if outcomes:
+        plan += '<p class="muted">Observed hook outcomes: '+_e(json.dumps(outcomes,sort_keys=True))+'. Admission does not prove tool execution.</p>'
     plan += '</section>'
     graph = '<section id="dependencies"><div class="section-head"><h2>03 / Dependency graph</h2><span class="muted">Source dependencies and change impact</span></div>'
     planned = not bool(m['artifacts'].get('changed'))
@@ -310,7 +323,7 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         u=session.get('usage') or {}
         tokens += '<tr><td>'+_e(session['agent'])+'<br><span class="muted">'+_e(session['role'])+' · '+_e(session['status'])+' · '+_e(session.get('measured_at'))+'</span></td>'+''.join('<td>'+_number(u.get(k))+'</td>' for k in ['input_tokens','cached_input_tokens','uncached_input_tokens','output_tokens','total_tokens'])+'</tr>'
     tokens += '</tbody></table></div>'
-    tokens += f'<p class="muted">Native lifetime totals for delivery sessions: {_number((m.get("native_tokens") or {}).get("total_tokens"))}. Flow totals subtract the root start baseline. Host approval review is separate: {_number((m.get("host_approval_tokens") or {}).get("total_tokens"))}. Cached input is included in input; reasoning is included in output. Token counts are not a billing estimate.</p></section>'
+    tokens += f'<p class="muted">Native lifetime totals for delivery sessions: {_number((m.get("native_tokens") or {}).get("total_tokens"))}. Flow totals use run-owned intervals, excluding reused-session history. Host approval review is separate: {_number((m.get("host_approval_tokens") or {}).get("total_tokens"))}. Cached input is included in input; reasoning is included in output. Token counts are not a billing estimate.</p></section>'
     evidence = '<section id="evidence"><h2>06 / Evidence and Retro</h2>'
     for path in m['artifacts'].get('evidence',[]):
         evidence += f'<details><summary>{_e(path)}</summary>{_evidence(ws,path,m)}</details>'

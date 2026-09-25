@@ -42,3 +42,12 @@ introduce approval steps that the user has already satisfied.
 Native discovery is observational. Use the installed named hook entry points and
 report their actual capability status; restoring native routines does not admit
 a host owner or change any human checkpoint.
+
+## Scoped native workers
+
+When authorized, use the installed native dispatch protocol: root prepares a run-bound
+task grant, the observed worker claims its identity and consumes its own task context,
+and root verifies the joined result before satisfying dependencies. Fill observed
+capacity with useful independent work; two is only the minimum live acceptance test.
+Workers return evidence and cannot operate root phase controls or publish task definitions.
+Require actual loaded-runtime and native execution evidence for live claims.

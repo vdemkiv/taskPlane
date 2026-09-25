@@ -67,7 +67,7 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
     while True:
         selected = [m for m in metadata if m['session_id'] in ids or (
             m.get('parent_session_id') in ids
-            and (m.get('thread_source') == 'guardian_review' or started is None
+            and (m.get('thread_source') == 'guardian_review' or m['session_id'] in run.get('worker_sessions', []) or started is None
                  or (_time(m['started_at']) or 0) >= started)
             and (cutoff is None or (_time(m['started_at']) or 0) < cutoff))]
         found = ids | {m['session_id'] for m in selected}
@@ -108,10 +108,17 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
         if native and baseline and any(v < baseline.get(k, 0) for k, v in native.items()):
             usage = None
             errors.append('native counter moved below run baseline; reset attribution is unknown')
+        interval = None
+        if sid != root and started is not None:
+            interval = meter.read_owned_interval([segment['path'] for segment in segments], sid, start=started, end=cutoff)
+            usage, native = interval['usage'], interval['native_usage']
+            errors = interval['errors']
         sessions.append({'session': sid, 'agent': meta.get('agent_path') or role,
                          'role': role, 'usage': usage, 'native_usage': native,
                          'status': 'partial' if errors else 'measured' if usage else 'unavailable',
-                         'basis': 'start baseline' if sid == root else 'child created during flow',
+                         'basis': interval['basis'] if interval else 'start baseline' if sid == root else 'child created during flow',
+                         'interval': interval.get('interval') if interval else None,
+                         'attribution_schema': 'taskplane.owned-interval/v1' if interval else None,
                          'errors': errors})
     return sessions, discovery_errors
 
@@ -133,16 +140,30 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
     if run.get('host') == 'claude':
         sessions, discovery_errors = claude.sessions(run, events, cutoff)
     else:
-        sessions, discovery_errors = _codex_sessions(run, cutoff, diagnostics)
+        known_workers = set(run.get('worker_sessions', []))
+        known_workers.update(str(e.get('session')) for e in events if e.get('run') == run['run']
+                             and e.get('kind') == 'hook' and e.get('session') != run['session'])
+        sessions, discovery_errors = _codex_sessions({**run, 'worker_sessions': sorted(known_workers)}, cutoff, diagnostics)
     saved: dict[str, Any] = next((e.get('measurement', {}) for e in reversed(events)
                   if e.get('run') == run['run'] and e.get('kind') == 'usage'), {})
     by_session = {s['session']: s for s in sessions}
     for prior in saved.get('sessions', []):
         current = by_session.get(prior['session'])
-        if prior.get('usage') and (current is None or not current.get('usage')):
+        # Legacy saved child totals can contain pre-run lifetime usage. Never
+        # restore them over an explicit reset/conflict or a revised interval.
+        owned = (prior.get('attribution_schema') == 'taskplane.owned-interval/v1'
+                 and prior.get('interval') == {'start': started, 'end_exclusive': cutoff})
+        if (prior.get('usage') and (current is None or not current.get('usage'))
+                and not (current or {}).get('errors')
+                and (prior.get('role') == 'orchestrator' or owned)):
             if current is not None:
                 sessions.remove(current)
-            sessions.append(dict(prior, status='recorded; native counter unavailable'))
+            sessions.append(dict(prior,
+                status='partial' if prior.get('status') == 'partial' else 'recorded; native counter unavailable',
+                recovery_status='recorded; native counter unavailable'))
+        elif current is None:
+            sessions.append({**prior, 'usage': None, 'native_usage': None, 'status': 'unavailable',
+                             'basis': 'saved attribution has no verified matching run interval'})
     # The next run's observed root baseline closes this run exactly. It remains
     # available when growing transcripts push that counter outside the bounded
     # native reader, so historical totals cannot fall back to an older sample.
@@ -176,7 +197,7 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
                                 'inventory_errors': len(diagnostics),
                                 'discovery_diagnostics': diagnostics[:32],
                                 'diagnostics_omitted': max(0, len(diagnostics) - 32),
-                               'basis': 'Root delta from flow start; full usage of children created during flow. Includes final responses and recovery until the next run in the same task. Host approval review shown separately.'}}
+                               'basis': 'Root start delta; new child usage and reused-session intervals [run start, next run start). Host approval review is separate. Missing/reset boundaries remain unknown.'}}
 
 
 def _counts(value: Any) -> bool:

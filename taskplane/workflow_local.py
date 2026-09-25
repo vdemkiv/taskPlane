@@ -206,14 +206,18 @@ class LocalWorkflow:
                      context_contract=SEMANTIC_CONTRACT)
 
     def decorate(self, state: dict[str, Any]) -> dict[str, Any]:
+        from . import worker_runtime
         return {"coverage": {"structured_hook_paths": "checked when observed", "source_drift": "audited",
                 "opaque_commands": "host permissions; effects not contained", "process_census": "unknown",
                 "late_stdin": "checked only when observed",
-                 "delegation": "unsupported: no scoped native worker adapter; use attributed root review"},
+                 "delegation": "scoped native attempts; observed identities, joins and root result acceptance"},
+                "worker_status": worker_runtime.summary(state, self.workspace),
                 "known_live_handles": [h for h,r in state.get("observed_handles", {}).items()
                                        if r["state"] == "running"]}
 
     def validate_state(self, state: dict[str, Any]) -> None:
+        from . import worker_runtime
+        worker_runtime.validate(state)
         from .context_handoff import CONTRACT, SEMANTIC_CONTRACT
         w.require(state.get("context_contract", CONTRACT) in {CONTRACT, SEMANTIC_CONTRACT},
                   "state_unavailable", "Unsupported context contract.")
@@ -243,7 +247,8 @@ class LocalWorkflow:
                       "Regenerate/link the dashboard and record flow present with its actual outcome.")
 
     def can_seal(self, state: dict[str, Any]) -> bool:
-        return not self.decorate(state)["known_live_handles"]
+        from . import worker_runtime
+        return not self.decorate(state)["known_live_handles"] and worker_runtime.joined(state)
 
     def after_action(self, state: dict[str, Any], action: str) -> None:
         if action == "advance":
@@ -324,7 +329,7 @@ class LocalWorkflow:
                         == self.workspace/".taskplane/dashboard.html")
         if words[2:] in (["version"], ["version", "--verify"], ["help"], ["--help"], ["flow", "--help"]):
             return True
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         if words.count("--workspace") != 1:
@@ -370,6 +375,9 @@ class LocalWorkflow:
         handles[key] = {"visit": previous["visit"] if previous else w.current(state)["id"],
                         "revision": previous["revision"] if previous else state["revision"],
                         "state": new_state,
+                        "worker_id": previous.get("worker_id") if previous else (
+                            (event.get("thread_id") or event.get("session_id"))
+                            if (event.get("thread_id") or event.get("session_id")) != state["root"] else None),
                         "read_only": previous.get("read_only", False) if previous else readonly_command(event)}
 
 

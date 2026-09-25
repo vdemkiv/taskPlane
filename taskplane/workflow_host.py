@@ -212,9 +212,10 @@ def installed_adapter(host: str, profile: str = "native_workflow") -> HostAdapte
 
 
 class Controller:
-    def __init__(self, workspace: Path, root: str, adapter: HostAdapter):
+    def __init__(self, workspace: Path, root: str, adapter: HostAdapter, *, principal: str | None = None):
         self.workspace = workspace.resolve()
         self.root = root
+        self.principal = principal or root
         self.adapter = adapter
         adapter.bind(self.workspace, root)
 
@@ -321,6 +322,7 @@ class Controller:
                       "stale_checkpoint", "Start retry cannot replace the run's initial tasks.")
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
+        w.require(self.principal == self.root, "scope_violation", "Workers cannot start or replace workflows.")
         target = self._path()
         with primitives.file_lock(str(target)):
             authorized = None
@@ -439,23 +441,112 @@ class Controller:
             w.require(db["active"] == state["run"]
                       and db["runs"][state["run"]]["revision"] == state["revision"],
                       "invalid_context", "Context requires the unchanged active run.")
-            session = Session(self.workspace, state, task)
+            from . import worker_runtime as workers
+            worker = workers.find(state, self.principal) if self.principal != self.root else None
+            if self.principal != self.root:
+                w.require(worker is not None and task == worker["task_id"], "scope_violation",
+                          "Worker context requires its own claimed task.")
+                assert worker is not None
+                w.require(worker["state"] in {"bootstrapping", "running"}, "scope_violation", "Worker attempt is not live.")
+                session = workers.worker_session(self.workspace, state, worker)
+            else:
+                session = Session(self.workspace, state, task)
             w.require(sum(value is not None for value in (consume, read, read_required)) <= 1,
                       "invalid_context", "Choose consume, read or read-required.")
             w.require(read is not None or (page == 0 and section is None),
                       "invalid_context", "Page and section require a single-reference read.")
             if consume:
-                return session.consume(consume)
-            if read:
-                return session.read(read, page, section)
-            if read_required is not None:
-                return session.read_required(read_required)
-            return {"schema": "taskplane.context-preparation/v1", "binding": session.binding,
-                    **session.descriptor()}
+                result = session.consume(consume)
+            elif read:
+                result = session.read(read, page, section)
+            elif read_required is not None:
+                result = session.read_required(read_required)
+            else:
+                result = {"schema": "taskplane.context-preparation/v1", "binding": session.binding,
+                          **session.descriptor()}
+            if worker is not None and result.get("remaining_required") == 0:
+                session.validate(result["context_receipt"])
+                record = db["runs"][state["run"]]["workers"][worker["grant_id"]]
+                record.update(context_receipt=result["context_receipt"], state="running")
+                self._write(self._path(), db)
+            return result
+
+    def update_tasks(self, run: str, revision: int | None, tasks: str) -> dict[str, Any]:
+        w.require(self.principal == self.root, "scope_violation", "Only the root can publish task definitions.")
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            w.require(db["active"] == run, "stale_checkpoint", "Task publication requires the active run.")
+            state = db["runs"][run]
+            frozen = evidence.freeze_tasks(self.workspace, state, evidence.object_file(self.workspace, tasks))
+            prior = state.get("task_context", {})
+            if (prior.get("visit") == w.current(state)["id"] and prior.get("tasks") == frozen
+                    and revision in {state["revision"], prior.get("base_revision")}):
+                return deepcopy(state)
+            w.require(revision == state["revision"], "stale_checkpoint", "Expected task revision changed.")
+            w.require(w.current(state)["decision"] in {"not_requested", "changes_requested", "rejected"}
+                      and self.adapter.can_seal(state), "scope_violation", "Task updates need an unsealed, quiescent visit.")
+            w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Accepted inputs changed.")
+            self.adapter.before_action(state, "update-tasks")
+            state["task_context"] = {"visit": w.current(state)["id"], "tasks": frozen, "base_revision": revision}
+            state["task_generation"] = state.get("task_generation", 0) + 1
+            state["revision"] += 1
+            self._write(target, db)
+            return deepcopy(state)
+
+    def worker(self, run: str, operation: str, *, revision: int | None = None,
+               task: str = "", grant: str = "", request: dict[str, Any] | None = None) -> dict[str, Any]:
+        from . import worker_runtime as workers
+        w.require(self.adapter.profile == "native_workflow", "unsupported_authority", "Worker adapter is cooperative native_workflow only.")
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            w.require(db["active"] == run, "stale_checkpoint", "Worker operation needs the active run.")
+            state = db["runs"][run]
+            request = request or {}
+            if operation == "claim":
+                row = workers.records(state).get(grant)
+                w.require(row and self.principal != self.root and row.get("worker_id") == self.principal,
+                          "scope_violation", "Claim requires an observed native identity; prompt or parent alone is insufficient.")
+                assert row is not None
+                workers.current(state, row)
+                w.require(row["state"] in {"bootstrapping", "running"}, "scope_violation", "Worker is not live.")
+                return {"grant_id": grant, "task_id": row["task_id"], "context": workers.worker_session(self.workspace, state, row).descriptor()}
+            w.require(self.principal == self.root, "scope_violation", "Workers cannot schedule or accept task results.")
+            if operation == "status":
+                return workers.summary(state, self.workspace)
+            w.require(revision == state["revision"], "stale_checkpoint", "Expected worker revision changed.")
+            w.require(w.current(state)["decision"] in {"not_requested", "changes_requested", "rejected"}
+                      and not state.get("finished") and not state.get("retired"), "approval_required", "Current phase is sealed or inactive.")
+            w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Accepted evidence changed.")
+            self.adapter.before_action(state, "worker")
+            if operation == "prepare":
+                row = workers.prepare(self.workspace, state, task, request)
+                result = {"grant": deepcopy(row), "message": workers.dispatch_message(state, row)}
+            elif operation == 'capacity':
+                limit = workers.capacity(request.get('capacity'))
+                state['worker_capacity'] = {**request['capacity'], 'effective_limit': limit,
+                                            'observed_at': workers.now()}
+                result = workers.summary(state, self.workspace)
+            elif operation == "accept-result":
+                result = workers.accept_result(self.workspace, state, task, {**request, **({"grant": grant} if grant else {})})
+            elif operation == "abandon":
+                row = workers.records(state).get(grant)
+                w.require(row and row["state"] == "prepared" and row["call_id"] is None,
+                          "scope_violation", "Only an unlaunched reservation can be abandoned.")
+                assert row is not None
+                row.update(state="failed", ended_at=workers.now(), terminal_status="not_launched")
+                result = deepcopy(row)
+            else:
+                raise w.Refusal("invalid_evidence", "Unknown worker operation.")
+            state["worker_sequence"] = state.get("worker_sequence", 0) + 1
+            self._write(target, db)
+            return result
 
     def apply(self, action: str, run: str, *, expected_revision: int | None = None,
               output: str = "", tasks: str = "", phase: str = "", native_reference: str = "",
               assessment_json: str | None = None) -> dict[str, Any]:
+        w.require(self.principal == self.root, "scope_violation", "Workers cannot change workflow control state.")
         w.require(assessment_json is None or action == "auto-decide", "invalid_evidence",
                   "Inline assessment applies only to auto-decide.")
         target = self._path()
@@ -556,6 +647,9 @@ class Controller:
             db = self._read(target)
             w.require(db["active"] == run, "state_unavailable", "Observation has no active workflow binding.")
             state = deepcopy(db["runs"][run])
+            from . import worker_runtime as workers
+            if self.adapter.profile == "native_workflow":
+                workers.observe(state, event)
             self.adapter.observe_state(event, state)
             if state != db["runs"][run]:
                 db["runs"][run] = state
@@ -563,6 +657,25 @@ class Controller:
 
     def guard(self, event: dict[str, Any], run: str) -> None:
         state = self.report(run)
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            w.require(not db["runs"].get(run, {}).get("retired"), "scope_violation", "The retired run has no active grants.")
+            w.require(db["active"] == run and db["runs"][run]["revision"] == state["revision"],
+                      "stale_checkpoint", "Tool grant changed during admission.")
+            candidate = deepcopy(db["runs"][run])
+            state.update(candidate)
+            self._guard(event, state)
+            # Commit mandatory admission before returning permission to the host.
+            for key in ("workers", "worker_sequence", "worker_polls"):
+                if key in state:
+                    candidate[key] = state[key]
+            if candidate != db["runs"][run]:
+                db["runs"][run] = candidate
+                self._write(target, db)
+
+    def _guard(self, event: dict[str, Any], state: dict[str, Any]) -> None:
+        from . import worker_runtime as workers
         w.require(state.get("workflow_available"), "unsupported_authority", state.get("detail", "Host guard unavailable."))
         w.require(state.get("visits"), "state_unavailable", "No active workflow grant.")
         w.require(not state.get("superseded_by"), "scope_violation", "The replaced run has no active grants.")
@@ -572,6 +685,35 @@ class Controller:
         tool = event.get("tool_name") or event.get("tool")
         args = event.get("tool_input", {})
         w.require(isinstance(args, dict), "scope_violation", "Unrecognized tool arguments.")
+        worker = None
+        if self.principal != self.root:
+            worker = workers.find(state, self.principal)
+            w.require(worker is not None, "scope_violation", "Unbound native child has no task grant.")
+            assert worker is not None
+            # Read/control exceptions never confer root authority on a descendant.
+            words = workflow_local.runtime_words(event) if tool in {"Bash", "exec_command"} else []
+            native_cli = (len(words) >= 3 and (self.workspace/words[1]).resolve() == Path(__file__).with_name('tp.py').resolve())
+            if self.adapter.control_action(event, state) or native_cli:
+                w.require(len(words) >= 4 and words[2] == "flow" and words[3] in {"context", "worker"}
+                          and (words[3] == "context" or "--operation" in words
+                               and words.index("--operation") + 1 < len(words)
+                               and words[words.index("--operation") + 1] == "claim"),
+                          "scope_violation", "Worker control is limited to claim and task context.")
+                return
+            workers.current(state, worker)
+            w.require(worker["state"] == "running" and worker.get("context_receipt"),
+                      "invalid_context", "Worker must consume every required task input before execution.")
+            workers.worker_session(self.workspace, state, worker).validate(worker["context_receipt"])
+            if tool in workers.MESSAGE:
+                parent_name = str(worker.get('canonical_name', '')).rsplit('/', 1)[0]
+                w.require(set(args) == {'target', 'message'} and args.get('target') in
+                          ({self.root, parent_name} - {''}) and isinstance(args.get('message'), str)
+                          and 0 < len(args['message']) <= 32768, 'scope_violation',
+                          'Worker messages may only report to their bound parent.')
+                return
+            w.require(tool not in workers.TOOLS, "scope_violation", "Nested delegation is unsupported.")
+        elif self.adapter.profile == "native_workflow" and workers.admit(state, event):
+            return
         if self.adapter.profile == "native_workflow" and (
                 tool in workflow_local.QUESTION_TOOLS or workflow_local.execution_entry(event)
                 or tool == "Skill" and args.get("skill") in {"taskplane:tp-help", "taskplane:tp-status"}):
@@ -583,9 +725,9 @@ class Controller:
                 relative = str(Path(value).relative_to(self.workspace)) if Path(value).is_absolute() and Path(value).is_relative_to(self.workspace) else value
                 evidence.path(self.workspace, relative)
             return
-        if tool in ("Bash", "exec_command") and self.adapter.control_action(event, state):
+        if worker is None and tool in ("Bash", "exec_command") and self.adapter.control_action(event, state):
             return
-        if self.adapter.profile == "native_workflow":
+        if worker is None and self.adapter.profile == "native_workflow":
             harness = workflow_local.Harness(self.workspace, self.root)
             if (harness.dashboard_opener(event, state) or harness.recovery_action(event, state)
                     or harness.recovery_setup(event, state)):
@@ -603,10 +745,17 @@ class Controller:
                   "Evidence drift must revoke the prior phase grant before further writes.")
         w.require(stage["decision"] in ("not_requested", "changes_requested", "rejected", "stale"),
                   "approval_required", "Current output is sealed; resolve the human checkpoint before writing.")
-        allowed = state["scope"]["paths"][stage["phase"]]
+        allowed = worker["paths"] if worker else state["scope"]["paths"][stage["phase"]]
+        if worker is None:
+            busy = {p for row in state.get('workers', {}).values() if row['state'] in workers.LIVE
+                    for p in [*row['paths'], *row.get('input_manifest', {}), *row.get('dependency_manifest', {})]}
+            allowed = [p for p in allowed if p not in busy]
         if tool in ("Bash", "exec_command"):
             self.adapter.guard_command(event, state, allowed)
         elif tool == "write_stdin":
+            if worker is not None:
+                record = state.get("observed_handles", {}).get(str(args.get("session_id", "")), {})
+                w.require(record.get("worker_id") == self.principal, "scope_violation", "Worker input belongs to another principal.")
             self.adapter.guard_input(event, state)
         elif tool in ("Write", "Edit", "write_file", "edit_file"):
             self._paths([args.get("file_path") or args.get("path")], allowed)

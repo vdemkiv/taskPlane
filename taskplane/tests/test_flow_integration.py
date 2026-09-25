@@ -87,7 +87,7 @@ def test_native_thread_counter_wins_over_stale_legacy_summary(tmp_path):
     assert meter.read_snapshot(str(path),at_or_before=datetime.fromisoformat("2026-09-01T00:00:07+00:00").timestamp())['usage']['total_tokens']==100
 
 
-def test_child_progress_uses_existing_flow_and_shared_dashboard(tmp_path,monkeypatch,capsys):
+def test_unbound_child_cannot_publish_root_progress(tmp_path,monkeypatch,capsys):
     ws,sessions,run=setup_run(tmp_path,monkeypatch)
     flow.append(ws,{'kind':'progress','run':'shared','session':'root','phase':'engineering','note':'Historical observation, no approval'})
     native(sessions/'child.jsonl','child',40,parent='root',at='2026-09-01T00:00:02Z')
@@ -95,11 +95,9 @@ def test_child_progress_uses_existing_flow_and_shared_dashboard(tmp_path,monkeyp
     (ws/'review.md').write_text('Reviewed shared T1 dependency scope')
     flow.main(['progress','--workspace',str(ws),'--phase','engineering','--note','T1 reviewed','--evidence','review.md'])
     r=json.loads(capsys.readouterr().out)
-    assert r['run']=='shared' and r['phase']=='engineering'
-    assert r['artifacts']['evidence']==['review.md']
+    assert r['reason']=='scope_violation'
     assert sum(e['kind']=='start' for e in flow.read_events(ws))==1
-    assert 'T1 reviewed' in (ws/flow.DASHBOARD).read_text()
-    assert r['dashboard']==str(ws/flow.DASHBOARD)
+    assert not any(e.get('note')=='T1 reviewed' for e in flow.read_events(ws))
 
 
 def test_dashboard_renders_multiple_review_evidence_paths_from_immutable_snapshot(tmp_path,monkeypatch,capsys):

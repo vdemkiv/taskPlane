@@ -40,3 +40,13 @@ Interactive design, build, and dynamic-review previews run only in registered,
 pinned, private disposable scopes. They cannot push, mutate the source checkout
 or remotes, escape the sandbox, access undeclared external networks, or claim
 success after build, launch, timeout, authorization, or teardown failure.
+
+## Scoped native execution
+
+Native workers use the existing run and accepted task definitions. Root prepares
+grants with observed host capacity, binds actual native identities, and verifies
+joined results before dependent tasks start. Workers claim their own context and
+exact task paths; root phase controls remain separate. There is no default two-worker
+cap. See the [native dispatch protocol](../skills/tp-go/references/codex-native-dispatch.md)
+and [CLI contracts](cli-reference.md). An edited checkout or package build does not
+prove that the host loaded its hooks; verify actual runtime identity before live dispatch.

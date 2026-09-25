@@ -25,6 +25,8 @@ MAX_METADATA_BYTES = 256 * 1024
 MAX_COUNTER_TAIL_BYTES = 4 * 1024 * 1024
 
 MAX_RECORD_BYTES = 2 * 1024 * 1024
+MAX_REPLAY_BYTES = 512 * 1024 * 1024
+MAX_REPLAY_RESPONSES = 250000
 
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 
@@ -151,7 +153,7 @@ def _latest_counter(tail: bytes, *, at_or_before: float | None = None,
             "reasoning_output_tokens",
         )
         total_tokens = _nonnegative(total.get("total_tokens"), "total_tokens")
-        if cached > input_tokens:
+        if cached > input_tokens or reasoning > output:
             raise NativeSessionMeterError("cached input exceeds native input tokens")
         if total_tokens != input_tokens + output:
             raise NativeSessionMeterError("native total tokens do not reconcile")
@@ -282,6 +284,144 @@ def read_logical_snapshot(paths: Sequence[str | Path], session_id: str, *,
     return {"session_id": session_id, "usage": usage,
             "parent_session_id": next(iter(parents), None),
             "agent_path": next(iter(agents), None), "partial": bool(errors)}
+
+
+def read_owned_interval(paths: Sequence[str | Path], session_id: str, *,
+                        start: float, end: float | None = None) -> dict[str, Any]:
+    """Bounded historical recovery with [start, end) response ownership.
+
+    Keep only counters/response IDs, never prompts. Prefer identified response
+    deltas; cumulative boundary subtraction is a fallback, never added to them.
+    Missing/reset/conflicting/truncated data stays partial or unavailable.
+    """
+    keys = ("input_tokens", "cached_input_tokens", "uncached_input_tokens", "output_tokens", "reasoning_tokens", "total_tokens")
+    zero = dict.fromkeys(keys, 0)
+    responses: dict[str, tuple[float, dict[str, int]]] = {}
+    counters: dict[tuple[float, str], dict[str, int]] = {}
+    errors: set[str] = set()
+    used = 0
+    earliest: float | None = None
+    resumed = False
+    owned = False
+
+    def counts(raw: Any) -> dict[str, int]:
+        if not isinstance(raw, dict):
+            raise NativeSessionMeterError("Missing owned usage")
+        value = {"input_tokens": _nonnegative(raw.get("input_tokens"), "input"),
+                 "cached_input_tokens": _nonnegative(raw.get("cached_input_tokens", 0), "cache"),
+                 "output_tokens": _nonnegative(raw.get("output_tokens"), "output"),
+                 "reasoning_tokens": _nonnegative(raw.get("reasoning_output_tokens", raw.get("reasoning_tokens", 0)), "reasoning"),
+                 "total_tokens": _nonnegative(raw.get("total_tokens"), "total")}
+        value["uncached_input_tokens"] = value["input_tokens"] - value["cached_input_tokens"]
+        if (value["uncached_input_tokens"] < 0 or value["reasoning_tokens"] > value["output_tokens"]
+                or value["total_tokens"] != value["input_tokens"] + value["output_tokens"]):
+            raise NativeSessionMeterError("Owned usage does not reconcile")
+        return value
+
+    for name in sorted({str(Path(p).absolute()) for p in paths}):
+        path = Path(name)
+        try:
+            if any(p.is_symlink() for p in (path, *path.parents)):
+                raise NativeSessionMeterError("Symlinked native replay")
+            with path.open("rb") as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise NativeSessionMeterError("Native replay is not regular")
+                metadata, _ = _session_metadata(stream.read(MAX_METADATA_BYTES))
+                if metadata["session_id"] != session_id:
+                    raise NativeSessionMeterError("Foreign native replay")
+                born = datetime.fromisoformat(metadata["started_at"].replace("Z", "+00:00")).timestamp()
+                earliest = born if earliest is None else min(earliest, born)
+                resumed = resumed or metadata["resumed"]
+                stream.seek(0)
+                while used < MAX_REPLAY_BYTES:
+                    raw = stream.readline(min(MAX_RECORD_BYTES + 1, MAX_REPLAY_BYTES - used))
+                    if not raw:
+                        break
+                    used += len(raw)
+                    if not raw.endswith(b"\n"):
+                        errors.add("oversized_or_inflight_record")
+                        while raw and not raw.endswith(b"\n") and used < MAX_REPLAY_BYTES:
+                            raw = stream.readline(min(MAX_RECORD_BYTES, MAX_REPLAY_BYTES - used))
+                            used += len(raw)
+                        continue
+                    try:
+                        record = json.loads(raw)
+                        payload = record.get("payload", {}) if isinstance(record, dict) else {}
+                        native = record.get("type") == "token_usage_record"
+                        legacy = record.get("type") == "event_msg" and payload.get("type") == "token_count"
+                        if not native and not legacy:
+                            continue
+                        if native and payload.get("thread_id") != session_id:
+                            continue
+                        if legacy and metadata.get("forked_history"):
+                            continue
+                        at = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+                        if at.tzinfo is None:
+                            raise ValueError("timestamp lacks timezone")
+                        instant = at.timestamp()
+                        if end is not None and instant >= end:
+                            continue
+                        total = payload.get("thread_token_usage") if native else payload.get("info", {}).get("total_token_usage")
+                        if total is not None:
+                            value = counts(total)
+                            key = (instant, "thread" if native else name)
+                            if key in counters and counters[key] != value:
+                                errors.add("conflicting_counter")
+                            counters[key] = value
+                        if native and "usage" in payload:
+                            owned = True
+                            response = payload.get("response_id")
+                            if not isinstance(response, str) or not response:
+                                errors.add("missing_response_identity")
+                                continue
+                            value = counts(payload["usage"])
+                            if response in responses and responses[response] != (instant, value):
+                                errors.add("conflicting_response")
+                            responses[response] = (instant, value)
+                            if len(responses) > MAX_REPLAY_RESPONSES:
+                                errors.add("response_limit")
+                                break
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        errors.add("invalid_counter_record")
+                if used >= MAX_REPLAY_BYTES:
+                    errors.add("replay_byte_limit")
+                after = os.fstat(stream.fileno())
+                if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                    errors.add("native_source_changed")
+        except (OSError, ValueError):
+            errors.add("native_source_unavailable")
+    thread = [(at, v) for (at, kind), v in counters.items() if kind == "thread"]
+    samples = sorted(thread or [(at, v) for (at, _), v in counters.items()], key=lambda x: x[0])
+    if not thread and len(paths) > 1:
+        errors.add("legacy_segment_boundaries_unknown")
+    reset = any(any(b[k] < a[k] for k in keys) for (_, a), (_, b) in zip(samples, samples[1:]))
+    if reset:
+        errors.add("counter_reset")
+    prior = [value for at, value in samples if at < start]
+    baseline = prior[-1] if prior else zero if earliest is not None and not resumed and not errors else None
+    native_usage = samples[-1][1] if samples else None
+    usage = None
+    basis = "unavailable interval"
+    if owned:
+        usage = {k: sum(v[k] for at, v in responses.values() if at >= start) for k in keys}
+        basis = "owned response replay [start, end)"
+        if baseline is None and resumed:
+            errors.add("resumed_baseline_unavailable")
+        if baseline is not None and native_usage is not None and not reset:
+            if any(usage[k] != native_usage[k] - baseline[k] for k in keys):
+                errors.add("owned_counter_mismatch")
+    elif baseline is not None and native_usage is not None and not reset:
+        if all(native_usage[k] >= baseline[k] for k in keys):
+            usage = {k: native_usage[k] - baseline[k] for k in keys}
+            basis = "owned session cumulative boundaries [start, end)"
+    if errors and not owned:
+        usage = None
+    return {"usage": usage, "native_usage": native_usage, "baseline": baseline,
+            "status": "partial" if errors else "measured" if usage is not None else "unavailable",
+            "basis": basis, "errors": sorted(errors), "bytes_read": used,
+            "responses": sum(at >= start for at, _ in responses.values()),
+            "interval": {"start": start, "end_exclusive": end}}
 
 
 def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:

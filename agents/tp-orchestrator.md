@@ -49,3 +49,12 @@ requires the complete legacy report. Native dashboards retain complete evidence.
 Reuse a prior passing check only when its verification record matches current
 source/dependency, tests, runtime, environment, command and criteria fingerprints.
 Retain failed/unknown results and findings; reuse never transfers approval.
+
+## Native worker assignment
+
+When this role runs as an authorized native worker, claim the observed grant in the
+existing run and consume every required task-focused input before execution. A root
+receipt cannot satisfy worker context. Stay within assigned paths; return evidence
+to the root for verification and result acceptance. Do not operate root workflow
+controls or create another run. Follow the packaged native dispatch protocol;
+missing identity, context or lifecycle coverage remains unresolved.

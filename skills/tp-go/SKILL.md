@@ -78,3 +78,12 @@ requires the complete legacy report. Native dashboards retain complete evidence.
 Reuse a prior passing check only when its verification record matches current
 source/dependency, tests, runtime, environment, command and criteria fingerprints.
 Retain failed/unknown results and findings; reuse never transfers approval.
+
+## Scoped native workers
+
+When authorized, use the installed native dispatch protocol: root prepares a run-bound
+task grant, the observed worker claims its identity and consumes its own task context,
+and root verifies the joined result before satisfying dependencies. Fill observed
+capacity with useful independent work; two is only the minimum live acceptance test.
+Workers return evidence and cannot operate root phase controls or publish task definitions.
+Require actual loaded-runtime and native execution evidence for live claims.

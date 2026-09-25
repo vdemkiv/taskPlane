@@ -63,3 +63,13 @@ be recorded without `--by` (the approve errors), while `plan_approval` and
 `loop_approve_unattributed`. An auditor should treat `(unattributed)`
 entries as detectable self-approval risk (this is exactly the signal the
 Claude Tag protocol uses), not as a uniform attributed trail.
+
+## Scoped native execution
+
+Native workers use the existing run and accepted task definitions. Root prepares
+grants with observed host capacity, binds actual native identities, and verifies
+joined results before dependent tasks start. Workers claim their own context and
+exact task paths; root phase controls remain separate. There is no default two-worker
+cap. See the [native dispatch protocol](../skills/tp-go/references/codex-native-dispatch.md)
+and [CLI contracts](cli-reference.md). An edited checkout or package build does not
+prove that the host loaded its hooks; verify actual runtime identity before live dispatch.

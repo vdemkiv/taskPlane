@@ -4,8 +4,39 @@ import json
 from pathlib import Path
 
 import pytest
+from datetime import datetime
 
 from taskplane import native_session_meter
+
+
+def test_interval_reset_and_truncated_history_never_become_measured_zero(tmp_path, monkeypatch):
+    from taskplane.tests.test_harness_review_regressions import native
+    path = tmp_path/'reset.jsonl'
+    native(path,'child',[(5,100),(15,30)],'root')
+    start=datetime.fromisoformat('2026-09-01T00:00:10+00:00').timestamp()
+    result=native_session_meter.read_owned_interval([path],'child',start=start)
+    assert result['usage'] is None and result['status']=='partial'
+    assert 'counter_reset' in result['errors']
+    monkeypatch.setattr(native_session_meter,'MAX_REPLAY_BYTES',100)
+    result=native_session_meter.read_owned_interval([path],'child',start=start)
+    assert result['status']=='partial' and result['usage'] is None
+
+
+def test_owned_usage_categories_and_foreign_response_exclusion(tmp_path):
+    from taskplane.tests.test_harness_review_regressions import native
+    path=tmp_path/'owned.jsonl'
+    rows=native(path,'child',[(5,100),(15,150)],'root',owned=True)
+    rows[-1]['payload']['usage'].update(cached_input_tokens=20,output_tokens=10,input_tokens=40,reasoning_output_tokens=5)
+    rows[-1]['payload']['thread_token_usage'].update(cached_input_tokens=20,output_tokens=10,input_tokens=140,reasoning_output_tokens=5)
+    # Foreign copied history may coexist but is never charged to this worker.
+    foreign=json.loads(json.dumps(rows[-1]));foreign['payload']['thread_id']='parent'
+    rows.append(foreign)
+    path.write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+    start=datetime.fromisoformat('2026-09-01T00:00:10+00:00').timestamp()
+    result=native_session_meter.read_owned_interval([path],'child',start=start)
+    assert result['status']=='measured'
+    assert result['usage']==dict(input_tokens=40,cached_input_tokens=20,uncached_input_tokens=20,
+                                output_tokens=10,reasoning_tokens=5,total_tokens=50)
 
 
 def _write_segment(
