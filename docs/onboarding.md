@@ -76,6 +76,12 @@ locality proof. Do not replace refused native workers with serial coverage.
 | Local Claude Code / Codex | Existing unbound local workflows remain compatible unless Cowork/session signals or an explicit binding/policy require validation. Verify the loaded adapter and actual hook events in the current host. |
 | Cowork | Binding, split cwd/native/shell paths, policy refusals and recovery have automated fixture coverage. Live selected-folder persistence, installed hook invocation, worker location/identity and dashboard display still require a named host/version integration run. |
 
+Strict workspace binding requires descriptor-relative directory operations with
+no-follow support. Standard Windows Python lacks these primitives: selected or
+bound workspaces refuse before writing state. Existing unbound local workflows
+remain supported. Windows CI checks that refusal and legacy behavior; successful
+binding and relocation fixtures run only where these primitives are available.
+
 No live Cowork certification is claimed. Claude fixtures must use Claude-shaped
 `session_id` and `Bash.command` events and assert the selected adapter; Codex-shaped
 fixtures, package contents and generated dashboards cannot establish that coverage.

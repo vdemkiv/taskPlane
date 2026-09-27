@@ -7,6 +7,7 @@
 - Return structured context errors when the workspace is omitted or unresolved, and reject malformed unavailable-worker evidence before changing grants or state.
 - Keep Claude-shaped hooks, native worker identity and workspace contracts aligned; document setup, recovery and manual live-host verification limits.
 - Verified with 450 affected regression tests, two host-shape checks, independent Evaluation and parallel Engineering reviews. Live Claude Cowork verification remains a manual follow-up.
+- Exercise packaged Windows hook launchers and explicitly test unsupported binding operations without mutation; successful binding fixtures require the actual filesystem primitives.
 
 ## v2.31.4 — native workers and bounded context
 

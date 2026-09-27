@@ -9,6 +9,7 @@ import shutil
 import pytest
 
 from taskplane import primitives, workflow as w, workspace_binding as b
+from taskplane.tests.binding_support import HAS_BINDING_RUNTIME, requires_binding_runtime
 
 
 @pytest.fixture(autouse=True)
@@ -132,10 +133,43 @@ def test_binding_administration_requires_descriptor_support(tmp_path, monkeypatc
     assert tree(tmp_path) == before
 
 
+@pytest.mark.parametrize("operation", ["bind", "recover", "inspect"])
+@pytest.mark.parametrize("capability", [
+    pytest.param("native", marks=pytest.mark.skipif(HAS_BINDING_RUNTIME,
+                 reason="Native unsupported-runtime check runs where primitives are absent")),
+    "dir_fd", "O_DIRECTORY", "O_NOFOLLOW",
+])
+def test_unsupported_binding_cli_is_structured_and_preserves_files(
+        tmp_path, monkeypatch, capsys, operation, capability):
+    req = request(tmp_path)
+    if operation == "recover":
+        req.update(expected_project_id="0" * 32, request_reference="user/recover")
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(req))
+    monkeypatch.setenv("TASKPLANE_SURFACE", "cowork")
+    if capability == "dir_fd":
+        monkeypatch.setattr(b.os, "supports_dir_fd", set())
+    elif capability != "native":
+        monkeypatch.delattr(b.os, capability, raising=False)
+    before = tree(tmp_path)
+    args = [operation, "--workspace", str(tmp_path)]
+    if operation != "inspect":
+        args += ["--request", str(request_path)]
+    assert b.main(args) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "blocked" and result["reason"] == "workspace_binding"
+    assert "no-follow directory operations" in result["detail"]
+    assert tree(tmp_path) == before
+    assert not (tmp_path / ".taskplane").exists()
+
+
 @pytest.mark.parametrize("authority", ["binding", "pending", "selected"])
 def test_selected_or_existing_authority_cannot_use_legacy_fallback(tmp_path, monkeypatch, authority):
     if authority == "binding":
-        b.bind(tmp_path, request(tmp_path))
+        # Even an unvalidated persisted binding selects the strict path. Creating
+        # it directly keeps this refusal test runnable without binding support.
+        (tmp_path / ".taskplane").mkdir()
+        (tmp_path / ".taskplane" / b.BINDING_FILE).write_text("{}")
     elif authority == "pending":
         (tmp_path / b.PENDING_FILE).write_text("{}")
     else:
@@ -154,6 +188,7 @@ def test_claude_session_path_requires_binding_without_matching_neighbors(path, r
     assert b._required(Path(path)) is required
 
 
+@requires_binding_runtime
 def test_bind_is_idempotent_and_frozen_contract_is_checked(tmp_path):
     req = request(tmp_path)
     bound = b.bind(tmp_path, req)
@@ -184,6 +219,7 @@ def test_bind_is_idempotent_and_frozen_contract_is_checked(tmp_path):
     lambda r: r["worker"].update(location=[]),
     lambda r: r.update(execution_root="/different-project"),
 ])
+@requires_binding_runtime
 def test_malformed_evidence_refuses_without_state(tmp_path, change):
     req = request(tmp_path)
     change(req)
@@ -195,6 +231,7 @@ def test_malformed_evidence_refuses_without_state(tmp_path, change):
 
 
 @pytest.mark.parametrize("kind", ["symlink", "parent-symlink", "directory", "fifo", "oversize"])
+@requires_binding_runtime
 def test_probe_reads_are_bounded_ordinary_no_symlink(tmp_path, kind):
     req = request(tmp_path)
     path = tmp_path / ".project-probe"
@@ -220,6 +257,7 @@ def test_probe_reads_are_bounded_ordinary_no_symlink(tmp_path, kind):
     assert not (tmp_path / ".taskplane").exists()
 
 
+@requires_binding_runtime
 def test_store_and_workspace_symlinks_are_rejected(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
@@ -237,6 +275,7 @@ def test_store_and_workspace_symlinks_are_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("policy", ["local", "darwin-local"])
+@requires_binding_runtime
 def test_required_execution_observation_not_inferred_from_binding(tmp_path, monkeypatch, policy):
     req = request(tmp_path, policy=policy)
     monkeypatch.setattr(b.platform, "system", lambda: "Darwin")
@@ -251,6 +290,7 @@ def test_required_execution_observation_not_inferred_from_binding(tmp_path, monk
         b.ensure(tmp_path)
 
 
+@requires_binding_runtime
 def test_darwin_local_checks_actual_platform(tmp_path, monkeypatch):
     local(monkeypatch)
     monkeypatch.setattr(b.platform, "system", lambda: "Linux")
@@ -259,6 +299,7 @@ def test_darwin_local_checks_actual_platform(tmp_path, monkeypatch):
     assert not (tmp_path / ".taskplane").exists()
 
 
+@requires_binding_runtime
 def test_worker_location_requires_independent_runtime_observation(tmp_path, monkeypatch):
     local(monkeypatch)
     bound = b.bind(tmp_path, request(tmp_path, policy="local"))
@@ -274,6 +315,7 @@ def test_worker_location_requires_independent_runtime_observation(tmp_path, monk
     assert b.ensure(tmp_path, worker=True) == bound
 
 
+@requires_binding_runtime
 def test_any_policy_allows_explicit_remote_but_refuses_conflict(tmp_path, monkeypatch):
     req = request(tmp_path)
     req["execution"]["location"] = "remote"
@@ -286,6 +328,7 @@ def test_any_policy_allows_explicit_remote_but_refuses_conflict(tmp_path, monkey
         b.ensure(tmp_path)
 
 
+@requires_binding_runtime
 def test_policy_environment_cannot_weaken_binding(tmp_path, monkeypatch):
     local(monkeypatch)
     b.bind(tmp_path, request(tmp_path, policy="local"))
@@ -295,6 +338,7 @@ def test_policy_environment_cannot_weaken_binding(tmp_path, monkeypatch):
         b.ensure(tmp_path)
 
 
+@requires_binding_runtime
 def test_split_cwd_aliases_one_root_and_no_scratch_store(tmp_path, monkeypatch):
     project, scratch = tmp_path / "project", tmp_path / "session"
     project.mkdir()
@@ -374,7 +418,7 @@ def test_posix_targets_keep_backslash_refusal(tmp_path, bound):
         b.relative_path(tmp_path, r"src\feature.py")
 
 
-@pytest.mark.parametrize("bound", [False, True])
+@pytest.mark.parametrize("bound", [False, pytest.param(True, marks=requires_binding_runtime)])
 @pytest.mark.parametrize("directory", [False, True])
 def test_native_targets_refuse_symlink_components(tmp_path, bound, directory):
     project = tmp_path / "project"
@@ -394,12 +438,14 @@ def test_native_targets_refuse_symlink_components(tmp_path, bound, directory):
 
 
 @pytest.mark.parametrize("target", ["../neighbor.txt", "sub/../neighbor.txt", "a\\b", "/other/project/a", "."])
+@requires_binding_runtime
 def test_relative_targets_refuse_escape(tmp_path, target):
     b.bind(tmp_path, request(tmp_path))
     with pytest.raises(w.Refusal):
         b.relative_path(tmp_path, target)
 
 
+@requires_binding_runtime
 def test_alias_neighbor_symlink_and_nested_alias_refused(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
@@ -416,6 +462,7 @@ def test_alias_neighbor_symlink_and_nested_alias_refused(tmp_path):
         b.bind(other, request(other, host=other / "nested"))
 
 
+@requires_binding_runtime
 def test_probe_drift_and_binding_tamper_refuse(tmp_path):
     b.bind(tmp_path, request(tmp_path))
     (tmp_path / ".project-probe").write_bytes(b"changed")
@@ -429,6 +476,7 @@ def test_probe_drift_and_binding_tamper_refuse(tmp_path):
         b.load(tmp_path)
 
 
+@requires_binding_runtime
 def test_active_legacy_store_cannot_be_bound(tmp_path):
     req = request(tmp_path)
     controller(tmp_path, active=True)
@@ -438,6 +486,7 @@ def test_active_legacy_store_cannot_be_bound(tmp_path):
     assert tree(tmp_path) == before
 
 
+@requires_binding_runtime
 def test_inactive_relocation_archives_exact_bytes_no_approval_transfer(tmp_path):
     destination, original, fresh, prior_bytes = relocation(tmp_path)
     assert b.describe(destination)["status"] == "blocked"
@@ -501,6 +550,7 @@ def restored_relocation(tmp_path, *, approved=False, archived=False, historical_
 
 
 @pytest.mark.parametrize("archived, historical_live", [(False, False), (True, False), (False, True)])
+@requires_binding_runtime
 def test_restored_retired_controller_relocates_exact_history_without_approvals(tmp_path, archived, historical_live):
     destination, bound, fresh, target, candidate, receipt = restored_relocation(
         tmp_path, approved=True, archived=archived, historical_live=historical_live)
@@ -537,6 +587,7 @@ def test_restored_retired_controller_relocates_exact_history_without_approvals(t
     "receipt-sha256", "receipt-reference", "receipt-prepared", "receipt-preserved", "receipt-approvals",
     "receipt-extra", "receipt-missing", "missing-current-run", "current-active",
 ])
+@requires_binding_runtime
 def test_invalid_restoration_history_refuses_without_mutation(tmp_path, bad):
     destination, _, fresh, target_name, copy_name, receipt_name = restored_relocation(tmp_path)
     store = destination / ".taskplane"
@@ -613,6 +664,7 @@ def test_invalid_restoration_history_refuses_without_mutation(tmp_path, bad):
 
 @pytest.mark.parametrize("options", [{"active": True}, {"worker": "running"}, {"worker": "unknown"},
                                      {"handle": "running"}, {"corrupt": True}])
+@requires_binding_runtime
 def test_active_or_corrupt_recovery_is_read_only(tmp_path, options):
     destination, _, fresh, prior = relocation(tmp_path, **options)
     before = tree(destination)
@@ -625,6 +677,7 @@ def test_active_or_corrupt_recovery_is_read_only(tmp_path, options):
 
 
 @pytest.mark.parametrize("mutation", ["project", "stale-bytes", "stale-reference", "missing-provenance"])
+@requires_binding_runtime
 def test_recovery_requires_correct_identity_fresh_probe_and_provenance(tmp_path, mutation):
     destination, original, fresh, _ = relocation(tmp_path)
     if mutation == "project":
@@ -642,6 +695,7 @@ def test_recovery_requires_correct_identity_fresh_probe_and_provenance(tmp_path,
     assert tree(destination) == before
 
 
+@requires_binding_runtime
 def test_copied_identity_refuses_even_with_fresh_claim(tmp_path):
     original = tmp_path / "original"
     original.mkdir()
@@ -656,6 +710,7 @@ def test_copied_identity_refuses_even_with_fresh_claim(tmp_path):
     assert tree(copied) == before
 
 
+@requires_binding_runtime
 def test_same_path_copy_detected_by_directory_identity(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
@@ -667,6 +722,7 @@ def test_same_path_copy_detected_by_directory_identity(tmp_path):
         b.ensure(root)
 
 
+@requires_binding_runtime
 def test_recovery_rejects_special_history_and_incomplete_marker(tmp_path):
     destination, _, fresh, _ = relocation(tmp_path)
     (destination / ".taskplane" / "untrusted-link").symlink_to(destination / ".project-probe")
@@ -679,6 +735,7 @@ def test_recovery_rejects_special_history_and_incomplete_marker(tmp_path):
         b.recover(destination, fresh)
 
 
+@requires_binding_runtime
 def test_interrupted_recovery_remains_fail_closed_and_original_bytes_survive(tmp_path, monkeypatch):
     destination, _, fresh, prior_bytes = relocation(tmp_path)
     rename = b.os.rename
@@ -696,6 +753,7 @@ def test_interrupted_recovery_remains_fail_closed_and_original_bytes_survive(tmp
         b.ensure(destination)
 
 
+@requires_binding_runtime
 def test_cli_request_and_readonly_inspection(tmp_path, capsys):
     req = request(tmp_path)
     path = tmp_path / "request.json"
@@ -712,11 +770,13 @@ def test_cli_request_and_readonly_inspection(tmp_path, capsys):
     assert tree(tmp_path) == before
 
 
+@requires_binding_runtime
 def test_digest_matches_canonical_record(tmp_path):
     bound = b.bind(tmp_path, request(tmp_path))
     assert bound["digest"] == primitives.content_fingerprint({k: v for k, v in bound.items() if k != "digest"})
 
 
+@requires_binding_runtime
 def test_recovery_preserves_and_validates_archived_context_history(tmp_path):
     from taskplane.context import Store
     original = tmp_path / "original"
@@ -736,6 +796,7 @@ def test_recovery_preserves_and_validates_archived_context_history(tmp_path):
 
 @pytest.mark.parametrize("field,value", [("retired", True), ("superseded_by", True),
                                          ("source_baseline", []), ("workers", [])])
+@requires_binding_runtime
 def test_corrupt_terminal_fields_do_not_authorize_recovery(tmp_path, field, value):
     destination, _, fresh, _ = relocation(tmp_path)
     path = next(p for p in (destination / ".taskplane").glob("workflow-*.json") if "initialized" not in p.name)
@@ -748,6 +809,7 @@ def test_corrupt_terminal_fields_do_not_authorize_recovery(tmp_path, field, valu
     assert tree(destination) == before
 
 
+@requires_binding_runtime
 def test_recovery_inventory_has_hard_bounds(tmp_path, monkeypatch):
     destination, _, fresh, _ = relocation(tmp_path)
     monkeypatch.setattr(b, "MAX_FILES", 2)

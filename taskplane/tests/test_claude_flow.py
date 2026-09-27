@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def bound_workspace(tmp_path, monkeypatch, policy='any'):
+    from taskplane.tests.binding_support import require_binding_runtime
+    require_binding_runtime()
     from taskplane import workspace_binding as binding
     for key in list(os.environ):
         if key.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_')):

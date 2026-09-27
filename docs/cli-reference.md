@@ -118,6 +118,12 @@ or cloud. Exact installed `workspace inspect`, `bind` and `recover` commands rem
 available for setup/recovery. This exception does not admit arbitrary shell commands
 or unsupported native tools.
 
+Binding and relocation require descriptor-relative no-follow directory operations.
+Standard Windows Python does not provide them; strict binding returns a structured
+`workspace_binding` refusal before mutation. Unbound local workflows retain their
+existing Windows behavior. Do not replace this refusal with path-based fallback
+or infer successful Windows binding from path-parser fixtures.
+
 Invoke the installed launcher, for example:
 
 ```sh

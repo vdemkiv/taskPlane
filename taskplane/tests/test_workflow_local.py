@@ -169,7 +169,8 @@ def guarded(args):
     identity = {'session_id':'package-root'} if host == 'claude' else {'thread_id':'package-root'}
     event = {'hook_event_name':'PreToolUse','cwd':str(workspace), **identity,
              'tool_name':tool, 'tool_input':{key:shlex.join(argv)}}
-    observed = subprocess.run(hooks['PreToolUse'][0]['hooks'][0]['command'], shell=True,
+    launcher = hooks['PreToolUse'][0]['hooks'][0]['commandWindows' if os.name == 'nt' else 'command']
+    observed = subprocess.run(launcher, shell=True,
         cwd=workspace, input=json.dumps(event), text=True, capture_output=True)
     assert observed.returncode == 0, (observed.stdout, observed.stderr)
     assert json.loads(observed.stdout).get('hookSpecificOutput',{}).get('permissionDecision') != 'deny', observed.stdout
