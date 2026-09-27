@@ -80,6 +80,16 @@ Retain failed/unknown results and findings; reuse never transfers approval.
 
 ## Adapter availability
 
+Validate the [workspace and execution contract](shared-flow.md#workspace-and-execution-contract)
+before preparation and again at claim. Supply the same selected execution root,
+binding and run to children; native host paths remain validated aliases. Under
+`local` or `darwin-local`, current worker location/reference evidence is required
+independently of the root command's observation. A mount, parent identity or grant
+prompt cannot prove child execution location or identity. Unknown required locality, binding
+drift or missing host propagation blocks the attempt; never substitute serial work
+for required native coverage. Existing claim, context and automatic pre/post startup
+checks remain mandatory, including after a host or mount change.
+
 Check the actually loaded runtime and workflow coverage before dispatch. The scoped
 native adapter supports explicit Codex collaboration and Claude Agent/Task contracts
 in `native_workflow`. Source changes and fixture tests do not prove the host loaded

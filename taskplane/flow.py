@@ -15,9 +15,10 @@ import os
 from pathlib import Path
 import sys
 import stat
+import shutil
 import uuid
 from typing import Any, Callable
-from taskplane import workflow, workflow_host, workflow_local, depgraph
+from taskplane import workflow, workflow_host, workflow_local, depgraph, workspace_binding
 
 if __package__:
     from . import native_session_meter as _package_meter
@@ -622,8 +623,12 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
 
 
 def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: str | None = None) -> dict[str, Any]:
+    try:
+        workspace = workspace_binding.resolve_workspace(None, event=event)
+        workspace_binding.ensure(workspace)
+    except workflow.Refusal:
+        return {}  # A denied selection must not create a competing journal or session export.
     claude_flow_usage.bind_session(event)
-    workspace = Path(event.get("cwd") or os.getcwd())
     rows = read_events(workspace)
     if not rows:
         return {}
@@ -651,6 +656,7 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
            "identity_observation": {k: event[k][:200] for k in ("thread_id", "session_id", "parent_session_id", "agent_id",
                "subagent_id", "agent_type", "parent_tool_call_id") if isinstance(event.get(k), str)},
            "binding_observation": event.get("taskplane_observed_binding"),
+           "workspace_contract": event.get("taskplane_workspace_contract"),
            **observation}
     from .host_capabilities import runtime_identity
     row['runtime_identity'] = runtime_identity()
@@ -669,9 +675,68 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
     return {}
 
 
+def _workspace_admin(event: dict[str, Any]) -> bool:
+    """Only the installed bounded administration CLI can precede binding checks."""
+    if (event.get("tool_name") or event.get("tool")) not in {"Bash", "exec_command"}:
+        return False
+    if event.get("parent_session_id") or event.get("agent_id"):
+        return False
+    words = workflow_local.runtime_words(event)
+    if (len(words) < 4 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
+            or not Path(words[1]).is_absolute()
+            or Path(words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()
+            or words[2] != 'workspace' or words[3] not in {'inspect', 'bind', 'recover'}):
+        return False
+    options = words[4:]
+    required = {'--workspace'} | ({'--request'} if words[3] != 'inspect' else set())
+    return (len(options) == 2 * len(required) and set(options[::2]) == required
+            and all(value and not value.startswith('--') for value in options[1::2]))
+
+
+def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
+    """Keep exact diagnosis/recovery reachable when the database itself is unavailable."""
+    if ((event.get("tool_name") or event.get("tool")) not in {"Bash", "exec_command"}
+            or event.get("parent_session_id") or event.get("agent_id") or event.get("subagent_id")):
+        return False
+    words = workflow_local.runtime_words(event)
+    if (len(words) < 4 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
+            or not Path(words[1]).is_absolute() or Path(words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()
+            or words[2] != 'flow' or words[3] not in {'diagnose', 'recover'}):
+        return False
+    options = words[4:]
+    if options.count('--full') > 1:
+        return False
+    options = [value for value in options if value != '--full']
+    required = {'--workspace'}
+    if words[3] == 'recover':
+        required |= {'--recover-from', '--expected-sha256', '--run', '--expected-revision', '--request-reference'}
+    if len(options) != len(required) * 2 or set(options[::2]) != required:
+        return False
+    values = dict(zip(options[::2], options[1::2]))
+    if any(not value or value.startswith('--') for value in values.values()):
+        return False
+    try:
+        return workspace_binding.resolve_workspace(values['--workspace'], event=event) == workspace
+    except (workflow.Refusal, OSError, ValueError):
+        return False
+
+
 def _hook(event: dict[str, Any], *,
          governor: workflow_host.Controller | None = None) -> dict[str, Any]:
-    workspace = Path(event.get("cwd") or os.getcwd()).resolve()
+    if governor is None and _workspace_admin(event):
+        return {}  # The administration command still validates proof and active-state recovery.
+    try:
+        workspace = workspace_binding.resolve_workspace(None, event=event)
+        contract = workspace_binding.ensure(workspace)
+    except workflow.Refusal:
+        incidental = Path(event.get("cwd") or os.getcwd())
+        # Installing the plugin must not capture unrelated, unselected Cowork tasks.
+        words = workflow_local.runtime_words(event)
+        invokes_runtime = len(words) > 2 and Path(words[1]).name == 'tp.py'
+        if (not os.environ.get('TASKPLANE_WORKSPACE') and not workflow_local.execution_entry(event)
+                and not invokes_runtime and not (incidental / '.taskplane').exists()):
+            return {}
+        raise
     rows, session = read_events(workspace), session_id(event)
     parent = event.get("parent_session_id")
     if governor is None:
@@ -679,11 +744,20 @@ def _hook(event: dict[str, Any], *,
     if parent:
         event['parent_session_id'] = parent
     legacy = active_run(rows, session, parent)
-    controller, guarded = select_controller(workspace, session, parent, event=event,
-                                            legacy=legacy, governor=governor)
+    try:
+        controller, guarded = select_controller(workspace, session, parent, event=event,
+                                                legacy=legacy, governor=governor)
+    except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
+        if ((not isinstance(exc, workflow.Refusal) or exc.reason == 'state_unavailable') and _state_admin(event, workspace)
+                and (governor is None or governor.adapter.profile == 'native_workflow'
+                     and governor.principal == governor.root)):
+            return {}  # The exact CLI still validates recovery identity/hash; no phase action is admitted.
+        raise
     name = event.get("hook_event_name")
     event["taskplane_observed_binding"] = {"root": controller.root, "principal": controller.principal,
                                            "profile": controller.adapter.profile}
+    event["taskplane_workspace_contract"] = ({k: contract[k] for k in ("project_id", "digest")}
+                                             if contract else None)
     # Overwrite caller data with the package actually executing this automatic hook.
     from .host_capabilities import runtime_identity
     event["taskplane_runtime_identity"] = runtime_identity()
@@ -847,7 +921,7 @@ def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = 
     from .context import Store, encode
     from .context_handoff import Session
     from .context_views import summary
-    if full:
+    if full or action in {'diagnose', 'recover'}:
         print(json.dumps(payload, indent=2))
         return
     state = payload.get("workflow", payload)
@@ -886,9 +960,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "context", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "context", "retire", "worker"])
     parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
-    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity"])
+    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable"])
     parser.add_argument("--grant", default="")
     parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")
     parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
@@ -900,7 +974,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     context_read.add_argument("--drain", help="Return up to 32 KiB of missing required bodies, with explicit terminal state")
     parser.add_argument("--section")
     parser.add_argument("--page", type=int)
-    parser.add_argument("--workspace", default=os.getcwd())
+    parser.add_argument("--workspace")
     parser.add_argument("--goal", default="")
     parser.add_argument("--phase", default="", type=str.lower)
     parser.add_argument("--standalone", action="store_true")
@@ -921,9 +995,13 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     assessments.add_argument("--assessment-json", help="Inline assessment JSON for auto-decide (at most 64 KiB)")
     parser.add_argument("--expected-revision", type=int)
     parser.add_argument("--replace-run", help="Explicitly replace this active native run, preserving its evidence; start only")
+    parser.add_argument("--recover-from", help="Exact adjacent numbered workflow copy; recover only")
+    parser.add_argument("--expected-sha256", help="Expected recovery copy SHA-256; recover only")
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     args = parser.parse_args(argv)
+    if args.action != 'recover' and (args.recover_from is not None or args.expected_sha256 is not None):
+        parser.error('recovery options apply only to flow recover')
     if args.task is not None and args.action not in {"context", "worker"}:
         parser.error("--task applies to context or worker")
     if any(value is not None for value in (args.consume, args.read, args.read_required, args.drain, args.section, args.page)) and args.action != "context":
@@ -934,12 +1012,16 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         parser.error("worker options apply only to flow worker")
     if (args.section is not None or args.page is not None) and args.read is None:
         parser.error("--section and --page require --read")
-    workspace = Path(args.workspace).resolve()
+    workspace = Path(args.workspace or os.getcwd()).resolve()
+    workspace_validated = False
     protected: dict[str, Any] = {}
     def show(payload: dict[str, Any]) -> None:
         if payload.get("reason") and protected.get("run"):
             payload = {**payload, "workflow": {**protected, "status": payload["status"]}}
-        emit(payload, workspace, args.action, full=args.full or not compact)
+        if not workspace_validated:
+            print(json.dumps(payload))  # Error summaries must not initialize a scratch context store.
+        else:
+            emit(payload, workspace, args.action, full=args.full or not compact)
     if args.replace_run and args.action != "start":
         parser.error("--replace-run applies only to flow start")
     if (args.assessment is not None or args.assessment_json is not None) and args.action != "auto-decide":
@@ -948,14 +1030,34 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         return run_hook(governor=governor)
     observation_errors: list[str] = []
     try:
-        workspace = Path(args.workspace).resolve()
+        workspace = workspace_binding.resolve_workspace(args.workspace)
+        workspace_binding.ensure(workspace)
+        workspace_validated = True
+        if args.action == 'recover':
+            session = session_id({})
+            workflow.require(not observed_parent({}, session), 'scope_violation', 'Native children cannot restore workflow state.')
+            controller = governor or _controller(workspace, session, args.profile)
+            recovery_result = controller.recover_initialization(args.recover_from or '', args.expected_sha256 or '',
+                        args.run or '', args.expected_revision, args.request_reference)
+            show(recovery_result)
+            return 0
         if args.action == "diagnose":
             diagnostics = workflow_local.diagnose(workspace)
+            diagnostic_controller = governor or _controller(workspace, session_id({}), args.profile)
             try:
-                state = (governor or _controller(workspace, session_id({}), args.profile)).report()
+                state = diagnostic_controller.report()
                 diagnostics["workflow"] = {k: state.get(k) for k in ("run", "revision", "phase", "status", "storage")}
             except (workflow.Refusal, OSError, ValueError, TypeError, KeyError) as exc:
                 diagnostics["workflow_error"] = str(exc)
+            if diagnostic_controller.adapter.profile == 'native_workflow':
+                try:
+                    target = diagnostic_controller.adapter.control_path(workspace, diagnostic_controller.root)
+                    marker = storage.runtime_file(str(workspace), target.stem + '.initialized.json')
+                    diagnostics['initialization'] = {'database': target.name, 'database_exists': target.exists(),
+                        'marker': marker.name, 'marker_exists': marker.exists(), 'root': diagnostic_controller.root}
+                except (workflow.Refusal, OSError, ValueError) as exc:
+                    diagnostics['initialization'] = {'error': str(exc), 'root': diagnostic_controller.root}
+            diagnostics['status'] = 'blocked' if diagnostics.get('workflow_error') else 'available'
             show(diagnostics)
             return 0
         rows = read_events(workspace)
@@ -1134,7 +1236,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         return 0
     except workflow.Refusal as exc:
         failure = exc.result()
-        if args.action == "context":
+        if args.action == "context" and workspace_validated:
             from .context_handoff import context_action
             task_id, context_run = args.task, args.run or protected.get("run", "")
             if "controller" in locals() and controller.principal != controller.root:
@@ -1142,7 +1244,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 worker = find(protected, controller.principal)
                 task_id = worker["task_id"] if worker else task_id
                 context_run = protected.get("run", context_run)
-            failure["next_action"] = (context_action(Path(args.workspace), context_run, task_id)
+            failure["next_action"] = (context_action(workspace, context_run, task_id)
                 if task_id is not None or "controller" not in locals() or controller.principal == controller.root
                 else "Report the missing current worker binding to the bound parent.")
         show(failure)

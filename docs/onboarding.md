@@ -18,14 +18,91 @@ available in this runtime.
 3. Locate the loaded skill's plugin directory. It contains `taskplane/tp.py`,
    `skills/`, the host manifest and `hooks/hooks.json`. Verify with
    `python3 /actual/plugin/taskplane/tp.py version --verify` and `help --md`.
-4. Keep a run's state in its original checkout. `.taskplane/` contains local workflow
+4. Keep a run's state in its bound checkout. `.taskplane/` contains local workflow
    state, its initialization marker, graph data, the journal and dashboard snapshots.
-   An external dashboard publication target does not move the workflow.
+   An external dashboard publication target or source export does not move the
+   workflow. A changed mount path requires the explicit recovery procedure below.
 
 A source clone and an installed cached plugin are different copies. Editing the
 clone does not update the running plugin. Verify the package source/version before
 using new commands; the version parity check validates manifest agreement, not the
 identity of every unreleased source change.
+
+## Cowork workspace and execution
+
+Before activation, scope creation or worker dispatch, establish these facts
+separately. Never infer execution topology from a `/sessions/` path, a mount,
+device metadata or the `native_workflow` name.
+
+| Condition | Required observation |
+| --- | --- |
+| Storage | One selected durable project; its native host path and execution path map to the same ordinary probe file and SHA-256, with a separate host-side observation reference. |
+| Execution | The current command environment satisfies the user's policy, with a location and observation reference. `darwin-local` also checks that the executing platform is Darwin. |
+| Workers | The worker environment independently satisfies that policy, uses the same binding/run and provides an observed child identity, successful claim, complete required context and automatic startup hooks. |
+
+1. Select one intended project through the host's supported folder controls. Obtain
+   its native host path and shell execution path; they may differ. Missing folders,
+   unavailable mappings or competing roots must be resolved before creating state.
+2. Record a host-side observation of a small ordinary probe file outside `.taskplane/`.
+   The runtime checks its bytes through the execution path. An execution-side read
+   alone is not a host-side observation. Retain the probe unchanged while bound.
+3. Set `TASKPLANE_WORKSPACE` to the selected **execution root** and
+   `TASKPLANE_SURFACE=cowork` in the environment actually supplied to Taskplane and
+   its hooks/children. Set the user's policy and the separate current execution and
+   worker observation pairs described in the [CLI binding contract](cli-reference.md#workspace-binding-and-execution-policy).
+   Prepare the versioned request outside the workflow store, then use the installed
+   runtime's `workspace bind --workspace PATH --request FILE` and `workspace inspect
+   --workspace PATH`. Binding creates only `.taskplane/workspace-binding.json` after
+   validation; ordinary workflow initialization follows it.
+4. Verify real hook events in this host and one useful worker's successful claim,
+   full required context and automatic pre/post hooks before releasing other ready
+   workers. Open the dashboard from the bound project and observe its run/visit.
+   Reopen the selected folder and verify that the authoritative store remains there.
+
+`any` permits the recorded execution environment; `local` requires current local
+execution and, for native dispatch, worker observations; `darwin-local` adds Darwin.
+Use only the policy the user permits. A Linux VM with a Mac mount cannot satisfy
+`darwin-local`; a local shell cannot establish where its child workers execute.
+These are cooperative observations, not host attestation. The local account can
+fabricate references, and a matching probe does not certify physical topology.
+
+If the host cannot propagate the selected root or required observations, report
+that missing capability and stop. Claude SessionStart can export an already
+validated root through its supported environment file; this convenience is not
+locality proof. Do not replace refused native workers with serial coverage.
+
+| Surface | Contract and verification limit |
+| --- | --- |
+| Local Claude Code / Codex | Existing unbound local workflows remain compatible unless Cowork/session signals or an explicit binding/policy require validation. Verify the loaded adapter and actual hook events in the current host. |
+| Cowork | Binding, split cwd/native/shell paths, policy refusals and recovery have automated fixture coverage. Live selected-folder persistence, installed hook invocation, worker location/identity and dashboard display still require a named host/version integration run. |
+
+Strict workspace binding requires descriptor-relative directory operations with
+no-follow support. Standard Windows Python lacks these primitives: selected or
+bound workspaces refuse before writing state. Existing unbound local workflows
+remain supported. Windows CI checks that refusal and legacy behavior; successful
+binding and relocation fixtures run only where these primitives are available.
+
+No live Cowork certification is claimed. Claude fixtures must use Claude-shaped
+`session_id` and `Bash.command` events and assert the selected adapter; Codex-shaped
+fixtures, package contents and generated dashboards cannot establish that coverage.
+
+### Recover a relocated project
+
+Inspect the new execution path with `workspace inspect --workspace PATH`; an old
+absolute path or copied project ID does not authorize adoption. For a genuine
+relocation, prepare a fresh binding request with the expected project ID, actual
+recovery request reference, new mapping and newly observed probe bytes/reference.
+Run `workspace recover --workspace PATH --request FILE` using the installed runtime.
+See the [exact recovery contract](cli-reference.md#workspace-relocation-recovery).
+
+Recovery requires validated inactive history and no live/unknown workers or
+commands. It archives the entire prior `.taskplane/` unchanged with a hash manifest,
+then creates a fresh binding for future runs. Historical approvals, grants and
+context receipts are never transferred. If the original root still exists, a
+copied binding cannot establish relocation. Active, corrupt or unverifiable state
+is left intact: retire active work through its original binding when possible,
+or report the missing original-host capability. Do not delete stores, edit identity
+files or disable hooks to force recovery.
 
 ## Review and trust hook definitions
 

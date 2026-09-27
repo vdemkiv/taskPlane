@@ -35,6 +35,118 @@ def reserve(c, s, task='T0', slots=5, **extra):
                     request={'capacity':dict(host_slots=slots, includes_root=True, reference='fixture/capacity'), **extra})
 
 
+@pytest.mark.parametrize('defect', [None, 'wrong_root', 'wrong_target', 'running', 'old', 'duplicate', 'missing',
+    'symlink', 'client_authored', 'foreign_tool', 'live_command', 'missing_reference', 'stale_revision', 'child',
+    'null_call_metadata', 'list_result_metadata', 'missing_metadata', 'number_call_timestamp',
+    'null_result_timestamp', 'missing_timestamp', 'invalid_timestamp', 'null_arguments', 'invalid_output', 'list_target'])
+def test_unavailable_worker_recovery_requires_native_evidence_and_never_accepts(tmp_path, monkeypatch, capsys, defect):
+    from datetime import datetime, timezone, timedelta
+    c, s = setup(tmp_path, count=1)
+    prepared = reserve(c, s); grant = prepared['grant']['grant_id']
+    launch(c, s, prepared)
+    event = dict(hook_event_name='PreToolUse', tool_name='collaboration.interrupt_agent',
+                 call_id='native-missing', session_id='root', tool_input={'target':'native-0'})
+    c.guard(event, s['run'])
+    c.observe({**event, 'hook_event_name':'PostToolUse','tool_response':{'previous_status':'not_found'}}, s['run'])
+    home = tmp_path.parent/(tmp_path.name+'-native-home'); folder=home/'sessions'; folder.mkdir(parents=True)
+    monkeypatch.setenv('CODEX_HOME',str(home))
+    stamp = (datetime.now(timezone.utc)-timedelta(hours=2) if defect=='old' else datetime.now(timezone.utc)).isoformat()
+    rows = [dict(type='session_meta',payload={'id':'other' if defect=='wrong_root' else 'root'}),
+        dict(type='response_item',timestamp=stamp,metadata={'client_authored':defect=='client_authored'},
+             payload=dict(type='function_call',name='interrupt_agent',namespace='other' if defect=='foreign_tool' else 'collaboration',
+                          call_id='native-missing',arguments=json.dumps({'target':'other' if defect=='wrong_target' else 'native-0'}))),
+        dict(type='response_item',timestamp=stamp,metadata={'client_authored':False},
+             payload=dict(type='function_call_output',call_id='native-missing',output=json.dumps(
+                 {'previous_status':'running' if defect=='running' else 'not_found'})))]
+    malformed = {
+        'null_call_metadata': (1, 'metadata', None), 'list_result_metadata': (2, 'metadata', []),
+        'number_call_timestamp': (1, 'timestamp', 123), 'null_result_timestamp': (2, 'timestamp', None),
+        'invalid_timestamp': (1, 'timestamp', 'not-a-timestamp'),
+    }
+    if defect in malformed:
+        index, key, value = malformed[defect]; rows[index][key] = value
+    if defect == 'missing_metadata': rows[1].pop('metadata')
+    if defect == 'missing_timestamp': rows[2].pop('timestamp')
+    if defect == 'null_arguments': rows[1]['payload']['arguments'] = None
+    if defect == 'invalid_output': rows[2]['payload']['output'] = 'not-json'
+    if defect == 'list_target': rows[1]['payload']['arguments'] = json.dumps({'target': []})
+    path=folder/'rollout-root.jsonl'; path.write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+    if defect=='duplicate':path.write_text(path.read_text()+json.dumps(rows[-1])+'\n')
+    if defect=='missing':path.unlink()
+    if defect=='symlink':
+        actual=folder/'actual.log'; path.rename(actual); path.symlink_to(actual)
+    if defect=='live_command':
+        c.observe(dict(hook_event_name='PostToolUse',tool_name='exec_command',session_id='root',
+                       tool_input={'cmd':'test'},tool_response={'session_id':1234}),s['run'])
+    if defect=='child':c=h.Controller(tmp_path,'root',h.installed_adapter('codex'),principal='native-0')
+    before=c._path().read_bytes()
+    kwargs=dict(revision=s['revision']+int(defect=='stale_revision'),grant=grant,
+                request={'request_reference':'' if defect=='missing_reference' else 'user/replace-interrupted-run',
+                         'call_id':'native-missing'})
+    if defect in {*malformed, 'missing_metadata', 'missing_timestamp', 'null_arguments', 'invalid_output', 'list_target'}:
+        from taskplane import flow
+        monkeypatch.setenv('CODEX_THREAD_ID', 'root')
+        assert flow.main(['worker', '--workspace', str(tmp_path), '--run', s['run'],
+                          '--operation', 'recover-unavailable', '--grant', grant,
+                          '--expected-revision', str(s['revision']), '--worker-json', json.dumps(kwargs['request'])],
+                         governor=c) == 2
+        failure = json.loads(capsys.readouterr().out)
+        assert failure['status'] == 'blocked' and failure['reason'] == 'invalid_evidence'
+        assert c._path().read_bytes() == before
+        assert c.report()['workers'][grant]['state'] == 'cancel_requested'
+        assert not c.report().get('task_results')
+    elif defect:
+        with pytest.raises((w.Refusal,OSError,ValueError)):
+            c.worker(s['run'],'recover-unavailable',**kwargs)
+        assert c._path().read_bytes()==before
+    else:
+        row=c.worker(s['run'],'recover-unavailable',**kwargs)
+        assert row['state']=='failed' and row['terminal_status']=='unavailable'
+        assert row['recovery']['process_exit']=='unknown' and not row.get('ended_at')
+        current=c.report()
+        assert wr.joined(current) and not current.get('task_results')
+        with pytest.raises(w.Refusal):
+            c.worker(s['run'],'accept-result',revision=s['revision'],task='T0',grant=grant,
+                     request={'outputs':['T0.md'],'checks':[]})
+
+
+def test_bound_workers_require_independent_current_location_and_matching_contract(tmp_path,monkeypatch):
+    from taskplane.tests.test_claude_flow import bound_workspace
+    ws,contract=bound_workspace(tmp_path,monkeypatch,policy='local')
+    c,s=setup(ws,count=1)
+    monkeypatch.delenv('TASKPLANE_WORKER_REFERENCE')
+    with pytest.raises(w.Refusal):reserve(c,s)
+    assert not c.report().get('workers')
+    monkeypatch.setenv('TASKPLANE_WORKER_REFERENCE','fixture/current-worker')
+    prepared=reserve(c,s);row=prepared['grant']
+    assert row['workspace_contract']=={k:contract[k] for k in ('project_id','digest')}
+    launch(c,s,prepared,'native-local')
+    worker=h.Controller(ws,c.root,h.installed_adapter('claude'),principal='native-local')
+    monkeypatch.setenv('TASKPLANE_WORKER_LOCATION','remote')
+    with pytest.raises(w.Refusal):worker.worker(s['run'],'claim',grant=row['grant_id'])
+    monkeypatch.setenv('TASKPLANE_WORKER_LOCATION','local')
+    worker.worker(s['run'],'claim',grant=row['grant_id'])
+    changed=deepcopy(row);changed['workspace_contract']['digest']='0'*64
+    with pytest.raises(w.Refusal,match='contract'):wr.current(s,changed)
+    (ws/'host-proof.txt').write_text('changed after prepare')
+    with pytest.raises(w.Refusal):worker.worker(s['run'],'claim',grant=row['grant_id'])
+
+
+def test_bound_host_alias_write_preserves_exact_scope_and_symlink_checks(tmp_path,monkeypatch):
+    from taskplane.tests.test_claude_flow import bound_workspace
+    ws,_=bound_workspace(tmp_path,monkeypatch)
+    c,s=setup(ws,count=1)
+    def write(path):
+        c.guard({'hook_event_name':'PreToolUse','tool_name':'Write','tool_input':{'file_path':path}},s['run'])
+    write('/Users/fixture/farm-viewer/T0.md')
+    write(str(ws/'T0.md'))
+    for path in ('/Users/fixture/farm-viewer-neighbor/T0.md',
+                 '/Users/fixture/farm-viewer/../T0.md','/Users/fixture/farm-viewer/unscoped.py'):
+        with pytest.raises(w.Refusal):write(path)
+    (ws/'T0.md').symlink_to(tmp_path/'outside')
+    with pytest.raises(w.Refusal):write('/Users/fixture/farm-viewer/T0.md')
+
+
 def launch(c, s, prepared, child='native-0'):
     row = prepared['grant']
     event = dict(hook_event_name='PreToolUse', session_id='root', call_id='call/'+row['grant_id'],

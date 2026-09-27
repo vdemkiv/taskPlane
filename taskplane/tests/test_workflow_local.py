@@ -18,6 +18,208 @@ def setup(workspace, *, entry="product", standalone=False):
     return c,s
 
 
+def displaced_database(tmp_path, *, approved=False):
+    import hashlib
+    c, state = setup(tmp_path)
+    if approved:
+        state = decide(c, submit(c, state))
+    target = c._path()
+    raw = target.read_bytes()
+    candidate = target.with_name(target.stem + ' 2.json')
+    candidate.write_bytes(raw)
+    target.unlink()
+    return c, state, target, candidate, raw, hashlib.sha256(raw).hexdigest()
+
+
+def test_numbered_database_recovery_preserves_exact_history_and_is_idempotent(tmp_path):
+    c, state, target, candidate, raw, checksum = displaced_database(tmp_path, approved=True)
+    marker = target.with_name(target.stem + '.initialized.json')
+    before = marker.read_bytes()
+    with pytest.raises(w.Refusal, match='incomplete'):
+        c.report()
+    result = c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
+    assert result['status'] == 'restored' and result['approvals_changed'] is False
+    assert target.read_bytes() == candidate.read_bytes() == raw and marker.read_bytes() == before
+    current = c.report()
+    assert current['revision'] == state['revision'] and current['decisions'] == state['decisions']
+    assert current['visits'] == state['visits']
+    assert c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/retry')['status'] == 'already_restored'
+
+
+@pytest.mark.parametrize('bad', ['hash', 'root', 'workspace', 'run', 'revision', 'boolean',
+    'marker', 'missing_marker', 'corrupt', 'symlink', 'path', 'reference', 'existing', 'child'])
+def test_numbered_database_recovery_refuses_without_changing_control_files(tmp_path, bad):
+    import hashlib
+    c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
+    marker = target.with_name(target.stem + '.initialized.json')
+    source, run, revision, reference = candidate.name, state['run'], state['revision'], 'conversation/recovery'
+    if bad == 'hash': checksum = '0' * 64
+    elif bad in {'root', 'workspace'}:
+        data = json.loads(raw); data[bad] = 'foreign'; candidate.write_text(json.dumps(data))
+        checksum = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    elif bad == 'run': run = 'foreign'
+    elif bad == 'revision': revision += 1
+    elif bad == 'boolean': revision = True
+    elif bad == 'marker': marker.write_text('{}')
+    elif bad == 'missing_marker': marker.unlink()
+    elif bad == 'corrupt':
+        candidate.write_text('{'); checksum = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    elif bad == 'symlink':
+        other = tmp_path/'other.json'; other.write_bytes(raw); candidate.unlink(); candidate.symlink_to(other)
+    elif bad == 'path': source = '../' + source
+    elif bad == 'reference': reference = ' '
+    elif bad == 'existing': target.write_text('{}')
+    else: c.principal = 'child'
+    before = {p.name: p.read_bytes() for p in target.parent.glob('*.json')}
+    with pytest.raises((w.Refusal, OSError, ValueError)):
+        c.recover_initialization(source, checksum, run, revision, reference)
+    assert {p.name: p.read_bytes() for p in target.parent.glob('*.json')} == before
+
+
+def test_numbered_database_recovery_never_overwrites_a_racing_writer(tmp_path, monkeypatch):
+    c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
+    def collision(source, destination):
+        destination.write_bytes(b'concurrent state')
+        raise FileExistsError('fixture concurrent writer')
+    monkeypatch.setattr(h.os, 'link', collision)
+    with pytest.raises(FileExistsError):
+        c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
+    assert target.read_bytes() == b'concurrent state' and candidate.read_bytes() == raw
+
+
+@pytest.mark.parametrize('tool,key', [('Bash', 'command'), ('exec_command', 'cmd')])
+@pytest.mark.parametrize('broken', ['missing', 'corrupt'])
+def test_unavailable_state_keeps_exact_diagnostics_and_recovery_reachable(tmp_path, tool, key, broken, capsys):
+    import shlex, sys
+    from pathlib import Path
+    from taskplane import flow
+    c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
+    if broken == 'corrupt': target.write_text('{')
+    runtime = [sys.executable, str(Path(flow.__file__).with_name('tp.py'))]
+    diagnose = [*runtime, 'flow', 'diagnose', '--workspace', str(tmp_path)]
+    recover = [*runtime, 'flow', 'recover', '--workspace', str(tmp_path), '--recover-from', candidate.name,
+               '--expected-sha256', checksum, '--run', state['run'], '--expected-revision', str(state['revision']),
+               '--request-reference', 'conversation/recovery']
+    def event(words, **extra):
+        return {'hook_event_name':'PreToolUse', 'cwd':str(tmp_path), 'session_id':'root',
+                'tool_name':tool, 'tool_input':{key:shlex.join(words)}, **extra}
+    before = candidate.read_bytes()
+    for words in (diagnose, [*diagnose, '--full'], recover):
+        assert flow.hook(event(words), governor=c).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
+    assert flow.main(['diagnose','--workspace',str(tmp_path)], compact=True, governor=c) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['schema'] == 'taskplane.diagnostics/v1' and result['status'] == 'blocked'
+    assert result['initialization']['database_exists'] == (broken == 'corrupt')
+    assert result['initialization']['marker_exists'] is True and result['workflow_error']
+    for words in ([*runtime,'flow','report','--workspace',str(tmp_path)], [*diagnose,'--output','app.py'],
+                  [*diagnose,'--workspace',str(tmp_path)], [*diagnose,';','touch','app.py'],
+                  [*runtime,'flow','diagnose','--workspace',str(tmp_path.parent)],
+                  [sys.executable,str(tmp_path/'tp.py'),'flow','diagnose','--workspace',str(tmp_path)]):
+        with pytest.raises(w.Refusal): flow.hook(event(words), governor=c)
+    with pytest.raises(w.Refusal): flow.hook(event(diagnose, parent_session_id='parent'), governor=c)
+    assert candidate.read_bytes() == before
+
+
+def test_recovery_cli_restores_only_expected_native_root(tmp_path, capsys, monkeypatch):
+    from taskplane import flow
+    c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
+    monkeypatch.setattr(flow, 'observed_parent', lambda *args: None)
+    args=['recover','--workspace',str(tmp_path),'--recover-from',candidate.name,
+          '--expected-sha256',checksum,'--run',state['run'],'--expected-revision',str(state['revision']),
+          '--request-reference','conversation/recovery']
+    assert flow.main(args,compact=True,governor=c) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'restored'
+    assert target.read_bytes() == raw
+
+
+@pytest.mark.parametrize('package_host,adapter', [('claude','claude'), ('openai','codex')])
+def test_extracted_packages_recover_displaced_state_through_declared_hooks(tmp_path, package_host, adapter):
+    import subprocess, sys, zipfile
+    from pathlib import Path
+    from scripts.package_plugin import package, ROOT
+    built = package(package_host, tmp_path/'archives')
+    extracted = tmp_path/'installed'
+    with zipfile.ZipFile(built['archive']) as archive:
+        for member in archive.namelist():
+            assert archive.read(member) == (ROOT/member).read_bytes()
+        archive.extractall(extracted)
+    # Only the extracted runtime is importable in this isolated child. Events are
+    # fixture observations, never claims about live Cowork or Windows coverage.
+    probe = r'''
+import hashlib, json, os, shlex, subprocess, sys
+from pathlib import Path
+root, workspace, host = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+sys.path.insert(0, str(root))
+from taskplane import workflow_host as h, workflow as w
+workspace.mkdir()
+(workspace/'app.py').write_text('value = 1\n')
+scope = {'criteria':['RECOVERY'], 'paths':{p:[p+'.json'] for p in w.PHASES}, 'verification_inputs':['app.py']}
+c = h.Controller(workspace, 'package-root', h.installed_adapter(host))
+state = c.start({'scope':scope, 'request_reference':'isolated-package-fixture'})
+assert c.adapter.name == host
+target = c._path()
+raw = target.read_bytes()
+candidate = target.with_name(target.stem+' 2.json')
+candidate.write_bytes(raw)
+target.unlink()  # Deliberate interruption in an isolated temporary test workspace.
+hooks = json.loads((root/'hooks/hooks.json').read_text())['hooks']
+def guarded(args):
+    # Match the declared hook's interpreter identity. Windows py -3 can select
+    # a different interpreter from the Python process that runs pytest.
+    python = ['py', '-3'] if os.name == 'nt' else [sys.executable]
+    argv = [*python, str(root/'taskplane/tp.py'), 'flow', *args, '--workspace', str(workspace)]
+    tool, key = ('Bash','command') if host == 'claude' else ('exec_command','cmd')
+    identity = {'session_id':'package-root'} if host == 'claude' else {'thread_id':'package-root'}
+    event = {'hook_event_name':'PreToolUse','cwd':str(workspace), **identity,
+             'tool_name':tool, 'tool_input':{key:shlex.join(argv)}}
+    launcher = hooks['PreToolUse'][0]['hooks'][0]['commandWindows' if os.name == 'nt' else 'command']
+    observed = subprocess.run(launcher, shell=True,
+        cwd=workspace, input=json.dumps(event), text=True, capture_output=True)
+    assert observed.returncode == 0, (observed.stdout, observed.stderr)
+    assert json.loads(observed.stdout).get('hookSpecificOutput',{}).get('permissionDecision') != 'deny', observed.stdout
+    result = subprocess.run(argv, cwd=workspace, text=True, capture_output=True)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    return json.loads(result.stdout)
+diagnosis = guarded(['diagnose'])
+assert diagnosis['status'] == 'blocked' and diagnosis['initialization']['marker_exists']
+assert diagnosis['initialization']['database_exists'] is False
+result = guarded(['recover','--recover-from',candidate.name,'--expected-sha256',hashlib.sha256(raw).hexdigest(),
+                  '--run',state['run'],'--expected-revision',str(state['revision']),
+                  '--request-reference','isolated-package-fixture/recovery'])
+assert result['status'] == 'restored' and target.read_bytes() == candidate.read_bytes() == raw
+assert c.report()['run'] == state['run'] and c.report()['revision'] == state['revision']
+assert c.report()['decisions'] == state['decisions']
+'''
+    env = {k:v for k,v in os.environ.items() if not k.startswith(
+        ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT', 'PYTHONPATH'))}
+    env.update(PLUGIN_ROOT=str(extracted), CLAUDE_PLUGIN_ROOT=str(extracted),
+               PATH=str(Path(sys.executable).parent)+os.pathsep+env['PATH'])
+    env['CODEX_THREAD_ID' if adapter == 'codex' else 'TASKPLANE_CLAUDE_SESSION_ID'] = 'package-root'
+    checked = subprocess.run([sys.executable,'-I','-c',probe,str(extracted),str(tmp_path/'workspace'),adapter],
+                             cwd=tmp_path,env=env,text=True,capture_output=True)
+    assert checked.returncode == 0, (checked.stdout, checked.stderr)
+
+
+@pytest.mark.parametrize('bad', ['marker_json', 'database_symlink', 'marker_symlink'])
+def test_diagnose_remains_reachable_for_invalid_initialization_files(tmp_path, bad, capsys):
+    import shlex, sys
+    from pathlib import Path
+    from taskplane import flow
+    c, _ = setup(tmp_path)
+    target = c._path(); marker = target.with_name(target.stem + '.initialized.json')
+    if bad == 'marker_json': marker.write_text('{')
+    else:
+        selected = target if bad == 'database_symlink' else marker
+        backup = tmp_path/'original'; backup.write_bytes(selected.read_bytes())
+        selected.unlink(); selected.symlink_to(backup)
+    event={'hook_event_name':'PreToolUse','cwd':str(tmp_path),'session_id':'root','tool_name':'Bash',
+           'tool_input':{'command':shlex.join([sys.executable,str(Path(flow.__file__).with_name('tp.py')),
+               'flow','diagnose','--workspace',str(tmp_path)])}}
+    assert flow.hook(event,governor=c).get('hookSpecificOutput',{}).get('permissionDecision') != 'deny'
+    assert flow.main(['diagnose','--workspace',str(tmp_path)],compact=True,governor=c) == 0
+    assert json.loads(capsys.readouterr().out)['workflow_error']
+
+
 def present(c, s):
     from taskplane import flow
     flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)

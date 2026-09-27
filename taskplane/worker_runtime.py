@@ -149,6 +149,11 @@ def dependency_manifest(state: dict[str, Any], dependencies: list[str], seen: se
 
 
 def current(state: dict[str, Any], row: dict[str, Any]) -> None:
+    from . import workspace_binding
+    workspace_binding.ensure(Path(state["workspace"]), worker=True,
+                             expected=state.get("workspace_contract"))
+    w.require(row.get("workspace_contract") == state.get("workspace_contract"),
+              "stale_checkpoint", "Worker workspace contract differs from its run.")
     w.require(row["binding"] == binding(state) and row["task_digest"] == digest(task(state, row["task_id"])),
               "stale_checkpoint", "Worker grant belongs to an old authority or task generation.")
 
@@ -217,6 +222,8 @@ def startup_blockers(state: dict[str, Any], definition: dict[str, Any]) -> list[
 
 
 def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[str, Any]) -> dict[str, Any]:
+    from . import workspace_binding
+    workspace_binding.ensure(workspace, worker=True, expected=state.get("workspace_contract"))
     definition = task(state, task_id)
     stage = w.current(state)
     w.require(definition.get("execution") != "root", "invalid_evidence",
@@ -272,7 +279,8 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
            "prepared_at": now(), "events": {}, "context_receipt": None,
            "purpose": definition.get("purpose") or definition.get("review_lens") or task_id,
            "retry_reason": retry_reason, "context_preflight": preflight,
-           "expected_runtime": runtime_identity()}
+           "expected_runtime": runtime_identity(),
+           "workspace_contract": deepcopy(state.get("workspace_contract"))}
     w.require(not any(path_conflict(row, other) for other in live), "scope_violation",
               "Join workers before changing their read inputs or reading active writer outputs.")
     if row["worker_id"]:

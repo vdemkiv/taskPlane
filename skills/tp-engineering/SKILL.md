@@ -5,7 +5,11 @@ description: Review source code, changes, architecture, or security and report a
 
 # Engineering review
 
-Before substantive work, resolve this installed plugin's runtime and run
+Before creating state, apply the [workspace and execution contract](../tp-go/references/shared-flow.md#workspace-and-execution-contract),
+including for read-only reviews. Bind Cowork's selected project and validate command
+and worker locality independently against the user's policy; report missing
+capability without substituting serial work for required native reviews.
+Then resolve this installed plugin's runtime and run
 `flow activate --workspace <checkout> --phase tp-engineering --request-reference <actual-user-request>`.
 Inspect `flow report`: reuse the matching active visit or initialize the appropriate
 scoped run before continuing. This requirement includes standalone work and resumed

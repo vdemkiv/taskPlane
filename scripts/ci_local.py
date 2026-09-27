@@ -20,7 +20,9 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
         return "browser"
     if capacity:
         return "capacity"
-    if filename in ("test_context.py", "test_context_delivery.py"):
+    if (filename in ("test_context.py", "test_context_delivery.py", "test_workspace_binding.py")
+            or (filename == "test_workflow_local.py"
+                and name.startswith("test_extracted_packages_recover_displaced_state_through_declared_hooks["))):
         return "portability"
     if filename == "test_native_workflow_cli.py":
         return "native"

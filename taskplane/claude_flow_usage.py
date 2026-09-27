@@ -34,6 +34,12 @@ def bind_session(event: dict[str, Any]) -> None:
         return
     values = {'TASKPLANE_CLAUDE_SESSION_ID': event.get('session_id'),
               'TASKPLANE_CLAUDE_TRANSCRIPT': event.get('transcript_path')}
+    selected = os.environ.get('TASKPLANE_WORKSPACE')
+    if selected:
+        from taskplane import workspace_binding
+        workspace = workspace_binding.resolve_workspace(None, event=event)
+        workspace_binding.ensure(workspace)
+        values['TASKPLANE_WORKSPACE'] = str(workspace)
     if all(isinstance(v, str) and v for v in values.values()):
         with open(target, 'a', encoding='utf-8') as stream:
             for key, value in values.items():

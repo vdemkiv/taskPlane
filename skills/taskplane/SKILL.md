@@ -5,7 +5,11 @@ description: Route requests to review code, design a change, implement work, ins
 
 # Taskplane
 
-Before substantive work, resolve this installed plugin's runtime and run
+Before creating state, apply the [workspace and execution contract](../tp-go/references/shared-flow.md#workspace-and-execution-contract).
+Cowork requires an explicit selected-project binding; honor the user's storage,
+command and worker location restrictions separately. Missing mapping or required
+locality evidence is a blocker, not permission to use a session directory.
+Then resolve this installed plugin's runtime and run
 `flow activate --workspace <checkout> --phase taskplane --request-reference <actual-user-request>`.
 Inspect `flow report`: reuse the matching active visit or initialize the appropriate
 scoped run before continuing. This requirement includes standalone work and resumed
