@@ -93,6 +93,18 @@ Where your organization allows adding a marketplace:
 
 Follow the installation's activation or reload instructions, inspect `/plugin` for errors and `/hooks` for the loaded definitions, and accept the host's project trust prompts as appropriate. Managed users install through their organization's catalog.
 
+### Cowork and connected folders
+
+Select the durable project and establish its explicit host/execution path binding
+before starting Taskplane. A connected Mac folder establishes neither macOS command
+execution nor local worker execution. Preserve the user's execution restriction:
+`darwin-local` requires Darwin and current local observations; unknown or conflicting
+required observations stop startup or worker dispatch. Installation alone does not
+establish Cowork hook, worker or dashboard support. See the
+[Cowork setup and evidence limits](docs/onboarding.md#cowork-workspace-and-execution)
+before using a connected folder. Live Cowork certification remains unavailable;
+the documented contract has automated fixture coverage.
+
 ### Try a small real change
 
 Open your repository and ask:

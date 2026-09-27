@@ -179,6 +179,7 @@ def runtime_hook_observations(records: Sequence[Mapping[str, Any]], *, host: str
 
 def inspect_native(host: str, workspace: Path, session: str) -> dict[str, Any]:
     """Bounded, read-only diagnostics from the executing plugin; no cache search."""
+    from . import workspace_binding
     plugin = Path(__file__).resolve().parents[1]
     selected = valid_plugin_root(str(plugin), str(plugin), host)
     executable = codex_readonly_runtime(str(workspace)) if host == "codex" else None
@@ -190,6 +191,7 @@ def inspect_native(host: str, workspace: Path, session: str) -> dict[str, Any]:
             "session_present": bool(session and session != "unknown"),
             "readonly_executable_found": executable is not None,
             "runtime_identity": runtime_identity(),
+            "workspace_locality": workspace_binding.describe(workspace),
             "authority_verified": False,
             "detail": "Discovery is observational. No native issuer, protected store or complete process/tool boundary is certified."}
 
@@ -201,7 +203,7 @@ def runtime_identity() -> dict[str, Any]:
     members = {}
     for name in ('taskplane/tp.py', 'taskplane/flow.py', 'taskplane/workflow_host.py',
                  'taskplane/workflow_local.py', 'taskplane/worker_runtime.py',
-                 'taskplane/context_handoff.py', 'hooks/hooks.json'):
+                 'taskplane/context_handoff.py', 'taskplane/workspace_binding.py', 'hooks/hooks.json'):
         target = root/name
         members[name] = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
     return {'root': str(root), 'member_sha256': members,
@@ -246,3 +248,77 @@ def worker_identities(parent: str, *, canonical_name: str | None = None,
             except (OSError, ValueError, TypeError):
                 continue
     return list(found.values()) if len(found) == 1 else []
+
+
+def unavailable_worker_observation(parent: str, worker: dict[str, Any], call_id: str) -> dict[str, Any]:
+    """Read one real native not-found response; absence alone is not completion."""
+    from datetime import datetime, timezone
+    from . import native_session_meter as meter, workflow as w
+    import stat
+    w.require(bool(re.fullmatch(r'[A-Za-z0-9_-]{1,128}', parent))
+              and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,128}', call_id)),
+              'invalid_evidence', 'Recovery requires an exact native interrupt call reference.')
+    home = Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))
+    paths = []
+    for folder in ('sessions', 'archived_sessions'):
+        for index, path in enumerate((home/folder).glob('**/*'+parent+'*.jsonl')):
+            w.require(index < 20000, 'state_unavailable', 'Native recovery inventory exceeds its bound.')
+            if path.is_file():
+                paths.append(path)
+    w.require(len(paths) == 1, 'invalid_evidence', 'Native root transcript is missing or ambiguous.')
+    path = paths[0]
+    w.require(not any(p.is_symlink() for p in (path, *path.parents)),
+              'invalid_evidence', 'Native recovery transcript cannot be a symlink.')
+    with path.open('rb') as stream:
+        info = os.fstat(stream.fileno())
+        w.require(stat.S_ISREG(info.st_mode), 'invalid_evidence', 'Native transcript must be regular.')
+        meta, _ = meter._session_metadata(stream.readline(meter.MAX_METADATA_BYTES))
+        w.require(meta.get('session_id') == parent, 'invalid_evidence', 'Native transcript belongs to another root.')
+        offset = max(0, info.st_size - 4 * 1024 * 1024)
+        stream.seek(offset)
+        if offset:
+            stream.readline(meter.MAX_METADATA_BYTES)
+        lines = stream.read(4 * 1024 * 1024).splitlines()
+    matched = []
+    for line in lines:
+        if len(line) > meter.MAX_METADATA_BYTES:
+            continue
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(item, dict) and item.get('type') == 'response_item'
+                and isinstance(item.get('payload'), dict) and item['payload'].get('call_id') == call_id):
+            matched.append(item)
+    w.require(len(matched) == 2, 'invalid_evidence', 'Need one matching native call and result in the bounded transcript tail.')
+    call, result = matched
+    a, b = call['payload'], result['payload']
+    w.require(a.get('type') == 'function_call' and a.get('name') == 'interrupt_agent'
+              and a.get('namespace') == 'collaboration' and b.get('type') == 'function_call_output'
+              and all(isinstance(x.get('metadata'), dict)
+                      and x['metadata'].get('client_authored') is False for x in matched),
+              'invalid_evidence', 'Recovery requires native collaboration observations.')
+    try:
+        args, response = json.loads(a.get('arguments', '{}')), json.loads(b.get('output', '{}'))
+    except (TypeError, ValueError):
+        raise w.Refusal('invalid_evidence', 'Native recovery call and result must contain JSON strings.') from None
+    w.require(isinstance(args, dict) and isinstance(args.get('target'), str)
+              and args['target'] in {worker.get('worker_id'), worker.get('canonical_name')}
+              and bool(args.get('target')) and response == {'previous_status': 'not_found'},
+              'invalid_evidence', 'Native interruption did not confirm this worker is unavailable.')
+    stamps = (worker.get('prepared_at'), call.get('timestamp'), result.get('timestamp'))
+    w.require(all(isinstance(value, str) for value in stamps),
+              'invalid_evidence', 'Native recovery timestamps must be ISO-format strings.')
+    def parse_stamp(value: Any) -> datetime:
+        assert isinstance(value, str)  # All values passed the explicit type guard above.
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    try:
+        started, called, observed = map(parse_stamp, stamps)
+    except ValueError:
+        raise w.Refusal('invalid_evidence', 'Native recovery timestamps must be ISO-format strings.') from None
+    now = datetime.now(timezone.utc)
+    w.require(all(t.tzinfo is not None for t in (started, called, observed))
+              and started <= called <= observed <= now and (now-observed).total_seconds() <= 900,
+              'stale_checkpoint', 'Worker-unavailable observation is stale or belongs to an older attempt.')
+    return {'call_id':call_id, 'source':str(path), 'sha256':content_fingerprint(matched),
+            'observed_at':result['timestamp'], 'assurance':'observed', 'process_exit':'unknown'}

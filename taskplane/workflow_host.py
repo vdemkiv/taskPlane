@@ -7,11 +7,14 @@ import json
 import os
 from pathlib import Path
 import stat
+import re
+import tempfile
 from typing import Any, Callable, Mapping, cast
 import uuid
 
 from . import primitives, storage, workflow as w, workflow_evidence as evidence
 from . import host_capabilities, host_native, command_runtime, workflow_local, workflow_approval
+from . import workspace_binding
 
 
 class HostAdapter:
@@ -213,7 +216,8 @@ def installed_adapter(host: str, profile: str = "native_workflow") -> HostAdapte
 
 class Controller:
     def __init__(self, workspace: Path, root: str, adapter: HostAdapter, *, principal: str | None = None):
-        self.workspace = workspace.resolve()
+        self.workspace = (workspace_binding.resolve_workspace(workspace)
+                          if adapter.profile == "native_workflow" else workspace.resolve())
         self.root = root
         self.principal = principal or root
         self.adapter = adapter
@@ -233,6 +237,8 @@ class Controller:
                 "Host approval protection/origin is unverified. Keep human gates; prepare a trusted integration before activation."}
 
     def _path(self) -> Path:
+        if self.adapter.profile == "native_workflow":
+            workspace_binding.ensure(self.workspace, worker=self.principal != self.root)
         w.require(self.availability()["workflow_available"], "unsupported_authority", self.availability()["detail"])
         try:
             return self.adapter.validate_path(self.workspace, self.adapter.control_path(self.workspace, self.root))
@@ -251,6 +257,15 @@ class Controller:
                 raw = stream.read(workflow_local.MAX_BYTES + 1)
                 w.require(len(raw.encode()) <= workflow_local.MAX_BYTES, "state_unavailable", "Workflow store is oversized.")
                 db = json.loads(raw)
+            return self._validate_database(db)
+        except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+            if isinstance(exc, w.Refusal):
+                raise
+            raise w.Refusal("state_unavailable", f"Control state cannot be read: {type(exc).__name__}") from None
+
+    def _validate_database(self, db: Any) -> dict[str, Any]:
+        """Validate identical identities for normal reads and explicit recovery."""
+        try:
             w.require(isinstance(db, dict) and db.get("schema") == "taskplane.control/v1"
                       and db.get("workspace") == str(self.workspace) and db.get("root") == self.root
                       and db.get("profile", "protected_host") == self.adapter.profile
@@ -266,6 +281,9 @@ class Controller:
                 w.require(s.get("profile", "protected_host") == self.adapter.profile,
                           "state_unavailable", "Stored run belongs to another profile.")
                 self.adapter.validate_state(s)
+                if self.adapter.profile == "native_workflow" and db["active"] == key:
+                    workspace_binding.ensure(self.workspace, worker=self.principal != self.root,
+                                             expected=s.get("workspace_contract"))
             w.require(db["active"] is None or db["active"] in db["runs"],
                       "state_unavailable", "Active workflow binding is missing.")
             from . import workflow_retention
@@ -275,6 +293,65 @@ class Controller:
             if isinstance(exc, w.Refusal):
                 raise
             raise w.Refusal("state_unavailable", f"Control state cannot be read: {type(exc).__name__}") from None
+
+    def recover_initialization(self, source: str, expected_sha256: str, run: str,
+                               revision: int | None, reference: str) -> dict[str, Any]:
+        """Restore exact same-binding bytes from an explicitly selected numbered copy."""
+        w.require(self.adapter.profile == "native_workflow" and self.principal == self.root,
+                  "unsupported_authority", "Initialization recovery is a native root operation.")
+        w.require(isinstance(reference, str) and 0 < len(reference.strip()) <= 512,
+                  "invalid_evidence", "Recovery requires the actual user request reference.")
+        target = self._path()
+        w.require(re.fullmatch(re.escape(target.stem) + r" [1-9][0-9]*\.json", source) is not None
+                  and re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is not None,
+                  "invalid_evidence", "Select an exact adjacent numbered copy and its SHA-256.")
+        w.require(type(revision) is int and revision >= 0 and bool(run),
+                  "invalid_evidence", "Recovery needs the expected active run and revision.")
+
+        def read_regular(path: Path, limit: int) -> bytes:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(fd, "rb") as stream:
+                w.require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "state_unavailable", "Recovery input must be regular.")
+                raw = stream.read(limit + 1)
+            w.require(len(raw) <= limit, "state_unavailable", "Recovery input exceeds its size bound.")
+            return raw
+
+        with primitives.file_lock(str(target)):
+            marker = storage.runtime_file(str(self.workspace), target.stem + ".initialized.json")
+            expected_marker = {"schema": "taskplane.local-initialization/v1", "workspace": str(self.workspace),
+                               "root": self.root, "profile": "native_workflow"}
+            w.require(marker.exists() and json.loads(read_regular(marker, 4096)) == expected_marker,
+                      "state_unavailable", "Recovery requires the existing matching initialization marker.")
+            candidate = storage.runtime_file(str(self.workspace), source)
+            raw = read_regular(candidate, workflow_local.MAX_BYTES)
+            w.require(primitives.content_fingerprint(raw) == expected_sha256,
+                      "stale_checkpoint", "Recovery copy checksum changed.")
+            db = self._validate_database(json.loads(raw))
+            w.require(db["active"] == run and db["runs"][run]["revision"] == revision,
+                      "stale_checkpoint", "Recovery copy has a different active run or revision.")
+            result = {"schema": "taskplane.initialization-recovery/v1", "workspace": str(self.workspace),
+                      "root": self.root, "run": run, "revision": revision, "source": source,
+                      "sha256": expected_sha256, "request_reference": reference.strip(),
+                      "state_bytes_preserved": True, "approvals_changed": False}
+            # Never replace an existing database, including a concurrently restored one.
+            if target.exists():
+                w.require(read_regular(target, workflow_local.MAX_BYTES) == raw,
+                          "state_unavailable", "Existing workflow state differs; recovery cannot overwrite it.")
+                return {**result, "status": "already_restored"}
+            record = storage.runtime_file(str(self.workspace), target.stem + ".recovery-" + expected_sha256 + ".json")
+            primitives.atomic_json(record, {**result, "status": "prepared"}, strict_directory_sync=True)
+            fd, temporary = tempfile.mkstemp(prefix="." + target.name + ".recover-", dir=target.parent)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(temporary, target)  # Atomic create-if-absent; source copy is retained.
+                primitives._fsync_directory(str(target.parent))
+            finally:
+                os.unlink(temporary)
+            primitives.atomic_json(record, {**result, "status": "restored"}, strict_directory_sync=True)
+            return {**result, "status": "restored"}
 
     def _write(self, target: Path, db: dict[str, Any]) -> None:
         try:
@@ -323,6 +400,8 @@ class Controller:
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
         w.require(self.principal == self.root, "scope_violation", "Workers cannot start or replace workflows.")
+        contract = (workspace_binding.ensure(self.workspace)
+                    if self.adapter.profile == "native_workflow" else None)
         target = self._path()
         with primitives.file_lock(str(target)):
             authorized = None
@@ -381,6 +460,8 @@ class Controller:
                      started_at=datetime.now(timezone.utc).isoformat(), profile=self.adapter.profile,
                      initial_context_tasks=self._initial_tasks(request, authorized["scope"]))
             self.adapter.state_created(s, authorized)
+            if contract:
+                s["workspace_contract"] = {k: contract[k] for k in ("project_id", "digest")}
             if replaced is not None:
                 # Commit preservation, grant revocation and the fresh baseline atomically.
                 # Replacement is not acceptance, cancellation or a migration of approvals.
@@ -547,6 +628,26 @@ class Controller:
                           "scope_violation", "Only an unlaunched reservation can be abandoned.")
                 assert row is not None
                 row.update(state="failed", ended_at=workers.now(), terminal_status="not_launched")
+                result = deepcopy(row)
+            elif operation == 'recover-unavailable':
+                row = workers.records(state).get(grant)
+                reference, call = request.get('request_reference'), request.get('call_id')
+                w.require(self.adapter.profile == 'native_workflow' and self.adapter.name == 'codex'
+                          and row and row.get('state') == 'cancel_requested' and row.get('worker_id'),
+                          'scope_violation', 'Recovery needs a current native worker with an observed interruption request.')
+                assert row is not None
+                workers.current(state, row)
+                w.require(isinstance(reference, str) and 0 < len(reference.strip()) <= 512
+                          and isinstance(call, str), 'invalid_evidence', 'Preserve the actual user recovery request and native call ID.')
+                assert isinstance(reference, str) and isinstance(call, str)
+                w.require(not any(r['state'] == 'running' for r in state.get('observed_handles', {}).values()),
+                          'scope_violation', 'Known live commands must stop before unavailable-worker recovery.')
+                from .host_capabilities import unavailable_worker_observation
+                proof = unavailable_worker_observation(self.root, row, call)
+                # Revoke an unavailable grant, never claim task success or process exit.
+                row.update(state='failed', terminal_status='unavailable', revoked_at=workers.now(),
+                           recovery={**proof, 'request_reference':reference.strip()})
+                row['events']['recovery/'+call] = 'unavailable'
                 result = deepcopy(row)
             else:
                 raise w.Refusal("invalid_evidence", "Unknown worker operation.")
@@ -733,7 +834,9 @@ class Controller:
             value = args.get("file_path") or args.get("path")
             if value:
                 w.require(isinstance(value, str), "scope_violation", "Invalid read path.")
-                relative = str(Path(value).relative_to(self.workspace)) if Path(value).is_absolute() and Path(value).is_relative_to(self.workspace) else value
+                relative = (workspace_binding.relative_path(self.workspace, value)
+                            if self.adapter.profile == "native_workflow" else
+                            str(Path(value).relative_to(self.workspace)) if Path(value).is_absolute() and Path(value).is_relative_to(self.workspace) else value)
                 evidence.path(self.workspace, relative)
             return
         if worker is None and tool in ("Bash", "exec_command") and self.adapter.control_action(event, state):
@@ -783,6 +886,8 @@ class Controller:
     def _paths(self, values: list[Any], allowed: list[str]) -> None:
         for value in values:
             w.require(isinstance(value, str) and value, "scope_violation", "A structured write needs a target.")
-            relative = str(Path(value).relative_to(self.workspace)) if Path(value).is_absolute() and Path(value).is_relative_to(self.workspace) else value
+            relative = (workspace_binding.relative_path(self.workspace, value)
+                        if self.adapter.profile == "native_workflow" else
+                        str(Path(value).relative_to(self.workspace)) if Path(value).is_absolute() and Path(value).is_relative_to(self.workspace) else value)
             evidence.path(self.workspace, relative)
             w.require(relative in allowed, "scope_violation", f"Write is outside current phase scope: {relative}")

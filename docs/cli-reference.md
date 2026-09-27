@@ -1,11 +1,17 @@
 # Taskplane CLI
 
+This reference describes the repository source. The cached 2.31.4 runtime inspected
+on 2026-09-26 lacks the `workspace` commands, `flow recover` and worker
+`recover-unavailable` operation described below. Confirm that the actual installed
+CLI and loaded hooks contain the needed implementation before using these commands;
+editing a checkout or matching version strings does not update the installed plugin.
+
 ## Scoped native workers and task publication
 
-`flow worker --operation prepare|claim|accept-result|status|capacity|abandon` operates
+`flow worker --operation prepare|claim|accept-result|status|capacity|abandon|recover-unavailable` operates
 on the existing run. Supply `--workspace` and `--run`; root mutations also require
 `--expected-revision`. Prepare/result commands use `--task`; claim/result/abandon
-use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
+and recover-unavailable use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
 Preparation needs `capacity` with `host_slots`, `includes_root`, and an actual
 observed source `reference`. Optional configured/resource limits narrow capacity.
 No default two-worker limit is applied.
@@ -51,6 +57,9 @@ Invoke `python3 <plugin>/taskplane/tp.py` with one of these commands.
 
 | Command | Purpose |
 | --- | --- |
+| `workspace inspect --workspace PATH` | Read binding, relocation and execution-policy diagnostics without initializing a workflow |
+| `workspace bind --workspace PATH --request FILE` | Validate an explicit selected-project mapping and create its binding |
+| `workspace recover --workspace PATH --request FILE` | Archive validated inactive history after relocation and bind future new runs |
 | `flow activate --workspace PATH --phase ENTRY --request-reference REF` | Select the session harness without starting or approving a run |
 | `flow deactivate --workspace PATH --request-reference REF --note REASON` | Explicitly clear a native selection with no active run; refuses active/protected workflows and preserves all approvals |
 | `flow present --workspace PATH --run ID --evidence .taskplane/dashboard.html --presentation OUTCOME --note TEXT` | Record the actual native dashboard handoff for this visit/revision |
@@ -99,12 +108,173 @@ refuses when unavailable. No automatic downgrade or workspace flag enables its
 protected capabilities. Local-account tampering and fabricated otherwise valid
 provenance are outside native_workflow's guarantees.
 
+## Workspace binding and execution policy
+
+Cowork, configured workspace/policy signals and recognized session/scratch roots
+require an explicit binding before ordinary runtime state is created. Existing
+local Claude Code/Codex workflows without these signals retain their legacy behavior.
+Directory heuristics require validation; they do not classify a machine as local
+or cloud. Exact installed `workspace inspect`, `bind` and `recover` commands remain
+available for setup/recovery. This exception does not admit arbitrary shell commands
+or unsupported native tools.
+
+Invoke the installed launcher, for example:
+
+```sh
+python3 /actual/plugin/taskplane/tp.py workspace inspect --workspace /selected/execution/project
+python3 /actual/plugin/taskplane/tp.py workspace bind --workspace /selected/execution/project --request /selected/binding-request.json
+```
+
+The request is a bounded ordinary JSON file, prepared before workflow initialization.
+The following is a template, not measured evidence. Replace every path, digest and
+reference with actual observations, and set only the policy the user permits:
+
+```json
+{
+  "schema": "taskplane.workspace-request/v1",
+  "surface": "cowork",
+  "host_root": "/selected/native/project",
+  "execution_root": "/selected/execution/project",
+  "policy": "darwin-local",
+  "execution": {"location": "local", "reference": "actual-command-environment-observation"},
+  "worker": {"location": "local", "reference": "actual-worker-environment-observation"},
+  "probe": {
+    "path": "workspace-probe.txt",
+    "sha256": "REPLACE_WITH_64_LOWERCASE_HEX_DIGEST",
+    "host_reference": "separate-actual-host-file-observation"
+  }
+}
+```
+
+`surface` is `cowork`, `claude-code`, `codex` or `other`. Both roots are normalized
+absolute paths; they may be equal. `execution_root` must match `--workspace` when
+binding. Each execution/worker observation has `location: local|remote|unknown`
+and its own nonempty `reference`. `probe.path` is workspace-relative, outside
+`.taskplane/`, without traversal or symlinks. The runtime reads that ordinary file
+through the execution root and compares its SHA-256 to the separately recorded
+host-side observation. Reading the execution file alone cannot establish the host
+reference. Keep the probe bytes stable during the binding's lifetime.
+
+| Environment setting | Contract |
+| --- | --- |
+| `TASKPLANE_WORKSPACE` | Selected execution root for CLI, hooks and children. An explicit flow workspace must agree with it or its declared native host alias. Hook cwd need not equal it. |
+| `TASKPLANE_SURFACE=cowork` | Require a binding even if the path looks like an ordinary local checkout. |
+| `TASKPLANE_WORKSPACE_POLICY` | Optional `any`, `local` or `darwin-local`; a stricter current value applies, and a weaker value cannot relax the stored policy. |
+| `TASKPLANE_EXECUTION_LOCATION`, `TASKPLANE_EXECUTION_REFERENCE` | Current command-environment observation; `local`/`remote` needs a reference. Strict policies require the local pair. |
+| `TASKPLANE_WORKER_LOCATION`, `TASKPLANE_WORKER_REFERENCE` | Independent current worker-environment observation; required as local for native preparation/claim under a strict policy. Root execution evidence cannot substitute for it. |
+
+`any` permits the declared environment; `local` requires both declared and current
+execution to be local, and the same independent worker checks when dispatching or
+claiming. `darwin-local` additionally requires the executing platform to be Darwin.
+Unknown required observations or conflicts refuse. A Linux VM mounted to a Mac
+folder fails `darwin-local`; its mount does not prove either execution or worker
+location. Do not silently change policy to make a refused environment pass.
+
+Successful binding writes `.taskplane/workspace-binding.json`, with a generated
+project ID and contract digest, only in the selected execution root. It does not
+initialize or approve a workflow. An identical bind is reusable; a different
+binding cannot overwrite it. Guarded operations revalidate mapping, probe and
+policy against the run's frozen contract. Covered native absolute paths normalize
+through the declared host alias before existing exact-scope and symlink checks;
+neighboring paths, traversal and undeclared aliases remain refused.
+
+The host must propagate the selected root and current observation pairs to hooks
+and children. Claude SessionStart may export an already validated selection through
+its environment file; this is convenience, not evidence of locality. Report missing
+propagation or adapter capabilities and stop. Binding references are cooperative
+observations that the local account can fabricate, not host attestation. Inspection
+keeps `host_attestation: false` and `live_cowork_verified: false`; fixture results
+do not establish live persistence, automatic hooks, worker execution or display.
+
+### Workspace relocation recovery
+
+Use `workspace inspect --workspace NEW_PATH` to inspect a relocated binding, then
+`workspace recover --workspace NEW_PATH --request FILE` for explicit recovery.
+The recovery request has all binding fields above plus `expected_project_id` from
+inspection and `request_reference` for the actual recovery request. Supply the new
+mapping and fresh host-side probe bytes, digest and observation reference. A matching
+project ID alone does not prove continuity.
+
+Recovery requires validated terminal/inactive current controller history and no
+live or unknown commands/workers. A still-present original root, copied metadata,
+stale probe, corrupt identities, symlinks or missing evidence refuse. Active work must be
+retired through its original binding first. If that host/path is unavailable, keep
+the evidence intact and report the missing recovery capability.
+
+After [restoring a displaced database](#recover-a-displaced-workflow-database),
+retire its run before relocating. Recovery accepts only exact numbered copies
+(`workflow-ROOTKEY N.json`, where N is a positive integer) paired with their completed
+`workflow-ROOTKEY.recovery-SHA256.json` receipts. Each pair must match the canonical
+controller and initialization marker, the copy's bytes, active run and revision.
+Every run in the copy must exist in current history at an equal or newer revision
+with the same workspace contract. Old active/worker flags remain historical; they do not override
+the current controller's inactivity requirement. Unknown, corrupt, foreign,
+symlinked or incomplete restoration artifacts refuse without changing the store.
+
+On success, the entire old `.taskplane/` becomes a uniquely named local
+`.taskplane-recovery-*` archive. The fresh store contains the binding and
+`workspace-recovery.json` with the old-file hash manifest and
+`approvals_transferred: false`; validated restoration copies and receipts retain
+their exact bytes in that archive. Start a new workflow; prior approvals, grants and
+context identities remain historical. An interrupted recovery preserves its pending
+record and archive for diagnosis. Do not delete them, edit binding identities or
+disable hooks to force adoption. Recovery is for relocation, not replacing an
+unchanged binding's policy or resetting corrupt state.
+
+## Workflow scope and replacement
+
 Start scope JSON has `criteria` (unique IDs), `paths` (all seven phase names mapped
 to exact workspace-relative file lists), and optional `verification_inputs`. Use
 `.taskplane/` for generated workflow artifacts. Declare source/task files written
 during a phase in that phase's scope. Scope and decision envelopes are data, never
 executable configuration. Start requires the actual user's request reference and
 does not accept any future phase.
+
+### Recover a displaced workflow database
+
+`flow diagnose --workspace PATH` returns bounded diagnostic details even in compact
+mode, including the expected database and initialization-marker filenames and
+whether each exists. An exact installed diagnosis command remains admitted when
+local state is unreadable; ordinary tools and phase operations remain guarded.
+
+When the database is missing but its matching initialization marker and an exact
+numbered copy remain, explicitly restore that copy with:
+
+```sh
+python3 /absolute/plugin/taskplane/tp.py flow recover --workspace PATH \
+  --recover-from 'workflow-ROOTKEY 2.json' --expected-sha256 SHA256 \
+  --run EXPECTED_RUN --expected-revision EXPECTED_REVISION \
+  --request-reference 'Actual user recovery request'
+```
+
+This native-root maintenance operation validates the marker, checksum, complete
+database schema, workspace/root identity and active run/revision. It preserves the
+copy and restores its exact bytes using an atomic create-if-absent operation. It
+cannot overwrite differing state, invent a missing marker, restore another root's
+approvals, select the newest copy automatically, or admit child/protected-host
+recovery. A recovery receipt records the request and content hash. Existing
+approval, worker-join and evidence-freshness checks still apply after restoration.
+If publication was interrupted, repeat the same exact request; identical restored
+bytes are reported as already restored. A different or newer database is refused.
+
+Numbered copies indicate displaced files but do not identify which program moved
+them. Diagnose the filesystem writer separately; this recovery does not prevent
+an external program from moving files again.
+
+If a restored run retains a worker which the native Codex service has lost, request
+an actual native interruption. A `not_found` response can support explicit
+`flow worker --operation recover-unavailable --run RUN --grant GRANT
+--expected-revision N --worker-json JSON`. Supply `request_reference` for the actual
+user recovery instruction and `call_id` for that interruption. This root-only
+operation verifies the matching call/result in the native root transcript, exact
+worker identity, current binding, a 15-minute observation window and absence of
+known live commands. Missing inventory alone is insufficient. It revokes the
+unavailable grant as failed, retaining its audit evidence; it never accepts a
+result or claims process exit. Retry or replacement still needs fresh native
+verification. This recovery currently supports Codex transcript observations only.
+Malformed native call/result JSON, metadata or timestamp fields return
+`invalid_evidence` without changing the grant. Preserve the evidence and diagnose
+the malformed observation before retrying.
 
 ### Start again without losing the previous run
 
@@ -523,6 +693,12 @@ flow context --workspace PATH --run RUN --read REFERENCE_SHA256 [--section KEY] 
 Read all required referenced bodies and include the returned `context_receipt` in
 new bounded/v1 phase outputs. Consume and read are mutually exclusive. References
 are current-run data, not approvals. The detailed context contract follows below.
+
+If a context request is refused after workspace validation, its corrective action
+uses that validated root, including when `--workspace` was omitted. If workspace
+resolution or binding validation fails, the response preserves the binding error
+without suggesting a retry against an unvalidated path. Resolve that selection
+before requesting context again.
 
 ## Context contract details
 

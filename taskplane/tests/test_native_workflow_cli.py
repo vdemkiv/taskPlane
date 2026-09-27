@@ -19,21 +19,22 @@ from taskplane.tests.test_workflow_local import decision, check_historical_finis
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def cli(workspace,host,*args,root=ROOT,code=0):
+def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     if args[0] == 'submit' and code == 0:
         # A legitimate fixture producer refreshes its receipt after corrections.
         # Every body is returned through the selected shipped runtime's CLI.
-        prepared = cli(workspace, host, 'context', root=root)
-        returned = cli(workspace, host, 'context', '--consume', prepared['handoff_ref']['sha256'], root=root)
+        prepared = cli(workspace, host, 'context', root=root, environment=environment)
+        returned = cli(workspace, host, 'context', '--consume', prepared['handoff_ref']['sha256'], root=root, environment=environment)
         while returned['remaining_required']:
-            returned = cli(workspace, host, 'context', '--read-required', prepared['handoff_ref']['sha256'], root=root)
+            returned = cli(workspace, host, 'context', '--read-required', prepared['handoff_ref']['sha256'], root=root, environment=environment)
             assert returned['pages'], 'Required-body delivery made no progress'
         assert returned['remaining_required'] == 0
         target = workspace/args[args.index('--output')+1]
         data = json.loads(target.read_text()); data['context_receipt'] = returned['context_receipt']
         target.write_text(json.dumps(data))
-    env={k:v for k,v in os.environ.items() if k not in {
-        'CODEX_THREAD_ID','CODEX_SESSION_ID','TASKPLANE_CLAUDE_SESSION_ID','CLAUDE_SESSION_ID'}}
+    env={k:v for k,v in os.environ.items() if not k.startswith(
+        ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
+    env.update(environment or {})  # Explicit fixture observations only; no ambient session identity.
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
     env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
                PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
@@ -43,8 +44,10 @@ def cli(workspace,host,*args,root=ROOT,code=0):
     argv=[*python,str(root/'taskplane/tp.py'),'flow',*args,'--full','--workspace',str(workspace)]
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     def hook(name, **extra):
-        event={'hook_event_name':name,'cwd':str(workspace),'session_id':'root','thread_id':'root',
-               'tool_name':'exec_command','tool_input':{'cmd':shlex.join(argv)},**extra}
+        identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
+        tool,key=('Bash','command') if host=='claude' else ('exec_command','cmd')
+        event={'hook_event_name':name,'cwd':str(workspace),**identity,
+               'tool_name':tool,'tool_input':{key:shlex.join(argv)},**extra}
         command=hooks[name][0]['hooks'][0]['commandWindows' if os.name=='nt' else 'command']
         result=subprocess.run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),
                               capture_output=True,text=True)
@@ -61,11 +64,18 @@ def cli(workspace,host,*args,root=ROOT,code=0):
 
 
 def handoff(workspace,host,root=ROOT):
+    if host=='claude':
+        # Claude has no Codex opener. A linked artifact is a supported handoff;
+        # this fixture makes no claim that a live Claude view was displayed.
+        cli(workspace,host,'present','--evidence','.taskplane/dashboard.html','--presentation','linked',
+            '--note','Claude fixture artifact linked; live display is unverified.',root=root)
+        return
     # Exercise the declared opener guard using the real native target shape.
     # The queued tool result is a fixture, never a live-display assertion.
-    env={**os.environ,'PLUGIN_ROOT':str(root),'CLAUDE_PLUGIN_ROOT':str(root),
-         'CODEX_THREAD_ID':'root','TASKPLANE_CLAUDE_SESSION_ID':'root',
-         'PATH':str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH']}
+    env={k:v for k,v in os.environ.items() if not k.startswith(
+        ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
+    env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),CODEX_THREAD_ID='root',
+               PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     for name in ('PreToolUse','PostToolUse'):
         event={'hook_event_name':name,'cwd':str(workspace),'thread_id':'root','session_id':'root',
@@ -87,6 +97,21 @@ def create(workspace):
     (workspace/'check.txt').write_text('Observed fixture check result')
     (workspace/'.taskplane/scope.json').write_text(json.dumps(initial['scope']))
     return initial['scope']
+
+
+@pytest.mark.parametrize('host',['codex','claude'])
+def test_declared_surface_matches_runtime_and_automatic_hooks(tmp_path,host):
+    create(tmp_path)
+    state=cli(tmp_path,host,'start','--standalone','--phase','product',
+              '--scope','.taskplane/scope.json','--request-reference','fixture/surface')['workflow']
+    assert state['native_observations']['host']==host
+    from taskplane import flow
+    events=[r for r in flow.read_events(tmp_path) if r.get('kind')=='hook']
+    assert events and events[-1]['tool']==('Bash' if host=='claude' else 'exec_command')
+    observed=events[-1]['identity_observation']
+    assert observed==({'session_id':'root'} if host=='claude' else {'thread_id':'root'})
+    if host=='claude':
+        assert events[-1]['host']=='claude'
 
 
 @pytest.mark.parametrize('host',['codex','claude'])
@@ -596,14 +621,14 @@ def exercise_counter_freshness(workspace, host, root=ROOT):
     with patch.dict(os.environ,environment):
         if host=='codex':_write_segment(path,session_id='root',total=100)
         else:write(path,[message()])
-        initial=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/EV-F01',root=root)
+        initial=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/EV-F01',root=root,environment=environment)
         if host=='codex':_write_segment(path,session_id='root',total=130)
         else:write(path,[message(),message('m2')])
-        measured=cli(workspace,host,'progress','--phase','product','--note','Observed fixture interval',root=root)
+        measured=cli(workspace,host,'progress','--phase','product','--note','Observed fixture interval',root=root,environment=environment)
         measured_at=measured['sessions'][0]['measured_at']
         assert measured['tokens']['total_tokens']==(30 if host=='codex' else 142)
         path.unlink()
-        saved=cli(workspace,host,'report','--run',initial['run'],root=root)
+        saved=cli(workspace,host,'report','--run',initial['run'],root=root,environment=environment)
         assert saved['sessions'][0]['status'].startswith('recorded')
         assert saved['sessions'][0]['measured_at']==measured_at
         expected_time=None if saved['token_coverage']['discovery_errors'] else measured_at

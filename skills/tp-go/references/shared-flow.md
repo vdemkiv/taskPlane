@@ -5,6 +5,46 @@ with source component decomposition, a task DAG and `.taskplane/dashboard.html`.
 This applies to standalone Product, Design and Engineering as well as full delivery.
 Help and status are read-only: they never initialize or advance a workflow.
 
+## Workspace and execution contract
+
+Resolve the selected durable project before activation, bootstrap writes, journals,
+context or dashboards. Cowork and signaled session/scratch roots require an explicit
+binding; legacy unbound local Claude Code/Codex execution remains compatible when
+no binding or stricter policy is required. Never infer cloud or local execution from
+a path, plugin name or mounted folder.
+
+Use the installed `workspace inspect|bind|recover` interface and the
+[versioned request contract](../../../docs/cli-reference.md#workspace-binding-and-execution-policy).
+`TASKPLANE_WORKSPACE` selects the execution root across CLI, hooks and children;
+`TASKPLANE_SURFACE=cowork` requires binding. A native host path is a declared alias,
+not a second store. The probe must match a separate host-side observation. Normalize
+covered native targets through that binding before exact-scope, traversal and
+symlink checks; mapping never broadens a task's approved paths.
+
+Storage, command execution and worker execution are separate observations with
+references. Honor `any`, `local` or `darwin-local` only as permitted by the user;
+the latter requires Darwin. Strict policies require current local execution
+evidence and independent worker evidence for dispatch/claims. Frozen run bindings
+must match at guarded use. Unknown required locality, conflicting observations or
+binding drift refuses; a
+native shell or source export does not prove worker locality or store continuity.
+The observations are cooperative and do not attest host topology.
+
+If selected-root propagation, required native identity/hooks or permitted worker
+execution is unavailable, report the exact capability and stop. Preserve the first
+useful worker's claim/context/automatic-hook startup gate. Do not weaken policy or
+replace refused required workers with serial work. Fixtures establish resolver and
+refusal behavior, not a live Cowork certification; actual persistence after reopen,
+hook invocation, worker execution and dashboard display need host integration evidence.
+
+For relocation, inspect first and use explicit `workspace recover` with expected
+project ID, request provenance and fresh host-side probe evidence. Recovery permits
+only validated inactive history, archives the entire former store with hashes and
+starts future workflows anew. Never transfer approvals, grants or context receipts.
+Active/corrupt state stays intact; retire active work in its original binding or
+report the missing recovery capability. Do not copy identity, erase stores or
+disable guards to adopt another root.
+
 ## Harness activation and dashboard handoff
 
 The harness is mandatory for every execution entry, including standalone work and

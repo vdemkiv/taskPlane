@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.31.5 — Cowork workspace binding and recovery
+
+- Separate durable workspace storage from execution and worker locality; require explicit Cowork bindings and refuse missing or conflicting roots before creating state.
+- Preserve validated same-binding recovery history through retirement and relocation without transferring approval.
+- Return structured context errors when the workspace is omitted or unresolved, and reject malformed unavailable-worker evidence before changing grants or state.
+- Keep Claude-shaped hooks, native worker identity and workspace contracts aligned; document setup, recovery and manual live-host verification limits.
+- Verified with 450 affected regression tests, two host-shape checks, independent Evaluation and parallel Engineering reviews. Live Claude Cowork verification remains a manual follow-up.
+
 ## v2.31.4 — native workers and bounded context
 
 - Scope native read inputs and freshness per task, with conservative legacy fallback.

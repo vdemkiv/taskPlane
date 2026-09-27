@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "taskplane"))
 
-from taskplane import depgraph, flow, graph_primitives, primitives, storage
+from taskplane import depgraph, flow, graph_primitives, primitives, storage, workspace_binding
 
 
 def _git(workspace: str, *args: str) -> str:
@@ -54,6 +54,8 @@ def _version(verify: bool) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["workspace"]:
+        return workspace_binding.main(arguments[1:])
     if arguments[:1] == ["flow"]:
         return flow.main(arguments[1:], compact=True)
     if arguments and arguments[0] in flow.HOOK_NAMES:
@@ -64,12 +66,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("flow", help="Human-gated delivery and observations; use flow --help")
+    commands.add_parser("workspace", help="Inspect, bind or recover the selected workspace; use workspace --help")
     version = commands.add_parser("version", help="Report the installed version")
     version.add_argument("--verify", action="store_true")
     help_command = commands.add_parser("help", help="Show the supported commands")
     help_command.add_argument("--md", action="store_true")
     graph = commands.add_parser("graph", help="Scan, inspect, and render source dependencies")
-    graph.add_argument("--workspace", default=os.getcwd())
+    graph.add_argument("--workspace")
     actions = graph.add_subparsers(dest="action", required=True)
     scan = actions.add_parser("scan")
     scan.add_argument("--decompose", action="store_true")
@@ -91,17 +94,17 @@ def main(argv: list[str] | None = None) -> int:
     edge.add_argument("--note", default="")
     edge.add_argument("--confidence", default="high")
     board = commands.add_parser("dashboard", help="Render the shared delivery dashboard")
-    board.add_argument("--workspace", default=os.getcwd())
+    board.add_argument("--workspace")
     board.add_argument("--out")
     board.add_argument("--run")
     review = commands.add_parser("review", help="Capture a source inventory for native review")
     review.add_argument("action", choices=["start"])
-    review.add_argument("--workspace", default=os.getcwd())
+    review.add_argument("--workspace")
     review.add_argument("--scope", choices=["repository", "diff"], default="diff")
     review.add_argument("--base", default="HEAD")
     review.add_argument("--paths", help="Comma-separated source paths")
     lens = commands.add_parser("lens", help="Suggest lenses from source signals")
-    lens.add_argument("--workspace", default=os.getcwd())
+    lens.add_argument("--workspace")
     lens.add_argument("--files", required=True)
     lens.add_argument("--stage")
     args = parser.parse_args(arguments)
@@ -116,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             result = _version(args.verify)
             print(json.dumps(result, indent=2))
             return 0 if result.get("ok", True) else 1
-        workspace = str(Path(args.workspace).resolve())
+        workspace = str(workspace_binding.resolve_workspace(args.workspace))
+        workspace_binding.ensure(workspace)
         if args.command == "graph":
             if args.action == "scan":
                 data = depgraph.scan(workspace, decompose=args.decompose)

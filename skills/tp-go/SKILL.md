@@ -5,7 +5,10 @@ description: Carry delivery through seven explicitly accepted phases with shared
 
 # Delivery with explicit approval policy
 
-Before substantive work, resolve this installed plugin's runtime and run
+Before creating state, apply the [workspace and execution contract](references/shared-flow.md#workspace-and-execution-contract).
+Bind Cowork's selected project and validate the user's execution policy before
+activation or bootstrap writes. A local mount does not establish command or worker
+locality. Then resolve this installed plugin's runtime and run
 `flow activate --workspace <checkout> --phase tp-go --request-reference <actual-user-request>`.
 Inspect `flow report`: reuse the matching active visit or initialize the appropriate
 scoped run before continuing. This requirement includes standalone work and resumed

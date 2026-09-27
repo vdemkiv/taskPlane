@@ -5,10 +5,219 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import hashlib
+import shlex
+import pytest
 
 from taskplane import claude_flow_usage as claude, flow
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def bound_workspace(tmp_path, monkeypatch, policy='any'):
+    from taskplane import workspace_binding as binding
+    for key in list(os.environ):
+        if key.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_')):
+            monkeypatch.delenv(key)
+    ws=tmp_path/'selected'; ws.mkdir()
+    (ws/'host-proof.txt').write_text('host-created fixture nonce')
+    request={'schema':'taskplane.workspace-request/v1','surface':'cowork',
+        'host_root':'/Users/fixture/farm-viewer','execution_root':str(ws), 'policy':policy,
+        'execution':{'location':'local','reference':'fixture/host-execution'},
+        'worker':{'location':'local','reference':'fixture/host-worker'},
+        'probe':{'path':'host-proof.txt','sha256':hashlib.sha256((ws/'host-proof.txt').read_bytes()).hexdigest(),
+                 'host_reference':'fixture/host-file-observation'}}
+    for kind in ('EXECUTION','WORKER'):
+        monkeypatch.setenv('TASKPLANE_'+kind+'_LOCATION','local')
+        monkeypatch.setenv('TASKPLANE_'+kind+'_REFERENCE','fixture/current-'+kind.lower())
+    record=binding.bind(ws,request)
+    monkeypatch.setenv('TASKPLANE_WORKSPACE',str(ws))
+    monkeypatch.setenv('TASKPLANE_SURFACE','cowork')
+    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID','root')
+    return ws,record
+
+
+def test_cowork_cli_and_hooks_share_selected_root_without_scratch_store(tmp_path,monkeypatch,capsys):
+    from taskplane.tests.test_native_workflow_cli import create
+    ws,binding=bound_workspace(tmp_path,monkeypatch)
+    create(ws)
+    scratch=tmp_path/'scratch';scratch.mkdir();monkeypatch.chdir(scratch)
+    command=shlex.join([sys.executable,str(ROOT/'taskplane/tp.py'),'flow','start',
+        '--standalone','--phase','product','--scope','.taskplane/scope.json',
+        '--request-reference','fixture/split-cwd'])
+    event={'hook_event_name':'PreToolUse','cwd':str(scratch),'session_id':'root',
+           'tool_name':'Bash','tool_input':{'command':command}}
+    flow.hook(event)
+    assert flow.main(['start','--standalone','--phase','product','--scope','.taskplane/scope.json',
+                      '--request-reference','fixture/split-cwd'])==0
+    state=json.loads(capsys.readouterr().out)['workflow']
+    assert state['workspace']==str(ws.resolve())
+    assert state['workspace_contract']=={k:binding[k] for k in ('project_id','digest')}
+    event['hook_event_name']='PostToolUse'
+    event['taskplane_workspace_contract']={'digest':'caller-forged'}
+    flow.hook(event)
+    assert flow.read_events(ws)[-1]['workspace_contract']==state['workspace_contract']
+    assert not (scratch/'.taskplane').exists()
+
+
+@pytest.mark.parametrize('tool,key', [('Bash','command'), ('exec_command','cmd')])
+@pytest.mark.parametrize('operation', [('flow','report'), ('dashboard',)])
+@pytest.mark.parametrize('selection', ['execution', 'alias', 'configured'])
+def test_bound_checkpoint_controls_use_selected_workspace(tmp_path,monkeypatch,tool,key,operation,selection):
+    from taskplane.tests.test_workflow_local import setup, submit
+    from taskplane import workflow as w
+    ws,contract=bound_workspace(tmp_path,monkeypatch)
+    controller,state=setup(ws); state=submit(controller,state)
+    scratch=tmp_path/'scratch'; scratch.mkdir(); monkeypatch.chdir(scratch)
+    selected={'execution':str(ws),'alias':contract['host_root'],'configured':None}[selection]
+    args=[sys.executable,str(ROOT/'taskplane/tp.py'),*operation]
+    if selected is not None: args+=['--workspace',selected]
+    event={'hook_event_name':'PreToolUse','cwd':str(scratch),'session_id':'root',
+           'tool_name':tool,'tool_input':{key:shlex.join(args)}}
+    flow.hook(event,governor=controller)
+    assert w.current(controller.report())['decision']=='awaiting_human_approval'
+    assert controller.report()['revision']==state['revision']
+    assert not (scratch/'.taskplane').exists()
+
+
+def test_bound_checkpoint_controls_keep_exact_command_boundaries(tmp_path,monkeypatch):
+    from taskplane.tests.test_workflow_local import setup, submit
+    from taskplane import workflow as w
+    ws,contract=bound_workspace(tmp_path,monkeypatch)
+    controller,state=setup(ws); submit(controller,state)
+    scratch=tmp_path/'scratch'; scratch.mkdir(); monkeypatch.chdir(scratch)
+    prefix=[sys.executable,str(ROOT/'taskplane/tp.py')]
+    def guard(args):
+        return flow.hook({'hook_event_name':'PreToolUse','cwd':str(scratch),'session_id':'root',
+                          'tool_name':'Bash','tool_input':{'command':shlex.join(args)}},governor=controller)
+    guard([*prefix,'flow','report','--workspace='+contract['host_root']])
+    invalid=[
+        [*prefix,'flow','report','--workspace',str(scratch)],
+        [*prefix,'flow','report','--workspace='+str(scratch)],
+        [*prefix,'flow','report','--workspace',str(ws),'--workspace',contract['host_root']],
+        [*prefix,'flow','report','--workspace',str(ws),'--workspace='+str(ws)],
+        [*prefix,'flow','report','--workspace'],
+        [*prefix,'flow','report','--workspace='],
+        [*prefix,'dashboard','--out','foreign.html'],
+        [*prefix,'dashboard','--run','foreign'],
+        [sys.executable,str(scratch/'tp.py'),'flow','report'],
+        [sys.executable,str(ROOT/'taskplane/tp.py'),'flow','unsupported'],
+    ]
+    for args in invalid:
+        with pytest.raises(w.Refusal): guard(args)
+    monkeypatch.setenv('TASKPLANE_WORKSPACE',str(scratch))
+    with pytest.raises(w.Refusal): guard([*prefix,'flow','report'])
+    assert not (scratch/'.taskplane').exists()
+
+
+def test_cowork_missing_selection_refuses_before_any_state_and_abstains_unrelated(tmp_path,monkeypatch,capsys):
+    from taskplane import workflow
+    for key in list(os.environ):
+        if key.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_')):monkeypatch.delenv(key)
+    monkeypatch.setenv('TASKPLANE_SURFACE','cowork');monkeypatch.chdir(tmp_path)
+    unrelated={'hook_event_name':'PreToolUse','cwd':str(tmp_path),'session_id':'root',
+               'tool_name':'Bash','tool_input':{'command':'pwd'}}
+    assert flow.hook(unrelated)=={}
+    selected={**unrelated,'tool_input':{'command':shlex.join(
+        [sys.executable,str(ROOT/'taskplane/tp.py'),'flow','activate','--phase','tp-go'])}}
+    with pytest.raises(workflow.Refusal):flow.hook(selected)
+    assert flow.main(['activate','--phase','tp-go','--request-reference','fixture/selection'],compact=True)==2
+    capsys.readouterr()
+    assert not (tmp_path/'.taskplane').exists()
+
+
+@pytest.mark.parametrize('selection', ['missing_configured', 'unbound_configured', 'unbound_cwd'])
+@pytest.mark.parametrize('task', [None, 'COW-CONTEXT'])
+def test_context_binding_refusal_without_workspace_is_structured_and_writes_nothing(tmp_path, monkeypatch, selection, task):
+    scratch = tmp_path/'scratch'; scratch.mkdir(); monkeypatch.chdir(scratch)
+    selected = tmp_path/'selected'
+    if selection != 'missing_configured': selected.mkdir()
+    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    if selection != 'unbound_cwd': monkeypatch.setenv('TASKPLANE_WORKSPACE', str(selected))
+    before = {str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    args = [sys.executable, str(ROOT/'taskplane/tp.py'), 'flow', 'context']
+    if task is not None: args += ['--task', task]
+    result = subprocess.run(args, cwd=scratch, capture_output=True, text=True)
+    assert result.returncode == 2 and not result.stderr
+    payload = json.loads(result.stdout)
+    assert payload['status'] == 'blocked' and payload['reason'] == 'workspace_binding'
+    assert 'next_action' not in payload  # An unresolved root cannot supply a corrective command.
+    assert {str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+    assert not (scratch/'.taskplane').exists() and not (selected/'.taskplane').exists()
+
+
+@pytest.mark.parametrize('selection', ['configured', 'cwd'])
+def test_context_refusal_uses_resolved_workspace_in_retry(tmp_path, monkeypatch, capsys, selection):
+    from taskplane import workflow as w
+    from taskplane.tests.test_workflow_local import setup
+    selected, _ = bound_workspace(tmp_path, monkeypatch)
+    if selection == 'cwd':
+        monkeypatch.delenv('TASKPLANE_WORKSPACE')
+    controller, state = setup(selected)
+    scratch = tmp_path/'scratch'; scratch.mkdir()
+    monkeypatch.chdir(scratch if selection == 'configured' else selected)
+    if selection == 'configured': monkeypatch.setenv('TASKPLANE_WORKSPACE', str(selected))
+    monkeypatch.setenv('CODEX_THREAD_ID', controller.root)
+    def refuse(*args, **kwargs):
+        raise w.Refusal('stale_checkpoint', 'Fixture stale context handoff.')
+    monkeypatch.setattr(controller, 'context', refuse)
+    before = controller._path().read_bytes()
+    assert flow.main(['context', '--run', state['run']], governor=controller) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['reason'] == 'stale_checkpoint'
+    assert str(selected) in payload['next_action'] and str(scratch) not in payload['next_action']
+    assert controller._path().read_bytes() == before and not (scratch/'.taskplane').exists()
+
+
+def test_workspace_admin_is_narrow_and_available_before_binding(tmp_path,monkeypatch):
+    monkeypatch.setenv('TASKPLANE_SURFACE','cowork');monkeypatch.delenv('TASKPLANE_WORKSPACE',raising=False)
+    words=[sys.executable,str(ROOT/'taskplane/tp.py'),'workspace','bind','--workspace',str(tmp_path),
+           '--request',str(tmp_path/'request.json')]
+    event={'hook_event_name':'PreToolUse','cwd':str(tmp_path),'session_id':'root',
+           'tool_name':'Bash','tool_input':{'command':shlex.join(words)}}
+    assert flow._workspace_admin(event)
+    assert flow.hook(event)=={}
+    for command in (shlex.join(words)+'; touch bad',shlex.join(words+['--extra','bad']),
+                    shlex.join([sys.executable,str(tmp_path/'tp.py'),*words[2:]])):
+        assert not flow._workspace_admin({**event,'tool_input':{'command':command}})
+    assert not flow._workspace_admin({**event,'parent_session_id':'parent'})
+    assert not (tmp_path/'.taskplane').exists()
+
+
+def test_selected_workspace_export_is_validated_before_claude_environment_write(tmp_path,monkeypatch):
+    ws,_=bound_workspace(tmp_path,monkeypatch,policy='local')
+    target=tmp_path/'claude.env';monkeypatch.setenv('CLAUDE_ENV_FILE',str(target))
+    event={'hook_event_name':'SessionStart','session_id':'root','cwd':str(tmp_path),
+           'transcript_path':str(tmp_path/'transcript.jsonl')}
+    claude.bind_session(event)
+    assert 'export TASKPLANE_WORKSPACE='+shlex.quote(str(ws.resolve())) in target.read_text()
+    before=target.read_bytes();monkeypatch.delenv('TASKPLANE_EXECUTION_REFERENCE')
+    from taskplane.workflow import Refusal
+    with pytest.raises(Refusal):claude.bind_session(event)
+    assert target.read_bytes()==before
+
+
+def test_legacy_local_runtime_does_not_require_posix_binding_operations(tmp_path,monkeypatch):
+    from taskplane import workspace_binding as binding, workflow_host
+    from taskplane.tests.test_native_workflow_cli import create
+    for key in list(os.environ):
+        if key.startswith('TASKPLANE_'):monkeypatch.delenv(key)
+    create(tmp_path)
+    monkeypatch.setattr(binding.os,'supports_dir_fd',set())
+    assert binding.ensure(tmp_path) is None
+    assert binding.describe(tmp_path)['status']=='unbound'
+    c=workflow_host.Controller(tmp_path,'legacy',workflow_host.installed_adapter('claude'))
+    scope=json.loads((tmp_path/'.taskplane/scope.json').read_text())
+    assert c.start({'scope':scope,'entry':'product','standalone':True,
+                    'request_reference':'fixture/legacy-platform'})['run']
+    monkeypatch.setenv('TASKPLANE_SURFACE','cowork')
+    from taskplane.workflow import Refusal
+    with pytest.raises(Refusal,match='no-follow directory'):binding.ensure(tmp_path)
+
+
+def test_cloud_scratch_signal_never_establishes_locality():
+    from taskplane import workspace_binding as binding
+    assert binding._required(Path('/home/claude/project'))
 
 
 def message(mid='m1', *, at='2026-09-15T00:00:01Z', agent=None, output=10):

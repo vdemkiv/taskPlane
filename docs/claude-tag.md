@@ -42,8 +42,13 @@ workspace, or org) from the Access bundle's Plugins tab or a skills
 repository — see [Customize Claude
 Tag](https://claude.com/docs/claude-tag/admins/customize). Honest limit:
 Tag's plugin surface today is skills-only, so enforcement is by process,
-visibility, and trace — not by mechanical interception. The hook layer
-remains fully active in Claude Code and Cowork. Individuals can work
+visibility, and trace — not by mechanical interception. Claude Code and Cowork
+hook coverage must be established from the installed adapter and actual host
+events. Cowork additionally needs an explicit selected-folder binding and separate
+execution/worker observations; a mounted Mac folder proves neither local commands
+nor local workers. Automated fixtures do not certify live Cowork hooks, persistence
+or dashboard display. Follow [Cowork setup and recovery](onboarding.md#cowork-workspace-and-execution)
+and stop when a required host capability is unavailable. Individuals can work
 privately even on a team plan and publish selected decisions to the
 channel's shared store with `tp share push` — see the changelog's v1.5.0
 entry.

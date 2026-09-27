@@ -171,7 +171,9 @@ class LocalWorkflow:
         target = self.control_path(self.workspace, self.root)
         marker = storage.runtime_file(str(self.workspace), self.markername)
         w.require(target.exists() == marker.exists(), "state_unavailable",
-                  "Local workflow initialization/state is incomplete. Explicit recovery is required.")
+                  "Local workflow initialization/state is incomplete. Explicit recovery is required. "
+                  "Run flow diagnose to identify the missing file; "
+                  "flow recover can restore an explicitly selected, matching numbered database copy.")
         if marker.exists():
             w.require(marker.stat().st_size <= 4096 and json.loads(marker.read_text()) == self.marker(),
                       "state_unavailable", "Local initialization identity is corrupt.")
@@ -312,6 +314,14 @@ class LocalWorkflow:
         return json.dumps(value) if isinstance(value, dict) else None
 
     def control_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
+        from . import workspace_binding
+
+        def selected_workspace(value: str | None) -> bool:
+            try:
+                return workspace_binding.resolve_workspace(value, event=event) == self.workspace
+            except (w.Refusal, OSError, ValueError):
+                return False
+
         words = runtime_words(event)
         if (len(words) < 3 or Path(shutil.which(words[0]) or "/nonexistent").resolve() != Path(sys.executable).resolve()
                 or (self.workspace/words[1]).resolve() != Path(__file__).with_name("tp.py").resolve()):
@@ -323,19 +333,24 @@ class LocalWorkflow:
                 return False
             values = dict(zip(options[::2], options[1::2]))
             return (set(values) <= {"--workspace", "--run", "--out"}
-                    and (self.workspace/values.get("--workspace", "/nonexistent")).resolve() == self.workspace
+                    and selected_workspace(values.get("--workspace"))
                     and values.get("--run", state["run"]) == state["run"]
                     and (self.workspace/values.get("--out", ".taskplane/dashboard.html")).absolute()
                         == self.workspace/".taskplane/dashboard.html")
         if words[2:] in (["version"], ["version", "--verify"], ["help"], ["--help"], ["flow", "--help"]):
             return True
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
-        if words.count("--workspace") != 1:
+        selections = [i for i, word in enumerate(words) if word == "--workspace" or word.startswith("--workspace=")]
+        if len(selections) > 1:
             return False
-        index = words.index("--workspace") + 1
-        return index < len(words) and (self.workspace/words[index]).resolve() == self.workspace
+        if not selections:
+            return selected_workspace(None)
+        index = selections[0]
+        if words[index] == "--workspace":
+            return index + 1 < len(words) and selected_workspace(words[index + 1])
+        return selected_workspace(words[index].split("=", 1)[1])
 
     def guard_command(self, event: dict[str, Any], state: dict[str, Any], paths: list[str]) -> None:
         pass  # Host permissions apply; inventory audits effects before transitions.
