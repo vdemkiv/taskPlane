@@ -164,7 +164,10 @@ candidate.write_bytes(raw)
 target.unlink()  # Deliberate interruption in an isolated temporary test workspace.
 hooks = json.loads((root/'hooks/hooks.json').read_text())['hooks']
 def guarded(args):
-    argv = [sys.executable, str(root/'taskplane/tp.py'), 'flow', *args, '--workspace', str(workspace)]
+    # Match the declared hook's interpreter identity. Windows py -3 can select
+    # a different interpreter from the Python process that runs pytest.
+    python = ['py', '-3'] if os.name == 'nt' else [sys.executable]
+    argv = [*python, str(root/'taskplane/tp.py'), 'flow', *args, '--workspace', str(workspace)]
     tool, key = ('Bash','command') if host == 'claude' else ('exec_command','cmd')
     identity = {'session_id':'package-root'} if host == 'claude' else {'thread_id':'package-root'}
     event = {'hook_event_name':'PreToolUse','cwd':str(workspace), **identity,

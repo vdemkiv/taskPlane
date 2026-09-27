@@ -34,6 +34,11 @@ def test_all_collected_tests_have_one_suite_and_short_ids(tmp_path):
     assert all('test_native_repeated_repair_history' in n for n in partitions['capacity'])
     assert all('test_generated_archives_match_verified_source' in n for n in partitions['packages'])
     assert any('large-unicode' in n for n in partitions['portability'])
+    binding = {r['nodeid'] for r in rows if 'test_workspace_binding.py::' in r['nodeid']}
+    recovery = {r['nodeid'] for r in rows
+                if '::test_extracted_packages_recover_displaced_state_through_declared_hooks[' in r['nodeid']}
+    assert binding and binding <= partitions['portability']
+    assert len(recovery) == 2 and recovery <= partitions['portability']
     assert any('test_source_instruction_contract' in n for n in partitions['core'])
     assert any('test_both_native_routing_contexts' in n for n in partitions['native'])
 
