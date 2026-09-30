@@ -30,6 +30,14 @@ identity of every unreleased source change.
 
 ## Cowork workspace and execution
 
+Requesting a review includes its supported first-run setup. Taskplane should show
+progress or name the exact setup blocker. With no folder selected it asks for one;
+with a folder already selected it inspects that same project and completes binding
+when the host exposes the required observations. It retains the requested route
+and lens count, then starts the review without requiring a second `tp-go` request.
+A status check reports pending setup without creating state. A blocked inspection
+leaves run history unknown; it does not prove the project has never had a run.
+
 Before activation, scope creation or worker dispatch, establish these facts
 separately. Never infer execution topology from a `/sessions/` path, a mount,
 device metadata or the `native_workflow` name.

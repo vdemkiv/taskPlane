@@ -110,6 +110,20 @@ provenance are outside native_workflow's guarantees.
 
 ## Workspace binding and execution policy
 
+Missing first-run bindings return `onboarding.state: binding_required`, candidate
+workspace, unknown history, and an actionable `next_action`, without creating state.
+Direct root execution prompts remain deliverable so the model can explain and finish
+setup. Root questions, bounded read-only discovery, and exact installed workspace
+administration remain reachable; implementation, corrupt bindings and child setup
+attempts stay refused. Cowork's bare `taskplane` Skill name also selects initialization.
+
+`workspace bind` and `workspace recover` accept exactly one of `--request FILE` or
+`--request-json JSON`. Inline JSON must be an object of at most 64 KiB and satisfies
+the same versioned request contract below. Shell-quote it as data using the host's
+supported argument API. This avoids a preliminary request-file write before binding.
+It does not authorize fabricated mapping, probe or execution observations.
+
+
 Cowork, configured workspace/policy signals and recognized session/scratch roots
 require an explicit binding before ordinary runtime state is created. Existing
 local Claude Code/Codex workflows without these signals retain their legacy behavior.

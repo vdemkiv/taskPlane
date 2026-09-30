@@ -47,6 +47,32 @@ disable guards to adopt another root.
 
 ## Harness activation and dashboard handoff
 
+### Onboarding continuation
+
+Keep the original execution request in conversation until setup succeeds or the
+user cancels it. Show a brief acknowledgement before setup. A missing binding is
+an actionable setup state: it must not swallow the prompt or end silently.
+
+If no project folder is available, ask for selection. If it is already selected,
+inspect its actual native and execution paths with the host's supported read tools
+and installed `workspace inspect`. Resolve the mapping and probe observations under
+the workspace contract above. When they are available, use `workspace bind` with
+`--request-json` (a shell-quoted JSON object of at most 64 KiB) or `--request FILE`.
+Inline input avoids needing a preliminary file write in an unbound workspace; it
+uses the same validation and grants no additional authority. Do not invent host-side
+evidence, assume a local folder means local execution, or weaken a user's policy.
+
+If the host cannot provide a required mapping, probe observation, root propagation
+or worker capability, report that exact capability and the supported next action.
+Do not repeatedly ask for a folder that is already selected. Do not write workflow
+state in a session directory to work around a missing mapping.
+
+Once bound, activate and start the original route in the same request, preserving
+its scope and lens count. A standalone engineering review uses `flow start
+--standalone --phase engineering`; it does not require the user to invoke `tp-go`.
+Inspect the resulting run before claiming initialization succeeded. Status alone
+stays read-only and explains pending setup; failed inspection leaves history unknown.
+
 The harness is mandatory for every execution entry, including standalone work and
 resumed stages. Direct Taskplane execution prompts, named execution skills and
 native reads of installed execution skill files select a session/workspace-bound

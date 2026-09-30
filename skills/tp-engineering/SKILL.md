@@ -5,6 +5,12 @@ description: Review source code, changes, architecture, or security and report a
 
 # Engineering review
 
+Starting the requested review includes supported first-run setup. If `.taskplane/`
+is absent, inspect/bind the selected project and start a standalone Engineering run;
+do not end with “no delivery” or recommend `tp-go`. Preserve the requested lenses.
+If setup cannot proceed, state the exact missing input/capability and the next action.
+Follow the [onboarding continuation](../tp-go/references/shared-flow.md#onboarding-continuation).
+
 Before creating state, apply the [workspace and execution contract](../tp-go/references/shared-flow.md#workspace-and-execution-contract),
 including for read-only reviews. Bind Cowork's selected project and validate command
 and worker locality independently against the user's policy; report missing

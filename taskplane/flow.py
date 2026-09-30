@@ -679,7 +679,7 @@ def _workspace_admin(event: dict[str, Any]) -> bool:
     """Only the installed bounded administration CLI can precede binding checks."""
     if (event.get("tool_name") or event.get("tool")) not in {"Bash", "exec_command"}:
         return False
-    if event.get("parent_session_id") or event.get("agent_id"):
+    if event.get("parent_session_id") or event.get("agent_id") or event.get("subagent_id"):
         return False
     words = workflow_local.runtime_words(event)
     if (len(words) < 4 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
@@ -688,8 +688,44 @@ def _workspace_admin(event: dict[str, Any]) -> bool:
             or words[2] != 'workspace' or words[3] not in {'inspect', 'bind', 'recover'}):
         return False
     options = words[4:]
-    required = {'--workspace'} | ({'--request'} if words[3] != 'inspect' else set())
+    source = '--request-json' if '--request-json' in options[::2] else '--request'
+    required = {'--workspace'} | ({source} if words[3] != 'inspect' else set())
     return (len(options) == 2 * len(required) and set(options[::2]) == required
+            and all(value and not value.startswith('--') for value in options[1::2]))
+
+
+def _onboarding_read(event: dict[str, Any]) -> bool:
+    """Root setup discovery only; no workflow or general shell mutation exception."""
+    if event.get('parent_session_id') or event.get('agent_id') or event.get('subagent_id'):
+        return False
+    tool = event.get('tool_name') or event.get('tool')
+    if tool in workflow_local.READ_TOOLS | workflow_local.QUESTION_TOOLS:
+        return True
+    if tool == 'Skill':
+        args = event.get('tool_input', {})
+        return isinstance(args, dict) and args.get('skill') in {
+            'taskplane', *('taskplane:' + name for name in (*workflow_local.EXECUTION_ENTRIES, 'tp-status', 'tp-help'))}
+    if tool not in {'Bash', 'exec_command'}:
+        return False
+    if workflow_local.readonly_command(event):
+        return True
+    words = workflow_local.runtime_words(event)
+    # Compute the execution-side probe without admitting Python or shell scripts.
+    # Host-side evidence must still be obtained independently by the caller.
+    if ((words[:4] == ['shasum', '-a', '256', '--'] and len(words) == 5)
+            or (words[:2] == ['sha256sum', '--'] and len(words) == 3)):
+        return bool(words[-1] and words[-1] != '-')
+    if (len(words) < 4 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
+            or not Path(words[1]).is_absolute()
+            or Path(words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()
+            or words[2:4] != ['flow', 'report']):
+        return False
+    options = words[4:]
+    if options.count('--full') > 1:
+        return False
+    options = [value for value in options if value != '--full']
+    return (len(options) % 2 == 0 and len(set(options[::2])) == len(options[::2])
+            and set(options[::2]) <= {'--workspace', '--run'}
             and all(value and not value.startswith('--') for value in options[1::2]))
 
 
@@ -728,7 +764,7 @@ def _hook(event: dict[str, Any], *,
     try:
         workspace = workspace_binding.resolve_workspace(None, event=event)
         contract = workspace_binding.ensure(workspace)
-    except workflow.Refusal:
+    except workflow.Refusal as exc:
         incidental = Path(event.get("cwd") or os.getcwd())
         # Installing the plugin must not capture unrelated, unselected Cowork tasks.
         words = workflow_local.runtime_words(event)
@@ -736,6 +772,12 @@ def _hook(event: dict[str, Any], *,
         if (not os.environ.get('TASKPLANE_WORKSPACE') and not workflow_local.execution_entry(event)
                 and not invokes_runtime and not (incidental / '.taskplane').exists()):
             return {}
+        if isinstance(exc, workspace_binding.MissingBinding) and governor is None:
+            name = event.get('hook_event_name')
+            root = not any(event.get(k) for k in ('parent_session_id', 'agent_id', 'subagent_id'))
+            if root and (name == 'UserPromptSubmit' or name == 'SessionStart'
+                         or name in {'PreToolUse', 'PostToolUse'} and _onboarding_read(event)):
+                return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': exc.guidance()}}
         raise
     rows, session = read_events(workspace), session_id(event)
     parent = event.get("parent_session_id")
@@ -901,7 +943,8 @@ def run_hook(command: str | None = None, *,
                 _observe_hook(event, outcome="error", reason="malformed_hook_input")
             except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
                 pass  # Recording failure never replaces the original denial.
-        reason = exc.detail if isinstance(exc, workflow.Refusal) else "Taskplane hook input/state is invalid."
+        reason = (exc.guidance() if isinstance(exc, workspace_binding.MissingBinding) else
+                  exc.detail if isinstance(exc, workflow.Refusal) else "Taskplane hook input/state is invalid.")
         if event.get("hook_event_name") == "PreToolUse":
             result = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                       "permissionDecision": "deny", "permissionDecisionReason": reason}}
@@ -1236,6 +1279,10 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         return 0
     except workflow.Refusal as exc:
         failure = exc.result()
+        if args.action == "context" and not workspace_validated:
+            # Context next_action is an executable continuation bound to a validated
+            # root. First-run explanation remains in onboarding.guidance instead.
+            failure.pop("next_action", None)
         if args.action == "context" and workspace_validated:
             from .context_handoff import context_action
             task_id, context_run = args.task, args.run or protected.get("run", "")

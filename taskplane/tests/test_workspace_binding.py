@@ -1,14 +1,17 @@
 """Topology fixtures prove cooperative checks, not live Cowork or host attestation."""
 from copy import deepcopy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PureWindowsPath
 import shutil
+import shlex
+import sys
 
 import pytest
 
-from taskplane import primitives, workflow as w, workspace_binding as b
+from taskplane import flow, primitives, workflow as w, workspace_binding as b
 from taskplane.tests.binding_support import HAS_BINDING_RUNTIME, requires_binding_runtime
 
 
@@ -817,3 +820,172 @@ def test_recovery_inventory_has_hard_bounds(tmp_path, monkeypatch):
     with pytest.raises(w.Refusal, match="bound"):
         b.recover(destination, fresh)
     assert tree(destination) == before
+
+
+# Claude-shaped onboarding journeys; these do not certify live Cowork.
+ROOT = Path(__file__).resolve().parents[2]
+PROMPT = '/taskplane run full engineering review for farm viewer repo with top 8 best matching lenses.'
+
+
+@pytest.fixture
+def onboarding_environment(monkeypatch):
+    for key in list(os.environ):
+        if key.startswith(('TASKPLANE_', 'CODEX_', 'CLAUDE_')):
+            monkeypatch.delenv(key)
+
+
+def invoke(tmp_path, monkeypatch, capsys, name, **extra):
+    event = {'hook_event_name': name, 'session_id': 'cowork-root', 'cwd': str(tmp_path), **extra}
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(event)))
+    code = flow.run_hook()
+    return code, json.loads(capsys.readouterr().out)
+
+
+@requires_binding_runtime
+@pytest.mark.parametrize('selected', [False, True])
+@pytest.mark.usefixtures("onboarding_environment")
+def test_prompt_reaches_model_with_setup_guidance(tmp_path, monkeypatch, capsys, selected):
+    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    if selected:
+        monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
+    before = tree(tmp_path)
+    code, result = invoke(tmp_path, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
+    assert code == 0
+    assert 'decision' not in result
+    context = result['hookSpecificOutput']['additionalContext']
+    assert 'original request' in context and 'lens count' in context
+    assert 'selected' in context and 'binding' in context
+    assert tree(tmp_path) == before
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures("onboarding_environment")
+def test_report_missing_binding_is_actionable_and_readonly(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    assert flow.main(['report', '--workspace', str(tmp_path)]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['onboarding']['state'] == 'binding_required'
+    assert result['onboarding']['history'] == 'unknown'
+    assert 'original request' in result['next_action']
+    assert not (tmp_path / '.taskplane').exists()
+
+
+@requires_binding_runtime
+@pytest.mark.parametrize('event_name', ['PreToolUse', 'PostToolUse'])
+@pytest.mark.parametrize('tool,args', [
+    ('Skill', {'skill': 'taskplane'}),
+    ('Skill', {'skill': 'taskplane:taskplane'}),
+    ('Skill', {'skill': 'taskplane:tp-engineering'}),
+    ('Skill', {'skill': 'taskplane:tp-status'}),
+    ('Read', {'file_path': 'README.md'}),
+    ('AskUserQuestion', {'question': 'Select the project folder'}),
+    ('Bash', {'command': 'pwd'}),
+    ('Bash', {'command': 'rg --files'}),
+    ('Bash', {'command': 'shasum -a 256 -- /selected/README.md'}),
+    ('Bash', {'command': 'sha256sum -- /selected/README.md'}),
+    ('Bash', {'command': shlex.join([sys.executable, str(ROOT / 'taskplane/tp.py'), 'flow', 'report'])}),
+])
+@pytest.mark.usefixtures("onboarding_environment")
+def test_selected_unbound_setup_reads_reachable(tmp_path, monkeypatch, capsys, tool, args, event_name):
+    monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
+    before = tree(tmp_path)
+    code, result = invoke(tmp_path, monkeypatch, capsys, event_name, tool_name=tool, tool_input=args)
+    assert code == 0
+    assert result['hookSpecificOutput'].get('permissionDecision') is None
+    assert 'setup is pending' in result['hookSpecificOutput']['additionalContext']
+    assert tree(tmp_path) == before
+
+
+@requires_binding_runtime
+@pytest.mark.parametrize('tool,args,child', [
+    ('Write', {'file_path': 'app.py', 'content': 'change'}, {}),
+    ('Bash', {'command': 'touch app.py'}, {}),
+    ('Bash', {'command': 'pwd; touch app.py'}, {}),
+    ('Bash', {'command': 'shasum -a 256 -- /selected/README.md; touch app.py'}, {}),
+    ('Bash', {'command': 'sha256sum --check /selected/checks'}, {}),
+    ('Bash', {'command': 'python3 /tmp/forged/tp.py flow report'}, {}),
+    ('Read', {'file_path': 'README.md'}, {'parent_session_id': 'parent'}),
+    ('Skill', {'skill': 'taskplane:tp-engineering'}, {'subagent_id': 'child'}),
+])
+@pytest.mark.usefixtures("onboarding_environment")
+def test_setup_does_not_admit_writes_or_children(tmp_path, monkeypatch, capsys, tool, args, child):
+    monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
+    code, result = invoke(tmp_path, monkeypatch, capsys, 'PreToolUse', tool_name=tool, tool_input=args, **child)
+    assert code == 0 and result['hookSpecificOutput']['permissionDecision'] == 'deny'
+    assert not (tmp_path / '.taskplane').exists()
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures("onboarding_environment")
+def test_invalid_binding_is_not_first_run_onboarding(tmp_path, monkeypatch, capsys):
+    b.bind(tmp_path, request(tmp_path))
+    target = tmp_path / '.taskplane' / b.BINDING_FILE
+    target.write_text('{corrupt')
+    monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
+    before = tree(tmp_path)
+    code, result = invoke(tmp_path, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT)
+    assert code == 2 and result['decision'] == 'block'
+    assert tree(tmp_path) == before
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures("onboarding_environment")
+def test_frozen_missing_binding_is_not_onboarding(tmp_path):
+    with pytest.raises(w.Refusal) as error:
+        b.ensure(tmp_path, expected={'project_id': 'lost', 'digest': 'lost'})
+    assert not isinstance(error.value, b.MissingBinding)
+
+
+@requires_binding_runtime
+@pytest.mark.parametrize('payload', ['{', '[]', '"value"', ' ' * (b.REQUEST_BYTES + 1)],
+                         ids=['malformed', 'list', 'scalar', 'oversize'])
+@pytest.mark.usefixtures("onboarding_environment")
+def test_inline_request_rejects_invalid_data_without_state(tmp_path, capsys, payload):
+    assert b.main(['bind', '--workspace', str(tmp_path), '--request-json', payload]) == 2
+    assert json.loads(capsys.readouterr().out)['reason'] == 'workspace_binding'
+    assert not (tmp_path / '.taskplane').exists()
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures("onboarding_environment")
+def test_selected_folder_inline_bind_then_standalone_engineering(tmp_path, monkeypatch, capsys):
+    from taskplane.tests.test_native_workflow_cli import cli
+    monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
+    req = request(tmp_path)
+    argv = [sys.executable, str(ROOT / 'taskplane/tp.py'), 'workspace', 'bind',
+            '--workspace', str(tmp_path), '--request-json', json.dumps(req)]
+    command = shlex.join(argv)
+    for child in ({'parent_session_id': 'parent'}, {'agent_id': 'child'}, {'subagent_id': 'child'}):
+        assert not flow._workspace_admin({'tool_name': 'Bash', 'tool_input': {'command': command}, **child})
+    code, result = invoke(tmp_path, monkeypatch, capsys, 'PreToolUse', tool_name='Bash',
+                          tool_input={'command': command})
+    assert code == 0 and result.get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
+    assert b.main(argv[3:]) == 0
+    assert json.loads(capsys.readouterr().out)['schema'] == b.BINDING_SCHEMA
+    env = {'TASKPLANE_WORKSPACE': str(tmp_path), 'TASKPLANE_SURFACE': 'cowork'}
+    cli(tmp_path, 'claude', 'activate', '--phase', 'tp-engineering', '--request-reference', PROMPT, environment=env)
+    bootstrap = tmp_path / '.taskplane/bootstrap'
+    bootstrap.mkdir()
+    scope = {'criteria': ['eight-lens-review'], 'paths': {p: [] for p in w.PHASES}, 'verification_inputs': []}
+    (bootstrap / 'scope.json').write_text(json.dumps(scope))
+    state = cli(tmp_path, 'claude', 'start', '--standalone', '--phase', 'engineering',
+                '--scope', '.taskplane/bootstrap/scope.json', '--request-reference', PROMPT, environment=env)['workflow']
+    assert [v['phase'] for v in state['visits']] == ['engineering']
+    assert state['request_provenance']['reference'] == PROMPT
+    assert state['scope']['criteria'] == ['eight-lens-review']
+    assert state['workspace_contract']['project_id'] == b.load(tmp_path)['project_id']
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures("onboarding_environment")
+def test_unrelated_cowork_prompt_does_not_select_taskplane(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    code, result = invoke(tmp_path, monkeypatch, capsys, 'UserPromptSubmit', prompt='Write a short poem')
+    assert code == 0 and result == {}
+    assert not (tmp_path / '.taskplane').exists()
+
+
+@pytest.mark.usefixtures("onboarding_environment")
+def test_cowork_router_skill_selects_initialization():
+    from taskplane.workflow_local import execution_entry
+    assert execution_entry({'tool_name': 'Skill', 'tool_input': {'skill': 'taskplane'}}) == 'taskplane'

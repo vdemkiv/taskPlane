@@ -33,6 +33,33 @@ LOCATIONS = {"local", "remote", "unknown"}
 FIELDS = {"surface", "host_root", "execution_root", "policy", "execution", "worker", "probe"}
 
 
+class MissingBinding(w.Refusal):
+    """First-run setup, never a corrupt binding or a lost frozen contract."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        super().__init__("workspace_binding", "Selected workspace needs an explicit binding before Taskplane state can be created.")
+
+    def guidance(self) -> str:
+        return ("Taskplane setup is pending. Tell the user what is missing; do not silently stop. "
+                "Keep the original request, route and lens count in conversation. "
+                "If a project folder is already selected, inspect that same folder and its actual execution path; "
+                "do not ask to select it again. Otherwise ask the user to select the project folder. "
+                "Use the installed workspace inspect and workspace bind interfaces with observed mapping/probe evidence "
+                "(bind accepts --request-json without a preliminary file write). "
+                "If the host cannot expose the mapping or required execution capability, name that exact blocker. "
+                "After binding, activate and start the original requested route, preserving its lens count. "
+                "A standalone review starts at Engineering; do not redirect it to tp-go. "
+                "A status-only request stays read-only: explain pending setup and the earlier request; "
+                "unreadable run history is unknown, not proof that no run exists.")
+
+    def result(self) -> dict[str, Any]:
+        return {**super().result(), "onboarding": {"state": "binding_required",
+                "candidate_workspace": str(self.root), "history": "unknown", "state_created": False,
+                "guidance": self.guidance()},
+                "next_action": self.guidance()}
+
+
 def _fail(detail: str, reason: str = "workspace_binding") -> NoReturn:
     raise w.Refusal(reason, detail)
 
@@ -320,8 +347,10 @@ def ensure(workspace: str | Path, worker: bool = False,
     root = _root(workspace)
     value = load(root)
     if value is None:
-        if expected is not None or _required(root):
-            _fail("Selected workspace needs an explicit binding before Taskplane state can be created.")
+        if expected is not None:
+            _fail("Workspace binding required by the frozen run contract is missing; preserve existing state.")
+        if _required(root):
+            raise MissingBinding(root)
         return None
     request = {"schema": REQUEST_SCHEMA, **{k: value[k] for k in FIELDS}}
     _request(root, request)
@@ -350,7 +379,7 @@ def resolve_workspace(workspace: str | Path | None,
         if str(explicit) not in aliases:
             _fail("Explicit workspace conflicts with TASKPLANE_WORKSPACE and its declared host alias.")
     if value is None and _required(root, event):
-        _fail("Cowork or session storage needs an explicit selected-folder binding before initialization.")
+        raise MissingBinding(root)
     return root
 
 
@@ -661,13 +690,25 @@ def main(argv: list[str] | None = None) -> int:
         command = sub.add_parser(operation)
         command.add_argument("--workspace", required=True)
         if operation != "inspect":
-            command.add_argument("--request", required=True)
+            source = command.add_mutually_exclusive_group(required=True)
+            source.add_argument("--request")
+            source.add_argument("--request-json", help="Inline request object, at most 64 KiB")
     args = parser.parse_args(argv)
     try:
         if args.operation == "inspect":
             result = describe(args.workspace)
         else:
-            request = _object(_absolute(args.request), REQUEST_BYTES)
+            if args.request_json is not None:
+                if len(args.request_json.encode('utf-8')) > REQUEST_BYTES:
+                    _fail("Inline workspace request exceeds 64 KiB.")
+                try:
+                    request = json.loads(args.request_json)
+                except (ValueError, UnicodeError):
+                    _fail("Inline workspace request must be a JSON object.")
+                if not isinstance(request, dict):
+                    _fail("Inline workspace request must be a JSON object.")
+            else:
+                request = _object(_absolute(args.request), REQUEST_BYTES)
             result = bind(args.workspace, request) if args.operation == "bind" else recover(args.workspace, request)
         print(json.dumps(result, sort_keys=True))
         return 0

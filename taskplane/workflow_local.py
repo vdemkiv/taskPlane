@@ -518,6 +518,8 @@ def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> 
     tool = event.get('tool_name') or event.get('tool')
     if tool == 'Skill':
         name = args.get('skill', '')
+        if name == 'taskplane':
+            return 'taskplane'  # Cowork can expose the router without a plugin namespace.
         if isinstance(name, str) and name.startswith('taskplane:') and name[10:] in EXECUTION_ENTRIES:
             return name[10:]
     # Codex can load skills through a native read instead of a Skill event.

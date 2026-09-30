@@ -5,6 +5,19 @@ description: Route requests to review code, design a change, implement work, ins
 
 # Taskplane
 
+An execution request must produce visible progress or a specific setup blocker.
+Read the requested route first and retain the original repository, scope and lens
+count through onboarding. For example, an eight-lens engineering review remains
+that standalone review after setup; do not redirect the user to `tp-go`.
+
+If no folder is available, explain that the requested work is waiting for a project
+folder and ask the user to select it. If a folder is already selected, inspect that
+folder and its actual execution path instead of asking the user to select it again.
+Complete supported binding and initialization as part of the execution request.
+Missing `.taskplane/` means first-run setup is needed, not that the request is done.
+Use the [onboarding continuation](../tp-go/references/shared-flow.md#onboarding-continuation)
+and resume the original task in the same conversation. Never stop without a response.
+
 Before creating state, apply the [workspace and execution contract](../tp-go/references/shared-flow.md#workspace-and-execution-contract).
 Cowork requires an explicit selected-project binding; honor the user's storage,
 command and worker location restrictions separately. Missing mapping or required

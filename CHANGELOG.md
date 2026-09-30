@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.31.7 — visible Cowork onboarding and review continuation
+
+- Deliver first-run execution prompts and router skills with actionable setup guidance instead of rejecting them before initialization can run.
+- Keep selected-folder discovery, questions and exact setup/report commands reachable without admitting implementation or corrupt bindings.
+- Accept bounded inline workspace binding requests, preserving existing proof and policy validation.
+- Preserve the original review route and lens count through onboarding; status reports pending setup and unknown history honestly.
+- Add Claude-shaped prompt, tool and selected-folder initialization regressions. Live Cowork installation remains unverified by these fixtures.
+
 ## v2.31.6 — approval, worker integrity and usage accounting fixes
 
 - Require every approval clause to match supported instructions; honor future human approval requirements and refuse unknown residual directives without changing workflow state.

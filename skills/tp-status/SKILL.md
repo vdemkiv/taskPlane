@@ -5,6 +5,15 @@ description: Show delivery progress, the responsible owner, actual outcomes, and
 
 # Delivery status
 
+Check the conversation for an earlier execution request that never initialized.
+Report it as pending setup, retaining its repository, route and requested lenses.
+If `flow report` returns `workspace_binding`, show its `detail` and `next_action`;
+history is unknown when inspection failed. Never infer “has never tracked a delivery”
+from a refused report or missing state in an incidental directory. A readable selected
+folder without state needs initialization for the earlier task, not a new `tp-go`
+request. Explain the precise next step; do not repeat folder selection if already done.
+A status-only invocation still does not initialize or resume work by itself.
+
 Use current task context first. For recorded delivery, invoke the installed
 `taskplane/tp.py flow report --workspace <checkout>` once. Show the orchestrator
 as owner, the latest meaningful milestone, actual verification, remaining work,
