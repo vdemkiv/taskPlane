@@ -14,10 +14,16 @@ from typing import Any
 
 if __package__:
     from .spend import normalize_usage as _package_normalize
+    from .native_session_meter import starting_baseline as _package_baseline, USAGE_KEYS as _package_keys
     normalize_usage = _package_normalize
+    starting_baseline = _package_baseline
+    USAGE_KEYS = _package_keys
 else:
     from spend import normalize_usage as _flat_normalize
+    from native_session_meter import starting_baseline as _flat_baseline, USAGE_KEYS as _flat_keys
     normalize_usage = _flat_normalize
+    starting_baseline = _flat_baseline
+    USAGE_KEYS = _flat_keys
 
 
 def timestamp(value: Any) -> float | None:
@@ -61,7 +67,8 @@ def transcript(session: str, event: dict[str, Any]) -> Path | None:
 
 def read_snapshot(path: Path, session: str, *, agent: str | None = None,
                   cutoff: float | None = None, start: float | None = None) -> dict[str, Any]:
-    messages: dict[str, dict[str, int] | None] = {}
+    messages: dict[str, list[tuple[float | None, dict[str, int] | None]]] = {}
+    errors: set[str] = set()
     started = None
     matched = False
     with path.open(encoding='utf-8') as stream:
@@ -80,20 +87,21 @@ def read_snapshot(path: Path, session: str, *, agent: str | None = None,
             matched = True
             if at is not None:
                 started = at if started is None else min(started, at)
-            if cutoff is not None and (at is None or at >= cutoff):
-                continue
-            if start is not None and (at is None or at < start):
-                continue
             message = row.get('message')
             if row.get('type') != 'assistant' or not isinstance(message, dict):
                 continue
             key = message.get('id') or row.get('requestId')
             if not key or message.get('model') == '<synthetic>':
                 continue
+            if at is None and (cutoff is not None or start is not None):
+                errors.add('missing_message_timestamp')
+                continue
+            if cutoff is not None and at is not None and at >= cutoff:
+                continue
             raw_usage = message.get('usage')
             usage = normalize_usage(raw_usage if isinstance(raw_usage, dict) else {}, provider='claude')
             if not usage['available']:
-                messages.setdefault(key, None)
+                messages.setdefault(key, []).append((at, None))
                 continue
             # Cache writes are uncached input in the shared host-neutral view.
             uncached = usage['uncached_input_tokens'] + usage['cache_creation_tokens']
@@ -103,15 +111,40 @@ def read_snapshot(path: Path, session: str, *, agent: str | None = None,
                      'output_tokens': usage['output_tokens'],
                      'reasoning_tokens': usage['reasoning_tokens'],
                      'total_tokens': usage['raw_total_tokens']}
-            previous = messages.get(key)
-            if previous is None or value['total_tokens'] >= previous['total_tokens']:
-                messages[key] = value
+            messages.setdefault(key, []).append((at, value))
     if not matched:
         raise ValueError('Claude session identity unavailable')
-    measured = [m for m in messages.values() if m is not None]
-    total = {key: sum(m[key] for m in measured) for key in measured[0]} if measured else None
+    measured = []
+    active = False
+    for records in messages.values():
+        # Stable order preserves streamed rows sharing a native timestamp.
+        records.sort(key=lambda row: row[0] if row[0] is not None else float('-inf'))
+        present = [value for _, value in records if value is not None]
+        if any(any(b[k] < a[k] for k in USAGE_KEYS) for a, b in zip(present, present[1:])):
+            errors.add('counter_decreased')
+            continue
+        end_value = records[-1][1]
+        if start is None:
+            active = True
+            if end_value is None:
+                errors.add('missing_message_usage')
+            else:
+                measured.append(end_value)
+            continue
+        owned = [(at, value) for at, value in records if at is not None and at >= start]
+        active = active or bool(owned)
+        if not owned:
+            continue
+        prior = [value for at, value in records if at is not None and at < start]
+        baseline = prior[-1] if prior else dict.fromkeys(USAGE_KEYS, 0)
+        if baseline is None or end_value is None:
+            errors.add('missing_message_boundary')
+            continue
+        measured.append({k: end_value[k] - baseline[k] for k in USAGE_KEYS})
+    total = ({key: sum(m[key] for m in measured) for key in USAGE_KEYS}
+             if measured or (start is not None and not errors) else None)
     return {'usage': total, 'started': started,
-            'partial': any(m is None for m in messages.values())}
+            'partial': bool(errors), 'errors': sorted(errors), 'active': active}
 
 
 def sessions(run: dict[str, Any], events: list[dict[str, Any]],
@@ -145,18 +178,24 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
         if sid != root and born is not None and cutoff is not None and born >= cutoff:
             continue
         native = snapshot.get('usage')
-        baseline = run.get('usage') if sid == root else {}
+        baseline = starting_baseline(run) if sid == root else {}
+        session_errors = list(snapshot.get('errors', []))
+        if sid == root and baseline is None:
+            session_errors.append('run baseline is partial or unavailable; attribution is unknown')
+            snapshot['partial'] = True
         usage = ({k: max(0, v - baseline.get(k, 0)) for k, v in native.items()}
                  if native is not None and baseline is not None else None)
         if native is not None and baseline is not None and any(v < baseline.get(k, 0) for k, v in native.items()):
             usage = None
             snapshot['partial'] = True
+            session_errors.append('native counter moved below run baseline; reset attribution is unknown')
         if sid != root and born is not None and started is not None and born < started and source:
             try:
                 interval = read_snapshot(source, root, agent=sid, cutoff=cutoff, start=started)
                 usage = interval['usage']
                 snapshot['partial'] = snapshot.get('partial') or interval['partial']
-                if usage is None and not interval['partial'] and sid not in observed:
+                session_errors.extend(interval.get('errors', []))
+                if not interval['active'] and not interval['partial'] and sid not in observed:
                     continue  # An old inactive child is not part of this run.
             except (OSError, ValueError):
                 errors += 1
@@ -166,6 +205,8 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
                        'role': 'orchestrator' if sid == root else 'lens',
                        'usage': usage, 'native_usage': native,
                        'status': 'partial' if snapshot.get('partial') else 'measured' if usage else 'unavailable',
+                       'errors': sorted(set(session_errors)),
+                       'attribution_unknown': bool(session_errors),
                        'basis': 'start baseline' if sid == root else 'owned message interval [start, end)',
                        'attribution_schema': 'taskplane.owned-interval/v1' if sid != root else None,
                        'interval': {'start': started, 'end_exclusive': cutoff} if sid != root else None})

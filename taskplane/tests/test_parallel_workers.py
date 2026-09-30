@@ -99,7 +99,9 @@ def test_root_empty_and_owned_input_manifests_are_current(tmp_path, owned):
     rows = json.loads((tmp_path/'tasks.json').read_text())
     rows['tasks'][0]['owner'] = 'root'
     if owned: rows['tasks'][0]['paths'].append('input.py')
-    else: (tmp_path/'input.py').unlink()
+    else:
+        # An absent declaration inherits verification inputs; only [] declares no reads.
+        rows['tasks'][0]['read_inputs'] = []
     (tmp_path/'.taskplane/root-tasks.json').write_text(json.dumps(rows))
     s = c.update_tasks(s['run'], s['revision'], '.taskplane/root-tasks.json')
     (tmp_path/'T0.md').write_text('root output')

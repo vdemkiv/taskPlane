@@ -1,6 +1,6 @@
 {
   "name": "taskplane",
-  "version": "2.31.5",
+  "version": "2.31.6",
   "description": "Turn software goals into clear plans, working code and reviews backed by evidence with Claude or Codex.",
   "author": {
     "name": "Volodymyr Demkiv",
@@ -21,7 +21,7 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "taskplane",
-    "shortDescription": "Design, build and review with confidence",
+    "shortDescription": "Plan, build and review code",
     "longDescription": "Taskplane coordinates AI-assisted software delivery from the first requirement to the final review. Design a change before building, implement a feature against clear acceptance criteria, or review existing code without changing it. Keep decisions, source dependencies, tasks, tests and findings connected in one dashboard. Review each stage yourself or explicitly authorize automatic continuation with your own conditions and stops.",
     "developerName": "Volodymyr Demkiv",
     "category": "Developer Tools",

@@ -313,3 +313,330 @@ def test_explicit_end_to_end_policy_consent(tmp_path, excerpt):
 def test_end_to_end_policy_keeps_negative_and_quoted_guards(excerpt):
     from taskplane.workflow_approval import affirmative_consent
     assert not affirmative_consent(excerpt)
+
+
+@pytest.mark.parametrize('text', [
+    'Proceed with fixes with end to end auto-approved flow',
+    'Please proceed with fixes with end-to-end auto-approved workflow.',
+    'Stop at Engineering. Auto-approve all phases.',
+    'Stop before Retro. Auto-approve all phases.',
+    'Auto-approve all phases. Stop at Engineering.',
+    'Pause at Retro. Proceed with fixes with end to end auto-approved flow.',
+    'Hold at Retro. Automatically approve all phases.',
+])
+def test_fixes_imperative_and_named_stops_preserve_explicit_consent(text):
+    assert approval.affirmative_consent(text)
+
+
+@pytest.mark.parametrize('text', [
+    'Proceed',
+    'Do not proceed with fixes with end to end auto-approved flow',
+    'Never proceed with fixes with end to end auto-approved flow',
+    '"Proceed with fixes with end to end auto-approved flow"',
+    'Add a feature to proceed with fixes with end to end auto-approved flow',
+    'If I approve, proceed with fixes with end to end auto-approved flow',
+    'Proceed with fixes with end to end auto-approved flow unless tests fail',
+    'Proceed with fixes with end to end auto-approved flow. Hold for my approval.',
+])
+def test_fixes_imperative_requires_unqualified_direct_consent(text):
+    assert not approval.affirmative_consent(text)
+
+
+@pytest.mark.parametrize('qualification', [
+    'Pause for my approval.', 'Hold for my confirmation.',
+    'Pause; for approval.', 'Hold! For Dr. Jane to approve.',
+    'Halt for authorization.', 'Stop for the reviewer to confirm.',
+    '"Pause for my approval" is required.',
+    'Hold at Engineering. My confirmation remains required.',
+    'Hold for the reviewer to auto-approve all phases.',
+    'Wait for the user to automatically approve all phases.',
+])
+def test_pause_hold_human_conditions_refuse_policy_without_mutation(tmp_path, qualification):
+    c, s = setup(tmp_path)
+    before = c._path().read_bytes()
+    request = authorization(s)
+    request['excerpt'] = 'Auto-approve all phases. ' + qualification
+    assert not approval.affirmative_consent(request['excerpt'])
+    with pytest.raises(w.Refusal, match='intent is unclear'):
+        set_policy(c, s, request)
+    assert c._path().read_bytes() == before
+
+
+@pytest.mark.parametrize('separator', ['. ', '; ', '! ', '\n', ': '])
+@pytest.mark.parametrize('qualification', [
+    'Wait for my sign-off.',
+    'Await our sign off.',
+    'Hold for the reviewer to signoff.',
+    'Pause for the user to sign off.',
+    'Stop for Dr. Jane to sign-off.',
+    'After I have signed off.',
+    'Before the reviewer signs off.',
+    'Approval from me is required.',
+    'Confirmation from us remains necessary.',
+    'Authorization by the user will be required.',
+    'Consent from you must be mandatory.',
+    'Sign-off by the reviewer is needed.',
+    'My sign off is still required.',
+    'Our signoff: required.',
+    'Approval from me; required.',
+    'Obtain approval from the reviewer.',
+    'We need confirmation from the user.',
+    'I must approve first.',
+    'The reviewer needs to sign off.',
+    'You have to confirm first.',
+    '"Wait for my sign-off" is required.',
+    '"Approval from me is required" is my condition.',
+])
+def test_human_source_and_signoff_qualifications_prevent_consent(separator, qualification):
+    assert not approval.affirmative_consent('Auto-approve all phases' + separator + qualification)
+
+
+@pytest.mark.parametrize('text', [
+    'Auto-approve all phases. My sign-off is not required.',
+    'Auto-approve all phases. Our sign off is no longer needed.',
+    'Auto-approve all phases. Approval from me is not required.',
+    'Auto-approve all phases. Confirmation by the user is not necessary.',
+    'Auto-approve all phases. Signoff from the reviewer is not mandatory.',
+    'Auto-approve all phases. You do not need my sign-off.',
+    'Auto-approve all phases. There is no need to obtain approval from me.',
+    'Auto-approve all phases. Do not wait for my sign-off.',
+    'Auto-approve all phases. My approval is not required. Stop before Retro.',
+    'Pause at Engineering. Proceed with fixes with end to end auto-approved flow',
+])
+def test_explicitly_unnecessary_human_decisions_preserve_consent(text):
+    assert approval.affirmative_consent(text)
+
+
+@pytest.mark.parametrize('text', [
+    'Do not auto-approve all phases. My sign-off is not required.',
+    '"Auto-approve all phases. My sign-off is not required."',
+    'Implement an option to auto-approve all phases without my sign-off.',
+    'Auto-approve all phases. Do not wait for checks; wait for my sign-off.',
+    'Auto-approve all phases. My sign-off is not only required, it is mandatory.',
+    'Auto-approve all phases. No need to wait for checks. Approval from me is required.',
+])
+def test_unnecessary_decision_wording_cannot_mask_nonconsent(text):
+    assert not approval.affirmative_consent(text)
+
+
+class TestHumanRequirementComposition:
+    @pytest.mark.parametrize('subject', [
+        'Approval from the human reviewer', 'Approval from the project owner',
+        'Confirmation by our designated security reviewer',
+        'The lead reviewer’s approval', 'Our project owner\'s sign-off',
+        'My sign-off', 'Your approval and confirmation',
+        'Approval and sign-off by the project owner',
+        'My approval and the human reviewer\'s confirmation',
+    ])
+    @pytest.mark.parametrize('predicate', [
+        'is required', 'will still be required', 'still will be needed',
+        'will be explicitly required', 'will also be mandatory',
+        'must still remain necessary', ': required',
+        'is not only required', 'is not always required', 'will eventually be required',
+        'is not necessarily required', 'is not usually required', 'is normally not required',
+        'is not yet required', 'is no longer always required',
+    ])
+    def test_required_subjects_and_predicates(self, subject, predicate):
+        assert not approval.affirmative_consent(f'Auto-approve all phases. {subject} {predicate}.')
+
+    @pytest.mark.parametrize('subject', [
+        'My sign-off', 'Approval from the human reviewer',
+        'Approval by our project owner', 'The lead reviewer’s approval',
+        'My approval and the human reviewer\'s confirmation',
+    ])
+    @pytest.mark.parametrize('predicate', [
+        'is still not required', 'will not be required', 'will still not be necessary',
+        'will no longer be needed', 'will also not be mandatory',
+        'is unnecessary', 'is optional', 'will not still be required', "won't be required",
+    ])
+    def test_explicitly_unnecessary_subjects_and_predicates(self, subject, predicate):
+        assert approval.affirmative_consent(f'Auto-approve all phases. {subject} {predicate}.')
+
+    @pytest.mark.parametrize('qualification', [
+        'Required: approval from the human reviewer.',
+        'Still required; the project owner\'s confirmation.',
+        'The project owner must still sign off.',
+        'Our lead reviewer will also have to approve.',
+        'The human reviewer is still required to confirm.',
+        'My approval will not be required. The project owner must still sign off.',
+        'Approval by our project owner is optional, but my sign-off remains mandatory.',
+        'My sign-off remains mandatory, although approval by our project owner is optional.',
+        'My approval is not required but is still mandatory.',
+        'My approval is not required and confirmation is still necessary.',
+        'My sign-off is required and approval by the human reviewer is not required.',
+        'Do not wait for my approval, which remains required.',
+        'My approval is not not required.',
+        '"Approval from the project owner will still be required" is my condition.',
+        '"Required: approval from our designated release owner" is my condition.',
+        'Our designated release approver must personally confirm.',
+        'The project owner must not only sign off.',
+        'The human reviewer will still need to approve.',
+        'The human reviewer may still need to approve.',
+        'My approval is not required and still needed.',
+        'My approval is required and not needed.',
+    ])
+    def test_required_combinations(self, qualification):
+        assert not approval.affirmative_consent('Auto-approve all phases. ' + qualification)
+
+    @pytest.mark.parametrize('qualification', [
+        'Not required: approval from the human reviewer.',
+        'No longer needed; the project owner\'s confirmation.',
+        'The human reviewer does not need to confirm.',
+        'Our project owner need not sign off.',
+        'My approval will not be required and confirmation is also not necessary.',
+        'My approval is not required, and the human reviewer\'s sign-off is optional.',
+        'Do not wait for approval from the human reviewer.',
+        'You do not need approval by our project owner.',
+        'Our human project owner need not still approve.',
+        'The human reviewer will still not need to approve.',
+        'Never required: approval by our assigned reviewer.',
+        'Tests required. My approval is unnecessary.',
+    ])
+    def test_unnecessary_combinations(self, qualification):
+        assert approval.affirmative_consent('Auto-approve all phases. ' + qualification)
+
+
+class TestCompleteDecisionQualifications:
+    @pytest.mark.parametrize('subject', [
+        'My approvals', 'Our confirmations', 'Human sign-offs',
+        'All human authorizations', 'My permission', 'My acceptance',
+        'The change board\'s assent', 'Our clearances',
+    ])
+    @pytest.mark.parametrize('predicate', ['remain mandatory', 'are required', 'are compulsory'])
+    def test_decision_inflections_and_synonyms_refuse(self, subject, predicate):
+        assert not approval.affirmative_consent(f'Auto-approve all phases. {subject} {predicate}.')
+
+    @pytest.mark.parametrize('subject', [
+        'Approval by our lead reviewer', 'My sign-off', 'Confirmation',
+        'Approval from Jane', 'The release captain\'s consent',
+    ])
+    @pytest.mark.parametrize('predicate', [
+        'will, however, still be required', 'will (however) still be required',
+        'will — however — still be required', 'will, in every case, be required',
+        'is, as always, necessary', 'will still (personally) be needed',
+        'remains compulsory', 'is essential', 'will always be my responsibility',
+    ])
+    def test_unknown_or_required_predicate_refuses_regardless_of_actor(self, subject, predicate):
+        assert not approval.affirmative_consent(f'Auto-approve all phases. {subject} {predicate}.')
+
+    @pytest.mark.parametrize('join', [', yet ', '; nevertheless ', '. However, ',
+                                      ' and ', ' (but ', ' — although '])
+    @pytest.mark.parametrize('tail', [
+        'confirmation remains mandatory', 'it remains compulsory', 'is still necessary',
+        'the release captain must approve', 'approval by our lead reviewer is required',
+    ])
+    def test_safe_prefix_cannot_hide_explicit_or_shared_requirement(self, join, tail):
+        text = 'Auto-approve all phases. My approval is not required' + join + tail + '.'
+        assert not approval.affirmative_consent(text)
+
+    @pytest.mark.parametrize('qualification', [
+        'My approval is not required except for launch.',
+        'My approval is not required for tests but required for delivery.',
+        'My approval is optional today but mandatory tomorrow.',
+        'My approval is optional. It remains my prerogative.',
+        'My approval is not required. Checks pass. It remains mandatory.',
+        'My approval is not required. Tests pass, but it remains mandatory.',
+        'My approval is not required. Stop before Retro, though it remains necessary.',
+        'My approval is not required. Checks require it.',
+        'My approval is not required; confirmation is still compulsory.',
+        'I reserve final approval.', 'You must obtain approval.',
+        'Approval from the change board is required.',
+        'My approval is not (always) required.',
+        'My approval is (not only) required.',
+        'It is not true that my approval is not required.',
+        'My approval is not required and not unnecessary.',
+        'My approval is optional, except that it is not optional.',
+        'My approval is not required, but it is not unnecessary.',
+        'Do not wait for my approval except for launch.',
+        'No need to obtain my approval for tests; still needed for delivery.',
+        'Remove exact word expectation for phase approval, but my approval is required.',
+        'Remove exact word expectation for phase approval, which remains mandatory.',
+        '"Remove exact word expectation for phase approval" is required; approval remains compulsory.',
+        'My approval is not required. "Confirmation" remains compulsory.',
+    ])
+    def test_unclassified_qualifications_and_logical_negation_refuse(self, qualification):
+        assert not approval.affirmative_consent('Auto-approve all phases. ' + qualification)
+
+    @pytest.mark.parametrize('subject', ['My approval', 'Approval from the human reviewer', 'Confirmation'])
+    @pytest.mark.parametrize('predicate', [
+        'is (still) not required', 'will, still, not be needed',
+        'is not required yet is not mandatory',
+        'is unnecessary; it is also optional',
+        'is not required, however confirmation is not necessary',
+        'is not required and approval from the project owner is also optional',
+    ])
+    def test_complete_unnecessary_dependencies_preserve_consent(self, subject, predicate):
+        assert approval.affirmative_consent(f'Auto-approve all phases. {subject} {predicate}.')
+
+    @pytest.mark.parametrize('qualification', [
+        'My approval is not required. Required checks must pass. Stop before Retro.',
+        'My approval is not required. Stop before Retro. Confirmation is optional.',
+        'Remove exact word expectation for phase approval.',
+        'Update the wording requirement for phase approval.',
+    ])
+    def test_bounded_checks_stops_and_technical_descriptions(self, qualification):
+        assert approval.affirmative_consent('Auto-approve all phases. ' + qualification)
+
+
+class TestEveryDirectiveIsClassified:
+    @pytest.mark.parametrize('directive', [
+        'Wait for my go-ahead.', 'Hold for my OK.', 'Pause for me to say yes.',
+        'Proceed only on my green light.', 'Pause for my decision.',
+        'Hold for instructions from me.',
+        'Await the final decision from the release owner.',
+        'You need to ask me first.', 'Wait for the human reviewer.',
+        'Stop for my go-ahead.', 'Do not proceed without my OK.',
+    ])
+    def test_independent_evaluation_reproductions(self, directive):
+        assert not approval.affirmative_consent('Auto-approve all phases. ' + directive)
+
+    @pytest.mark.parametrize('directive', [
+        'Await the release captain\'s semaphore.', 'The amber lantern must glow.',
+        'Respect the quux protocol.', 'Zyxwvu frobnicator.',
+        'Proceed only on my green light.', 'x', '\u2603', '42',
+    ])
+    @pytest.mark.parametrize('template', [
+        '{} Auto-approve all phases.',
+        'Auto-approve all phases. {} Run an autonomous workflow.',
+        'Auto-approve all phases. {}',
+    ])
+    def test_unknown_directives_fail_in_every_position(self, directive, template):
+        assert not approval.affirmative_consent(template.format(directive))
+
+    @pytest.mark.parametrize('clause', [
+        'Auto-approve all phases',
+        'Start a full auto-approved workflow through Retro',
+        'proceed with end to end auto-approved flow to fix all',
+        'Proceed with fixes with end to end auto-approved flow',
+        'run all release phases automatically through Retro',
+        'Run a full workflow with auto approval',
+        'Auto-approve all phases after required checks pass',
+        'Required checks must pass', 'Stop before Retro', 'Pause at Engineering',
+        'My approval is not required', 'Do not wait for my sign-off',
+        'Remove exact word expectation for phase approval',
+        'Use taskplane to implement the settings page',
+        'We need to address and resolve all the issues',
+        'Additionally run security lens and include its findings into the scope',
+        'Now I need to run auto-approved full workflow which should resolve untracked token usage',
+    ])
+    @pytest.mark.parametrize('tail', [
+        ', but await the lantern', ' and await the lantern',
+        ' only with the lantern', ': await the lantern', '; await the lantern',
+        '. Await the lantern', '! Await the lantern', '\nAwait the lantern',
+        ' (await the lantern)', ' — await the lantern',
+        ' / await the lantern', ' "await the lantern"',
+        'xyz', '/xyz', '#xyz', ' <xyz>',
+    ])
+    def test_every_allowed_clause_requires_a_complete_match(self, clause, tail):
+        assert not approval.affirmative_consent('Auto-approve all phases. ' + clause + tail + '.')
+
+    @pytest.mark.parametrize('text', [
+        'Required checks must pass. Auto-approve all phases. Stop before Retro.',
+        'Stop before Retro. Auto-approve all phases. Required checks must pass.',
+        'Auto-approve all phases. My approval is not required. Required checks must pass.',
+        'My approval is not required. Auto-approve all phases. Stop before Retro.',
+        'Remove exact word expectation for phase approval. Auto-approve all phases.',
+        'Auto-approve all phases. Run an autonomous workflow.',
+    ])
+    def test_known_complete_clauses_remain_compatible(self, text):
+        assert approval.affirmative_consent(text)

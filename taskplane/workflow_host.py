@@ -383,6 +383,7 @@ class Controller:
             paths = set(scope["paths"][phase]) if phase else allowed
             w.require(set(row["paths"]) <= paths and set(evidence.task_criteria(row)) <= set(scope["criteria"]),
                       "scope_violation", "Initial task paths and criteria must stay within the requested scope.")
+            evidence.validate_read_inputs(self.workspace, scope, row)
         frozen = [{k: deepcopy(v) for k, v in row.items() if k not in evidence.TASK_OBSERVATIONS} for row in rows]
         from .context import encode
         w.require(len(encode(frozen)) <= 65536, "invalid_evidence", "Initial task snapshot exceeds 64 KiB.")

@@ -138,12 +138,12 @@ def test_incremental_imports_follow_target_additions_renames_and_exclusions(tmp_
     assert ("client", "service-v2", "imports") in edge_set(restored)
 
 
-def native(path, total, *, resumed=False, sid="root"):
+def native(path, total, *, resumed=False, sid="root", timestamp="2026-09-01T00:00:05Z"):
     metadata = {"id": sid, "timestamp": "2026-09-01T00:00:00Z"}
     if resumed:
         metadata["history_base"] = {"thread_id": sid, "end_ordinal_exclusive": 1, "end_byte_offset": 1}
     rows = [{"type": "session_meta", "payload": metadata},
-            {"type": "token_usage_record", "ordinal": 2, "timestamp": "2026-09-01T00:00:05Z",
+            {"type": "token_usage_record", "ordinal": 2, "timestamp": timestamp,
              "payload": {"thread_id": sid, "thread_token_usage": {
                  "input_tokens": total - 10, "cached_input_tokens": 0, "output_tokens": 10, "total_tokens": total}}}]
     path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
@@ -154,12 +154,12 @@ def test_resumed_task_start_captures_one_logical_baseline(tmp_path, monkeypatch)
     sessions.mkdir(parents=True)
     monkeypatch.setenv('CODEX_THREAD_ID', 'root')
     native(sessions / 'part1-root.jsonl', 100)
-    native(sessions / 'part2-root.jsonl', 160, resumed=True)
+    native(sessions / 'part2-root.jsonl', 160, resumed=True, timestamp="2026-09-01T00:00:06Z")
     native(sessions / 'foreign-root.jsonl', 999, sid='unrelated')
     c, _, _ = controller(tmp_path)
     started = json.loads(run_cli(c.workspace, 'flow', 'start', '--workspace', str(c.workspace), '--goal', 'Resume', governor=c))
     assert started['tokens']['total_tokens'] == 0
-    native(sessions / 'part2-root.jsonl', 220, resumed=True)
+    native(sessions / 'part2-root.jsonl', 220, resumed=True, timestamp="2026-09-01T00:00:07Z")
     report = cli(c.workspace, 'flow', 'report', '--workspace', str(c.workspace))
     assert report['tokens']['total_tokens'] == 60
     assert report['native_tokens']['total_tokens'] == 220

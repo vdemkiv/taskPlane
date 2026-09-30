@@ -212,6 +212,17 @@ def read_inputs(state: dict[str, Any], definition: dict[str, Any]) -> list[str]:
     return list(definition.get("read_inputs", state["scope"].get("verification_inputs", [])))
 
 
+def validate_read_inputs(root: Path, scope: dict[str, Any], row: dict[str, Any]) -> None:
+    """Apply the same declared read boundary before any task is frozen."""
+    if "read_inputs" not in row:
+        return
+    allowed = set(scope.get("verification_inputs", [])) | set(scope["paths"].get("build", []))
+    w.require(set(row["read_inputs"]) <= allowed, "scope_violation",
+              "Task read inputs must be declared run verification or Build paths.")
+    for relative in row["read_inputs"]:
+        path(root, relative)
+
+
 def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate an explicit run-bound publication without consulting global files."""
     from copy import deepcopy
@@ -226,12 +237,7 @@ def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> lis
                   "scope_violation", "Task publication exceeds accepted paths or criteria.")
         for relative in row["paths"]:
             path(root, relative)
-        allowed_reads = set(state["scope"].get("verification_inputs", [])) | set(state["scope"]["paths"].get("build", []))
-        if "read_inputs" in row:
-            w.require(set(row["read_inputs"]) <= allowed_reads, "scope_violation",
-                      "Task read inputs must be declared run verification or Build paths.")
-            for relative in row["read_inputs"]:
-                path(root, relative)
+        validate_read_inputs(root, state["scope"], row)
     if w.current(state)["phase"] == "build":
         approved = w.accepted_plan(state)["packet"]["output"]["task_dag"]
         w.require(task_definitions(rows) == task_definitions(approved), "invalid_evidence",

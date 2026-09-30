@@ -29,9 +29,32 @@ MAX_REPLAY_BYTES = 512 * 1024 * 1024
 MAX_REPLAY_RESPONSES = 250000
 
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+USAGE_KEYS = ("input_tokens", "cached_input_tokens", "uncached_input_tokens",
+              "output_tokens", "reasoning_tokens", "total_tokens")
+
+
+def starting_baseline(run: Mapping[str, Any]) -> dict[str, int] | None:
+    """Accept observed counters, or complete coherent legacy status-less ones.
+
+    A partial subtotal cannot become exact just because native history recovers.
+    Empty/missing categories are not evidence of a zero starting counter.
+    """
+    usage = run.get("usage")
+    if (run.get("usage_status", "observed") != "observed"
+            or not isinstance(usage, dict)
+            or any(type(usage.get(k)) is not int or usage[k] < 0 for k in USAGE_KEYS)):
+        return None
+    if (usage["input_tokens"] != usage["cached_input_tokens"] + usage["uncached_input_tokens"]
+            or usage["total_tokens"] != usage["input_tokens"] + usage["output_tokens"]
+            or usage["reasoning_tokens"] > usage["output_tokens"]):
+        return None
+    return {k: usage[k] for k in USAGE_KEYS}
 
 class NativeSessionMeterError(ValueError):
     """The native counter or its lineage cannot be proven safely."""
+
+class CounterChronologyError(NativeSessionMeterError):
+    """Observed counters conflict; a saved baseline must not hide the conflict."""
 
 def _canonical(value: object) -> bytes:
     return _json_primitives.canonical_bytes(value, ensure_ascii=True)
@@ -273,14 +296,11 @@ def read_logical_snapshot(paths: Sequence[str | Path], session_id: str, *,
     parents = {s.get("parent_session_id") for s in snapshots if s.get("parent_session_id")}
     agents = {s.get("agent_path") for s in snapshots if s.get("agent_path")}
     if len(parents) > 1 or len(agents) > 1:
-        raise NativeSessionMeterError("native task segment lineage disagrees")
+        raise CounterChronologyError("native task segment lineage disagrees")
     thread = [s for s in snapshots if s.get("counter_scope") == "thread"]
-    if thread:
-        usage = max(thread, key=lambda s: s["usage"]["total_tokens"])["usage"]
-    elif errors:
+    if not thread and errors:
         raise NativeSessionMeterError("legacy task segments are incomplete")
-    else:
-        usage = aggregate(snapshots)["usage"]
+    usage = aggregate(snapshots)["usage"]
     return {"session_id": session_id, "usage": usage,
             "parent_session_id": next(iter(parents), None),
             "agent_path": next(iter(agents), None), "partial": bool(errors)}
@@ -465,43 +485,70 @@ def validate_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
         raise NativeSessionMeterError("native session usage does not reconcile")
     return dict(value)
 
+def _counter_order(row: Mapping[str, Any]) -> tuple[float, int]:
+    try:
+        at = datetime.fromisoformat(str(row.get("observed_at") or "").replace("Z", "+00:00"))
+        if at.tzinfo is None:
+            raise ValueError("timezone unavailable")
+    except ValueError as exc:
+        raise CounterChronologyError("native counter chronology is unavailable") from exc
+    return at.timestamp(), _nonnegative(row.get("ordinal"), "ordinal")
+
+
+def _chronological_counter(rows: Sequence[dict[str, Any]], label: str) -> dict[str, Any]:
+    ordered = sorted(rows, key=_counter_order)
+    for before, after in zip(ordered, ordered[1:]):
+        a, b = _counter_order(before), _counter_order(after)
+        if (a == b or (a[0] == b[0] and
+                any(row.get("ordinal_basis") != "native" for row in (before, after)))):
+            if before["usage"] != after["usage"]:
+                raise CounterChronologyError(f"conflicting {label} counter boundary")
+        if any(after["usage"][key] < before["usage"][key] for key in USAGE_KEYS):
+            raise CounterChronologyError(f"{label} counter moved backwards")
+    return ordered[-1]
+
+
 def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Sum sessions once, respecting thread totals versus reset segment counters."""
-    latest_by_source: dict[str, dict[str, Any]] = {}
-    session_sources: dict[str, set[str]] = {}
+    by_source: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    thread_history: dict[str, list[dict[str, Any]]] = {}
     for raw in snapshots:
         row = validate_snapshot(raw)
         session_id = str(row["session_id"])
-        source_id = str(row["source_identity_fingerprint"])
-        session_sources.setdefault(session_id, set()).add(source_id)
-        prior = latest_by_source.get(source_id)
-        if prior is None:
-            latest_by_source[source_id] = row
-            continue
-        if prior["session_id"] != session_id:
-            raise NativeSessionMeterError("native session source identity changed owners")
-        prior_usage = prior["usage"]
-        usage = row["usage"]
-        prior_key = (str(prior.get("observed_at") or ""), int(prior["ordinal"]))
-        row_key = (str(row.get("observed_at") or ""), int(row["ordinal"]))
-        if row_key >= prior_key:
-            if any(int(usage[key]) < int(prior_usage[key]) for key in usage):
-                raise NativeSessionMeterError("native physical-segment counter moved backwards")
-            latest_by_source[source_id] = row
-    ordered_segments = [latest_by_source[key] for key in sorted(latest_by_source)]
+        source_id = (row["source"]["device"], row["source"]["inode"])
+        prior = by_source.setdefault(source_id, [])
+        if prior and prior[0]["session_id"] != session_id:
+            raise CounterChronologyError("native session source identity changed owners")
+        prior.append(row)
+        if row.get("counter_scope") == "thread":
+            thread_history.setdefault(session_id, []).append(row)
+    ordered_segments = [_chronological_counter(by_source[key], "native physical-segment")
+                        for key in sorted(by_source)]
+    latest_threads = {sid: _chronological_counter(rows, "native thread")
+                      for sid, rows in thread_history.items()}
     sessions: dict[str, list[dict[str, Any]]] = {}
     for row in ordered_segments:
         sessions.setdefault(str(row["session_id"]), []).append(row)
     for rows in sessions.values():
-        rows.sort(
-            key=lambda row: (
-                str(row.get("observed_at") or ""),
-                row["ordinal"],
-                bool(row.get("resumed")),
-            )
-        )
-        if any(not row.get("resumed") for row in rows[1:]):
-            raise NativeSessionMeterError("native source replacement has no restart evidence")
+        rows.sort(key=lambda row: (*_counter_order(row), bool(row.get("resumed"))))
+        for field in ("parent_session_id", "agent_path"):
+            if len({row[field] for row in rows if row.get(field)}) > 1:
+                raise CounterChronologyError("native task segment lineage disagrees")
+        # Archive/copy inventories can expose an identical thread observation
+        # through multiple physical files. Exact native record hashes prove
+        # that duplicate without inventing restart provenance for other files.
+        distinct = []
+        seen_thread_records = set()
+        for row in rows:
+            source = row["source"]
+            record = (source["metadata_record_sha256"], source["counter_record_sha256"])
+            if row.get("counter_scope") == "thread":
+                if record in seen_thread_records:
+                    continue
+                seen_thread_records.add(record)
+            distinct.append(row)
+        if any(not row.get("resumed") for row in distinct[1:]):
+            raise CounterChronologyError("native source replacement has no restart evidence")
     usage_keys = (
         "input_tokens",
         "cached_input_tokens",
@@ -514,7 +561,7 @@ def aggregate(snapshots: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         thread_rows = [row for row in rows if row.get("counter_scope") == "thread"]
         if thread_rows:
             # A provider thread total already includes prior physical segments.
-            latest = max(thread_rows, key=lambda row: row["usage"]["total_tokens"])
+            latest = latest_threads[str(rows[0]["session_id"])]
             return {key: int(latest["usage"][key]) for key in usage_keys}
         return {key: sum(int(row["usage"][key]) for row in rows) for key in usage_keys}
 

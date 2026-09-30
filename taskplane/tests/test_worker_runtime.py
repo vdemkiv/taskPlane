@@ -548,3 +548,73 @@ def test_explicit_native_execution_refuses_grantless_root_result(tmp_path):
     with pytest.raises(w.Refusal, match='native|Native'):
         c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', request=dict(
             outputs=['T0.md'], checks=[dict(name='inspect',status='pass',evidence='T0.md')]))
+
+
+@pytest.mark.parametrize('relative', ['config.json', '.taskplane/hidden-input.json'])
+@pytest.mark.parametrize('native', [True, False])
+def test_suppressed_fallback_reads_pin_native_and_root_results(tmp_path, relative, native):
+    if relative.startswith('.taskplane/'):
+        (tmp_path/'.taskplane').mkdir()
+    c, s = setup(tmp_path, count=1, scoped_input=True, extra_inputs=[relative])
+    (tmp_path/relative).write_text('{"tasks":["first"]}')
+    if native:
+        item = reserve(c, s)
+        assert relative in item['grant']['input_manifest']
+        launch(c, s, item); consume(c, s, item['grant'], 'native-0')
+        result = complete(c, s, item, 'native-0')
+    else:
+        s, _ = root_prerequisite(c, s)
+        result = c.report()['task_results']['T0']
+    assert relative in result['input_manifest']
+    assert 'T0.md' not in result['input_manifest']
+    assert wr.result_valid(tmp_path, c.report(), 'T0')
+    (tmp_path/relative).write_text('{"tasks":["changed"]}')
+    assert not wr.result_valid(tmp_path, c.report(), 'T0')
+
+
+@pytest.mark.parametrize('relative', ['input.py', '.taskplane/hidden-input.json'])
+@pytest.mark.parametrize('native', [True, False])
+def test_missing_fallback_read_refuses_preparation_or_root_acceptance(tmp_path, relative, native):
+    extra = [] if relative == 'input.py' else [relative]
+    if extra:
+        (tmp_path/'.taskplane').mkdir()
+    c, s = setup(tmp_path, count=1, scoped_input=True, extra_inputs=extra)
+    if not native:
+        s, request = root_prerequisite(c, s)
+    (tmp_path/relative).unlink()
+    with pytest.raises(w.Refusal, match='unavailable'):
+        if native:
+            reserve(c, s)
+        else:
+            c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', request=request)
+    if native:
+        assert not c.report().get('workers')
+
+
+def test_owned_fallback_path_does_not_become_its_own_dependency(tmp_path):
+    c, s = setup(tmp_path, count=1)
+    state = deepcopy(s)
+    state['scope']['verification_inputs'].append('T0.md')
+    session = Session(tmp_path, state, 'T0')
+    manifest = wr.read_input_manifest(tmp_path, session, ['T0.md'])
+    assert set(manifest) == {'input.py'}
+
+
+@pytest.mark.parametrize('native', [True, False])
+def test_legacy_incomplete_read_manifests_require_fresh_verification(tmp_path, native):
+    c, s = setup(tmp_path, count=1, scoped_input=True, extra_inputs=['config.json'])
+    (tmp_path/'config.json').write_text('{"tasks":["first"]}')
+    if native:
+        item = reserve(c, s)
+        launch(c, s, item); consume(c, s, item['grant'], 'native-0')
+        complete(c, s, item, 'native-0')
+    else:
+        s, _ = root_prerequisite(c, s)
+    state = c.report()
+    assert wr.result_valid(tmp_path, state, 'T0')
+    # Model an accepted pre-fix manifest consistently stored on both records.
+    result = state['task_results']['T0']
+    result['input_manifest'].pop('config.json')
+    if native:
+        state['workers'][result['grant']]['input_manifest'].pop('config.json')
+    assert not wr.result_valid(tmp_path, state, 'T0')

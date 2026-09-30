@@ -905,3 +905,155 @@ def test_codex_patch_payload_preserves_bootstrap_and_phase_scope(tmp_path, key):
     s=submit(c,s)
     with pytest.raises(w.Refusal,match='sealed'):
         c.guard(patch('product.json'),s['run'])
+
+
+def recovery_fixture(tmp_path):
+    import subprocess
+    source = tmp_path/'source'; source.mkdir()
+    def git(*args, cwd=source):
+        subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True)
+    git('init', '-q')
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-q', '--allow-empty', '-m', 'Fixture')
+    c, s = setup(source); s = submit(c, s)
+    destination = tmp_path/'clean'
+    git('worktree', 'add', '--detach', str(destination), 'HEAD')
+    harness = local.Harness(source, 'root')
+    create = {'tool_name':'mcp__codex_app__create_worktree', 'call_id':'create-1',
+              'tool_input':{'name':'recovery-fixture', 'ref':'HEAD', 'allowAsync':True}}
+    paths = {'worktreeGitRoot':str(destination), 'worktreeWorkspaceRoot':str(destination)}
+    return c, s, harness, create, paths, git
+
+
+def observe_worktree(harness, event, state, payload, wrapper='direct'):
+    if wrapper == 'text':
+        payload = {'content':[{'type':'text', 'text':json.dumps(payload)}]}
+    elif wrapper == 'structured':
+        payload = {'structuredContent':payload}
+    harness.observe_recovery({**event, 'tool_response':payload}, state)
+
+
+def pending_worktree(c, s, harness, create):
+    c.guard(create, s['run'])
+    observe_worktree(harness, create, s, {'type':'pending', 'operationId':'operation-1'})
+    assert not harness.read().get('recovery_workspace')
+    return {'tool_name':'mcp__codex_app__get_worktree_creation_status', 'call_id':'poll-1',
+            'tool_input':{'operationId':'operation-1'}}
+
+
+@pytest.mark.parametrize('wrapper', ['direct', 'text', 'structured'])
+def test_current_async_worktree_recovery_waits_for_correlated_completion(tmp_path, wrapper):
+    c, s, harness, create, paths, _ = recovery_fixture(tmp_path)
+    poll = pending_worktree(c, s, harness, create)
+    pending = harness.read()['recovery_pending']
+    assert pending['call_id'] == create['call_id'] and pending['operation_id'] == 'operation-1'
+    assert pending['input_digest'] == local.primitives.content_fingerprint(create['tool_input'])
+    for index, status in enumerate(['preparing', 'creating', 'registering', 'completed']):
+        poll['call_id'] = f'poll-{index}'
+        c.guard(poll, s['run'])
+        payload = {'operationId':'operation-1', 'status':status, **paths}
+        observe_worktree(harness, poll, s, payload, wrapper)
+        if status != 'completed':
+            assert not harness.read().get('recovery_workspace')
+            assert 'poll' not in harness.read()['recovery_pending']
+        else:
+            assert harness.read()['recovery_workspace']['workspace'] == paths['worktreeWorkspaceRoot']
+            assert not harness.read().get('recovery_pending')
+    c.guard({'tool_name':'Write', 'tool_input':{'path':paths['worktreeWorkspaceRoot']+'/.taskplane/bootstrap/scope.json'}}, s['run'])
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name':'Write', 'tool_input':{'path':paths['worktreeWorkspaceRoot']+'/app.py'}}, s['run'])
+    assert c.report()['revision'] == s['revision'] and not c.report()['decisions']
+
+
+@pytest.mark.parametrize('args', [
+    {'allowAsync':True}, {'allowAsync':False, 'ref':'HEAD'}, {'allowAsync':1, 'ref':'HEAD'},
+    {'allowAsync':'true', 'ref':'HEAD'}, {'allowAsync':True, 'ref':'main'},
+    {'allowAsync':True, 'ref':'HEAD', 'extra':True},
+])
+def test_current_worktree_requires_literal_async_and_explicit_head(tmp_path, args):
+    c, s, harness, create, _, _ = recovery_fixture(tmp_path)
+    with pytest.raises(w.Refusal):
+        c.guard({**create, 'tool_input':args}, s['run'])
+    assert not harness.read().get('recovery_pending')
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_worktree_immediate_result_preserves_legacy_and_current_contracts(tmp_path, legacy):
+    c, s, harness, create, paths, _ = recovery_fixture(tmp_path)
+    if legacy:
+        create['tool_input'] = {'name':'recovery-fixture'}
+    c.guard(create, s['run'])
+    observe_worktree(harness, create, s, {'type':'created', **paths})
+    assert harness.read()['recovery_workspace']['workspace'] == paths['worktreeWorkspaceRoot']
+
+
+@pytest.mark.parametrize('defect', [
+    'wrong-call', 'wrong-input', 'unadmitted-poll', 'foreign-operation', 'missing-operation',
+    'failed', 'malformed-status', 'unknown-shape', 'tool-error', 'binding', 'source-head',
+])
+def test_async_worktree_rejects_uncorrelated_or_failed_completion(tmp_path, defect):
+    c, s, harness, create, paths, git = recovery_fixture(tmp_path)
+    poll = pending_worktree(c, s, harness, create)
+    if defect != 'unadmitted-poll':
+        c.guard(poll, s['run'])
+    payload = {'operationId':'operation-1', 'status':'completed', **paths}
+    state = s
+    if defect == 'wrong-call': poll['call_id'] = 'foreign-call'
+    elif defect == 'wrong-input': poll['tool_input']['operationId'] = 'foreign'
+    elif defect == 'foreign-operation': payload['operationId'] = 'foreign'
+    elif defect == 'missing-operation': payload.pop('operationId')
+    elif defect == 'failed': payload['status'] = 'failed'
+    elif defect == 'malformed-status': payload['status'] = []
+    elif defect == 'unknown-shape': payload = {'operationId':'operation-1', 'status':'completed', 'result':paths}
+    elif defect == 'tool-error': payload = {'isError':True, **payload}
+    elif defect == 'binding': state = {**s, 'revision':s['revision']+1}
+    elif defect == 'source-head':
+        git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+            'commit', '-q', '--allow-empty', '-m', 'Changed')
+    observe_worktree(harness, poll, state, payload)
+    assert not harness.read().get('recovery_workspace')
+
+
+@pytest.mark.parametrize('defect', ['operation', 'extra-input', 'binding', 'source-head'])
+def test_async_poll_admission_remains_bound_to_original_request(tmp_path, defect):
+    c, s, harness, create, _, git = recovery_fixture(tmp_path)
+    poll = pending_worktree(c, s, harness, create)
+    state = s
+    if defect == 'operation': poll['tool_input']['operationId'] = 'foreign'
+    elif defect == 'extra-input': poll['tool_input']['other'] = True
+    elif defect == 'binding': state = {**s, 'revision':s['revision']+1}
+    elif defect == 'source-head':
+        git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+            'commit', '-q', '--allow-empty', '-m', 'Changed')
+    assert not harness.recovery_action(poll, state)
+    assert not harness.read().get('recovery_workspace')
+
+
+@pytest.mark.parametrize('asynchronous', [True, False])
+@pytest.mark.parametrize('defect', ['relative', 'source', 'subpath', 'symlink', 'other-head'])
+def test_every_worktree_destination_requires_identical_checkout_identity(tmp_path, asynchronous, defect):
+    from pathlib import Path
+    c, s, harness, create, paths, git = recovery_fixture(tmp_path)
+    if asynchronous:
+        event = pending_worktree(c, s, harness, create)
+        c.guard(event, s['run'])
+        payload = {'operationId':'operation-1', 'status':'completed', **paths}
+    else:
+        create['tool_input'] = {'name':'legacy-recovery'}
+        event = create; c.guard(event, s['run'])
+        payload = {'type':'created', **paths}
+    destination = Path(paths['worktreeWorkspaceRoot'])
+    if defect == 'relative': payload['worktreeWorkspaceRoot'] = 'clean'
+    elif defect == 'source':
+        payload.update(worktreeWorkspaceRoot=str(c.workspace), worktreeGitRoot=str(c.workspace))
+    elif defect == 'subpath':
+        (destination/'subdir').mkdir(); payload['worktreeWorkspaceRoot'] += '/subdir'
+    elif defect == 'symlink':
+        (tmp_path/'alias').symlink_to(destination, target_is_directory=True)
+        payload.update(worktreeWorkspaceRoot=str(tmp_path/'alias'), worktreeGitRoot=str(tmp_path/'alias'))
+    elif defect == 'other-head':
+        git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+            'commit', '-q', '--allow-empty', '-m', 'Other HEAD', cwd=destination)
+    observe_worktree(harness, event, s, payload)
+    assert not harness.read().get('recovery_workspace')
+    assert not harness.read().get('recovery_pending')
