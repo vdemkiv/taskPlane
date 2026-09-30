@@ -759,6 +759,12 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
 
 def _hook(event: dict[str, Any], *,
          governor: workflow_host.Controller | None = None) -> dict[str, Any]:
+    session = session_id(event)
+    parent = event.get("parent_session_id")
+    if governor is None:
+        parent = observed_parent(event, session) or parent
+    if parent:
+        event['parent_session_id'] = parent
     if governor is None and _workspace_admin(event):
         return {}  # The administration command still validates proof and active-state recovery.
     try:
@@ -779,12 +785,7 @@ def _hook(event: dict[str, Any], *,
                          or name in {'PreToolUse', 'PostToolUse'} and _onboarding_read(event)):
                 return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': exc.guidance()}}
         raise
-    rows, session = read_events(workspace), session_id(event)
-    parent = event.get("parent_session_id")
-    if governor is None:
-        parent = observed_parent(event, session) or parent
-    if parent:
-        event['parent_session_id'] = parent
+    rows = read_events(workspace)
     legacy = active_run(rows, session, parent)
     try:
         controller, guarded = select_controller(workspace, session, parent, event=event,

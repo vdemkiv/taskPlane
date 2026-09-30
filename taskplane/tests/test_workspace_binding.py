@@ -989,3 +989,96 @@ def test_unrelated_cowork_prompt_does_not_select_taskplane(tmp_path, monkeypatch
 def test_cowork_router_skill_selects_initialization():
     from taskplane.workflow_local import execution_entry
     assert execution_entry({'tool_name': 'Skill', 'tool_input': {'skill': 'taskplane'}}) == 'taskplane'
+
+
+@requires_binding_runtime
+@pytest.mark.parametrize('tool', ['Read', 'Skill', 'Bash'])
+@pytest.mark.parametrize('event_name', ['PreToolUse', 'PostToolUse'])
+@pytest.mark.usefixtures("onboarding_environment")
+def test_discovered_child_cannot_use_onboarding_exemptions(tmp_path, monkeypatch, capsys, tool, event_name):
+    from taskplane.tests.test_native_session_meter import _write_segment
+    home = tmp_path / 'native-home'
+    logs = home / 'sessions'
+    logs.mkdir(parents=True)
+    _write_segment(logs / 'child-session.jsonl', session_id='child-session', total=None, parent='parent-session')
+    project = tmp_path / 'project'
+    project.mkdir()
+    monkeypatch.setenv('CODEX_HOME', str(home))
+    monkeypatch.setenv('CODEX_THREAD_ID', 'child-session')
+    monkeypatch.setenv('TASKPLANE_WORKSPACE', str(project))
+    args = {'Read': {'file_path': 'README.md'},
+            'Skill': {'skill': 'taskplane:tp-engineering'},
+            'Bash': {'command': shlex.join([sys.executable, str(ROOT / 'taskplane/tp.py'),
+                                           'workspace', 'inspect', '--workspace', str(project)])}}[tool]
+    before = tree(tmp_path)
+    code, result = invoke(project, monkeypatch, capsys, event_name, thread_id='child-session',
+                          tool_name=tool, tool_input=args)
+    if event_name == 'PreToolUse':
+        assert code == 0 and result['hookSpecificOutput']['permissionDecision'] == 'deny'
+    else:
+        assert code == 2 and result['decision'] == 'block'
+    assert tree(tmp_path) == before
+
+
+@requires_binding_runtime
+@pytest.mark.parametrize('history', ['active', 'inactive', 'corrupt', 'marker-only', 'archived'])
+@pytest.mark.parametrize('selection', ['workspace', 'surface', 'event'])
+@pytest.mark.usefixtures("onboarding_environment")
+def test_lost_binding_history_is_not_first_run_through_entry_points(tmp_path, monkeypatch, capsys, history, selection):
+    bound = b.bind(tmp_path, request(tmp_path))
+    db, path = controller(tmp_path, active=history == 'active')
+    db['runs']['old-run']['workspace_contract'] = {k: bound[k] for k in ('project_id', 'digest')}
+    if history == 'archived':
+        from taskplane.context import Store
+        db['archives'] = {'old-run': Store(tmp_path).put('workflow-history', db['runs'].pop('old-run'))}
+    path.write_text('{corrupt' if history == 'corrupt' else json.dumps(db))
+    if history == 'marker-only':
+        path.unlink()
+    (tmp_path / '.taskplane' / b.BINDING_FILE).unlink()
+    extra = {}
+    if selection == 'workspace':
+        monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
+    elif selection == 'surface':
+        monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    else:
+        extra['surface'] = 'cowork'
+    before = tree(tmp_path)
+    code, result = invoke(tmp_path, monkeypatch, capsys, 'UserPromptSubmit', prompt=PROMPT, **extra)
+    assert code == 2 and result['decision'] == 'block'
+    assert 'preserve existing state' in result['reason']
+    assert 'setup is pending' not in result['reason']
+    assert tree(tmp_path) == before
+    # CLI selection has no native event, so supply its corresponding surface signal.
+    if selection == 'event':
+        monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    assert flow.main(['report', '--workspace', str(tmp_path)]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report['reason'] == 'workspace_binding'
+    assert 'onboarding' not in report
+    assert 'restore the original binding' in report['detail']
+    assert tree(tmp_path) == before
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures("onboarding_environment")
+def test_missing_binding_discovery_is_bounded_and_readonly(tmp_path, monkeypatch, capsys):
+    store = tmp_path / '.taskplane'
+    store.mkdir()
+    (store / 'unrelated-a').write_text('a')
+    (store / 'unrelated-b').write_text('b')
+    monkeypatch.setattr(b, 'MAX_FILES', 1)
+    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
+    before = tree(tmp_path)
+    assert flow.main(['report', '--workspace', str(tmp_path)]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert 'entry bound' in result['detail'] and 'onboarding' not in result
+    assert tree(tmp_path) == before
+
+
+@requires_binding_runtime
+@pytest.mark.usefixtures("onboarding_environment")
+def test_existing_unbound_local_history_retains_legacy_resolution(tmp_path):
+    controller(tmp_path, active=True)
+    before = tree(tmp_path)
+    assert b.resolve_workspace(tmp_path) == tmp_path.resolve()
+    assert tree(tmp_path) == before

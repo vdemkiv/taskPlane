@@ -341,6 +341,28 @@ def load(workspace: str | Path, allow_relocated: bool = False) -> dict[str, Any]
     return value
 
 
+def _missing_binding(root: Path) -> NoReturn:
+    """Only a root without controller history qualifies for first-run guidance."""
+    store = root / ".taskplane"
+    if _exists(store):
+        with _directory(store):
+            pass
+        try:
+            for count, entry in enumerate(store.iterdir(), 1):
+                if count > MAX_FILES:
+                    _fail("Controller inventory exceeds its entry bound; preserve existing state.")
+                # Canonical stores, initialization markers, restoration copies and
+                # archive indexes all belong to controller history. No JSON needs
+                # to be trusted or loaded to rule out first-run onboarding.
+                if entry.name.startswith("workflow-"):
+                    _fail("Existing workflow state has no workspace binding; preserve existing state and "
+                          "restore the original binding before resuming. Use workspace inspect to diagnose; "
+                          "normal first-run bind/start cannot recover an active or unverified history.")
+        except OSError as exc:
+            raise w.Refusal("workspace_binding", "Cannot inspect controller history; preserve existing state.") from exc
+    raise MissingBinding(root)
+
+
 def ensure(workspace: str | Path, worker: bool = False,
            expected: dict[str, Any] | str | None = None) -> dict[str, Any] | None:
     """Revalidate mapping, probe, policy and an optional frozen run contract."""
@@ -350,7 +372,7 @@ def ensure(workspace: str | Path, worker: bool = False,
         if expected is not None:
             _fail("Workspace binding required by the frozen run contract is missing; preserve existing state.")
         if _required(root):
-            raise MissingBinding(root)
+            _missing_binding(root)
         return None
     request = {"schema": REQUEST_SCHEMA, **{k: value[k] for k in FIELDS}}
     _request(root, request)
@@ -379,7 +401,7 @@ def resolve_workspace(workspace: str | Path | None,
         if str(explicit) not in aliases:
             _fail("Explicit workspace conflicts with TASKPLANE_WORKSPACE and its declared host alias.")
     if value is None and _required(root, event):
-        raise MissingBinding(root)
+        _missing_binding(root)
     return root
 
 
