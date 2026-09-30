@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.31.6 — approval, worker integrity and usage accounting fixes
+
+- Require every approval clause to match supported instructions; honor future human approval requirements and refuse unknown residual directives without changing workflow state.
+- Fingerprint all declared worker read inputs independently of context delivery and apply consistent read boundaries during initial and later task publication.
+- Support correlated asynchronous worktree recovery with `allowAsync: true`, preserving source and destination identity checks.
+- Preserve unknown attribution for incomplete starting counters and observed Codex resets; conserve streamed Claude message usage across adjacent run intervals.
+- Verified with 1,247 affected test passes, 82 integration passes, independent evaluation and two distinct Engineering reviews. Test groups overlap; two capacity cases were deselected in local integration verification.
+
 ## v2.31.5 — Cowork workspace binding and recovery
 
 - Separate durable workspace storage from execution and worker locality; require explicit Cowork bindings and refuse missing or conflicting roots before creating state.

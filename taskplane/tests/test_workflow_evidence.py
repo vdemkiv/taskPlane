@@ -605,3 +605,42 @@ def test_engineering_coverage_survives_retro_transition_with_sealed_freshness(tm
     assert {row['status'] for row in before} == {dict(native='native_verified', serial='serial_scope', legacy='legacy_unverified')[mode]}
     (tmp_path/'input.py' if mode != 'legacy' else tmp_path/'app.py').write_text('changed after approval\n')
     assert not wr.lens_summary(s, tmp_path)
+
+
+@pytest.mark.parametrize('relative,valid', [
+    ('app.py', True), ('build.json', True), ('undeclared.py', False),
+    ('../outside.py', False), ('linked.py', False),
+])
+def test_initial_and_published_read_boundaries_match(tmp_path, relative, valid):
+    from taskplane import workflow_host as h
+    state, _, tasks = prepare(tmp_path)
+    row = tasks['tasks'][0]
+    row['read_inputs'] = [relative]
+    if relative == 'linked.py':
+        state['scope']['verification_inputs'].append(relative)
+        (tmp_path/relative).symlink_to(tmp_path/'app.py')
+    elif relative == '../outside.py':
+        # Even a mistaken declaration cannot authorize traversal.
+        state['scope']['verification_inputs'].append(relative)
+    (tmp_path/'tasks.json').write_text(json.dumps(tasks))
+    controller = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
+    for invoke in (lambda: controller._initial_tasks({'tasks':'tasks.json'}, state['scope']),
+                   lambda: e.freeze_tasks(tmp_path, state, tasks)):
+        if valid:
+            assert invoke()[0]['read_inputs'] == [relative]
+        else:
+            with pytest.raises(w.Refusal) as failure:
+                invoke()
+            assert failure.value.reason == 'scope_violation'
+
+
+def test_start_refuses_unscoped_reads_before_initializing(tmp_path):
+    from taskplane import workflow_host as h
+    state, _, tasks = prepare(tmp_path)
+    tasks['tasks'][0]['read_inputs'] = ['unscoped.json']
+    (tmp_path/'tasks.json').write_text(json.dumps(tasks))
+    (tmp_path/'unscoped.json').write_text('{"private":"fixture"}')
+    controller = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
+    with pytest.raises(w.Refusal, match='read inputs'):
+        controller.start({'scope':state['scope'], 'tasks':'tasks.json', 'request_reference':'fixture'})
+    assert not controller.adapter.state_exists()

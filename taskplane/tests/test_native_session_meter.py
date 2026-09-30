@@ -202,3 +202,94 @@ def test_verified_fork_history_requires_own_thread_counter(tmp_path):
     p.write_text('\n'.join(json.dumps(row) for row in rows)+'\n')
     with pytest.raises(ValueError, match='identity'):
         native_session_meter.read_snapshot(p)
+
+
+def _write_thread_segment(path, *, total, cached=0, ordinal=5, resumed=False):
+    _write_segment(path, session_id='root', total=total, cached=cached,
+                   output=0, ordinal=ordinal, resumed=resumed)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    counter = rows[-1]
+    usage = counter['payload']['info']['total_token_usage']
+    counter.update(type='token_usage_record',
+                   payload={'thread_id': 'root', 'thread_token_usage': usage})
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+
+
+@pytest.mark.parametrize('total,cached', [(30, 0), (150, 10), (150, 100)])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_resumed_thread_rejects_each_category_reset_in_both_readers(tmp_path, total, cached, reverse):
+    first, resumed = tmp_path / 'first.jsonl', tmp_path / 'resumed.jsonl'
+    _write_thread_segment(first, total=100, cached=20)
+    _write_thread_segment(resumed, total=total, cached=cached, ordinal=15, resumed=True)
+    paths = [resumed, first] if reverse else [first, resumed]
+    snapshots = [native_session_meter.read_snapshot(str(path)) for path in paths]
+    with pytest.raises(ValueError, match='backwards'):
+        native_session_meter.aggregate(snapshots)
+    with pytest.raises(ValueError, match='backwards'):
+        native_session_meter.read_logical_snapshot(paths, 'root')
+
+
+def test_valid_thread_resume_and_duplicate_source_conserve_latest_total(tmp_path):
+    first, resumed = tmp_path / 'first.jsonl', tmp_path / 'resumed.jsonl'
+    _write_thread_segment(first, total=100, cached=20)
+    _write_thread_segment(resumed, total=150, cached=30, ordinal=15, resumed=True)
+    snapshots = [native_session_meter.read_snapshot(str(path)) for path in [resumed, first, resumed]]
+    aggregate = native_session_meter.aggregate(snapshots)
+    logical = native_session_meter.read_logical_snapshot([resumed, first, resumed], 'root')
+    assert aggregate['usage'] == logical['usage']
+    assert logical['usage']['total_tokens'] == 150 and not logical['partial']
+    assert aggregate['physical_segments'] == 2
+
+
+def test_same_source_out_of_order_observations_still_detect_reset(tmp_path):
+    path = tmp_path / 'root.jsonl'
+    _write_thread_segment(path, total=100, ordinal=5)
+    before = native_session_meter.read_snapshot(str(path))
+    _write_thread_segment(path, total=30, ordinal=15)
+    after = native_session_meter.read_snapshot(str(path))
+    with pytest.raises(ValueError, match='backwards'):
+        native_session_meter.aggregate([after, before])
+
+
+def test_conflicting_thread_boundary_refuses_both_readers(tmp_path):
+    first, resumed = tmp_path / 'first.jsonl', tmp_path / 'resumed.jsonl'
+    _write_thread_segment(first, total=100)
+    _write_thread_segment(resumed, total=150, resumed=True)
+    with pytest.raises(ValueError, match='conflicting'):
+        native_session_meter.aggregate([native_session_meter.read_snapshot(str(p)) for p in [first, resumed]])
+    with pytest.raises(ValueError, match='conflicting'):
+        native_session_meter.read_logical_snapshot([first, resumed], 'root')
+
+
+def test_physical_alias_is_not_an_extra_legacy_segment(tmp_path):
+    first, alias = tmp_path / 'first.jsonl', tmp_path / 'alias.jsonl'
+    _write_segment(first, session_id='root', total=100)
+    alias.hardlink_to(first)
+    snapshots = [native_session_meter.read_snapshot(str(p)) for p in [first, alias]]
+    result = native_session_meter.aggregate(snapshots)
+    assert result['physical_segments'] == 1 and result['usage']['total_tokens'] == 100
+    assert native_session_meter.read_logical_snapshot([alias, first], 'root')['usage'] == result['usage']
+
+
+def test_thread_chronology_uses_instants_not_timestamp_spelling(tmp_path):
+    first, resumed = tmp_path / 'first.jsonl', tmp_path / 'resumed.jsonl'
+    _write_thread_segment(first, total=100, ordinal=5)
+    _write_thread_segment(resumed, total=150, ordinal=15, resumed=True)
+    rows = [json.loads(line) for line in first.read_text().splitlines()]
+    rows[-1]['timestamp'] = '2026-09-01T01:00:05+01:00'
+    first.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    assert native_session_meter.read_logical_snapshot([resumed, first], 'root')['usage']['total_tokens'] == 150
+
+
+def test_exact_thread_record_copy_does_not_require_fictional_restart(tmp_path):
+    first, copy = tmp_path / 'first.jsonl', tmp_path / 'copy.jsonl'
+    _write_thread_segment(first, total=100)
+    copy.write_bytes(first.read_bytes())
+    snapshots = [native_session_meter.read_snapshot(str(p)) for p in [first, copy]]
+    result = native_session_meter.aggregate(snapshots)
+    assert result['physical_segments'] == 2 and result['usage']['total_tokens'] == 100
+    assert native_session_meter.read_logical_snapshot([copy, first], 'root')['usage'] == result['usage']
+    # A different observation is not proved to be a copy of this physical segment.
+    _write_thread_segment(copy, total=150, ordinal=15)
+    with pytest.raises(ValueError, match='restart evidence'):
+        native_session_meter.read_logical_snapshot([copy, first], 'root')

@@ -64,12 +64,12 @@ def task(state: dict[str, Any], task_id: str) -> dict[str, Any]:
 
 
 def read_input_manifest(workspace: Path, session: Session, owned_paths: list[str]) -> dict[str, Any]:
-    """Share the exact context source selection for root and native verification."""
+    """Fingerprint declared dependencies independently of context transport."""
     paths = {item["body"]["path"] for item in session.items if item["kind"] == "source"}
     for item in session.items:
         if item["kind"] == "requirements":
-            paths.update(p for row in item["body"].get("tasks", []) for p in row.get("read_inputs", []))
-    # Explicit missing inputs must refuse, not vanish from freshness coverage.
+            paths.update(p for row in item["body"].get("tasks", []) for p in e.read_inputs(session.state, row))
+    # Missing explicit or fallback inputs must refuse, even if not transported.
     return e.manifest(workspace, sorted(paths - set(owned_paths)))
 
 
@@ -108,6 +108,9 @@ def result_valid(workspace: Path, state: dict[str, Any], task_id: str, seen: set
     result = state.get("task_results", {}).get(task_id)
     if not result or result.get("task_digest") != digest(definition):
         return False
+    required_reads = set(e.read_inputs(state, definition)) - set(definition['paths'])
+    if not required_reads <= set(result.get('input_manifest', {})):
+        return False  # Older incomplete manifests need fresh verification too.
     if definition.get("execution") == "native_required" and not native_result_valid(workspace, state, task_id, result):
         return False
     if not result.get("grant") and result.get("input_contract") != "declared-source/v1":

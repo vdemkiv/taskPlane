@@ -176,7 +176,7 @@ def test_next_run_baseline_closes_history_when_native_log_is_unavailable(monkeyp
     assert result['sessions'][0]['measurement_source'] == 'run_boundary'
     assert result['sessions'][0]['measured_at'] == closing['at']
     start['usage_status'] = 'partial'
-    assert flow_usage.reconcile(start, [closing, saved])['tokens']['total_tokens'] == 20
+    assert flow_usage.reconcile(start, [closing, saved])['tokens'] is None
     start['usage_status'] = 'observed'
     # Partial or unrelated observations cannot substitute for the closing baseline.
     closing['usage_status'] = 'partial'
@@ -214,3 +214,79 @@ def test_claude_reused_worker_charges_only_current_messages(tmp_path, monkeypatc
     assert session['usage']['total_tokens'] == 142
     assert session['native_usage']['total_tokens'] == 284
     assert session['status'] == 'measured'
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('baseline_status,baseline,expected', [
+    ('partial', counts(100), None),
+    ('unavailable', None, None),
+    ('observed', {'total_tokens': 100}, None),
+    (None, {'total_tokens': 100}, None),
+    (None, counts(100), 50),
+    ('observed', counts(100), 50),
+    ('observed', counts(0), 150),
+])
+def test_root_baseline_must_be_complete_before_run_delta(
+        tmp_path, monkeypatch, host, baseline_status, baseline, expected):
+    from taskplane import claude_flow_usage as claude
+    from taskplane.tests.test_native_session_meter import _write_thread_segment
+    path = tmp_path / 'sessions/root.jsonl'
+    path.parent.mkdir()
+    _write_thread_segment(path, total=150, ordinal=5)
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    monkeypatch.setattr(claude, 'read_snapshot', lambda *_args, **_kwargs:
+                        {'usage': counts(150), 'started': 0, 'partial': False})
+    run = {'run': 'old', 'session': 'root', 'host': host, 'usage': baseline,
+           'at': '2026-09-01T00:00:10Z', 'transcript_path': str(path)}
+    if baseline_status is not None:
+        run['usage_status'] = baseline_status
+    result = flow_usage.reconcile(run, [])
+    root = result['sessions'][0]
+    assert root['native_usage'] == counts(150)
+    if expected is None:
+        assert root['usage'] is None and root['status'] == 'partial'
+    else:
+        assert root['usage'] == counts(expected) and root['status'] == 'measured'
+
+
+def test_claude_recovered_prerun_counter_does_not_become_run_usage(tmp_path):
+    from taskplane.tests.test_claude_flow import message, write
+    from taskplane import claude_flow_usage as claude
+    path = tmp_path / 'root.jsonl'
+    incomplete = message('missing')
+    del incomplete['message']['usage']['cache_read_input_tokens']
+    write(path, [message('first'), incomplete])
+    before = claude.read_snapshot(path, 'root')
+    assert before['partial'] and before['usage']['total_tokens'] == 142
+    run = {'run': 'run', 'session': 'root', 'host': 'claude',
+           'at': '2026-09-15T00:00:10Z', 'transcript_path': str(path),
+           'usage': before['usage'], 'usage_status': 'partial'}
+    write(path, [message('first'), message('missing')])
+    report = flow_usage.reconcile(run, [])
+    assert report['tokens'] is None
+    assert report['native_tokens']['total_tokens'] == 284
+    assert report['sessions'][0]['status'] == 'partial'
+
+
+@pytest.mark.parametrize('new_total,new_cached', [(30, 0), (150, 10), (150, 0)])
+def test_resumed_codex_reset_is_not_restored_from_saved_or_closing_counts(
+        tmp_path, monkeypatch, new_total, new_cached):
+    from taskplane.tests.test_native_session_meter import _write_thread_segment
+    folder = tmp_path / 'sessions'
+    folder.mkdir()
+    _write_thread_segment(folder / 'first.jsonl', total=100, cached=20, ordinal=5)
+    _write_thread_segment(folder / 'resumed.jsonl', total=new_total, cached=new_cached,
+                          resumed=True, ordinal=15)
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    baseline = counts(100)
+    baseline.update(cached_input_tokens=20, uncached_input_tokens=80)
+    run = {'run': 'run', 'session': 'root', 'usage': baseline, 'usage_status': 'observed',
+           'at': '2026-09-01T00:00:10Z'}
+    saved = {'kind': 'usage', 'run': 'run', 'measurement': measured(0)}
+    closing = {'kind': 'start', 'run': 'next', 'session': 'root',
+               'at': '2026-09-01T00:00:20Z', 'usage': counts(200), 'usage_status': 'observed'}
+    closing['usage'].update(cached_input_tokens=20, uncached_input_tokens=180)
+    result = flow_usage.reconcile(run, [saved, closing])
+    root = result['sessions'][0]
+    assert root['usage'] is None and root['status'] == 'partial'
+    assert root['errors']

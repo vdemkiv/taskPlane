@@ -272,6 +272,60 @@ def test_incomplete_provider_usage_is_unknown_not_zero(tmp_path):
     assert claude.read_snapshot(path, 'root')['partial']
 
 
+def test_streamed_worker_boundary_increments_conserve_lifetime(tmp_path):
+    path = tmp_path / 'root.jsonl'
+    write(path, [message('root')])
+    child = path.with_suffix('') / 'subagents/agent-reused.jsonl'
+    write(child, [message('streamed', agent='reused', output=1, at='2026-09-15T00:00:05Z'),
+                  message('streamed', agent='reused', output=10, at='2026-09-15T00:00:10Z'),
+                  message('streamed', agent='reused', output=10, at='2026-09-15T00:00:15Z')])
+    boundary = claude.timestamp('2026-09-15T00:00:10Z')
+    run = {'run': 'first', 'session': 'root', 'host': 'claude', 'transcript_path': str(path),
+           'at': '2026-09-15T00:00:00Z', 'usage': claude.read_snapshot(path, 'root')['usage']}
+    earlier, _ = claude.sessions(run, [], boundary)
+    later, _ = claude.sessions({**run, 'run': 'next', 'at': '2026-09-15T00:00:10Z'}, [], None)
+    a = next(s for s in earlier if s['session'] == 'reused')
+    b = next(s for s in later if s['session'] == 'reused')
+    lifetime = claude.read_snapshot(child, 'root', agent='reused')['usage']
+    assert a['usage']['total_tokens'] == 133
+    assert b['usage']['total_tokens'] == b['usage']['output_tokens'] == 9
+    assert b['usage']['input_tokens'] == b['usage']['cached_input_tokens'] == 0
+    assert a['status'] == b['status'] == 'measured'
+    assert {key: a['usage'][key] + b['usage'][key] for key in lifetime} == lifetime
+
+
+def test_streamed_missing_boundary_and_category_decrease_stay_partial(tmp_path):
+    path = tmp_path / 'root.jsonl'
+    before = message(output=1, at='2026-09-15T00:00:05Z')
+    after = message(output=10, at='2026-09-15T00:00:15Z')
+    boundary = claude.timestamp('2026-09-15T00:00:10Z')
+    del before['message']['usage']['cache_read_input_tokens']
+    write(path, [before, after])
+    interval = claude.read_snapshot(path, 'root', start=boundary)
+    assert interval['usage'] is None and interval['partial']
+    assert claude.read_snapshot(path, 'root')['usage']['total_tokens'] == 142
+    before = message(output=1, at='2026-09-15T00:00:05Z')
+    after['message']['usage']['cache_read_input_tokens'] = 99
+    write(path, [before, after])
+    interval = claude.read_snapshot(path, 'root', start=boundary)
+    assert interval['usage'] is None and interval['partial']
+    assert 'counter_decreased' in interval['errors']
+
+
+def test_inactive_claude_worker_is_zero_only_when_observed(tmp_path):
+    path = tmp_path / 'root.jsonl'
+    write(path, [message()])
+    child = path.with_suffix('') / 'subagents/agent-old.jsonl'
+    write(child, [message(agent='old')])
+    run = {'run': 'run', 'session': 'root', 'at': '2026-09-15T00:00:10Z',
+           'transcript_path': str(path), 'usage': claude.read_snapshot(path, 'root')['usage']}
+    sessions, _ = claude.sessions(run, [], None)
+    assert [s['session'] for s in sessions] == ['root']
+    sessions, _ = claude.sessions({**run, 'worker_sessions': ['old']}, [], None)
+    old = next(s for s in sessions if s['session'] == 'old')
+    assert old['status'] == 'measured' and old['usage']['total_tokens'] == 0
+
+
 def test_discovers_lens_counters_and_excludes_other_runs(tmp_path, monkeypatch):
     ws, path = setup(tmp_path, monkeypatch)
     write(path, [message(), message('m2', at='2026-09-15T00:00:03Z')])

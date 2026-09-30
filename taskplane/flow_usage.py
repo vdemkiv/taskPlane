@@ -92,22 +92,28 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
         role = ('orchestrator' if sid == root else 'host_approval_review'
                 if meta.get('thread_source') == 'guardian_review' else 'lens')
         errors = []
+        attribution_unknown = False
         try:
             snapshot = meter.read_logical_snapshot(
                 [segment['path'] for segment in segments], sid, at_or_before=cutoff)
             native = snapshot['usage']
             if snapshot['partial']:
                 errors.append('native counter unavailable')
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
             native = None
             if segments:
-                errors.append('segment counters could not be reconciled')
-        baseline = run.get('usage') if sid == root else None
+                errors.append(f'segment counters could not be reconciled: {exc}')
+                attribution_unknown = isinstance(exc, meter.CounterChronologyError)
+        baseline = meter.starting_baseline(run) if sid == root else None
+        if sid == root and baseline is None:
+            errors.append('run baseline is partial or unavailable; attribution is unknown')
+            attribution_unknown = True
         usage = ({k: max(0, v - (baseline or {}).get(k, 0)) for k, v in native.items()}
                   if native and (sid != root or baseline is not None) else None)
         if native and baseline and any(v < baseline.get(k, 0) for k, v in native.items()):
             usage = None
             errors.append('native counter moved below run baseline; reset attribution is unknown')
+            attribution_unknown = True
         interval = None
         if sid != root and started is not None:
             interval = meter.read_owned_interval([segment['path'] for segment in segments], sid, start=started, end=cutoff)
@@ -119,6 +125,7 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                          'basis': interval['basis'] if interval else 'start baseline' if sid == root else 'child created during flow',
                          'interval': interval.get('interval') if interval else None,
                          'attribution_schema': 'taskplane.owned-interval/v1' if interval else None,
+                         'attribution_unknown': attribution_unknown,
                          'errors': errors})
     return sessions, discovery_errors
 
@@ -144,6 +151,11 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         known_workers.update(str(e.get('session')) for e in events if e.get('run') == run['run']
                              and e.get('kind') == 'hook' and e.get('session') != run['session'])
         sessions, discovery_errors = _codex_sessions({**run, 'worker_sessions': sorted(known_workers)}, cutoff, diagnostics)
+    start = meter.starting_baseline(run)
+    if start is None:
+        for session in sessions:
+            if session.get('session') == run['session']:
+                session.update(usage=None, status='partial', attribution_unknown=True)
     saved: dict[str, Any] = next((e.get('measurement', {}) for e in reversed(events)
                   if e.get('run') == run['run'] and e.get('kind') == 'usage'), {})
     by_session = {s['session']: s for s in sessions}
@@ -155,6 +167,8 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
                  and prior.get('interval') == {'start': started, 'end_exclusive': cutoff})
         if (prior.get('usage') and (current is None or not current.get('usage'))
                 and not (current or {}).get('errors')
+                and not (current or {}).get('attribution_unknown')
+                and (prior.get('role') != 'orchestrator' or start is not None)
                 and (prior.get('role') == 'orchestrator' or owned)):
             if current is not None:
                 sessions.remove(current)
@@ -167,15 +181,15 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
     # The next run's observed root baseline closes this run exactly. It remains
     # available when growing transcripts push that counter outside the bounded
     # native reader, so historical totals cannot fall back to an older sample.
-    end: Any = boundary.get('usage') if boundary else None
-    start: Any = run.get('usage')
+    end = meter.starting_baseline(boundary) if boundary else None
     if (boundary and boundary.get('usage_status') == 'observed'
             and run.get('usage_status', 'observed') == 'observed'
             and boundary.get('host', 'codex') == run.get('host', 'codex')
+            and start is not None and end is not None
             and _counts(start) and _counts(end) and set(start) == set(end)
             and all(end[k] >= start[k] for k in start)):
         root_session = next((s for s in sessions if s.get('session') == run['session']), None)
-        if root_session is not None:
+        if root_session is not None and not root_session.get('attribution_unknown'):
             root_session.update(native_usage=dict(end), usage={k: end[k] - start[k] for k in start},
                                 status='measured', basis='observed next-run start baseline',
                                 measurement_source='run_boundary', measured_at=boundary['at'])

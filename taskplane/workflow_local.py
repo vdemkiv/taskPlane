@@ -670,31 +670,54 @@ class Harness:
         if tool in {'mcp__codex_app__uninstall_plugin', 'mcp__codex_app.uninstall_plugin'}:
             return (set(args) == {'plugin'} and isinstance(args['plugin'], str)
                     and args['plugin'].casefold() in {'taskplane', 'taskplane@openai-curated-remote'})
+        identity = event.get('tool_use_id') or event.get('call_id')
+        if not isinstance(identity, str) or not 0 < len(identity) <= 512:
+            return False
+        if tool in {'mcp__codex_app__get_worktree_creation_status', 'mcp__codex_app.get_worktree_creation_status'}:
+            pending = self.read().get('recovery_pending') or {}
+            if (not pending.get('operation_id') or set(args) != {'operationId'}
+                    or args['operationId'] != pending['operation_id']
+                    or pending.get('binding') != self.binding(state)
+                    or not pending.get('source') or git_identity(self.workspace) != pending['source']):
+                return False
+            self.update(recovery_pending={**pending, 'poll': {
+                'call_id': identity, 'input_digest': primitives.content_fingerprint(args)}})
+            return True
         if tool not in {'mcp__codex_app__create_worktree', 'mcp__codex_app.create_worktree'}:
             return False
-        if set(args) - {'name', 'ref'} or args.get('ref', 'HEAD') != 'HEAD':
+        if set(args) - {'name', 'ref', 'allowAsync'} or args.get('ref', 'HEAD') != 'HEAD':
+            return False
+        # The current API defaults to the remote default branch, not HEAD.
+        # Retain legacy immediate calls; their destination identity is checked too.
+        if 'allowAsync' in args and (args['allowAsync'] is not True or args.get('ref') != 'HEAD'):
             return False
         name = args.get('name')
         if name is not None and (not isinstance(name, str) or len(name) > 64
                 or not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', name)
                 or re.fullmatch(r'(?:[a-f0-9]{4,}|con|prn|aux|nul|com[1-9]|lpt[1-9])', name)):
             return False
-        identity = event.get('tool_use_id') or event.get('call_id')
         source = git_identity(self.workspace)
-        if not isinstance(identity, str) or not 0 < len(identity) <= 512 or source is None:
+        if source is None:
             return False
         self.update(recovery_pending={'call_id': identity, 'input_digest': primitives.content_fingerprint(args),
-                                      'binding': self.binding(state), 'source': source}, recovery_workspace=None)
+                                      'binding': self.binding(state), 'source': source,
+                                      'allow_async': args.get('allowAsync') is True}, recovery_workspace=None)
         return True
 
     def observe_recovery(self, event: dict[str, Any], state: dict[str, Any]) -> None:
-        if (event.get('tool_name') or event.get('tool')) not in {
-                'mcp__codex_app__create_worktree', 'mcp__codex_app.create_worktree'}:
+        tool = event.get('tool_name') or event.get('tool')
+        polling = tool in {'mcp__codex_app__get_worktree_creation_status', 'mcp__codex_app.get_worktree_creation_status'}
+        if not polling and tool not in {'mcp__codex_app__create_worktree', 'mcp__codex_app.create_worktree'}:
             return
         pending = self.read().get('recovery_pending') or {}
-        if (not pending or pending.get('call_id') != (event.get('tool_use_id') or event.get('call_id'))
-                or pending.get('input_digest') != primitives.content_fingerprint(event.get('tool_input', {}))
-                or pending.get('binding') != self.binding(state)):
+        expected = pending.get('poll', {}) if polling else pending
+        if (not pending or not expected or expected.get('call_id') != (event.get('tool_use_id') or event.get('call_id'))
+                or expected.get('input_digest') != primitives.content_fingerprint(event.get('tool_input', {}))
+                or not polling and pending.get('operation_id')):
+            return
+        if (pending.get('binding') != self.binding(state) or not pending.get('source')
+                or git_identity(self.workspace) != pending['source']):
+            self.update(recovery_pending=None, recovery_workspace=None)
             return
         response = event.get('tool_response')
         if not isinstance(response, dict) or response.get('isError'):
@@ -713,10 +736,32 @@ class Harness:
                 payload = json.loads(blocks[0]['text'])
             except ValueError:
                 payload = None
+        if not isinstance(payload, dict):
+            self.update(recovery_pending=None, recovery_workspace=None)
+            return
+        if polling:
+            if (payload.get('operationId') != pending.get('operation_id')
+                    or event.get('tool_input', {}).get('operationId') != pending.get('operation_id')):
+                self.update(recovery_pending=None, recovery_workspace=None)
+                return
+            status = payload.get('status')
+            if isinstance(status, str) and status in {'preparing', 'creating', 'registering'}:
+                self.update(recovery_pending={k: v for k, v in pending.items() if k != 'poll'})
+                return
+            completed = status == 'completed' and payload.get('type') in (None, 'created')
+        else:
+            operation = payload.get('operationId')
+            if (pending.get('allow_async') and payload.get('type') == 'pending'
+                    and isinstance(operation, str) and 0 < len(operation.strip()) <= 512):
+                self.update(recovery_pending={**pending, 'operation_id': operation})
+                return
+            completed = (payload.get('type') == 'created' and not operation
+                         and payload.get('status') in (None, 'completed'))
         destination = None
-        if isinstance(payload, dict) and payload.get('type') == 'created':
+        if completed:
             workspace, git_root = payload.get('worktreeWorkspaceRoot'), payload.get('worktreeGitRoot')
-            if isinstance(workspace, str) and isinstance(git_root, str) and len(workspace) <= 4096:
+            if (isinstance(workspace, str) and isinstance(git_root, str)
+                    and len(workspace) <= 4096 and len(git_root) <= 4096):
                 target, checkout = Path(workspace), Path(git_root)
                 if (target.is_absolute() and checkout.is_absolute() and target.is_dir()
                         and target == target.resolve() and checkout == checkout.resolve()

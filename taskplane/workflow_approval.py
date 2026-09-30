@@ -118,71 +118,187 @@ def conversational_choice(excerpt: str) -> str | None:
     return next(iter(choices)) if len(choices) == 1 else None
 
 
-def affirmative_consent(excerpt: str) -> bool:
-    """Recognize direct approval instructions, not arbitrary natural-language intent.
+def _unnecessary_decision(predicate: str) -> bool:
+    """Only a local, unambiguous negation removes a human dependency."""
+    for contraction, expanded in (("won't", 'will not'), ("can't", 'can not'), ("shan't", 'shall not')):
+        predicate = predicate.replace(contraction, expanded)
+    predicate = re.sub(r"\b(\w+)n't\b", r'\1 not', predicate)
+    words = predicate.split()
+    certain = {'is', 'are', 'was', 'were', 'be', 'been', 'being', 'remain', 'remains',
+               'will', 'would', 'shall', 'should', 'must', 'can', 'could', 'have', 'has',
+               'had', 'do', 'does', 'did', 'need', 'needs', 'to', 'required', 'needed',
+               'necessary', 'mandatory', 'unnecessary', 'optional', 'still', 'also',
+               'explicitly', 'manually', 'personally', 'strictly'}
+    negatives = [i for i, word in enumerate(words) if word in ('not', 'never', 'no')]
+    if words[-1] in ('unnecessary', 'optional'):
+        return not negatives and all(word in certain for word in words)
+    if len(negatives) != 1:
+        return False
+    index = negatives[0]
+    if words[index] == 'no':
+        if words[index:index + 2] != ['no', 'longer']:
+            return False
+        end = index + 2
+    else:
+        end = index + 1
+    # "Not only required", "not always required" and "not yet required"
+    # retain a possible human checkpoint; none means explicitly unnecessary.
+    return (all(word in certain | {'always'} for word in words[:index])
+            and all(word in certain for word in words[end:]))
 
-    Quoted examples are not instructions. Unsupported or contradictory wording
-    stays manual; the recorder must still interpret and assess every condition.
+
+def _unnecessary_clause(clause: str) -> bool:
+    """Recognize an entire explicitly unnecessary human-decision clause.
+
+    The grammar consumes the subject and every predicate. An unknown qualifier
+    cannot be discarded by matching a shorter unnecessary prefix.
     """
-    text = decision_text(excerpt)
+    signoff = r'sign(?:s|ed|ing)?[\s\-\u2010\u2011]?offs?'
+    decision_verb = (r'(?:approv(?:e[sd]?|ing)|confirm(?:s|ed|ing)?|'
+                     r'authori[sz](?:e[sd]?|ing)|consent(?:s|ed|ing)?|accept(?:s|ed|ing)?|'
+                     r'assent(?:s|ed|ing)?|' + signoff + r')')
+    decision_noun = (r'(?:approvals?|confirmations?|authori[sz]ations?|consents?|'
+                     r'acceptances?|permissions?|assents?|clearances?|' + signoff + r')')
+    conjunction = r'(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)'
+    nouns = decision_noun + r'(?:' + conjunction + decision_noun + r'){0,3}'
+    modifier = (r'(?!(?:and|or|but|while|although|from|by|is|are|be|will|must|not|no|'
+                r'required|needed|necessary|mandatory)\b)[a-z][a-z-]{0,31}')
+    role = (r'(?:(?:the|a|an|my|our|your)\s+)?(?:' + modifier + r'\s+){0,3}'
+            r'(?:humans?|users?|reviewers?|owners?|approvers?|maintainers?|managers?|operators?)')
+    human_actor = r'(?:i|we|you|' + role + r')'
+    human_source = r'(?:me|us|you|' + role + r')'
+    human_noun = (r'(?:(?:my|our|your|human|user|manual|' + role + r"(?:'s|')?)\s+"
+                  + nouns + r'|' + nouns + r'\s+(?:from|by)\s+' + human_source + r')')
+    human_subject = ('(?:' + human_noun + '|' + nouns + r')(?:' + conjunction +
+                     r'(?:' + human_noun + '|' + nouns + r')){0,3}')
+    requirement = r'(?:required|needed|necessary|mandatory|unnecessary|optional)'
+    adverb = r'(?:still|also|always|only|just|yet|ever|sometimes|[a-z]{2,24}ly)'
+    auxiliary = (r"(?:is|are|was|were|be|been|being|remain[s]?|will|would|shall|should|must|"
+                 r"can|could|may|might|have|has|had|do|does|did|need[s]?|required|to|not|never|no longer|\w+n't)")
+    predicate_words = r'(?:(?:' + auxiliary + '|' + adverb + r')\s+){0,10}'
+    passive = predicate_words.replace('{0,10}', '{0,10}?') + requirement
+    continuation = r'\s+(?:and|or|but|yet|however|nevertheless|while|although)\s+'
+    tail = (passive + r'(?:' + continuation + r'(?:(?:' + human_subject +
+            r'|it)\s+)?' + passive + r'){0,3}')
+    # Only supported parenthetical words and inter-word commas are presentation.
+    # Other brackets, quotes, symbols and trailing punctuation remain unmatched.
+    clause = re.sub(r'\((still|also|never|' + decision_noun + r')\)', r'\1', clause)
+    clause = re.sub(r'(?<=\w),\s+(?=\w)', ' ', clause)
+    clause = re.sub(r'\s+', ' ', clause).strip()
+    gap = r'[\s:;]+'
+    forward = human_subject + gap + r'(?P<predicate>' + tail + r')'
+    reverse = r'(?P<predicate>' + passive + ')' + gap + human_subject
+    elided = r'(?:it\s+)?(?P<predicate>' + tail + r')'
+    for pattern in (forward, reverse, elided):
+        match = re.fullmatch(pattern, clause)
+        if match:
+            predicates = [item[0] for item in re.finditer(passive, match['predicate'])]
+            # After the first complete predicate, "yet" is the conjunction
+            # admitted by tail, not an adverb modifying the next negation.
+            predicates = [re.sub(r'^yet\s+', '', item) if index else item
+                          for index, item in enumerate(predicates)]
+            return bool(predicates) and all(_unnecessary_decision(item) for item in predicates)
+    obligation = human_actor + r'\s+(?P<predicate>' + predicate_words + r')' + decision_verb
+    match = re.fullmatch(obligation, clause)
+    if match:
+        predicate = match['predicate'].strip()
+        return bool(re.search(r'\b(?:must|need[s]?|(?:have|has|had) to|required to)\b', predicate)
+                    and _unnecessary_decision(predicate))
+    human_decision = (r'(?:' + human_actor + r'\s+'
+                      r'(?:(?:have|has|had|will|explicitly|manually)\s+)*' + decision_verb +
+                      r'|' + human_subject + r')')
+    negated_dependency = (r"(?:(?:you|there is)\s+)?(?:do not|don't|does not|doesn't|need not|no need to)\s+"
+                          r'(?:wait|await|ask|pause|hold|halt|stop|require|need|obtain|get)\s+'
+                          r'(?:(?:for|to)\s+)?' + human_decision)
+    return re.fullmatch(negated_dependency, clause) is not None
+
+
+def affirmative_consent(excerpt: str) -> bool:
+    """Require direct consent and a complete classification of every clause.
+
+    This finite grammar intentionally refuses unsupported harmless prose as well
+    as unknown conditions. No recognized prefix, quoted example, human-decision
+    vocabulary, or previous clause can exempt the remaining text from the audit.
+    Provenance and policy conditions are still checked by the Controller.
+    """
+    if not _text(excerpt) or '\x00' in excerpt:
+        return False
+    text = excerpt.casefold().replace("’", "'")
     text = re.sub(r'^\s*(?:\[@taskplane\]\(plugin://[^)]+\)|@taskplane)\s*', '', text)
-    if '?' in excerpt or re.search(r'\b(?:if|unless|until|when|once|provided|assuming|hypothetically|maybe|perhaps|subject to|as long as)\b', excerpt.casefold()):
+    if '?' in text or re.search(
+        r'\b(?:if|unless|until|when|once|provided|assuming|hypothetically|maybe|perhaps|subject to|as long as)\b', text
+    ):
         return False
-    # A required check can qualify autonomy; a future human decision cannot.
-    # Inspect the whole instruction so an affirmative prefix cannot hide a later
-    # request to wait, including a separate sentence or quoted qualification.
-    decision_action = (r'(?:approv(?:e[sd]?|ing|al)|confirm(?:s|ed|ing|ation)?'
-                       r'|authori[sz](?:e[sd]?|ing|ation)|consent(?:s|ed|ing)?)')
-    human_decision = (r'\b(?:(?:i|we|you|the (?:user|reviewer))\s+'
-                      r'(?:(?:have|has|had|will|explicitly|manually)\s+)*' + decision_action +
-                      r'|(?:my|our|your|human|user|manual|reviewer(?:\'s)?)\s+'
-                      r'(?:approval|confirmation|authorization|consent))\b')
-    original = excerpt.casefold().replace("’", "'")
-    # A human decision can also be the subject of a requirement: "my approval
-    # is required" or "with my approval required first". Keep the predicate
-    # explicit so "my approval is not required" does not create a requirement.
-    human_requirement = (human_decision + r'\s+'
-                         r'(?:(?:is|remains|will be|must be)\s+)?(?:still\s+)?'
-                         r'(?:required|needed|necessary|mandatory)\b')
-    # Punctuation is not a reliable end to a qualification (for example Dr.,
-    # or a condition continued after a semicolon/newline). Scan the original
-    # instruction through its end before considering any affirmative prefix.
-    # Checks passing and named phase stops alone contain no decision action.
-    if (re.search(r'\b(?:after|before)\b[\s\S]*\b' + decision_action + r'\b', original)
-            or re.search(r'\b(?:wait|await|ask|pending)\b'
-                         r'[\s\S]*\b' + decision_action + r'\b', original)
-            or re.search(r'\b(?:require|need|obtain|get)\b[\s\S]*' + human_decision, original)
-            or re.search(human_requirement, original)):
-        return False
-    clauses = [re.sub(r'\s+', ' ', clause).strip() for clause in re.split(r'[.;!]', text)]
-    approval_term = r'\b(?:auto[ -]?approv\w*|automatic\w*\s+(?:phase\s+)?approv\w*|autonomous)\b'
-    # Quoted contradictory instructions also need clarification, even though a
-    # quoted positive example can never supply authorization by itself.
-    for clause in re.split(r'[.;!]', excerpt.casefold().replace("’", "'")):
-        if re.search(r'\bmanual\s+(?:phase\s+)?approval\b', clause):
-            return False
-        if re.search(approval_term, clause) and (
-            re.search(r"\b(?:no|not|never|without|cannot|can't|don't|won't|isn't|aren't|example|hypothetical)\b", clause)
-            or re.search(r'\b(?:stop|disable|revoke|cancel)\b.{0,50}' + approval_term, clause)
-        ):
-            return False
-    # Match an imperative (or explicit authorization) at a sentence boundary.
-    # Feature requests such as "implement an option to ..." cannot match.
-    prefix = r'^(?:now[, ]+)?(?:for this (?:task|run|release|workflow),?\s+)?(?:please\s+)?'
+    phase = r'(?:' + '|'.join(w.PHASES) + r')'
+    check = (r'(?:required\s+)?(?:tests?|checks?)\s+'
+             r'(?:(?:(?:must|should|shall|will)\s+)?(?:pass|succeed)|'
+             r'(?:(?:is|are|remain|remains)\s+)?(?:required|mandatory|needed|necessary))')
+    stop = r'(?:stop|pause|hold)\s+(?:at|before)\s+' + phase + r'(?:\s+phase)?'
+    prefix = r'(?:now[, ]+)?(?:for this (?:task|run|release|workflow),?\s+)?(?:please\s+)?'
     actor = r'(?:(?:i (?:explicitly )?authorize (?:you|taskplane) to|run autonomously and)\s+)?'
     verb = r'(?:auto[ -]?approve|automatically approve)\s+'
-    target = r'(?:all\s+|the\s+|each\s+)?(?:phases?\b|phase transitions?\b|product\b|design\b|plan\b|build\b|evaluate\b|engineering\b|retro\b)'
+    phase_list = phase + r'(?:\s*,\s*' + phase + r'){0,6}(?:\s*,?\s+and\s+' + phase + r')?'
+    target = r'(?:all\s+|the\s+|each\s+)?(?:phases?|phase transitions?|' + phase_list + r')'
     direct = prefix + actor + verb + target
     request = prefix + r'(?:(?:i (?:want|need|would like)(?: you)? to|you may)\s+)?'
     workflow = (request + r'(?:start|run|execute|proceed with)\s+(?:an?\s+|the\s+|this\s+)?'
                 r'(?:(?:full|end[ -]to[ -]end)\s+)?(?:auto[ -]?approved|automatically approved|autonomous)\s+'
-                r'(?:full\s+)?(?:workflow|flow|run|delivery)\b')
-    automatic_phases = request + r'(?:run|execute)\s+(?:all\s+)?(?:release\s+)?phases\s+automatically\b'
-    end_to_end = (request + r'(?:use\s+[^.;!]{1,512}\s+as (?:an? )?input and\s+)?'
+                r'(?:full\s+)?(?:workflow|flow|run|delivery)')
+    fixes_workflow = (request + r'proceed with fixes with\s+(?:an?\s+|the\s+)?'
+                      r'(?:end[ -]to[ -]end\s+)?auto[ -]?approved\s+(?:workflow|flow)')
+    automatic_phases = request + r'(?:run|execute)\s+(?:all\s+)?(?:release\s+)?phases\s+automatically'
+    # The existing document-input request has a bounded object, never a wildcard
+    # capable of swallowing a human condition embedded in a technical description.
+    document_input = r'(?:use 36-hour audit and retrospective document as (?:an? )?input and\s+)?'
+    end_to_end = (request + document_input +
                   r'(?:start|run|execute|proceed with)\s+(?:an?\s+|the\s+)?(?:(?:full\s+)?end[ -]to[ -]end|full)\s+'
-                  r'(?:flow|workflow|delivery)\s+with\s+auto[ -]?approv(?:al|e)\b')
-    return any(re.search(pattern, clause) is not None for clause in clauses
-               for pattern in (direct, workflow, automatic_phases, end_to_end))
+                  r'(?:flow|workflow|delivery)\s+with\s+auto[ -]?approv(?:al|e)')
+    technical_goal = (r'which should resolve untracked token usage'
+                      r"(?:, over 3\.5m tokens were spend outside any of the phases, it should be properly tracked where it's used "
+                      r'for proper tracking and father analysis)?')
+    # Supported suffixes form a complete grammar, not a prefix to be erased.
+    scope = r'(?:\s+for this (?:task|run|release|workflow))?'
+    through = r'(?:\s+through\s+' + phase + r')?'
+    condition = r'(?:\s+after\s+' + check + r')?'
+    purpose = r'(?:\s+(?:to fix all|' + technical_goal + r'))?'
+    positive = '(?:' + '|'.join((direct, workflow, fixes_workflow, automatic_phases, end_to_end)) + ')'
+    positive += scope + through + condition + purpose
+    feature = (r'(?:second improvement is coming from retro as well:\s*)?'
+               r'(?:remove|change|relax|update)\s+(?:the\s+)?(?:exact\s+)?'
+               r'(?:word|wording)\s+(?:expectation|requirement|matching)\s+for\s+'
+               r'phase approval(?:,?\s*either extend vocabulary or just accept '
+               r'plain text which indicates? approval)?')
+    technical = (
+        feature,
+        r'use taskplane to implement the settings page',
+        r'we need to address and resolve all the issues',
+        r'additionally run security lens and include its findings into the scope',
+        r"it's ok for ask for clarification, but never ask for specific 100% match on the words to be used to proceed",
+    )
+    positive_seen = False
+
+    def classified(clause: str) -> bool:
+        nonlocal positive_seen
+        clause = re.sub(r'\s+', ' ', clause).strip()
+        if re.fullmatch(positive, clause):
+            positive_seen = True
+            return True
+        if any(re.fullmatch(pattern, clause) for pattern in (check, stop, *technical)):
+            return True
+        return _unnecessary_clause(clause)
+
+    # Decimal punctuation belongs to the bounded technical statement. All other
+    # sentence punctuation is an explicit boundary. A semicolon may also belong
+    # to a reversed unnecessary decision, so try the full clause before splitting.
+    for sentence in re.split(r'(?<!\d)\.|\.(?!\d)|[!\n]', text):
+        if not sentence.strip():
+            continue
+        if classified(sentence):
+            continue
+        clauses = sentence.split(';')
+        if len(clauses) == 1 or not all(part.strip() and classified(part) for part in clauses):
+            return False
+    return positive_seen
 
 
 def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:

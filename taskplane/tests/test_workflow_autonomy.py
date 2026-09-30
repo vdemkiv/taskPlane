@@ -292,3 +292,255 @@ def test_dashboard_distinguishes_pending_policy_and_current_human_checkpoint(tmp
         'current-human': {'kind':'human','binding':{'visit':w.current(s)['id'],'checkpoint':w.current(s)['packet']['checkpoint']}}}
     page=flow_dashboard.render(str(tmp_path),model)
     assert 'Automatically approved' not in page and 'Human decision: Approved' in page
+
+
+def test_exact_user_fixes_request_persists_real_authorization(tmp_path):
+    c, s = setup(tmp_path)
+    request = authorization(s)
+    request['excerpt'] = 'Proceed with fixes with end to end auto-approved flow'
+    accepted = set_policy(c, s, request)
+    policy = accepted['approval_policy']
+    assert policy['mode'] == 'autonomous'
+    assert policy['provenance']['excerpt'] == request['excerpt']
+    assert policy['provenance']['source'] == request['source']
+    assert not accepted['decisions']  # The policy does not itself accept a phase.
+
+
+@pytest.mark.parametrize('qualification', [
+    'Wait for my sign-off.',
+    'Approval from me is required.',
+    'Wait! For our sign off.',
+    'Pause; for the reviewer to signoff.',
+    'My sign-off: required.',
+    'Approval by the user\nis mandatory.',
+    'We need authorization from you.',
+    'The reviewer must sign off.',
+    'I have to approve first.',
+    'My approval is not required. Wait for the reviewer to sign off.',
+    '"Approval from me is required" is my condition.',
+    'Stop before Retro. My sign-off is required.',
+])
+def test_human_source_decision_refusal_preserves_control_store(tmp_path, qualification):
+    c, state = setup(tmp_path)
+    original = deepcopy(state)
+    exercise_nonconsent_policy(c, state, ['Auto-approve all phases. ' + qualification])
+    assert c.report()['revision'] == original['revision']
+    assert not c.report()['decisions']
+    assert state == original
+
+
+@pytest.mark.parametrize('qualification', [
+    'My sign-off is not required.',
+    'Approval from me is no longer needed.',
+    'You do not need my sign-off.',
+    'Do not wait for my sign-off.',
+])
+def test_unnecessary_human_decision_preserves_policy_and_named_stop(tmp_path, qualification):
+    c, state = setup(tmp_path)
+    request = authorization(state)
+    request['excerpt'] = 'Auto-approve all phases. ' + qualification + ' Stop before Product.'
+    request['stop_phases'] = ['product']
+    accepted = set_policy(c, state, request)
+    assert accepted['revision'] == state['revision'] + 1
+    assert accepted['approval_policy']['provenance']['excerpt'] == request['excerpt']
+    assert accepted['approval_policy']['stop_phases'] == ['product']
+    assert not accepted['decisions']
+    pending = submit(c, accepted)
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='human checkpoint'):
+        auto(c, pending)
+    assert c._path().read_bytes() == before
+
+
+class TestComposedHumanDecisionPolicy:
+    @pytest.mark.parametrize('qualification', [
+        'Approval from the human reviewer is required.',
+        'Approval from the project owner is required.',
+        'My sign-off will still be required.',
+        'The lead reviewer’s approval remains required.',
+        'Approval by our project owner will also be mandatory.',
+        'Required: approval from the human reviewer.',
+        'Our designated security reviewer must still sign off.',
+        'The human reviewer is still required to confirm.',
+        'My approval and the project owner\'s confirmation will be required.',
+        'Approval and sign-off from the lead reviewer are necessary.',
+        'My approval will not be required. The project owner must still sign off.',
+        'My approval is unnecessary but confirmation by our project owner is required.',
+        'Approval by our project owner is required; my sign-off is not necessary.',
+        'My approval is not required but is still mandatory.',
+        'My approval is not required and confirmation is still necessary.',
+        'Approval from the human reviewer is not only required.',
+        'Approval from the project owner is not always required.',
+        'Do not wait for my approval, which remains required.',
+        'Stop before Retro. Approval from our project owner will still be needed.',
+        '"Approval from the human reviewer is required" is my condition.',
+    ])
+    def test_refusal_preserves_store_bytes_and_revision(self, tmp_path, qualification):
+        c, state = setup(tmp_path)
+        request = authorization(state)
+        request['excerpt'] = 'Auto-approve all phases. ' + qualification
+        original = deepcopy(request)
+        before = c._path().read_bytes()
+        with pytest.raises(w.Refusal) as exc:
+            set_policy(c, state, request)
+        assert exc.value.reason == 'approval_required'
+        assert c._path().read_bytes() == before
+        assert c.report()['revision'] == state['revision']
+        assert not c.report().get('approval_policy')
+        assert not c.report()['decisions']
+        assert request == original
+
+    @pytest.mark.parametrize('qualification', [
+        'My sign-off is still not required.',
+        'Approval from the human reviewer will not be required.',
+        'Approval by our project owner will no longer be mandatory.',
+        'The lead reviewer’s approval is unnecessary.',
+        'My approval and the human reviewer\'s confirmation are not needed.',
+        'My approval is not required and confirmation is also not necessary.',
+        'Not required: approval from the human reviewer.',
+        'The human reviewer does not need to confirm.',
+        'Our project owner need not sign off.',
+    ])
+    def test_unnecessary_decisions_keep_provenance(self, tmp_path, qualification):
+        c, state = setup(tmp_path)
+        request = authorization(state)
+        request['excerpt'] = 'Auto-approve all phases. ' + qualification
+        accepted = set_policy(c, state, request)
+        assert accepted['revision'] == state['revision'] + 1
+        assert accepted['approval_policy']['mode'] == 'autonomous'
+        assert accepted['approval_policy']['provenance']['excerpt'] == request['excerpt']
+        assert accepted['approval_policy']['provenance']['source'] == request['source']
+        assert not accepted['decisions']
+
+
+class TestCompleteDecisionPolicy:
+    @pytest.mark.parametrize('qualification', [
+        'My approvals remain mandatory.', 'Our confirmations are required.',
+        'Human sign-offs are required.', 'All human authorizations are compulsory.',
+        'My permission is required.', 'My acceptance is required.',
+        'My approval is not required. Tests pass, but it remains mandatory.',
+        'My approval is not required. Stop before Retro, though it remains necessary.',
+        'My approval is not required. Checks require it.',
+        'My approval is not required, yet confirmation remains mandatory.',
+        'Approval by our lead reviewer will, however, still be required.',
+        'Approval by our lead reviewer will (however) still be required.',
+        'Approval by our lead reviewer will — however — still be required.',
+        'Approval by our lead reviewer is, as always, necessary.',
+        'Approval remains compulsory.', 'Approval from Jane is essential.',
+        'My approval is optional; consent is still compulsory.',
+        'My approval is not required. Nevertheless, confirmation remains mandatory.',
+        'My approval is not required, but the release captain must approve.',
+        'My approval is not required except for launch.',
+        'My approval is not required for tests but required for delivery.',
+        'My approval is optional today but mandatory tomorrow.',
+        'My approval is not required. It remains my prerogative.',
+        'I reserve final approval.', 'You must obtain approval.',
+        'Approval from the change board is required.',
+        'Approval will always be my responsibility.',
+        'My approval is not (always) required.',
+        'My approval is (not only) required.',
+        'My approval is not required and not unnecessary.',
+        'It is not true that my approval is not required.',
+        'My approval is optional. Checks pass. It is mandatory.',
+        'Do not wait for my approval except for launch.',
+        'Remove exact word expectation for phase approval, which remains required.',
+        '"Remove exact word expectation for phase approval" is required; approval remains compulsory.',
+    ])
+    def test_refusal_is_atomic_at_controller_boundary(self, tmp_path, qualification):
+        c, state = setup(tmp_path)
+        request = authorization(state)
+        request['excerpt'] = 'Auto-approve all phases. ' + qualification
+        original = deepcopy(request)
+        before = c._path().read_bytes()
+        with pytest.raises(w.Refusal) as exc:
+            set_policy(c, state, request)
+        assert exc.value.reason == 'approval_required'
+        assert c._path().read_bytes() == before
+        assert c.report()['revision'] == state['revision'] == 0
+        assert not c.report().get('approval_policy')
+        assert not c.report()['decisions']
+        assert request == original
+
+    @pytest.mark.parametrize('qualification', [
+        'My approval is (still) not required.',
+        'My approval is not required yet is not mandatory.',
+        'My approval is unnecessary; it is also optional.',
+        'My approval is not required, however confirmation is not necessary.',
+        'Confirmation is not required and approval from the project owner is optional.',
+    ])
+    def test_complete_unnecessary_clauses_preserve_policy_provenance(self, tmp_path, qualification):
+        c, state = setup(tmp_path)
+        request = authorization(state)
+        request['excerpt'] = 'Auto-approve all phases. ' + qualification + ' Stop before Retro.'
+        request['stop_phases'] = ['retro']
+        accepted = set_policy(c, state, request)
+        assert accepted['revision'] == state['revision'] + 1
+        assert accepted['approval_policy']['mode'] == 'autonomous'
+        assert accepted['approval_policy']['stop_phases'] == ['retro']
+        assert accepted['approval_policy']['provenance']['excerpt'] == request['excerpt']
+        assert accepted['approval_policy']['provenance']['source'] == request['source']
+        assert not accepted['decisions']
+
+
+class TestEveryDirectivePolicy:
+    @pytest.mark.parametrize('directive', [
+        'Wait for my go-ahead.', 'Hold for my OK.', 'Pause for me to say yes.',
+        'Proceed only on my green light.', 'Pause for my decision.',
+        'Hold for instructions from me.',
+        'Await the final decision from the release owner.',
+        'You need to ask me first.', 'Wait for the human reviewer.',
+        'Stop for my go-ahead.', 'Do not proceed without my OK.',
+    ])
+    def test_independent_evaluation_reproductions(self, tmp_path, directive):
+        self.assert_atomic_refusal(tmp_path, 'Auto-approve all phases. ' + directive)
+
+    @pytest.mark.parametrize('directive', [
+        'Await the release captain\'s semaphore.', 'The amber lantern must glow.',
+        'Respect the quux protocol.', 'Zyxwvu frobnicator.', '\u2603',
+    ])
+    @pytest.mark.parametrize('template', [
+        '{} Auto-approve all phases.',
+        'Auto-approve all phases. {} Run an autonomous workflow.',
+        'Auto-approve all phases. {}',
+    ])
+    def test_unknown_directive_order_is_atomic(self, tmp_path, directive, template):
+        self.assert_atomic_refusal(tmp_path, template.format(directive))
+
+    @pytest.mark.parametrize('clause', [
+        'Auto-approve all phases',
+        'Start a full auto-approved workflow through Retro',
+        'proceed with end to end auto-approved flow to fix all',
+        'Proceed with fixes with end to end auto-approved flow',
+        'run all release phases automatically through Retro',
+        'Run a full workflow with auto approval',
+        'Auto-approve all phases after required checks pass',
+        'Required checks must pass', 'Stop before Retro', 'Pause at Engineering',
+        'My approval is not required', 'Do not wait for my sign-off',
+        'Remove exact word expectation for phase approval',
+        'Use taskplane to implement the settings page',
+        'We need to address and resolve all the issues',
+        'Additionally run security lens and include its findings into the scope',
+        'Now I need to run auto-approved full workflow which should resolve untracked token usage',
+    ])
+    @pytest.mark.parametrize('tail', [
+        ', but await the lantern', ': await the lantern', '. Await the lantern',
+        ' (await the lantern)', 'xyz',
+    ])
+    def test_allowed_clause_tails_are_atomic(self, tmp_path, clause, tail):
+        self.assert_atomic_refusal(tmp_path, 'Auto-approve all phases. ' + clause + tail + '.')
+
+    @staticmethod
+    def assert_atomic_refusal(tmp_path, excerpt):
+        c, state = setup(tmp_path)
+        request = authorization(state)
+        request['excerpt'] = excerpt
+        original = deepcopy(request)
+        before = c._path().read_bytes()
+        with pytest.raises(w.Refusal) as exc:
+            set_policy(c, state, request)
+        assert exc.value.reason == 'approval_required'
+        assert c._path().read_bytes() == before
+        assert c.report()['revision'] == state['revision'] == 0
+        assert not c.report().get('approval_policy')
+        assert not c.report()['decisions']
+        assert request == original
