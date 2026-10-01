@@ -11,6 +11,9 @@ from taskplane import dashboard, flow_dashboard, flow_telemetry as telemetry, fl
 from taskplane import primitives, snapshot_retention as snapshots, workflow as w
 from taskplane import workflow_retention, workspace_binding
 
+requires_collection = pytest.mark.skipif(
+    not snapshots.supports_collection(), reason="Snapshot deletion requires descriptor-relative no-follow operations")
+
 
 def counts(value):
     return dict(input_tokens=value, cached_input_tokens=0, uncached_input_tokens=value,
@@ -108,6 +111,7 @@ def test_inventory_observation_does_not_recursively_defeat_dedup(tmp_path):
     assert snapshots.content_key(first) != snapshots.content_key(other)
 
 
+@requires_collection
 def test_hundreds_of_transients_obey_store_wide_pair_and_byte_bounds(tmp_path, monkeypatch):
     monkeypatch.setattr(snapshots, "LEASE_SECONDS", 0)
     monkeypatch.setattr(snapshots, "MAX_PAIRS", 8)
@@ -120,6 +124,7 @@ def test_hundreds_of_transients_obey_store_wide_pair_and_byte_bounds(tmp_path, m
     assert len(list((tmp_path / ".taskplane").glob("snapshot-*.html"))) == len(pairs)
 
 
+@requires_collection
 def test_pinned_selected_legacy_and_leased_pairs_survive(tmp_path):
     pinned = publish(tmp_path, 1, detached=True)
     snapshots.pin(tmp_path, pinned, "presentation:checkpoint")
@@ -137,6 +142,7 @@ def test_pinned_selected_legacy_and_leased_pairs_survive(tmp_path):
     assert legacy.with_suffix(".html").read_text() == "historical"
 
 
+@requires_collection
 def test_context_reference_becomes_a_permanent_pin(tmp_path):
     target = publish(tmp_path, detached=True)
     context = tmp_path / ".taskplane" / "context-v1" / "objects"
@@ -172,6 +178,7 @@ def test_corrupt_catalog_and_failed_catalog_commit_never_delete(tmp_path, monkey
     assert target.exists()
 
 
+@requires_collection
 def test_partial_deletion_intent_recovers_only_owned_garbage(tmp_path, monkeypatch):
     target = publish(tmp_path, detached=True)
     original = snapshots.os.unlink
@@ -233,7 +240,46 @@ def test_selection_order_and_latest_detached_active_view(tmp_path):
     first = publish(tmp_path, 1, run="active", active=True, detached=True)
     last = publish(tmp_path, 2, run="active", active=True, detached=True)
     snapshots.collect(tmp_path, max_pairs=0, max_bytes=0, now=time.time() + 1000)
-    assert not first.exists() and last.exists()
+    assert first.exists() is (not snapshots.supports_collection())
+    assert last.exists()
+
+
+def test_legacy_publication_reuses_and_pins_but_cannot_collect(tmp_path, monkeypatch):
+    monkeypatch.setattr(snapshots, "supports_collection", lambda: False)
+    first = publish(tmp_path, 1, detached=True)
+    original = first.read_bytes(), first.with_suffix(".json").read_bytes()
+    assert publish(tmp_path, 1, detached=True) == first
+    assert snapshots.pin(tmp_path, first, "presentation")["status"] == "pinned"
+    selected = publish(tmp_path, 2, select=True)
+    assert selected.name == "dashboard.html" and selected.read_text() == "<html>2</html>"
+    assert publish(tmp_path, 3, run="another").name != "dashboard.html"
+    assert selected.read_text() == "<html>2</html>"
+    result = snapshots.collect(tmp_path, max_pairs=0, max_bytes=0, now=time.time() + 1000)
+    assert result["status"] == "skipped" and result["removed_pairs"] == 0
+    assert "no-follow" in result["reason"]
+    assert (first.read_bytes(), first.with_suffix(".json").read_bytes()) == original
+    assert snapshots.inventory(tmp_path)["complete"]
+
+
+@pytest.mark.parametrize("linked", ["store", "pair", "lock"])
+def test_legacy_publication_rejects_links(tmp_path, monkeypatch, linked):
+    monkeypatch.setattr(snapshots, "supports_collection", lambda: False)
+    target = publish(tmp_path, detached=True)
+    store = tmp_path / ".taskplane"
+    original = {p.name: p.read_bytes() for p in store.iterdir()}
+    if linked == "store":
+        outside = tmp_path / "outside"
+        store.rename(outside)
+        store.symlink_to(outside, target_is_directory=True)
+    else:
+        target = target if linked == "pair" else store / (snapshots.CATALOG + ".lock")
+        outside = tmp_path / "outside"
+        target.rename(outside)
+        target.symlink_to(outside)
+    with pytest.raises(ValueError, match="ordinary"):
+        publish(tmp_path, detached=True)
+    actual = outside if linked == "store" else store
+    assert {p.name: p.read_bytes() for p in actual.iterdir()} == original
 
 
 def test_inventory_is_read_only_bounded_and_counts_nested_legacy_and_hardlinks(tmp_path):

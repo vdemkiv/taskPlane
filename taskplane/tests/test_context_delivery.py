@@ -366,6 +366,8 @@ import sys
 import tempfile
 from typing import Any
 
+import pytest
+
 from taskplane import depgraph, flow, workflow as w, workflow_host as h, workflow_local as local
 from taskplane.context import Store, encode, digest
 from taskplane.context_handoff import Session
@@ -616,7 +618,11 @@ def test_review_fixture_transport_and_oracle(tmp_path):
     assert result['quality']['known_blocker_retained']
 
 
-def test_delivery_fixture_has_seven_receipts_and_gates(tmp_path):
+@pytest.mark.parametrize("portable_snapshots", [False, True])
+def test_delivery_fixture_has_seven_receipts_and_gates(tmp_path, monkeypatch, portable_snapshots):
+    if portable_snapshots:
+        from taskplane import snapshot_retention
+        monkeypatch.setattr(snapshot_retention, "supports_collection", lambda: False)
     result = delivery(tmp_path)
     assert result['quality']['human_gates'] == 7 and result['compact_report_bytes'] <= 16384
 

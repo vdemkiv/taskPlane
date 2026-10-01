@@ -2,6 +2,8 @@
 
 Only pairs created by this catalog can be collected. No controller APIs are
 called, and a caller must not hold a controller lock while invoking this module.
+Legacy local hosts can publish observations with ordinary atomic file operations;
+collection requires descriptor-relative no-follow operations on every host.
 """
 from __future__ import annotations
 
@@ -42,11 +44,39 @@ def _root(workspace: str | Path) -> Path:
     return validate_workspace_root(workspace).resolve() / ".taskplane"
 
 
+def supports_collection() -> bool:
+    return (hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY")
+            and os.open in os.supports_dir_fd)
+
+
+def _ordinary(path: Path, *, directory: bool = False) -> os.stat_result:
+    info = path.lstat()
+    reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if reparse or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+        raise ValueError("Snapshot path must be an ordinary " + ("directory" if directory else "file"))
+    return info
+
+
+def _path_identity(path: Path) -> tuple[tuple[int, int], ...]:
+    return tuple((info.st_dev, info.st_ino) for part in (*reversed(path.parents), path)
+                 for info in [_ordinary(part, directory=True)])
+
+
 @contextmanager
-def _directory(path: Path) -> Iterator[int]:
-    """Pin all path components; never follow a link during later mutation."""
-    if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
-        raise ValueError("Snapshot mutation requires no-follow directory operations")
+def _directory(path: Path, *, strict: bool = False) -> Iterator[int | Path]:
+    """Anchor POSIX I/O; retain the legacy local publication path on Windows.
+
+    Path checks detect ordinary links and directory changes, but are not a
+    substitute for descriptor-relative deletion or strict workspace binding.
+    """
+    if not supports_collection():
+        if strict:
+            raise ValueError("Snapshot collection requires no-follow directory operations")
+        identity = _path_identity(path)
+        yield path
+        if _path_identity(path) != identity:
+            raise ValueError("Snapshot directory changed during observation")
+        return
     fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for part in path.parts[1:]:
@@ -58,10 +88,18 @@ def _directory(path: Path) -> Iterator[int]:
         os.close(fd)
 
 
-def _read(fd: int, name: str, limit: int = MAX_FILE_BYTES) -> bytes:
-    child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+def _read(fd: int | Path, name: str, limit: int = MAX_FILE_BYTES) -> bytes:
+    expected = None
+    if isinstance(fd, Path):
+        _path_identity(fd)
+        expected = _ordinary(fd / name)
+        child = os.open(fd / name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    else:
+        child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
     with os.fdopen(child, "rb") as stream:
         before = os.fstat(stream.fileno())
+        if expected and (expected.st_dev, expected.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("Snapshot input changed while opening")
         if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
             raise ValueError("Snapshot input is not a bounded ordinary file")
         raw = stream.read(limit + 1)
@@ -72,7 +110,30 @@ def _read(fd: int, name: str, limit: int = MAX_FILE_BYTES) -> bytes:
         return raw
 
 
-def _write(fd: int, name: str, raw: bytes, *, exclusive: bool = False) -> None:
+def _write(fd: int | Path, name: str, raw: bytes, *, exclusive: bool = False) -> None:
+    if isinstance(fd, Path):
+        identity = _path_identity(fd)
+        target = fd / name
+        try:
+            _ordinary(target)
+        except FileNotFoundError:
+            pass
+        temporary_path = fd / (".snapshot-write-" + uuid.uuid4().hex)
+        try:
+            with temporary_path.open("xb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if _path_identity(fd) != identity:
+                raise ValueError("Snapshot directory changed during publication")
+            if exclusive:
+                os.link(temporary_path, target)
+            else:
+                os.replace(temporary_path, target)
+            primitives._fsync_directory(str(fd))
+        finally:
+            temporary_path.unlink(missing_ok=True)
+        return
     temporary = ".snapshot-write-" + uuid.uuid4().hex
     child = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
     try:
@@ -101,8 +162,16 @@ def _write(fd: int, name: str, raw: bytes, *, exclusive: bool = False) -> None:
 
 
 @contextmanager
-def _locked(root: Path) -> Iterator[int]:
-    with _directory(root) as fd:
+def _locked(root: Path, *, strict: bool = False) -> Iterator[int | Path]:
+    with _directory(root, strict=strict) as fd:
+        if isinstance(fd, Path):
+            try:
+                _ordinary(root / (CATALOG + ".lock"))
+            except FileNotFoundError:
+                pass
+            with primitives.file_lock(str(root / CATALOG)):
+                yield fd
+            return
         child = os.open(CATALOG + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
                         0o600, dir_fd=fd)
         with os.fdopen(child, "a+b") as stream:
@@ -115,7 +184,7 @@ def _locked(root: Path) -> Iterator[int]:
                 primitives.unlock_file(stream)
 
 
-def _catalog(fd: int, root: Path) -> dict[str, Any]:
+def _catalog(fd: int | Path, root: Path) -> dict[str, Any]:
     try:
         value = json.loads(_read(fd, CATALOG))
     except FileNotFoundError:
@@ -139,7 +208,7 @@ def _catalog(fd: int, root: Path) -> dict[str, Any]:
     return value
 
 
-def _save(fd: int, value: dict[str, Any]) -> None:
+def _save(fd: int | Path, value: dict[str, Any]) -> None:
     _write(fd, CATALOG, primitives.canonical_bytes(value, trailing_newline=True))
 
 
@@ -160,7 +229,7 @@ def content_key(model: dict[str, Any]) -> str:
     return primitives.content_fingerprint(value)
 
 
-def _verified(fd: int, item: dict[str, Any], *, absent: bool = False) -> bool:
+def _verified(fd: int | Path, item: dict[str, Any], *, absent: bool = False) -> bool:
     for name, expected in item["files"].items():
         try:
             raw = _read(fd, name)
@@ -216,12 +285,12 @@ def _scan(root: Path, *, references: bool = False, max_entries: int = MAX_SCAN_E
         if len(result["errors"]) < 16:
             result["errors"].append(detail)
 
-    def visit(fd: int, prefix: str, depth: int) -> None:
+    def visit(fd: int | Path, prefix: str, depth: int) -> None:
         nonlocal consumed
         if depth > max_depth:
             error("depth_limit")
             return
-        before = os.fstat(fd)
+        before = _ordinary(fd, directory=True) if isinstance(fd, Path) else os.fstat(fd)
         try:
             with os.scandir(fd) as entries:
                 for entry in entries:
@@ -231,7 +300,13 @@ def _scan(root: Path, *, references: bool = False, max_entries: int = MAX_SCAN_E
                     relative = prefix + entry.name
                     result["entries"] += 1
                     info = entry.stat(follow_symlinks=False)
-                    if stat.S_ISDIR(info.st_mode):
+                    if getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+                        error("link_or_special_file:" + relative)
+                    elif stat.S_ISDIR(info.st_mode) and isinstance(fd, Path):
+                        with _directory(fd / entry.name) as child_path:
+                            visit(child_path, relative + "/", depth + 1)
+                    elif stat.S_ISDIR(info.st_mode):
+                        assert isinstance(fd, int)
                         child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
                         try:
                             if os.fstat(child).st_ino != info.st_ino:
@@ -280,7 +355,7 @@ def _scan(root: Path, *, references: bool = False, max_entries: int = MAX_SCAN_E
                         error("link_or_special_file:" + relative)
         except (OSError, ValueError) as exc:
             error(type(exc).__name__ + ":" + prefix)
-        after = os.fstat(fd)
+        after = _ordinary(fd, directory=True) if isinstance(fd, Path) else os.fstat(fd)
         if before.st_mtime_ns != after.st_mtime_ns:
             error("directory_changed:" + prefix)
 
@@ -331,10 +406,12 @@ def inventory(workspace: str | Path, *, max_entries: int = MAX_SCAN_ENTRIES,
     return value
 
 
-def _collect(fd: int, root: Path, catalog: dict[str, Any], before: dict[str, Any],
+def _collect(fd: int | Path, root: Path, catalog: dict[str, Any], before: dict[str, Any],
              *, max_pairs: int, max_bytes: int, now: float) -> dict[str, Any]:
-    current = _scan(root, references=True)
     result: dict[str, Any] = {"at": _now(), "status": "skipped", "removed_pairs": 0, "removed_bytes": 0}
+    if isinstance(fd, Path):
+        return {**result, "reason": "Snapshot collection requires no-follow directory operations"}
+    current = _scan(root, references=True)
     if not before["complete"] or not current["complete"] or before["fingerprint"] != current["fingerprint"]:
         result["reason"] = "reference inventory incomplete or changed"
         return result
@@ -395,7 +472,7 @@ def collect(workspace: str | Path, *, max_pairs: int = MAX_PAIRS, max_bytes: int
     root = _root(workspace)
     before = _scan(root, references=True)
     try:
-        with _locked(root) as fd:
+        with _locked(root, strict=True) as fd:
             catalog = _catalog(fd, root)
             result = _collect(fd, root, catalog, before, max_pairs=max(0, max_pairs),
                               max_bytes=max(0, max_bytes), now=time.time() if now is None else now)

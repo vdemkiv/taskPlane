@@ -105,6 +105,10 @@ no-follow support. Standard Windows Python lacks these primitives: selected or
 bound workspaces refuse before writing state. Existing unbound local workflows
 remain supported. Windows CI checks that refusal and legacy behavior; successful
 binding and relocation fixtures run only where these primitives are available.
+Dashboard publication, immutable usage observations and presentation pins remain
+available in unbound local workflows on Windows. Snapshot garbage collection
+requires descriptor-relative no-follow operations; it reports a skipped result
+and preserves all snapshots when those operations are unavailable.
 
 No live Cowork certification is claimed. Claude fixtures must use Claude-shaped
 `session_id` and `Bash.command` events and assert the selected adapter; Codex-shaped
