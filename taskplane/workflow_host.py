@@ -406,7 +406,9 @@ class Controller:
         target = self._path()
         with primitives.file_lock(str(target)):
             authorized = None
-            if not self.adapter.state_exists():
+            if not (cast(workflow_local.LocalWorkflow, self.adapter).state_exists(allow_pending=True)
+                    if self.adapter.profile == "native_workflow"
+                    else self.adapter.state_exists()):
                 w.require(not request.get("replace_run"), "state_unavailable",
                           "No initialized run exists to replace.")
                 authorized = self.adapter.verify_start(self.workspace, self.root, request)
@@ -438,7 +440,7 @@ class Controller:
                               and active["scope"] == request.get("scope"),
                               "stale_checkpoint", "Conflicting run replacement retry.")
                     self._check_start_tasks(active, request)
-                    return deepcopy(active)
+                    return self._started_result(active)
                 w.require(db["active"] == replace_run and previous["revision"] == revision,
                           "stale_checkpoint", "The run or revision selected for replacement changed.")
                 w.require(self.adapter.can_seal(previous), "scope_violation",
@@ -452,7 +454,7 @@ class Controller:
                           "approval_required", "Another run is active. To start a new scope, explicitly use "
                           "--replace-run and --expected-revision with the new user request reference.")
                 self._check_start_tasks(active, request)
-                return deepcopy(active)
+                return self._started_result(active)
             authorized = authorized or self.adapter.verify_start(self.workspace, self.root, request)
             evidence.valid_scope(self.workspace, authorized["scope"])
             s = w.new_state(str(self.workspace), self.root, uuid.uuid4().hex, authorized["scope"],
@@ -477,7 +479,20 @@ class Controller:
             db["runs"][s["run"]] = s
             db["active"] = s["run"]
             self._write(target, db)
-            return deepcopy(s)
+            return self._started_result(s)
+
+    def _started_result(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Bind setup observations under the store lock after the run is durable."""
+        result = deepcopy(state)
+        if self.adapter.profile == "native_workflow":
+            try:
+                workflow_local.Harness(self.workspace, self.root).bind(state)
+            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                # Initial handles are already in the committed run. Keep the
+                # original setup observations for a binding retry, and report
+                # the committed result so callers can close the old interval.
+                result["start_observation_errors"] = ["Run started; harness binding observation unavailable."]
+        return result
 
     def report(self, run: str | None = None) -> dict[str, Any]:
         if not self.availability()["workflow_available"]:
@@ -819,10 +834,23 @@ class Controller:
             workers.current(state, matches[0])
             return actor
 
-    def observe(self, event: dict[str, Any], run: str) -> None:
+    def observe(self, event: dict[str, Any], run: str | None) -> str | None:
         target = self._path()
         with primitives.file_lock(str(target)):
+            if run is None:
+                # Startup and observation use store -> harness order. Recheck the
+                # binding here: a pre-run report may predate start's transfer.
+                w.require(self.adapter.profile == "native_workflow" and self.principal == self.root,
+                          "scope_violation", "Setup observation requires the native root.")
+                if not cast(workflow_local.LocalWorkflow, self.adapter).state_exists(allow_pending=True):
+                    workflow_local.Harness(self.workspace, self.root).observe_setup(event)
+                    return None
             db = self._read(target)
+            if run is None:
+                run = db["active"]
+                if run is None:
+                    workflow_local.Harness(self.workspace, self.root).observe_setup(event)
+                    return None
             w.require(db["active"] == run, "state_unavailable", "Observation has no active workflow binding.")
             state = deepcopy(db["runs"][run])
             from . import worker_runtime as workers
@@ -832,6 +860,7 @@ class Controller:
             if state != db["runs"][run]:
                 db["runs"][run] = state
                 self._write(target, db)
+            return run
 
     def guard(self, event: dict[str, Any], run: str) -> None:
         state = self.report(run)
@@ -909,7 +938,12 @@ class Controller:
 
     def complete_admission(self, event: dict[str, Any]) -> dict[str, Any] | None:
         call = self._call(event)
-        if call is None or not self.adapter.state_exists():
+        if call is None:
+            return None
+        # A resumable first start has setup handles but no admission store yet.
+        # Validate its pending transaction without mistaking it for corruption.
+        if not (cast(workflow_local.LocalWorkflow, self.adapter).state_exists(allow_pending=True)
+                if self.adapter.profile == "native_workflow" else self.adapter.state_exists()):
             return None
         key, identity = call
         target = self._path()
@@ -949,6 +983,25 @@ class Controller:
         tool = event.get("tool_name") or event.get("tool")
         args = event.get("tool_input", {})
         w.require(isinstance(args, dict), "scope_violation", "Unrecognized tool arguments.")
+        if self.adapter.profile == "native_workflow" and tool in {"Bash", "exec_command"}:
+            words = workflow_local.runtime_words(event)
+            from . import runtime_command
+            try:
+                cwd = runtime_command.validate_workdir(words, event, self.workspace)
+            except ValueError as exc:
+                raise w.Refusal("scope_violation", str(exc)) from None
+            mismatch = runtime_command.collision(words, cwd)
+            w.require(not mismatch, "scope_violation", mismatch or "")
+            if runtime_command.installed(words, cwd):
+                try:
+                    selected = runtime_command.workspace_selector(words[2:])
+                    if selected is not None:
+                        w.require(runtime_command.resolve_selection(selected, event, self.workspace) == self.workspace
+                                  or self.principal == self.root and
+                                  workflow_local.Harness(self.workspace, self.root).recovery_setup(event, state),
+                                  "scope_violation", "Runtime command selects another workspace.")
+                except ValueError as exc:
+                    raise w.Refusal("scope_violation", str(exc)) from None
         worker = None
         if self.principal != self.root:
             worker = workers.find(state, self.principal)
@@ -964,6 +1017,15 @@ class Controller:
                                and words[words.index("--operation") + 1] == "claim"),
                           "scope_violation", "Worker control is limited to claim and task context.")
                 return
+            if tool == "write_stdin" and args.get("chars", "") in ("", "\x03"):
+                record = state.get("observed_handles", {}).get(str(args.get("session_id", "")), {})
+                if record.get("control"):
+                    workers.current(state, worker)
+                    w.require(worker["state"] in workers.LIVE, "scope_violation", "Worker control grant has ended.")
+                    w.require(record.get("worker_id") == self.principal, "scope_violation",
+                              "Worker input belongs to another principal.")
+                    self.adapter.guard_input(event, state)
+                    return  # Claim/context output can be drained before its receipt is complete.
             workers.current(state, worker)
             w.require(worker["state"] == "running" and worker.get("context_receipt"),
                       "invalid_context", "Worker must consume every required task input before execution.")
@@ -1003,6 +1065,8 @@ class Controller:
             if tool == "write_stdin" and args.get("chars", "") in ("", "\x03"):
                 record = state.get("observed_handles", {}).get(str(args.get("session_id", "")), {})
                 if record:
+                    w.require(not record.get("control") or record.get("worker_id") in (None, self.root),
+                              "scope_violation", "Control input belongs to another principal.")
                     self.adapter.guard_input(event, state)
                     return  # Drain known work across revisions without sending new code.
             if workflow_local.bootstrap_write(self.workspace, event, state):

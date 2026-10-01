@@ -15,10 +15,9 @@ import os
 from pathlib import Path
 import sys
 import stat
-import shutil
 import uuid
-from typing import Any, Callable
-from taskplane import workflow, workflow_host, workflow_local, depgraph, workspace_binding
+from typing import Any, Callable, cast
+from taskplane import workflow, workflow_host, workflow_local, depgraph, workspace_binding, runtime_command
 
 if __package__:
     from . import native_session_meter as _package_meter
@@ -285,12 +284,22 @@ def _controller(workspace: Path, root: str, profile: str = "native_workflow",
 def select_controller(workspace: Path, actor: str, parent: str | None, *,
                       profile: str = "native_workflow", event: dict[str, Any] | None = None,
                       legacy: dict[str, Any] | None = None,
-                      governor: workflow_host.Controller | None = None) -> tuple[workflow_host.Controller, dict[str, Any]]:
+                      governor: workflow_host.Controller | None = None,
+                      pending_start: bool = False) -> tuple[workflow_host.Controller, dict[str, Any]]:
     """Exact observed worker bindings outrank own runs; ordinary ancestry does not."""
+    def selected_report(controller: workflow_host.Controller) -> dict[str, Any]:
+        try:
+            return controller.report()
+        except workflow.Refusal:
+            if (pending_start and controller.adapter.profile == 'native_workflow'
+                    and controller.principal == controller.root
+                    and cast(workflow_local.LocalWorkflow, controller.adapter).pending_initialization()):
+                return {**controller.availability(), 'status': 'initialization_pending'}
+            raise
     if governor is not None:
-        return governor, governor.report()
+        return governor, selected_report(governor)
     own = _controller(workspace, actor, profile, event=event)
-    own_state = own.report()
+    own_state = selected_report(own)
     inherited = _controller(workspace, parent, profile, event=event, principal=actor) if parent and parent != actor else None
     inherited_state = inherited.report() if inherited else {}
     from .worker_runtime import find
@@ -695,9 +704,8 @@ def _workspace_admin(event: dict[str, Any]) -> bool:
     if event.get("parent_session_id") or event.get("agent_id") or event.get("subagent_id"):
         return False
     words = workflow_local.runtime_words(event)
-    if (len(words) < 4 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
-            or not Path(words[1]).is_absolute()
-            or Path(words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()
+    cwd = runtime_command.execution_directory(event, Path.cwd())
+    if (len(words) < 4 or not runtime_command.installed(words, cwd, absolute=True)
             or words[2] != 'workspace' or words[3] not in {'inspect', 'bind', 'recover'}):
         return False
     options = words[4:]
@@ -723,14 +731,16 @@ def _onboarding_read(event: dict[str, Any]) -> bool:
     if workflow_local.readonly_command(event):
         return True
     words = workflow_local.runtime_words(event)
+    cwd = runtime_command.execution_directory(event, Path.cwd())
+    if (runtime_command.installed(words, cwd, absolute=True)
+            and words[2:] in (['version', '--verify'], ['help', '--md'])):
+        return True
     # Compute the execution-side probe without admitting Python or shell scripts.
     # Host-side evidence must still be obtained independently by the caller.
     if ((words[:4] == ['shasum', '-a', '256', '--'] and len(words) == 5)
             or (words[:2] == ['sha256sum', '--'] and len(words) == 3)):
         return bool(words[-1] and words[-1] != '-')
-    if (len(words) < 4 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
-            or not Path(words[1]).is_absolute()
-            or Path(words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()
+    if (len(words) < 4 or not runtime_command.installed(words, cwd, absolute=True)
             or words[2:4] != ['flow', 'report']):
         return False
     options = words[4:]
@@ -748,8 +758,8 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
             or event.get("parent_session_id") or event.get("agent_id") or event.get("subagent_id")):
         return False
     words = workflow_local.runtime_words(event)
-    if (len(words) < 4 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
-            or not Path(words[1]).is_absolute() or Path(words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()
+    cwd = runtime_command.execution_directory(event, workspace)
+    if (len(words) < 4 or not runtime_command.installed(words, cwd, absolute=True)
             or words[2] != 'flow' or words[3] not in {'diagnose', 'recover'}):
         return False
     options = words[4:]
@@ -765,7 +775,7 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
     if any(not value or value.startswith('--') for value in values.values()):
         return False
     try:
-        return workspace_binding.resolve_workspace(values['--workspace'], event=event) == workspace
+        return runtime_command.resolve_selection(values['--workspace'], event, workspace) == workspace
     except (workflow.Refusal, OSError, ValueError):
         return False
 
@@ -779,6 +789,20 @@ def _hook(event: dict[str, Any], *,
         parent = observed_parent(event, session) or parent
     if parent:
         event['parent_session_id'] = parent
+    words = workflow_local.runtime_words(event)
+    cwd = runtime_command.execution_directory(event, Path.cwd())
+    if event.get('hook_event_name') == 'PreToolUse':
+        try:
+            runtime_command.validate_workdir(words, event, Path.cwd())
+        except ValueError as exc:
+            raise workflow.Refusal('scope_violation', str(exc)) from None
+        mismatch = runtime_command.collision(words, cwd)
+        workflow.require(not mismatch, 'scope_violation', mismatch or '')
+        if runtime_command.installed(words, cwd):
+            try:
+                runtime_command.workspace_selector(words[2:])
+            except ValueError as exc:
+                raise workflow.Refusal('scope_violation', str(exc)) from None
     if governor is None and _workspace_admin(event):
         return {}  # The administration command still validates proof and active-state recovery.
     try:
@@ -803,7 +827,9 @@ def _hook(event: dict[str, Any], *,
     legacy = active_run(rows, session, parent)
     try:
         controller, guarded = select_controller(workspace, session, parent, event=event,
-                                                legacy=legacy, governor=governor)
+                                                legacy=legacy, governor=governor, pending_start=(
+                                                    (runtime_command.installed(words, cwd) and words[2:4] == ["flow", "start"])
+                                                    or (event.get("tool_name") or event.get("tool")) == "write_stdin"))
     except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
         if ((not isinstance(exc, workflow.Refusal) or exc.reason == 'state_unavailable') and _state_admin(event, workspace)
                 and (governor is None or governor.adapter.profile == 'native_workflow'
@@ -825,10 +851,16 @@ def _hook(event: dict[str, Any], *,
             event["taskplane_admission"] = pair
     harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" and controller.principal == controller.root else None
     selected = workflow_local.execution_entry(event)
+    startup_observed = False
     if harness:
         harness.update(hook_observed=True)
         if name == "PostToolUse":
             harness.observe_recovery(event, guarded)
+            if not guarded.get("run"):
+                observed_run = controller.observe(event, None)
+                startup_observed = True
+                if observed_run:
+                    guarded = controller.report(observed_run)
         if selected and not guarded.get("run") and not workflow_local.execution_entry(event, allow_skill_read=False):
             # A passive reread is not a new user request. Check completion before
             # select() can erase the historical binding needed for cleanup.
@@ -848,6 +880,9 @@ def _hook(event: dict[str, Any], *,
             prior = controller.report(harness.read()["run"])
             if prior.get("finished"):
                 harness.update(selected=False, waiting=None)
+        if (guarded.get('status') == 'initialization_pending' and name == 'PreToolUse'
+                and (event.get('tool_name') or event.get('tool')) == 'write_stdin'):
+            harness.guard_setup_input(event)
         if name == "PreToolUse" and harness.read().get("selected"):
             if not guarded.get("run"):
                 harness.guard_bootstrap(event, guarded)
@@ -856,7 +891,8 @@ def _hook(event: dict[str, Any], *,
     # Protected state is checked independently of the deletable workspace journal.
     run = guarded.get("run") or (legacy or {}).get("run")
     if guarded.get("workflow_available") and guarded.get("run"):
-        controller.observe(event, str(run))
+        if not startup_observed:
+            controller.observe(event, str(run))
         guarded = controller.report(str(run))
         if name == "Stop" and not controller.adapter.can_seal(guarded):
             return {"systemMessage": "Taskplane is waiting for process quiescence before sealing. No phase has advanced; unknown host coverage remains explicit."}
@@ -1040,7 +1076,7 @@ def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = 
 def main(argv: list[str] | None = None, *, compact: bool = False,
          prepare: Callable[[str], dict[str, Any]] | None = None,
          governor: workflow_host.Controller | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
                                            "activate", "deactivate", "present", "wait", "diagnose", "recover", "inspect", "prevalidate", "context", "retire", "worker"])
@@ -1086,7 +1122,12 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--expected-sha256", help="Expected recovery copy SHA-256; recover only")
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
-    args = parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    try:
+        runtime_command.workspace_selector(arguments)
+    except ValueError as exc:
+        parser.error(str(exc))
+    args = parser.parse_args(arguments)
     if args.action != 'recover' and (args.recover_from is not None or args.expected_sha256 is not None):
         parser.error('recovery options apply only to flow recover')
     if args.task is not None and args.action not in {"context", "worker"}:
@@ -1155,7 +1196,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                         and (r.get("run") == args.run if args.run else r.get("session") == session)), None)
         parent = observed_parent({}, session)
         controller, protected = select_controller(workspace, session, parent, profile=args.profile,
-                                                  legacy=run, governor=governor)
+                                                  legacy=run, governor=governor, pending_start=args.action == "start")
         if governor is None and claude_session({}) and args.action == 'worker' and args.operation == 'claim':
             from .host_capabilities import native_invocation_identity
             invocation = native_invocation_identity('claude', workspace, list(sys.argv))
@@ -1274,6 +1315,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                                       "scope": scope, "request_reference": args.request_reference, "tasks": args.tasks,
                                       "replace_run": args.replace_run, "expected_revision": args.expected_revision})
             committed_state = state
+            observation_errors.extend(state.pop("start_observation_errors", []))
             if harness:
                 try:
                     if args.replace_run:

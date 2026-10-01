@@ -558,6 +558,8 @@ def test_restored_retired_controller_relocates_exact_history_without_approvals(t
     destination, bound, fresh, target, candidate, receipt = restored_relocation(
         tmp_path, approved=True, archived=archived, historical_live=historical_live)
     before = tree(destination / ".taskplane")
+    proofs = [json.loads(raw) for name, raw in before.items() if name.startswith("initialization-")]
+    assert len(proofs) == 1 and proofs[0]["status"] == "committed"
     historical = json.loads(before[candidate])
     run = historical["active"]
     assert historical["runs"][run]["decisions"]

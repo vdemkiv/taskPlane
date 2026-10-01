@@ -55,6 +55,30 @@ def test_decision_exact_replay_keeps_recording_time(tmp_path):
         decide(controller, state, conflict)
 
 
+@pytest.mark.parametrize("explicit", [False, True])
+def test_named_checkpoint_cannot_approve_another_checkpoint(tmp_path, explicit):
+    controller, state = setup(tmp_path)
+    state = submit(controller, state)
+    value = decision(state, text="Approved " + "0" * 32)
+    value["checkpoint_explicit"] = explicit
+    before = controller._path().read_bytes()
+    with pytest.raises(w.Refusal, match="different checkpoint"):
+        decide(controller, state, value)
+    assert controller._path().read_bytes() == before
+
+
+def test_named_checkpoint_does_not_hide_unclassified_approval_suffix(tmp_path):
+    controller, state = setup(tmp_path)
+    state = submit(controller, state)
+    value = decision(state, text="Approved " + w.binding(state, w.current(state)["packet"])["checkpoint"]
+                     + ". I need more time to deliberate.")
+    value.update(checkpoint_explicit=True, choice="approved")
+    before = controller._path().read_bytes()
+    with pytest.raises(w.Refusal, match="unclear"):
+        decide(controller, state, value)
+    assert controller._path().read_bytes() == before
+
+
 def event(workspace, call="call-1", **extra):
     return {"hook_event_name": "PreToolUse", "cwd": str(workspace), "session_id": "root",
             "tool_name": "Read", "tool_input": {"file_path": "product.json"},

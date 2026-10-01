@@ -873,3 +873,37 @@ The unconditional instruction “This is an auto-approved flow all the way” ca
 authorize an automatic policy. Conditional, deferred, negative, quoted or
 contradictory instructions still require clarification. Wording recognition alone
 does not approve any phase.
+
+### Exact runtime setup and interrupted initialization
+
+`flow` requires full long-option names and at most one exact `--workspace PATH` or
+`--workspace=PATH` selector. Covered setup hooks reject repeated or abbreviated
+workspace selectors, including graph setup, before admission. If `exec_command.workdir`
+differs from the hook cwd, use an absolute installed launcher and an explicit
+absolute workspace matching the selected project; omitted or relative selectors
+are refused. Interpreter identity (including relative executable paths and every
+relative or empty `PATH` entry), launcher identity and relative dashboard outputs
+follow the actual command workdir. Use an absolute verified Python interpreter to
+avoid directory-dependent lookup. An exact-looking Taskplane command with a
+different interpreter is refused before setup, diagnostics or ordinary command
+admission, including before workspace binding. Legacy direct graph
+and workspace parsers outside those hooks are not an approval boundary. A runtime
+collision reports the executing and requested launcher paths; select one installation
+in host settings and reload its skills/hooks. Foreign launchers remain refused.
+
+Before required workspace binding, the installed absolute launcher's exact
+`version --verify` and `help --md` commands are read-only discovery exceptions.
+Use `workspace bind --workspace PATH --request-json 'JSON_OBJECT'` to supply bounded
+inline binding evidence without an unbound file write. These exceptions do not admit
+arbitrary Python, shell scripts, child administration or structured pre-binding writes.
+
+First-store publication saves `initialization-<root-key>.json` transaction evidence before
+its marker/database boundary and marks it committed before accepting a run. Only a
+validated pending transaction bound to the exact empty store may resume on `flow start`.
+Read-only status reports pending setup and does not repair it. Established missing
+or corrupt history and legacy marker-only stores require explicit recovery.
+
+Exact setup/control command handles are recorded when the host reports them running,
+including before the first run. Empty stdin polls and Ctrl-C can drain those current
+handles across startup; executable input, terminal/foreign/stale handles are refused.
+Known running handles block sealing. Unobserved host processes remain unknown.
