@@ -11,6 +11,7 @@ import shlex
 from pathlib import Path
 import subprocess
 import sys
+import uuid
 import pytest
 from taskplane import depgraph, workflow as w
 from taskplane.tests.test_workflow_evidence import prepare
@@ -34,6 +35,8 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
         target.write_text(json.dumps(data))
     env={k:v for k,v in os.environ.items() if not k.startswith(
         ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
+    host_data=workspace.parent/(workspace.name+'-host-data')
+    env.update(CODEX_HOME=str(host_data/'codex'),CLAUDE_CONFIG_DIR=str(host_data/'claude'))
     env.update(environment or {})  # Explicit fixture observations only; no ambient session identity.
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
     env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
@@ -43,10 +46,11 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     python=['py','-3'] if os.name=='nt' else [sys.executable]
     argv=[*python,str(root/'taskplane/tp.py'),'flow',*args,'--full','--workspace',str(workspace)]
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
+    call_id = 'fixture-' + uuid.uuid4().hex
     def hook(name, **extra):
         identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
         tool,key=('Bash','command') if host=='claude' else ('exec_command','cmd')
-        event={'hook_event_name':name,'cwd':str(workspace),**identity,
+        event={'hook_event_name':name,'cwd':str(workspace),'tool_use_id':call_id,**identity,
                'tool_name':tool,'tool_input':{key:shlex.join(argv)},**extra}
         command=hooks[name][0]['hooks'][0]['commandWindows' if os.name=='nt' else 'command']
         result=subprocess.run(command,shell=True,cwd=workspace,env=env,input=json.dumps(event),
@@ -233,7 +237,13 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     result = cli(workspace,host,'submit','--output',target,'--tasks','tasks.json',
                  '--expected-revision',str(state['revision']),root=root,code=2)
     assert result['reason'] == 'state_unavailable' and 'size limit' in result['detail']
-    assert store.read_bytes() == before
+    def authority(raw):
+        value = json.loads(raw)
+        value.pop('admissions', None)
+        for state in value.get('runs', {}).values():
+            state.pop('parent_hook_readiness', None)
+        return value
+    assert authority(store.read_bytes()) == authority(before)
     resumed = cli(workspace,host,'report',root=root)['workflow']
     assert resumed['run'] == state['run'] and resumed['revision'] == state['revision']
     (workspace/target).write_bytes(small)
@@ -412,9 +422,11 @@ def test_phase_usage_reconciles_work_review_and_resume_without_double_counting()
     def measurement(value):
         native={'input_tokens':100+value,'cached_input_tokens':80,'uncached_input_tokens':20+value,
                 'output_tokens':10,'reasoning_tokens':2,'total_tokens':110+value}
-        return {'sessions':[{'session':'root','role':'orchestrator','status':'measured','native_usage':native}],
-                'tokens':{'input_tokens':value,'cached_input_tokens':0,'uncached_input_tokens':value,
-                          'output_tokens':0,'reasoning_tokens':0,'total_tokens':value},'token_coverage':{}}
+        usage={'input_tokens':value,'cached_input_tokens':0,'uncached_input_tokens':value,
+               'output_tokens':0,'reasoning_tokens':0,'total_tokens':value}
+        return {'sessions':[{'session':'root','role':'orchestrator','status':'measured',
+                             'native_usage':native,'usage':usage}],
+                'tokens':usage,'token_coverage':{}}
     points=[flow.usage_point(state,measurement(0))]
     state['revision']=1;state['visits'][0]['decision']='awaiting_human_approval'
     points.append(flow.usage_point(state,measurement(10),previous_revision=0))
@@ -662,7 +674,7 @@ def test_measurement_clock_distinguishes_coverage(tmp_path,monkeypatch,case):
     if case=='reset':sessions[0]['native_usage']={'total_tokens':1}
     if case=='unknown_time':sessions=[session('root','recorded; native counter unavailable',None)]
     flow.append(tmp_path,{'kind':'start','session':'root','run':state['run'],'phase':'product','at':state['started_at'],'usage':{'total_tokens':100},'hook_setup':'host_adapter'})
-    monkeypatch.setattr(flow.flow_usage,'reconcile',lambda *_:{'sessions':deepcopy(sessions),'tokens':{'total_tokens':30},'token_coverage':{'discovery_errors':1 if case=='discovery' else 0}})
+    monkeypatch.setattr(flow.flow_usage,'reconcile',lambda *_,**kw:{'sessions':deepcopy(sessions),'tokens':{'total_tokens':30},'token_coverage':{'discovery_errors':1 if case=='discovery' else 0}})
     result=flow.report(tmp_path,state['run'],governor=c)
     clock=result['usage_measurement']
     expected={'fresh':'fresh','recorded':'recorded','mixed':'mixed','missing':'unavailable','reset':'unavailable','unknown_time':'partial','discovery':'partial'}[case]
@@ -683,6 +695,8 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     default_prompt=prompt is None
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     env={k:v for k,v in os.environ.items() if not k.startswith(('CODEX_','CLAUDE_','TASKPLANE_','PLUGIN_ROOT'))}
+    host_data=workspace.parent/(workspace.name+'-host-data')
+    env.update(CODEX_HOME=str(host_data/'codex'),CLAUDE_CONFIG_DIR=str(host_data/'claude'))
     env.update(PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
     bash=shutil.which('bash')
     if os.name == 'nt':

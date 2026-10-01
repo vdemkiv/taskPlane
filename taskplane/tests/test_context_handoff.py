@@ -301,6 +301,12 @@ def test_drain_returns_all_required_pages_once_with_combined_budget(tmp_path, co
                 context_budget_bytes=1024 * 1024)
     state['scope']['paths']['design'] = ['design.json']
     state['task_context'] = {'visit': w.current(state)['id'], 'tasks': [task]}
+    # Pure pagination fixture; this input is not live host readiness evidence.
+    from taskplane.host_capabilities import runtime_identity
+    from taskplane.context_handoff import binding
+    state['parent_hook_readiness'] = dict(binding=binding(state), workspace=state['workspace'],
+        root=state['root'], runtime=runtime_identity(), matched_call='fixture/parent-pair',
+        reference='fixture/pagination', admitted=True, automatic=True)
     grant = worker_runtime.prepare(tmp_path, state, 'LARGE',
         {'capacity': {'host_slots': 2, 'includes_root': True, 'reference': 'fixture'}})
     assert grant['context_preflight']['required_roots'] == count + 2

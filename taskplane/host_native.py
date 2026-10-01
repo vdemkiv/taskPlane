@@ -83,6 +83,33 @@ class NativeSession:
         w.require(isinstance(reference, str) and 0 < len(reference) <= 2048 and "\0" not in reference,
                   "unsupported_authority", "An opaque native event reference is required.")
 
+    def verify_invocation(self, reference: str, argv: list[str]) -> dict[str, Any]:
+        """Resolve an exact pending invocation only through the host-owned boundary.
+
+        The installed local profile has no owner for this channel. No environment
+        variable or transcript command-text search substitutes for that owner.
+        """
+        self._reference(reference)
+        w.require(isinstance(argv, list) and bool(argv)
+                  and all(isinstance(arg, str) and '\0' not in arg for arg in argv),
+                  'unsupported_authority', 'Native invocation argv is invalid.')
+        try:
+            value = self.owner.read_event(reference)
+        except (OSError, KeyError, TypeError, ValueError):
+            raise w.Refusal('unsupported_authority', 'Native invocation reference is unavailable.') from None
+        w.require(isinstance(value, Mapping) and value.get('reference') == reference
+                  and value.get('session') == self.binding and value.get('kind') == 'tool_invocation'
+                  and value.get('automatic') is True and value.get('resolved') is True
+                  and value.get('pending') is True and value.get('argv') == argv
+                  and isinstance(value.get('call_id'), str) and 0 < len(value['call_id']) <= 512
+                  and isinstance(value.get('principal'), str) and 0 < len(value['principal']) <= 200
+                  and value.get('hook_principal') == value.get('principal'),
+                  'unsupported_authority', 'Native invocation lacks an exact automatic actor and pending call.')
+        self.require_current()
+        return {'root': self.binding['root'], 'workspace': str(self.workspace),
+                'principal': value['principal'], 'call_id': value['call_id'], 'reference': reference,
+                'argv_sha256': primitives.content_fingerprint(argv), 'assurance': 'host_owned'}
+
     def verify_decision(self, reference: str, expected: dict[str, Any], *,
                         prior_decisions: Mapping[str, Any] | None = None) -> dict[str, Any]:
         self._reference(reference)

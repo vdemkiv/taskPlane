@@ -846,3 +846,30 @@ the dashboard. Delivered bytes, native tokens and Codex allowance are different
 measurements; no allowance saving can be inferred from byte counts alone.
 
 `flow context --drain HANDOFF_SHA` is mutually exclusive with consume/read/read-required. It returns schema `taskplane.context-drain/v1`, pages, receipt, remaining_required, done and next_action (null on completion). Required preflight budgets count unique serialized body bytes; page and receipt overhead is reported separately by actual delivery.
+
+## Bounded checkpoint recovery
+
+`flow prevalidate --workspace PATH --run RUN --expected-revision N --output PACKET
+--tasks TASKS` validates the current packet through the submission validator. It
+returns diagnostics and an input digest without allocating a checkpoint or
+changing controller, receipt or dashboard state. Success is not approval; submit
+revalidates under the controller lock. Packet JSON is bounded before parsing.
+
+`flow inspect --workspace PATH --run RUN --kind contract --reference cli-reference
+--offset 0 --limit 32768` reads a bounded slice of this runtime's CLI contract.
+`shared-flow` selects its delivery contract. The offset and limit count bytes;
+the limit is at most 32 KiB. Arbitrary paths and symlinks are refused.
+`--kind result --reference SHA256` reads a registered, reachable immutable result
+node for that run. A digest does not grant access to another run's result. These
+operations remain available while a checkpoint is sealed or stale.
+
+New observed approvals preserve their actual source reference and timestamp.
+Recording requires run start ≤ checkpoint submission ≤ response ≤ recording;
+brief responses also require submission ≤ presentation < response. Naming the
+checkpoint explicitly removes only the presentation requirement. Unknown legacy
+chronology stays unverified. Exact replay retains the original recording time.
+
+The unconditional instruction “This is an auto-approved flow all the way” can
+authorize an automatic policy. Conditional, deferred, negative, quoted or
+contradictory instructions still require clarification. Wording recognition alone
+does not approve any phase.

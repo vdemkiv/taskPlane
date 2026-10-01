@@ -247,6 +247,7 @@ def affirmative_consent(excerpt: str) -> bool:
     fixes_workflow = (request + r'proceed with fixes with\s+(?:an?\s+|the\s+)?'
                       r'(?:end[ -]to[ -]end\s+)?auto[ -]?approved\s+(?:workflow|flow)')
     automatic_phases = request + r'(?:run|execute)\s+(?:all\s+)?(?:release\s+)?phases\s+automatically'
+    declarative = r'this is\s+(?:an?\s+)?auto[ -]?approved\s+(?:flow|workflow|run)(?:\s+all the way)?'
     # The existing document-input request has a bounded object, never a wildcard
     # capable of swallowing a human condition embedded in a technical description.
     document_input = r'(?:use 36-hour audit and retrospective document as (?:an? )?input and\s+)?'
@@ -261,7 +262,7 @@ def affirmative_consent(excerpt: str) -> bool:
     through = r'(?:\s+through\s+' + phase + r')?'
     condition = r'(?:\s+after\s+' + check + r')?'
     purpose = r'(?:\s+(?:to fix all|' + technical_goal + r'))?'
-    positive = '(?:' + '|'.join((direct, workflow, fixes_workflow, automatic_phases, end_to_end)) + ')'
+    positive = '(?:' + '|'.join((direct, workflow, fixes_workflow, automatic_phases, end_to_end, declarative)) + ')'
     positive += scope + through + condition + purpose
     feature = (r'(?:second improvement is coming from retro as well:\s*)?'
                r'(?:remove|change|relax|update)\s+(?:the\s+)?(?:exact\s+)?'
@@ -440,9 +441,11 @@ def automatic_decision(state: dict[str, Any], assessment: dict[str, Any]) -> dic
               and all(set(paths) <= set(outer["paths"][phase]) for phase,paths in state["scope"]["paths"].items())
               and not packet.get("route_change"), "approval_required", "Scope or route changes require renewed human authorization.")
     output = packet["output"]
-    checks = output.get("build_checks", [])
+    from .workflow_evidence import effective_checks
+    checks = effective_checks(state, output)
     if stage["phase"] == "build":
-        w.require(checks and all(c.get("status") == "pass" for c in checks) and not output.get("known_gaps"),
+        w.require(checks and all(c.get("status") == "pass" for c in checks if c.get("required", True))
+                  and not output.get("known_gaps"),
                   "approval_required", "Build checks or unresolved gaps require review.")
     if stage["phase"] == "evaluate":
         w.require(all(c.get("status") == "pass" for c in output["criterion_results"].values())

@@ -1,6 +1,9 @@
 """Self-contained document shell for the shared delivery dashboard."""
 from __future__ import annotations
 
+from html import escape
+from typing import Any
+
 def _esc(s: str) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -90,3 +93,63 @@ def standalone_document(fragments: list[str], title: str = "Taskplane delivery")
 def report_widget(workspace: str) -> str:
     from taskplane import flow_dashboard
     return flow_dashboard.render(workspace)
+
+
+def telemetry_sections(model: dict[str, Any]) -> str:
+    """Static, escaped telemetry details shared by live and frozen documents."""
+    parts = []
+    boundary = model.get("final_observation") or {}
+    if boundary:
+        parts.append('<section class="tp-sec" data-telemetry="final"><h3>'
+                     + _esc(boundary.get("label", "Final observation")) + '</h3><p class="tp-lede">'
+                     + 'Observed ' + _esc(boundary.get("observed_at", "unknown"))
+                     + ' · Cutoff ' + _esc(boundary.get("cutoff", "unknown"))
+                     + '. This immutable usage view records a committed transition.</p></section>')
+    final_snapshots = model.get("final_snapshots")
+    if isinstance(final_snapshots, list) and final_snapshots:
+        from .snapshot_retention import final_snapshot_links
+        snapshot = model.get("snapshot") or {}
+        links = (final_snapshot_links(snapshot.get("workspace"), snapshot.get("root"),
+                                      model.get("run"), final_snapshots)
+                 if snapshot.get("schema") == "taskplane.dashboard-snapshot/v1"
+                 and snapshot.get("run") == model.get("run") else [])
+        items = ''.join('<li><a href="' + escape(row["href"], quote=True) + '">'
+                        + _esc(row["label"]) + '</a> · Cutoff ' + _esc(row["cutoff"]) + '</li>'
+                        for row in links)
+        parts.append('<section class="tp-sec" data-telemetry="final-snapshots"><h3>'
+                     'Frozen usage snapshots</h3><p class="tp-lede">Original observations remain '
+                     'separate from later follow-up. Only verified local artifacts are linked.</p>'
+                     + ('<ul>' + items + '</ul>' if items else '<p class="tp-lede">'
+                        'Snapshot artifacts unavailable or unverified.</p>') + '</section>')
+    observations = model.get("post_completion_observations") or []
+    if observations:
+        items = ''.join('<li>' + _esc(row.get("at", "Time unknown")) + ' · '
+                        + _esc(row.get("kind", "observation")) + ': '
+                        + _esc(row.get("note") or row.get("outcome") or "Observed") + '</li>'
+                        for row in observations[-32:] if isinstance(row, dict))
+        parts.append('<section class="tp-sec" data-telemetry="follow-up"><h3>'
+                     'Post-completion observations</h3><p class="tp-lede">Later evidence is separate '
+                     'from the accepted phase record.</p><ul>' + items + '</ul></section>')
+    storage = model.get("workflow", {}).get("storage") or {}
+    store = storage.get("store")
+    if store:
+        size = store.get("bytes")
+        files = store.get("files")
+        measured = (f'{size:,} bytes across {files:,} files' if type(size) is int and type(files) is int
+                    else 'Unknown size')
+        if not store.get("complete"):
+            measured += ' · Partial inventory; observed lower bound'
+        else:
+            measured += ' · Complete inventory'
+        parts.append('<section class="tp-sec" data-telemetry="storage"><h3>Whole-store storage</h3>'
+                     '<p class="tp-lede">' + _esc(measured) + '. Logical bytes count each path; '
+                     'this is separate from the controller JSON capacity.</p>')
+        snapshots = store.get("snapshots") or {}
+        if snapshots.get("status") == "catalogued":
+            parts.append('<dl class="tp-binding">' + ''.join(
+                '<dt>' + label + '</dt><dd>' + _esc(f'{snapshots.get(key, 0):,}') + ' bytes</dd>'
+                for key, label in (("pinned_bytes", "Pinned evidence"), ("transient_bytes", "Managed transients"),
+                                   ("protected_bytes", "Protected snapshots"), ("legacy_bytes", "Preserved legacy snapshots")))
+                + '</dl>')
+        parts.append('</section>')
+    return ''.join(parts)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from typing import Any
 import uuid
 
@@ -144,6 +145,9 @@ def submit(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
     if stage["packet"]:
         s["history"].append({"visit": stage["id"], "packet": stage["packet"], "decision": stage["decision"]})
     stage.update(packet=deepcopy(packet), work="ready", decision="awaiting_human_approval")
+    from .primitives import content_fingerprint
+    stage["submitted_at"] = datetime.now(timezone.utc).isoformat()
+    stage["checkpoint_scope_digest"] = content_fingerprint(s["scope"])
     s["revision"] += 1
     stage["packet_revision"] = s["revision"]
     return s
@@ -187,6 +191,8 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     if choice == "approved" and stage["phase"] == "plan":
         # The accepted Plan narrows the outer requested scope to actual Build grants.
         s["scope"]["paths"]["build"] = list(stage["packet"]["output"]["write_scope"])
+        from .primitives import content_fingerprint
+        stage["approved_scope_digest"] = content_fingerprint(s["scope"])
     change = stage["packet"].get("route_change")
     if choice == "approved" and change:
         require(stage["phase"] in ("design", "evaluate", "engineering"),
@@ -245,6 +251,7 @@ def finish(state: dict[str, Any]) -> dict[str, Any]:
     s = deepcopy(state)
     if not s["finished"]:
         s["finished"] = True
+        s["finished_at"] = datetime.now(timezone.utc).isoformat()
         s["revision"] += 1
     return s
 

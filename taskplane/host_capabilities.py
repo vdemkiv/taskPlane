@@ -203,6 +203,8 @@ def runtime_identity() -> dict[str, Any]:
     members = {}
     for name in ('taskplane/tp.py', 'taskplane/flow.py', 'taskplane/workflow_host.py',
                  'taskplane/workflow_local.py', 'taskplane/worker_runtime.py',
+                 'taskplane/host_capabilities.py', 'taskplane/host_native.py',
+                 'taskplane/claude_worker_observations.py',
                  'taskplane/context_handoff.py', 'taskplane/workspace_binding.py', 'hooks/hooks.json'):
         target = root/name
         members[name] = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
@@ -248,6 +250,58 @@ def worker_identities(parent: str, *, canonical_name: str | None = None,
             except (OSError, ValueError, TypeError):
                 continue
     return list(found.values()) if len(found) == 1 else []
+
+
+def worker_identity_observation(host: str, parent: str, attempt: dict[str, Any],
+                                event: dict[str, Any]) -> dict[str, Any]:
+    """Resolve one admitted launch; returned observations never grant authority."""
+    if host == 'claude':
+        from .claude_worker_observations import observe
+        return observe(parent, attempt, event)
+    base = {'schema': 'taskplane.worker-identity-observation/v1', 'host': host,
+            'parent': parent, 'workspace': attempt.get('workspace'),
+            'call_id': attempt.get('call_id'), 'grant_id': attempt.get('grant_id'),
+            'attempt': attempt.get('attempt'), 'dispatch_digest': attempt.get('dispatch_digest'),
+            'assurance': 'observed'}
+    if host != 'codex':
+        return {**base, 'status': 'unsupported', 'reason': 'Host identity schema is unsupported'}
+    response = event.get('tool_response')
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except ValueError:
+            response = None
+    identity = response.get('agent_id') if isinstance(response, dict) else None
+    call = event.get('tool_use_id') or event.get('call_id')
+    if isinstance(response, dict) and identity is not None and call == attempt.get('call_id'):
+        if not isinstance(identity, str) or not identity or len(identity) > 200 or identity == parent:
+            return {**base, 'status': 'conflict', 'reason': 'Invalid native child identity'}
+        return {**base, 'status': 'matched', 'worker_id': identity,
+                'canonical_name': response.get('task_name'),
+                'evidence_sha256': content_fingerprint({'call': call, 'response': response}),
+                'reason': 'Exact admitted native call and returned child identity'}
+    name = response.get('task_name') if isinstance(response, dict) else attempt.get('canonical_name')
+    identities = worker_identities(parent, canonical_name=name, task_name=attempt.get('task_name'),
+                                   since=attempt['prepared_at']) if attempt.get('call_id') else []
+    if len(identities) == 1:
+        value = identities[0]
+        return {**base, 'status': 'matched', 'worker_id': value['worker_id'],
+                'canonical_name': value['canonical_name'], 'started_at': value['started_at'],
+                'evidence_sha256': content_fingerprint(value),
+                'reason': 'Exact admitted task and native session metadata'}
+    return {**base, 'status': 'not_yet_available', 'reason': 'Exact native child evidence is not readable'}
+
+
+def native_invocation_identity(host: str, workspace: str | Path,
+                               argv: Sequence[str]) -> dict[str, Any] | None:
+    """The installed CLI has no supported per-invocation Claude identity channel.
+
+    Inherited session environment, an echoed grant and matching command text are
+    not enough to distinguish concurrent parent/child invocations. Host-owned
+    integrations may use NativeSession.verify_invocation; the local CLI must
+    report unavailable rather than choose a principal from those signals.
+    """
+    return None
 
 
 def unavailable_worker_observation(parent: str, worker: dict[str, Any], call_id: str) -> dict[str, Any]:

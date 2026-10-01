@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 import stat
 from typing import Any
@@ -14,6 +15,10 @@ from .primitives import content_fingerprint
 
 TASK_OBSERVATIONS = {"status", "started_at", "completed_at", "updated_at", "elapsed_seconds"}
 TASK_DEFINITIONS = "taskplane.task-definitions/v1"
+VERIFICATION_STRATEGY = "taskplane.verification-strategy/v1"
+VERIFICATION_HISTORY = "taskplane.verification-history/v1"
+CHECK_KINDS = {"static", "unit", "roundtrip", "browser", "integration", "independent"}
+CHECK_ENVIRONMENTS = {"fixture", "local", "deployed"}
 
 EMPTY_LIST_FIELDS = {"non_goals", "dependencies", "finding_references", "known_gaps",
                      "findings", "source_locations", "remaining_risk", "unknowns_and_failures",
@@ -277,6 +282,591 @@ def native_lens_conflicts(tasks: list[dict[str, Any]], results: dict[str, Any]) 
     return {task_id for group in reviewers.values() if len(group) > 1 for task_id in group}
 
 
+def _strings(value: Any, label: str, *, nonempty: bool = True) -> list[str]:
+    w.require(isinstance(value, list) and (bool(value) or not nonempty)
+              and all(isinstance(item, str) and item.strip() for item in value)
+              and len(value) == len(set(value)), "invalid_evidence", f"{label} needs unique strings.")
+    return list(value)
+
+
+def typed_plan(output: dict[str, Any]) -> bool:
+    return ("build_outputs" in output or isinstance(output.get("verification_strategy"), dict)
+            and output["verification_strategy"].get("schema") == VERIFICATION_STRATEGY)
+
+
+def _plan(state: dict[str, Any]) -> dict[str, Any]:
+    plans = [visit for visit in state.get("visits", [])[:state.get("index", 0) + 1]
+             if visit.get("phase") == "plan" and visit.get("decision") == "approved"
+             and not visit.get("superseded") and visit.get("packet")]
+    return plans[-1]["packet"]["output"] if plans else {}
+
+
+def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
+                   tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check declared production/read dependencies, never expand their authority."""
+    strict = state["scope"].get("execution_contract") == "native-default/v1" or typed_plan(output)
+    if not strict:
+        return {"status": "legacy_untyped"}
+    planned = set(_strings(output.get("write_scope"), "Plan write scope"))
+    outer = set(state["scope"]["paths"]["build"])
+    w.require(planned <= outer, "scope_violation", "Plan writes exceed the authorized Build scope.")
+    index = {row["id"]: row for row in tasks}
+    build = {key: row for key, row in index.items() if row.get("phase") == "build"}
+    owners: dict[str, str] = {}
+    for key, row in build.items():
+        validate_read_inputs(root, state["scope"], row)
+        for relative in _strings(row.get("paths"), f"Task {key} paths"):
+            path(root, relative)
+            w.require(relative in planned and relative not in owners, "invalid_evidence",
+                      "Every Build path needs exactly one declared task owner.")
+            owners[relative] = key
+    w.require(set(owners) == planned, "invalid_evidence", "Plan write scope needs exact Build ownership.")
+    outputs = output.get("build_outputs")
+    w.require(isinstance(outputs, list) and outputs, "invalid_evidence",
+              "Plan needs declared Build packet, report and verification history outputs.")
+    assert isinstance(outputs, list)
+    kinds: list[str] = []
+    paths: set[str] = set()
+    for row in outputs:
+        w.require(isinstance(row, dict) and row.get("kind") in {"packet", "report", "verification_history"}
+                  and isinstance(row.get("path"), str) and row["path"] not in paths
+                  and row.get("task") in build and owners.get(row["path"]) == row["task"],
+                  "invalid_evidence", "Build output needs a unique declared path and matching Build task owner.")
+        paths.add(row["path"])
+        kinds.append(row["kind"])
+    w.require(kinds.count("packet") == 1 and "report" in kinds and "verification_history" in kinds,
+              "invalid_evidence", "Plan requires one Build packet and at least one report and verification history.")
+    strategy = output.get("verification_strategy")
+    w.require(isinstance(strategy, dict) and strategy.get("schema") == VERIFICATION_STRATEGY
+              and isinstance(strategy.get("checks"), list) and strategy["checks"],
+              "invalid_evidence", "Plan needs a typed verification strategy.")
+    assert isinstance(strategy, dict)
+    allowed_reads = set(state["scope"].get("verification_inputs", [])) | outer
+    ids: set[str] = set()
+    order = output.get("integration_order", [])
+    w.require(isinstance(order, list) and set(order) == set(index), "invalid_evidence",
+              "Plan integration order must identify its tasks.")
+
+    def ancestors(key: str, seen: set[str] | None = None) -> set[str]:
+        seen = set() if seen is None else set(seen)
+        seen.add(key)
+        result: set[str] = set()
+        for dependency in index[key].get("dependencies", []):
+            w.require(dependency in index and dependency not in seen, "invalid_evidence",
+                      "Verification prerequisite is missing or cyclic.")
+            result.add(dependency)
+            result.update(ancestors(dependency, seen))
+        return result
+
+    for check in strategy["checks"]:
+        w.require(isinstance(check, dict) and isinstance(check.get("id"), str) and check["id"]
+                  and check["id"] not in ids and isinstance(check.get("name"), str) and check["name"].strip()
+                  and check.get("task") in build and check.get("kind") in CHECK_KINDS
+                  and check.get("environment") in CHECK_ENVIRONMENTS and type(check.get("required")) is bool,
+                  "invalid_evidence", "Verification checks need unique IDs, Build task, kind, environment and required flag.")
+        ids.add(check["id"])
+        task = build[check["task"]]
+        criteria = _strings(check.get("criteria"), "Check criteria")
+        w.require(set(criteria) <= set(task_criteria(task)) & set(state["scope"]["criteria"]),
+                  "invalid_evidence", "Check criteria must belong to its declared task.")
+        command = check.get("command")
+        w.require(isinstance(command, list) and command and all(isinstance(arg, str) and arg for arg in command),
+                  "invalid_evidence", "Check command must be an explicit argument vector.")
+        inputs = _strings(check.get("source_inputs"), "Check source inputs")
+        inputs += _strings(check.get("test_inputs"), "Check test inputs")
+        task_reads = set(read_inputs(state, task)) | set(task["paths"])
+        deps = ancestors(task["id"])
+        for relative in inputs:
+            target = path(root, relative)
+            w.require(relative in allowed_reads and relative in task_reads, "scope_violation",
+                      f"Verification input is undeclared for task {task['id']}: {relative}")
+            producer = owners.get(relative)
+            if producer and producer != task["id"]:
+                w.require(producer in deps and order.index(producer) < order.index(task["id"]),
+                          "invalid_evidence", f"Verification input needs its preceding producer dependency: {relative}")
+            if target.exists():
+                read(root, relative)  # Includes regular-file/no-symlink checks.
+            else:
+                w.require(producer is not None, "invalid_evidence",
+                          f"Missing verification input has no declared producer: {relative}")
+        for relative in _strings(check.get("evidence_outputs"), "Check evidence outputs"):
+            path(root, relative)
+            w.require(owners.get(relative) == task["id"], "invalid_evidence",
+                      "Every verification log/output must be owned by its checking task.")
+    return {"status": "validated", "checks": sorted(ids), "outputs": deepcopy(outputs)}
+
+
+def validate_build_outputs(root: Path, state: dict[str, Any], output: dict[str, Any], output_path: str) -> None:
+    plan = _plan(state)
+    if not typed_plan(plan):
+        return
+    rows = plan["build_outputs"]
+    w.require(next(row["path"] for row in rows if row["kind"] == "packet") == output_path,
+              "invalid_evidence", "Build must submit the exact planned packet path.")
+    for row in rows:
+        read(root, row["path"])
+        if row["kind"] == "report":
+            w.require(any(ref.get("path") == row["path"] and ref.get("kind") == "report"
+                          and row["task"] in ref.get("tasks", []) for ref in output.get("artifacts", [])),
+                      "invalid_evidence", "Build needs its planned report with matching task ownership.")
+
+
+def finding_paths(output: dict[str, Any]) -> list[str]:
+    paths: set[str] = set()
+    for field in ("finding_references", "findings", "finding_updates"):
+        for row in output.get(field, []) if isinstance(output.get(field, []), list) else []:
+            if not isinstance(row, dict):
+                continue
+            values = row.get("evidence", [])
+            for relative in ([values] if isinstance(values, str) else values if isinstance(values, list) else []):
+                if isinstance(relative, str) and relative:
+                    paths.add(relative)
+    return sorted(paths)
+
+
+def _packets(state: dict[str, Any]) -> list[dict[str, Any]]:
+    # Rejected/superseded declarations still describe obligations; only a current
+    # approved decision can apply a closing update.
+    return [row for row in state.get("history", []) if row.get("packet")] + [
+        row for row in state.get("visits", []) if row.get("packet")]
+
+
+def _finding_packets(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Replay each accepted packet once, in approval order when recorded.
+
+    Legacy packets without a decision binding retain visit/history order. Real
+    decision revisions order resubmissions even when an earlier visit is repaired
+    after a later one. A packet retained in both history and visits is one event.
+    """
+    visits = {row["id"]: (index, row) for index, row in enumerate(state.get("visits", []))}
+    packets: dict[str, dict[str, Any]] = {}
+    for index, stage in enumerate(_packets(state)):
+        packet = stage["packet"]
+        digest = content_fingerprint(packet)
+        visit_index, current = visits.get(packet.get("visit"), (len(visits), {}))
+        decisions = [decision for decision in state.get("decisions", {}).values()
+                     if decision.get("choice") == "approved"
+                     and decision.get("binding", {}).get("manifest_digest") == digest]
+        revisions = [decision["binding"]["revision"] for decision in decisions
+                     if type(decision.get("binding", {}).get("revision")) is int]
+        entry = packets.setdefault(digest, {"packet": packet, "digest": digest,
+            "order": (visit_index, index), "revision": min(revisions) if revisions else None,
+            "previously_accepted": False, "accepted": False})
+        entry["previously_accepted"] |= stage.get("decision") == "approved" or bool(decisions)
+        entry["accepted"] |= (current.get("decision") == "approved" and not current.get("superseded")
+                              and current.get("packet") == packet)
+    ordered = sorted(packets.values(), key=lambda entry: entry["order"])
+    # Keep unknown legacy positions stable rather than inventing a revision.
+    recorded = iter(sorted((entry for entry in ordered if entry["revision"] is not None),
+                           key=lambda entry: entry["revision"]))
+    return [next(recorded) if entry["revision"] is not None else entry for entry in ordered]
+
+
+def finding_register(state: dict[str, Any]) -> list[dict[str, Any]]:
+    inherited = state.get("inherited_findings", {})
+    rows = inherited.get("findings", []) if isinstance(inherited, dict) else inherited
+    registry = {(row["origin_run"], row["id"]): deepcopy(row) for row in rows or []}
+    for row in registry.values():
+        if row.get("disposition") == "resolved":
+            row.update(disposition="open", verification="unverified", resolution_visit=None,
+                       reason="Inherited resolution requires current runtime verification.")
+    packets = _finding_packets(state)
+    # Declarations must all exist before history can hand off their ownership or
+    # add obligations. History is commonly stored before the current Product visit.
+    for entry in packets:
+        packet = entry["packet"]
+        output = packet.get("output", {})
+        refs = packet.get("finding_evidence", {})
+        for declaration in [*output.get("finding_references", []), *output.get("findings", [])]:
+            if not isinstance(declaration, dict) or not isinstance(declaration.get("id"), str):
+                continue
+            key = (declaration.get("origin_run", state["run"]), declaration["id"])
+            if key not in registry:
+                criteria = declaration.get("criteria", [declaration["criterion"]] if declaration.get("criterion") else [])
+                registry[key] = {"origin_run": key[0], "id": key[1],
+                    "owner": declaration.get("owner", "unknown"),
+                    "required_evidence": deepcopy(declaration.get("required_evidence", [])),
+                    "evidence_requirements": deepcopy(declaration.get("evidence_requirements", [])),
+                    "criteria": deepcopy(criteria), "disposition": "open", "verification": "unverified",
+                    "origin": {"run": key[0], "visit": packet.get("visit"), "packet_digest": entry["digest"]},
+                    "evidence": deepcopy(declaration.get("evidence", [])), "evidence_refs": [],
+                    "ownership_history": [], "update_history": [], "metadata": "typed" if declaration.get("owner")
+                        and declaration.get("required_evidence") else "legacy_untyped"}
+                if declaration.get("disposition") == "deferred":
+                    registry[key]["disposition"] = "deferred"
+                    registry[key]["reason"] = declaration.get("reason", "Historical deferral; metadata may be incomplete.")
+            row = registry[key]
+            for relative in finding_paths({"findings": [declaration]}):
+                if relative in refs and refs[relative] not in row["evidence_refs"]:
+                    row["evidence_refs"].append(deepcopy(refs[relative]))
+    for entry in packets:
+        if not entry["previously_accepted"]:
+            continue
+        packet = entry["packet"]
+        refs = packet.get("finding_evidence", {})
+        for update in packet.get("output", {}).get("finding_updates", []):
+            if not isinstance(update, dict):
+                continue
+            key = (update.get("origin_run", state["run"]), update.get("id"))
+            if key not in registry:
+                continue
+            row = registry[key]
+            historical = {"visit": packet["visit"], "packet_digest": entry["digest"], "update": deepcopy(update)}
+            if historical not in row.setdefault("update_history", []):
+                row["update_history"].append(historical)
+            if update.get("owner", row["owner"]) != row["owner"]:
+                row["ownership_history"].append({"from": row["owner"], "to": update["owner"],
+                                                "visit": packet["visit"], "reason": update.get("reason")})
+            for field in ("required_evidence", "evidence_requirements"):
+                if field in update:
+                    before, after = row.get(field, []), update[field]
+                    row[field] = (deepcopy(before) + [deepcopy(item) for item in after if item not in before]
+                                  if isinstance(before, list) and isinstance(after, list) else deepcopy(after))
+            for field in ("owner", "disposition", "verification", "evidence", "reason"):
+                if field in update:
+                    row[field] = deepcopy(update[field])
+            if not entry["accepted"] and update.get("disposition") == "resolved":
+                row.update(disposition="open", verification="unverified",
+                           reason="Historical resolution is stale or superseded; runtime verification is required.")
+            row["resolution_visit"] = packet["visit"] if row["disposition"] == "resolved" else None
+            for relative in finding_paths({"finding_updates": [update]}):
+                if relative in refs and refs[relative] not in row["evidence_refs"]:
+                    row["evidence_refs"].append(deepcopy(refs[relative]))
+    checks = effective_checks(state)
+    verification = _verification_packet(state).get("packet", {}).get("verification", {})
+    for row in registry.values():
+        if row.get("disposition") == "resolved" and not _runtime_resolution(row, row, checks, verification):
+            row.update(disposition="open", verification="unverified", resolution_visit=None,
+                       reason="Current runtime verification is failed, missing, incompatible or stale.")
+    return sorted(registry.values(), key=lambda row: (row["origin_run"], row["id"]))
+
+
+def carry_findings(previous: dict[str, Any]) -> dict[str, Any]:
+    """Carry observations only. No approval, policy, grant or receipt crosses runs."""
+    inherited = previous.get("inherited_findings", {})
+    histories = deepcopy(inherited.get("verification_histories", [])) if isinstance(inherited, dict) else []
+    for stage in _packets(previous):
+        verification = stage["packet"].get("verification", {})
+        if verification.get("history") and verification["history"] not in histories:
+            histories.append(deepcopy(verification["history"]))
+    return {"schema": "taskplane.inherited-findings/v1",
+            "predecessor": {"run": previous["run"], "revision": previous["revision"],
+                            "digest": content_fingerprint(previous)},
+            "findings": finding_register(previous), "verification_histories": histories}
+
+
+def _valid_runtime_requirement(requirement: Any, criteria: Any) -> bool:
+    """Require an explicit runtime contract within the finding's criteria."""
+    if not isinstance(requirement, dict):
+        return False
+    required_criteria = requirement.get("criteria")
+    return (all(isinstance(requirement.get(field), str) and requirement[field].strip()
+                for field in ("obligation", "check_id"))
+            and isinstance(requirement.get("kind"), str)
+            and requirement["kind"] in {"unit", "roundtrip", "browser", "integration"}
+            and isinstance(requirement.get("environment"), str)
+            and requirement["environment"] in CHECK_ENVIRONMENTS
+            and isinstance(criteria, list) and bool(criteria)
+            and all(isinstance(criterion, str) and criterion.strip() for criterion in criteria)
+            and isinstance(required_criteria, list) and bool(required_criteria)
+            and all(isinstance(criterion, str) and criterion.strip() for criterion in required_criteria)
+            and set(required_criteria) <= set(criteria))
+
+
+def _runtime_resolution(prior: dict[str, Any], update: dict[str, Any],
+                        checks: list[dict[str, Any]], verification: dict[str, Any]) -> bool:
+    """Match every obligation to fresh typed execution, never to free prose.
+
+    A typed required_evidence item supplies obligation/check_id/kind/environment/
+    criteria. Every accepted evidence_requirements entry adds coverage for its
+    named obligation, including typed obligations. Legacy strings need at least
+    one such mapping. Orphan or malformed historical mappings prevent closure.
+    Adding a mapping and closing in one update is not permitted.
+    """
+    obligations = prior.get("required_evidence", [])
+    mappings = prior.get("evidence_requirements", [])
+    criteria = prior.get("criteria", [])
+    if (verification.get("status") != "validated"
+            or not isinstance(obligations, list) or not obligations or not isinstance(mappings, list)):
+        return False
+    names = [item.get("obligation") if isinstance(item, dict) else item for item in obligations]
+    if not all(isinstance(name, str) and name.strip() for name in names):
+        return False
+    requirements = [item for item in obligations if isinstance(item, dict)] + mappings
+    if any(not _valid_runtime_requirement(item, criteria) or item["obligation"] not in names
+           for item in requirements):
+        return False
+    # Check every accepted mapping, not just mappings selected by legacy strings.
+    # A mapping cannot replace the original typed requirement or invent an obligation.
+    if any(isinstance(item, str) and not any(mapping["obligation"] == item for mapping in mappings)
+           for item in obligations):
+        return False
+    evidence = set(finding_paths({"finding_updates": [update]}))
+    covered: set[str] = set()
+    for requirement in requirements:
+        required_criteria = requirement["criteria"]
+        matched = [check for check in checks if check.get("check_id") == requirement["check_id"]
+                   and check.get("kind") == requirement["kind"]
+                   and check.get("environment") == requirement["environment"]
+                   and set(required_criteria) <= set(check.get("criteria", []))]
+        if (not matched or any(check.get("status") != "pass" or not check.get("id")
+                              or not check.get("record_ref") or not check.get("log_ref")
+                              or check.get("evidence") not in evidence for check in matched)):
+            return False
+        covered.update(required_criteria)
+    associated = [check for check in checks if set(criteria) & set(check.get("criteria", []))]
+    return set(criteria) <= covered and all(check.get("status") == "pass" for check in associated)
+
+
+def validate_finding_updates(root: Path, state: dict[str, Any], output: dict[str, Any], *,
+                             verification: dict[str, Any] | None = None) -> list[str]:
+    registered = {(row["origin_run"], row["id"]): row for row in finding_register(state)}
+    updates = output.get("finding_updates", [])
+    w.require(isinstance(updates, list), "invalid_evidence", "Finding updates must be a list.")
+    seen: set[tuple[str, str]] = set()
+    for update in updates:
+        w.require(isinstance(update, dict) and isinstance(update.get("origin_run"), str)
+                  and isinstance(update.get("id"), str), "invalid_evidence", "Finding update needs its original run and ID.")
+        key = (update["origin_run"], update["id"])
+        w.require(key in registered and key not in seen, "invalid_evidence", "Finding update is unknown, renamed or duplicated.")
+        seen.add(key)
+        prior = registered[key]
+        merged = {**prior, **update}
+        w.require(merged.get("disposition") in {"open", "deferred", "resolved"}
+                  and merged.get("verification") in {"unverified", "implemented", "static_checked", "runtime_verified"},
+                  "invalid_evidence", "Finding disposition or verification level is invalid.")
+        w.require("criteria" not in update and "origin" not in update and "evidence_refs" not in update,
+                  "invalid_evidence", "Finding origin, criteria and immutable evidence cannot be replaced.")
+        for field in ("required_evidence", "evidence_requirements"):
+            before, after = prior.get(field, []), merged.get(field, [])
+            w.require(isinstance(before, list) and isinstance(after, list) and all(item in after for item in before)
+                      or before == after, "invalid_evidence", "Original evidence obligations cannot be removed.")
+        if merged["disposition"] in {"deferred", "resolved"} or merged["owner"] != prior["owner"]:
+            w.require(isinstance(merged.get("owner"), str) and merged["owner"] not in {"", "unknown"}
+                      and substantive(merged.get("required_evidence")) and substantive(update.get("reason")),
+                      "invalid_evidence", "Deferral, resolution and ownership changes need owner, evidence obligations and reason.")
+        if merged["disposition"] == "resolved":
+            w.require(all(merged.get(field, []) == prior.get(field, [])
+                          for field in ("required_evidence", "evidence_requirements")), "invalid_evidence",
+                      "Resolution requires runtime checks matching previously accepted obligations; accept additions first.")
+            w.require(finding_paths({"finding_updates": [update]}) and merged["verification"] == "runtime_verified",
+                      "invalid_evidence", "Resolution requires current runtime evidence.")
+            validated = verification if verification is not None else _verification_packet(state, output).get(
+                "packet", {}).get("verification", {})
+            checks = validated.get("effective_checks", []) if verification is not None else effective_checks(state, output)
+            w.require(_runtime_resolution(prior, update, checks, validated), "invalid_evidence",
+                      "Resolution requires validated current runtime checks matching every original obligation and environment.")
+        before, after = prior.get("evidence_requirements", []), merged.get("evidence_requirements", [])
+        if after != before:
+            obligations = merged.get("required_evidence", [])
+            obligations = obligations if isinstance(obligations, list) else []
+            names = [item.get("obligation") if isinstance(item, dict) else item for item in obligations]
+            for item in after:
+                if item in before:
+                    continue
+                w.require(_valid_runtime_requirement(item, prior.get("criteria", [])) and item["obligation"] in names,
+                          "invalid_evidence", "Each new evidence mapping must specify valid runtime coverage for an existing obligation.")
+                w.require(all(not isinstance(other, dict) or other.get("check_id") != item["check_id"]
+                              or all(other.get(field) == item[field] for field in ("kind", "environment"))
+                              for other in obligations + after), "invalid_evidence",
+                          "Evidence mappings for the same check must agree on runtime kind and environment.")
+    files = finding_paths(output)
+    for relative in files:
+        read(root, relative)
+    return files
+
+
+def outcome_summary(state: dict[str, Any]) -> dict[str, Any]:
+    findings = finding_register(state)
+    checks = effective_checks(state)
+    return {"current_checks": checks, "findings": findings,
+            "unresolved_findings": [row for row in findings if row["disposition"] != "resolved"],
+            "verification": "typed" if typed_plan(_plan(state)) else "legacy_untyped"}
+
+
+def _verification_packet(state: dict[str, Any], output: dict[str, Any] | None = None) -> dict[str, Any]:
+    packets: list[dict[str, Any]] = [stage for stage in state.get("visits", [])[:state.get("index", 0) + 1]
+                                    if stage.get("packet") and not stage.get("superseded")]
+    if output is not None:
+        # Only Build/Evaluate packets validate check snapshots. Later phase
+        # outputs must not hide the current Build evidence during policy lookup.
+        matches = [stage for stage in packets if stage.get("phase") in {"build", "evaluate"}
+                   and stage["packet"].get("output") == output]
+        if matches:
+            return matches[-1]
+    matches = [stage for stage in packets if stage.get("phase") == "build"]
+    return matches[-1] if matches else {}
+
+
+def effective_checks(state: dict[str, Any], output: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """One current selector: a later fail/unknown always supersedes an older pass.
+
+    Typed selections come from validated packet snapshots, not mutable log files.
+    The Controller invalidates changed packet/source manifests before using this.
+    """
+    stage = _verification_packet(state, output)
+    packet = stage.get("packet", {})
+    source = output if output is not None else packet.get("output", {})
+    plan = _plan(state)
+    if not typed_plan(plan):
+        rows: dict[str, dict[str, Any]] = {}
+        for check in source.get("build_checks", []):
+            if isinstance(check, dict):
+                rows[str(check.get("check_id", check.get("name")))] = deepcopy(check)
+        return list(rows.values())
+    verification = packet.get("verification", {})
+    selected = {row["check_id"]: row for row in verification.get("effective_checks", [])}
+    result = []
+    for requirement in plan["verification_strategy"]["checks"]:
+        row = deepcopy(selected.get(requirement["id"], {}))
+        invalid = stage.get("decision") in {"stale", "rejected", "changes_requested", "cancelled"}
+        if not row or invalid:
+            row.update(status="unknown", reason="No current validated verification attempt.")
+        row.update(check_id=requirement["id"], name=requirement["name"],
+                   kind=requirement["kind"], environment=requirement["environment"],
+                   required=requirement["required"], criteria=deepcopy(requirement["criteria"]))
+        result.append(row)
+    return result
+
+
+def validate_verification(root: Path, state: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
+    """Bind declared requirements, immutable attempts, current provenance and logs."""
+    plan = _plan(state)
+    phase = w.current(state)["phase"]
+    if phase not in {"build", "evaluate"} or not typed_plan(plan):
+        return {"status": "legacy_untyped", "files": []}
+    from .context import Store
+    from . import context_reuse
+    import hashlib
+    store = Store(root)
+    requirements = {check["id"]: check for check in plan["verification_strategy"]["checks"]}
+    history_path = output.get("verification_history")
+    if phase == "evaluate" and history_path is None:
+        predecessor = _verification_packet(state)
+        packet = predecessor.get("packet", {})
+        w.require(predecessor.get("decision") == "approved" and packet.get("verification", {}).get("history"),
+                  "invalid_evidence", "Evaluate needs a current accepted typed Build verification history.")
+        history_path = packet["verification"]["history_path"]
+    declared_histories = {row["path"] for row in plan["build_outputs"] if row["kind"] == "verification_history"}
+    w.require(isinstance(history_path, str) and history_path in declared_histories,
+              "invalid_evidence", "Verification history must name a planned output.")
+    assert isinstance(history_path, str)
+    history = object_file(root, history_path)
+    w.require(history.get("schema") == VERIFICATION_HISTORY and history.get("run") == state["run"]
+              and history.get("coverage") == "declared_producer" and isinstance(history.get("attempts"), list),
+              "invalid_evidence", "Verification history has foreign binding, schema or coverage.")
+    visits = {visit["id"] for visit in state["visits"] if visit["phase"] == "build"}
+    current_visit = w.current(state)["id"] if phase == "build" else _verification_packet(state).get("id")
+    w.require(history.get("visit") == current_visit, "invalid_evidence", "Verification history belongs to a different Build visit.")
+    attempts = history["attempts"]
+    # Every previously captured attempt remains an exact ordered prefix through
+    # resubmission and repair. Replacement keeps predecessor histories separately.
+    for stage in _packets(state):
+        previous = stage["packet"].get("verification", {}).get("history", {})
+        if previous.get("run") == state["run"]:
+            old = previous.get("attempts", [])
+            w.require(attempts[:len(old)] == old, "invalid_evidence",
+                      "Verification attempts cannot be removed, reordered or rewritten.")
+    seen: set[str] = set()
+    latest: dict[str, dict[str, Any]] = {}
+    files = [history_path]
+    refs: list[dict[str, Any]] = []
+    for sequence, attempt in enumerate(attempts, 1):
+        w.require(isinstance(attempt, dict) and isinstance(attempt.get("id"), str) and attempt["id"]
+                  and attempt["id"] not in seen and attempt.get("sequence") == sequence
+                  and attempt.get("check_id") in requirements and attempt.get("run") == state["run"]
+                  and attempt.get("visit") in visits and attempt.get("status") in {"pass", "fail", "unknown"},
+                  "invalid_evidence", "Verification attempt identity, sequence or binding is invalid.")
+        seen.add(attempt["id"])
+        requirement = requirements[attempt["check_id"]]
+        w.require(attempt.get("kind") == requirement["kind"]
+                  and attempt.get("environment") == requirement["environment"]
+                  and isinstance(attempt.get("record_ref"), dict), "invalid_evidence",
+                  "Attempt kind/environment must exactly match its required coverage.")
+        record = store.resolve(attempt["record_ref"])
+        bound = {key: attempt[key] for key in ("id", "check_id", "run", "visit", "kind", "environment")}
+        w.require(isinstance(record, dict) and record.get("schema") == "taskplane.verification-record/v1"
+                  and record.get("status") == attempt["status"] and record.get("verification") == bound,
+                  "invalid_evidence", "Attempt does not match its immutable verification record.")
+        key = record.get("key", {})
+        w.require(key.get("command") == requirement["command"]
+                  and set(key.get("paths", [])) == set(requirement["source_inputs"])
+                  and set(key.get("tests", [])) == set(requirement["test_inputs"])
+                  and set(key.get("criteria", [])) == set(requirement["criteria"]),
+                  "invalid_evidence", "Attempt command or input contract differs from its Plan requirement.")
+        log_path = attempt.get("evidence")
+        w.require(log_path in requirement["evidence_outputs"] and attempt.get("log_ref") == record.get("log_ref")
+                  and record.get("log_path") == log_path, "invalid_evidence", "Attempt log is not its declared immutable evidence.")
+        log = store.resolve(attempt["log_ref"])
+        w.require(isinstance(log, dict) and log.get("path") == log_path and isinstance(log.get("text"), str)
+                  and log.get("sha256") == hashlib.sha256(log["text"].encode()).hexdigest(),
+                  "invalid_evidence", "Immutable attempt log is invalid.")
+        # Missing historical files can be recovered from the pinned immutable
+        # body. An existing edited path must not masquerade as the old log.
+        if path(root, log_path).exists():
+            w.require(read(root, log_path) == log["text"].encode(), "invalid_evidence", "A captured verification log was edited.")
+            files.append(log_path)
+        refs.extend([attempt["record_ref"], attempt["log_ref"]])
+        if attempt["visit"] == current_visit:
+            latest[attempt["check_id"]] = {**deepcopy(attempt), "_record": record}
+    selected: list[dict[str, Any]] = []
+    final_rows = output.get("build_checks", []) if phase == "build" else _verification_packet(state).get("packet", {}).get("output", {}).get("build_checks", [])
+    w.require(isinstance(final_rows, list) and all(isinstance(row, dict) for row in final_rows),
+              "invalid_evidence", "Final Build checks must be a list.")
+    final = {row.get("check_id"): row for row in final_rows}
+    w.require(len(final) == len(final_rows) and set(final) <= set(requirements),
+              "invalid_evidence", "Final checks must identify unique declared check IDs.")
+    for check_id, requirement in requirements.items():
+        attempt = latest.get(check_id)
+        if attempt is None:
+            w.require(check_id not in final, "invalid_evidence", "Final check has no current attempt.")
+            selected.append({"check_id": check_id, "status": "unknown", "reason": "Required check has no current attempt."})
+            continue
+        claim = final.get(check_id)
+        w.require(claim is not None and claim.get("attempt_id") == attempt["id"]
+                  and claim.get("status") == attempt["status"] and claim.get("evidence") == attempt["evidence"],
+                  "invalid_evidence", "Final check must select its latest attempt with the same observed status and log.")
+        record = attempt.pop("_record")
+        saved = record["key"]
+        current_key = context_reuse.key(root, paths=saved["paths"], tests=saved["tests"],
+            criteria=saved["criteria"], command=saved["command"], tool=saved["tool"], contract=saved["contract"])
+        if current_key != saved:
+            attempt.update(status="unknown", reason="Verification source/runtime/environment fingerprint changed.")
+        if attempt["status"] == "pass":
+            w.require(record.get("result", {}).get("returncode") == 0, "invalid_evidence", "Pass lacks successful command evidence.")
+            if requirement["kind"] == "browser":
+                details = record.get("result", {}).get("coverage_details", {})
+                w.require(all(substantive(details.get(field)) for field in ("engine", "version", "interactions")),
+                          "invalid_evidence", "Browser coverage needs engine, version and exercised interactions.")
+            if requirement["environment"] == "deployed":
+                details = record.get("result", {}).get("coverage_details", {})
+                w.require(all(substantive(details.get(field)) for field in ("target", "service_result")),
+                          "invalid_evidence", "Deployed coverage needs actual target and service outcome.")
+            if requirement["kind"] == "independent":
+                from . import worker_runtime as workers
+                task = requirement["task"]
+                result = state.get("task_results", {}).get(task, {})
+                details = record.get("result", {}).get("coverage_details", {})
+                w.require(workers.native_result_valid(root, state, task, result) and workers.result_valid(root, state, task)
+                          and details.get("grant") == result.get("grant")
+                          and details.get("reviewer") == result.get("worker_id")
+                          and result.get("worker_id") != state.get("root")
+                          and task not in native_lens_conflicts(plan["task_dag"], state.get("task_results", {})),
+                          "invalid_evidence", "Independent checks need current native result and actual distinct reviewer.")
+        attempt.update(check_id=check_id, name=requirement["name"], criteria=deepcopy(requirement["criteria"]),
+                       required=requirement["required"], kind=requirement["kind"], environment=requirement["environment"])
+        selected.append(attempt)
+    if phase == "evaluate":
+        for criterion, result in output.get("criterion_results", {}).items():
+            if result.get("status") == "pass":
+                checks = [row for row in selected if requirements[row["check_id"]]["required"]
+                          and criterion in requirements[row["check_id"]]["criteria"]]
+                w.require(checks and all(row["status"] == "pass" for row in checks), "invalid_evidence",
+                          "Criterion pass requires every mandatory check kind/environment to be current and passing.")
+    return {"status": "validated", "files": sorted(set(files)), "history_path": history_path,
+            "history": deepcopy(history), "refs": refs, "effective_checks": selected}
+
+
 def execution_evidence(root: Path, state: dict[str, Any], tasks: list[dict[str, Any]],
                        output: dict[str, Any]) -> list[str]:
     """Frozen execution requirements must be discharged by actual current results."""
@@ -329,7 +919,8 @@ def execution_evidence(root: Path, state: dict[str, Any], tasks: list[dict[str, 
     return files
 
 
-def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -> dict[str, Any]:
+def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -> dict[str, Any]:
+    """Validate the exact prospective packet without allocating or writing anything."""
     valid_scope(root, state["scope"])
     stage = w.current(state)
     phase = stage["phase"]
@@ -347,7 +938,7 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
     w.require(output.get("criteria") == criteria, "invalid_evidence", "Output must identify the accepted criteria.")
     if state.get("context_contract"):
         from .context_handoff import Session
-        Session(root, state).validate(output.get("context_receipt"))
+        Session(root, state, persist=False).validate(output.get("context_receipt"))
     tasks = task_dag(object_file(root, tasks_path), criteria)
     files = [output_path, *execution_evidence(root, state, tasks, output)]
     for t in tasks:
@@ -382,6 +973,7 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
         build_tasks = [t for t in tasks if t.get("phase") == "build"]
         w.require(build_tasks and set(planned) == {p for t in build_tasks for p in t["paths"]},
                   "invalid_evidence", "Plan write scope must exactly match its Build task paths.")
+        plan_preflight(root, state, output, tasks)
     if phase == "build":
         build_task_map(state, tasks, output["task_acceptance_map"], criteria)
         inventory = output["change_inventory"]
@@ -396,6 +988,7 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
                       and isinstance(check.get("evidence"), str) and check["evidence"],
                       "invalid_evidence", "Build checks need name, observed status and evidence file.")
             files.append(check["evidence"])
+        validate_build_outputs(root, state, output, output_path)
     if phase == "evaluate":
         results = output["criterion_results"]
         w.require(isinstance(results, dict) and set(results) == set(criteria),
@@ -421,6 +1014,9 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
                       ("id", "severity", "source", "evidence")) and isinstance(finding["evidence"], str),
                       "invalid_evidence", "Findings need ID, severity, source location and evidence.")
             files.append(finding["evidence"])
+    verification = validate_verification(root, state, output)
+    files.extend(verification.get("files", []))
+    files.extend(validate_finding_updates(root, state, output, verification=verification))
     graph = object_file(root, ".taskplane/knowledge/graph.json")
     w.require(isinstance(graph.get("modules"), (dict, list)) and isinstance(graph.get("components"), list)
               and (not graph["modules"] or graph["components"])
@@ -469,7 +1065,7 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
     if receipt and (receipt.get("workspace") != str(root.resolve())
                     or receipt.get("graph_digest") != content_fingerprint(graph)):
         receipt = None
-    return {"checkpoint": uuid.uuid4().hex, "phase": phase, "visit": stage["id"],
+    return {"phase": phase, "visit": stage["id"],
             "output": output, "manifest": manifest(root, files, task_path=tasks_path),
             "execution_evidence": "native-results/v1" if any("execution" in row for row in tasks) else None,
             "source_manifest": manifest(root, state["scope"]["paths"]["build"] +
@@ -478,7 +1074,21 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
             # Context is sealed in the protected packet; shared views can refresh without
             # invalidating approved normative artifacts merely because telemetry changed.
             "context": {"graph": graph, "graph_receipt": receipt, "tasks": tasks, "tasks_path": tasks_path, "dashboard_digest": content_fingerprint(dashboard)},
-            "route_change": change}
+            "verification": verification, "route_change": change}
+
+
+def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -> dict[str, Any]:
+    packet = prevalidate(root, state, output_path, tasks_path)
+    # Only sealing persists immutable finding bodies. Previewing the identical
+    # validation path neither allocates a checkpoint nor touches the store.
+    from .context import Store
+    from .context_handoff import text_body
+    store = Store(root)
+    refs = {}
+    for relative in finding_paths(packet["output"]):
+        refs[relative] = store.put("finding-evidence", {"path": relative, **text_body(read(root, relative))})
+    packet.update(checkpoint=uuid.uuid4().hex, finding_evidence=refs)
+    return packet
 
 
 def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) -> tuple[str, str] | None:

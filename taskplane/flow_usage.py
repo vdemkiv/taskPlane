@@ -93,6 +93,7 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                 if meta.get('thread_source') == 'guardian_review' else 'lens')
         errors = []
         attribution_unknown = False
+        snapshot: dict[str, Any] = {}
         try:
             snapshot = meter.read_logical_snapshot(
                 [segment['path'] for segment in segments], sid, at_or_before=cutoff)
@@ -124,6 +125,8 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                          'status': 'partial' if errors else 'measured' if usage else 'unavailable',
                          'basis': interval['basis'] if interval else 'start baseline' if sid == root else 'child created during flow',
                          'interval': interval.get('interval') if interval else None,
+                         'measured_at': (interval or snapshot).get('measured_at'),
+                         'measurement_source': 'native_sample',
                          'attribution_schema': 'taskplane.owned-interval/v1' if interval else None,
                          'attribution_unknown': attribution_unknown,
                          'errors': errors})
@@ -131,7 +134,8 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
 
 
 def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
-              expected: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+              expected: list[str] | tuple[str, ...] = (), *,
+              closing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Read native identities and counters; never run tools or retain content.
 
     Final responses remain observable until the next run in the same session.
@@ -142,6 +146,13 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
              and e.get('session') == run['session'] and e.get('run') != run['run']
              and started is not None and (_time(e.get('at')) or 0) > started]
     boundary = min(later, key=lambda e: _time(e.get('at')) or 0) if later else None
+    if closing is not None:
+        instant = _time(closing.get('at'))
+        if (closing.get('session') != run['session'] or closing.get('host', 'codex') != run.get('host', 'codex')
+                or instant is None or started is None or instant < started
+                or boundary and instant > (_time(boundary.get('at')) or 0)):
+            raise ValueError('Closing counter must match this root, host and ownership interval')
+        boundary = closing
     cutoff = _time(boundary.get('at')) if boundary else None
     diagnostics: list[dict[str, Any]] = []
     if run.get('host') == 'claude':
@@ -156,6 +167,13 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         for session in sessions:
             if session.get('session') == run['session']:
                 session.update(usage=None, status='partial', attribution_unknown=True)
+    closing_end = meter.starting_baseline(closing) if closing is not None else None
+    if closing is not None and (closing_end is None or start is not None and any(
+            closing_end[k] < start[k] for k in start)):
+        for session in sessions:
+            if session.get('session') == run['session']:
+                session.update(usage=None, status='partial', attribution_unknown=True,
+                               errors=['committed closing counter is partial, unavailable or reset'])
     saved: dict[str, Any] = next((e.get('measurement', {}) for e in reversed(events)
                   if e.get('run') == run['run'] and e.get('kind') == 'usage'), {})
     by_session = {s['session']: s for s in sessions}
@@ -202,6 +220,7 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         return {k: sum(v.get(k, 0) for v in values) for k in values[0]} if values else None
     delivery = [s for s in sessions if s['role'] != 'host_approval_review']
     return {'sessions': sessions, 'tokens': total('usage', False),
+            'ownership_interval': {'start': started, 'end_exclusive': cutoff},
             'native_tokens': total('native_usage', False),
             'host_approval_tokens': total('usage', True),
             'token_coverage': {'measured_sessions': sum(s['usage'] is not None for s in delivery),
@@ -389,6 +408,8 @@ def phase_accounting(points: list[dict[str, Any]], endpoint: dict[str, Any],
         gaps.append('Known run usage has explained unresolved attribution; see interval and session accounting.')
     if measurement.get('token_coverage', {}).get('discovery_errors'):
         gaps.append('Native session discovery has errors; additional coverage is unknown.')
+    if any(s.get('usage') is None or s.get('status') != 'measured' for s in delivery):
+        gaps.append('Measured subtotal has incomplete session coverage; missing usage is unknown, not zero.')
     root: dict[str, Any] = next((s for s in delivery if s.get('session') == state['root']), {})
     native: Any = root.get('native_usage')
     run_usage: Any = root.get('usage')

@@ -236,6 +236,37 @@ def test_required_named_check_and_hook_authorization(tmp_path):
     stage=w.current(s);stage['packet']['output']['build_checks']=[{'name':'suite','status':'pass'}]
     assert approval.automatic_decision(s,assessment(s))['kind']=='policy'
 
+
+@pytest.mark.parametrize('required_status', ['pass', 'fail', 'unknown'])
+@pytest.mark.parametrize('explicit_optional', [False, True])
+def test_typed_optional_check_remains_visible_without_becoming_required(tmp_path, required_status, explicit_optional):
+    from taskplane.tests.test_farm_evidence import contract
+    from taskplane import workflow_evidence
+    _, plan, requirement = contract(tmp_path)
+    plan['verification_strategy']['checks'].append({**requirement, 'id':'optional',
+        'name':'Optional browser', 'required':False})
+    c,s=setup(tmp_path)
+    policy=authorization(s)
+    if explicit_optional:
+        policy['conditions']=[{'id':'browser', 'kind':'required_check', 'check':'Optional browser',
+                               'instruction':'Require this named browser check.'}]
+    s=set_policy(c,s,policy);s=submit(c,s)
+    # Exercise policy over a sealed-check snapshot; separate tests validate the
+    # Plan and immutable verification records before such a snapshot can seal.
+    packet=deepcopy(w.current(s)['packet'])
+    s['visits'][2].update(decision='approved', packet={'output':plan})
+    s['index']=w.PHASES.index('build')
+    packet.update(output={'build_checks':[], 'known_gaps':[]}, verification={
+        'effective_checks':[{'check_id':requirement['id'], 'status':required_status}]})
+    s['visits'][s['index']].update(decision='awaiting_human_approval', packet=packet)
+    if required_status == 'pass' and not explicit_optional:
+        assert approval.automatic_decision(s,assessment(s))['automatic']
+    else:
+        with pytest.raises(w.Refusal, match='Build checks|Named required check'):
+            approval.automatic_decision(s,assessment(s))
+    optional=workflow_evidence.effective_checks(s)[1]
+    assert optional['status']=='unknown' and optional['required'] is False
+
 def exercise_autonomous(workspace, host, root=ROOT):
     create(workspace)
     state=cli(workspace,host,'start','--scope','.taskplane/scope.json','--request-reference','test/autonomy',root=root)['workflow']

@@ -108,18 +108,54 @@ def test_historical_name_only_spawn_and_list_status_resolve_actual_uuid(tmp_path
     assert 'Private result' not in json.dumps(c.report()['workers'])
 
 
-def test_claude_start_stop_contract_and_child_control_refusal(tmp_path):
-    c,s=setup(tmp_path);item=reserve(c,s);row=item['grant']
+def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypatch):
+    import re
+    from taskplane import flow
+    c,s=setup(tmp_path)
+    c.adapter.name = 'claude'
+    item=reserve(c,s);row=item['grant']
     event={'hook_event_name':'PreToolUse','tool_name':'Agent','tool_use_id':'claude-call',
-           'tool_input':{'prompt':item['message'],'description':'bounded review','subagent_type':'general-purpose'}}
+           'tool_input':{'prompt':item['message'],'description':'bounded review','subagent_type':'general-purpose',
+                         'run_in_background':True}}
     c.guard(event,s['run'])
-    c.observe({'hook_event_name':'SubagentStart','tool_use_id':'claude-call','agent_id':'claude-child'},s['run'])
+    home=tmp_path/'native-home'
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    parent=home/'.claude/projects'/re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path))/'root.jsonl'
+    parent.parent.mkdir(parents=True)
+    called=wr.now()
+    header=dict(sessionId='root', agentId='claude-child', isSidechain=True, cwd=str(tmp_path), timestamp=wr.now())
+    records=[dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
+                  message={'content':[dict(type='tool_use', id='claude-call', name='Agent', input=event['tool_input'])]}),
+             dict(type='user', sessionId='root', cwd=str(tmp_path), timestamp=wr.now(),
+                  message={'content':[dict(type='tool_result', tool_use_id='claude-call', content='untrusted text')]},
+                  toolUseResult=dict(isAsync=True, status='async_launched', agentId='claude-child'))]
+    parent.write_text(''.join(json.dumps(r)+'\n' for r in records))
+    child=parent.with_suffix('')/'subagents/agent-claude-child.jsonl'
+    child.parent.mkdir(parents=True)
+    child.write_text(json.dumps(header)+'\n')
+    c.observe({'hook_event_name':'SubagentStart','host':'claude','session_id':'root',
+               'tool_use_id':'claude-call','agent_id':'claude-child'},s['run'])
     worker=consume(c,s,row,'claude-child')
+    monkeypatch.setenv('CLAUDE_SESSION_ID', 'root')
+    monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
+    flow.append(tmp_path, dict(kind='start', run=s['run'], session='root', phase='product', host='claude'))
+    # Real Claude hooks may omit host. Adding the normalized child thread_id
+    # must not make the second host selection treat this as a Codex event.
+    child_event=dict(hook_event_name='PreToolUse', cwd=str(tmp_path), session_id='root',
+        agent_id='claude-child', tool_use_id='child-write', tool_name='Write',
+        tool_input={'path':'T0.md'}, transcript_path=str(parent))
+    flow.hook(child_event)
+    flow.hook({**child_event, 'hook_event_name':'PostToolUse'})
+    recorded=flow.read_events(tmp_path)[-1]
+    assert recorded['binding_observation']['principal']=='claude-child'
+    assert recorded['admission']['principal']=='claude-child'
+    with pytest.raises(w.Refusal, match='outside'):
+        flow.hook({**child_event, 'tool_use_id':'sibling-write', 'tool_input':{'path':'T1.md'}})
     engine=Path(w.__file__).with_name('tp.py')
     for action in ['start','submit','decide','policy','advance','attach','retire','present']:
         command=shlex.join([sys.executable,str(engine),'flow',action,'--workspace',str(tmp_path)])
         with pytest.raises(w.Refusal):worker.guard({'tool_name':'exec_command','tool_input':{'cmd':command}},s['run'])
-    c.observe({'hook_event_name':'SubagentStop','agent_id':'claude-child'},s['run'])
+    c.observe({'hook_event_name':'SubagentStop','host':'claude','session_id':'root','agent_id':'claude-child'},s['run'])
     assert c.report()['workers'][row['grant_id']]['state']=='result_pending'
 
 

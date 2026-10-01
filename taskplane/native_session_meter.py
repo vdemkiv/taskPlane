@@ -5,7 +5,7 @@ import json
 import os
 import re
 import stat
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 if __package__:
@@ -303,7 +303,9 @@ def read_logical_snapshot(paths: Sequence[str | Path], session_id: str, *,
     usage = aggregate(snapshots)["usage"]
     return {"session_id": session_id, "usage": usage,
             "parent_session_id": next(iter(parents), None),
-            "agent_path": next(iter(agents), None), "partial": bool(errors)}
+            "agent_path": next(iter(agents), None), "partial": bool(errors),
+            "measured_at": max(snapshots, key=_counter_order).get("observed_at"),
+            "cutoff": at_or_before, "cutoff_semantics": "at_or_before"}
 
 
 def read_owned_interval(paths: Sequence[str | Path], session_id: str, *,
@@ -441,6 +443,7 @@ def read_owned_interval(paths: Sequence[str | Path], session_id: str, *,
             "status": "partial" if errors else "measured" if usage is not None else "unavailable",
             "basis": basis, "errors": sorted(errors), "bytes_read": used,
             "responses": sum(at >= start for at, _ in responses.values()),
+            "measured_at": datetime.fromtimestamp(samples[-1][0], timezone.utc).isoformat() if samples else None,
             "interval": {"start": start, "end_exclusive": end}}
 
 

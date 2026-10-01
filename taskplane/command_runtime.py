@@ -7,6 +7,7 @@ The supplied observer and pre-provisioned store belong to the trusted host.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,71 @@ from . import primitives, storage, workflow as w
 TERMINAL = {"completed", "failed", "cancelled"}
 STATES = {"running", "input_required", "cancelling"} | TERMINAL
 BINDINGS = ("workspace", "root", "run", "visit", "revision")
+
+
+def inspect_recovery(workspace: Path, state: dict[str, Any], kind: str,
+                     reference: str, offset: int = 0, limit: int = 32768) -> dict[str, Any]:
+    """Read installed contracts or reachable result nodes without publishing state."""
+    w.require(type(offset) is int and type(limit) is int and offset >= 0 and 0 < limit <= 32768,
+              "invalid_evidence", "Inspection needs a nonnegative byte offset and 1-32768 byte limit.")
+    if kind == "contract":
+        contracts = {"cli-reference": "docs/cli-reference.md",
+                     "shared-flow": "skills/tp-go/references/shared-flow.md"}
+        w.require(reference in contracts, "scope_violation", "Choose cli-reference or shared-flow.")
+        target = Path(__file__).resolve().parents[1] / contracts[reference]
+        w.require(target.resolve() == target and not target.is_symlink(), "scope_violation", "Inspection cannot follow a symlink.")
+        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            w.require(stat.S_ISREG(info.st_mode) and info.st_size <= 1024 * 1024,
+                      "invalid_evidence", "Contract inspection requires a regular file of at most 1 MiB.")
+            raw = stream.read(1024 * 1024 + 1)
+            w.require(len(raw) <= 1024 * 1024, "invalid_evidence", "Contract grew beyond its read bound.")
+    elif kind == "result":
+        from .context import Store, REFERENCE_SCHEMA
+        from .context_handoff import binding
+        store = Store(workspace)
+        pending = list(store.roots(binding(state)))
+        # Sealed packet and accepted worker result references remain reachable
+        # even when approval advances the current read-index revision.
+        values: list[Any] = [state]
+        examined = 0
+        while values:
+            value = values.pop()
+            examined += 1
+            w.require(examined <= 20000, "context_overflow", "Recovery reference inventory exceeded its bound.")
+            if isinstance(value, dict):
+                if value.get("schema") == REFERENCE_SCHEMA:
+                    pending.append(value)
+                else:
+                    values.extend(value.values())
+            elif isinstance(value, list):
+                values.extend(value)
+        visited: set[str] = set()
+        found = False
+        while pending:
+            ref = pending.pop()
+            key = ref.get("sha256", "")
+            if key in visited:
+                continue
+            w.require(len(visited) < 4096, "context_overflow", "Recovery result reachability exceeded its bound.")
+            node = store.node(ref)
+            visited.add(key)
+            if key == reference:
+                found = True
+                break
+            pending.extend(store.children(node))
+        w.require(found, "scope_violation", "Result is not registered or reachable for this run; use its current report references.")
+        raw = store._bytes(reference)
+    else:
+        raise w.Refusal("invalid_evidence", "Inspection kind must be contract or result.")
+    w.require(offset <= len(raw), "invalid_evidence", "Inspection byte offset is beyond the result.")
+    selected = raw[offset:offset + limit]
+    return {"schema": "taskplane.recovery-read/v1", "kind": kind, "reference": reference,
+            "offset": offset, "returned_bytes": len(selected), "total_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(), "text": selected.decode("utf-8", errors="replace"),
+            "next_offset": offset + len(selected) if offset + len(selected) < len(raw) else None,
+            "authority": "none", "untrusted_data": True}
 
 
 class ProcessObserver(Protocol):

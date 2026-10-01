@@ -84,11 +84,16 @@ def summary(store: Store, payload: dict[str, Any], action: str,
                    "Finished; no phase work remains." if state.get("finished") else
                    "Consume current context, complete phase evidence, then submit for approval.")
     details = store.put("command-result", payload)
+    from .workflow_evidence import outcome_summary
+    outcomes = outcome_summary(state) if visits else {}
     result: dict[str, Any] = {"schema": "taskplane.command-summary/v1", "action": action, "status": status,
               "reason": payload.get("reason"), "detail": str(payload.get("detail", ""))[:512],
                "storage": state.get("storage"), "archived": state.get("archived", False),
               "binding": binding, "phase": phase, "run": state.get("run"),
               "revision": state.get("revision"),
+              "outcomes": {"current_checks": collection(store, outcomes.get("current_checks", []), "current-checks", 0),
+                           "unresolved_original_findings": len(outcomes.get("unresolved_findings", [])),
+                           "details": store.put("original-findings", outcomes) if outcomes else None},
               "tokens": payload.get("tokens"), "native_tokens": payload.get("native_tokens"),
               "token_coverage": payload.get("token_coverage"),
               "approval": {"status": stage.get("decision", status), "decisions": len(state.get("decisions", {})),
@@ -120,6 +125,8 @@ def summary(store: Store, payload: dict[str, Any], action: str,
     if state.get("visits"):
         from .context_handoff import binding as current_binding
         references = [details]
+        if result["outcomes"].get("details"):
+            references.append(result["outcomes"]["details"])
         for section in (result["errors"], result["coverage"], result["context"], result.get("usage_accounting"),
                       result["tokens"], result["native_tokens"], result["token_coverage"]):
             if not isinstance(section, dict):

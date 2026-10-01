@@ -464,6 +464,7 @@ class Controller:
             if contract:
                 s["workspace_contract"] = {k: contract[k] for k in ("project_id", "digest")}
             if replaced is not None:
+                s["inherited_findings"] = evidence.carry_findings(replaced)
                 # Commit preservation, grant revocation and the fresh baseline atomically.
                 # Replacement is not acceptance, cancellation or a migration of approvals.
                 replaced["superseded_by"] = s["run"]
@@ -491,7 +492,7 @@ class Controller:
             if key is None:
                 from . import workflow_retention
                 return {**self.availability(), "status": "no_workflow",
-                        "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES)}
+                        "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace)}
             from . import workflow_retention
             archived = key in db.get("archives", {})
             s = workflow_retention.read(self.workspace, db, key)
@@ -503,11 +504,36 @@ class Controller:
                 s["revision"] = revision
                 s["invalidation_pending"] = True
             return {**s, **self.availability(), **self.adapter.decorate(s), "phase": w.current(s)["phase"],
-                    "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES), "archived": archived,
+                    "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace), "archived": archived,
                     "pending_checkpoint": w.binding(s, w.current(s)["packet"])
                         if not s.get("superseded_by") and not s.get("retired") and w.current(s)["decision"] == "awaiting_human_approval" else None,
                     "status": "retired" if s.get("retired") else "superseded" if s.get("superseded_by") else
                               "accepted" if s["finished"] else w.current(s)["decision"]}
+
+    def inspect(self, run: str, kind: str, reference: str, *, offset: int = 0,
+                limit: int = 32768) -> dict[str, Any]:
+        w.require(self.principal == self.root, "scope_violation", "Recovery inspection belongs to the root.")
+        from . import workflow_retention
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            state = workflow_retention.read(self.workspace, self._read(target), run)
+            return command_runtime.inspect_recovery(self.workspace, state, kind, reference, offset, limit)
+
+    def prevalidate(self, run: str, *, revision: int | None, output: str, tasks: str) -> dict[str, Any]:
+        w.require(self.principal == self.root, "scope_violation", "Prevalidation belongs to the root.")
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            w.require(db["active"] == run, "state_unavailable", "Prevalidation needs the active run.")
+            state = db["runs"][run]
+            w.require(state["revision"] == revision, "stale_checkpoint", "Expected state revision changed.")
+            drift = evidence.changed(self.workspace, state, skip_current=True)
+            w.require(not drift, "stale_checkpoint", str(drift))
+            self.adapter.before_action(state, "submit")
+            w.require(self.adapter.can_seal(state), "scope_violation", "Live work prevents prevalidation.")
+            packet = evidence.prevalidate(self.workspace, state, output, tasks)
+            return {"valid": True, "authority": "none", "run": run, "revision": revision,
+                    "phase": packet["phase"], "visit": packet["visit"], "manifest": packet["manifest"]}
 
     def context(self, run: str | None = None, *, task: str | None = None,
                  consume: str | None = None, read: str | None = None,
@@ -754,6 +780,45 @@ class Controller:
             self._write(target, db)
             return deepcopy(updated)
 
+    def claude_actor(self, actor: str, event: dict[str, Any]) -> str:
+        """Resolve an actor only through exact admitted native launch evidence."""
+        from . import worker_runtime as workers
+        from .context_handoff import binding
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            # A late post-hook may close its admitted observation after replacement;
+            # it receives no execution grant from the historical worker identity.
+            if event.get('hook_event_name') == 'PostToolUse':
+                call = event.get('tool_use_id') or event.get('call_id')
+                matches = [row for row in db.get('admissions', {}).values()
+                           if row.get('principal') == actor and row.get('call_id') == call
+                           and row.get('tool') == (event.get('tool_name') or event.get('tool'))
+                           and row.get('input_digest') == primitives.content_fingerprint(event.get('tool_input', {}))]
+                if len(matches) == 1:
+                    return actor
+            w.require(db["active"], "scope_violation", "Claude child has no active parent run.")
+            state = db["runs"][db["active"]]
+            before = deepcopy(state)
+            candidates = [row for row in workers.records(state).values()
+                          if row.get("host") == "claude" and row.get("call_id")
+                          and row.get("worker_id") in {None, actor}]
+            w.require(len(candidates) <= 64, "scope_violation", "Claude actor correlation exceeds its bound.")
+            for row in candidates:
+                proof = host_capabilities.worker_identity_observation("claude", self.root,
+                            {**row, "workspace": str(self.workspace)}, event)
+                workers.reconcile(self.workspace, state, row, proof)
+            matches = [row for row in candidates if row.get("worker_id") == actor
+                       and row.get("identity_observation", {}).get("status") == "matched"
+                       and not row.get("identity_conflict") and not row.get("revoked_at")
+                       and row.get('binding') == binding(state)
+                       and row.get('state') in {'bootstrapping', 'running'}]
+            if state != before:
+                self._write(target, db)
+            w.require(len(matches) == 1, "scope_violation", "Claude child actor needs exact structured native launch proof.")
+            workers.current(state, matches[0])
+            return actor
+
     def observe(self, event: dict[str, Any], run: str) -> None:
         target = self._path()
         with primitives.file_lock(str(target)):
@@ -783,9 +848,95 @@ class Controller:
             for key in ("workers", "worker_sequence", "worker_polls"):
                 if key in state:
                     candidate[key] = state[key]
-            if candidate != db["runs"][run]:
+            admission = self._admission(db, event, candidate, "phase_grant")
+            if admission:
+                event["taskplane_admission"] = deepcopy(admission)
+            changed = candidate != db["runs"][run]
+            if changed:
                 db["runs"][run] = candidate
+            if admission or changed:
                 self._write(target, db)
+
+    def _call(self, event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+        call = event.get("tool_use_id") or event.get("call_id")
+        if not isinstance(call, str) or not call or len(call) > 512:
+            return None
+        identity = {"root": self.root, "principal": self.principal, "call_id": call,
+                    "workspace": str(self.workspace)}
+        key = primitives.content_fingerprint(identity)
+        return key, {**identity, "tool": event.get("tool_name") or event.get("tool"),
+                     "input_digest": primitives.content_fingerprint(event.get("tool_input", {}))}
+
+    def _admission(self, db: dict[str, Any], event: dict[str, Any], state: dict[str, Any],
+                   authority: str) -> dict[str, Any] | None:
+        call = self._call(event)
+        if call is None:
+            return None
+        from .context_handoff import binding
+        key, identity = call
+        rows = db.setdefault("admissions", {})
+        if key in rows:
+            old = rows[key]
+            w.require(all(old.get(k) == v for k, v in identity.items()) and old.get("run") == state["run"],
+                      "scope_violation", "Conflicting tool call admission.")
+            return cast(dict[str, Any], old)
+        if len(rows) >= 512:
+            completed = sorted((k for k, v in rows.items() if v.get("state") == "completed"),
+                               key=lambda k: rows[k]["completed_at"])
+            w.require(completed, "state_unavailable", "Pending tool call admission capacity exhausted.")
+            del rows[completed[0]]
+        row = {**identity, "run": state["run"], "binding": binding(state), "authority": authority,
+               "state": "admitted", "admitted_at": datetime.now(timezone.utc).isoformat(),
+               "automatic": event.get("taskplane_automatic_hook") is True,
+               "runtime": deepcopy(event.get("taskplane_runtime_identity"))}
+        rows[key] = row
+        return row
+
+    def followup_admission(self, event: dict[str, Any], run: str) -> dict[str, Any] | None:
+        w.require(self.principal == self.root, "scope_violation", "Only root follow-up observations are supported.")
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            from . import workflow_retention
+            state = workflow_retention.read(self.workspace, db, run)
+            w.require(db["active"] is None and (state.get("finished") or state.get("retired")),
+                      "scope_violation", "Follow-up observations require a closed run and no active grant.")
+            row = self._admission(db, event, state, "observation_only")
+            if row:
+                self._write(target, db)
+                event["taskplane_admission"] = deepcopy(row)
+            return deepcopy(row)
+
+    def complete_admission(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        call = self._call(event)
+        if call is None or not self.adapter.state_exists():
+            return None
+        key, identity = call
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            row = db.get("admissions", {}).get(key)
+            if row is None:
+                return None
+            w.require(all(row.get(k) == v for k, v in identity.items()),
+                      "scope_violation", "Completion conflicts with admitted tool call.")
+            if row["state"] == "completed":
+                return cast(dict[str, Any], deepcopy(row))
+            row.update(state="completed", completed_at=datetime.now(timezone.utc).isoformat())
+            from .context_handoff import binding
+            state = db["runs"].get(row["run"])
+            runtime = host_capabilities.runtime_identity()
+            current_parent = (state and db["active"] == state["run"] and self.principal == self.root
+                    and row["binding"] == binding(state) and row["automatic"]
+                    and event.get("taskplane_automatic_hook") is True)
+            if current_parent and row["runtime"] == event.get("taskplane_runtime_identity") == runtime:
+                state["parent_hook_readiness"] = {"binding": binding(state), "workspace": str(self.workspace),
+                    "root": self.root, "runtime": runtime, "matched_call": row["call_id"],
+                    "reference": "admission/" + key, "admitted": True, "automatic": True}
+            elif current_parent:
+                state.pop('parent_hook_readiness', None)
+            self._write(target, db)
+            return cast(dict[str, Any], deepcopy(row))
 
     def _guard(self, event: dict[str, Any], state: dict[str, Any]) -> None:
         from . import worker_runtime as workers

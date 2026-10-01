@@ -80,6 +80,7 @@ def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
     if not row or row.get("task_id") != task_id or row.get("state") != "accepted":
         return False
     if (not row.get("worker_id") or row["worker_id"] == state["root"]
+            or not row.get('claimed_at') or row.get('revoked_at') or row.get('identity_conflict')
             or row["worker_id"] != result.get("worker_id")
             or row.get("terminal_status") not in {"completed", "idle"}
             or row.get("task_digest") != result.get("task_digest")
@@ -155,6 +156,7 @@ def current(state: dict[str, Any], row: dict[str, Any]) -> None:
     from . import workspace_binding
     workspace_binding.ensure(Path(state["workspace"]), worker=True,
                              expected=state.get("workspace_contract"))
+    w.require(not row.get('revoked_at'), 'scope_violation', 'Worker grant is permanently revoked.')
     w.require(row.get("workspace_contract") == state.get("workspace_contract"),
               "stale_checkpoint", "Worker workspace contract differs from its run.")
     w.require(row["binding"] == binding(state) and row["task_digest"] == digest(task(state, row["task_id"])),
@@ -200,6 +202,38 @@ def readiness(row: dict[str, Any]) -> dict[str, Any]:
             "runtime_root": proof.get("root"), "basis": "Observed child claim, delivered context and automatic pre/post hook pair."}
 
 
+def parent_readiness(state: dict[str, Any], runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Require a current, admitted automatic parent pair before reserving work."""
+    from .host_capabilities import runtime_identity
+    expected = runtime if runtime is not None else runtime_identity()
+    proof = state.get('parent_hook_readiness', {})
+    if not isinstance(proof, dict):
+        proof = {}
+    missing = [label for label, valid in (
+        ('admitted automatic parent hook pair', proof.get('admitted') is True
+         and proof.get('automatic') is True and isinstance(proof.get('matched_call'), str)
+         and 0 < len(proof['matched_call']) <= 512 and not proof.get('mismatch')),
+        ('current run, visit and revision', proof.get('binding') == binding(state)),
+        ('selected workspace and root', proof.get('workspace') == state.get('workspace')
+         and proof.get('root') == state.get('root')),
+        ('executing runtime', bool(expected.get('member_sha256'))
+         and all(expected['member_sha256'].values()) and proof.get('runtime') == expected),
+        ('native observation reference', isinstance(proof.get('reference'), str)
+         and 0 < len(proof['reference']) <= 2048)) if not valid]
+    return {'status': 'ready' if not missing else 'mismatch' if proof else 'missing',
+            'missing': missing, 'reference': proof.get('reference'),
+            'workspace': state.get('workspace'), 'root': state.get('root'),
+            'runtime_root': expected.get('root')}
+
+
+def require_parent_readiness(state: dict[str, Any]) -> dict[str, Any]:
+    result = parent_readiness(state)
+    w.require(result['status'] == 'ready', 'worker_readiness',
+              'Native parent readiness is ' + result['status'] + ': ' + ', '.join(result['missing'])
+              + '. Observe an ordinary admitted command pre/post pair in the selected workspace/root/runtime before retrying.')
+    return deepcopy(state['parent_hook_readiness'])
+
+
 def startup_blockers(state: dict[str, Any], definition: dict[str, Any]) -> list[str]:
     blocked = []
     gates = list(definition.get("readiness_after", []))
@@ -225,6 +259,7 @@ def startup_blockers(state: dict[str, Any], definition: dict[str, Any]) -> list[
 
 
 def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[str, Any]) -> dict[str, Any]:
+    parent_proof = require_parent_readiness(state)
     from . import workspace_binding
     workspace_binding.ensure(workspace, worker=True, expected=state.get("workspace_contract"))
     definition = task(state, task_id)
@@ -272,6 +307,7 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     # Preserve immutable content in the bounded object store, never the control DB.
     frozen = session.store.put("worker-input-snapshot", session.frozen)
     row = {"grant_id": key, "root": state["root"], "run": state["run"], "binding": binding(state),
+           "workspace": str(workspace), "parent_readiness": parent_proof,
            "task_id": task_id, "task_digest": digest(definition), "task_generation": state.get("task_generation", 0),
            "paths": paths, "criteria": e.task_criteria(definition), "task_name": name,
            "attempt": 1 + max((r["attempt"] for r in rows.values() if r["task_id"] == task_id), default=0),
@@ -359,6 +395,7 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
         w.require(len(matches) == 1 and matches[0] in records(state), "scope_violation", "Dispatch requires one prepared grant.")
         row = records(state)[matches[0]]
         current(state, row)
+        require_parent_readiness(state)
         workspace = Path(state['workspace'])
         definition = task(state, row['task_id'])
         w.require(not startup_blockers(state, definition), "worker_readiness",
@@ -381,7 +418,11 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
         if tool in FOLLOW:
             w.require(row.get("worker_id") and args.get("target") in {row["worker_id"], row.get("canonical_name")},
                       "scope_violation", "Follow-up target does not match its new attempt.")
-        elif not claude:
+        elif claude:
+            w.require((args.get('resume') == row.get('worker_id') if row.get('worker_id')
+                       else not args.get('resume')), 'scope_violation',
+                      'Claude resume must target the exact prepared known worker attempt.')
+        else:
             w.require(args.get("task_name") == row["task_name"] and args.get("fork_turns") == "none"
                       and not row.get("worker_id"), "scope_violation", "Spawn needs the prepared name and a task-focused handoff.")
         w.require(sum(r["state"] in LIVE for r in records(state).values()) <=
@@ -403,8 +444,14 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
 
 
 def bind_worker(state: dict[str, Any], row: dict[str, Any], identity: str, name: str | None = None) -> bool:
-    w.require(identity and identity != state["root"] and len(identity) <= 200,
+    w.require(isinstance(identity, str) and identity and identity != state["root"] and len(identity) <= 200,
               "scope_violation", "Invalid native worker identity.")
+    if row.get('revoked_at'):
+        _audit(row, 'late_identity', {'worker_id': identity})
+        return False
+    if row.get('binding') != binding(state):
+        _audit(row, 'historical_identity', {'worker_id': identity})
+        return False
     if row.get("worker_id") not in (None, identity):
         row["state"] = "unknown"
         return False
@@ -412,7 +459,7 @@ def bind_worker(state: dict[str, Any], row: dict[str, Any], identity: str, name:
         row["state"] = "unknown"
         return False
     row["worker_id"] = identity
-    if name:
+    if isinstance(name, str) and name:
         row["canonical_name"] = name[:200]
     if row["state"] == "launch_pending":
         row.update(state="bootstrapping", identity_bound_at=now())
@@ -421,10 +468,17 @@ def bind_worker(state: dict[str, Any], row: dict[str, Any], identity: str, name:
 
 def terminal(row: dict[str, Any], status: str, event_id: str) -> None:
     status = "completed" if status == "idle" else status
+    if status not in {'completed', 'failed', 'interrupted'}:
+        _audit(row, 'unsupported_terminal', {'status': status, 'event_id': event_id})
+        return
+    if row.get('revoked_at'):
+        _audit(row, 'late_terminal', {'status': status, 'event_id': event_id})
+        return
     previous = row["events"].get(event_id)
     if previous == status:
         return
     if previous is not None or row.get("terminal_status") not in (None, status):
+        _audit(row, 'terminal_conflict', {'status': status, 'event_id': event_id})
         row["state"] = "unknown"
         return
     if row.get("terminal_status") == status:
@@ -432,6 +486,119 @@ def terminal(row: dict[str, Any], status: str, event_id: str) -> None:
     row["events"][event_id] = status
     row.update(terminal_status=status, ended_at=now(), state=(
         "result_pending" if status in {"completed", "idle"} else "interrupted" if status == "interrupted" else "failed"))
+
+
+def _audit(row: dict[str, Any], kind: str, value: dict[str, Any]) -> None:
+    events = row.setdefault('reconciliation_events', {})
+    key = digest({'kind': kind, 'value': value})
+    if key not in events and len(events) < 128:
+        events[key] = {'kind': kind, 'value': deepcopy(value), 'observed_at': now()}
+
+
+def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
+              observation: dict[str, Any]) -> dict[str, Any]:
+    """Apply a parser observation under Controller lock, never asserted CLI facts.
+
+    Old/revoked attempts retain diagnostic evidence without regaining execution.
+    Completion is only pending evidence; claim/context/result validation still run.
+    """
+    grant_id = row.get('grant_id')
+    w.require(isinstance(grant_id, str) and records(state).get(grant_id) is row
+              and str(workspace) == state.get('workspace')
+              and row.get('root') == state.get('root') and row.get('run') == state.get('run'),
+              'scope_violation', 'Worker reconciliation belongs to another attempt or workspace.')
+    status = observation.get('status')
+    w.require(status in {'matched', 'not_yet_available', 'unsupported', 'conflict'},
+              'invalid_evidence', 'Unsupported worker identity observation.')
+    # Parsers return only compact metadata. Never persist transcript/prompt bytes.
+    fields = ('status', 'reason', 'host', 'parent', 'workspace', 'call_id', 'worker_id',
+              'grant_id', 'attempt', 'dispatch_digest', 'evidence_sha256', 'record_sha256',
+              'references', 'called_at', 'started_at', 'observed_at', 'canonical_name')
+    proof = {key: deepcopy(observation[key]) for key in fields if key in observation}
+    _audit(row, 'identity_observation', proof)
+    if status in {'not_yet_available', 'unsupported'}:
+        return {'status': status, 'state': row['state']}
+    exact = (observation.get('parent') == state['root']
+             and observation.get('host') == row.get('host')
+             and observation.get('workspace') == state['workspace']
+             and observation.get('call_id') == row.get('call_id') and bool(row.get('call_id'))
+             and observation.get('grant_id') == row['grant_id']
+             and observation.get('attempt') == row['attempt']
+             and observation.get('dispatch_digest') == row.get('dispatch_digest')
+             and isinstance(observation.get('evidence_sha256'), str)
+             and bool(re.fullmatch(r'[0-9a-f]{64}', observation['evidence_sha256'])))
+    prior = row.get('identity_observation', {})
+    if prior and prior.get('evidence_sha256') != observation.get('evidence_sha256'):
+        exact = False
+    if status == 'conflict' or not exact:
+        row['identity_conflict'] = True
+        if not row.get('revoked_at') and row['state'] not in {'accepted', 'failed', 'interrupted'}:
+            row['state'] = 'unknown'
+        return {'status': 'conflict', 'state': row['state']}
+    if row.get('revoked_at') or row.get('binding') != binding(state):
+        return {'status': 'historical', 'state': row['state']}
+    if row.get('identity_conflict'):
+        return {'status': 'conflict', 'state': row['state']}
+    identity = observation.get('worker_id')
+    w.require(isinstance(identity, str), 'scope_violation', 'Invalid native worker identity.')
+    assert isinstance(identity, str)
+    if not bind_worker(state, row, identity, observation.get('canonical_name')):
+        return {'status': 'conflict', 'state': row['state']}
+    if row['state'] == 'unknown' and not row.get('terminal_status'):
+        row.update(state='bootstrapping', identity_bound_at=now())
+    row['identity_observation'] = proof
+    # Call-less lifecycle observations are joined only after this exact launch
+    # proof. Reused native IDs always require an attempt-correlated call ID.
+    for event_id, event in state.get('unbound_worker_events', {}).items():
+        if event.get('worker_id') != row['worker_id'] or event.get('parent') != state['root']:
+            continue
+        if event.get('call_id') and event['call_id'] != row['call_id']:
+            continue
+        if not event.get('call_id') and sum(r.get('worker_id') == row['worker_id'] for r in records(state).values()) != 1:
+            continue
+        if event.get('observed_at', '') < row.get('launch_requested_at', row['prepared_at']):
+            continue
+        if event['event'] == 'SubagentStop':
+            terminal(row, event['status'], event_id)
+        elif row['state'] in {'bootstrapping', 'running'}:
+            row.setdefault('started_at', event['observed_at'])
+    return {'status': 'matched', 'state': row['state'], 'worker_id': row['worker_id']}
+
+
+def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
+    """Cache unbound lifecycle data, then reconcile exact structured launches."""
+    tool = event.get('tool_name') or event.get('tool')
+    name = event.get('hook_event_name')
+    call = event.get('tool_use_id') or event.get('call_id')
+    identity = event.get('agent_id')
+    attempts = [row for row in records(state).values() if row.get('host') == 'claude']
+    relevant = (tool in {'Agent', 'Task'} or event.get('host') == 'claude'
+                or (name in {'SubagentStart', 'SubagentStop'} and any(
+                    row.get('call_id') == call if call else row.get('worker_id') == identity
+                    or row['state'] in {'launch_pending', 'unknown', 'cancel_requested'} for row in attempts)))
+    if not relevant:
+        return False
+    if name in {'SubagentStart', 'SubagentStop'}:
+        parent = event.get('session_id') or event.get('thread_id')
+        if parent == state['root'] and isinstance(identity, str) and 0 < len(identity) <= 200 and identity != parent:
+            status = event.get('status', 'completed')
+            if status in {'completed', 'failed', 'interrupted'}:
+                value = {'event': name, 'parent': parent, 'worker_id': identity,
+                         'call_id': call, 'status': status}
+                event_id = digest(value | {'event_id': event.get('event_id')})
+                pending = state.setdefault('unbound_worker_events', {})
+                if event_id not in pending and len(pending) < 1024:
+                    pending[event_id] = {**value, 'observed_at': now()}
+    candidates = [row for row in attempts if (row.get('call_id') == call if call else
+                  (not identity or row.get('worker_id') in (None, identity)))]
+    # A lifecycle event does not select the sole/latest child. Each candidate
+    # must independently supply its exact admitted call/result/header proof.
+    from .host_capabilities import worker_identity_observation
+    for row in candidates[:64]:
+        observation = worker_identity_observation('claude', state['root'],
+                                                  {**row, 'workspace': state['workspace']}, event)
+        reconcile(Path(state['workspace']), state, row, observation)
+    return True
 
 
 def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
@@ -443,7 +610,8 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
             response = json.loads(response)
         except ValueError:
             response = None
-    if name == "PostToolUse" and tool in SPAWN | FOLLOW:
+    claude = _observe_claude(state, event)
+    if not claude and name == "PostToolUse" and tool in SPAWN | FOLLOW:
         row = next((r for r in records(state).values() if call and r.get("call_id") == call), None)
         w.require(row is not None, "scope_violation", "Native result has no admitted launch.")
         assert row is not None
@@ -456,7 +624,7 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
             bind_worker(state, row, row['worker_id'])
         elif row["state"] == "launch_pending":
             row["state"] = "unknown"  # Ambiguous failure never proves non-start.
-    if name in {"SubagentStart", "SubagentStop"}:
+    if not claude and name in {"SubagentStart", "SubagentStop"}:
         identity = event.get("agent_id")
         row = (next((r for r in records(state).values() if r.get("call_id") == call), None)
                if call else find(state, str(identity or "")))
@@ -474,13 +642,13 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
             row.setdefault('started_at', now())
     # Explicit native parent-call metadata can resolve a child-before-return race.
     # Parent identity or an echoed grant alone never selects the latest child.
-    if event.get("parent_session_id") == state["root"] and event.get("parent_tool_call_id"):
+    if not claude and event.get("parent_session_id") == state["root"] and event.get("parent_tool_call_id"):
         row = next((r for r in records(state).values()
                     if r.get("call_id") == event["parent_tool_call_id"]), None)
         identity = event.get("thread_id") or event.get("session_id")
         if row and isinstance(identity, str):
             bind_worker(state, row, identity)
-    elif event.get('parent_session_id') == state['root']:
+    elif not claude and event.get('parent_session_id') == state['root']:
         identity = event.get('thread_id') or event.get('session_id')
         known = find(state, str(identity or ''))
         if known and known['state'] == 'launch_pending':
@@ -488,7 +656,7 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
         for row in records(state).values():
             if row['state'] == 'launch_pending' and row.get('host') == 'codex':
                 correlate(state, row, expected_identity=identity)
-    principal = event.get('thread_id') or event.get('session_id')
+    principal = event.get('taskplane_observed_binding', {}).get('principal') or event.get('thread_id') or event.get('session_id')
     executing = find(state, str(principal or ''))
     if executing and name == 'PreToolUse' and executing['state'] in {'bootstrapping', 'running'}:
         executing.setdefault('started_at', now())
@@ -558,6 +726,8 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
                   "invalid_evidence", "Native attempt is not joined with a pending result.")
         assert row is not None
         current(state, row)
+        w.require(row.get('claimed_at') and not row.get('identity_conflict'), 'invalid_evidence',
+                  'Worker must claim its exact non-conflicting attempt before accepting a result.')
         w.require(row["context_receipt"] is not None, "invalid_context", "Worker did not consume its task inputs.")
         w.require(row["input_manifest"] == e.manifest(workspace, list(row["input_manifest"])),
                   "stale_checkpoint", "Worker read inputs changed; revalidate with a fresh attempt.")

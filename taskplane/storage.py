@@ -7,7 +7,8 @@ import stat
 
 
 def tp_dir(workspace: str) -> str:
-    root = Path(workspace).resolve()
+    from taskplane.workspace_binding import validate_workspace_root
+    root = validate_workspace_root(workspace).resolve()
     target = root / ".taskplane"
     if target.is_symlink():
         raise ValueError("Taskplane storage must remain inside the workspace")

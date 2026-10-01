@@ -63,10 +63,18 @@ def read(workspace: Path, db: dict[str, Any], key: str) -> dict[str, Any]:
     return dict(state)
 
 
-def capacity(db: dict[str, Any], limit: int) -> dict[str, Any]:
+def capacity(db: dict[str, Any], limit: int, workspace: Path | None = None) -> dict[str, Any]:
     used = len(encode(db)) + 1
-    return {"bytes": used, "limit_bytes": limit, "remaining_bytes": max(0, limit - used),
+    result: dict[str, Any] = {"bytes": used, "limit_bytes": limit, "remaining_bytes": max(0, limit - used),
             "watermark_bytes": WATERMARK, "resident_runs": len(db["runs"]),
             "archived_runs": len(db.get("archives", {})),
             "status": "near_limit" if used >= limit * 0.8 else "available",
             "retention": "inactive terminal runs only; historical decisions preserved"}
+    if workspace is not None:
+        from .snapshot_retention import inventory
+        try:
+            result["store"] = inventory(workspace)
+        except (OSError, ValueError, RuntimeError):
+            result["store"] = {"status": "partial", "complete": False, "lower_bound": True,
+                               "bytes": None, "files": None, "errors": ["store inventory unavailable"]}
+    return result

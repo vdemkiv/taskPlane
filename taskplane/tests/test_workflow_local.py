@@ -284,13 +284,16 @@ def test_control_json_allows_literal_conditions_but_never_shell_expansion():
 
 
 def decision(s, *, text="Approved", event="message-1"):
+    from datetime import datetime, timezone
+    presented = datetime.now(timezone.utc).isoformat()
+    observed = datetime.now(timezone.utc).isoformat()
     binding=w.binding(s,w.current(s)["packet"])
     return {"schema":"taskplane.observed-decision/v1","event_id":event,"choice":local.choice(text),
             "binding":binding,"excerpt":text,"recorder":"root_orchestrator",
             "source":{"kind":"conversation","reference":event,"conversation":s["root"],"actor":"user",
-                      "automatic":False,"observed_at":"2026-09-16T22:02:00+00:00"},
+                      "automatic":False,"observed_at":observed},
             "presentation":{"checkpoint":binding["checkpoint"],"reference":"assistant/presentation",
-                            "at":"2026-09-16T22:01:00+00:00"}}
+                            "at":presented}}
 
 
 def decide(c,s,value=None):

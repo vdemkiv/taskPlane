@@ -30,7 +30,18 @@ def setup(tmp_path, count=4, scoped_input=False, extra_inputs=()):
     return c, state
 
 
+def parent_pair(c):
+    from taskplane import flow
+    import uuid
+    event = dict(hook_event_name='PreToolUse', host=c.adapter.name,
+                 cwd=str(c.workspace), session_id=c.root, call_id='fixture-parent-' + uuid.uuid4().hex,
+                 tool_name='Read', tool_input={'file_path':'input.py'})
+    flow._hook(event, governor=c)
+    flow._hook({**event, 'hook_event_name':'PostToolUse'}, governor=c)
+
+
 def reserve(c, s, task='T0', slots=5, **extra):
+    parent_pair(c)
     return c.worker(s['run'], 'prepare', revision=s['revision'], task=task,
                     request={'capacity':dict(host_slots=slots, includes_root=True, reference='fixture/capacity'), **extra})
 
@@ -267,6 +278,8 @@ def test_scoped_retries_need_a_concrete_reason(tmp_path):
 def test_context_budget_refuses_before_reserving_or_launching(tmp_path):
     c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
     s = scoped(c, s, tmp_path, budget=16384)
+    parent_pair(c)
+    s = c.report(s['run'])
     s['goal'] = 'Required normative goal. ' * 5000
     before = deepcopy(s.get('workers', {}))
     with pytest.raises(w.Refusal, match='before launch'):

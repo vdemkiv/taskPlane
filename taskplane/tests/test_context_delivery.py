@@ -285,12 +285,15 @@ def engine_comparison_entry():
                 self.cli('present','--evidence','.taskplane/dashboard.html','--presentation','linked',
                     '--note','Fixture-labelled artifact link; no live host display or human approval claim.')
                 binding=self.w.binding(state,self.w.current(state)['packet'])
+                from datetime import datetime, timezone
+                presented = datetime.now(timezone.utc).isoformat()
+                observed = datetime.now(timezone.utc).isoformat()
                 decision={'schema':'taskplane.observed-decision/v1','event_id':'fixture-human-'+phase,
                     'choice':'approved','binding':binding,'excerpt':'Approved','recorder':'root_orchestrator',
                     'source':{'kind':'conversation','reference':'fixture-human-'+phase,'conversation':ROOT,
-                              'actor':'user','automatic':False,'observed_at':'2026-09-23T00:00:02+00:00'},
+                              'actor':'user','automatic':False,'observed_at':observed},
                     'presentation':{'checkpoint':binding['checkpoint'],'reference':'fixture/presentation-'+phase,
-                                    'at':'2026-09-23T00:00:01+00:00'}}
+                                    'at':presented}}
                 self.cli('decide','--decision-json',json.dumps(decision),'--expected-revision',str(state['revision']))
                 state=self.state()
                 self.cli(action,*args,'--expected-revision',str(state['revision']))

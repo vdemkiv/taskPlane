@@ -156,6 +156,26 @@ def headline(m: dict[str, Any]) -> str:
 
 def _workflow(m: dict[str, Any]) -> str:
     authority = m.get('workflow') or {}
+    header = ''
+    if authority.get('visits'):
+        from taskplane.workflow_evidence import outcome_summary
+        outcome = outcome_summary(authority)
+        findings = outcome.get('findings', [])
+        unresolved = [item for item in findings if item.get('disposition') != 'resolved']
+        header += '<div class="note" id="original-obligations"><strong>Original obligations: '+_e(len(unresolved))+' unresolved</strong>'
+        header += '<p class="muted">Current check results and original risk dispositions are separate evidence.</p>'
+        if findings:
+            header += '<div class="table-wrap"><table><thead><tr><th>Finding / origin</th><th>Owner</th><th>Disposition / verification</th><th>Required evidence</th></tr></thead><tbody>'
+            for finding in findings:
+                header += '<tr><td>'+_e(finding.get('id'))+'<br><code>'+_e(finding.get('origin_run'))+'</code></td>'
+                header += '<td>'+_e(finding.get('owner'))+'</td><td>'+_e(finding.get('disposition'))+' / '+_e(finding.get('verification'))+'</td>'
+                header += '<td>'+_e(finding.get('required_evidence'))+'</td></tr>'
+            header += '</tbody></table></div>'
+        header += '</div>'
+        chronology = [item.get('provenance', {}).get('chronology', 'unverified legacy observation')
+                      for item in authority.get('decisions', {}).values() if item.get('kind') != 'policy']
+        if chronology:
+            header += '<p class="muted">Decision chronology: '+_e(', '.join(sorted(set(chronology))))+'</p>'
     visits = authority.get('visits') or []
     html = '<section id="workflow"><div class="section-head"><h2>01 / Workflow</h2><span class="muted">Work, evidence and checkpoint decisions</span></div><div class="stages">'
     details = ''
@@ -213,7 +233,7 @@ def _workflow(m: dict[str, Any]) -> str:
             details += ''.join(f'<div class="note"><span class="muted">{_e(n.get("at"))}</span><p>{_e(n.get("note"))}</p></div>' for n in notes) or '<p class="muted">No milestone recorded. Completion is not inferred.</p>'
             details += '</details>'
         details = '<p class="muted">Legacy observations are unverified. Progress, task completion and finish notes do not establish human acceptance.</p>' + details
-    return html + '</div>' + details + '</section>'
+    return html + '</div>' + header + details + '</section>'
 
 
 def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
@@ -351,4 +371,5 @@ def render(ws: str, m: dict[str, Any] | None = None) -> str:
     m = m or model(ws)
     if m is None:
         return ""
-    return STYLE+'<main class="tp-flow">'+''.join(body for _,body in sections(ws,m))+'</main>'
+    from .dashboard import telemetry_sections
+    return STYLE+'<main class="tp-flow">'+''.join(body for _,body in sections(ws,m))+telemetry_sections(m)+'</main>'

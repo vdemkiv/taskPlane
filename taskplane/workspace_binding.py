@@ -100,8 +100,29 @@ def _directory(path: Path) -> Iterator[int]:
             os.close(fd)
 
 
-def _root(workspace: str | Path, *, strict: bool = False) -> Path:
+def validate_workspace_root(workspace: str | Path) -> Path:
+    """Reject the reserved store component without reading or creating state.
+
+    Check the spelling as well as the resolved path: a legacy directory alias
+    must not hide a selection inside another project's runtime store. Resolution
+    is only inspection; callers retain their existing strict alias checks.
+    """
     root = _absolute(workspace)
+    try:
+        resolved = root.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise w.Refusal("workspace_binding", "Workspace path cannot be resolved safely.") from exc
+    for candidate in (root, resolved):
+        if ".taskplane" in candidate.parts:
+            index = candidate.parts.index(".taskplane")
+            containing = Path(*candidate.parts[:index])
+            _fail("Workspace cannot be at or below the reserved .taskplane directory. "
+                  f"Select the containing project explicitly: {containing}")
+    return root
+
+
+def _root(workspace: str | Path, *, strict: bool = False) -> Path:
+    root = validate_workspace_root(workspace)
     # Legacy local workflows retain their existing path/platform behavior.
     # Secure descriptor operations are mandatory once binding is selected.
     if (not strict and not _required(root) and not _exists(root / ".taskplane" / BINDING_FILE)

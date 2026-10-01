@@ -189,9 +189,9 @@ def active_run(rows: list[dict[str, Any]], session: str, parent: str | None = No
                 row.get("event") == "SubagentStart" and row.get("child") in owners)):
             owners.add(root)
     closed = {row.get("run") for row in rows if row.get("kind") in {"finish", "retire"}}
-    return next((row for row in reversed(rows)
-                 if row.get("kind") == "start" and row.get("session") in owners
-                 and row.get("run") not in closed), None)
+    selected = next((row for row in reversed(rows)
+                     if row.get("kind") == "start" and row.get("session") in owners), None)
+    return selected if selected and selected.get("run") not in closed else None
 
 
 def summarize(rows: list[dict[str, Any]], run: dict[str, Any]) -> dict[str, Any]:
@@ -412,6 +412,27 @@ def graph_view(workspace: Path, state: dict[str, Any], historical: bool) -> dict
                 "fingerprint": None, "detail": "Optional graph observation failed; regenerate after repairing scan access."}
 
 
+def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict[str, Any],
+                    expected: list[str] | tuple[str, ...] = (), *,
+                    closing: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Keep the same participant coverage in live and committed observations."""
+    workers = {r['worker_id'] for r in state.get('workers', {}).values() if r.get('worker_id')}
+    declared = set(expected) | workers
+    for row in rows:
+        if row.get('run') != run['run']:
+            continue
+        if row.get('child'):
+            declared.add(str(row['child']))
+        reviews = (row.get('captured') or {}).get('reviews', [])
+        groups = reviews.values() if isinstance(reviews, dict) else [reviews]
+        for group in groups:
+            if isinstance(group, list):
+                declared.update(str(review['agent']) for review in group
+                                if isinstance(review, dict) and review.get('agent'))
+    return flow_usage.reconcile({**run, 'worker_sessions': sorted(workers)}, rows,
+                                sorted(declared), closing=closing)
+
+
 def report(workspace: Path, run_id: str | None = None, *,
            governor: workflow_host.Controller | None = None) -> dict[str, Any] | None:
     captured_at = datetime.now(timezone.utc).isoformat()
@@ -481,15 +502,13 @@ def report(workspace: Path, run_id: str | None = None, *,
     expected += [str(r["child"]) for r in rows if r.get("run") == run["run"] and r.get("child")]
     result["observed_tokens"] = result["tokens"]
     try:
-        bound_run = {**run, "worker_sessions": sorted({r['worker_id'] for r in governed.get('workers', {}).values()
-                                                     if r.get('worker_id')})}
-        result.update(flow_usage.reconcile(bound_run, rows, expected))
+        result.update(reconcile_usage(run, rows, governed, expected))
     except (OSError, ValueError, TypeError, KeyError):
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
     measured_at = datetime.now(timezone.utc).isoformat()
     for measured in result.get("sessions", []):
         if (str(measured.get("status", "")).startswith("recorded")
-                or measured.get("measurement_source") == "run_boundary"):
+                or measured.get("measurement_source") in {"run_boundary", "native_sample"}):
             measured["measured_at"] = measurement_time(measured.get("measured_at"))
         else:
             measured["measured_at"] = measured_at if measured.get("usage") and measured.get("native_usage") else None
@@ -509,6 +528,9 @@ def report(workspace: Path, run_id: str | None = None, *,
     for review in result["reviews"]:
         review["coverage_status"] = "legacy_unverified"
     result["workflow"] = governed
+    result["post_completion_observations"] = [r for r in rows if r.get("run") == run["run"]
+        and r.get("kind") == "hook" and (r.get("admission") or {}).get("authority") == "observation_only"][-32:]
+    result["final_snapshots"] = [r for r in rows if r.get("run") == run["run"] and r.get("kind") == "final_snapshot"]
     result["observation_status"] = result["status"]
     if governed.get("visits"):
         result["phase"] = governed["phase"]
@@ -573,7 +595,8 @@ def older_snapshot(previous: dict[str, Any], snapshot: dict[str, Any]) -> bool:
 
 def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Path | None = None,
                       select: bool = False, governor: workflow_host.Controller | None = None,
-                      supplied: dict[str, Any] | None = None) -> Path:
+                      supplied: dict[str, Any] | None = None, detached: bool = False,
+                      pin_reason: str | None = None) -> Path:
     """One renderer and immutable generation per explicit/task-bound run."""
     from taskplane import dashboard, flow_dashboard
     workspace = workspace.resolve()
@@ -592,33 +615,16 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
         snapshot["digest"] = primitives.content_fingerprint({k:v for k,v in model.items() if k != "snapshot"} | {
             "snapshot": {k:v for k,v in snapshot.items() if k != "digest"}})
         document = dashboard.standalone_document([flow_dashboard.render(str(workspace), model)], title="Taskplane — delivery")
-        if governed.get("visits"):
+        if governed.get("visits") and not model.get("final_observation"):
             after = controller.report(model["run"])
             if (after.get("revision"), after.get("status"), after.get("invalidation_pending")) != (
                     governed.get("revision"), governed.get("status"), governed.get("invalidation_pending")):
                 continue
             if model.get("graph", {}).get("status") == "current" and not depgraph.source_inputs_current(str(workspace), model["graph"]["data"]):
                 continue
-        prefix = "snapshot-" + hashlib.sha256(str(model["run"]).encode()).hexdigest()[:16] + "-" + snapshot["digest"]
-        immutable = storage.runtime_file(str(workspace), prefix + ".html")
-        primitives.atomic_write_bytes(str(immutable), document.encode())
-        primitives.atomic_json(storage.runtime_file(str(workspace), prefix + ".json"), model)
-        selection = target.with_suffix(".selection.json")
-        workflow.require(not selection.is_symlink(), "scope_violation", "Dashboard selection cannot follow a link.")
-        with primitives.file_lock(str(target)):
-            previous = json.loads(selection.read_text()) if selection.exists() else {}
-            if previous and previous.get("run") != model["run"] and not select:
-                # Concurrent background publishers retain their independent snapshot.
-                return immutable
-            if previous.get("run") == model["run"] and older_snapshot(previous, snapshot):
-                return immutable
-            primitives.atomic_write_bytes(str(target), document.encode())
-            primitives.atomic_json(selection, {"workspace": str(workspace), "root": snapshot.get("root"),
-                "run": model["run"], "revision": snapshot.get("revision", -1), "digest": snapshot["digest"],
-                "captured_at": snapshot.get("captured_at"), "observation_count": snapshot.get("observation_count"),
-                "generated_at": snapshot["generated_at"], "snapshot": str(immutable),
-                "presentation": "generated; opening and visible verification are host observations"})
-        return target.resolve()
+        from .snapshot_retention import publish_pair
+        return publish_pair(workspace, model, document, target=target, select=select,
+                            detached=detached, older=older_snapshot, pin_reason=pin_reason)
     raise workflow.Refusal("stale_checkpoint", "Dashboard inputs changed during publication; regenerate the selected run.")
 
 
@@ -638,7 +644,12 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
     except (OSError, ValueError, TypeError, KeyError):
         observation = {"usage": None, "usage_status": "unavailable"}
     parent = event.get("parent_session_id") or observation.get("parent") or observed_parent(event, session)
-    run = active_run(rows, session, parent)
+    admission = event.get("taskplane_admission")
+    run = ({"run": admission["run"], "session": admission["root"]} if isinstance(admission, dict)
+           else active_run(rows, session, parent))
+    if run is None:
+        selected = workflow_local.Harness(workspace, str(parent or session)).read().get("run")
+        run = next((r for r in reversed(rows) if r.get("kind") == "start" and r.get("run") == selected), None)
     if run is None:
         return {}
     name = str(event.get("hook_event_name") or "unknown")
@@ -656,6 +667,8 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
            "identity_observation": {k: event[k][:200] for k in ("thread_id", "session_id", "parent_session_id", "agent_id",
                "subagent_id", "agent_type", "parent_tool_call_id") if isinstance(event.get(k), str)},
            "binding_observation": event.get("taskplane_observed_binding"),
+           "admission": admission,
+           "attribution": "paired" if admission else "unpaired",
            "workspace_contract": event.get("taskplane_workspace_contract"),
            **observation}
     from .host_capabilities import runtime_identity
@@ -759,6 +772,7 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
 
 def _hook(event: dict[str, Any], *,
          governor: workflow_host.Controller | None = None) -> dict[str, Any]:
+    event.pop("taskplane_admission", None)
     session = session_id(event)
     parent = event.get("parent_session_id")
     if governor is None:
@@ -804,6 +818,11 @@ def _hook(event: dict[str, Any], *,
     # Overwrite caller data with the package actually executing this automatic hook.
     from .host_capabilities import runtime_identity
     event["taskplane_runtime_identity"] = runtime_identity()
+    event["taskplane_automatic_hook"] = True
+    if name == "PostToolUse":
+        pair = controller.complete_admission(event)
+        if pair:
+            event["taskplane_admission"] = pair
     harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" and controller.principal == controller.root else None
     selected = workflow_local.execution_entry(event)
     if harness:
@@ -844,6 +863,10 @@ def _hook(event: dict[str, Any], *,
     guarded_run = guarded.get("run") or (run if controller.adapter.profile == "protected_host" else None)
     if guarded_run and name == "PreToolUse":
         controller.guard(event, str(run))
+    elif name == "PreToolUse" and harness and harness.read().get("run"):
+        previous = controller.report(harness.read()["run"])
+        if previous.get("finished") or previous.get("retired"):
+            controller.followup_admission(event, previous["run"])
     if name == "Stop" and harness:
         stopped = harness.stop(event, guarded)
         if stopped:
@@ -874,6 +897,7 @@ def _hook(event: dict[str, Any], *,
 
 def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = None) -> dict[str, Any]:
     """Observe all exits, including denials. Optional journaling never grants access."""
+    event.pop('taskplane_admission', None)
     outcome, reason = "observed", None
     result: dict[str, Any] = {}
     try:
@@ -882,6 +906,21 @@ def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = N
         # Resolve the actor before root exemptions; never guess by recent work.
         native_session = os.environ.get("CODEX_THREAD_ID")
         reported = session_id(event)
+        if (governor is None and claude_session(event)
+                and event.get("hook_event_name") not in {"SubagentStart", "SubagentStop"}
+                and event.get("agent_id")):
+            actor = event["agent_id"]
+            workflow.require(isinstance(actor, str) and 0 < len(actor) <= 200 and actor.strip() == actor,
+                             "scope_violation", "Invalid Claude child actor identity.")
+            parent = event.get("parent_session_id") or event.get("session_id")
+            workflow.require(isinstance(parent, str) and parent and parent != actor,
+                             "scope_violation", "Claude child actor lacks its exact parent session.")
+            assert isinstance(parent, str)
+            workspace = workspace_binding.resolve_workspace(None, event=event)
+            parent_controller = _controller(workspace, parent, event=event)
+            parent_controller.claude_actor(actor, event)
+            event = {**event, "host": "claude", "host_reported_session": reported, "thread_id": actor,
+                     "parent_session_id": parent, "identity_basis": "structured Claude launch proof"}
         if (governor is None and not claude_session(event)
                 and event.get("hook_event_name") not in {"SubagentStart", "SubagentStop"}):
             actor = event.get("agent_id")
@@ -1004,7 +1043,11 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "context", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "inspect", "prevalidate", "context", "retire", "worker"])
+    parser.add_argument("--kind", choices=["contract", "result"])
+    parser.add_argument("--reference")
+    parser.add_argument("--offset", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=32768)
     parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
     parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable"])
     parser.add_argument("--grant", default="")
@@ -1062,7 +1105,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     def show(payload: dict[str, Any]) -> None:
         if payload.get("reason") and protected.get("run"):
             payload = {**payload, "workflow": {**protected, "status": payload["status"]}}
-        if not workspace_validated:
+        if not workspace_validated or args.action in {"inspect", "prevalidate"}:
             print(json.dumps(payload))  # Error summaries must not initialize a scratch context store.
         else:
             emit(payload, workspace, args.action, full=args.full or not compact)
@@ -1113,9 +1156,30 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         parent = observed_parent({}, session)
         controller, protected = select_controller(workspace, session, parent, profile=args.profile,
                                                   legacy=run, governor=governor)
+        if governor is None and claude_session({}) and args.action == 'worker' and args.operation == 'claim':
+            from .host_capabilities import native_invocation_identity
+            invocation = native_invocation_identity('claude', workspace, list(sys.argv))
+            workflow.require(invocation is not None, 'unsupported_authority',
+                             'Claude worker CLI invocation identity is unavailable; inherited parent environment cannot claim a child grant.')
+            # A future host channel must bind this exact invocation. The installed
+            # cooperative adapter currently supplies no such channel.
+            assert invocation is not None
+            workflow.require(invocation.get('root') == controller.root
+                             and invocation.get('workspace') == str(workspace)
+                             and invocation.get('principal') == controller.principal
+                             and controller.principal != controller.root,
+                             'unsupported_authority', 'Worker invocation does not match the selected native principal.')
         if controller.principal != controller.root:
             workflow.require(args.action == "context" or args.action == "worker" and args.operation == "claim",
                              "scope_violation", "Worker CLI is limited to claim and scoped context.")
+        if args.action in {"inspect", "prevalidate"}:
+            workflow.require(args.run, "invalid_evidence", "Select the exact run for recovery inspection.")
+            recovery_read = (controller.inspect(args.run, args.kind or "", args.reference or "",
+                                         offset=args.offset, limit=args.limit)
+                      if args.action == "inspect" else controller.prevalidate(args.run,
+                          revision=args.expected_revision, output=args.output or "", tasks=args.tasks or ""))
+            show(recovery_read)
+            return 0
         if args.action == "worker":
             from .context import encode
             workflow.require(args.run and args.operation and len((args.worker_json or "{}").encode()) <= 65536,
@@ -1167,16 +1231,37 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                   "guidance": harness.guidance(protected)})
             return 0
         before_measurement: dict[str, Any] | None = None
+        outgoing_run = deepcopy(run)
+        outgoing_state = deepcopy(protected)
+        if args.action == "start" and not outgoing_state.get("run"):
+            outgoing_run = next((r for r in reversed(rows) if r.get("kind") == "start"
+                                 and r.get("session") == controller.root), None)
+            if outgoing_run:
+                try:
+                    outgoing_state = controller.report(outgoing_run["run"])
+                except workflow.Refusal as exc:
+                    if exc.reason != "state_unavailable":
+                        raise
+                    # A journal-only predecessor has no committed controller
+                    # state to close. It stays legacy evidence, not a start gate.
+                    outgoing_run = None
+                    observation_errors.append("Prior journal has no governed run; legacy usage remains unverified.")
         measured_at = datetime.now(timezone.utc).isoformat()
-        if run and args.action not in ("report", "start"):
+        if outgoing_run and args.action != "report":
             try:
-                before_measurement = flow_usage.reconcile(run, rows)
+                before_measurement = reconcile_usage(outgoing_run, rows, outgoing_state)
             except (OSError, ValueError, TypeError, KeyError):
                 observation_errors.append("Transition counters unavailable; phase allocation remains partial.")
         start_counter = counter({}, session) if args.action == "start" else {}
+        committed_state: dict[str, Any] | None = None
         if args.action == "start":
             from . import workflow_evidence
             scope = workflow_evidence.object_file(workspace, args.scope) if args.scope else None
+            start_graph = None
+            if not protected.get('run') or args.replace_run:
+                start_graph = depgraph.scan(str(workspace), decompose=True)
+                workflow.require(not depgraph.scan_quality(start_graph).get("degraded"),
+                                 "invalid_evidence", "Repair the source graph before starting the workflow.")
             if harness and not protected.get("run"):
                 selected_entry = harness.read().get("entry") if harness.read().get("selected") else None
                 standalone_phase = {"tp-engineering": "engineering", "tp-northstar": "engineering",
@@ -1188,36 +1273,38 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                                       "goal": args.goal, "native_reference": args.native_event,
                                       "scope": scope, "request_reference": args.request_reference, "tasks": args.tasks,
                                       "replace_run": args.replace_run, "expected_revision": args.expected_revision})
+            committed_state = state
             if harness:
-                if args.replace_run:
-                    harness.select("tp-" + (args.phase or "product") if args.standalone else "tp-go",
-                                   args.request_reference, state)
-                harness.bind(state)
+                try:
+                    if args.replace_run:
+                        harness.select("tp-" + (args.phase or "product") if args.standalone else "tp-go",
+                                       args.request_reference, state)
+                    harness.bind(state)
+                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                    observation_errors.append("Run started; harness selection or binding observation unavailable.")
             if not any(r.get("kind") == "start" and r.get("run") == state["run"] for r in rows):
-                graph = depgraph.scan(str(workspace), decompose=True)
-                record_scan(workspace, graph)
-                workflow.require(not depgraph.scan_quality(graph).get("degraded"),
-                                 "invalid_evidence", "Repair the source graph before preparing a checkpoint.")
-                if "tasks" not in artifacts:
-                    task_path = storage.runtime_file(str(workspace), "tasks.json")
-                    primitives.atomic_json(task_path, {"tasks": [{
-                        "id": "SCOPE", "title": args.goal or "Prepare the requested outcome",
-                        "owner": state["root"], "dependencies": [], "status": "working",
-                        "paths": state["scope"]["paths"][workflow.current(state)["phase"]],
-                        "criteria": state["scope"]["criteria"],
-                        "verification": "Produce criterion evidence and request human stage acceptance."}]})
-                    artifacts["tasks"] = str(task_path.relative_to(workspace))
                 run = {"kind": "start", "run": state["run"], "session": state["root"],
                        "at": state.get("started_at"), "goal": state.get("goal", args.goal),
-                       "phase": workflow.current(state)["phase"], "artifacts": artifacts,
-                       "captured": capture_attachments(workspace, artifacts), "hook_setup": "host_adapter", **start_counter}
-                append(workspace, run)
-                initial = {"sessions": [{"session": state["root"], "role": "orchestrator", "native_usage": start_counter.get("usage"),
-                    "status": "measured" if start_counter.get("usage_status") == "observed" else "unavailable"}]}
+                       "phase": workflow.current(state)["phase"], "hook_setup": "host_adapter", **start_counter}
                 try:
+                    if start_graph:
+                        record_scan(workspace, start_graph)
+                    if "tasks" not in artifacts:
+                        task_path = storage.runtime_file(str(workspace), "tasks.json")
+                        primitives.atomic_json(task_path, {"tasks": [{
+                            "id": "SCOPE", "title": args.goal or "Prepare the requested outcome",
+                            "owner": state["root"], "dependencies": [], "status": "working",
+                            "paths": state["scope"]["paths"][workflow.current(state)["phase"]],
+                            "criteria": state["scope"]["criteria"],
+                            "verification": "Produce criterion evidence and request human stage acceptance."}]})
+                        artifacts["tasks"] = str(task_path.relative_to(workspace))
+                    run.update(artifacts=artifacts, captured=capture_attachments(workspace, artifacts))
+                    append(workspace, run)
+                    initial = {"sessions": [{"session": state["root"], "role": "orchestrator", "native_usage": start_counter.get("usage"),
+                        "status": "measured" if start_counter.get("usage_status") == "observed" else "unavailable"}]}
                     append(workspace, usage_point(state, initial, observed_at=measured_at))
-                except (OSError, ValueError, primitives.StateError):
-                    observation_errors.append("Run started; initial phase observation unavailable.")
+                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                    observation_errors.append("Run started; initial graph, journal or phase observation unavailable.")
         elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide", "retire"}:
             workflow.require(run, "state_unavailable", "No active workflow binding.")
             assert run is not None
@@ -1225,8 +1312,12 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 expected_revision=args.expected_revision, output=(args.assessment if args.action == "auto-decide" else args.output) or "",
                 tasks=args.tasks or "", phase=args.phase, assessment_json=args.assessment_json,
                 native_reference=json.dumps({"request_reference": args.request_reference, "reason": args.note}) if args.action == "retire" else args.policy_json if args.action == "policy" else args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
+            committed_state = state
             if harness and (state.get("finished") or state.get("retired")):
-                harness.update(selected=False, waiting=None)
+                try:
+                    harness.update(selected=False, waiting=None)
+                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                    observation_errors.append("Workflow action committed; harness completion observation unavailable.")
             try:
                 append(workspace, {"kind": args.action, "run": run["run"], "session": run["session"],
                                    "phase": workflow.current(state)["phase"], "note": args.note[:1000],
@@ -1247,7 +1338,41 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             append(workspace, {"kind": args.action, "run": run["run"], "session": run["session"],
                                "phase": args.phase[:80], "note": args.note[:1000],
                                "artifacts": artifacts, "captured": capture_attachments(workspace, artifacts), **counter({}, session)})
-        if before_measurement and run:
+        if outgoing_run and outgoing_state.get("run") and committed_state and args.action in {"finish", "start"}:
+            try:
+                from . import flow_telemetry
+                after_outgoing = controller.report(outgoing_state["run"])
+                transition = "finish" if args.action == "finish" else "replacement" if args.replace_run else "interval_closed"
+                cutoff = measured_at
+                closing = None
+                measurement = before_measurement or {"sessions": [], "token_coverage": {"status": "unavailable"}}
+                if args.action == "start" and committed_state["run"] != outgoing_state["run"]:
+                    cutoff = committed_state["started_at"]
+                    closing = {**start_counter, "session": controller.root, "at": cutoff}
+                    measurement = reconcile_usage(outgoing_run, rows, outgoing_state, closing=closing)
+                if (after_outgoing["revision"] != outgoing_state["revision"]
+                        or args.action == "start" and committed_state["run"] != outgoing_state["run"]):
+                    closure = flow_telemetry.commit_boundary(workspace, outgoing_state, after_outgoing,
+                        transition, measurement, measured_at, cutoff=cutoff, closing_counter=closing,
+                        host=outgoing_run.get("host", "codex"), next_state=committed_state if args.action == "start" else None)
+                    if not any(r.get("closure_id") == closure["id"] for r in read_events(workspace)):
+                        append(workspace, closure["point"])
+                # Retry rendering from the original committed sample, never replace it with new counters.
+                for closure in flow_telemetry.read_boundaries(workspace, outgoing_state["run"], controller.root):
+                    current_rows = read_events(workspace)
+                    if any(r.get("kind") == "final_snapshot" and r.get("closure_id") == closure["id"] for r in current_rows):
+                        continue
+                    closing_model = report(workspace, outgoing_state["run"], governor=controller)
+                    if closing_model:
+                        frozen = flow_telemetry.frozen_model(closing_model, closure, current_rows)
+                        snapshot = publish_dashboard(workspace, outgoing_state["run"], governor=controller,
+                            supplied=frozen, detached=True, pin_reason="closure/" + closure["id"])
+                        append(workspace, {"kind": "final_snapshot", "run": outgoing_state["run"],
+                            "session": controller.root, "closure_id": closure["id"], "artifact": str(snapshot),
+                            "label": closure["label"], "cutoff": closure["cutoff"]})
+            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                observation_errors.append("Lifecycle committed; frozen usage closure or publication unavailable.")
+        if before_measurement and run and args.action not in {"start", "finish"}:
             try:
                 after_state = controller.report(str(run["run"]))
                 if after_state.get("visits"):
@@ -1273,10 +1398,23 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                     supplied=result, select=args.action == "start"))
             except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
                 result["evidence_errors"].append("Optional observations or dashboard refresh unavailable.")
-        if result and harness and not result.get("historical"):
-            result["harness"] = harness.readiness(controller.report())
-        empty = {**controller.report(), "harness": harness.readiness(protected)} if harness else controller.availability()
-        show(result if result else empty)
+        if result:
+            if harness and not result.get("historical"):
+                try:
+                    result["harness"] = harness.readiness(controller.report())
+                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                    result["harness"] = {"status": "unavailable"}
+                    result["evidence_errors"].append("Optional harness readiness observation unavailable.")
+            show(result)
+        else:
+            empty = controller.report() if harness else controller.availability()
+            if harness:
+                try:
+                    empty["harness"] = harness.readiness(protected)
+                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                    empty["harness"] = {"status": "unavailable"}
+                    empty.setdefault("evidence_errors", []).append("Optional harness readiness observation unavailable.")
+            show(empty)
         return 0
     except workflow.Refusal as exc:
         failure = exc.result()

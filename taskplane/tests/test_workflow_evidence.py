@@ -558,7 +558,7 @@ def test_verified_lens_dashboard_preserves_token_coverage_and_plain_labels(tmp_p
 
 
 def test_observed_unavailable_capacity_never_completes_required_lenses(tmp_path):
-    from taskplane.tests.test_worker_runtime import reserve
+    from taskplane.tests.test_worker_runtime import parent_pair
     from taskplane.context_handoff import Session, consume_required
     c, s, out, rows = native_lens_fixture(tmp_path, serial=True)
     for row in rows:
@@ -567,6 +567,7 @@ def test_observed_unavailable_capacity_never_completes_required_lenses(tmp_path)
     task_path = '.taskplane/native-tasks.json'
     (tmp_path/task_path).write_text(json.dumps({'tasks':rows}))
     s = c.update_tasks(s['run'], s['revision'], task_path)
+    parent_pair(c)
     status = c.worker(s['run'], 'capacity', revision=s['revision'], request={'capacity':dict(
         host_slots=0, includes_root=False, status='unavailable', reason='Native host adapter unavailable', reference='host/observed-error')})
     assert {row['status'] for row in status['lens_coverage']} == {'unavailable'}

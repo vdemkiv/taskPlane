@@ -5,7 +5,7 @@ records repeat message usage; count each API message once, not each JSONL row.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -143,7 +143,10 @@ def read_snapshot(path: Path, session: str, *, agent: str | None = None,
         measured.append({k: end_value[k] - baseline[k] for k in USAGE_KEYS})
     total = ({key: sum(m[key] for m in measured) for key in USAGE_KEYS}
              if measured or (start is not None and not errors) else None)
+    sample_times = [at for records in messages.values() for at, value in records if at is not None and value is not None]
     return {'usage': total, 'started': started,
+            'measured_at': datetime.fromtimestamp(max(sample_times), timezone.utc).isoformat() if sample_times else None,
+            'interval': {'start': start, 'end_exclusive': cutoff},
             'partial': bool(errors), 'errors': sorted(errors), 'active': active}
 
 
@@ -206,6 +209,7 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
                        'usage': usage, 'native_usage': native,
                        'status': 'partial' if snapshot.get('partial') else 'measured' if usage else 'unavailable',
                        'errors': sorted(set(session_errors)),
+                       'measured_at': snapshot.get('measured_at'), 'measurement_source': 'native_sample',
                        'attribution_unknown': bool(session_errors),
                        'basis': 'start baseline' if sid == root else 'owned message interval [start, end)',
                        'attribution_schema': 'taskplane.owned-interval/v1' if sid != root else None,

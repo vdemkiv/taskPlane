@@ -6,7 +6,7 @@ Checks enforce the Taskplane API contract and observed hooks, not host isolation
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import heapq
 import json
@@ -277,18 +277,29 @@ class LocalWorkflow:
                   and value.get("choice") == choice(excerpt) and choice(excerpt) is not None,
                   "invalid_evidence", "The response or its human provenance is unclear. Ask what the user wants to do with this checkpoint; no exact wording is required.")
         observed = timestamp(source.get("observed_at"))
+        if event_id in prior:
+            old_source = prior[event_id].get("provenance", {}).get("source", {})
+            w.require(all(source.get(k) == v for k, v in old_source.items()),
+                      "stale_checkpoint", "Conflicting native event replay.")
+        recorded_at = (prior[event_id].get("provenance", {}).get("recorded_at")
+                       if event_id in prior else None) or datetime.now(timezone.utc).isoformat()
         expected = prior[event_id]["binding"] if event_id in prior else expected
         w.require(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
                   "stale_checkpoint", "Observed decision has a stale or foreign checkpoint binding.")
         from .workflow_approval import decision_phase
         named_phase = decision_phase(excerpt)
+        supplied = value.get("binding") or {}
+        db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
+        run = db.get("runs", {}).get(supplied.get("run"), {})
+        stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
+        legacy_replay = event_id in prior and not prior[event_id].get("provenance", {}).get("recorded_at")
+        if not legacy_replay:
+            w.require(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
+                      <= timestamp(recorded_at), "invalid_evidence",
+                      "Decision must follow run and checkpoint submission and cannot be in the future.")
         if named_phase:
             # Resolve the named visit under the Controller's existing store lock.
             # A correct binding cannot turn 'Build approved' into Product consent.
-            supplied = value.get("binding") or {}
-            db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
-            run = db.get("runs", {}).get(supplied.get("run"), {})
-            stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
             w.require(stage.get("phase") == named_phase, "invalid_evidence",
                       "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         if value.get("checkpoint_explicit") is not True:
@@ -297,20 +308,33 @@ class LocalWorkflow:
                       and isinstance(presentation.get("reference"), str) and presentation["reference"],
                       "invalid_evidence", "Brief approval needs the presented checkpoint and ordering evidence.")
             w.require(timestamp(presentation.get("at")) < observed, "invalid_evidence", "Response precedes presentation.")
+            if not legacy_replay:
+                w.require(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
+                          "invalid_evidence", "Presentation precedes checkpoint submission.")
         else:
             w.require(expected["checkpoint"] in excerpt, "invalid_evidence", "Explicit approval must name the checkpoint.")
-        return {"event_id": event_id, "human": True, "automatic": False, "choice": value["choice"],
+        result = {"event_id": event_id, "human": True, "automatic": False, "choice": value["choice"],
                 "binding": deepcopy(expected), "assurance": "observed", "provenance": {
                     "source": {k:source[k] for k in ("kind","reference","conversation","actor","automatic","observed_at")},
                     "recorder": recorder, "excerpt": excerpt,
                     "presentation": {k:value["presentation"][k] for k in ("checkpoint","reference","at")}
                         if value.get("checkpoint_explicit") is not True else None,
                     "checkpoint_explicit": value.get("checkpoint_explicit", False)}}
+        if not legacy_replay:
+            result["provenance"].update(recorded_at=recorded_at, chronology="verified/v1")
+        if event_id in prior:
+            w.require(result == prior[event_id], "stale_checkpoint", "Conflicting native event replay.")
+        return result
 
     def prompt_reference(self, event: dict[str, Any], state: dict[str, Any]) -> str | None:
         # Named hooks may carry an observed envelope. Plain hook-shaped text is
         # not enough to establish what checkpoint was shown before the response.
         value = event.get("taskplane_decision")
+        if isinstance(value, dict):
+            source = value.get("source", {})
+            for field, expected in (("timestamp", source.get("observed_at")), ("message_id", source.get("reference"))):
+                w.require(field not in event or event[field] == expected, "invalid_evidence",
+                          "Observed approval differs from supplied native prompt metadata.")
         return json.dumps(value) if isinstance(value, dict) else None
 
     def control_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -339,7 +363,7 @@ class LocalWorkflow:
                         == self.workspace/".taskplane/dashboard.html")
         if words[2:] in (["version"], ["version", "--verify"], ["help"], ["--help"], ["flow", "--help"]):
             return True
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         selections = [i for i, word in enumerate(words) if word == "--workspace" or word.startswith("--workspace=")]
@@ -861,7 +885,12 @@ class Harness:
         if not state.get('visits') or not w.current(state).get('packet'):
             return None
         stage = w.current(state)
-        return {**{k: v for k, v in w.binding(state, stage['packet']).items() if k != 'revision'},
+        checkpoint_binding = w.binding(state, stage['packet'])
+        if (stage.get('phase') == 'plan' and stage.get('decision') == 'approved'
+                and stage.get('approved_scope_digest') == primitives.content_fingerprint(state['scope'])
+                and stage.get('checkpoint_scope_digest')):
+            checkpoint_binding['scope_digest'] = stage['checkpoint_scope_digest']
+        return {**{k: v for k, v in checkpoint_binding.items() if k != 'revision'},
                 'packet_revision': stage.get('packet_revision')}
 
     def native_snapshot(self, state: dict[str, Any], artifact: str, *, current: bool = True) -> tuple[Path, dict[str, Any]]:
@@ -897,6 +926,8 @@ class Harness:
         w.require(outcome in {'linked', 'verified', 'blocked'} and 0 < len(note.strip()) <= 2048,
                   'invalid_evidence', 'Record the actual link/open outcome and its evidence or limitation.')
         immutable, _ = self.native_snapshot(state, artifact)
+        from .snapshot_retention import pin
+        pin(self.workspace, immutable, 'harness-presentation/' + state['run'])
         self.update(presentation={'binding': self.binding(state), 'checkpoint': self.checkpoint(state),
                                   'artifact': str(immutable), 'outcome': outcome, 'note': note.strip(),
                                   'assurance': 'observed', 'digest': hashlib.sha256(immutable.read_bytes()).hexdigest(),

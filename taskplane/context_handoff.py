@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from copy import deepcopy
 import json
 import shlex
@@ -10,7 +11,7 @@ from typing import Any
 import uuid
 
 from . import depgraph, primitives, workflow as w, workflow_evidence as evidence
-from .context import Store, digest, encode, signed, PAGE_LIMIT
+from .context import Store, digest, encode, signed, PAGE_LIMIT, OBJECT_LIMIT, REFERENCE_SCHEMA
 from .context_views import PHASE_BYTES, collection, view
 
 CONTRACT = "bounded/v1"
@@ -57,6 +58,16 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
     items: list[dict[str, Any]] = []
     semantic = state.get("context_contract") == SEMANTIC_CONTRACT
     artifact_ids: set[str] = set()
+    # Original obligations are independent of the new task's narrower criteria.
+    # Their immutable bodies survive predecessor archival and path replacement.
+    for finding in evidence.finding_register(state):
+        if finding["disposition"] == "resolved":
+            continue
+        identity = finding["origin_run"] + "/" + finding["id"]
+        items.append({"id": "finding/" + identity, "kind": "finding", "body": finding})
+        for ref in finding.get("evidence_refs", []):
+            items.append({"id": "finding-evidence/" + identity + "/" + ref["sha256"],
+                          "kind": "finding-evidence", "body": Store(workspace).resolve(ref)})
     for visit in state["visits"][:state["index"]]:
         packet = visit.get("packet")
         if visit.get("superseded") or visit["decision"] != "approved" or not packet:
@@ -154,13 +165,37 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
     return items, [row["id"] for row in selected], criteria, {"authority": authority, "coverage": coverage}
 
 
+class _PreviewStore(Store):
+    """Exact canonical trees in memory, with read-through to existing evidence."""
+
+    def __init__(self, workspace: Path):
+        super().__init__(workspace)
+        self.objects: dict[str, bytes] = {}
+
+    def _object(self, kind: str, data: Any, source_key: str, form: str) -> dict[str, Any]:
+        raw = encode({"schema": "taskplane.context-object/v1", "kind": kind,
+                      "source_key": source_key, "form": form, "data": data})
+        w.require(len(raw) <= OBJECT_LIMIT, "context_overflow", "Canonical context node is oversized.")
+        key = hashlib.sha256(raw).hexdigest()
+        self.objects[key] = raw
+        return {"schema": REFERENCE_SCHEMA, "kind": kind, "sha256": key,
+                "bytes": len(raw), "source_key": source_key}
+
+    def _bytes(self, key: str) -> bytes:
+        return self.objects[key] if key in self.objects else super()._bytes(key)
+
+    def register(self, binding: dict[str, Any], refs: list[dict[str, Any]]) -> None:
+        return None
+
+
 class Session:
     def __init__(self, workspace: Path, state: dict[str, Any], task: str | None = None, *,
-                 consumer: dict[str, Any] | None = None, snapshot: dict[str, Any] | None = None):
+                 consumer: dict[str, Any] | None = None, snapshot: dict[str, Any] | None = None,
+                 persist: bool = True):
         w.require(state.get("run") and state.get("visits") and not state.get("superseded_by"),
                   "invalid_context", "Context requires the current bound run.")
         self.workspace, self.state, self.task = workspace.resolve(), state, task
-        self.store = Store(self.workspace)
+        self.store = Store(self.workspace) if persist else _PreviewStore(self.workspace)
         self.binding = binding(state)
         self.phase = w.current(state)["phase"]
         if snapshot is None:

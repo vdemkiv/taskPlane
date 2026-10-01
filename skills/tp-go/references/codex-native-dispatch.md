@@ -1,5 +1,13 @@
 # Native delegation
 
+Reservation and dispatch require a current matched automatic parent hook pair
+for the selected workspace, root, run, visit and runtime. A CLI workspace option
+does not prove hook propagation. Inspect readiness before reserving workers;
+missing observations require a real host event, never an authored readiness flag.
+Keep fixture protocol checks separate from live host execution. In particular,
+an inherited Claude environment or prompt grant does not identify a child CLI
+invocation; unsupported invocation identity remains unavailable.
+
 Native dispatch is the default for useful independent work under this skill.
 Every new run scope must declare `execution_contract: "native-default/v1"`; this
 is mandatory in this entry flow. Publish typed `execution: "native_required"`

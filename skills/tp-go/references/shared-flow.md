@@ -164,6 +164,15 @@ and do not silently migrate old observation journals into accepted decisions.
 
 ## Shared evidence at every phase
 
+Before submission, use `flow prevalidate --workspace ROOT --run RUN
+--expected-revision N --output PACKET --tasks TASKS` to check the same packet
+contract without sealing it. Prevalidation grants no authority and submission
+rechecks the current files. At a sealed checkpoint, bounded recovery reads are
+available through `flow inspect --workspace ROOT --run RUN --kind contract
+--reference cli-reference --offset 0 --limit 32768` (or `shared-flow`). Use
+`--kind result --reference SHA256` only for a result reference registered to that
+run. Preserve failed verification attempts when a repaired attempt passes.
+
 1. Read `flow report --workspace <root> [--run <id>]` and reuse the relevant scope,
    approvals, task plan and findings. Do not select an unrelated latest run. A full
    route starts at Product. Standalone entry uses `--standalone --phase
