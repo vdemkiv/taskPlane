@@ -548,7 +548,7 @@ def frozen_snapshot_index(workspace, transition="finish"):
 
 @pytest.mark.parametrize("transition", ["finish", "replacement", "interval_closed"])
 def test_frozen_snapshot_links_bind_original_artifact_and_survive_collection(tmp_path, transition):
-    workspace = tmp_path / 'workspace with spaces & "quotes"'
+    workspace = tmp_path / "workspace with spaces & 'quotes'"
     workspace.mkdir()
     current, artifact, closure = frozen_snapshot_index(workspace, transition)
     before = artifact.read_bytes(), artifact.with_suffix(".json").read_bytes()

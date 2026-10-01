@@ -285,8 +285,17 @@ def test_control_json_allows_literal_conditions_but_never_shell_expansion():
 
 def decision(s, *, text="Approved", event="message-1"):
     from datetime import datetime, timezone
+    import time
     presented = datetime.now(timezone.utc).isoformat()
-    observed = datetime.now(timezone.utc).isoformat()
+    # Windows clocks can return the same timestamp for consecutive reads. This
+    # fixture represents a later response; keep the runtime's strict ordering.
+    for _ in range(1000):
+        observed = datetime.now(timezone.utc).isoformat()
+        if observed > presented:
+            break
+        time.sleep(0.001)
+    else:
+        raise AssertionError("Fixture clock did not advance after presentation")
     binding=w.binding(s,w.current(s)["packet"])
     return {"schema":"taskplane.observed-decision/v1","event_id":event,"choice":local.choice(text),
             "binding":binding,"excerpt":text,"recorder":"root_orchestrator",
