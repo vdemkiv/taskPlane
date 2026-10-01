@@ -805,6 +805,12 @@ def _hook(event: dict[str, Any], *,
                 raise workflow.Refusal('scope_violation', str(exc)) from None
     if governor is None and _workspace_admin(event):
         return {}  # The administration command still validates proof and active-state recovery.
+    if (governor is None and event.get('hook_event_name') in {'PreToolUse', 'PostToolUse'}
+            and not any(event.get(k) for k in ('parent_session_id', 'agent_id', 'subagent_id'))
+            and runtime_command.installed(words, cwd, absolute=True)
+            and words[2:] in (['version', '--verify'], ['help', '--md'])):
+        return {'hookSpecificOutput': {'hookEventName': event['hook_event_name'],
+                'additionalContext': 'Read-only runtime diagnostics do not create or validate workspace binding.'}}
     try:
         workspace = workspace_binding.resolve_workspace(None, event=event)
         contract = workspace_binding.ensure(workspace)

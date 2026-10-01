@@ -109,6 +109,10 @@ Dashboard publication, immutable usage observations and presentation pins remain
 available in unbound local workflows on Windows. Snapshot garbage collection
 requires descriptor-relative no-follow operations; it reports a skipped result
 and preserves all snapshots when those operations are unavailable.
+Claude transcript-based worker identity also requires no-follow reads. Runtimes
+without them report the reader as unsupported and cannot admit a worker from
+that observation. Read-only installed version and help commands remain available
+to diagnose these capability limits before workspace binding.
 
 No live Cowork certification is claimed. Claude fixtures must use Claude-shaped
 `session_id` and `Bash.command` events and assert the selected adapter; Codex-shaped

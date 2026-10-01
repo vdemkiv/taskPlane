@@ -21,6 +21,15 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
     if capacity:
         return "capacity"
     if (filename in ("test_context.py", "test_context_delivery.py", "test_workspace_binding.py")
+            or filename in ("test_farm_telemetry.py", "test_farm_workers.py")
+            or (filename == "test_review_remediation.py" and name.startswith((
+                "test_required_binding_allows_only_exact_installed_diagnostics",
+                "test_exact_argv_foreign_interpreter_refused_in_execution_directory",
+                "test_missing_binding_exemptions_resolve_actual_interpreter",
+                "test_windows_interpreter_search_respects_current_directory_policy",
+                "test_valid_interpreter_identity_uses_execution_cwd")))
+            or (filename == "test_native_worker_dispatch.py"
+                and name == "test_claude_start_stop_contract_and_child_control_refusal")
             or (filename == "test_workflow_local.py"
                 and name.startswith("test_extracted_packages_recover_displaced_state_through_declared_hooks["))):
         return "portability"

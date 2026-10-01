@@ -8,6 +8,7 @@ import pytest
 
 from taskplane import worker_runtime as wr, workflow as w
 from taskplane.tests.test_worker_runtime import setup, reserve, launch, consume
+from taskplane.tests.test_farm_workers import requires_native_reader
 
 
 def metadata(path, state, row, child='native-uuid'):
@@ -108,6 +109,7 @@ def test_historical_name_only_spawn_and_list_status_resolve_actual_uuid(tmp_path
     assert 'Private result' not in json.dumps(c.report()['workers'])
 
 
+@requires_native_reader
 def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypatch):
     import re
     from taskplane import flow

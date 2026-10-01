@@ -12,6 +12,9 @@ from taskplane import host_native, worker_runtime as workers, workflow as w
 from taskplane.context import digest
 from taskplane.context_handoff import binding
 
+requires_native_reader = pytest.mark.skipif(
+    not claude.supported_reader(), reason='Native transcript identity requires no-follow reads')
+
 
 def fixture(tmp_path):
     observed = datetime.now(timezone.utc)
@@ -107,6 +110,7 @@ def test_incomplete_launch_is_unknown_not_completion(tmp_path, missing):
     assert row['worker_id'] is None and row['state'] == 'launch_pending'
 
 
+@requires_native_reader
 def test_bounded_reader_ignores_output_path_and_rejects_unsafe_files(tmp_path, monkeypatch):
     state, row, records, headers = fixture(tmp_path)
     records[1]['toolUseResult']['outputFile'] = '/unrelated/private/output'
@@ -126,6 +130,19 @@ def test_bounded_reader_ignores_output_path_and_rejects_unsafe_files(tmp_path, m
     assert claude.observe('parent', row, {})['status'] == 'conflict'
 
 
+def test_unsupported_native_reader_never_reads_or_admits_identity(tmp_path, monkeypatch):
+    state, row, _, _ = fixture(tmp_path)
+    monkeypatch.setattr(claude, 'supported_reader', lambda: False)
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError('Unsupported native reader attempted to open a transcript')
+    monkeypatch.setattr(claude, '_read', unexpected_read)
+    answer = claude.observe('parent', row, {})
+    assert answer['status'] == 'unsupported' and 'no-follow' in answer['reason']
+    workers.reconcile(tmp_path, state, row, answer)
+    assert row['worker_id'] is None
+
+
+@requires_native_reader
 def test_callless_stop_before_result_reconciles_exact_attempt(tmp_path, monkeypatch):
     state, row, records, headers = fixture(tmp_path)
     other = deepcopy(row); other.update(grant_id='other', call_id='other-call')

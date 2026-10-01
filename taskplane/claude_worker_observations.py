@@ -136,6 +136,11 @@ def _open_regular(path: Path) -> int:
         os.close(directory)
 
 
+def supported_reader() -> bool:
+    return (os.open in os.supports_dir_fd and hasattr(os, 'O_NOFOLLOW')
+            and hasattr(os, 'O_DIRECTORY'))
+
+
 def _read(path: Path, *, first_only: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     fd = _open_regular(path)
     with os.fdopen(fd, "rb") as stream:
@@ -179,6 +184,8 @@ def observe(parent: str, attempt: Mapping[str, Any], event: Mapping[str, Any]) -
     supplied = event.get("transcript_path") or event.get("transcript")
     if supplied is not None and str(path) != supplied:
         return _answer("conflict", "Hook transcript differs from selected native parent")
+    if not supported_reader():
+        return _answer("unsupported", "Native no-follow transcript reads are unavailable on this runtime")
     try:
         rows, source = _read(path)
         # Discover the child only from the exact structured result, never text.

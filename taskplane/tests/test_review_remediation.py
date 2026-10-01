@@ -2,6 +2,7 @@
 from copy import deepcopy
 import io
 import json
+import os
 from pathlib import Path
 import shlex
 import sys
@@ -11,6 +12,8 @@ import pytest
 from taskplane import flow, primitives, runtime_command, workflow as w
 from taskplane import workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_local import setup, submit, decision, decide
+
+PYTHON_NAME = 'python.exe' if os.name == 'nt' else 'python3'
 
 
 @pytest.fixture
@@ -112,7 +115,10 @@ def test_runtime_collision_reports_both_paths_and_keeps_foreign_denial(root, too
 
 @pytest.mark.parametrize('tool', ['exec_command', 'Bash'])
 @pytest.mark.parametrize('tail', [('version', '--verify'), ('help', '--md')])
-def test_required_binding_allows_only_exact_installed_diagnostics(root, tool, tail, monkeypatch, capsys):
+@pytest.mark.parametrize('directory_support', [False, True])
+def test_required_binding_allows_only_exact_installed_diagnostics(root, tool, tail, monkeypatch, capsys, directory_support):
+    if not directory_support:
+        monkeypatch.setattr(os, 'supports_dir_fd', set())
     monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
     monkeypatch.setenv('TASKPLANE_WORKSPACE', str(root))
     event = runtime(root, *tail, tool=tool)
@@ -518,7 +524,7 @@ def interpreters(root, monkeypatch):
     import os
     selected, execution = root / 'selected', root / 'execution'
     selected.mkdir(); execution.mkdir()
-    for suffix in ['python3', 'bin/python3']:
+    for suffix in [PYTHON_NAME, 'bin/' + PYTHON_NAME]:
         trusted, foreign = selected / suffix, execution / suffix
         trusted.parent.mkdir(exist_ok=True); foreign.parent.mkdir(exist_ok=True)
         trusted.symlink_to(sys.executable)
@@ -531,12 +537,25 @@ def interpreters(root, monkeypatch):
 def interpreter_event(interpreters, mode, tail, monkeypatch):
     import os
     selected, execution, search = interpreters
-    executable = './python3' if mode == 'relative-executable' else 'python3'
+    executable = './' + PYTHON_NAME if mode == 'relative-executable' else PYTHON_NAME
     if mode != 'relative-executable':
         monkeypatch.setenv('PATH', ('bin' if mode == 'relative-PATH' else '') + os.pathsep + search)
     event = command(selected, executable, str(Path(flow.__file__).with_name('tp.py')), *tail)
     event['tool_input']['workdir'] = str(execution)
     return event
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows executable search policy')
+@pytest.mark.parametrize('exclude_current_directory', [False, True])
+def test_windows_interpreter_search_respects_current_directory_policy(interpreters, monkeypatch, exclude_current_directory):
+    selected, execution, _ = interpreters
+    monkeypatch.setenv('PATH', str(selected / 'bin'))
+    if exclude_current_directory:
+        monkeypatch.setenv('NoDefaultCurrentDirectoryInExePath', '1')
+    else:
+        monkeypatch.delenv('NoDefaultCurrentDirectoryInExePath', raising=False)
+    expected = Path(sys.executable).resolve() if exclude_current_directory else execution / PYTHON_NAME
+    assert runtime_command.interpreter(PYTHON_NAME, execution) == expected
 
 
 @pytest.mark.parametrize('mode', ['relative-executable', 'relative-PATH', 'empty-PATH'])
@@ -557,8 +576,9 @@ def test_exact_argv_foreign_interpreter_refused_in_execution_directory(interpret
     words = local.runtime_words(event)
     assert runtime_command.installed(words, selected)
     assert not runtime_command.installed(words, execution)
-    actual = subprocess.run(words, cwd=execution, capture_output=True, text=True, check=True)
-    assert actual.stdout.strip() == 'foreign-interpreter'
+    if os.name != 'nt':  # The foreign executable fixture is a POSIX shell script.
+        actual = subprocess.run(words, cwd=execution, capture_output=True, text=True, check=True)
+        assert actual.stdout.strip() == 'foreign-interpreter'
     with pytest.raises(w.Refusal, match='interpreter mismatch'):
         flow.hook(event, governor=controller)
     if lifecycle != 'bootstrap':
@@ -604,7 +624,7 @@ def test_valid_interpreter_identity_uses_execution_cwd(interpreters, mode, diffe
         event = interpreter_event(interpreters, mode, ['version', '--verify'], monkeypatch)
         if different_cwd:
             # A valid relative interpreter in the actual directory is supported too.
-            for suffix in ['python3', 'bin/python3']:
+            for suffix in [PYTHON_NAME, 'bin/' + PYTHON_NAME]:
                 (execution / suffix).unlink()
                 (execution / suffix).symlink_to(sys.executable)
         else:

@@ -290,7 +290,7 @@ def test_inventory_is_read_only_bounded_and_counts_nested_legacy_and_hardlinks(t
     nested = store / "nested" / ".taskplane" / "evidence.txt"
     nested.write_bytes(b"abc")
     snapshots.os.link(nested, store / "same-bytes.txt")
-    (store / "journal.jsonl").write_text('{}\n')
+    (store / "journal.jsonl").write_bytes(b'{}\n')
     inventory = snapshots.inventory(tmp_path)
     assert inventory["bytes"] == 9 and inventory["files"] == 3 and inventory["complete"]
     assert inventory["categories"]["journals"]["bytes"] == 3

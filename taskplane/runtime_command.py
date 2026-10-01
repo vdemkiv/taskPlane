@@ -60,14 +60,30 @@ def resolve_selection(value: str | None, event: dict[str, Any], fallback: Path) 
     return workspace_binding.resolve_workspace(selected, event={**event, 'cwd': str(cwd)})
 
 
+def _windows_current_directory(command: str) -> bool:
+    import ctypes
+    kernel = getattr(ctypes, 'WinDLL')('kernel32', use_last_error=True)
+    needed = kernel.NeedCurrentDirectoryForExePathW
+    needed.argtypes = [ctypes.c_wchar_p]
+    needed.restype = ctypes.c_int
+    return bool(needed(command))
+
+
 def interpreter(command: str, cwd: Path) -> Path | None:
     """Resolve executable paths and every PATH entry in the execution directory."""
     if os.path.dirname(command):
         found = shutil.which(str(cwd / command))
-    else:
-        search = os.pathsep.join(str(cwd / entry) for entry in os.get_exec_path())
-        found = shutil.which(command, path=search)
-    return Path(found).resolve() if found else None
+        return Path(found).resolve() if found else None
+    search = [cwd / entry for entry in os.get_exec_path()]
+    if os.name == 'nt' and _windows_current_directory(command):
+        search.insert(0, cwd)
+    # Passing a bare name to Windows which() can prepend this hook process's
+    # cwd. Resolve absolute candidates so only the command's cwd participates.
+    for directory in search:
+        found = shutil.which(str(directory / command))
+        if found:
+            return Path(found).resolve()
+    return None
 
 
 def installed(words: list[str], cwd: Path, *, absolute: bool = False) -> bool:
