@@ -28,6 +28,20 @@ clone does not update the running plugin. Verify the package source/version befo
 using new commands; the version parity check validates manifest agreement, not the
 identity of every unreleased source change.
 
+If a hook reports a runtime mismatch, compare the reported **executing hook runtime**
+and **requested runtime** paths. Select one Taskplane installation in the host's
+plugin settings, align its loaded skills and hooks, and reload the session before
+retrying that exact launcher. The diagnostic does not modify configuration or admit
+another installation's launcher. With required binding still missing, only exact
+installed `version --verify` and `help --md` diagnostics are admitted alongside the
+bounded discovery and workspace administration commands.
+
+The Python interpreter is resolved in the command's execution directory, including
+relative executable paths and relative or empty `PATH` entries. If the hook reports
+an interpreter mismatch, use the reported absolute hook interpreter with the exact
+installed launcher. Changing `exec_command.workdir` cannot authorize another
+directory's executable through the setup or diagnostic exception.
+
 ## Cowork workspace and execution
 
 Requesting a review includes its supported first-run setup. Taskplane should show
@@ -58,9 +72,11 @@ device metadata or the `native_workflow` name.
    `TASKPLANE_SURFACE=cowork` in the environment actually supplied to Taskplane and
    its hooks/children. Set the user's policy and the separate current execution and
    worker observation pairs described in the [CLI binding contract](cli-reference.md#workspace-binding-and-execution-policy).
-   Prepare the versioned request outside the workflow store, then use the installed
-   runtime's `workspace bind --workspace PATH --request FILE` and `workspace inspect
-   --workspace PATH`. Binding creates only `.taskplane/workspace-binding.json` after
+   Pass the versioned request as shell-quoted JSON with the installed runtime's
+   `workspace bind --workspace PATH --request-json 'JSON_OBJECT'`, then run
+   `workspace inspect --workspace PATH`. Inline input avoids a preliminary file
+   write before binding; `--request FILE` also works when that file already exists.
+   Binding creates only `.taskplane/workspace-binding.json` after
    validation; ordinary workflow initialization follows it.
 4. Verify real hook events in this host and one useful worker's successful claim,
    full required context and automatic pre/post hooks before releasing other ready
@@ -307,3 +323,14 @@ exact task paths; root phase controls remain separate. There is no default two-w
 cap. See the [native dispatch protocol](../skills/tp-go/references/codex-native-dispatch.md)
 and [CLI contracts](cli-reference.md). An edited checkout or package build does not
 prove that the host loaded its hooks; verify actual runtime identity before live dispatch.
+
+An interrupted first database publication leaves a versioned pending transaction
+with the exact empty-store fingerprint. Retry the same validated `flow start` to
+complete it. Status and diagnosis never repair it. A legacy marker without that
+proof, or an established missing/corrupt database, still requires explicit recovery;
+preserve all markers, transaction records and history.
+
+Observed running setup/control handles accept only empty polling or Ctrl-C. Their
+lifecycle survives first startup and blocks sealing while running. Unknown, terminal,
+foreign or old-phase handles remain refused; this depends on the host delivering
+the corresponding process and stdin hook events.

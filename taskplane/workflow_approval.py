@@ -74,6 +74,76 @@ def decision_phase(excerpt: str) -> str | None:
     return match[1] if match else None
 
 
+def _complete_approval_response(excerpt: str) -> bool:
+    """Positively classify every clause, including quoted and unknown content.
+
+    A recognized opening is only a candidate: every remaining clause must be a
+    complete current grant, supported work statement, or supported explanation.
+    This finite English grammar intentionally requires clarification for other
+    prose. No negative keyword or request detector activates this boundary.
+    Quoted grants cannot establish assent; the caller checks the unquoted lead.
+    """
+    phase = r'(?:' + '|'.join(w.PHASES) + r')'
+    target = r'(?:' + phase + r'(?:\s+phase)?|phase|checkpoint|output|proposal|changes?|work)'
+    obj = r'(?:it|this|that|(?:(?:the|this|that)\s+)?(?:current\s+)?' + target + r')'
+    actor = r'(?:(?:i|we)\s+(?:have\s+)?)?'
+    adverb = r'(?:(?:hereby|explicitly|now)\s+)?'
+    grant_verb = (r'(?:approv(?:e|ed)|accept(?:ed)?|confirm(?:ed)?|authori[sz](?:e|ed)|'
+                  r'consent(?:ed)?|assent(?:ed)?|apparoved|apprvoed)')
+    active = actor + adverb + grant_verb + r'(?:\s+' + obj + r')?'
+    signed = (actor + adverb + r'sign(?:ed)?\s+(?:off(?:\s+(?:on\s+)?' + obj + r')?|'
+              + obj + r'\s+off)')
+    passive = obj + r'\s+(?:is\s+)?(?:approved|accepted|confirmed|authorized|authorised|signed\s+off)'
+    noun = (r'(?:approvals?|confirmations?|authori[sz]ations?|consents?|acceptances?|'
+            r'permissions?|assents?|clearances?|sign\s*offs?|go\s+ahead|green\s+light|ok(?:ay)?)')
+    subject = r'(?:(?:my|our|the)\s+)?' + noun
+    given = (subject + r'\s+(?:(?:is|are|has been|have been)\s+)?(?:given|granted|confirmed)|'
+             + actor + adverb + r'(?:give|given|grant(?:ed)?|provide(?:d)?)\s+' + subject + r'|'
+             r'(?:i am|we are)\s+(?:giving|granting|providing)\s+' + subject)
+    present = r'(?:' + '|'.join((active, signed, passive, given)) + r')(?:\s+(?:now|today))?'
+    assent = (r'(?:ok(?:ay)?|yes|yep|yeah|lgtm|go ahead|proceed|continue|ship it|'
+              r'(?:looks?|sounds?) (?:good|great))')
+    item = r'(?:' + present + '|' + assent + r')'
+    grant = r'(?:please\s+)?' + item + r'(?:\s+(?:and\s+)?' + item + r')*'
+
+    requester = r'(?:i|we|you|(?:(?:the|my|our|your)\s+)?(?:reviewer|approver|owner|team))'
+    request_adverb = r'(?:(?:still|also|really|just)\s+){0,2}'
+    request_verb = r'(?:need(?:s|ed|ing)?|requir(?:e[sd]?|ing)|want(?:s|ed|ing)?)'
+    request = (requester + r'\s+' + request_adverb
+               + r'(?:(?:am|are|is|was|were|will|shall|do|does)\s+)?'
+               + request_adverb + request_verb + r'|(?:give|allow)\s+(?:me|us)|let\s+(?:me|us)\s+have')
+    work_quantity = r'(?:(?:some|a little)\s+)?(?:(?:more|additional|extra)\s+)?time'
+    work_object = (r'(?:(?:the|this|that|these|those|our)\s+)?(?:current\s+)?'
+                   r'(?:plan|implementation|changes|feature|release|code|documentation)')
+    work_action = r'(?:implement|build|publish|ship)\s+' + work_object
+    work_purpose = (r'(?:to\s+' + work_action
+                    + r'(?:\s+and\s+(?:to\s+)?' + work_action + r'){0,3}'
+                    + r'|for\s+(?:implementation|publication)\s+of\s+' + work_object + r')')
+    work_time = (r'(?:' + request + r')\s+' + work_quantity + r'\s+' + work_purpose
+                 + r'(?:\s+(?:today|tomorrow|please))?')
+    work = (r'(?:i|we)\s+will\s+(?:' + work_action + r'|publish|ship)'
+            + r'(?:\s+(?:today|tomorrow))?')
+    explanation = (
+        r'(?:all\s+)?(?:required\s+)?(?:tests|checks)\s+passed',
+        r'outstanding work',
+        r'(?:the\s+)?results\s+(?:look okay|are ready)',
+        r'(?:the\s+)?results\s+(?:clearly\s+)?show\s+(?:over\s+)?[0-9]+%\s+reduction',
+    )
+    complete = '(?:' + '|'.join((grant, work_time, work, *explanation)) + ')'
+    # Retain quoted contents, remove only presentation delimiters. Unrecognized
+    # symbols/words remain in the clause and fail the complete match. Apostrophes
+    # within words are retained, so unsupported contractions cannot be erased.
+    text = excerpt.casefold().replace("’", "'")
+    text = re.sub(r'["“”`]|(?<!\w)\'|\'(?!\w)|(?m:^\s*>\s?)', ' ', text)
+    text = re.sub(r'(?<=\w)[-\u2010\u2011](?=\w)', ' ', text)
+    clauses = re.split(r'[.!;\n:—–]+', text)
+    for part in clauses:
+        words = re.sub(r'\s+', ' ', part.replace(',', ' ')).strip()
+        if words and not re.fullmatch(complete, words):
+            return False
+    return True
+
+
 def conversational_choice(excerpt: str) -> str | None:
     """Recognize explicit everyday decisions; ambiguity requires clarification.
 
@@ -103,7 +173,7 @@ def conversational_choice(excerpt: str) -> str | None:
                 r'(?:approv(?:e|ed)|accept(?:ed)?|apparoved|apprvoed)|'
                 r'(?:looks?|sounds?) (?:good|great)|lgtm|go ahead|proceed|continue|'
                 r'yes|yep|yeah|ok(?:ay)?|ship it)\b')
-    if re.match(approval, lead):
+    if re.match(approval, lead) and _complete_approval_response(excerpt):
         choices.add('approved')
     # Every recognized dissent form also qualifies an affirmative prefix.
     # Quoting that qualification cannot hide it from the mixed-decision check.
@@ -260,7 +330,7 @@ def affirmative_consent(excerpt: str) -> bool:
     scope = r'(?:\s+for this (?:task|run|release|workflow))?'
     through = r'(?:\s+through\s+' + phase + r')?'
     condition = r'(?:\s+after\s+' + check + r')?'
-    purpose = r'(?:\s+(?:to fix all|' + technical_goal + r'))?'
+    purpose = r'(?:\s+(?:to fix (?:it )?all|' + technical_goal + r'))?'
     positive = '(?:' + '|'.join((direct, workflow, fixes_workflow, automatic_phases, end_to_end)) + ')'
     positive += scope + through + condition + purpose
     feature = (r'(?:second improvement is coming from retro as well:\s*)?'

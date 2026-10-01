@@ -426,7 +426,7 @@ def test_local_concurrent_replay_commits_one_decision(tmp_path):
     assert c.report()["revision"]==s["revision"]+1
 
 
-def test_interrupted_initialization_requires_recovery(tmp_path,monkeypatch):
+def test_interrupted_first_initialization_resumes_with_pending_proof(tmp_path,monkeypatch):
     initial,_,_=prepare(tmp_path)
     c=h.Controller(tmp_path.resolve(),"root",h.installed_adapter("codex"))
     original=local.primitives.atomic_json
@@ -438,8 +438,10 @@ def test_interrupted_initialization_requires_recovery(tmp_path,monkeypatch):
     with pytest.raises(OSError,match="interruption"):
         c.start({"scope":initial["scope"],"request_reference":"test/start"})
     monkeypatch.setattr(local.primitives,"atomic_json",original)
-    with pytest.raises(w.Refusal,match="recovery"):
-        c.start({"scope":initial["scope"],"request_reference":"test/retry"})
+    with pytest.raises(w.Refusal,match="pending"):
+        c.report()
+    resumed = c.start({"scope":initial["scope"],"request_reference":"test/start"})
+    assert resumed["revision"] == 0 and resumed["decisions"] == {}
 
 
 def test_native_prompt_needs_envelope_and_journal_failure_keeps_decision(tmp_path,monkeypatch):

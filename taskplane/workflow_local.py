@@ -14,7 +14,6 @@ import os
 import re
 from pathlib import Path
 import shlex
-import shutil
 import stat
 import subprocess
 import sys
@@ -22,7 +21,7 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 from typing import Any, cast
 
-from . import primitives, storage, workflow as w, workflow_evidence as evidence
+from . import primitives, storage, runtime_command, workflow as w, workflow_evidence as evidence
 
 PROFILE = "native_workflow"
 MAX_BYTES = 8 * 1024 * 1024
@@ -167,27 +166,70 @@ class LocalWorkflow:
         return {"schema": "taskplane.local-initialization/v1", "workspace": str(self.workspace),
                 "root": self.root, "profile": PROFILE}
 
-    def state_exists(self) -> bool:
+    def empty_database(self) -> dict[str, Any]:
+        return {"schema": "taskplane.control/v1", "profile": PROFILE, "workspace": str(self.workspace),
+                "root": self.root, "active": None, "runs": {}}
+
+    def initialization_transaction(self) -> dict[str, Any]:
+        return {**self.marker(),
+                "schema": "taskplane.local-initialization-transaction/v1",
+                "database": self.filename, "empty_sha256": primitives.content_fingerprint(self.empty_database()),
+                "status": "pending"}
+
+    def _initialization(self) -> tuple[Path, Path, Path, dict[str, Any] | None]:
         target = self.control_path(self.workspace, self.root)
         marker = storage.runtime_file(str(self.workspace), self.markername)
-        w.require(target.exists() == marker.exists(), "state_unavailable",
-                  "Local workflow initialization/state is incomplete. Explicit recovery is required. "
-                  "Run flow diagnose to identify the missing file; "
-                  "flow recover can restore an explicitly selected, matching numbered database copy.")
+        transaction = storage.runtime_file(str(self.workspace), "initialization-" + target.stem.removeprefix("workflow-") + ".json")
+        data = None
+        if transaction.exists():
+            w.require(transaction.stat().st_size <= 4096, "state_unavailable", "Initialization transaction is oversized.")
+            data = json.loads(transaction.read_text())
+            expected = self.initialization_transaction()
+            w.require(data == expected or data == {**expected, "status": "committed"},
+                      "state_unavailable", "Initialization transaction identity is corrupt.")
         if marker.exists():
             w.require(marker.stat().st_size <= 4096 and json.loads(marker.read_text()) == self.marker(),
                       "state_unavailable", "Local initialization identity is corrupt.")
+        if data and data["status"] == "pending":
+            # Pending evidence is only valid for this exact never-used empty store.
+            if target.exists():
+                w.require(marker.exists() and target.stat().st_size <= 4096
+                          and json.loads(target.read_text()) == self.empty_database(),
+                          "state_unavailable", "Pending initialization does not match an empty never-used store.")
+        else:
+            w.require(target.exists() == marker.exists() and (not data or target.exists()), "state_unavailable",
+                      "Local workflow initialization/state is incomplete. Explicit recovery is required. "
+                      "Run flow diagnose to identify the missing file; "
+                      "flow recover can restore an explicitly selected, matching numbered database copy.")
+        return target, marker, transaction, data
+
+    def pending_initialization(self) -> bool:
+        return (self._initialization()[3] or {}).get("status") == "pending"
+
+    def state_exists(self, *, allow_pending: bool = False) -> bool:
+        target, _, _, transaction = self._initialization()
+        if transaction and transaction["status"] == "pending":
+            w.require(allow_pending, "state_unavailable",
+                      "First initialization is pending. Retry the exact validated flow start request; "
+                      "read-only status does not repair state.")
+            return False
         return target.exists()
 
     def initialize(self) -> None:
-        if self.state_exists():
+        if self.state_exists(allow_pending=True):
             return
-        # Marker first: interruption cannot silently create a fresh approval store.
-        primitives.atomic_json(storage.runtime_file(str(self.workspace), self.markername),
-                               self.marker(), strict_directory_sync=True)
-        primitives.atomic_json(self.control_path(self.workspace, self.root), {
-            "schema": "taskplane.control/v1", "profile": PROFILE, "workspace": str(self.workspace),
-            "root": self.root, "active": None, "runs": {}}, strict_directory_sync=True)
+        target, marker, transaction, pending = self._initialization()
+        if pending is None:
+            # Proof precedes both marker and database publication. Keep it after commit
+            # so a missing established database can never be mistaken for first use.
+            primitives.atomic_json(transaction, self.initialization_transaction(), strict_directory_sync=True)
+        if not marker.exists():
+            primitives.atomic_json(marker, self.marker(), strict_directory_sync=True)
+        if not target.exists():
+            primitives.atomic_json(target, self.empty_database(), strict_directory_sync=True)
+        self._initialization()  # Validate exact empty bytes before closing recovery.
+        primitives.atomic_json(transaction, {**self.initialization_transaction(), "status": "committed"},
+                               strict_directory_sync=True)
 
     def verify_start(self, workspace: Path, root: str, request: dict[str, Any]) -> dict[str, Any]:
         scope = request.get("scope")
@@ -203,7 +245,8 @@ class LocalWorkflow:
 
     def state_created(self, state: dict[str, Any], request: dict[str, Any]) -> None:
         from .context_handoff import SEMANTIC_CONTRACT
-        state.update(profile=PROFILE, source_baseline=inventory(self.workspace), observed_handles={},
+        state.update(profile=PROFILE, source_baseline=inventory(self.workspace),
+                     observed_handles=Harness(self.workspace, self.root).initial_handles(state),
                      request_provenance={"reference": request["request_reference"], "assurance": "observed"},
                      context_contract=SEMANTIC_CONTRACT)
 
@@ -314,17 +357,19 @@ class LocalWorkflow:
         return json.dumps(value) if isinstance(value, dict) else None
 
     def control_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
-        from . import workspace_binding
 
         def selected_workspace(value: str | None) -> bool:
             try:
-                return workspace_binding.resolve_workspace(value, event=event) == self.workspace
+                return runtime_command.resolve_selection(value, event, self.workspace) == self.workspace
             except (w.Refusal, OSError, ValueError):
                 return False
 
         words = runtime_words(event)
-        if (len(words) < 3 or Path(shutil.which(words[0]) or "/nonexistent").resolve() != Path(sys.executable).resolve()
-                or (self.workspace/words[1]).resolve() != Path(__file__).with_name("tp.py").resolve()):
+        try:
+            cwd = runtime_command.validate_workdir(words, event, self.workspace)
+        except ValueError:
+            return False
+        if not runtime_command.installed(words, cwd):
             return False
         if words[2] == "dashboard":
             # A sealed checkpoint can refresh its native view, never an arbitrary output.
@@ -335,22 +380,18 @@ class LocalWorkflow:
             return (set(values) <= {"--workspace", "--run", "--out"}
                     and selected_workspace(values.get("--workspace"))
                     and values.get("--run", state["run"]) == state["run"]
-                    and (self.workspace/values.get("--out", ".taskplane/dashboard.html")).absolute()
+                    and ((cwd / values["--out"]).absolute() if "--out" in values else
+                         self.workspace / ".taskplane/dashboard.html")
                         == self.workspace/".taskplane/dashboard.html")
-        if words[2:] in (["version"], ["version", "--verify"], ["help"], ["--help"], ["flow", "--help"]):
+        if runtime_command.diagnostic(words):
             return True
         if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
-        selections = [i for i, word in enumerate(words) if word == "--workspace" or word.startswith("--workspace=")]
-        if len(selections) > 1:
+        try:
+            return selected_workspace(runtime_command.workspace_selector(words[4:]))
+        except ValueError:
             return False
-        if not selections:
-            return selected_workspace(None)
-        index = selections[0]
-        if words[index] == "--workspace":
-            return index + 1 < len(words) and selected_workspace(words[index + 1])
-        return selected_workspace(words[index].split("=", 1)[1])
 
     def guard_command(self, event: dict[str, Any], state: dict[str, Any], paths: list[str]) -> None:
         pass  # Host permissions apply; inventory audits effects before transitions.
@@ -363,11 +404,14 @@ class LocalWorkflow:
         w.require(record is not None and record["state"] == "running"
                   and record["visit"] == w.current(state)["id"]
                   and record["revision"] <= state["revision"]
-                  and (safe_input or record["revision"] == state["revision"]),
+                  and (not record.get("control") or
+                       (event.get("thread_id") or event.get("session_id") or record.get("worker_id") or self.root)
+                       == (record.get("worker_id") or self.root))
+                  and (safe_input or not record.get("control") and record["revision"] == state["revision"]),
                   "scope_violation", "Observed input handle is unknown, terminal or belongs to an old phase grant.")
 
     def observe_state(self, event: dict[str, Any], state: dict[str, Any]) -> None:
-        if event.get("hook_event_name") != "PostToolUse" or self.control_action(event, state):
+        if event.get("hook_event_name") != "PostToolUse":
             return
         tool = event.get("tool_name") or event.get("tool")
         response = event.get("tool_response")
@@ -377,6 +421,8 @@ class LocalWorkflow:
         handle = response.get("session_id", args.get("session_id") if tool == "write_stdin" else None)
         if type(handle) not in {str, int}:
             return
+        if tool == "write_stdin":
+            w.require(str(handle) == str(args.get("session_id")), "scope_violation", "Poll returned another handle.")
         key = str(handle)
         handles = state["observed_handles"]
         w.require(key in handles or len(handles) < 4096, "state_unavailable", "Observed handle limit reached.")
@@ -393,7 +439,8 @@ class LocalWorkflow:
                         "worker_id": previous.get("worker_id") if previous else (
                             (event.get("thread_id") or event.get("session_id"))
                             if (event.get("thread_id") or event.get("session_id")) != state["root"] else None),
-                        "read_only": previous.get("read_only", False) if previous else readonly_command(event)}
+                        "read_only": previous.get("read_only", False) if previous else readonly_command(event),
+                        "control": previous.get("control", False) if previous else self.control_action(event, state)}
 
 
 EXECUTION_ENTRIES = {'taskplane', 'tp-go', 'tp-tag', 'tp-build', 'tp-product',
@@ -592,13 +639,82 @@ class Harness:
 
     def update(self, **values: Any) -> dict[str, Any]:
         with primitives.file_lock(str(self.path)):
-            data = self.read() or {'schema': 'taskplane.harness/v1', 'workspace': str(self.workspace), 'root': self.root}
-            data.update(values)
-            # Match atomic_json's encoding, indentation and trailing newline.
-            w.require(len(json.dumps(data, sort_keys=True, indent=2, allow_nan=False).encode('utf-8')) + 1 <= 16384,
-                      'invalid_evidence', 'Harness update exceeds its size bound.')
-            primitives.atomic_json(self.path, data, strict_directory_sync=True)
-            return data
+            return self._update_locked(**values)
+
+    def _update_locked(self, **values: Any) -> dict[str, Any]:
+        """Publish while the caller holds the non-reentrant harness lock."""
+        data = self.read() or {'schema': 'taskplane.harness/v1', 'workspace': str(self.workspace), 'root': self.root}
+        data.update(values)
+        # Match atomic_json's encoding, indentation and trailing newline.
+        w.require(len(json.dumps(data, sort_keys=True, indent=2, allow_nan=False).encode('utf-8')) + 1 <= 16384,
+                  'invalid_evidence', 'Harness update exceeds its size bound.')
+        primitives.atomic_json(self.path, data, strict_directory_sync=True)
+        return data
+
+    def setup_handles(self) -> dict[str, Any]:
+        data = self.read()
+        handles = data.get('setup_handles', {})
+        w.require(isinstance(handles, dict) and len(handles) <= 64, 'state_unavailable', 'Invalid setup handles.')
+        for key, record in handles.items():
+            w.require(isinstance(key, str) and 0 < len(key) <= 256 and isinstance(record, dict)
+                      and record.get('state') in {'running', 'completed', 'failed'}
+                      and record.get('root') == self.root and record.get('run') is None,
+                      'state_unavailable', 'Invalid setup process identity.')
+        return handles if data.get('run') is None else {}
+
+    def initial_handles(self, state: dict[str, Any]) -> dict[str, Any]:
+        return {key: {'state': record['state'], 'visit': w.current(state)['id'],
+                      'revision': state['revision'], 'worker_id': None, 'read_only': False, 'control': True}
+                for key, record in self.setup_handles().items()}
+
+    def guard_setup_input(self, event: dict[str, Any]) -> None:
+        args = event.get('tool_input', {})
+        record = self.setup_handles().get(str(args.get('session_id', '')))
+        actor = event.get('thread_id') or event.get('session_id') or self.root
+        w.require(actor == self.root and not event.get('parent_session_id')
+                  and record is not None and record['state'] == 'running'
+                  and args.get('chars', '') in ('', '\x03'),
+                  'scope_violation', 'Setup input requires an observed running handle and empty polling or Ctrl-C.')
+
+    def observe_setup(self, event: dict[str, Any]) -> None:
+        with primitives.file_lock(str(self.path)):
+            self._observe_setup_locked(event)
+
+    def _observe_setup_locked(self, event: dict[str, Any]) -> None:
+        if event.get('hook_event_name') != 'PostToolUse':
+            return
+        tool = event.get('tool_name') or event.get('tool')
+        args, response = event.get('tool_input', {}), event.get('tool_response')
+        if not isinstance(args, dict) or not isinstance(response, dict):
+            return
+        actor = event.get('thread_id') or event.get('session_id') or self.root
+        if actor != self.root or event.get('parent_session_id'):
+            return
+        if self.read().get('run') is not None:
+            return  # A transferred handle must be observed through its active store.
+        handles = self.setup_handles()
+        if tool == 'write_stdin':
+            self.guard_setup_input(event)
+        elif (tool not in {'Bash', 'exec_command'}
+              or not runtime_command.installed(runtime_words(event),
+                                               runtime_command.execution_directory(event, self.workspace))
+              or not self.bootstrap_command(event)):
+            return
+        handle = response.get('session_id', args.get('session_id') if tool == 'write_stdin' else None)
+        if type(handle) not in {str, int}:
+            return
+        if tool == 'write_stdin':
+            w.require(str(handle) == str(args.get('session_id')), 'scope_violation', 'Setup poll returned another handle.')
+        key = str(handle)
+        w.require(0 < len(key) <= 256 and (key in handles or len(handles) < 64),
+                  'state_unavailable', 'Setup handle limit reached.')
+        terminal = type(response.get('exit_code')) is int
+        status = ('completed' if response['exit_code'] == 0 else 'failed') if terminal else 'running'
+        previous = handles.get(key)
+        w.require(not previous or previous['state'] == 'running' or previous['state'] == status,
+                  'scope_violation', 'A terminal setup handle cannot reopen.')
+        handles[key] = {'state': status, 'root': self.root, 'run': None}
+        self._update_locked(setup_handles=handles)
 
     def select(self, entry: str, reference: str, state: dict[str, Any]) -> None:
         w.require(entry in EXECUTION_ENTRIES or entry in w.PHASES, 'invalid_evidence', 'Choose a Taskplane execution entry.')
@@ -614,7 +730,7 @@ class Harness:
         previous = self.read()
         if previous.get('run') != state['run'] or not previous.get('selected'):
             self.update(selected=True, entry=previous.get('entry', w.current(state)['phase']),
-                        run=state['run'], waiting=None, presentation=None)
+                        run=state['run'], waiting=None, presentation=None, setup_handles={})
 
     def deactivate(self, state: dict[str, Any], reference: str, reason: str) -> None:
         """Clear only uninitialized engagement; never alter a workflow grant."""
@@ -784,13 +900,15 @@ class Harness:
             return False
         words = runtime_words(event)
         if words:
-            if (len(words) < 6 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
-                    or Path(words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()
-                    or words[2] != 'flow' or words[3] not in {'activate', 'start', 'report', 'diagnose', 'wait'}
-                    or words.count('--workspace') != 1):
+            try:
+                cwd = runtime_command.validate_workdir(words, event, self.workspace)
+                if (len(words) < 6 or not runtime_command.installed(words, cwd)
+                        or words[2] != 'flow' or words[3] not in {'activate', 'start', 'report', 'diagnose', 'wait'}):
+                    return False
+                value = runtime_command.workspace_selector(words[4:])
+                return value is not None and (cwd / value).resolve() == target
+            except ValueError:
                 return False
-            i = words.index('--workspace') + 1
-            return i < len(words) and Path(words[i]).resolve() == target
         # A fresh scope proposal is needed before initializing that exact checkout.
         # Once initialized, only its own Controller may authorize writes there.
         marker = target/'.taskplane'/('workflow-' + hashlib.sha256(self.root.encode()).hexdigest()[:32] + '.json')
@@ -811,17 +929,19 @@ class Harness:
         words = runtime_words(event)
         if readonly_command(event):
             return True
-        if (len(words) < 3 or Path(shutil.which(words[0]) or '/nonexistent').resolve() != Path(sys.executable).resolve()
-                or (self.workspace/words[1]).resolve() != Path(__file__).with_name('tp.py').resolve()):
+        try:
+            cwd = runtime_command.validate_workdir(words, event, self.workspace)
+        except ValueError:
             return False
-        if words[2] in {'help', 'version'}:
-            return True
-        if words[2:] == ['flow', '--help']:
-            return True
-        if '--workspace' not in words:
+        if not runtime_command.installed(words, cwd):
             return False
-        index = words.index('--workspace') + 1
-        if index >= len(words) or (self.workspace/words[index]).resolve() != self.workspace:
+        if runtime_command.diagnostic(words):
+            return True
+        try:
+            value = runtime_command.workspace_selector(words[3:])
+            if value is None or runtime_command.resolve_selection(value, event, self.workspace) != self.workspace:
+                return False
+        except (w.Refusal, OSError, ValueError):
             return False
         return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'wait'})
                 or words[2] == 'graph' and 'scan' in words[3:]
@@ -831,6 +951,15 @@ class Harness:
         tool = event.get('tool_name') or event.get('tool')
         args = event.get('tool_input', {})
         w.require(isinstance(args, dict), 'scope_violation', self.guidance(state))
+        try:
+            cwd = runtime_command.validate_workdir(runtime_words(event), event, self.workspace)
+        except ValueError as exc:
+            raise w.Refusal("scope_violation", str(exc)) from None
+        mismatch = runtime_command.collision(runtime_words(event), cwd)
+        w.require(not mismatch, 'scope_violation', mismatch or '')
+        if tool == 'write_stdin':
+            self.guard_setup_input(event)
+            return
         if self.recovery_action(event, state) or self.recovery_setup(event, state):
             return
         if tool in READ_TOOLS | QUESTION_TOOLS or execution_entry(event):
