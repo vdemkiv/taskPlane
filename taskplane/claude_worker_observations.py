@@ -5,6 +5,8 @@ child. A missing record is unknown, including a result not yet flushed to disk.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -19,7 +21,10 @@ from .context import digest
 MAX_BYTES = 4 * 1024 * 1024
 MAX_LINE_BYTES = 256 * 1024
 MAX_RECORDS = 16384
+MAX_CANDIDATES = 64
+MAX_STATE_BYTES = 512 * 1024
 _ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
+_SHA = re.compile(r"[a-f0-9]{64}\Z")
 
 
 def _stamp(value: Any) -> datetime:
@@ -141,78 +146,569 @@ def supported_reader() -> bool:
             and hasattr(os, 'O_DIRECTORY'))
 
 
-def _read(path: Path, *, first_only: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    fd = _open_regular(path)
-    with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("Native transcript is not regular")
-        offset = 0 if first_only else max(0, info.st_size - MAX_BYTES)
-        stream.seek(offset)
-        if offset:
-            stream.readline(MAX_LINE_BYTES + 1)
-        offset = stream.tell()
-        raw = stream.readline(MAX_LINE_BYTES + 1) if first_only else stream.read(MAX_BYTES)
-    rows: list[dict[str, Any]] = []
+@dataclass
+class ReadBudget:
+    """One hook's aggregate I/O allowance, including proof revalidation.
+
+    Pass the same instance to selection and every observation in that hook.
+    observe_many also shares a single parent scan across its candidates.
+    """
+
+    max_bytes: int = MAX_BYTES
+    max_records: int = MAX_RECORDS
+    bytes_read: int = 0
+    records_read: int = 0
+
+    def __post_init__(self) -> None:
+        if (type(self.max_bytes) is not int or not 0 <= self.max_bytes <= MAX_BYTES
+                or type(self.max_records) is not int or not 0 <= self.max_records <= MAX_RECORDS
+                or self.bytes_read != 0 or self.records_read != 0):
+            raise ValueError("Invalid native read budget")
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.max_bytes - self.bytes_read)
+
+    def read(self, fd: int, offset: int, size: int) -> bytes:
+        raw = os.pread(fd, min(size, self.remaining), offset)
+        self.bytes_read += len(raw)
+        return raw
+
+    def record(self) -> bool:
+        if self.records_read >= self.max_records:
+            return False
+        self.records_read += 1
+        return True
+
+    def report(self) -> dict[str, int]:
+        return {"bytes": self.bytes_read, "records": self.records_read,
+                "max_bytes": self.max_bytes, "max_records": self.max_records}
+
+
+def _sealed(value: Mapping[str, Any]) -> dict[str, Any]:
+    body = {key: item for key, item in value.items() if key != "sha256"}
+    return {**body, "sha256": digest(body)}
+
+
+def _valid_seal(value: Any, schema: str) -> bool:
+    return (isinstance(value, Mapping) and value.get("schema") == schema
+            and len(json.dumps(value)) <= MAX_STATE_BYTES
+            and value.get("sha256") == _sealed(value)["sha256"])
+
+
+def _identity(info: os.stat_result) -> dict[str, int]:
+    return {"device": info.st_dev, "inode": info.st_ino}
+
+
+def _source_path(parent: str, supplied: Any) -> Path:
+    if (not isinstance(parent, str) or not _ID.fullmatch(parent)
+            or not isinstance(supplied, str) or len(supplied) > 4096
+            or "\x00" in supplied or os.path.normpath(supplied) != supplied):
+        raise ValueError("Invalid native transcript path")
+    path = Path(supplied)
+    base = Path.home() / ".claude" / "projects"
+    if (not path.is_absolute() or path.parent.parent != base
+            or path.name != parent + ".jsonl" or path.parent.name in {".", ".."}):
+        raise ValueError("Hook transcript is outside the exact native parent layout")
+    return path
+
+
+def _open_source(path: Path) -> tuple[int, dict[str, int]]:
+    # Keep the selected project descriptor open while opening the parent leaf.
+    # _open_regular already holds every ancestor while walking without symlinks.
+    project = _open_regular(path.parent)
+    try:
+        info = os.fstat(project)
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError("Native project is not a directory")
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=project)
+        return fd, _identity(info)
+    finally:
+        os.close(project)
+
+
+def _regular(fd: int) -> os.stat_result:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("Native transcript is not regular")
+    return info
+
+
+def _decode(raw: bytes) -> dict[str, Any]:
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("Malformed native record")
+    return value
+
+
+def _reference(path: Path, info: os.stat_result, offset: int, raw: bytes) -> dict[str, Any]:
+    return {"source": str(path), **_identity(info), "offset": offset,
+            "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _scan(fd: int, path: Path, start: int, watermark: int, budget: ReadBudget,
+          accept: Any) -> int:
+    """Visit complete records; never advance past an incomplete trailing line."""
+    if budget.records_read >= budget.max_records:
+        return start
+    raw = budget.read(fd, start, max(0, watermark - start))
+    offset = start
+    info = _regular(fd)
     for line in raw.splitlines(keepends=True):
-        if not line.endswith(b"\n"):
-            break  # A concurrently written tail is not a complete record.
+        if budget.records_read >= budget.max_records:
+            break
         if len(line) > MAX_LINE_BYTES:
             raise ValueError("Native record exceeds byte bound")
-        if len(rows) >= MAX_RECORDS:
-            raise ValueError("Native transcript exceeds record bound")
-        value = json.loads(line)
-        if not isinstance(value, dict):
-            raise ValueError("Malformed native record")
-        rows.append(value)
-    return rows, {"source": str(path), "offset": offset, "bytes": len(raw),
-                  "sha256": hashlib.sha256(raw).hexdigest()}
+        if not line.endswith(b"\n"):
+            break
+        if not budget.record():
+            break
+        row = _decode(line)
+        ref = _reference(path, info, offset, line)
+        offset += len(line)
+        if accept(row, ref) is False:
+            break
+    return offset
 
 
-def observe(parent: str, attempt: Mapping[str, Any], event: Mapping[str, Any]) -> dict[str, Any]:
-    """Read only the selected parent's native project and the exact child file.
+def select_source(parent: str, event: Mapping[str, Any], *, automatic: bool = False,
+                  previous: Mapping[str, Any] | None = None,
+                  budget: ReadBudget | None = None) -> dict[str, Any]:
+    """Select only a root hook's exact parent path, independent of execution cwd.
 
-    outputFile and arbitrary event transcript paths never expand the read scope.
-    Unsupported Claude layouts remain unknown instead of scanning other projects.
+    The controller must establish automatic root provenance before setting
+    automatic=True. No worker event or CLI assertion may invoke that privilege.
+    Persist the returned descriptor under the controller lock before dispatch.
+    This helper and its checksums provide cooperative observation, not authority.
     """
-    workspace = attempt.get("workspace")
-    if (not isinstance(parent, str) or not _ID.fullmatch(parent)
-            or not isinstance(workspace, str) or not Path(workspace).is_absolute()):
-        return _answer("conflict", "Invalid native parent or workspace")
-    project = re.sub(r"[^A-Za-z0-9]", "-", workspace)
-    path = Path.home() / ".claude" / "projects" / project / (parent + ".jsonl")
-    supplied = event.get("transcript_path") or event.get("transcript")
-    if supplied is not None and str(path) != supplied:
-        return _answer("conflict", "Hook transcript differs from selected native parent")
+    budget = budget if budget is not None else ReadBudget()
     if not supported_reader():
-        return _answer("unsupported", "Native no-follow transcript reads are unavailable on this runtime")
+        return _answer("unsupported", "Native no-follow transcript reads are unavailable")
+    if (automatic is not True or event.get("session_id") != parent
+            or event.get("agent_id") not in (None, "", parent)
+            or event.get("hook_event_name") not in {"SessionStart", "PreToolUse", "PostToolUse"}):
+        return _answer("conflict", "Transcript source requires an automatic root hook")
     try:
-        rows, source = _read(path)
-        # Discover the child only from the exact structured result, never text.
-        children = set()
-        for row in rows:
-            message = row.get("message")
-            content = message.get("content") if isinstance(message, dict) else None
-            if isinstance(content, list) and any(isinstance(item, dict)
-                    and item.get("type") == "tool_result" and item.get("tool_use_id") == attempt.get("call_id")
-                    for item in content):
-                result = row.get("toolUseResult")
-                if isinstance(result, dict) and isinstance(result.get("agentId"), str):
-                    children.add(result["agentId"])
-        headers, sources = [], [source]
-        for child in sorted(children):
-            if not _ID.fullmatch(child) or child == parent:
-                return _answer("conflict", "Invalid native child filename")
-            try:
-                head, reference = _read(path.with_suffix("") / "subagents" / ("agent-" + child + ".jsonl"), first_only=True)
-                headers.extend(head)
-                sources.append(reference)
-            except FileNotFoundError:
-                pass
-        answer = correlate_records(parent, attempt, rows, headers)
-        answer["references"] = sources
-        return answer
+        path = _source_path(parent, event.get("transcript_path"))
+        if previous is not None:
+            if not _valid_seal(previous, "taskplane.claude-transcript-source/v1"):
+                raise ValueError("Corrupt selected source")
+            if previous.get("path") != str(path) or previous.get("parent") != parent:
+                raise ValueError("A root hook cannot replace the selected parent source")
+        fd, project = _open_source(path)
+        with os.fdopen(fd, "rb", buffering=0) as stream:
+            info = _regular(stream.fileno())
+            if previous is not None:
+                if project != previous.get("project_identity") or _identity(info) != previous.get("identity"):
+                    raise ValueError("Selected parent source was replaced")
+                if info.st_size < previous.get("selected_size", 0):
+                    raise ValueError("Selected parent source was truncated")
+                if _verify(stream.fileno(), previous["session_reference"], budget) is None:
+                    return _answer("not_yet_available", "Source revalidation budget exhausted", source=previous)
+                return _answer("selected", "Existing root transcript source", source=dict(previous),
+                               watermark=info.st_size, budget=budget.report())
+            found: list[dict[str, Any]] = []
+            def session(row: dict[str, Any], ref: dict[str, Any]) -> bool:
+                if "sessionId" not in row:
+                    return True
+                if row.get("sessionId") != parent or row.get("isSidechain") is True:
+                    raise ValueError("Root transcript has foreign session lineage")
+                found.append(ref)
+                return False
+            _scan(stream.fileno(), path, 0, info.st_size, budget, session)
+            if not found:
+                return _answer("not_yet_available", "Root session record is not readable within budget", budget=budget.report())
+            source = _sealed({"schema": "taskplane.claude-transcript-source/v1", "parent": parent,
+                "path": str(path), "project_identity": project, "identity": _identity(info),
+                "selected_size": info.st_size, "session_reference": found[0],
+                "hook_reference": digest({key: event.get(key) for key in
+                    ("hook_event_name", "session_id", "tool_use_id", "event_id", "transcript_path")})})
+            return _answer("selected", "Automatic root hook selected native parent", source=source,
+                           watermark=info.st_size, budget=budget.report())
     except FileNotFoundError:
-        return _answer("not_yet_available", "Native transcript is not readable yet")
-    except (OSError, ValueError, TypeError, UnicodeError):
-        return _answer("conflict", "Native transcript is unsafe, malformed or exceeds read bounds")
+        return _answer("not_yet_available", "Selected root transcript is not readable yet", budget=budget.report())
+    except (OSError, ValueError, TypeError, UnicodeError, KeyError):
+        return _answer("conflict", "Root transcript source is unsafe, foreign or changed", budget=budget.report())
+
+
+def _verify(fd: int, ref: Mapping[str, Any], budget: ReadBudget) -> dict[str, Any] | None:
+    info = _regular(fd)
+    size, offset = ref.get("bytes"), ref.get("offset")
+    if (type(size) is not int or not 0 < size <= MAX_LINE_BYTES
+            or type(offset) is not int or offset < 0
+            or _identity(info) != {key: ref.get(key) for key in ("device", "inode")}
+            or info.st_size < offset + size):
+        raise ValueError("Native evidence reference changed")
+    if budget.remaining < size or budget.records_read >= budget.max_records:
+        return None
+    raw = budget.read(fd, offset, size)
+    budget.record()
+    if len(raw) != size or hashlib.sha256(raw).hexdigest() != ref.get("sha256"):
+        raise ValueError("Native evidence span changed")
+    if not raw.endswith(b"\n"):
+        raise ValueError("Incomplete evidence reference")
+    return _decode(raw)
+
+
+def _scalar(value: Any, limit: int = 4096) -> Any:
+    # Malformed fields must not turn cached projections into prompt storage.
+    return value if value is None or type(value) is bool or isinstance(value, str) and len(value) <= limit else None
+
+
+def _projection(row: Mapping[str, Any], role: str, item: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    result = {key: _scalar(row.get(key)) for key in ("sessionId", "cwd", "isSidechain", "timestamp")}
+    result["record_sha256"] = digest(row)
+    if role == "call":
+        assert item is not None
+        result.update(name=_scalar(item.get("name"), 200),
+                      input_digest=digest(item["input"]) if isinstance(item.get("input"), Mapping) else None)
+    elif role == "result":
+        assert item is not None
+        structured = row.get("toolUseResult")
+        result.update(is_error=item.get("is_error") is True, structured=isinstance(structured, Mapping))
+        structured = structured if isinstance(structured, Mapping) else {}
+        result.update(child=_scalar(structured.get("agentId"), 200), is_async=structured.get("isAsync") is True,
+                      status=_scalar(structured.get("status"), 200))
+    else:
+        result["child"] = _scalar(row.get("agentId"), 200)
+    return result
+
+
+def _items(row: Mapping[str, Any], call: str) -> list[tuple[str, Mapping[str, Any]]]:
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if not isinstance(content, list):
+        return []
+    return [("call" if item.get("type") == "tool_use" else "result", item)
+            for item in content if isinstance(item, Mapping) and
+            (item.get("type") == "tool_use" and item.get("id") == call
+             or item.get("type") == "tool_result" and item.get("tool_use_id") == call)]
+
+
+def _retain(entry: dict[str, Any], role: str, projection: dict[str, Any], ref: dict[str, Any]) -> None:
+    values = entry[role]
+    if not any(value["projection"] == projection for value in values) and len(values) < 2:
+        values.append({"projection": projection, "reference": ref})
+    if len(values) > 1:
+        entry["conflict"] = "Conflicting native " + role + " records"
+
+
+def _binding(parent: str, attempt: Mapping[str, Any]) -> dict[str, Any]:
+    # worker_id is learned later and must not reset discovery state.
+    return {"parent": parent, **{key: attempt.get(key) for key in
+        ("workspace", "run", "binding", "grant_id", "attempt", "call_id", "dispatch_digest",
+         "prepared_at", "transcript_admission_offset")}}
+
+
+def _check_cursor(state: Mapping[str, Any]) -> None:
+    if (any(type(state.get(key)) is not int or state[key] < 0 for key in ("offset", "watermark", "size", "turn"))
+            or state["offset"] > state["watermark"] or not isinstance(state.get("entries"), dict)
+            or len(state["entries"]) > MAX_CANDIDATES
+            or state.get("conflict") is not None and not isinstance(state["conflict"], str)):
+        raise ValueError("Malformed native cursor")
+    for key, entry in state["entries"].items():
+        if (not isinstance(entry, dict) or not isinstance(entry.get("binding"), dict)
+                or key != digest(entry["binding"])
+                or not isinstance(entry["binding"].get("call_id"), str)
+                or entry.get("conflict") is not None and not isinstance(entry["conflict"], str)):
+            raise ValueError("Malformed cached native binding")
+        for role in ("call", "result", "header"):
+            if not isinstance(entry.get(role), list) or len(entry[role]) > 2:
+                raise ValueError("Malformed cached native projections")
+            for value in entry[role]:
+                if not isinstance(value, dict) or not isinstance(value.get("projection"), dict):
+                    raise ValueError("Malformed cached native projection")
+                ref = value.get("reference")
+                if (not isinstance(ref, dict) or not isinstance(ref.get("source"), str)
+                        or type(ref.get("offset")) is not int or ref["offset"] < 0
+                        or type(ref.get("bytes")) is not int or not 0 < ref["bytes"] <= MAX_LINE_BYTES
+                        or any(type(ref.get(field)) is not int for field in ("device", "inode"))
+                        or not isinstance(ref.get("sha256"), str) or not _SHA.fullmatch(ref["sha256"])):
+                    raise ValueError("Malformed cached native reference")
+
+
+def _correlate(parent: str, attempt: Mapping[str, Any], entry: Mapping[str, Any]) -> dict[str, Any]:
+    if entry.get("conflict"):
+        return _answer("conflict", entry["conflict"])
+    if not entry["call"] or not entry["result"]:
+        return _answer("not_yet_available", "Exact native launch call/result is not readable")
+    call, result = (entry[role][0]["projection"] for role in ("call", "result"))
+    workspace = attempt.get("workspace")
+    if (call["name"] not in {"Agent", "Task"} or call["input_digest"] != attempt.get("dispatch_digest")
+            or result["is_error"] or any(row["sessionId"] != parent or row["cwd"] != workspace
+            or row["isSidechain"] is True for row in (call, result))):
+        return _answer("conflict", "Native launch disagrees with admitted parent, workspace or arguments")
+    if not result["structured"] or not result["is_async"] or result["status"] != "async_launched":
+        return _answer("unsupported", "Native result has no supported asynchronous identity")
+    child = result["child"]
+    if (not isinstance(child, str) or not _ID.fullmatch(child) or child == parent
+            or attempt.get("worker_id") not in (None, child)):
+        return _answer("conflict", "Native result has an invalid or changed child identity")
+    if not entry["header"]:
+        return _answer("not_yet_available", "Matching child header is not readable")
+    header = entry["header"][0]["projection"]
+    if (header["child"] != child or header["sessionId"] != parent
+            or header["isSidechain"] is not True or header["cwd"] != workspace):
+        return _answer("conflict", "Child header has foreign identity, parent or workspace")
+    try:
+        prepared = _stamp(attempt.get("prepared_at"))
+        called, returned, started = (_stamp(row["timestamp"]) for row in (call, result, header))
+        observed = datetime.now(timezone.utc)
+        if not prepared <= called <= returned <= observed or not called <= started <= observed:
+            raise ValueError("Out-of-order native timestamps")
+    except (ValueError, TypeError, OverflowError):
+        return _answer("conflict", "Native timestamps are missing, future or out of order")
+    hashes = {role: entry[role][0]["projection"]["record_sha256"] for role in ("call", "result", "header")}
+    return _answer("matched", "Exact native launch call/result and child header", parent=parent,
+                   workspace=workspace, call_id=attempt["call_id"], worker_id=child,
+                   grant_id=attempt.get("grant_id"), attempt=attempt.get("attempt"),
+                   dispatch_digest=attempt["dispatch_digest"], record_sha256=hashes,
+                   evidence_sha256=digest(hashes), called_at=call["timestamp"],
+                   started_at=header["timestamp"], observed_at=result["timestamp"])
+
+
+def _child_path(path: Path, parent: str, child: Any) -> Path:
+    if not isinstance(child, str) or not _ID.fullmatch(child) or child == parent:
+        raise ValueError("Invalid native child filename")
+    return path.with_suffix("") / "subagents" / ("agent-" + child + ".jsonl")
+
+
+def _open_child(path: Path, project_identity: Mapping[str, int]) -> int:
+    """Open the exact child beneath the same pinned project as the parent FD."""
+    directory = _open_regular(path.parent.parent.parent)
+    try:
+        if _identity(os.fstat(directory)) != project_identity:
+            raise ValueError("Selected project was replaced before opening child")
+        for component in (path.parent.parent.name, "subagents"):
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        return os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+
+def _validate_entry(fd: int, path: Path, parent: str, attempt: Mapping[str, Any],
+                    entry: dict[str, Any], budget: ReadBudget,
+                    project_identity: Mapping[str, int], *, reserve: int = 0) -> bool:
+    refs = [value for role in ("call", "result", "header") for value in entry[role]]
+    if (sum(value["reference"]["bytes"] for value in refs) > max(0, budget.remaining - reserve)
+            or len(refs) > budget.max_records - budget.records_read - bool(reserve)):
+        return False
+    for role in ("call", "result"):
+        for value in entry[role]:
+            if value["reference"]["source"] != str(path):
+                raise ValueError("Foreign parent proof reference")
+            row = _verify(fd, value["reference"], budget)
+            if row is None:
+                return False
+            if not any(kind == role and _projection(row, role, item) == value["projection"]
+                       for kind, item in _items(row, attempt["call_id"])):
+                raise ValueError("Cached projection differs from native evidence")
+    for value in entry["header"]:
+        child_path = _child_path(path, parent, value["projection"]["child"])
+        if value["reference"]["source"] != str(child_path) or value["reference"]["offset"] != 0:
+            raise ValueError("Foreign child proof reference")
+        with os.fdopen(_open_child(child_path, project_identity), "rb", buffering=0) as stream:
+            row = _verify(stream.fileno(), value["reference"], budget)
+            if row is None:
+                return False
+            if _projection(row, "header") != value["projection"]:
+                raise ValueError("Cached header differs from native evidence")
+    return True
+
+
+def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapping[str, Any], *,
+                 source: Mapping[str, Any] | None, cursor: Mapping[str, Any] | None = None,
+                 budget: ReadBudget | None = None) -> dict[str, Any]:
+    """Perform one bounded, resumable parent scan for at most 64 exact attempts.
+
+    Return observations in input order plus a JSON-serializable sealed cursor.
+    The caller persists cursor and immutable proof objects under its controller
+    lock (e.g. context.Store.put('claude-launch-proof', observation['proof'])).
+    Retain their references on attempts through normal run retention. Matching
+    requires the entire captured watermark and current revalidation of spans;
+    retained proof alone never establishes a fresh observation after source loss.
+    """
+    budget = budget if budget is not None else ReadBudget()
+    state: dict[str, Any] | None = None
+    state_valid = False
+    answers: dict[str, dict[str, Any]] = {}
+    keys: list[str] = []
+
+    def finish(status: str | None = None, reason: str = "") -> dict[str, Any]:
+        nonlocal state
+        if not state_valid and status == "conflict" and isinstance(source, Mapping):
+            # A corrupt cursor must not disappear on the next hook. Keep a new
+            # refusal marker bound to this source, without trusting its contents.
+            state = {"schema": "taskplane.claude-transcript-cursor/v1", "source_sha256": source.get("sha256"),
+                     "offset": 0, "watermark": 0, "size": 0, "turn": 0,
+                     "entries": {}, "conflict": reason}
+        if state is not None and status == "conflict":
+            state["conflict"] = reason
+        result = []
+        for index, attempt in enumerate(attempts):
+            key = keys[index] if index < len(keys) else ""
+            answer = _answer(status, reason) if status else answers.get(key, _answer("not_yet_available", "Observation budget exhausted"))
+            entry = state["entries"].get(key) if state else None
+            if entry:
+                references = [value["reference"] for role in ("call", "result", "header") for value in entry[role]]
+                # One source per file for compatibility; immutable proof has all spans.
+                answer["references"] = list({ref["source"]: ref for ref in references}.values())
+                if source is not None and all(entry[role] for role in ("call", "result", "header")):
+                    answer["proof"] = _sealed({"schema": "taskplane.claude-launch-proof/v1",
+                        "source_sha256": source["sha256"], "binding": _binding(parent, attempt),
+                        "records": {role: entry[role] for role in ("call", "result", "header")}})
+            result.append(answer)
+        return {"observations": result, "cursor": _sealed(state) if state is not None else None,
+                "budget": budget.report()}
+
+    if not supported_reader():
+        return finish("unsupported", "Native no-follow transcript reads are unavailable")
+    if source is None:
+        return finish("not_yet_available", "A validated automatic root transcript source is required")
+    try:
+        if (not 1 <= len(attempts) <= MAX_CANDIDATES
+                or not _valid_seal(source, "taskplane.claude-transcript-source/v1")
+                or source.get("parent") != parent):
+            raise ValueError("Invalid selected source or candidate bound")
+        path = _source_path(parent, source["path"])
+        bindings = [_binding(parent, attempt) for attempt in attempts]
+        keys = [digest(value) for value in bindings]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Duplicate candidate binding")
+        for attempt in attempts:
+            if (not isinstance(attempt.get("call_id"), str) or not 0 < len(attempt["call_id"]) <= 512
+                    or not isinstance(attempt.get("workspace"), str) or not Path(attempt["workspace"]).is_absolute()
+                    or not isinstance(attempt.get("dispatch_digest"), str) or not _SHA.fullmatch(attempt["dispatch_digest"])):
+                raise ValueError("Incomplete admitted launch binding")
+        if cursor is None:
+            state = {"schema": "taskplane.claude-transcript-cursor/v1", "source_sha256": source["sha256"],
+                     "offset": 0, "watermark": 0, "size": source["selected_size"], "turn": 0,
+                     "entries": {}, "conflict": None}
+        else:
+            if (not _valid_seal(cursor, "taskplane.claude-transcript-cursor/v1")
+                    or cursor.get("source_sha256") != source["sha256"]):
+                raise ValueError("Corrupt cursor or changed selected source")
+            state = deepcopy(dict(cursor))
+        _check_cursor(state)
+        state_valid = True
+        if state.get("conflict"):
+            return finish("conflict", state["conflict"])
+        # A newly registered attempt must inspect the earlier prefix too. Already
+        # retained exact projections remain, and identical rescan is idempotent.
+        for key, binding in zip(keys, bindings):
+            if key not in state["entries"]:
+                if len(state["entries"]) >= MAX_CANDIDATES:
+                    return finish("unsupported", "Native candidate inventory bound exceeded")
+                state["entries"][key] = {"binding": binding, "call": [], "result": [], "header": [], "conflict": None}
+                state["offset"] = 0
+        fd, project = _open_source(path)
+        with os.fdopen(fd, "rb", buffering=0) as stream:
+            info = _regular(stream.fileno())
+            if project != source["project_identity"] or _identity(info) != source["identity"]:
+                raise ValueError("Selected parent source was replaced")
+            if info.st_size < state["size"]:
+                raise ValueError("Selected parent source was truncated")
+            state["size"] = info.st_size
+            if source["session_reference"]["source"] != str(path):
+                raise ValueError("Foreign selected session reference")
+            session = _verify(stream.fileno(), source["session_reference"], budget)
+            if session is None:
+                return finish("not_yet_available", "Source revalidation budget exhausted")
+            if session.get("sessionId") != parent or session.get("isSidechain") is True:
+                raise ValueError("Selected root session changed")
+            # Explicit parent paths cannot silently replace a pinned source. A
+            # child hook's own path is not a source selector and is ignored.
+            supplied = event.get("transcript_path")
+            if event.get("agent_id") in (None, "", parent) and supplied is not None and supplied != str(path):
+                raise ValueError("Root hook disagrees with selected parent source")
+            rotated = list(zip(keys, attempts))
+            turn = state["turn"] % len(rotated)
+            rotated = rotated[turn:] + rotated[:turn]
+            state["turn"] += 1
+            verified: set[str] = set()
+            reserve = min(MAX_LINE_BYTES, info.st_size - state["offset"])
+            for key, attempt in rotated:
+                entry = state["entries"][key]
+                if entry["conflict"]:
+                    answers[key] = _answer("conflict", entry["conflict"])
+                    continue
+                try:
+                    if _validate_entry(stream.fileno(), path, parent, attempt, entry, budget,
+                                       project, reserve=reserve):
+                        verified.add(key)
+                except FileNotFoundError:
+                    answers[key] = _answer("not_yet_available", "Retained native evidence source is unavailable")
+                except (OSError, ValueError, TypeError, KeyError, UnicodeError):
+                    entry["conflict"] = "Native evidence is unsafe, changed or corrupt"
+                    answers[key] = _answer("conflict", entry["conflict"])
+            # Capture the current size once per invocation. Extending the next
+            # snapshot also permits a previously incomplete last line to finish.
+            # No match is fresh until this entire snapshot has been inspected.
+            state["watermark"] = info.st_size
+            active: dict[str, list[tuple[str, Mapping[str, Any]]]] = {}
+            # Retain observations for registered candidates even when this hook
+            # asks about a subset; otherwise a shared cursor could skip evidence.
+            for key, cached in state["entries"].items():
+                attempt = cached["binding"]
+                active.setdefault(attempt["call_id"], [])
+                active[attempt["call_id"]].append((key, attempt))
+            def retain(row: dict[str, Any], ref: dict[str, Any]) -> None:
+                for call, candidates in active.items():
+                    for role, item in _items(row, call):
+                        for key, attempt in candidates:
+                            entry = state["entries"][key]
+                            admission = attempt.get("transcript_admission_offset")
+                            admission = 0 if admission is None else admission
+                            if type(admission) is not int or admission < 0 or ref["offset"] < admission:
+                                entry["conflict"] = "Native launch predates its admission watermark"
+                            _retain(entry, role, _projection(row, role, item), ref)
+            state["offset"] = _scan(stream.fileno(), path, state["offset"], state["watermark"], budget, retain)
+            complete = state["offset"] == state["watermark"] and state["watermark"] == info.st_size
+            for key, attempt in rotated:
+                entry = state["entries"][key]
+                if entry["conflict"]:
+                    answers[key] = _answer("conflict", entry["conflict"])
+                    continue
+                if key not in verified:
+                    continue
+                if entry["result"] and not entry["header"]:
+                    result = entry["result"][0]["projection"]
+                    if result["structured"] and result["is_async"] and result["status"] == "async_launched":
+                        try:
+                            child_path = _child_path(path, parent, result["child"])
+                            with os.fdopen(_open_child(child_path, project), "rb", buffering=0) as child:
+                                child_info = _regular(child.fileno())
+                                def header(row: dict[str, Any], ref: dict[str, Any]) -> bool:
+                                    _retain(entry, "header", _projection(row, "header"), ref)
+                                    return False
+                                _scan(child.fileno(), child_path, 0, min(child_info.st_size, MAX_LINE_BYTES + 1), budget, header)
+                        except FileNotFoundError:
+                            pass
+                        except (OSError, ValueError, TypeError, UnicodeError):
+                            entry["conflict"] = "Native child header is unsafe or malformed"
+                answer = _correlate(parent, attempt, entry)
+                if answer["status"] == "conflict":
+                    entry["conflict"] = answer["reason"]
+                elif not complete:
+                    answer = _answer("not_yet_available", "Native transcript snapshot scan is incomplete")
+                answers[key] = answer
+            # A concurrent truncation must not create a fresh match.
+            if _regular(stream.fileno()).st_size < state["size"]:
+                raise ValueError("Selected parent source was truncated during observation")
+        return finish()
+    except FileNotFoundError:
+        return finish("not_yet_available", "Selected native transcript is unavailable")
+    except (OSError, ValueError, TypeError, UnicodeError, KeyError, IndexError):
+        return finish("conflict", "Native transcript source or cursor is unsafe, malformed or changed")
+
+
+def observe(parent: str, attempt: Mapping[str, Any], event: Mapping[str, Any], *,
+            source: Mapping[str, Any] | None = None, cursor: Mapping[str, Any] | None = None,
+            budget: ReadBudget | None = None) -> dict[str, Any]:
+    """Single-attempt adapter; it never selects a source from a worker event."""
+    result = observe_many(parent, [attempt], event,
+                          source=source if source is not None else attempt.get("transcript_source"),
+                          cursor=cursor if cursor is not None else attempt.get("transcript_cursor"), budget=budget)
+    return {**result["observations"][0], "cursor": result["cursor"], "budget": result["budget"]}

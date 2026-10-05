@@ -43,10 +43,10 @@ def source_identity(members: dict[str, bytes]) -> dict:
     if tree is not None and tree.returncode == 0:
         for entry in tree.stdout.split(b"\0"):
             if entry:
-                metadata, name = entry.split(b"\t", 1)
+                metadata, raw_name = entry.split(b"\t", 1)
                 mode, kind, oid = metadata.split()
                 if kind == b"blob" and mode in {b"100644", b"100755"}:
-                    blobs[name.decode("utf-8", errors="surrogateescape")] = oid.decode()
+                    blobs[raw_name.decode("utf-8", errors="surrogateescape")] = oid.decode()
     comparable = bool(revision and tree is not None and tree.returncode == 0)
     differences = []
     for name, data in members.items():
@@ -85,7 +85,13 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
                      if p.is_file() and "__pycache__" not in p.parts)
     files.update((ROOT / "taskplane").glob("*.py"))
     files.update(p for p in (ROOT / "lenses").rglob("*") if p.suffix == ".md" or p.name == "catalog.json")
-    files.update(ROOT / "docs" / name for name in ("cli-reference.md", "lens-catalog.md", "onboarding.md"))
+    files.update(ROOT / "docs" / name for name in
+                 ("cli-reference.md", "lens-catalog.md", "onboarding.md", "workflow-builder.md",
+                  "claude-worker-recovery.md", "test-candidate.md"))
+    files.add(ROOT / "scripts" / "verify_claude_workers.py")
+    files.update(ROOT / "workflows" / name for name in
+                 ("change-risk-review.workflow.json", "design-brief.workflow.json",
+                  "feature-delivery.workflow.json"))
     files.update(ROOT / "docs/assets" / name for name in
                  ("taskplane-cowork-flow.gif", "taskplane-flow-source.html"))
     for path in files:

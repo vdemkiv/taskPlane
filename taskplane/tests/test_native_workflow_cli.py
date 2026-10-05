@@ -21,34 +21,49 @@ ROOT=Path(__file__).resolve().parents[2]
 
 
 def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
+    workspace, root = Path(workspace).resolve(), Path(root).resolve()
     if args[0] == 'submit' and code == 0:
         # A legitimate fixture producer refreshes its receipt after corrections.
         # Every body is returned through the selected shipped runtime's CLI.
-        prepared = cli(workspace, host, 'context', root=root, environment=environment)
-        returned = cli(workspace, host, 'context', '--consume', prepared['handoff_ref']['sha256'], root=root, environment=environment)
+        target = workspace/args[args.index('--output')+1]
+        data = json.loads(target.read_text())
+        context = ('context', '--run', data['run'])
+        prepared = cli(workspace, host, *context, root=root, environment=environment)
+        returned = cli(workspace, host, *context, '--consume', prepared['handoff_ref']['sha256'], root=root, environment=environment)
         while returned['remaining_required']:
-            returned = cli(workspace, host, 'context', '--read-required', prepared['handoff_ref']['sha256'], root=root, environment=environment)
+            returned = cli(workspace, host, *context, '--read-required', prepared['handoff_ref']['sha256'], root=root, environment=environment)
             assert returned['pages'], 'Required-body delivery made no progress'
         assert returned['remaining_required'] == 0
-        target = workspace/args[args.index('--output')+1]
-        data = json.loads(target.read_text()); data['context_receipt'] = returned['context_receipt']
+        data['context_receipt'] = returned['context_receipt']
         target.write_text(json.dumps(data))
     env={k:v for k,v in os.environ.items() if not k.startswith(
         ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
     host_data=workspace.parent/(workspace.name+'-host-data')
     env.update(CODEX_HOME=str(host_data/'codex'),CLAUDE_CONFIG_DIR=str(host_data/'claude'))
     env.update(environment or {})  # Explicit fixture observations only; no ambient session identity.
+    if host == 'claude':
+        # The source reader uses Path.home(), independently of CLAUDE_CONFIG_DIR.
+        # Keep native-layout provenance entirely inside this test's isolated HOME.
+        env['HOME'] = str(host_data/'home')
+        transcript = Path(env['HOME'])/'.claude/projects/fixture/root.jsonl'
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        if not transcript.exists():
+            transcript.write_text(json.dumps({'sessionId': 'root', 'cwd': str(workspace),
+                                              'isSidechain': False}) + '\n')
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
     env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
                PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
     # Match the declared Windows hook launcher; py -3 may select a different
     # installed interpreter from the one running pytest.
-    python=['py','-3'] if os.name=='nt' else [sys.executable]
-    argv=[*python,str(root/'taskplane/tp.py'),'flow',*args,'--full','--workspace',str(workspace)]
+    python=['py','-3'] if os.name=='nt' else [str(Path(sys.executable).resolve())]
+    argv=[*python,str(root/'taskplane/tp.py'),'flow',*args,
+          *([] if host == 'claude' and args[0] == 'context' else ['--full']),
+          '--workspace',str(workspace)]
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     call_id = 'fixture-' + uuid.uuid4().hex
     def hook(name, **extra):
-        identity={'session_id':'root'} if host=='claude' else {'thread_id':'root'}
+        identity=({'host':'claude', 'session_id':'root', 'transcript_path':str(transcript)}
+                  if host=='claude' else {'thread_id':'root'})
         tool,key=('Bash','command') if host=='claude' else ('exec_command','cmd')
         event={'hook_event_name':name,'cwd':str(workspace),'tool_use_id':call_id,**identity,
                'tool_name':tool,'tool_input':{key:shlex.join(argv)},**extra}
@@ -61,9 +76,15 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     if before.get('hookSpecificOutput',{}).get('permissionDecision')=='deny':
         assert code==2,before
         return {**before,'hook_refusal':True}  # The denied operation is never executed.
-    result=subprocess.run(argv,cwd=workspace,env=env,capture_output=True,text=True)
+    updated = before.get('hookSpecificOutput', {}).get('updatedInput')
+    if host == 'claude' and args[0] == 'context':
+        assert isinstance(updated, dict) and isinstance(updated.get('command'), str), before
+    executed = shlex.split(updated['command']) if updated is not None else argv
+    result=subprocess.run(executed,cwd=workspace,env=env,capture_output=True,text=True)
     assert result.returncode==code,(result.stdout,result.stderr)
-    hook('PostToolUse',tool_response={'exit_code':result.returncode})
+    post = hook('PostToolUse', **({'tool_input': updated} if updated is not None else {}),
+                tool_response={'exit_code':result.returncode})
+    assert post.get('hookSpecificOutput', {}).get('permissionDecision') != 'deny', post
     return json.loads(result.stdout)
 
 
@@ -216,6 +237,9 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     create(workspace)
     state = cli(workspace,host,'start','--scope','.taskplane/scope.json',
                 '--request-reference','test/size-limit',root=root)['workflow']
+    # Revalidate the newly selected parent source before taking the authority
+    # baseline, so the rejected submit must preserve its entire pinned proof.
+    cli(workspace,host,'report',root=root)
     target = output(workspace,state)
     small = (workspace/target).read_bytes()
     out = json.loads(small)

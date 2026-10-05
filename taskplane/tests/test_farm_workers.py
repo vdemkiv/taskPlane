@@ -115,6 +115,9 @@ def test_bounded_reader_ignores_output_path_and_rejects_unsafe_files(tmp_path, m
     state, row, records, headers = fixture(tmp_path)
     records[1]['toolUseResult']['outputFile'] = '/unrelated/private/output'
     parent, children = native_files(tmp_path, monkeypatch, state, records, headers)
+    selection = claude.select_source('parent', {'session_id':'parent', 'hook_event_name':'PreToolUse',
+        'transcript_path':str(parent)}, automatic=True)
+    row['transcript_source'] = selection['source']
     answer = caps.worker_identity_observation('claude', 'parent', row, {'transcript_path': str(parent)})
     assert answer['status'] == 'matched' and len(answer['references']) == 2
     assert all('/unrelated' not in ref['source'] for ref in answer['references'])
@@ -135,7 +138,7 @@ def test_unsupported_native_reader_never_reads_or_admits_identity(tmp_path, monk
     monkeypatch.setattr(claude, 'supported_reader', lambda: False)
     def unexpected_read(*args, **kwargs):
         raise AssertionError('Unsupported native reader attempted to open a transcript')
-    monkeypatch.setattr(claude, '_read', unexpected_read)
+    monkeypatch.setattr(claude, '_open_source', unexpected_read)
     answer = claude.observe('parent', row, {})
     assert answer['status'] == 'unsupported' and 'no-follow' in answer['reason']
     workers.reconcile(tmp_path, state, row, answer)
@@ -148,8 +151,11 @@ def test_callless_stop_before_result_reconciles_exact_attempt(tmp_path, monkeypa
     other = deepcopy(row); other.update(grant_id='other', call_id='other-call')
     state['workers']['other'] = other
     parent, _ = native_files(tmp_path, monkeypatch, state, records[:1], headers)
+    selection = claude.select_source('parent', {'session_id':'parent', 'hook_event_name':'PreToolUse',
+        'transcript_path':str(parent)}, automatic=True)
+    state['claude_transcript_source'] = selection['source']
     stop = {'host': 'claude', 'hook_event_name': 'SubagentStop', 'session_id': 'parent',
-            'agent_id': 'child', 'event_id': 'stop-first'}
+            'agent_id': 'child', 'event_id': 'stop-first', 'status':'completed'}
     workers.observe(state, stop)
     assert row['worker_id'] is None and other['worker_id'] is None
     parent.write_text(''.join(json.dumps(record) + '\n' for record in records))
@@ -251,3 +257,251 @@ def test_host_owned_invocation_requires_exact_actor_pending_call_and_revocation(
         value[field] = previous
     owner.revoked = True
     with pytest.raises(w.Refusal): native.verify_invocation('native/invocation', ['flow', 'context'])
+
+
+def integrated_claude(tmp_path, monkeypatch, count=2):
+    """Automatic hook fixtures with actual pinned JSONL; never live certification."""
+    from taskplane import flow, claude_worker_invocation as inv
+    from taskplane.tests.test_worker_runtime import setup, reserve
+    c, state = setup(tmp_path, count=count)
+    c.adapter.name = 'claude'
+    home = tmp_path.parent/(tmp_path.name+'-native-home')
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    monkeypatch.setenv('CLAUDE_SESSION_ID', 'root')
+    monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
+    # OS boot probe may fail inside the test sandbox. This is an explicit fixture.
+    monkeypatch.setattr(inv, '_boot_identity', lambda: 'fixture:controller-boot')
+    parent = home/'.claude/projects/original-project/root.jsonl'
+    parent.parent.mkdir(parents=True)
+    parent.write_text(json.dumps({'sessionId':'root', 'type':'user', 'cwd':str(tmp_path)})+'\n')
+    children = parent.with_suffix('')/'subagents'; children.mkdir(parents=True)
+    items = []
+    for index in range(count):
+        item = reserve(c, state, f'T{index}')
+        event = {'hook_event_name':'PreToolUse', 'host':'claude', 'session_id':'root',
+                 'cwd':str(tmp_path), 'transcript_path':str(parent), 'tool_name':'Task',
+                 'tool_use_id':f'launch-{index}', 'tool_input':{'prompt':item['message'],
+                    'description':'fixture', 'subagent_type':'general-purpose', 'run_in_background':True}}
+        flow.hook(event, governor=c)
+        offset = parent.stat().st_size
+        assert c.report()['workers'][item['grant']['grant_id']]['transcript_admission_offset'] == offset
+        called = workers.now()
+        header = {'sessionId':'root', 'agentId':f'child-{index}', 'isSidechain':True,
+                  'cwd':str(tmp_path), 'timestamp':workers.now()}
+        records = [dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
+                        message={'content':[dict(type='tool_use', id=f'launch-{index}', name='Task', input=event['tool_input'])]}),
+                   dict(type='user', sessionId='root', cwd=str(tmp_path), timestamp=workers.now(),
+                        message={'content':[dict(type='tool_result', tool_use_id=f'launch-{index}', content='untrusted')]},
+                        toolUseResult={'isAsync':True, 'status':'async_launched', 'agentId':f'child-{index}'})]
+        with parent.open('a') as stream:
+            stream.write(''.join(json.dumps(row)+'\n' for row in records))
+        (children/f'agent-child-{index}.jsonl').write_text(json.dumps(header)+'\n')
+        flow.hook({**event, 'hook_event_name':'PostToolUse'}, governor=c)
+        items.append(item)
+    return c, state, parent, items
+
+
+def invocation_event(c, state, parent, *, actor='child-0', grant=None, task=None, call='invoke', extra=()):
+    import shlex
+    import sys
+    words = [str(Path(sys.executable).resolve()), str(Path(w.__file__).with_name('tp.py').resolve()), 'flow',
+             'worker' if grant else 'context', '--workspace', str(c.workspace), '--run', state['run']]
+    if grant: words += ['--operation', 'claim', '--grant', grant]
+    if task: words += ['--task', task]
+    words += list(extra)
+    event = {'hook_event_name':'PreToolUse', 'host':'claude', 'session_id':'root',
+             'cwd':str(c.workspace), 'transcript_path':str(parent), 'tool_name':'Bash',
+             'tool_use_id':call, 'tool_input':{'command':shlex.join(words), 'description':'fixture', 'timeout':10000}}
+    if actor != 'root': event['agent_id'] = actor
+    return event
+
+
+def rewritten(event):
+    import shlex
+    from taskplane import flow
+    result = flow.hook(deepcopy(event))
+    output = result['hookSpecificOutput']
+    assert 'permissionDecision' not in output
+    return output['updatedInput'], shlex.split(output['updatedInput']['command'])[1:]
+
+
+@requires_native_reader
+def test_controller_concurrent_identity_claim_context_and_replay(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from taskplane import workflow_host as host, flow
+    c, state, parent, items = integrated_claude(tmp_path, monkeypatch)
+    calls = [invocation_event(c, state, parent, actor=f'child-{i}', grant=item['grant']['grant_id'], call=f'claim-{i}')
+             for i, item in enumerate(items)]
+    issued = [rewritten(event) for event in calls]
+    assert issued[0][1][-1] != issued[1][1][-1]
+    assert rewritten(calls[0])[1] == issued[0][1]  # duplicate pre retains one reference
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(host.Controller.invoke_claude, [issued[1][1], issued[0][1]]))
+    assert [r['task_id'] for r in results] == ['T1','T0']
+    for (_, argv), event in zip(issued, calls):
+        with pytest.raises(w.Refusal): host.Controller.invoke_claude(argv)
+        with pytest.raises(w.Refusal): rewritten(event)  # consumed pre cannot issue again
+    for i, ((updated, _), event) in enumerate(zip(issued, calls)):
+        flow.hook({**event, 'hook_event_name':'PostToolUse', 'tool_input':updated})
+        assert workers.readiness(c.report()['workers'][items[i]['grant']['grant_id']])['status'] == 'pending'
+        context = invocation_event(c, state, parent, actor=f'child-{i}', task=f'T{i}', call=f'context-{i}')
+        _, argv = rewritten(context)
+        descriptor = host.Controller.invoke_claude(argv)
+        drain = invocation_event(c, state, parent, actor=f'child-{i}', task=f'T{i}', call=f'drain-{i}',
+                                 extra=('--drain', descriptor['handoff_ref']['sha256']))
+        _, argv = rewritten(drain)
+        result = host.Controller.invoke_claude(argv)
+        assert result['done']
+        row = c.report()['workers'][items[i]['grant']['grant_id']]
+        assert row['worker_id'] == f'child-{i}' and row['context_receipt']
+        ordinary = {**context, 'tool_name':'Read', 'tool_use_id':f'ready-{i}', 'tool_input':{'file_path':'input.py'}}
+        flow.hook(ordinary); flow.hook({**ordinary, 'hook_event_name':'PostToolUse'})
+        assert workers.readiness(c.report()['workers'][items[i]['grant']['grant_id']])['status'] == 'ready'
+    saved = c.report()
+    assert saved['claude_transcript_cursor']['offset'] == parent.stat().st_size
+    assert saved['workers'][items[1]['grant']['grant_id']]['transcript_admission_offset'] > saved['claude_transcript_source']['selected_size']
+    for row in saved['workers'].values():
+        assert row['launch_proof_refs'] and row['launch_proof_ref'] in row['launch_proof_refs']
+
+
+@requires_native_reader
+@pytest.mark.parametrize('defect', ['unclaimed', 'foreign-grant', 'root-grant', 'missing-task', 'foreign-task', 'background', 'extra-field'])
+def test_controller_invocation_scope_refusals(tmp_path, monkeypatch, defect):
+    c, state, parent, items = integrated_claude(tmp_path, monkeypatch)
+    grant = items[1 if defect == 'foreign-grant' else 0]['grant']['grant_id']
+    event = invocation_event(c, state, parent, grant=grant if defect != 'unclaimed' else None,
+                             task='T0' if defect == 'unclaimed' else None)
+    if defect in {'missing-task','foreign-task'}:
+        from taskplane.workflow_host import Controller
+        Controller.invoke_claude(rewritten(event)[1])
+        event = invocation_event(c, state, parent, task='T1' if defect == 'foreign-task' else None, call='context')
+    if defect == 'root-grant': event.pop('agent_id')
+    if defect == 'background': event['tool_input']['run_in_background'] = True
+    if defect == 'extra-field': event['tool_input']['recipient'] = 'other'
+    if defect == 'root-grant':
+        # Root claim is rejected in the CLI; no worker invocation is minted.
+        from taskplane import flow
+        assert 'updatedInput' not in flow.hook(event).get('hookSpecificOutput', {})
+    else:
+        with pytest.raises(w.Refusal): rewritten(event)
+
+
+@requires_native_reader
+def test_cli_locator_precedes_inherited_identity_and_missing_reference_refuses(tmp_path, monkeypatch, capsys):
+    import sys
+    from taskplane import flow
+    c, state, parent, items = integrated_claude(tmp_path, monkeypatch, count=1)
+    event = invocation_event(c, state, parent, grant=items[0]['grant']['grant_id'])
+    _, argv = rewritten(event)
+    monkeypatch.setenv('CLAUDE_SESSION_ID','foreign-inherited-root')
+    monkeypatch.setattr(sys, 'argv', argv)
+    assert flow.main(argv[2:]) == 0
+    assert json.loads(capsys.readouterr().out)['task_id'] == 'T0'
+    assert flow.main(argv[2:]) == 2
+    capsys.readouterr()
+    assert flow.main(['context','--workspace',str(tmp_path),'--run',state['run']]) == 2
+    assert 'reference' in capsys.readouterr().out
+
+
+@requires_native_reader
+def test_invocation_concurrent_double_consume_and_foreign_reference(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from taskplane.workflow_host import Controller
+    c, state, parent, items = integrated_claude(tmp_path, monkeypatch, count=1)
+    _, argv = rewritten(invocation_event(c, state, parent, grant=items[0]['grant']['grant_id']))
+    def consume_once(_):
+        try: return Controller.invoke_claude(argv)['task_id']
+        except w.Refusal: return 'refused'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(consume_once, range(2))) == ['T0', 'refused']
+    foreign = argv[:-1]+[argv[-1][:-64]+'0'*64]
+    with pytest.raises(w.Refusal, match='unknown or foreign'): Controller.invoke_claude(foreign)
+
+
+@requires_native_reader
+@pytest.mark.parametrize('representation', ['original','rewritten','mismatch','runtime'])
+def test_invocation_post_requires_exact_recorded_input_and_runtime(tmp_path, monkeypatch, representation):
+    from taskplane import flow, workflow_host as host
+    c, state, parent, items = integrated_claude(tmp_path, monkeypatch, count=1)
+    event = invocation_event(c, state, parent, grant=items[0]['grant']['grant_id'])
+    updated, argv = rewritten(event)
+    host.Controller.invoke_claude(argv)
+    post = {**event, 'hook_event_name':'PostToolUse', 'tool_input':event['tool_input'] if representation == 'original' else updated}
+    if representation == 'mismatch': post['tool_input'] = {**updated,'description':'later plugin rewrite'}
+    if representation == 'runtime':
+        monkeypatch.setattr(caps, 'runtime_identity', lambda:{'root':'foreign','member_sha256':{}})
+    if representation in {'mismatch','runtime'}:
+        with pytest.raises(w.Refusal): flow.hook(post)
+    else:
+        flow.hook(post)
+        db = c._read(c._path())
+        admission = next(row for row in db['admissions'].values() if row['call_id'] == 'invoke')
+        assert admission['post_input_representation'] == representation
+
+
+@requires_native_reader
+def test_genuine_root_context_gets_distinct_one_use_transport(tmp_path, monkeypatch):
+    from taskplane.workflow_host import Controller
+    c, state, parent, _ = integrated_claude(tmp_path, monkeypatch, count=1)
+    event = invocation_event(c, state, parent, actor='root')
+    _, argv = rewritten(event)
+    result = Controller.invoke_claude(argv)
+    assert result['binding']['root'] == 'root'
+    db = c._read(c._path())
+    record = next(row['invocation'] for row in db['admissions'].values() if row['call_id']=='invoke')
+    assert record['binding']['kind'] == 'root-context' and record['binding']['grant_id'] is None
+
+
+@requires_native_reader
+def test_handback_implicit_parent_readiness_and_unsupported_terminal(tmp_path, monkeypatch):
+    from taskplane import flow
+    from taskplane.tests.test_worker_runtime import consume
+    c, state, parent, items = integrated_claude(tmp_path, monkeypatch, count=1)
+    consume(c, state, items[0]['grant'], 'child-0')
+    base = invocation_event(c, state, parent)
+    handback = {**base, 'tool_name':'SubagentHandback', 'tool_use_id':'return', 'tool_input':{'message':'T0.md contains fixture evidence'}}
+    with pytest.raises(w.Refusal, match='readiness'): flow.hook(handback)
+    ready = {**base, 'tool_name':'Read', 'tool_use_id':'ready', 'tool_input':{'file_path':'input.py'}}
+    flow.hook(ready); flow.hook({**ready,'hook_event_name':'PostToolUse'})
+    for delta in [{'tool_input':{'message':'report','recipient':'sibling'}}, {'agent_id':'foreign'}, {'agent_id':None}]:
+        with pytest.raises(w.Refusal): flow.hook({**handback, **delta})
+    flow.hook(handback); flow.hook(handback)
+    with pytest.raises(w.Refusal, match='competing'): flow.hook({**handback,'tool_use_id':'competing'})
+    c.observe({'host':'claude','hook_event_name':'SubagentStop','session_id':'root','agent_id':'child-0'},state['run'])
+    row = c.report()['workers'][items[0]['grant']['grant_id']]
+    assert row['state']=='running' and row['handback']['status']=='delivery_unknown'
+    assert c.report()['claude_terminal_observation']['status']=='unsupported'
+    c.observe({'host':'claude','hook_event_name':'SubagentStop','session_id':'root','agent_id':'child-0','status':'completed'},state['run'])
+    flow.hook({**handback,'hook_event_name':'PostToolUse','tool_response':{'message':'text is not delivery proof'}})
+    row = c.report()['workers'][items[0]['grant']['grant_id']]
+    assert row['state']=='result_pending' and row['handback']['status']=='delivery_unknown'
+    with pytest.raises(w.Refusal): flow.hook({**ready,'tool_use_id':'after-stop'})
+    with pytest.raises(w.Refusal, match='handback'):
+        c.worker(state['run'],'accept-result',revision=state['revision'],task='T0',request={'grant':row['grant_id']})
+
+
+@requires_native_reader
+@pytest.mark.parametrize('defect', ['revoked', 'generation', 'source-missing', 'runtime', 'foreign-workspace'])
+def test_pending_reference_revalidates_current_attempt_and_source(tmp_path, monkeypatch, defect):
+    from taskplane import workflow_host as host
+    c, state, parent, items = integrated_claude(tmp_path, monkeypatch, count=1)
+    _, argv = rewritten(invocation_event(c, state, parent, grant=items[0]['grant']['grant_id']))
+    if defect in {'revoked','generation'}:
+        db = c._read(c._path())
+        saved = db['runs'][state['run']]
+        if defect == 'revoked': saved['workers'][items[0]['grant']['grant_id']]['revoked_at'] = workers.now()
+        else: saved['revision'] += 1
+        c._write(c._path(), db)
+    if defect == 'source-missing': parent.unlink()
+    if defect == 'runtime': monkeypatch.setattr(caps,'runtime_identity',lambda:{'root':'foreign','member_sha256':{}})
+    if defect == 'foreign-workspace': argv[argv.index('--workspace')+1] = str(tmp_path.parent)
+    with pytest.raises(w.Refusal): host.Controller.invoke_claude(argv)
+
+
+@requires_native_reader
+def test_direct_worker_context_requires_explicit_claim(tmp_path, monkeypatch):
+    from taskplane import workflow_host as host
+    c, state, _, _ = integrated_claude(tmp_path, monkeypatch, count=1)
+    worker = host.Controller(tmp_path,'root',host.installed_adapter('claude'),principal='child-0')
+    with pytest.raises(w.Refusal, match='claimed task'):
+        worker.context(state['run'], task='T0')

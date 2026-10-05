@@ -119,11 +119,14 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
     event={'hook_event_name':'PreToolUse','tool_name':'Agent','tool_use_id':'claude-call',
            'tool_input':{'prompt':item['message'],'description':'bounded review','subagent_type':'general-purpose',
                          'run_in_background':True}}
-    c.guard(event,s['run'])
     home=tmp_path/'native-home'
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
     parent=home/'.claude/projects'/re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path))/'root.jsonl'
     parent.parent.mkdir(parents=True)
+    prefix=json.dumps({'sessionId':'root','cwd':str(tmp_path),'type':'user'})+'\n'
+    parent.write_text(prefix)
+    event.update(host='claude', session_id='root', cwd=str(tmp_path), transcript_path=str(parent))
+    flow.hook(event, governor=c)
     called=wr.now()
     header=dict(sessionId='root', agentId='claude-child', isSidechain=True, cwd=str(tmp_path), timestamp=wr.now())
     records=[dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
@@ -131,7 +134,7 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
              dict(type='user', sessionId='root', cwd=str(tmp_path), timestamp=wr.now(),
                   message={'content':[dict(type='tool_result', tool_use_id='claude-call', content='untrusted text')]},
                   toolUseResult=dict(isAsync=True, status='async_launched', agentId='claude-child'))]
-    parent.write_text(''.join(json.dumps(r)+'\n' for r in records))
+    parent.write_text(prefix+''.join(json.dumps(r)+'\n' for r in records))
     child=parent.with_suffix('')/'subagents/agent-claude-child.jsonl'
     child.parent.mkdir(parents=True)
     child.write_text(json.dumps(header)+'\n')
@@ -158,7 +161,8 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
         command=shlex.join([sys.executable,str(engine),'flow',action,'--workspace',str(tmp_path)])
         with pytest.raises(w.Refusal):worker.guard({'tool_name':'exec_command','tool_input':{'cmd':command}},s['run'])
     c.observe({'hook_event_name':'SubagentStop','host':'claude','session_id':'root','agent_id':'claude-child'},s['run'])
-    assert c.report()['workers'][row['grant_id']]['state']=='result_pending'
+    assert c.report()['workers'][row['grant_id']]['state']=='running'
+    assert c.report()['claude_terminal_observation']['status']=='unsupported'
 
 
 def test_no_suffix_alias_and_reused_attempt_needs_new_context(tmp_path):

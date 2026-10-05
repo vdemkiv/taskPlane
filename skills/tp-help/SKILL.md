@@ -21,6 +21,16 @@ For actual setup or a concrete installation failure, consult
 Explain only the requested concept; load no full manuals or hook manifests as a tour.
 For a question about phase policy, consult [the shared flow](../tp-go/references/shared-flow.md).
 
+For reusable workflow questions, consult only the relevant section of
+[Workflow Builder](../../docs/workflow-builder.md). Explain conversational
+create/edit/save/preview/run through `tp-workflow`, the change-risk review,
+Design brief and feature-delivery seeds, and the distinction between saving a
+definition and root execution after its Design checkpoint. `workflow catalog`,
+`validate`, `preview` and run-bound `check` are read-only; there is no
+`workflow run` command. Compilation produces inputs for existing `flow` controls.
+Check actual loaded support before claiming availability. Fixture coverage is
+not live host evidence, and unsupported runtime or native capacity stays explicit.
+
 Explain that plugin installation, hook trust, phase acceptance and host tool permissions
 are separate. Automatic mode requires explicit additional instructions; show a concise
 example and how to return to manual mode when requested.

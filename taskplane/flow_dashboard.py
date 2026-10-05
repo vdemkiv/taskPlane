@@ -157,6 +157,16 @@ def headline(m: dict[str, Any]) -> str:
 def _workflow(m: dict[str, Any]) -> str:
     authority = m.get('workflow') or {}
     header = ''
+    provenance = authority.get('workflow_provenance')
+    if provenance:
+        binding = provenance.get('binding') or {}
+        header += '<div class="note"><strong>Reusable workflow: '+_e(provenance.get('name') or binding.get('definition_id'))+'</strong>'
+        header += '<p>Version '+_e(binding.get('definition_version'))+' · Run '+_e(provenance.get('run'))+'</p>'
+        header += '<p>Package digest <code>'+_e(binding.get('package_digest'))+'</code></p>'
+        header += '<p>Compatibility and inputs: '+_e(provenance.get('status'))+' · Unresolved inputs: '+_e(provenance.get('unresolved_inputs'))+'</p>'
+        if provenance.get('diagnostics'):
+            header += '<pre>'+_e(json.dumps(provenance['diagnostics'], ensure_ascii=False, indent=2))+'</pre>'
+        header += '</div>'
     if authority.get('visits'):
         from taskplane.workflow_evidence import outcome_summary
         outcome = outcome_summary(authority)

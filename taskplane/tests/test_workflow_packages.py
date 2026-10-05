@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -24,6 +25,233 @@ from taskplane.tests.test_native_workflow_cli import exercise_correction_cli
 from taskplane.tests import test_harness_review_regressions as review_regressions
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def workflow_candidate_checks(root, workspace, host):
+    """Run inside one isolated extracted interpreter; this is not WFB-LIVE."""
+    from contextlib import redirect_stdout
+    from copy import deepcopy
+    import hashlib
+    import io
+    import json
+    from pathlib import Path
+    import subprocess
+    import sys
+    from taskplane import flow, tp, workflow as w
+
+    root, workspace = Path(root).resolve(), Path(workspace).resolve()
+    workspace.mkdir()
+
+    def snapshot(path):
+        return {p.relative_to(path).as_posix(): p.read_bytes() if p.is_file() else None
+                for p in path.rglob('*')}
+
+    def command(action, *args, code=0):
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            actual = tp.main(['workflow', action, '--workspace', str(workspace), *args])
+        result = json.loads(stream.getvalue())
+        assert actual == code, (action, args, actual, result)
+        return result
+
+    def git(*args):
+        return subprocess.run(['git', *args], cwd=workspace, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    git('init')
+    git('config', 'user.email', 'fixture@example.invalid')
+    git('config', 'user.name', 'Workflow package fixture')
+    for name, body in {'main.py': 'answer = 41\n', 'dependency.py': 'limit = 42\n',
+                       'test_main.py': 'assert True\n'}.items():
+        (workspace/name).write_text(body)
+    git('add', '.')
+    git('commit', '-m', 'fixture base')
+    base = git('rev-parse', 'HEAD')
+    (workspace/'main.py').write_text('answer = 42\n')
+    git('add', 'main.py')
+    git('commit', '-m', 'fixture head')
+    head = git('rev-parse', 'HEAD')
+    before = snapshot(workspace)
+    catalog = command('catalog')
+    runtime = catalog['runtime']
+    assert catalog['compatible'] and not catalog['blockers']
+    assert runtime['runtime_root'] == str(root)
+    assert runtime['interpreter']['path'] == str(Path(sys.executable).resolve())
+    for name, member in runtime['modules'].items():
+        assert Path(member['path']) == root/name
+        assert member['sha256'] == hashlib.sha256((root/name).read_bytes()).hexdigest()
+        assert len(member['loaded_code_sha256']) == 64
+    assert {'taskplane/blueprint.py', 'taskplane/blueprint_catalog.py',
+            'taskplane/blueprint_compile.py', 'taskplane/workflow_local.py'} <= set(runtime['modules'])
+    for module_name, module in tuple(sys.modules.items()):
+        if module_name == 'taskplane' or module_name.startswith('taskplane.'):
+            if module.__file__ is not None:
+                assert Path(module.__file__).resolve().is_relative_to(root), module_name
+            else:
+                assert {Path(p).resolve() for p in module.__path__} == {root/'taskplane'}, module_name
+    assert snapshot(workspace) == before
+
+    compiled_review = None
+    for seed in ('change-risk-review', 'design-brief', 'feature-delivery'):
+        definition = root/'workflows'/f'{seed}.workflow.json'
+        data = json.loads(definition.read_text())
+        values = {'request': 'Inspect this isolated package fixture.',
+                  'source_files': ['main.py'], 'dependency_files': ['dependency.py'],
+                  'test_files': ['test_main.py'], 'output_prefix': f'reports/{seed}',
+                  'criteria': [{'id': 'C1', 'statement': 'Return scoped evidence.'}]}
+        if seed == 'change-risk-review':
+            values.update(base_ref=base, head_ref=head)
+        if seed == 'feature-delivery':
+            values['build_files'] = ['main.py', 'new.py', 'checks/history.json',
+                                     'checks/attempt-1.log', 'checks/attempt-2.log']
+        inputs = workspace/f'{seed}-inputs.json'
+        inputs.write_text(json.dumps(values))
+        before = snapshot(workspace)
+        validated = command('validate', '--definition', str(definition))
+        assert validated['status'] == 'valid' and 'runtime' not in validated
+        incomplete = command('preview', '--definition', str(definition))
+        assert incomplete['status'] == 'incomplete' and incomplete['unresolved_inputs']
+        preview = command('preview', '--definition', str(definition), '--inputs', inputs.name)
+        assert preview['status'] == 'ready' and preview['runnable']
+        assert preview['effects']['workers_dispatched'] == 0
+        assert preview['effects']['preview_writes'] == preview['effects']['external_actions'] == []
+        assert preview['decisions']['execution_authorized'] is False
+        assert preview['decisions']['approval_default'] == 'manual'
+        assert set(preview['source_manifest']) == {'main.py', 'dependency.py', 'test_main.py'}
+        assert snapshot(workspace) == before
+        published = f"workflows/{seed}.{data['version']}.workflow.json"
+        assert command('save', '--definition', str(definition), '--out', published)['status'] == 'created'
+        saved = snapshot(workspace)
+        assert command('save', '--definition', str(definition), '--out', published)['status'] == 'unchanged'
+        assert snapshot(workspace) == saved
+        out = f'.taskplane/bootstrap/workflow-{seed}'
+        compiled = command('compile', '--definition', published, '--inputs', inputs.name, '--out', out)
+        assert compiled['status'] == 'created' and compiled['package_path'] == out
+        assert compiled['start_arguments'][:2] == ['flow', 'start']
+        assert compiled['scope']['execution_contract'] == 'native-default/v1'
+        expected_members = {'definition.json', 'bindings.json', 'capabilities.json', 'compilation.json',
+                            'scope.json', 'tasks.json', 'preview.json', 'preview.md'}
+        assert set(snapshot(workspace/out)) == expected_members
+        pinned = json.loads((workspace/out/'capabilities.json').read_text())
+        assert pinned['runtime']['runtime_root'] == str(root)
+        after = snapshot(workspace)
+        assert {name for name in after.keys() - saved.keys() if after[name] is not None} == {
+            f'{out}/{name}' for name in expected_members}
+        assert command('compile', '--definition', published, '--inputs', inputs.name,
+                       '--out', out)['status'] == 'unchanged'
+        assert snapshot(workspace) == after
+        # Finite CLI destinations reject before creating any additional files.
+        for destination in ('outside', '.taskplane/bootstrap/workflow-../escape'):
+            refused = command('compile', '--definition', published, '--inputs', inputs.name,
+                              '--out', destination, code=2)
+            assert refused['diagnostics'][0]['code'] == 'invalid_package_path'
+        assert snapshot(workspace) == after
+        phases = compiled['scope']['paths']
+        if seed == 'feature-delivery':
+            assert set(compiled['compilation']['phase_files']) == set(w.PHASES)
+            assert set(values['build_files']) <= set(phases['build'])
+        else:
+            assert all(not paths for phase, paths in phases.items() if phase != data['route']['phase'])
+        if seed == 'change-risk-review':
+            compiled_review = compiled
+            tasks = {task['id']: task for task in compiled['preview']['tasks']['engineering']['tasks']}
+            reviewers = [tasks['security-review'], tasks['quality-review']]
+            assert {t['review_lens'] for t in reviewers} == {'security', 'code-quality'}
+            assert all(t['execution'] == 'native_required' for t in reviewers)
+            assert set(tasks['review-synthesis']['dependencies']) == {t['id'] for t in reviewers}
+
+    assert {p.name for p in (workspace/'.taskplane').iterdir()} == {'bootstrap'}
+    definition = root/'workflows/change-risk-review.workflow.json'
+    inputs = workspace/'change-risk-review-inputs.json'
+    # Static validation remains available when a selected runtime asset is missing.
+    asset = root/'lenses/security.md'
+    hidden = asset.with_suffix('.fixture-hidden')
+    before = snapshot(workspace)
+    asset.rename(hidden)
+    try:
+        assert command('validate', '--definition', str(definition))['status'] == 'valid'
+        unavailable = command('catalog', code=2)
+        assert any(d['code'] == 'capability_asset_unavailable' for d in unavailable['blockers'])
+        assert command('preview', '--definition', str(definition), '--inputs', inputs.name,
+                       code=2)['status'] == 'blocked'
+        refused = command('compile', '--definition', str(definition), '--inputs', inputs.name,
+                          '--out', '.taskplane/bootstrap/workflow-unavailable', code=2)
+        assert refused['diagnostics'][0]['code'] == 'runtime_incompatible'
+        assert snapshot(workspace) == before
+    finally:
+        hidden.rename(asset)
+    compiled = compiled_review
+    assert compiled is not None
+    published = 'workflows/change-risk-review.0.1.0.workflow.json'
+    altered = deepcopy(json.loads(definition.read_text()))
+    altered['description'] += ' Changed version content.'
+    (workspace/'altered.json').write_text(json.dumps(altered))
+    before = snapshot(workspace)
+    refused = command('save', '--definition', 'altered.json', '--out', published, code=2)
+    assert refused['diagnostics'][0]['code'] == 'published_version_conflict'
+    refused = command('compile', '--definition', 'altered.json', '--inputs', inputs.name,
+                      '--out', compiled['package_path'], code=2)
+    assert refused['diagnostics'][0]['code'] == 'package_integrity', refused
+    assert snapshot(workspace) == before
+    # Reuse the saved definition with a fresh namespace and different bound source.
+    values = json.loads(inputs.read_text())
+    values.update(source_files=['dependency.py'], dependency_files=['main.py'],
+                  output_prefix='reports/review-second')
+    (workspace/'second-inputs.json').write_text(json.dumps(values))
+    second = command('compile', '--definition', published, '--inputs', 'second-inputs.json',
+                     '--out', '.taskplane/bootstrap/workflow-review-second')
+    assert second['package_digest'] != compiled['package_digest']
+    assert set(second['scope']['paths']['engineering']).isdisjoint(compiled['scope']['paths']['engineering'])
+    # Check names an existing fixture run; no real host, worker or checkpoint is claimed.
+    before = snapshot(workspace)
+    assert command('check', '--run', 'missing', code=2)['diagnostics'][0]['code'] == 'state_unavailable'
+    assert snapshot(workspace) == before
+    c = flow._controller(workspace, flow.session_id({}))
+    request = {'scope': compiled['scope'], 'entry': 'engineering', 'standalone': True,
+               'request_reference': 'fixture/package-workflow',
+               'tasks': compiled['package_path'] + '/tasks.json'}
+    state = c.start(request)
+    assert c.adapter.name == ('codex' if host == 'openai' else 'claude')
+    assert state['decisions'] == {} and not state.get('workers')
+    assert c.start(request)['run'] == state['run']
+    before = snapshot(workspace)
+    checked = command('check', '--run', state['run'])
+    assert checked['status'] == 'valid' and checked['run'] == state['run']
+    assert snapshot(workspace) == before
+    member = workspace/compiled['package_path']/'preview.md'
+    original = member.read_bytes()
+    member.write_bytes(original + b'changed fixture package\n')
+    before = snapshot(workspace)
+    blocked = command('check', '--run', state['run'], code=2)
+    assert blocked['status'] == 'blocked' and blocked['diagnostics'][0]['code'] == 'package_integrity'
+    assert snapshot(workspace) == before
+    member.write_bytes(original)
+    (workspace/'dependency.py').write_text('changed bound dependency\n')
+    before = snapshot(workspace)
+    blocked = command('check', '--run', state['run'], code=2)
+    assert blocked['status'] == 'blocked' and blocked['diagnostics'][0]['code'] == 'source_drift'
+    assert snapshot(workspace) == before
+    return {'runtime_root': str(root), 'modules': sorted(runtime['modules']),
+            'seeds': 3, 'host': host, 'WFB-LIVE': 'not_run'}
+
+
+def exercise_workflow_candidate(extracted, workspace, host):
+    """No checkout imports or ambient native session identities in the child."""
+    environment = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
+    environment.update(CODEX_HOME=str(workspace.parent/(host+'-workflow-codex-home')),
+                       CLAUDE_CONFIG_DIR=str(workspace.parent/(host+'-workflow-claude-home')))
+    environment['CODEX_THREAD_ID' if host == 'openai' else 'TASKPLANE_CLAUDE_SESSION_ID'] = 'package-fixture'
+    script = ('import sys, json\nsys.path.insert(0, sys.argv[1])\n'
+              + inspect.getsource(workflow_candidate_checks)
+              + '\nprint(json.dumps(workflow_candidate_checks(*sys.argv[1:])))\n')
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', script,
+                             str(extracted.resolve()), str(workspace.resolve()), host],
+                            cwd=workspace.parent, env=environment, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    evidence = json.loads(result.stdout)
+    assert evidence['runtime_root'] == str(extracted.resolve())
+    assert evidence['host'] == host and evidence['seeds'] == 3 and evidence['WFB-LIVE'] == 'not_run'
 
 
 def test_source_instruction_contract():
@@ -78,10 +306,17 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
         assert 'docs/assets/taskplane-flow-source.html' in archive.namelist()
         assert 'taskplane/workflow_host.py' in archive.namelist()
         assert 'taskplane/worker_runtime.py' in archive.namelist()
+        assert {'taskplane/blueprint.py', 'taskplane/blueprint_catalog.py', 'taskplane/blueprint_compile.py',
+                'skills/tp-workflow/SKILL.md', 'agents/tp-workflow-builder.md', 'docs/workflow-builder.md',
+                'workflows/change-risk-review.workflow.json', 'workflows/design-brief.workflow.json',
+                'workflows/feature-delivery.workflow.json', 'taskplane/claude_worker_invocation.py',
+                'taskplane/claude_worker_observations.py', 'scripts/verify_claude_workers.py',
+                'docs/claude-worker-recovery.md', 'docs/test-candidate.md'} <= set(archive.namelist())
         dispatch = archive.read('skills/tp-go/references/codex-native-dispatch.md').decode()
         assert 'operation prepare' in dispatch and 'minimum live acceptance test' in dispatch
         assert 'hooks/hooks.json' in archive.namelist()
         archive.extractall(extracted)
+    exercise_workflow_candidate(extracted, tmp_path/(host+'-workflow-builder'), host)
     # The ordinary shipped profile must work without the protected fixture.
     exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
     exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),

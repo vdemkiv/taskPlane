@@ -38,6 +38,21 @@ Long coding tasks can lose the original requirement, overlook a dependency, or f
 
 Use `taskplane help` to see the available routes. You do not need to choose review lenses or operate Taskplane's internal commands yourself.
 
+## Reuse a workflow
+
+Workflow Builder turns a repeatable request into a versioned project-local JSON
+definition. Ask `taskplane create a reusable change risk review with security and
+code-quality reviewers; save it without running it`, then preview or invoke the
+saved version with fresh inputs. Packaged seeds cover change review, a Design
+brief and full feature delivery.
+
+Authoring has a Design checkpoint. Saving and previewing launch no work; the root
+starts an authorized invocation through the existing harness after resolving
+that checkpoint and any occupied run. See the
+[Workflow Builder guide](docs/workflow-builder.md) for commands and limits.
+This source candidate still requires separate candidate-loaded live verification;
+fixture checks do not establish installed-host execution.
+
 ## From a goal to working software
 
 A full delivery follows **Product → Design → Plan → Build → Evaluate → Engineering → Retro**:
@@ -128,6 +143,9 @@ Available token measurements help you understand the work already done. Missing 
 
 - [Onboarding and troubleshooting](docs/onboarding.md)
 - [CLI reference](docs/cli-reference.md)
+- [Workflow Builder and reusable seeds](docs/workflow-builder.md)
+- [Candidate packages and external tests](docs/test-candidate.md)
+- [Claude worker verification and recovery](docs/claude-worker-recovery.md)
 - [Engineering review lenses](docs/lens-catalog.md)
 - [Release history](CHANGELOG.md)
 - [Privacy](PRIVACY.md) and [Apache-2.0 license](LICENSE)

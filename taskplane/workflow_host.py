@@ -9,6 +9,7 @@ from pathlib import Path
 import stat
 import re
 import tempfile
+import time
 from typing import Any, Callable, Mapping, cast
 import uuid
 
@@ -286,6 +287,19 @@ class Controller:
                                              expected=s.get("workspace_contract"))
             w.require(db["active"] is None or db["active"] in db["runs"],
                       "state_unavailable", "Active workflow binding is missing.")
+            from . import claude_worker_invocation as invocation
+            admissions = db.get("admissions", {})
+            w.require(isinstance(admissions, dict) and len(admissions) <= 512,
+                      "state_unavailable", "Invalid admission inventory.")
+            for admission in admissions.values():
+                w.require(isinstance(admission, dict), "state_unavailable", "Invalid admission record.")
+                if "invocation" in admission:
+                    invocation.validate_record(admission["invocation"])
+                    bound = admission["invocation"]["binding"]
+                    w.require(all(bound[key] == admission.get(other) for key, other in
+                              (("root", "root"), ("actor", "principal"), ("workspace", "workspace"),
+                               ("call_id", "call_id"), ("run", "run"))),
+                              "state_unavailable", "Invocation differs from its admission identity.")
             from . import workflow_retention
             workflow_retention.validate_index(db)
             return dict(db)
@@ -352,6 +366,65 @@ class Controller:
                 os.unlink(temporary)
             primitives.atomic_json(record, {**result, "status": "restored"}, strict_directory_sync=True)
             return {**result, "status": "restored"}
+
+    def reconcile_maintenance(self, run: str, revision: int | None, manifest: str) -> dict[str, Any]:
+        """Record explicitly requested, hash-pinned maintenance without expanding a phase grant."""
+        from . import worker_runtime as workers
+        w.require(self.adapter.profile == 'native_workflow' and self.principal == self.root,
+                  'unsupported_authority', 'Maintenance reconciliation is a native root operation.')
+        request = evidence.object_file(self.workspace, manifest)
+        w.require(len(primitives.canonical_bytes(request)) <= 65536
+                  and request.get('schema') == 'taskplane.maintenance-request/v1'
+                  and set(request) == {'schema', 'request_reference', 'reason', 'changes'}
+                  and all(isinstance(request.get(k), str) and 0 < len(request[k].strip()) <= limit
+                          for k, limit in (('request_reference', 512), ('reason', 2048))),
+                  'invalid_evidence', 'Maintenance needs a bounded exact manifest and actual user request and reason.')
+        changes = request.get('changes')
+        w.require(isinstance(changes, dict) and 0 < len(changes) <= 256,
+                  'invalid_evidence', 'Maintenance must name 1-256 exact changed paths.')
+        assert isinstance(changes, dict)
+        for path, change in changes.items():
+            w.require(isinstance(path, str) and isinstance(change, dict) and set(change) == {'before', 'after'}
+                      and all(v is None or isinstance(v, str) and re.fullmatch(r'[0-9a-f]{64}', v)
+                              for v in change.values()) and change['before'] != change['after'],
+                      'invalid_evidence', 'Each maintenance path needs distinct exact before/after SHA-256 values or null.')
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            w.require(db['active'] == run, 'stale_checkpoint', 'Maintenance needs the active run.')
+            state = db['runs'][run]
+            w.require(state['revision'] == revision, 'stale_checkpoint', 'Expected maintenance revision changed.')
+            w.require(w.current(state)['decision'] in {'not_requested', 'changes_requested', 'rejected'}
+                      and not state.get('finished') and not state.get('retired'),
+                      'approval_required', 'Maintenance cannot amend a sealed or inactive phase.')
+            w.require(workers.joined(state)
+                      and not any(h['state'] == 'running' for h in state.get('observed_handles', {}).values()),
+                      'scope_violation', 'Join or recover live workers and commands before reconciling maintenance.')
+            w.require(evidence.changed(self.workspace, state) is None,
+                      'stale_checkpoint', 'Maintenance cannot bless changed accepted evidence.')
+            before, after = state['source_baseline'], workflow_local.inventory(self.workspace)
+            allowed = set(state['scope']['paths'][w.current(state)['phase']])
+            drift = {p for p in set(before) | set(after) if before.get(p) != after.get(p)} - allowed
+            w.require(set(changes) == drift and all(change == {'before': before.get(p), 'after': after.get(p)}
+                      for p, change in changes.items()), 'stale_checkpoint',
+                      'Maintenance manifest must match every out-of-scope change exactly; phase outputs remain under their grant.')
+            receipt = {**deepcopy(request), 'schema': 'taskplane.maintenance-reconciliation/v1',
+                       'run': run, 'root': self.root, 'workspace': str(self.workspace),
+                       'visit': w.current(state)['id'], 'previous_revision': revision,
+                       'revision': state['revision'] + 1, 'recorded_at': workers.now(),
+                       'manifest_sha256': primitives.content_fingerprint(request),
+                       'assurance': 'observed', 'scope_changed': False, 'approvals_changed': False}
+            # Acknowledge only these exact bytes; no path becomes writable in the phase.
+            for path, change in changes.items():
+                if change['after'] is None:
+                    before.pop(path, None)
+                else:
+                    before[path] = change['after']
+            state['history'].append({'maintenance': receipt})
+            state['revision'] += 1
+            state.pop('parent_hook_readiness', None)
+            self._write(target, db)
+            return receipt
 
     def _write(self, target: Path, db: dict[str, Any]) -> None:
         try:
@@ -494,7 +567,13 @@ class Controller:
                 result["start_observation_errors"] = ["Run started; harness binding observation unavailable."]
         return result
 
-    def report(self, run: str | None = None) -> dict[str, Any]:
+    def report(self, run: str | None = None, *, diagnostics: bool = True) -> dict[str, Any]:
+        """Read current authority; hooks omit expensive presentation-only diagnostics.
+
+        Evidence drift and database validation always run. Worker scheduling/context
+        reconstruction and storage inventory belong to explicit status requests, not
+        every tool's admission path. Required worker checks still run in _guard.
+        """
         if not self.availability()["workflow_available"]:
             return self.availability()
         target = self._path()
@@ -507,7 +586,8 @@ class Controller:
             if key is None:
                 from . import workflow_retention
                 return {**self.availability(), "status": "no_workflow",
-                        "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace)}
+                        **({"storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace)}
+                           if diagnostics else {})}
             from . import workflow_retention
             archived = key in db.get("archives", {})
             s = workflow_retention.read(self.workspace, db, key)
@@ -518,8 +598,9 @@ class Controller:
                 # A read-only projection cannot advertise a revision not yet committed.
                 s["revision"] = revision
                 s["invalidation_pending"] = True
-            return {**s, **self.availability(), **self.adapter.decorate(s), "phase": w.current(s)["phase"],
-                    "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace), "archived": archived,
+            details = {**self.adapter.decorate(s),
+                       "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace)} if diagnostics else {}
+            return {**s, **self.availability(), **details, "phase": w.current(s)["phase"], "archived": archived,
                     "pending_checkpoint": w.binding(s, w.current(s)["packet"])
                         if not s.get("superseded_by") and not s.get("retired") and w.current(s)["decision"] == "awaiting_human_approval" else None,
                     "status": "retired" if s.get("retired") else "superseded" if s.get("superseded_by") else
@@ -555,53 +636,64 @@ class Controller:
                  page: int = 0, section: str | None = None,
                  read_required: str | None = None, drain: str | None = None) -> dict[str, Any]:
         """Current-binding derived data only; never writes a workflow decision."""
-        from .context_handoff import Session
-        state = self.report(run)
-        w.require(state.get("run") and not state.get("invalidation_pending"),
+        snapshot = self.report(run)
+        w.require(snapshot.get("run") and not snapshot.get("invalidation_pending"),
                   "invalid_context", "Repair the current workflow binding before consuming context.")
-        with primitives.file_lock(str(self._path())):
-            db = self._read(self._path())
-            w.require(db["active"] == state["run"]
-                      and db["runs"][state["run"]]["revision"] == state["revision"],
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            selected = snapshot["run"]
+            w.require(selected and db["active"] == selected
+                      and db["runs"][selected]["revision"] == snapshot["revision"],
                       "invalid_context", "Context requires the unchanged active run.")
-            state = db["runs"][state["run"]]
-            w.require(evidence.changed(self.workspace, state) is None, "invalid_context",
-                      "Accepted evidence changed before context delivery.")
-            from . import worker_runtime as workers
-            worker = workers.find(state, self.principal) if self.principal != self.root else None
-            if self.principal != self.root:
-                w.require(worker is not None and task == worker["task_id"], "scope_violation",
-                          "Worker context requires its own claimed task.")
-                assert worker is not None
-                w.require(worker["state"] in {"bootstrapping", "running"}, "scope_violation", "Worker attempt is not live.")
-                session = workers.worker_session(self.workspace, state, worker)
-            else:
-                session = Session(self.workspace, state, task)
-            w.require(sum(value is not None for value in (consume, read, read_required, drain)) <= 1,
-                      "invalid_context", "Choose consume, read, read-required or drain.")
-            w.require(read is not None or (page == 0 and section is None),
-                      "invalid_context", "Page and section require a single-reference read.")
-            if consume:
-                result = session.consume(consume)
-            elif read:
-                result = session.read(read, page, section)
-            elif read_required is not None:
-                result = session.read_required(read_required)
-            elif drain is not None:
-                result = session.drain(drain)
-            else:
-                result = {"schema": "taskplane.context-preparation/v1", "binding": session.binding,
-                          **session.descriptor()}
-            if worker is not None and "context_receipt" in result:
-                record = db["runs"][state["run"]]["workers"][worker["grant_id"]]
-                receipt = session.store.resolve(result["context_receipt"]["receipt"])
-                record["context_delivery"] = {"returned_bytes": receipt["returned_bytes"],
-                    "responses": len(session.ledger()["receipts"]), "remaining_required": result["remaining_required"]}
-                if result.get("remaining_required") == 0:
-                    session.validate(result["context_receipt"])
-                    record.update(context_receipt=result["context_receipt"], state="running")
-                self._write(self._path(), db)
-            return result
+            return self._context_locked(db, selected, task=task, consume=consume, read=read,
+                                        page=page, section=section, read_required=read_required, drain=drain)
+
+    def _context_locked(self, db: dict[str, Any], run: str, *, task: str | None = None,
+                        consume: str | None = None, read: str | None = None, page: int = 0,
+                        section: str | None = None, read_required: str | None = None,
+                        drain: str | None = None) -> dict[str, Any]:
+        from .context_handoff import Session
+        state = db["runs"][run]
+        w.require(not state.get("invalidation_pending"), "invalid_context", "Repair context binding first.")
+        w.require(evidence.changed(self.workspace, state) is None, "invalid_context",
+                  "Accepted evidence changed before context delivery.")
+        from . import worker_runtime as workers
+        worker = workers.find(state, self.principal) if self.principal != self.root else None
+        if self.principal != self.root:
+            w.require(worker is not None and worker.get("claimed_at") and task == worker["task_id"], "scope_violation",
+                      "Worker context requires its own claimed task.")
+            assert worker is not None
+            w.require(worker["state"] in {"bootstrapping", "running"}, "scope_violation", "Worker attempt is not live.")
+            workers.current(state, worker)
+            session = workers.worker_session(self.workspace, state, worker)
+        else:
+            session = Session(self.workspace, state, task)
+        w.require(sum(value is not None for value in (consume, read, read_required, drain)) <= 1,
+                  "invalid_context", "Choose consume, read, read-required or drain.")
+        w.require(read is not None or (page == 0 and section is None),
+                  "invalid_context", "Page and section require a single-reference read.")
+        if consume:
+            result = session.consume(consume)
+        elif read:
+            result = session.read(read, page, section)
+        elif read_required is not None:
+            result = session.read_required(read_required)
+        elif drain is not None:
+            result = session.drain(drain)
+        else:
+            result = {"schema": "taskplane.context-preparation/v1", "binding": session.binding,
+                      **session.descriptor()}
+        if worker is not None and "context_receipt" in result:
+            record = db["runs"][state["run"]]["workers"][worker["grant_id"]]
+            receipt = session.store.resolve(result["context_receipt"]["receipt"])
+            record["context_delivery"] = {"returned_bytes": receipt["returned_bytes"],
+                "responses": len(session.ledger()["receipts"]), "remaining_required": result["remaining_required"]}
+            if result.get("remaining_required") == 0:
+                session.validate(result["context_receipt"])
+                record.update(context_receipt=result["context_receipt"], state="running")
+            self._write(self._path(), db)
+        return result
 
     def update_tasks(self, run: str, revision: int | None, tasks: str) -> dict[str, Any]:
         w.require(self.principal == self.root, "scope_violation", "Only the root can publish task definitions.")
@@ -626,6 +718,21 @@ class Controller:
             self._write(target, db)
             return deepcopy(state)
 
+    def _claim_locked(self, db: dict[str, Any], run: str, grant: str) -> dict[str, Any]:
+        from . import worker_runtime as workers
+        state = db["runs"][run]
+        row = workers.records(state).get(grant)
+        w.require(row and self.principal != self.root and row.get("worker_id") == self.principal,
+                  "scope_violation", "Claim requires an observed native identity; prompt or parent alone is insufficient.")
+        assert row is not None
+        workers.current(state, row)
+        w.require(row["state"] in {"bootstrapping", "running"} and not row.get("identity_conflict"),
+                  "scope_violation", "Worker is not live or has conflicting identity.")
+        row.setdefault("claimed_at", workers.now())
+        self._write(self._path(), db)
+        return {"grant_id": grant, "task_id": row["task_id"],
+                "context": workers.worker_session(self.workspace, state, row).descriptor()}
+
     def worker(self, run: str, operation: str, *, revision: int | None = None,
                task: str = "", grant: str = "", request: dict[str, Any] | None = None) -> dict[str, Any]:
         from . import worker_runtime as workers
@@ -637,15 +744,7 @@ class Controller:
             state = db["runs"][run]
             request = request or {}
             if operation == "claim":
-                row = workers.records(state).get(grant)
-                w.require(row and self.principal != self.root and row.get("worker_id") == self.principal,
-                          "scope_violation", "Claim requires an observed native identity; prompt or parent alone is insufficient.")
-                assert row is not None
-                workers.current(state, row)
-                w.require(row["state"] in {"bootstrapping", "running"}, "scope_violation", "Worker is not live.")
-                row.setdefault("claimed_at", workers.now())
-                self._write(target, db)
-                return {"grant_id": grant, "task_id": row["task_id"], "context": workers.worker_session(self.workspace, state, row).descriptor()}
+                return self._claim_locked(db, run, grant)
             w.require(self.principal == self.root, "scope_violation", "Workers cannot schedule or accept task results.")
             if operation == "status":
                 return workers.summary(state, self.workspace)
@@ -653,7 +752,11 @@ class Controller:
             w.require(w.current(state)["decision"] in {"not_requested", "changes_requested", "rejected"}
                       and not state.get("finished") and not state.get("retired"), "approval_required", "Current phase is sealed or inactive.")
             w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Accepted evidence changed.")
-            self.adapter.before_action(state, "worker")
+            # Verified revocation accepts no source changes. Drift must continue
+            # to block new work, but cannot prevent retiring a missed launch.
+            if operation != 'recover-unbound':
+                self.adapter.before_action(state, "worker")
+            row: dict[str, Any] | None
             if operation == "prepare":
                 row = workers.prepare(self.workspace, state, task, request)
                 result = {"grant": deepcopy(row), "message": workers.dispatch_message(state, row)}
@@ -670,6 +773,30 @@ class Controller:
                           "scope_violation", "Only an unlaunched reservation can be abandoned.")
                 assert row is not None
                 row.update(state="failed", ended_at=workers.now(), terminal_status="not_launched")
+                result = deepcopy(row)
+            elif operation == 'recover-unbound':
+                row = workers.records(state).get(grant)
+                w.require(self.adapter.name == 'codex' and row and row.get('state') == 'prepared'
+                          and all(row.get(k) is None for k in
+                                  ('call_id', 'worker_id', 'claimed_at', 'context_receipt', 'dispatch_digest', 'revoked_at'))
+                          and not row.get('events') and not row.get('canonical_name')
+                          and not any(r.get('grant') == grant for r in state.get('task_results', {}).values()),
+                          'scope_violation', 'Recovery needs a prepared Codex grant with no admitted launch, claim or result.')
+                assert row is not None
+                workers.current(state, row)
+                reference = request.get('request_reference')
+                launch_call, terminal_call = request.get('launch_call_id'), request.get('terminal_call_id')
+                w.require(isinstance(reference, str) and 0 < len(reference.strip()) <= 512
+                          and isinstance(launch_call, str) and isinstance(terminal_call, str),
+                          'invalid_evidence', 'Preserve the actual user request and native launch and terminal references.')
+                assert isinstance(reference, str) and isinstance(launch_call, str) and isinstance(terminal_call, str)
+                w.require(not any(r['state'] == 'running' for r in state.get('observed_handles', {}).values()),
+                          'scope_violation', 'Known live commands must stop before unbound-worker recovery.')
+                proof = host_capabilities.unbound_worker_observation(self.root, row, launch_call, terminal_call)
+                # Preserve missing admission fields. Revocation cannot manufacture a successful dispatch.
+                row.update(state='failed', terminal_status='unadmitted_launch_revoked', revoked_at=workers.now(),
+                           recovery={**proof, 'request_reference': reference.strip()})
+                row['events']['recovery/' + terminal_call] = 'unadmitted_launch_revoked'
                 result = deepcopy(row)
             elif operation == 'recover-unavailable':
                 row = workers.records(state).get(grant)
@@ -795,6 +922,133 @@ class Controller:
             self._write(target, db)
             return deepcopy(updated)
 
+    def _invocation_binding(self, db: dict[str, Any], admission: dict[str, Any],
+                            command: Any) -> dict[str, Any]:
+        from . import worker_runtime as workers
+        from .context_handoff import binding
+        run = admission["run"]
+        w.require(db["active"] == run and admission.get("state") == "admitted"
+                  and admission.get("automatic") is True and admission.get("authority") == "phase_grant",
+                  "stale_checkpoint", "Invocation admission is no longer current and pending.")
+        state = db["runs"][run]
+        w.require(admission["binding"] == binding(state) and not state.get("invalidation_pending")
+                  and not any(state.get(k) for k in ("retired", "finished", "superseded_by")),
+                  "stale_checkpoint", "Invocation belongs to an inactive workflow binding.")
+        w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Invocation evidence changed.")
+        runtime = host_capabilities.runtime_identity()
+        w.require(admission.get("runtime") == runtime, "stale_checkpoint", "Invocation runtime changed.")
+        actor = admission["principal"]
+        result = {"kind": "root-context", "workspace": str(self.workspace), "root": self.root,
+                  "actor": actor, "call_id": admission["call_id"], "run": run,
+                  "visit": w.current(state)["id"], "revision": state["revision"],
+                  "binding_sha256": primitives.content_fingerprint(binding(state)),
+                  "workspace_contract_sha256": primitives.content_fingerprint(state.get("workspace_contract")),
+                  "runtime_sha256": primitives.content_fingerprint(runtime), "task_id": command.task_id,
+                  "active": True, "automatic": True,
+                  **{k: None for k in ("grant_id", "attempt", "task_generation", "launch_call_id",
+                     "launch_evidence_sha256", "task_sha256", "inputs_sha256", "claimed")}}
+        if actor == self.root:
+            w.require(command.action == "context" and admission.get("root_observed") is True,
+                      "unsupported_authority", "Root context requires an automatic observed root actor.")
+            return result
+        matches = [row for row in workers.records(state).values()
+                   if row.get("worker_id") == actor and row.get("host") == "claude"
+                   and row.get("binding") == binding(state) and row.get("state") in {"bootstrapping", "running"}
+                   and not row.get("revoked_at") and not row.get("identity_conflict")
+                   and row.get("identity_observation", {}).get("status") == "matched"]
+        w.require(len(matches) == 1, "scope_violation", "Invocation needs one exact live observed Claude attempt.")
+        row = matches[0]
+        workers.current(state, row)
+        w.require(row.get("expected_runtime") == runtime, "stale_checkpoint", "Worker runtime changed.")
+        w.require(row["input_manifest"] == evidence.manifest(self.workspace, list(row["input_manifest"])),
+                  "stale_checkpoint", "Worker invocation inputs changed.")
+        result.update(kind="worker-claim" if command.action == "worker" else "worker-context",
+                      task_id=row["task_id"], grant_id=row["grant_id"], attempt=row["attempt"],
+                      task_generation=state.get("task_generation", 0), launch_call_id=row["call_id"],
+                      launch_evidence_sha256=row["identity_observation"]["evidence_sha256"],
+                      task_sha256=row["task_digest"], inputs_sha256=primitives.content_fingerprint(row["input_manifest"]),
+                      claimed=bool(row.get("claimed_at")))
+        return result
+
+    def _issue_invocation(self, db: dict[str, Any], event: dict[str, Any],
+                          admission: dict[str, Any] | None) -> None:
+        if (self.adapter.profile != "native_workflow" or self.adapter.name != "claude"
+                or event.get("hook_event_name") != "PreToolUse"
+                or (event.get("tool_name") or event.get("tool")) != "Bash"):
+            return
+        words = workflow_local.runtime_words(event)
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"worker", "context"}:
+            return
+        if words[3] == "worker" and self.principal == self.root:
+            return  # Root worker scheduling is outside the invocation bridge.
+        from . import claude_worker_invocation as invocation
+        args = event.get("tool_input", {})
+        w.require(set(args) <= {"command", "description", "timeout", "run_in_background"}
+                  and ("description" not in args or isinstance(args["description"], str))
+                  and ("timeout" not in args or type(args["timeout"]) is int and 0 < args["timeout"] <= 600000)
+                  and ("run_in_background" not in args or args["run_in_background"] is False),
+                  "scope_violation", "Unsupported foreground Claude Bash input schema.")
+        w.require(admission is not None and event.get("taskplane_automatic_hook") is True,
+                  "unsupported_authority", "Claude invocation requires an automatic call admission.")
+        assert admission is not None
+        command = invocation.parse_command(args.get("command"))
+        if self.principal == self.root:
+            w.require(event.get("taskplane_claude_root_source") is True,
+                      "unsupported_authority", "Root context requires fresh automatic root transcript provenance.")
+            admission["root_observed"] = True
+        record, rewritten = invocation.issue_record(command, args,
+            self._invocation_binding(db, admission, command), existing=admission.get("invocation"))
+        admission["invocation"] = record
+        event["taskplane_updated_input"] = rewritten
+
+    @classmethod
+    def invoke_claude(cls, argv: list[str]) -> dict[str, Any]:
+        """Resolve a locator before any environment-selected controller; consume under one lock."""
+        from . import claude_worker_invocation as invocation
+        command, reference = invocation.parse_cli(argv)
+        root = invocation.decode_reference(reference)
+        controller = cls(Path(command.workspace), root, installed_adapter("claude"))
+        target = controller._path()
+        with primitives.file_lock(str(target)):
+            db = controller._read(target)  # Existing validated store only; never initialize.
+            matches = [row for row in db.get("admissions", {}).values()
+                       if row.get("invocation", {}).get("reference") == reference]
+            w.require(len(matches) == 1, "unsupported_authority", "Invocation reference is unknown or foreign.")
+            admission = matches[0]
+            w.require(admission["invocation"]["state"] == "pending", "scope_violation",
+                      "Invocation reference has already been consumed.")
+            controller.principal = admission["principal"]
+            if controller.principal != controller.root and db["active"] == admission["run"]:
+                from . import worker_runtime as workers
+                state = db["runs"][admission["run"]]
+                grant = admission["invocation"]["binding"]["grant_id"]
+                attempt = state.get("workers", {}).get(grant)
+                w.require(attempt is not None, "scope_violation", "Invocation attempt is missing.")
+                fresh = workers.observe_claude_launches(state, [attempt], {})
+                controller._write(target, db)
+                w.require(fresh[0]["status"] == "matched", "scope_violation", "Invocation launch proof is not freshly available.")
+            current = controller._invocation_binding(db, admission, command)
+            def persist(record: dict[str, Any]) -> None:
+                admission["invocation"] = record
+                controller._write(target, db)
+            def dispatch() -> dict[str, Any]:
+                if command.action == "worker":
+                    return controller._claim_locked(db, command.run, command.grant_id or "")
+                options = dict(zip(command.argv[4::2], command.argv[5::2]))
+                return controller._context_locked(db, command.run, task=command.task_id,
+                    consume=options.get("--consume"), read=options.get("--read"),
+                    page=int(options.get("--page", "0")), section=options.get("--section"),
+                    read_required=options.get("--read-required"), drain=options.get("--drain"))
+            return invocation.consume_record(admission["invocation"], command, reference, current,
+                                             persist=persist, dispatch=dispatch)
+
+    @staticmethod
+    def _post_matches(row: dict[str, Any], identity: dict[str, Any], event: dict[str, Any]) -> bool:
+        from . import claude_worker_invocation as invocation
+        return (all(row.get(k) == v for k, v in identity.items() if k != "input_digest")
+                and (invocation.post_input_matches(row["invocation"], event.get("tool_input", {}))
+                     if row.get("invocation") else row.get("input_digest") == identity["input_digest"]))
+
     def claude_actor(self, actor: str, event: dict[str, Any]) -> str:
         """Resolve an actor only through exact admitted native launch evidence."""
         from . import worker_runtime as workers
@@ -806,10 +1060,11 @@ class Controller:
             # it receives no execution grant from the historical worker identity.
             if event.get('hook_event_name') == 'PostToolUse':
                 call = event.get('tool_use_id') or event.get('call_id')
+                call_identity = self._call(event)
                 matches = [row for row in db.get('admissions', {}).values()
-                           if row.get('principal') == actor and row.get('call_id') == call
+                           if call_identity and row.get('principal') == actor and row.get('call_id') == call
                            and row.get('tool') == (event.get('tool_name') or event.get('tool'))
-                           and row.get('input_digest') == primitives.content_fingerprint(event.get('tool_input', {}))]
+                           and self._post_matches(row, {**call_identity[1], "principal": actor}, event)]
                 if len(matches) == 1:
                     return actor
             w.require(db["active"], "scope_violation", "Claude child has no active parent run.")
@@ -819,12 +1074,10 @@ class Controller:
                           if row.get("host") == "claude" and row.get("call_id")
                           and row.get("worker_id") in {None, actor}]
             w.require(len(candidates) <= 64, "scope_violation", "Claude actor correlation exceeds its bound.")
-            for row in candidates:
-                proof = host_capabilities.worker_identity_observation("claude", self.root,
-                            {**row, "workspace": str(self.workspace)}, event)
-                workers.reconcile(self.workspace, state, row, proof)
+            workers.observe_claude_launches(state, candidates, event)
             matches = [row for row in candidates if row.get("worker_id") == actor
                        and row.get("identity_observation", {}).get("status") == "matched"
+                       and row.get("identity_freshness", {}).get("status") == "matched"
                        and not row.get("identity_conflict") and not row.get("revoked_at")
                        and row.get('binding') == binding(state)
                        and row.get('state') in {'bootstrapping', 'running'}]
@@ -863,7 +1116,7 @@ class Controller:
             return run
 
     def guard(self, event: dict[str, Any], run: str) -> None:
-        state = self.report(run)
+        state = self.report(run, diagnostics=False)
         target = self._path()
         with primitives.file_lock(str(target)):
             db = self._read(target)
@@ -878,6 +1131,7 @@ class Controller:
                 if key in state:
                     candidate[key] = state[key]
             admission = self._admission(db, event, candidate, "phase_grant")
+            self._issue_invocation(db, event, admission)
             if admission:
                 event["taskplane_admission"] = deepcopy(admission)
             changed = candidate != db["runs"][run]
@@ -910,7 +1164,16 @@ class Controller:
                       "scope_violation", "Conflicting tool call admission.")
             return cast(dict[str, Any], old)
         if len(rows) >= 512:
-            completed = sorted((k for k, v in rows.items() if v.get("state") == "completed"),
+            # Expiry removes invocation authority, never invents successful completion.
+            utc_ns, monotonic_ns = time.time_ns(), time.monotonic_ns()
+            for pending in rows.values():
+                inv = pending.get("invocation", {})
+                expires = inv.get("expires", {})
+                if (pending.get("state") == "admitted" and inv.get("state") == "pending"
+                        and utc_ns >= expires.get("utc_ns", 2 ** 63)
+                        and monotonic_ns >= expires.get("monotonic_ns", 2 ** 63)):
+                    pending.update(state="expired", completed_at=datetime.now(timezone.utc).isoformat())
+            completed = sorted((k for k, v in rows.items() if v.get("state") in {"completed", "expired"}),
                                key=lambda k: rows[k]["completed_at"])
             w.require(completed, "state_unavailable", "Pending tool call admission capacity exhausted.")
             del rows[completed[0]]
@@ -952,8 +1215,19 @@ class Controller:
             row = db.get("admissions", {}).get(key)
             if row is None:
                 return None
-            w.require(all(row.get(k) == v for k, v in identity.items()),
+            w.require(self._post_matches(row, identity, event),
                       "scope_violation", "Completion conflicts with admitted tool call.")
+            if row.get("invocation"):
+                w.require(row.get("automatic") is True and event.get("taskplane_automatic_hook") is True
+                          and row.get("runtime") == event.get("taskplane_runtime_identity")
+                          == host_capabilities.runtime_identity(),
+                          "stale_checkpoint", "Invocation post hook runtime or provenance changed.")
+                row["post_input_representation"] = ("original" if identity["input_digest"]
+                    == row["invocation"]["original_input_sha256"] else "rewritten")
+            from . import worker_runtime as workers
+            observed_state = db["runs"].get(row["run"])
+            if observed_state is not None:
+                workers.observe_handback(observed_state, row, event)
             if row["state"] == "completed":
                 return cast(dict[str, Any], deepcopy(row))
             row.update(state="completed", completed_at=datetime.now(timezone.utc).isoformat())
@@ -1030,6 +1304,9 @@ class Controller:
             w.require(worker["state"] == "running" and worker.get("context_receipt"),
                       "invalid_context", "Worker must consume every required task input before execution.")
             workers.worker_session(self.workspace, state, worker).validate(worker["context_receipt"])
+            if tool in workers.HANDBACK:
+                workers.admit_handback(state, worker, event)
+                return
             if tool in workers.MESSAGE:
                 parent_name = str(worker.get('canonical_name', '')).rsplit('/', 1)[0]
                 w.require(set(args) == {'target', 'message'} and args.get('target') in
@@ -1038,6 +1315,8 @@ class Controller:
                           'Worker messages may only report to their bound parent.')
                 return
             w.require(tool not in workers.TOOLS, "scope_violation", "Nested delegation is unsupported.")
+        elif tool in workers.HANDBACK:
+            raise w.Refusal("scope_violation", "SubagentHandback belongs only to a current bound Claude child.")
         elif self.adapter.profile == "native_workflow" and workers.admit(state, event):
             return
         if self.adapter.profile == "native_workflow" and (

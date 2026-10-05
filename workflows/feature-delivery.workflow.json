@@ -1,0 +1,506 @@
+{
+  "schema": "taskplane.workflow-blueprint/v1",
+  "id": "feature-delivery",
+  "version": "0.1.0",
+  "name": "Feature delivery",
+  "description": "Carry an explicitly bounded feature through Product, Design, Plan, Build, Evaluate, Engineering and Retro with the existing checkpoint and native-worker contracts.",
+  "route": {
+    "kind": "delivery"
+  },
+  "trigger": {
+    "kind": "manual"
+  },
+  "inputs": {
+    "request": {
+      "type": "text",
+      "required": true
+    },
+    "source_files": {
+      "type": "workspace_file_list",
+      "required": true
+    },
+    "dependency_files": {
+      "type": "workspace_file_list",
+      "required": true
+    },
+    "test_files": {
+      "type": "workspace_file_list",
+      "required": true
+    },
+    "output_prefix": {
+      "type": "workspace_relative_directory",
+      "required": true
+    },
+    "criteria": {
+      "type": "acceptance_criteria",
+      "required": true
+    },
+    "build_files": {
+      "type": "workspace_output_file_list",
+      "required": true
+    }
+  },
+  "policy": {
+    "approval_default": "manual",
+    "source_writes": true,
+    "external_actions": [],
+    "on_failure": "stop_and_report"
+  },
+  "tasks": [
+    {
+      "id": "product-analysis",
+      "phase": "product",
+      "capability": "taskplane.product.analysis",
+      "purpose": "Define the requested feature outcome and acceptance criteria.",
+      "execution": "native_required",
+      "depends_on": [],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "requirements",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "requirements.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "instructions": "Use the bound request and criteria. Describe included scope, non-goals, dependencies and task outline. Do not widen the bound outer Build file allowlist."
+    },
+    {
+      "id": "design-analysis",
+      "phase": "design",
+      "capability": "taskplane.design.analysis",
+      "purpose": "Design the feature using accepted Product evidence.",
+      "execution": "native_required",
+      "depends_on": [
+        "product-analysis"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "product-analysis",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "design",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "design.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "instructions": "Use accepted Product decisions. Specify interfaces, state, authority, failures, graph impact and a criterion-to-validation map."
+    },
+    {
+      "id": "plan-decomposition",
+      "phase": "plan",
+      "capability": "taskplane.plan.decomposition",
+      "purpose": "Prepare the exact Build DAG and typed verification strategy.",
+      "execution": "native_required",
+      "depends_on": [
+        "design-analysis"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "design-analysis",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "plan",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "plan.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "instructions": "Propose exact task ownership, read inputs, dependencies, criterion coverage, integration order and typed checks. The existing Plan checkpoint must finalize actual Build tasks inside the compiled outer scope. Reserve a verification-history file and distinct attempt logs from build_files; do not execute verification commands from definition text or invent passing evidence."
+    },
+    {
+      "id": "implementation",
+      "phase": "build",
+      "capability": "taskplane.build.execution",
+      "purpose": "Implement only the accepted Plan's exact Build assignments.",
+      "execution": "native_required",
+      "depends_on": [
+        "plan-decomposition"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "plan-decomposition",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "source",
+          "kind": "source",
+          "binding": {
+            "input": "build_files"
+          }
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "instructions": "This is a task pattern, not an accepted Build plan. Root publishes and obtains acceptance for the actual Build DAG and typed verification before work. Restrict changes to the accepted assignment and return actual check results; preserve failed attempts. Root may allocate reserved history and log paths to its Build checkpoint task during Plan."
+    },
+    {
+      "id": "evaluate-results",
+      "phase": "evaluate",
+      "capability": "taskplane.evaluate.verification",
+      "purpose": "Evaluate every accepted criterion against the completed Build.",
+      "execution": "native_required",
+      "depends_on": [
+        "implementation"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "implementation",
+            "name": "source"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "verification",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "evaluation.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "instructions": "Use current implementation and actual Build evidence. Report each criterion as pass, fail or unknown with evidence and source/test fingerprints. Do not repair source during Evaluate."
+    },
+    {
+      "id": "security-review",
+      "phase": "engineering",
+      "capability": "taskplane.review.lens",
+      "purpose": "Independently review security of the delivered feature.",
+      "execution": "native_required",
+      "depends_on": [
+        "implementation",
+        "evaluate-results"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "implementation",
+            "name": "source"
+          }
+        },
+        {
+          "artifact": {
+            "task": "evaluate-results",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "report",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "security.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "lens": "security",
+      "instructions": "Use the accepted outcome and actual evaluation evidence. Record concrete security findings, locations, evidence and unknown coverage. Make no repairs."
+    },
+    {
+      "id": "quality-review",
+      "phase": "engineering",
+      "capability": "taskplane.review.lens",
+      "purpose": "Independently review correctness and maintainability of the feature.",
+      "execution": "native_required",
+      "depends_on": [
+        "implementation",
+        "evaluate-results"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "implementation",
+            "name": "source"
+          }
+        },
+        {
+          "artifact": {
+            "task": "evaluate-results",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "report",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "code-quality.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "lens": "code-quality",
+      "instructions": "Use a distinct native identity. Record correctness and maintainability findings with locations and evidence. Preserve failed checks and unknowns; make no repairs."
+    },
+    {
+      "id": "engineering-synthesis",
+      "phase": "engineering",
+      "capability": "taskplane.phase.synthesis",
+      "purpose": "Combine accepted security and quality findings for the Engineering checkpoint.",
+      "execution": "root",
+      "depends_on": [
+        "security-review",
+        "quality-review"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "security-review",
+            "name": "report"
+          }
+        },
+        {
+          "artifact": {
+            "task": "quality-review",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "report",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "engineering.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "execution_reason": "The root integrates prerequisite evidence and prepares the existing phase checkpoint.",
+      "execution_reference": "This definition's explicit producer dependencies and the shared Taskplane phase contract.",
+      "instructions": "Wait for both distinct native reviewers to join and have fresh results accepted. Retain actual lens coverage, findings, requirements comparison and residual risk. Any source repair needs the existing separately authorized repair route."
+    },
+    {
+      "id": "retro-synthesis",
+      "phase": "retro",
+      "capability": "taskplane.phase.synthesis",
+      "purpose": "Record the accepted outcome, actual verification, lessons and owned deferrals.",
+      "execution": "root",
+      "depends_on": [
+        "engineering-synthesis",
+        "evaluate-results"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "engineering-synthesis",
+            "name": "report"
+          }
+        },
+        {
+          "artifact": {
+            "task": "evaluate-results",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "report",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "retro.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "execution_reason": "The root integrates prerequisite evidence and prepares the existing phase checkpoint.",
+      "execution_reference": "This definition's explicit producer dependencies and the shared Taskplane phase contract.",
+      "instructions": "Use accepted prior phase evidence. Report what shipped, actual verification and limitations, deferred items with owners, and lessons. Finish only after the existing Retro checkpoint is accepted."
+    }
+  ],
+  "acceptance_scenarios": [
+    "Preview exposes the exact outer Build allowlist and all seven phase evidence allocations.",
+    "Start at Product; no template task or saved definition approves a later phase.",
+    "Plan finalizes typed checks and the exact Build DAG without widening compiled scope.",
+    "Authorized Build mutations require current verification; unrelated bound input drift refuses.",
+    "Distinct native Engineering lens results precede root synthesis; retain failures and unknowns.",
+    "The full route ends only after Retro acceptance."
+  ],
+  "runtime_requirements": [
+    "bounded/v2",
+    "native-default/v1",
+    "taskplane.phase-output/v1",
+    "taskplane.task-definitions/v1",
+    "taskplane.verification-strategy/v1",
+    "taskplane.verification-history/v1"
+  ]
+}

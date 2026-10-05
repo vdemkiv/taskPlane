@@ -528,8 +528,8 @@ def test_locked_context_never_revives_observed_attempt(tmp_path, monkeypatch, op
     descriptor = worker.context(s['run'], task='T0')
     original_report = worker.report
     before = c.report()['workers'][item['grant']['grant_id']]['context_receipt']
-    def interleave(run=None):
-        snapshot = original_report(run)
+    def interleave(run=None, **kwargs):
+        snapshot = original_report(run, **kwargs)
         if transition == 'stop':
             c.observe(dict(hook_event_name='SubagentStop', agent_id='native-0', event_id='race-stop'), s['run'])
         elif transition == 'cancel':

@@ -153,6 +153,15 @@ observed limits; a reduction stops admission without cancelling live work.
 `abandon --grant GRANT` releases only an unlaunched reservation. An idle worker's
 follow-up needs a new preparation with its actual `worker_id`, a fresh grant and
 fresh task context. Unknown attempts remain visible and block sealing.
+When an actual launch escaped hook admission, do not label it unlaunched or edit
+the controller. If the prepared grant has no admitted call, identity, claim,
+context or result, `recover-unbound --grant GRANT` can revoke it after the root
+supplies the actual `request_reference`, `launch_call_id` and `terminal_call_id`
+in `--worker-json`, with the current run and revision. The installed CLI validates
+native spawn/terminal inventory pairs, independent child lineage and chronology,
+and refuses later child input/activity or known live commands. Historical proof
+only releases the reservation as failed; it cannot replace startup hooks, accept
+work or prove process exit. Retry with a fresh grant after hooks are restored.
 For a reused worker, join with a native status call admitted during the new
 attempt, or a terminal event correlated to that attempt's launch. An old poll
 or an uncorrelated stop cannot complete a newer attempt.

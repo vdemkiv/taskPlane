@@ -1,0 +1,156 @@
+{
+  "schema": "taskplane.workflow-blueprint/draft-v0.1",
+  "status": "design_example_not_executable",
+  "id": "change-risk-review",
+  "version": "0.1.0",
+  "name": "Change risk review",
+  "description": "Review a repository change with independent security and code-quality lenses, then produce one findings report.",
+  "route": {
+    "kind": "standalone",
+    "phase": "engineering"
+  },
+  "trigger": {
+    "kind": "manual"
+  },
+  "inputs": {
+    "base_ref": {
+      "type": "git_ref",
+      "required": true
+    },
+    "head_ref": {
+      "type": "git_ref",
+      "required": true
+    },
+    "criteria": {
+      "type": "acceptance_criteria",
+      "required": true
+    },
+    "source_files": {
+      "type": "workspace_file_list",
+      "required": true
+    },
+    "output_prefix": {
+      "type": "workspace_relative_directory",
+      "required": true
+    }
+  },
+  "policy": {
+    "approval_default": "manual",
+    "source_writes": false,
+    "external_actions": [],
+    "on_failure": "stop_and_report"
+  },
+  "tasks": [
+    {
+      "id": "security",
+      "phase": "engineering",
+      "capability": "taskplane.review.lens",
+      "lens": "security",
+      "execution": "native_required",
+      "depends_on": [],
+      "read_bindings": [
+        "source_files"
+      ],
+      "outputs": [
+        {
+          "name": "findings",
+          "relative_path": "security.md",
+          "kind": "report"
+        }
+      ],
+      "criteria_binding": "criteria",
+      "verification": "Findings identify severity, source locations, evidence, and uncertainty."
+    },
+    {
+      "id": "code-quality",
+      "phase": "engineering",
+      "capability": "taskplane.review.lens",
+      "lens": "code-quality",
+      "execution": "native_required",
+      "depends_on": [],
+      "read_bindings": [
+        "source_files"
+      ],
+      "outputs": [
+        {
+          "name": "findings",
+          "relative_path": "code-quality.md",
+          "kind": "report"
+        }
+      ],
+      "criteria_binding": "criteria",
+      "verification": "Findings identify correctness and maintenance defects with supporting source evidence."
+    },
+    {
+      "id": "synthesis",
+      "phase": "engineering",
+      "capability": "taskplane.review.synthesis",
+      "execution": "root",
+      "depends_on": [
+        "security",
+        "code-quality"
+      ],
+      "read_bindings": [
+        "source_files"
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "relative_path": "report.md",
+          "kind": "report"
+        },
+        {
+          "name": "phase_packet",
+          "relative_path": "engineering.json",
+          "kind": "phase-output"
+        }
+      ],
+      "criteria_binding": "criteria",
+      "execution_reason": "The root verifies independent lens evidence and prepares the single phase checkpoint.",
+      "verification": "Deduplicate findings, map every criterion, preserve unresolved gaps and actual reviewer identities."
+    }
+  ],
+  "acceptance_scenarios": [
+    "Two independent lens results must be joined and accepted before synthesis.",
+    "The final report covers every bound criterion and preserves unknown results.",
+    "Execution creates only the bound output files; it does not change source.",
+    "A second invocation gets fresh run identity, bindings and checkpoint decisions.",
+    "Unavailable native workers block required coverage instead of changing it to serial work."
+  ],
+  "preview_binding": {
+    "example_only": true,
+    "values": {
+      "base_ref": "BASE_COMMIT",
+      "head_ref": "HEAD_COMMIT",
+      "criteria": [
+        {
+          "id": "CR1",
+          "statement": "Identify security and correctness risks in the bound change."
+        }
+      ],
+      "source_files": [
+        "src/change.py"
+      ],
+      "output_prefix": "review-results/change-risk-review/example"
+    },
+    "expanded_paths": [
+      "review-results/change-risk-review/example/security.md",
+      "review-results/change-risk-review/example/code-quality.md",
+      "review-results/change-risk-review/example/report.md",
+      "review-results/change-risk-review/example/engineering.json"
+    ],
+    "route_summary": "One standalone Engineering visit; two independent native lens tasks, then root synthesis and the normal checkpoint.",
+    "unresolved_before_run": [
+      "Resolve refs to immutable commits and match the selected checkout.",
+      "Discover relevant dependency/test files and bind the complete exact read scope.",
+      "Verify installed role/lens availability and runtime contract fingerprints.",
+      "Bind real user request, worker capacity, runtime-owned scope/task evidence paths and output location."
+    ],
+    "side_effects": "None. This JSON is an illustrative proposed format, not accepted by the current CLI."
+  },
+  "runtime_requirements": {
+    "execution_contract": "native-default/v1",
+    "context_contract": "bounded/v2",
+    "resolution": "Verify supported contracts and pin the actually loaded runtime and capability fingerprints when binding."
+  }
+}

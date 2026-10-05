@@ -144,6 +144,106 @@ def git_identity(workspace: Path) -> dict[str, str] | None:
         return None
 
 
+WORKFLOW_OPTIONS = {
+    "catalog": ({"--workspace"}, set()),
+    "validate": ({"--workspace", "--definition"}, set()),
+    "preview": ({"--workspace", "--definition"}, {"--inputs"}),
+    "save": ({"--workspace", "--definition", "--out"}, set()),
+    "compile": ({"--workspace", "--definition", "--inputs", "--out"}, set()),
+    "check": ({"--workspace", "--run"}, set()),
+}
+
+
+def workflow_options(arguments: list[str]) -> tuple[str, dict[str, str]]:
+    """One closed argument grammar shared by the data CLI and native guards."""
+    w.require(bool(arguments) and arguments[0] in WORKFLOW_OPTIONS,
+              "invalid_arguments", "Choose workflow catalog, validate, preview, save, compile or check.")
+    action = arguments[0]
+    required, optional = WORKFLOW_OPTIONS[action]
+    values: dict[str, str] = {}
+    index = 1
+    while index < len(arguments):
+        option, separator, value = arguments[index].partition("=")
+        w.require(option in required | optional and option not in values, "invalid_arguments",
+                  "Unknown, abbreviated or duplicate workflow option: " + option)
+        if not separator:
+            index += 1
+            value = arguments[index] if index < len(arguments) else ""
+        w.require(bool(value) and not value.startswith("--") and "\0" not in value,
+                  "invalid_arguments", "Expected one value for " + option)
+        values[option] = value
+        index += 1
+    w.require(required <= set(values), "invalid_arguments",
+              "Missing workflow options: " + ", ".join(sorted(required - set(values))))
+    return action, values
+
+
+def verify_workflow(workspace: Path, state: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate optional pinned provenance at use, never when loading diagnostics."""
+    scope = state.get("scope", {})
+    if "workflow_binding" not in scope:
+        return None
+    from . import blueprint, blueprint_compile
+    try:
+        plans = [v for v in state["visits"][:state["index"] + 1]
+                 if v["phase"] == "plan" and not v.get("superseded")]
+        plan = plans[-1] if plans and plans[-1].get("decision") == "approved" else None
+        if any(v["phase"] == "plan" for v in state["visits"][:state["index"]]):
+            w.require(plan is not None, "approval_required", "Continuation requires its current accepted Plan.")
+        mutable: list[str] = []
+        if plan:
+            w.validate_state(state)
+            w.require(not state.get("invalidation_pending") and evidence.changed(workspace, state) is None,
+                      "stale_checkpoint", "Accepted Plan evidence is stale.")
+            w.require(plan.get("approved_scope_digest") == primitives.content_fingerprint(scope),
+                      "scope_drift", "Current scope does not match the accepted Plan.")
+            expected_binding = {**{key: state[key] for key in ("workspace", "root", "run")},
+                                "visit": plan["id"], "checkpoint": plan["packet"]["checkpoint"],
+                                "manifest_digest": primitives.content_fingerprint(plan["packet"]),
+                                "scope_digest": plan.get("checkpoint_scope_digest")}
+            w.require(any(d.get("choice") == "approved" and all(d.get("binding", {}).get(k) == v
+                          for k, v in expected_binding.items()) for d in state["decisions"].values()),
+                      "stale_checkpoint", "Accepted Plan decision belongs to another binding.")
+            mutable = plan["packet"]["output"]["write_scope"]
+            w.require(scope["paths"]["build"] == mutable, "scope_drift",
+                      "Build paths differ from the accepted Plan.")
+        # The compiler independently authenticates the complete pinned package
+        # before its outer scope is used to admit a narrowed Plan projection.
+        checked = blueprint_compile.verify_package(workspace, scope["workflow_binding"],
+                                                    authorized_mutable_paths=mutable)
+        expected = deepcopy(checked["scope"])
+        if plan:
+            expected["paths"]["build"] = mutable
+        w.require(scope == expected, "scope_drift", "Run scope differs from the pinned workflow and accepted Plan.")
+        w.require(Path(state["workspace"]).resolve() == workspace.resolve(),
+                  "state_mismatch", "Workflow state belongs to another workspace.")
+        if checked["definition"]["route"]["kind"] == "standalone":
+            expected_tasks = checked["compilation"]["task_patterns"][checked["compilation"]["entry_phase"]]["tasks"]
+            w.require(evidence.task_definitions(evidence.context_tasks(state)) == evidence.task_definitions(expected_tasks),
+                      "binding_mismatch", "Current standalone tasks differ from the pinned workflow.")
+        return checked
+    except blueprint.BlueprintError as exc:
+        raise w.Refusal(exc.code, str(exc) + " " + exc.remedy) from None
+
+
+def workflow_status(workspace: Path, state: dict[str, Any]) -> dict[str, Any] | None:
+    binding = state.get("scope", {}).get("workflow_binding")
+    if "workflow_binding" not in state.get("scope", {}):
+        return None
+    result = {"run": state.get("run"), "binding": deepcopy(binding),
+              "status": "unknown", "unresolved_inputs": None}
+    try:
+        checked = verify_workflow(workspace, state)
+        assert checked is not None
+        result.update(status="valid", name=checked["definition"]["name"],
+                      unresolved_inputs=checked["bindings"]["unresolved_inputs"])
+    except w.Refusal as exc:
+        result.update(status="blocked", diagnostics=[{
+            "code": exc.reason, "location": "/workflow_binding", "message": str(exc),
+            "remedy": "Restore pinned inputs or explicitly recover; do not replace the active package."}])
+    return result
+
+
 class LocalWorkflow:
     """Mixin for the same Controller, with explicitly weaker local provenance."""
     profile = PROFILE
@@ -236,6 +336,22 @@ class LocalWorkflow:
         w.require(isinstance(scope, dict), "invalid_evidence", "Native workflow start requires an exact --scope JSON file.")
         assert isinstance(scope, dict)
         evidence.valid_scope(workspace, scope)
+        if "workflow_binding" in scope:
+            from . import blueprint, blueprint_compile
+            try:
+                checked = blueprint_compile.verify_package(workspace, scope["workflow_binding"],
+                                                            scope=scope, for_start=True)
+            except blueprint.BlueprintError as exc:
+                raise w.Refusal(exc.code, str(exc) + " " + exc.remedy) from None
+            route = checked["definition"]["route"]
+            w.require(request.get("entry", "product") == checked["compilation"]["entry_phase"]
+                      and request.get("standalone", False) == (route["kind"] == "standalone"),
+                      "binding_mismatch", "Start route differs from the compiled workflow.")
+            w.require(isinstance(request.get("tasks"), str), "binding_mismatch",
+                      "A compiled workflow requires its pinned entry tasks.")
+            tasks = evidence.object_file(workspace, request["tasks"])
+            w.require(tasks == checked["compilation"]["task_patterns"][checked["compilation"]["entry_phase"]],
+                      "binding_mismatch", "Start tasks differ from the compiled workflow.")
         reference = request.get("request_reference")
         w.require(isinstance(reference, str) and 0 < len(reference) <= 512, "invalid_evidence",
                   "Identify the actual user request with --request-reference.")
@@ -257,6 +373,7 @@ class LocalWorkflow:
                 "late_stdin": "checked only when observed",
                  "delegation": "scoped native attempts; observed identities, joins and root result acceptance"},
                 "worker_status": worker_runtime.summary(state, self.workspace),
+                "workflow_provenance": workflow_status(self.workspace, state),
                 "known_live_handles": [h for h,r in state.get("observed_handles", {}).items()
                                        if r["state"] == "running"]}
 
@@ -280,6 +397,7 @@ class LocalWorkflow:
                   for k,v in state["source_baseline"].items()), "state_unavailable", "Invalid source audit baseline.")
 
     def before_action(self, state: dict[str, Any], action: str) -> None:
+        verify_workflow(self.workspace, state)
         before, after = state["source_baseline"], inventory(self.workspace)
         allowed = set(state["scope"]["paths"][w.current(state)["phase"]])
         changed = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
@@ -293,7 +411,8 @@ class LocalWorkflow:
 
     def can_seal(self, state: dict[str, Any]) -> bool:
         from . import worker_runtime
-        return not self.decorate(state)["known_live_handles"] and worker_runtime.joined(state)
+        return (not any(record["state"] == "running" for record in state.get("observed_handles", {}).values())
+                and worker_runtime.joined(state))
 
     def after_action(self, state: dict[str, Any], action: str) -> None:
         if action == "advance":
@@ -410,9 +529,12 @@ class LocalWorkflow:
                     and ((cwd / values["--out"]).absolute() if "--out" in values else
                          self.workspace / ".taskplane/dashboard.html")
                         == self.workspace/".taskplane/dashboard.html")
-        if runtime_command.diagnostic(words):
+        if runtime_command.diagnostic(words) or words[2:] == ["workflow", "--help"]:
             return True
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if words[2] == "workflow":
+            action, _ = workflow_command(self.workspace, event, state)
+            return action in {"catalog", "validate", "preview", "check"}
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "reconcile-maintenance", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -421,7 +543,11 @@ class LocalWorkflow:
             return False
 
     def guard_command(self, event: dict[str, Any], state: dict[str, Any], paths: list[str]) -> None:
-        pass  # Host permissions apply; inventory audits effects before transitions.
+        words = runtime_words(event)
+        if len(words) >= 3 and words[2] == "workflow":
+            workflow_command(self.workspace, event, state, allowed=paths)
+        verify_workflow(self.workspace, state)
+        # Host permissions apply; inventory audits opaque command effects.
 
     def guard_input(self, event: dict[str, Any], state: dict[str, Any]) -> None:
         args = event.get("tool_input", {})
@@ -470,7 +596,7 @@ class LocalWorkflow:
                         "control": previous.get("control", False) if previous else self.control_action(event, state)}
 
 
-EXECUTION_ENTRIES = {'taskplane', 'tp-go', 'tp-tag', 'tp-build', 'tp-product',
+EXECUTION_ENTRIES = {'taskplane', 'tp-go', 'tp-tag', 'tp-build', 'tp-product', 'tp-workflow',
                      'tp-design', 'tp-engineering', 'tp-northstar'}
 READ_TOOLS = {'Read', 'read_file', 'list_files', 'search_files', 'Grep', 'Glob'}
 QUESTION_TOOLS = {'AskUserQuestion', 'request_user_input', 'request_user_input_async'}
@@ -516,6 +642,81 @@ def runtime_words(event: dict[str, Any]) -> list[str]:
     if os.name == 'nt' and words[:2] == ['py', '-3']:
         return [sys.executable, *words[2:]]
     return words
+
+
+def workflow_command(workspace: Path, event: dict[str, Any], state: dict[str, Any], *,
+                     allowed: list[str] | None = None) -> tuple[str, dict[str, str]]:
+    """Admit only this installed data command and its finite, current write set."""
+    words = runtime_words(event)
+    cwd = runtime_command.validate_workdir(words, event, workspace)
+    w.require(runtime_command.installed(words, cwd) and words[2] == "workflow",
+              "scope_violation", "Use the exact loaded workflow runtime and interpreter.")
+    action, options = workflow_options(words[3:])
+    w.require(runtime_command.resolve_selection(options["--workspace"], event, workspace) == workspace,
+              "scope_violation", "Workflow command selects another workspace.")
+    if action in {"catalog", "validate", "preview", "check"}:
+        return action, options
+    if state.get("visits") and not state.get("finished"):
+        w.require(not state.get("invalidation_pending") and w.current(state)["decision"] in
+                  {"not_requested", "changes_requested", "rejected", "stale"},
+                  "approval_required", "Current output is sealed; resolve the checkpoint before publishing workflow data.")
+    from . import blueprint, blueprint_compile
+    try:
+        definition_path = workspace / options["--definition"]
+        data = blueprint.load_definition(definition_path)
+        if action == "save":
+            target = f"workflows/{data['id']}.{data['version']}.workflow.json"
+            requested = Path(options["--out"])
+            if requested.is_absolute():
+                requested = requested.relative_to(workspace)
+            w.require(requested.as_posix() == target and ".." not in requested.parts,
+                      "scope_violation", "Save must select the exact versioned definition path.")
+            evidence.path(workspace, target)
+            paths = allowed if allowed is not None else (state.get("scope", {}).get("paths", {}).get(
+                w.current(state)["phase"], []) if state.get("visits") else [])
+            w.require(target in paths, "scope_violation", "Save requires the exact current authoring path.")
+        else:
+            destination = blueprint_compile.package_path(workspace, options["--out"], {})
+            sealed = {p for stage in state.get("visits", []) if stage.get("packet")
+                      for key in ("manifest", "source_manifest") for p in stage["packet"][key]}
+            current = state.get("scope", {}).get("workflow_binding", {})
+            w.require(current.get("package_path") != destination
+                      and not any(p.startswith(destination + "/") for p in sealed),
+                      "scope_violation", "An active or sealed workflow package cannot be republished.")
+    except (blueprint.BlueprintError, OSError, ValueError) as exc:
+        if isinstance(exc, w.Refusal):
+            raise
+        raise w.Refusal("invalid_workflow_command", str(exc)) from None
+    return action, options
+
+
+def workflow_diagnostic_event(workspace: Path, event: dict[str, Any], state: dict[str, Any]) -> bool:
+    """Recovery reads and lifecycle controls remain usable with stale provenance."""
+    tool = event.get("tool_name") or event.get("tool")
+    from . import worker_runtime
+    if tool in worker_runtime.STATUS | worker_runtime.WAIT | worker_runtime.INTERRUPT:
+        return True  # The existing worker adapter still checks target and operation.
+    if tool in READ_TOOLS | QUESTION_TOOLS or readonly_command(event):
+        return True
+    if Harness(workspace, state["root"]).dashboard_opener(event, state):
+        return True
+    if tool == "write_stdin" and event.get("tool_input", {}).get("chars", "") in ("", "\x03"):
+        return True
+    words = runtime_words(event)
+    cwd = runtime_command.validate_workdir(words, event, workspace)
+    if not runtime_command.installed(words, cwd):
+        return False
+    if runtime_command.diagnostic(words) or words[2] == "dashboard" or words[2:] == ["workflow", "--help"]:
+        return True
+    if words[2] == "workflow":
+        return workflow_command(workspace, event, state)[0] in {"catalog", "validate", "preview", "check"}
+    if len(words) > 3 and words[2:4] == ["flow", "worker"]:
+        options = words[4:]
+        return any(word == '--operation=' + operation or word == '--operation'
+                   and index + 1 < len(options) and options[index + 1] == operation
+                   for index, word in enumerate(options) for operation in ("status", "recover-unbound"))
+    return len(words) > 3 and words[2] == "flow" and words[3] in {
+        "report", "diagnose", "inspect", "recover", "reconcile-maintenance", "retire", "start", "wait", "present", "decide"}
 
 
 def readonly_command(event: dict[str, Any]) -> bool:
@@ -592,6 +793,10 @@ def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> 
     tool = event.get('tool_name') or event.get('tool')
     if tool == 'Skill':
         name = args.get('skill', '')
+        if name in {'taskplane:tp-workflow', 'tp-workflow'}:
+            intent = args.get('args', '')
+            return 'tp-workflow' if isinstance(intent, str) and re.match(
+                r'^(?:create|edit|author)\b', intent.strip(), re.I) else None
         if name == 'taskplane':
             return 'taskplane'  # Cowork can expose the router without a plugin namespace.
         if isinstance(name, str) and name.startswith('taskplane:') and name[10:] in EXECUTION_ENTRIES:
@@ -605,6 +810,8 @@ def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> 
         if isinstance(value, str):
             path = Path(value)
             for entry in EXECUTION_ENTRIES:
+                if entry == 'tp-workflow':
+                    continue  # The skill resolves inspect/run/author intent before activation.
                 if path.is_absolute() and path.resolve() == Path(__file__).resolve().parents[1]/'skills'/entry/'SKILL.md':
                     return entry
     if event.get('hook_event_name') != 'UserPromptSubmit':
@@ -617,6 +824,8 @@ def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> 
     text = prompt.strip().casefold()
     match = re.match(r'^(?:\$|/)(?:taskplane:)?(tp-[a-z]+|taskplane)\b', text)
     if match:
+        if match[1] == 'tp-workflow':
+            return 'tp-workflow' if re.match(r'^\s+(?:create|edit|author)\b', text[match.end():]) else None
         return match[1] if match[1] in EXECUTION_ENTRIES else None
     # The menu and README also use bare directives. Route by their leading
     # action, so a Build request mentioning design/review keeps its full route.
@@ -793,7 +1002,7 @@ class Harness:
         if not state.get('visits'):
             entry = self.read().get('entry', 'taskplane')
             phase = {'tp-engineering': 'engineering', 'tp-northstar': 'engineering',
-                     'tp-design': 'design', 'tp-product': 'product'}.get(entry)
+                     'tp-design': 'design', 'tp-workflow': 'design', 'tp-product': 'product'}.get(entry)
             route = f'--standalone --phase {phase}' if phase else 'the requested route (Product for full delivery)'
             return ('Taskplane selected; initialization required before implementation or completing the review. '
                     'Prepare exact scope/evidence under .taskplane/bootstrap/, then run the installed tp.py flow start with '
@@ -962,7 +1171,10 @@ class Harness:
             return False
         if not runtime_command.installed(words, cwd):
             return False
-        if runtime_command.diagnostic(words):
+        if runtime_command.diagnostic(words) or words[2:] == ["workflow", "--help"]:
+            return True
+        if words[2] == 'workflow':
+            workflow_command(self.workspace, event, {})
             return True
         try:
             value = runtime_command.workspace_selector(words[3:])

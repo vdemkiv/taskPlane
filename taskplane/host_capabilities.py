@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 import re
 import shlex
@@ -204,7 +205,7 @@ def runtime_identity() -> dict[str, Any]:
     for name in ('taskplane/tp.py', 'taskplane/flow.py', 'taskplane/workflow_host.py',
                  'taskplane/workflow_local.py', 'taskplane/worker_runtime.py',
                  'taskplane/host_capabilities.py', 'taskplane/host_native.py',
-                 'taskplane/claude_worker_observations.py',
+                 'taskplane/claude_worker_observations.py', 'taskplane/claude_worker_invocation.py',
                  'taskplane/context_handoff.py', 'taskplane/workspace_binding.py', 'hooks/hooks.json'):
         target = root/name
         members[name] = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
@@ -376,3 +377,176 @@ def unavailable_worker_observation(parent: str, worker: dict[str, Any], call_id:
               'stale_checkpoint', 'Worker-unavailable observation is stale or belongs to an older attempt.')
     return {'call_id':call_id, 'source':str(path), 'sha256':content_fingerprint(matched),
             'observed_at':result['timestamp'], 'assurance':'observed', 'process_exit':'unknown'}
+
+
+MAX_RECOVERY_BYTES = 64 * 1024 * 1024
+
+
+def _recovery_transcript(session: str, workspace: str) -> tuple[Path, list[dict[str, Any]]]:
+    """Read a complete bounded native snapshot, without following file symlinks."""
+    import stat
+    from . import native_session_meter as meter, workflow as w
+    home = Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))
+    paths: list[Path] = []
+    count = 0
+    for folder in ('sessions', 'archived_sessions'):
+        for candidate in (home/folder).glob('**/*' + session + '*.jsonl'):
+            count += 1
+            w.require(count <= 20000, 'state_unavailable', 'Native recovery inventory exceeds its bound.')
+            paths.append(candidate)
+    w.require(len(paths) == 1, 'invalid_evidence', 'Native recovery transcript is missing or ambiguous.')
+    path = paths[0]
+    w.require(not any(p.is_symlink() for p in (path, *path.parents)),
+              'invalid_evidence', 'Native recovery transcript cannot be a symlink.')
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            w.require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_RECOVERY_BYTES,
+                      'invalid_evidence', 'Native recovery transcript must be regular and within its byte bound.')
+            snapshot = stream.read(info.st_size)
+            w.require(len(snapshot) == info.st_size and snapshot.endswith(b'\n'),
+                      'invalid_evidence', 'Native recovery transcript snapshot is incomplete.')
+    except OSError as exc:
+        raise w.Refusal('invalid_evidence', 'Native recovery transcript is unreadable.') from exc
+    rows: list[dict[str, Any]] = []
+    for raw in snapshot.splitlines():
+        w.require(0 < len(raw) <= meter.MAX_RECORD_BYTES,
+                  'invalid_evidence', 'Native recovery record is empty or oversized.')
+        try:
+            item = json.loads(raw)
+        except ValueError:
+            raise w.Refusal('invalid_evidence', 'Native recovery transcript has malformed JSON.') from None
+        w.require(isinstance(item, dict) and isinstance(item.get('payload'), dict),
+                  'invalid_evidence', 'Native recovery transcript has a malformed record.')
+        rows.append(item)
+    meta = rows[0]['payload']
+    w.require(rows[0].get('type') == 'session_meta' and meta.get('id') == session
+              and meta.get('cwd') == workspace
+              and sum(r.get('type') == 'session_meta' for r in rows) == 1,
+              'invalid_evidence', 'Native recovery transcript has another identity, location or restart boundary.')
+    return path, rows
+
+
+def _recovery_object(value: Any) -> dict[str, Any]:
+    from . import workflow as w
+    try:
+        result = json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        result = None
+    w.require(isinstance(result, dict), 'invalid_evidence', 'Native recovery arguments and results must be JSON objects.')
+    assert isinstance(result, dict)
+    return result
+
+
+def _recovery_time(value: Any) -> datetime:
+    from . import workflow as w
+    try:
+        result = datetime.fromisoformat(value.replace('Z', '+00:00')) if isinstance(value, str) else None
+    except ValueError:
+        result = None
+    w.require(result is not None and result.tzinfo is not None,
+              'invalid_evidence', 'Native recovery timestamps require ISO format and a timezone.')
+    assert result is not None
+    return result
+
+
+def _recovery_pair(rows: list[dict[str, Any]], call_id: str, tool: str) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    from . import workflow as w
+    matched = [r for r in rows if r.get('type') == 'response_item' and r['payload'].get('call_id') == call_id]
+    w.require(len(matched) == 2, 'invalid_evidence', 'Recovery needs exactly one native call and result per reference.')
+    call, result = (r['payload'] for r in matched)
+    w.require(call.get('type') == 'function_call' and call.get('namespace') == 'collaboration'
+              and call.get('name') == tool and result.get('type') == 'function_call_output'
+              and all(isinstance(r.get('metadata'), dict) and r['metadata'].get('client_authored') is False
+                      for r in matched), 'invalid_evidence', 'Recovery requires native collaboration call/result observations.')
+    return matched, _recovery_object(call.get('arguments')), _recovery_object(result.get('output'))
+
+
+def unbound_worker_observation(parent: str, worker: dict[str, Any], launch_call_id: str,
+                               terminal_call_id: str) -> dict[str, Any]:
+    """Correlate a missed launch with native lineage and terminal observations.
+
+    Historical evidence can revoke a reservation, never admit it or accept work.
+    This is observed local metadata, not host attestation or an OS process census.
+    """
+    from datetime import datetime, timezone
+    from . import native_session_meter as meter, workflow as w
+    w.require(all(isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value)
+                  for value in (parent, launch_call_id, terminal_call_id))
+              and launch_call_id != terminal_call_id,
+              'invalid_evidence', 'Recovery needs distinct exact native launch and terminal call references.')
+    path, rows = _recovery_transcript(parent, worker['workspace'])
+    launch, args, response = _recovery_pair(rows, launch_call_id, 'spawn_agent')
+    terminal, poll, inventory = _recovery_pair(rows, terminal_call_id, 'list_agents')
+    name = response.get('task_name')
+    w.require(args.get('task_name') == worker['task_name'] and args.get('fork_turns') == 'none'
+              and isinstance(name, str) and name.startswith('/root/')
+              and name.rsplit('/', 1)[-1] == worker['task_name']
+              and worker['task_name'].endswith('__' + worker['grant_id'])
+              and set(poll) <= {'path_prefix'}
+              and poll.get('path_prefix') in (None, '/root', name),
+              'invalid_evidence', 'Native launch or terminal poll does not identify this prepared grant.')
+    assert isinstance(name, str)
+    _recovery_time(worker.get('prepared_at'))
+    identities = worker_identities(parent, canonical_name=name, since=worker['prepared_at'])
+    w.require(len(identities) == 1, 'invalid_evidence', 'Native child lineage is missing or ambiguous.')
+    identity = identities[0]
+    child_id = identity['worker_id']
+    w.require(child_id != parent and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,128}', child_id)),
+              'invalid_evidence', 'Native child identity is invalid.')
+    child_path, child_rows = _recovery_transcript(child_id, worker['workspace'])
+    child = child_rows[0]['payload']
+    meta, _ = meter._session_metadata(json.dumps(child_rows[0]).encode())
+    source = child.get('source')
+    subagent = source.get('subagent') if isinstance(source, dict) else None
+    spawn = subagent.get('thread_spawn') if isinstance(subagent, dict) else None
+    w.require(isinstance(spawn, dict) and spawn.get('parent_thread_id') == parent
+              and spawn.get('agent_path') == name and child.get('parent_thread_id') == parent
+              and child.get('thread_source') == 'subagent' and not child.get('forked_from_id')
+              and not child.get('history_base') and meta.get('started_at') == identity['started_at'],
+              'invalid_evidence', 'Recovery needs independent native child lineage from this root.')
+    agents = inventory.get('agents')
+    w.require(isinstance(agents, list) and all(isinstance(a, dict) for a in agents),
+              'invalid_evidence', 'Native terminal inventory is malformed.')
+    assert isinstance(agents, list)
+    matched = [a for a in agents if a.get('agent_name') == name]
+    status = matched[0].get('agent_status') if len(matched) == 1 else None
+    w.require(isinstance(status, dict) and len(status) == 1
+              and next(iter(status)) in ('completed', 'failed', 'interrupted'),
+              'invalid_evidence', 'Native inventory must identify exactly one terminal worker.')
+    assert isinstance(status, dict)
+    stamps = [worker.get('prepared_at'), launch[0].get('timestamp'), identity['started_at'],
+              launch[1].get('timestamp'), terminal[0].get('timestamp'), terminal[1].get('timestamp')]
+    times = [_recovery_time(v) for v in stamps]
+    w.require(all(a <= b for a, b in zip(times, times[1:])) and times[-1] <= datetime.now(timezone.utc),
+              'invalid_evidence', 'Native recovery evidence belongs to another attempt or has inconsistent chronology.')
+    w.require(rows.index(launch[1]) < rows.index(terminal[0]),
+              'invalid_evidence', 'Native terminal poll precedes the launch result.')
+    terminal_index = rows.index(terminal[1])
+    targets = (child_id, name, worker['task_name'])
+    for index, row in enumerate(rows):
+        value = row['payload']
+        if (row.get('type') != 'response_item' or value.get('type') != 'function_call'
+                or value.get('namespace') != 'collaboration'):
+            continue
+        operation = value.get('name')
+        if operation not in ('spawn_agent', 'followup_task', 'send_message', 'interrupt_agent'):
+            continue
+        arguments = _recovery_object(value.get('arguments'))
+        if operation == 'spawn_agent' and arguments.get('task_name') == worker['task_name']:
+            w.require(value.get('call_id') == launch_call_id,
+                      'invalid_evidence', 'Conflicting native launch uses this grant name.')
+        if operation != 'spawn_agent' and arguments.get('target') in targets:
+            stamp = _recovery_time(row.get('timestamp'))
+            w.require(index < terminal_index and stamp < times[-1],
+                      'invalid_evidence', 'Later native input invalidates the terminal observation.')
+    # An independently resumed child also invalidates the old terminal inventory.
+    w.require(all(_recovery_time(r.get('timestamp')) <= times[-1] for r in child_rows[1:]),
+              'invalid_evidence', 'Native child activity continued after the terminal observation.')
+    proof = {'launch': launch, 'terminal': terminal, 'identity': identity,
+             'child_metadata': {k: child.get(k) for k in ('id', 'parent_thread_id', 'cwd', 'source', 'timestamp')}}
+    return {'launch_call_id': launch_call_id, 'terminal_call_id': terminal_call_id,
+            'worker_id': child_id, 'canonical_name': name, 'source': str(path), 'child_source': str(child_path),
+            'sha256': content_fingerprint(proof), 'observed_at': terminal[1]['timestamp'],
+            'native_status': next(iter(status)), 'assurance': 'observed', 'process_exit': 'unknown'}

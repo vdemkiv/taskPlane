@@ -154,35 +154,58 @@ def counter(event: dict[str, Any], session: str) -> dict[str, Any]:
     return {"usage": None, "usage_status": "unavailable"}
 
 
-def observed_parent(event: dict[str, Any], session: str) -> str | None:
-    """Read native lineage independently of whether usage has been emitted yet."""
+def _native_metadata(event: dict[str, Any], session: str) -> tuple[list[dict[str, Any]], bool]:
+    """Read matching native identities without interpreting history as delegation."""
     if claude_session(event):
-        return None  # Claude ancestry comes from parent fields and child-start events.
+        return [], False  # Claude ancestry comes from parent fields and child-start events.
     path = event.get("transcript_path") or event.get("transcript")
     candidates = [Path(path)] if isinstance(path, str) else []
     if session != "local":
         home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
         candidates.extend((home / "sessions").glob(f"**/*{session}*.jsonl"))
-    parents: set[str] = set()
-    for candidate in candidates:
+    records: list[dict[str, Any]] = []
+    complete = True
+    for candidate in dict.fromkeys(candidates):
         try:
             fd = os.open(candidate, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
             with os.fdopen(fd, "rb") as stream:
                 if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    complete = False
                     continue
                 # Share the canonical metadata parser, but require no token counter.
-                metadata, _ = native_session_meter._session_metadata(
+                metadata, raw = native_session_meter._session_metadata(
                     stream.read(native_session_meter.MAX_METADATA_BYTES))
-            if metadata["session_id"] == session and metadata.get("parent_session_id"):
-                parents.add(str(metadata["parent_session_id"]))
+            if metadata["session_id"] == session:
+                payload = json.loads(raw)["payload"]
+                # A desktop/CLI chat fork copies history, not a worker grant.
+                # Unknown or conflicting host shapes retain the conservative path.
+                independent = (payload.get("thread_source") == "agent_forked_thread"
+                               and payload.get("source") in ("vscode", "cli")
+                               and bool(payload.get("forked_from_id"))
+                               and not payload.get("parent_thread_id"))
+                records.append({**metadata, "independent_fork": independent})
         except (OSError, ValueError):
-            continue
+            complete = False
+    return records, complete
+
+
+def observed_parent(event: dict[str, Any], session: str) -> str | None:
+    """Native history lineage, which alone does not establish a worker role."""
+    records, _ = _native_metadata(event, session)
+    parents = {str(row["parent_session_id"]) for row in records if row.get("parent_session_id")}
     return next(iter(parents)) if len(parents) == 1 else None
 
 
-def active_run(rows: list[dict[str, Any]], session: str, parent: str | None = None) -> dict[str, Any] | None:
-    owners = {session, parent} - {None}
-    for row in reversed(rows):
+def independent_fork(event: dict[str, Any], session: str) -> bool:
+    records, complete = _native_metadata(event, session)
+    return (complete and bool(records) and all(row["independent_fork"] for row in records)
+            and len({row.get("parent_session_id") for row in records}) == 1)
+
+
+def active_run(rows: list[dict[str, Any]], session: str, parent: str | None = None, *,
+               inherit: bool = True) -> dict[str, Any] | None:
+    owners = ({session, parent} if inherit else {session}) - {None}
+    for row in reversed(rows) if inherit else ():
         root = row.get("root")
         if isinstance(root, str) and root and (row.get("session") in owners or (
                 row.get("event") == "SubagentStart" and row.get("child") in owners)):
@@ -285,11 +308,12 @@ def select_controller(workspace: Path, actor: str, parent: str | None, *,
                       profile: str = "native_workflow", event: dict[str, Any] | None = None,
                       legacy: dict[str, Any] | None = None,
                       governor: workflow_host.Controller | None = None,
-                      pending_start: bool = False) -> tuple[workflow_host.Controller, dict[str, Any]]:
+                      pending_start: bool = False,
+                      diagnostics: bool = True) -> tuple[workflow_host.Controller, dict[str, Any]]:
     """Exact observed worker bindings outrank own runs; ordinary ancestry does not."""
     def selected_report(controller: workflow_host.Controller) -> dict[str, Any]:
         try:
-            return controller.report()
+            return controller.report(diagnostics=diagnostics)
         except workflow.Refusal:
             if (pending_start and controller.adapter.profile == 'native_workflow'
                     and controller.principal == controller.root
@@ -300,19 +324,20 @@ def select_controller(workspace: Path, actor: str, parent: str | None, *,
         return governor, selected_report(governor)
     own = _controller(workspace, actor, profile, event=event)
     own_state = selected_report(own)
+    fork = independent_fork(event or {}, actor)
     inherited = _controller(workspace, parent, profile, event=event, principal=actor) if parent and parent != actor else None
-    inherited_state = inherited.report() if inherited else {}
+    inherited_state = inherited.report(diagnostics=diagnostics and not fork) if inherited else {}
     from .worker_runtime import find
     if inherited is not None and find(inherited_state, actor) is not None:
         return inherited, inherited_state
-    if own_state.get("run"):
+    if own_state.get("run") or fork:
         return own, own_state
     if inherited is not None and inherited_state.get("run"):
         return inherited, inherited_state
     if legacy or inherited is not None:
         fallback = _controller(workspace, str(legacy["session"] if legacy else parent),
                                profile, event=event, principal=actor)
-        return fallback, fallback.report()
+        return fallback, fallback.report(diagnostics=diagnostics)
     return own, own_state
 
 
@@ -652,10 +677,14 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
         observation = counter(event, session)
     except (OSError, ValueError, TypeError, KeyError):
         observation = {"usage": None, "usage_status": "unavailable"}
-    parent = event.get("parent_session_id") or observation.get("parent") or observed_parent(event, session)
+    fork = independent_fork(event, session)
+    parent = None if fork else event.get("parent_session_id") or observation.get("parent") or observed_parent(event, session)
     admission = event.get("taskplane_admission")
+    observed_binding = event.get("taskplane_observed_binding")
+    bound_root = observed_binding.get("root") if isinstance(observed_binding, dict) else None
     run = ({"run": admission["run"], "session": admission["root"]} if isinstance(admission, dict)
-           else active_run(rows, session, parent))
+           else active_run(rows, bound_root, inherit=False) if isinstance(bound_root, str) and bound_root
+           else active_run(rows, session, parent, inherit=not fork))
     if run is None:
         selected = workflow_local.Harness(workspace, str(parent or session)).read().get("run")
         run = next((r for r in reversed(rows) if r.get("kind") == "start" and r.get("run") == selected), None)
@@ -785,10 +814,13 @@ def _hook(event: dict[str, Any], *,
     event.pop("taskplane_admission", None)
     session = session_id(event)
     parent = event.get("parent_session_id")
+    fork = governor is None and independent_fork(event, session)
     if governor is None:
         parent = observed_parent(event, session) or parent
-    if parent:
+    if parent and not fork:
         event['parent_session_id'] = parent
+    elif fork:
+        event.pop('parent_session_id', None)
     words = workflow_local.runtime_words(event)
     cwd = runtime_command.execution_directory(event, Path.cwd())
     if event.get('hook_event_name') == 'PreToolUse':
@@ -798,6 +830,9 @@ def _hook(event: dict[str, Any], *,
             raise workflow.Refusal('scope_violation', str(exc)) from None
         mismatch = runtime_command.collision(words, cwd)
         workflow.require(not mismatch, 'scope_violation', mismatch or '')
+        if len(words) >= 3 and Path(words[1]).name == 'tp.py' and words[2] == 'workflow':
+            workflow.require(runtime_command.installed(words, cwd), 'scope_violation',
+                             'Use the exact loaded workflow runtime and interpreter.')
         if runtime_command.installed(words, cwd):
             try:
                 runtime_command.workspace_selector(words[2:])
@@ -830,10 +865,10 @@ def _hook(event: dict[str, Any], *,
                 return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': exc.guidance()}}
         raise
     rows = read_events(workspace)
-    legacy = active_run(rows, session, parent)
+    legacy = active_run(rows, session, None if fork else parent, inherit=not fork)
     try:
         controller, guarded = select_controller(workspace, session, parent, event=event,
-                                                legacy=legacy, governor=governor, pending_start=(
+                                                legacy=legacy, governor=governor, diagnostics=False, pending_start=(
                                                     (runtime_command.installed(words, cwd) and words[2:4] == ["flow", "start"])
                                                     or (event.get("tool_name") or event.get("tool")) == "write_stdin"))
     except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
@@ -866,12 +901,12 @@ def _hook(event: dict[str, Any], *,
                 observed_run = controller.observe(event, None)
                 startup_observed = True
                 if observed_run:
-                    guarded = controller.report(observed_run)
+                    guarded = controller.report(observed_run, diagnostics=False)
         if selected and not guarded.get("run") and not workflow_local.execution_entry(event, allow_skill_read=False):
             # A passive reread is not a new user request. Check completion before
             # select() can erase the historical binding needed for cleanup.
             previous_run = harness.read().get("run")
-            if previous_run and controller.report(previous_run).get("finished"):
+            if previous_run and controller.report(previous_run, diagnostics=False).get("finished"):
                 selected = None
         if selected:
             selection_reference = str(event.get("tool_use_id") or event.get("call_id") or event.get("turn_id") or
@@ -883,7 +918,7 @@ def _hook(event: dict[str, Any], *,
         if guarded.get("visits") and not guarded.get("finished"):
             harness.bind(guarded)
         elif harness.read().get("run") and not guarded.get("run"):
-            prior = controller.report(harness.read()["run"])
+            prior = controller.report(harness.read()["run"], diagnostics=False)
             if prior.get("finished"):
                 harness.update(selected=False, waiting=None)
         if (guarded.get('status') == 'initialization_pending' and name == 'PreToolUse'
@@ -899,14 +934,18 @@ def _hook(event: dict[str, Any], *,
     if guarded.get("workflow_available") and guarded.get("run"):
         if not startup_observed:
             controller.observe(event, str(run))
-        guarded = controller.report(str(run))
+        guarded = controller.report(str(run), diagnostics=False)
         if name == "Stop" and not controller.adapter.can_seal(guarded):
             return {"systemMessage": "Taskplane is waiting for process quiescence before sealing. No phase has advanced; unknown host coverage remains explicit."}
     guarded_run = guarded.get("run") or (run if controller.adapter.profile == "protected_host" else None)
     if guarded_run and name == "PreToolUse":
+        if "workflow_binding" in guarded.get("scope", {}):
+            if (controller.principal != controller.root or not
+                    workflow_local.workflow_diagnostic_event(workspace, event, guarded)):
+                workflow_local.verify_workflow(workspace, guarded)
         controller.guard(event, str(run))
     elif name == "PreToolUse" and harness and harness.read().get("run"):
-        previous = controller.report(harness.read()["run"])
+        previous = controller.report(harness.read()["run"], diagnostics=False)
         if previous.get("finished") or previous.get("retired"):
             controller.followup_admission(event, previous["run"])
     if name == "Stop" and harness:
@@ -921,16 +960,18 @@ def _hook(event: dict[str, Any], *,
         if isinstance(policy_event, dict):
             controller.apply("policy", str(run), expected_revision=guarded["revision"],
                              native_reference=json.dumps(policy_event))
-            guarded = controller.report(str(run))
+            guarded = controller.report(str(run), diagnostics=False)
         if guarded.get("status") == "awaiting_human_approval" and not policy_event:
             reference = controller.adapter.prompt_reference(event, guarded)
             if reference:
                 controller.apply("decide", str(run), expected_revision=guarded["revision"], native_reference=reference)
-                guarded = controller.report(str(run))
+                guarded = controller.report(str(run), diagnostics=False)
             else:
                 return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
                         "Taskplane: record the actual human response with its presented checkpoint and conversation provenance. This prompt alone has not advanced the workflow."}}
     result: dict[str, Any] = {}
+    if name == "PreToolUse" and event.get("taskplane_updated_input") is not None:
+        result["hookSpecificOutput"] = {"hookEventName": name, "updatedInput": event["taskplane_updated_input"]}
     if harness and harness.read().get("selected") and (selected or name in {"SessionStart", "UserPromptSubmit"}):
         output = result.setdefault("hookSpecificOutput", {"hookEventName": name})
         output["additionalContext"] = harness.guidance(guarded) + " " + output.get("additionalContext", "")
@@ -940,6 +981,8 @@ def _hook(event: dict[str, Any], *,
 def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = None) -> dict[str, Any]:
     """Observe all exits, including denials. Optional journaling never grants access."""
     event.pop('taskplane_admission', None)
+    event.pop('taskplane_updated_input', None)
+    event.pop('taskplane_claude_root_source', None)
     outcome, reason = "observed", None
     result: dict[str, Any] = {}
     try:
@@ -1085,15 +1128,17 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "inspect", "prevalidate", "context", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "reconcile-maintenance", "inspect", "prevalidate", "context", "retire", "worker"])
     parser.add_argument("--kind", choices=["contract", "result"])
     parser.add_argument("--reference")
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=32768)
     parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
-    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable"])
+    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound"])
+    parser.add_argument("--invocation-ref", help=argparse.SUPPRESS)
     parser.add_argument("--grant", default="")
     parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")
+    parser.add_argument("--maintenance-file", help="Exact user-requested maintenance hashes and provenance JSON")
     parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
     parser.add_argument("--task", help="Current phase task ID for context selection")
     context_read = parser.add_mutually_exclusive_group()
@@ -1167,9 +1212,21 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         workspace = workspace_binding.resolve_workspace(args.workspace)
         workspace_binding.ensure(workspace)
         workspace_validated = True
+        if args.invocation_ref is not None:
+            workflow.require(governor is None and args.profile == "native_workflow", "unsupported_authority",
+                             "Cooperative invocation cannot replace a protected or supplied controller.")
+            from .context import encode
+            invoked_result = workflow_host.Controller.invoke_claude(list(sys.argv))
+            print(encode(invoked_result).decode("utf-8"))
+            return 0
+        if governor is None and claude_session({}) and (args.action == "context"
+                or args.action == "worker" and args.operation == "claim"):
+            raise workflow.Refusal("unsupported_authority",
+                "Claude invocation identity is unavailable; claim/context requires an automatic invocation reference.")
         if args.action == 'recover':
             session = session_id({})
-            workflow.require(not observed_parent({}, session), 'scope_violation', 'Native children cannot restore workflow state.')
+            workflow.require(not observed_parent({}, session) or independent_fork({}, session),
+                             'scope_violation', 'Native children cannot restore workflow state.')
             controller = governor or _controller(workspace, session, args.profile)
             recovery_result = controller.recover_initialization(args.recover_from or '', args.expected_sha256 or '',
                         args.run or '', args.expected_revision, args.request_reference)
@@ -1196,29 +1253,24 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             return 0
         rows = read_events(workspace)
         session = session_id({})
-        run = active_run(rows, session, counter({}, session).get("parent"))
+        fork = independent_fork({}, session)
+        run = active_run(rows, session, None if fork else counter({}, session).get("parent"), inherit=not fork)
         if args.action in {"report", "attach"}:
             run = next((r for r in reversed(rows) if r.get("kind") == "start"
                         and (r.get("run") == args.run if args.run else r.get("session") == session)), None)
         parent = observed_parent({}, session)
         controller, protected = select_controller(workspace, session, parent, profile=args.profile,
                                                   legacy=run, governor=governor, pending_start=args.action == "start")
-        if governor is None and claude_session({}) and args.action == 'worker' and args.operation == 'claim':
-            from .host_capabilities import native_invocation_identity
-            invocation = native_invocation_identity('claude', workspace, list(sys.argv))
-            workflow.require(invocation is not None, 'unsupported_authority',
-                             'Claude worker CLI invocation identity is unavailable; inherited parent environment cannot claim a child grant.')
-            # A future host channel must bind this exact invocation. The installed
-            # cooperative adapter currently supplies no such channel.
-            assert invocation is not None
-            workflow.require(invocation.get('root') == controller.root
-                             and invocation.get('workspace') == str(workspace)
-                             and invocation.get('principal') == controller.principal
-                             and controller.principal != controller.root,
-                             'unsupported_authority', 'Worker invocation does not match the selected native principal.')
         if controller.principal != controller.root:
             workflow.require(args.action == "context" or args.action == "worker" and args.operation == "claim",
                              "scope_violation", "Worker CLI is limited to claim and scoped context.")
+        if protected.get("visits") and "workflow_binding" in protected.get("scope", {}):
+            diagnostic = args.action in {"report", "diagnose", "inspect", "recover", "reconcile-maintenance",
+                                         "retire", "wait", "present", "decide"}
+            replacement = args.action == "start" and args.replace_run
+            worker_recovery = args.action == "worker" and args.operation in {"status", "recover-unbound", "abandon"}
+            if not (diagnostic or replacement or worker_recovery):
+                workflow_local.verify_workflow(workspace, protected)
         if args.action in {"inspect", "prevalidate"}:
             workflow.require(args.run, "invalid_evidence", "Select the exact run for recovery inspection.")
             recovery_read = (controller.inspect(args.run, args.kind or "", args.reference or "",
@@ -1226,6 +1278,12 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                       if args.action == "inspect" else controller.prevalidate(args.run,
                           revision=args.expected_revision, output=args.output or "", tasks=args.tasks or ""))
             show(recovery_read)
+            return 0
+        if args.action == 'reconcile-maintenance':
+            from .context import encode
+            workflow.require(args.run and args.maintenance_file, 'invalid_evidence',
+                             'Maintenance reconciliation needs the exact run and manifest file.')
+            print(encode(controller.reconcile_maintenance(args.run, args.expected_revision, args.maintenance_file)).decode('utf-8'))
             return 0
         if args.action == "worker":
             from .context import encode
@@ -1312,7 +1370,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             if harness and not protected.get("run"):
                 selected_entry = harness.read().get("entry") if harness.read().get("selected") else None
                 standalone_phase = {"tp-engineering": "engineering", "tp-northstar": "engineering",
-                                    "tp-design": "design", "tp-product": "product",
+                                    "tp-design": "design", "tp-workflow": "design", "tp-product": "product",
                                     "engineering": "engineering", "design": "design", "product": "product"}.get(str(selected_entry))
                 workflow.require(not standalone_phase or args.standalone and args.phase == standalone_phase,
                                  "scope_violation", "The selected standalone task requires --standalone --phase " + str(standalone_phase))

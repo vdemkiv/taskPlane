@@ -1,9 +1,17 @@
 ---
 name: taskplane
-description: Route requests to review code, design a change, implement work, inspect Taskplane status, or explain Taskplane. Preserve the user's requested scope and existing decisions.
+description: Route requests to review code, design a change, implement work, author or invoke reusable workflows, inspect Taskplane status, or explain Taskplane. Preserve the user's requested scope and existing decisions.
 ---
 
 # Taskplane
+
+For reusable workflow create/edit/inspect/preview/run requests, first read
+[Workflow Builder](../tp-workflow/SKILL.md). That route distinguishes read-only
+inspection from Design authoring and root execution. Catalog, validation and
+preview do not activate a run. Create alone never executes the definition;
+create-and-run retains its root handoff after the authoring checkpoint.
+Help and status likewise remain read-only. The execution setup below applies
+only after selecting an execution or authoring route.
 
 An execution request must produce visible progress or a specific setup blocker.
 Read the requested route first and retain the original repository, scope and lens
@@ -41,6 +49,9 @@ without a verified owner. Never substitute one profile for the other.
   [engineering](../tp-engineering/SKILL.md) and use native tools in the available checkout.
 - Status: read [status](../tp-status/SKILL.md). Inspect existing state without initializing it.
 - Help: read [help](../tp-help/SKILL.md). Answer the question without setup.
+- Reusable workflow create/edit/save/preview/invoke: read
+  [workflow](../tp-workflow/SKILL.md). Resolve occupied runs explicitly; never
+  nest a run or treat a saved definition as approval.
 - Product requirements: read [product](../tp-product/SKILL.md).
 - Design before implementation: read [design](../tp-design/SKILL.md).
 - Build or fix an approved delivery plan: read [delivery](../tp-go/SKILL.md).

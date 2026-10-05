@@ -8,10 +8,10 @@ editing a checkout or matching version strings does not update the installed plu
 
 ## Scoped native workers and task publication
 
-`flow worker --operation prepare|claim|accept-result|status|capacity|abandon|recover-unavailable` operates
+`flow worker --operation prepare|claim|accept-result|status|capacity|abandon|recover-unavailable|recover-unbound` operates
 on the existing run. Supply `--workspace` and `--run`; root mutations also require
 `--expected-revision`. Prepare/result commands use `--task`; claim/result/abandon
-and recover-unavailable use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
+and both recovery operations use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
 Preparation needs `capacity` with `host_slots`, `includes_root`, and an actual
 observed source `reference`. Optional configured/resource limits narrow capacity.
 No default two-worker limit is applied.
@@ -107,6 +107,59 @@ owner. It uses `--native-event REF` for independent scope/decision resolution an
 refuses when unavailable. No automatic downgrade or workspace flag enables its
 protected capabilities. Local-account tampering and fabricated otherwise valid
 provenance are outside native_workflow's guarantees.
+
+## Workflow Builder
+
+These commands describe the source candidate's strict
+`taskplane.workflow-blueprint/v1` contract. Use the actually loaded plugin's
+launcher and confirm its `workflow catalog` support. The installed 2.31.7
+runtime used for this development does not contain Workflow Builder; source or
+extracted-package fixtures do not establish candidate-loaded live behavior.
+See [Workflow Builder](workflow-builder.md) for the schema, reusable seeds,
+authoring checkpoint, occupied-run handling and explicit WFB-LIVE gap.
+
+| Command | Effect |
+| --- | --- |
+| `workflow catalog --workspace ROOT` | Read registered capabilities/lenses, prompt assets and loaded runtime contracts. No capacity or authority claim. |
+| `workflow validate --workspace ROOT --definition FILE` | Perform strict static definition validation. No run, runtime compatibility claim or dispatch. |
+| `workflow preview --workspace ROOT --definition FILE [--inputs FILE]` | Read-only preview of unresolved inputs, exact reads/writes, tasks, evidence and decisions. No persistence. |
+| `workflow save --workspace ROOT --definition FILE --out FILE` | Publish only `workflows/<id>.<version>.workflow.json`, without replacing different bytes or creating a run. |
+| `workflow compile --workspace ROOT --definition FILE --inputs FILE --out DIR` | Publish an immutable no-clobber package only at `.taskplane/bootstrap/workflow-<invocation>`. No run or workers. |
+| `workflow check --workspace ROOT --run RUN` | Read-only verification of that exact existing run's pinned package, compatibility and inputs. No approval or repair. |
+
+JSON is the only CLI output format. Complete `--name VALUE` and `--name=VALUE`
+forms are supported; unknown, duplicated and abbreviated options refuse. Static
+validation does not establish runtime compatibility; use catalog, preview,
+compile or run-bound check for loaded contract observations. Save
+and compile require `--out`. Inputs use a bounded strict JSON object; duplicate
+keys, non-finite numbers and undeclared inputs refuse. File arguments resolve
+against the explicitly selected workspace. The guide provides a concrete
+change-review input object and the full publication walkthrough.
+
+Definitions allow manual invocation, fixed standalone Product/Design/Engineering
+or seven-phase delivery routes, registered capabilities and typed input/artifact
+bindings. Text never supplies an executable or workflow authority. Paths are
+exact literals; expressions, traversal, symlinks, globs and colliding outputs
+refuse. Declare source, dependency and test reads explicitly. Delivery reserves
+an exact outer Build allowlist; actual Build tasks and typed checks are accepted
+through Plan before implementation.
+
+Compilation returns `start_arguments` for the existing `flow start` control,
+including the compiled scope and first-phase tasks. Only root starts an
+authorized invocation with the actual request reference. There is no `workflow
+run` command. `tp-workflow` create/edit uses scoped Design authoring; root resolves
+that checkpoint and finishes a standalone authoring route before invocation.
+Another active run requires explicit resolution, never silent replacement or
+nesting. Preview's `runnable` flag grants no execution permission or capacity.
+
+Published definitions require a new semantic version for changed content.
+Active runs pin their own definition, inputs, runtime and capability identity.
+Resume the same run; keep partial publication and failed attempts for diagnosis.
+Changed immutable evidence blocks dependent work, while accepted Plan scope
+governs legitimate Build mutations. Use the existing native claim/context/join/
+accept-result protocol and shared dashboard. Missing native capacity cannot be
+downgraded into serial coverage. Required live host verification remains separate
+from fixture results; installation, schedules and external actions are excluded.
 
 ## Workspace binding and execution policy
 
@@ -295,6 +348,48 @@ verification. This recovery currently supports Codex transcript observations onl
 Malformed native call/result JSON, metadata or timestamp fields return
 `invalid_evidence` without changing the grant. Preserve the evidence and diagnose
 the malformed observation before retrying.
+
+If hooks missed an actual launch and the reservation is still `prepared` with no
+admitted call, worker identity, claim, context or result, use the explicit
+`flow worker --operation recover-unbound --workspace PATH --run RUN --grant GRANT
+--expected-revision N --worker-json JSON`. Its request contains
+`request_reference`, `launch_call_id` and `terminal_call_id`: the actual user
+instruction, native `collaboration.spawn_agent` call, and native
+`collaboration.list_agents` call observing that exact child as terminal.
+
+This Codex root-only operation checks the active unsealed run, current binding,
+absence of known live commands, exact grant-suffixed name, independent native
+child lineage, workspace and timestamp order. It reads complete regular native
+transcript snapshots, bounded to 64 MiB each, and refuses ambiguous, malformed,
+restarted or symlinked transcripts, conflicting launches, later input to the
+child or child activity after the terminal observation. Historical completion is
+allowed; missing current inventory is insufficient. The operation records
+`unadmitted_launch_revoked`, the observed child and evidence digest in `recovery`,
+leaving the missing admission fields missing and process exit unknown. It never
+accepts the attempt or restores readiness. Repeating recovery refuses without
+changing the saved evidence. A retry needs a new grant and actual automatic hook
+observations. Use `abandon` only when the reservation really was never launched.
+
+### Reconcile explicitly requested maintenance in the current run
+
+After a separately requested maintenance repair, `flow reconcile-maintenance
+--workspace PATH --run RUN --expected-revision N --maintenance-file FILE` records
+its exact source changes without expanding the current phase's writable paths.
+The JSON file uses `schema: "taskplane.maintenance-request/v1"`, the actual
+`request_reference`, a `reason`, and a `changes` object mapping each path to
+`{"before": SHA256_OR_NULL, "after": SHA256_OR_NULL}`. Null denotes absence.
+The manifest must cover every changed path outside the current phase scope,
+with exact old baseline and current hashes; it cannot include phase outputs.
+The request is limited to 64 KiB and 256 paths.
+
+This cooperative native-root operation requires an active unsealed phase, no
+live workers or known commands, and unchanged accepted evidence. Recover failed
+workers first. It stores an audit receipt and changes only the named source
+baseline entries, increments the revision and clears parent readiness. Scope,
+decisions and prior attempt records remain intact. Fresh hook observations and
+worker verification are required at the new revision. Future edits to the same
+maintenance paths still refuse; this is neither a blanket ignore nor phase
+acceptance. A repeated or stale request refuses without mutation.
 
 ### Start again without losing the previous run
 

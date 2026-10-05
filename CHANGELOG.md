@@ -1,5 +1,12 @@
 # taskplane changelog
 
+## v2.32.0 — Workflow Builder and Claude recovery test candidate
+
+- Add versioned reusable workflow definitions, validation, preview and compilation, with packaged review, design and delivery seeds.
+- Connect Claude claim/context commands to one-use automatic hook references and pinned, bounded native transcript observations. Preserve distinct worker identity, context, terminal evidence and result acceptance.
+- Scope historical message-only handback inputs without inventing delivery success. Missing handback acknowledgement and status-less terminal events still block live Claude acceptance; fresh installed-host validation remains required.
+- Include the external Claude verification harness and candidate test guide in both packages. Package receipts bind archive members to the exact source commit; these are test candidates, not a marketplace publication or live recovery certification.
+
 ## v2.31.7 — visible Cowork onboarding and review continuation
 
 - Deliver first-run execution prompts and router skills with actionable setup guidance instead of rejecting them before initialization can run.

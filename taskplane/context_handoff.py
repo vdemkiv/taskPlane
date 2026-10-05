@@ -128,6 +128,28 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
                     "body": {"goal": state.get("goal", ""), "criteria": criteria, "phase": phase, "paths": paths,
                              "tasks": [{k:v for k,v in row.items() if k not in evidence.TASK_OBSERVATIONS}
                                        for row in selected]}})
+    if "workflow_binding" in state["scope"]:
+        from .workflow_local import verify_workflow
+        checked = verify_workflow(workspace, state)
+        assert checked is not None
+        for name in ("definition", "compilation"):
+            items.append({"id": "workflow/" + name, "kind": "workflow-provenance",
+                          "body": checked[name]})
+        names = {ref["input"] for row in checked["definition"]["tasks"]
+                 if not task or row["id"] == task for ref in
+                 [*row["read_bindings"], row["criteria_binding"],
+                  *[output.get("binding", output.get("directory")) for output in row["outputs"]]]
+                 if "input" in ref}
+        bound = checked["bindings"]
+        items.append({"id": "workflow/bindings", "kind": "workflow-provenance", "body": {
+            "workflow_binding": checked["workflow_binding"], "task": task,
+            "values": {key: value for key, value in bound["values"].items() if not task or key in names},
+            "git_refs": bound["git_refs"], "source_manifest": bound["source_manifest"],
+            "unresolved_inputs": bound["unresolved_inputs"], "context_is_authority": False}})
+        for relative in checked["compilation"]["snapshots"].values():
+            if not task or any(relative in row.get("read_inputs", []) for row in selected):
+                items.append({"id": "workflow/source/" + relative, "kind": "source",
+                              "body": {"path": relative, **text_body(evidence.read(workspace, relative))}})
     declared_reads = ({p for row in selected for p in evidence.read_inputs(state, row)}
                       if selected else set(state["scope"].get("verification_inputs", [])))
     source_paths = sorted(set(paths) | declared_reads)
@@ -195,6 +217,10 @@ class Session:
         w.require(state.get("run") and state.get("visits") and not state.get("superseded_by"),
                   "invalid_context", "Context requires the current bound run.")
         self.workspace, self.state, self.task = workspace.resolve(), state, task
+        # A frozen worker snapshot cannot bypass current package/runtime checks.
+        if snapshot is not None:
+            from .workflow_local import verify_workflow
+            verify_workflow(self.workspace, state)
         self.store = Store(self.workspace) if persist else _PreviewStore(self.workspace)
         self.binding = binding(state)
         self.phase = w.current(state)["phase"]

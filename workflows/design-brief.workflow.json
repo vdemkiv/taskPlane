@@ -1,0 +1,140 @@
+{
+  "schema": "taskplane.workflow-blueprint/v1",
+  "id": "design-brief",
+  "version": "0.1.0",
+  "name": "Design brief",
+  "description": "Turn a concrete change request and explicit repository context into a design and validation map, without implementing the change.",
+  "route": {
+    "kind": "standalone",
+    "phase": "design"
+  },
+  "trigger": {
+    "kind": "manual"
+  },
+  "inputs": {
+    "request": {
+      "type": "text",
+      "required": true
+    },
+    "source_files": {
+      "type": "workspace_file_list",
+      "required": true
+    },
+    "dependency_files": {
+      "type": "workspace_file_list",
+      "required": true
+    },
+    "test_files": {
+      "type": "workspace_file_list",
+      "required": true
+    },
+    "output_prefix": {
+      "type": "workspace_relative_directory",
+      "required": true
+    },
+    "criteria": {
+      "type": "acceptance_criteria",
+      "required": true
+    }
+  },
+  "policy": {
+    "approval_default": "manual",
+    "source_writes": false,
+    "external_actions": [],
+    "on_failure": "stop_and_report"
+  },
+  "tasks": [
+    {
+      "id": "design-analysis",
+      "phase": "design",
+      "capability": "taskplane.design.analysis",
+      "purpose": "Design the requested change against the bound context.",
+      "execution": "native_required",
+      "depends_on": [],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "source_files"
+        },
+        {
+          "input": "dependency_files"
+        },
+        {
+          "input": "test_files"
+        },
+        {
+          "input": "criteria"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "design",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "design-analysis.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "instructions": "Reuse accepted product decisions. Describe interfaces, state, dependencies, authority boundaries, failure and recovery, meaningful trade-offs, and a criterion-to-validation map. Distinguish proposed dependencies from scanned source relationships. Make no source changes."
+    },
+    {
+      "id": "design-synthesis",
+      "phase": "design",
+      "capability": "taskplane.phase.synthesis",
+      "purpose": "Present a coherent design brief and unresolved decisions.",
+      "execution": "root",
+      "depends_on": [
+        "design-analysis"
+      ],
+      "read_bindings": [
+        {
+          "input": "request"
+        },
+        {
+          "input": "criteria"
+        },
+        {
+          "artifact": {
+            "task": "design-analysis",
+            "name": "report"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "kind": "design",
+          "directory": {
+            "input": "output_prefix"
+          },
+          "relative_path": "design-brief.md"
+        }
+      ],
+      "criteria_binding": {
+        "input": "criteria"
+      },
+      "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
+      "execution_reason": "The root integrates prerequisite evidence and prepares the existing phase checkpoint.",
+      "execution_reference": "This definition's explicit producer dependencies and the shared Taskplane phase contract.",
+      "instructions": "Integrate the accepted Design analysis with existing decisions and graph evidence. State scope, alternatives, risks, and validation. Present the existing Design checkpoint and dashboard; Design acceptance alone does not authorize implementation."
+    }
+  ],
+  "acceptance_scenarios": [
+    "Preview reports unresolved source or criterion bindings without persistence.",
+    "Author and accept a standalone Design brief without starting Build.",
+    "A new version preserves the prior published definition and active invocation binding."
+  ],
+  "runtime_requirements": [
+    "bounded/v2",
+    "native-default/v1",
+    "taskplane.phase-output/v1",
+    "taskplane.task-definitions/v1"
+  ]
+}
