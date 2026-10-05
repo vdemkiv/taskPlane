@@ -468,7 +468,7 @@ def test_handback_implicit_parent_readiness_and_unsupported_terminal(tmp_path, m
     consume(c, state, items[0]['grant'], 'child-0')
     base = invocation_event(c, state, parent)
     handback = {**base, 'tool_name':'SubagentHandback', 'tool_use_id':'return', 'tool_input':{'message':'T0.md contains fixture evidence'}}
-    with pytest.raises(w.Refusal, match='readiness'): flow.hook(handback)
+    with pytest.raises(w.Refusal, match='startup or ready context'): flow.hook(handback)
     ready = {**base, 'tool_name':'Read', 'tool_use_id':'ready', 'tool_input':{'file_path':'input.py'}}
     flow.hook(ready); flow.hook({**ready,'hook_event_name':'PostToolUse'})
     for delta in [{'tool_input':{'message':'report','recipient':'sibling'}}, {'agent_id':'foreign'}, {'agent_id':None}]:

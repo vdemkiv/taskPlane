@@ -26,6 +26,10 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 PHASES = ("product", "design", "plan", "build", "evaluate", "engineering", "retro")
 LIMIT = 64 * 1024 * 1024
+HOOK_ACTIONS = {"SessionStart": "context", "PreToolUse": "screen",
+                "PostToolUse": "tool-observe", "SubagentStart": "subagent-start",
+                "SubagentStop": "subagent-stop", "Stop": "session-verify",
+                "UserPromptSubmit": "human-input"}
 
 
 def stamp():
@@ -86,6 +90,17 @@ def clean_environment(workspace):
     return env
 
 
+def hook_action(event, command):
+    """Translate only the shipped hook wrapper; never interpret shell syntax."""
+    action = HOOK_ACTIONS.get(event)
+    expected = ('if [ -n "${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}" ]; then python3 '
+                '"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/taskplane/tp.py" ' + str(action)
+                + '; else echo \'{"decision":"block","reason":"Taskplane plugin root unavailable"}\'; exit 2; fi')
+    if action is None or command != expected:
+        raise ValueError(f"Unsupported hook command for {event}")
+    return action
+
+
 def proxy(config_path, index):
     """Only invoked by the host-configured hook; stdin is never manufactured."""
     config = load(config_path)
@@ -94,12 +109,20 @@ def proxy(config_path, index):
         print("Hook input exceeded capture bound", file=sys.stderr)
         return 2
     item = config["commands"][int(index)]
+    action = hook_action(item["event"], item["command"])
     event = json.loads(raw)
-    root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", ""))
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("PLUGIN_ROOT")
+    if not plugin_root:
+        print('{"decision":"block","reason":"Taskplane plugin root unavailable"}')
+        return 2
+    root = Path(plugin_root)
     before = fingerprint(root)
     started = stamp()
-    result = subprocess.run(item["command"], shell=True, executable="/bin/sh",
-                            input=raw, capture_output=True)
+    python = shutil.which("python3")
+    if python is None:
+        raise ValueError("Hook interpreter python3 unavailable")
+    argv = [python, str(root / "taskplane/tp.py"), action]
+    result = subprocess.run(argv, input=raw, capture_output=True)
     stdout = result.stdout
     probe = None
     if (config.get("probe") and item["event"] == "PreToolUse"
@@ -119,7 +142,8 @@ def proxy(config_path, index):
             pass  # Preserve original failure/unknown output, never override it.
     record = {"schema": "taskplane.claude-hook-capture/v1", "started_at": started,
               "ended_at": stamp(), "event": item["event"], "input": event,
-              "delegate_command": item["command"], "delegate_exit_code": result.returncode,
+              "delegate_command": item["command"], "delegate_argv": argv,
+              "delegate_exit_code": result.returncode,
               "delegate_stdout": result.stdout.decode(errors="replace"),
               "delegate_stderr": result.stderr.decode(errors="replace"),
               "host_stdout": stdout.decode(errors="replace"), "capability_fixture": probe,
@@ -153,6 +177,7 @@ def stage_plugin(candidate, folder, capture, probe):
             for hook in group["hooks"]:
                 if hook.get("type") != "command" or not isinstance(hook.get("command"), str):
                     raise ValueError("Instrumentation supports command hooks only")
+                hook_action(event, hook["command"])
                 index = len(config["commands"])
                 config["commands"].append({"event": event, "command": hook["command"]})
                 hook["command"] = shlex.join([sys.executable, str(harness_copy), "--hook-proxy", str(config_path), str(index)])

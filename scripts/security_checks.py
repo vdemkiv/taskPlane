@@ -58,7 +58,8 @@ def main() -> int:
                     continue
                 result = subprocess.run([tool, *command[1:]], cwd=ROOT, capture_output=True, text=True, timeout=600)
                 checks.append({'name':command[0], 'status':'pass' if result.returncode == 0 else 'fail',
-                               'exit_code':result.returncode,'details':result.stderr[-2000:]})
+                               'exit_code':result.returncode,'details':result.stderr[-2000:],
+                               'stdout':result.stdout[-20000:]})
     print(json.dumps({'checks':checks,'external_scanners':'requested' if args.scanners else 'not run'},indent=2))
     return 0 if all(check['status'] == 'pass' for check in checks) else 1
 

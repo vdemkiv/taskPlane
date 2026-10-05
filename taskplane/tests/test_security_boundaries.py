@@ -46,3 +46,20 @@ def test_all_ci_checkouts_drop_credentials():
     checkouts = [i for i,line in enumerate(source) if 'uses: actions/checkout@' in line]
     assert checkouts
     assert all('persist-credentials: false' in source[i+1] for i in checkouts)
+
+
+def test_scanner_report_includes_findings_written_to_stdout(monkeypatch, capsys):
+    import subprocess
+    from scripts import security_checks
+
+    monkeypatch.setattr(security_checks.sys, 'argv', ['security_checks.py', '--scanners'])
+    monkeypatch.setattr(security_checks, 'offline', lambda root: [])
+    monkeypatch.setattr(security_checks.shutil, 'which', lambda tool: tool)
+    monkeypatch.setattr(security_checks.subprocess, 'run', lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 1, 'unsafe subprocess finding', 'scanner startup'))
+    assert security_checks.main() == 1
+    report = json.loads(capsys.readouterr().out)
+    scanners = report['checks'][1:]
+    assert scanners
+    assert all(check['stdout'] == 'unsafe subprocess finding' for check in scanners)
+    assert all(check['details'] == 'scanner startup' for check in scanners)

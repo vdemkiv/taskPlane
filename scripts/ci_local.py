@@ -29,7 +29,7 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
                 "test_windows_interpreter_search_respects_current_directory_policy",
                 "test_valid_interpreter_identity_uses_execution_cwd")))
             or (filename == "test_native_worker_dispatch.py"
-                and name == "test_claude_start_stop_contract_and_child_control_refusal")
+                and name.partition("[")[0] == "test_claude_start_stop_contract_and_child_control_refusal")
             or (filename == "test_workflow_local.py"
                 and name.startswith("test_extracted_packages_recover_displaced_state_through_declared_hooks["))):
         return "portability"
