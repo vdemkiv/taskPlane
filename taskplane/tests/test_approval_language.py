@@ -57,21 +57,29 @@ def test_native_decisions_do_not_erase_qualification(text):
     assert local.choice(text) is None
 
 
-@pytest.mark.parametrize('bad,reason', [
+@pytest.mark.parametrize('bad,category', [
     ('grammar', 'decision_grammar'), ('provenance', 'decision_provenance'),
     ('binding', 'decision_binding'), ('chronology', 'decision_chronology'),
 ])
-def test_decision_failures_identify_the_failed_contract(tmp_path, bad, reason):
+def test_decision_failures_identify_the_failed_contract(tmp_path, bad, category):
     c, state = setup(tmp_path); state = submit(c, state)
     response = decision(state, text='Approve as is')
     if bad == 'grammar': response['excerpt'] += ' if tests pass'
     elif bad == 'provenance': response['source']['actor'] = 'assistant'
     elif bad == 'binding': response['binding']['root'] = 'other'
     else: response['presentation']['at'] = response['source']['observed_at']
+    original_response = deepcopy(response)
     before = c._path().read_bytes()
     with pytest.raises(w.Refusal) as refused:
         decide(c, state, response)
-    assert refused.value.reason == reason
+    assert refused.value.reason == 'invalid_evidence'
+    assert refused.value.result() == {
+        'status': 'blocked', 'reason': 'invalid_evidence',
+        'category': category, 'detail': refused.value.detail,
+    }
+    assert str(refused.value) == refused.value.detail
+    assert refused.value.detail.startswith(category + ': ')
+    assert response == original_response
     assert c._path().read_bytes() == before
 
 

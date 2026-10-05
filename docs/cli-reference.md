@@ -475,8 +475,11 @@ negative requirements in its explanation. The full actual excerpt is retained
 (up to 4096 characters); do not reduce “Approve as is” to “Approve” or drop a
 condition. A named phase must match the bound visit. Conditional or mixed positive
 decisions and quoted examples require clarification in ordinary language.
-`decision_grammar`, `decision_provenance`, `decision_binding`, and
-`decision_chronology` identify separate response failures. A brief approval needs presentation identity and earlier
+Response grammar, provenance, binding and chronology refusals retain the compatible
+`reason: invalid_evidence`. Their full structured result adds `category` with
+`decision_grammar`, `decision_provenance`, `decision_binding`, or
+`decision_chronology`; the readable detail begins with the same category.
+A brief approval needs presentation identity and earlier
 presentation time. If ordering is unavailable, use `checkpoint_explicit: true` and
 an actual response such as `Approve: <checkpoint ID>`; the response must itself
 name the checkpoint. Automatic, assistant/tool, timeout/cleanup, ambiguous, stale

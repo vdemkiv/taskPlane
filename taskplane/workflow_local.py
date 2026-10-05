@@ -31,6 +31,22 @@ EXCLUDED = {".git", ".taskplane", ".venv", "venv", "node_modules", "__pycache__"
             ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 
 
+class DecisionRefusal(w.Refusal):
+    """Keep the decision API's refusal reason while identifying its failed contract."""
+
+    def __init__(self, category: str, detail: str):
+        self.category = category
+        super().__init__("invalid_evidence", f"{category}: {detail}")
+
+    def result(self) -> dict[str, Any]:
+        return {**super().result(), "category": self.category}
+
+
+def _require_decision(condition: object, category: str, detail: str) -> None:
+    if not condition:
+        raise DecisionRefusal(category, detail)
+
+
 def choice(text: str) -> str | None:
     from .workflow_approval import conversational_choice
     return conversational_choice(text)
@@ -428,17 +444,17 @@ class LocalWorkflow:
         w.require(isinstance(value, dict) and value.get("schema") == "taskplane.observed-decision/v1",
                   "invalid_evidence", "Observed decision schema is missing.")
         source = value.get("source")
-        w.require(isinstance(source, dict) and source.get("kind") in {"conversation", "native_prompt"}
+        _require_decision(isinstance(source, dict) and source.get("kind") in {"conversation", "native_prompt"}
                   and source.get("conversation") == self.root and source.get("actor") == "user"
                   and source.get("automatic") is False and isinstance(source.get("reference"), str)
                   and 0 < len(source["reference"]) <= 512, "decision_provenance", "Human response provenance is incomplete.")
         event_id, excerpt, recorder = value.get("event_id"), value.get("excerpt"), value.get("recorder")
-        w.require(isinstance(event_id, str) and 0 < len(event_id) <= 512
+        _require_decision(isinstance(event_id, str) and 0 < len(event_id) <= 512
                   and isinstance(excerpt, str) and 0 < len(excerpt) <= 4096
                   and recorder in {"root_orchestrator", "native_prompt_hook"},
                   "decision_provenance", "Preserve the complete bounded human excerpt, event reference and recorder.")
         interpreted = choice(excerpt)
-        w.require(interpreted is not None and value.get("choice") == interpreted,
+        _require_decision(interpreted is not None and value.get("choice") == interpreted,
                   "decision_grammar", "The response's decision is unclear or differs from its recorded choice. Clarify the intended decision; no exact wording is required.")
         observed = timestamp(source.get("observed_at"))
         if event_id in prior:
@@ -448,10 +464,10 @@ class LocalWorkflow:
         recorded_at = (prior[event_id].get("provenance", {}).get("recorded_at")
                        if event_id in prior else None) or datetime.now(timezone.utc).isoformat()
         expected = prior[event_id]["binding"] if event_id in prior else expected
-        w.require(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
+        _require_decision(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
                   "decision_binding", "Observed decision has a stale or foreign checkpoint binding.")
         named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
-        w.require(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
+        _require_decision(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
                   "decision_binding", "The response names a different checkpoint.")
         from .workflow_approval import decision_phase
         named_phase = decision_phase(excerpt)
@@ -461,25 +477,25 @@ class LocalWorkflow:
         stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
         legacy_replay = event_id in prior and not prior[event_id].get("provenance", {}).get("recorded_at")
         if not legacy_replay:
-            w.require(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
+            _require_decision(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
                       <= timestamp(recorded_at), "decision_chronology",
                       "Decision must follow run and checkpoint submission and cannot be in the future.")
         if named_phase:
             # Resolve the named visit under the Controller's existing store lock.
             # A correct binding cannot turn 'Build approved' into Product consent.
-            w.require(stage.get("phase") == named_phase, "decision_binding",
+            _require_decision(stage.get("phase") == named_phase, "decision_binding",
                       "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         if value.get("checkpoint_explicit") is not True:
             presentation = value.get("presentation")
-            w.require(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
+            _require_decision(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
                       and isinstance(presentation.get("reference"), str) and presentation["reference"],
                       "decision_binding", "Brief approval needs the presented checkpoint and ordering evidence.")
-            w.require(timestamp(presentation.get("at")) < observed, "decision_chronology", "Response precedes presentation.")
+            _require_decision(timestamp(presentation.get("at")) < observed, "decision_chronology", "Response precedes presentation.")
             if not legacy_replay:
-                w.require(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
+                _require_decision(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
                           "decision_chronology", "Presentation precedes checkpoint submission.")
         else:
-            w.require(expected["checkpoint"] in excerpt, "decision_binding", "Explicit approval must name the checkpoint.")
+            _require_decision(expected["checkpoint"] in excerpt, "decision_binding", "Explicit approval must name the checkpoint.")
         result = {"event_id": event_id, "human": True, "automatic": False, "choice": value["choice"],
                 "binding": deepcopy(expected), "assurance": "observed", "provenance": {
                     "source": {k:source[k] for k in ("kind","reference","conversation","actor","automatic","observed_at")},
