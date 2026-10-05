@@ -15,6 +15,25 @@ from taskplane.tests.test_worker_runtime import setup, reserve
 pytestmark = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
 
 
+def attachment_peer_record(peer):
+    """Mid-turn system attachment observed in native Claude 2.1.289."""
+    reminder = '42c0fdbd542aa236'
+    prompt = f'<agent-message from="{peer["origin"]["from"]}">\n' + peer['origin']['body'] + '\n</agent-message>'
+    content = (f'<system-reminder id="{reminder}">\n'
+        + 'Another Claude session sent a message while you were working:\n' + prompt + '\n\n'
+        + observations.HANDBACK_FOOTER
+        + ' After completing your current task, decide whether/how to respond '
+        + '(reply via SendMessage to the `from=` address).\n'
+        + f'</system-reminder id="{reminder}">')
+    return dict(type='attachment', sessionId=peer['sessionId'], session_id=peer['sessionId'],
+        cwd=peer['cwd'], isSidechain=peer['isSidechain'], timestamp=peer['timestamp'], renderedRole='system',
+        attachment=dict(type='queued_command', commandMode='prompt', isMeta=peer['isMeta'],
+            source_uuid='d35fde74-36f8-4458-9eb0-e00c476c6168',
+            delivery_id='ded47894-c1d7-4f37-b707-db530629b93b',
+            reminderId=reminder, timestamp=peer['timestamp'], origin=peer['origin'], prompt=prompt),
+        rendered=[{'content': content}])
+
+
 class Interactive:
     def __init__(self, tmp_path, monkeypatch, *, count=4, scoped=False):
         self.workspace = tmp_path
@@ -133,25 +152,26 @@ class Interactive:
         flow.hook({**event, 'hook_event_name': 'PostToolUse'})
         assert workers.readiness(self.row())['status'] == 'ready'
 
-    def peer(self, body):
+    def peer(self, body, variant='user'):
         frame = observations.HANDBACK_HEADER + '\n' + '\n'.join('  ' + line for line in body.split('\n'))
-        return dict(type='user', sessionId='root', cwd=str(self.workspace), isSidechain=False, isMeta=True,
+        peer = dict(type='user', sessionId='root', cwd=str(self.workspace), isSidechain=False, isMeta=True,
             timestamp=workers.now(), promptSource='system', turnOrigin='peer',
             origin={'kind': 'peer', 'from': self.child_id, 'senderTaskId': self.child_id,
                     'name': 'taskplane:tp-lens', 'handback': True, 'body': frame},
             message={'role': 'user', 'content': 'Another Claude session sent a message:\n'
                 + f'<agent-message from="{self.child_id}">\n' + frame + '\n</agent-message>\n\n'
                 + observations.HANDBACK_FOOTER})
+        return attachment_peer_record(peer) if variant == 'attachment' else peer
 
     def redirect(self):
         note = notification_record(self.row(), self.result, observations.handback_redirect(self.child_id))
         note['sessionId'] = 'root'
         return attachment_notification_record(note)
 
-    def deliver(self, body, *, terminal=True):
+    def deliver(self, body, *, terminal=True, variant='user'):
         event = self.event('SubagentHandback', {'message': body})
         flow.hook(event)
-        peer = self.peer(body)
+        peer = self.peer(body, variant)
         self.append(peer)
         flow.hook({**event, 'hook_event_name': 'PostToolUse',
                    'tool_response': {'message': 'Report delivered to your caller.', 'success': True}})
@@ -268,13 +288,14 @@ def test_stop_history_and_failure_handback_attempts_have_bounds(tmp_path, monkey
 
 
 @pytest.mark.parametrize('ready', [False, True])
-def test_native_peer_handback_textless_stop_and_redirect_complete_exact_attempt(tmp_path, monkeypatch, ready):
+@pytest.mark.parametrize('variant', ['user', 'attachment'])
+def test_native_peer_handback_textless_stop_and_redirect_complete_exact_attempt(tmp_path, monkeypatch, ready, variant):
     host = Interactive(tmp_path, monkeypatch)
     host.launch()
     if ready:
         host.ready()
     body = 'Verified useful report.\n<&> literal entities &amp; and "quotes"\n\nFinal line.\n'
-    event, peer = host.deliver(body)
+    event, peer = host.deliver(body, variant=variant)
     row = host.row()
     assert row['state'] == ('result_pending' if ready else 'failed'), row
     assert row['terminal_status'] == ('completed' if ready else 'failed')
@@ -297,7 +318,7 @@ def test_native_peer_handback_textless_stop_and_redirect_complete_exact_attempt(
             host.accept()
         host.launch(retry_reason='Verified textless stop and native startup diagnostic; retry with full startup.')
         host.ready()
-        host.deliver('Fresh ready worker report.')
+        host.deliver('Fresh ready worker report.', variant=variant)
         host.accept()
         assert host.row()['state'] == 'accepted'
 
@@ -376,6 +397,102 @@ def test_peer_redirect_requires_every_native_proof_part(tmp_path, monkeypatch, d
     with pytest.raises(w.Refusal): host.accept()
 
 
+@pytest.mark.parametrize(('path', 'value'), [
+    (('type',), 'queue-operation'), (('type',), 'user'), (('type',), 'system'),
+    (('isSidechain',), True), (('isSidechain',), None),
+    (('renderedRole',), 'user'), (('session_id',), 'foreign-parent'),
+    (('session_id',), None), (('sessionId',), 'foreign-parent'), (('sessionId',), None),
+    (('attachment',), None), (('attachment', 'type'), 'hook_additional_context'),
+    (('attachment', 'commandMode'), 'task-notification'), (('attachment', 'isMeta'), False),
+    (('attachment', 'isMeta'), 1), (('attachment', 'timestamp'), '2000-01-01T00:00:00Z'),
+    (('attachment', 'source_uuid'), 'invalid'), (('attachment', 'source_uuid'), None),
+    (('attachment', 'delivery_id'), 'invalid'), (('attachment', 'delivery_id'), None),
+    (('attachment', 'reminderId'), '42c0fdbd542aa237'), (('attachment', 'reminderId'), None),
+    (('attachment', 'reminderId'), '42c0fdbd542aa23z'),
+    (('attachment', 'unknown_metadata'), True), (('attachment', 'prompt'), 'ordinary text'),
+    (('attachment', 'origin'), None), (('attachment', 'origin', 'kind'), 'user'),
+    (('attachment', 'origin', 'handback'), False), (('attachment', 'origin', 'handback'), 1),
+    (('attachment', 'origin', 'from'), 'foreign-child'),
+    (('attachment', 'origin', 'senderTaskId'), 'foreign-child'),
+    (('attachment', 'origin', 'body'), '  Unframed report'),
+    (('attachment', 'origin', 'extra'), True),
+    (('rendered',), None), (('rendered',), []), (('rendered',), [{'content': 'ordinary text'}]),
+])
+def test_mid_turn_peer_attachment_requires_exact_native_envelope(path, value):
+    body = 'Useful report.'
+    peer = attachment_peer_record(dict(sessionId='root', cwd='/fixture', isSidechain=False, isMeta=True,
+        timestamp='2026-10-05T12:28:04.256Z', origin=dict(kind='peer', handback=True,
+            senderTaskId='child', **{'from': 'child'}, name='taskplane:tp-lens',
+            body=observations.HANDBACK_HEADER + '\n  ' + body)))
+    assert observations._peer_handback(peer)['input_digest'] == workers.digest({'message': body})
+    target = peer
+    for key in path[:-1]: target = target[key]
+    target[path[-1]] = value
+    assert observations._peer_handback(peer) is None
+
+
+@pytest.mark.parametrize('defect', ['prefix', 'footer', 'closing_reminder', 'reply_instruction',
+    'extra_rendered', 'extra_content_metadata', 'prompt_sender', 'prompt_frame', 'rendered_frame',
+    'unindented_body', 'missing_header', 'empty_body', 'oversized_body'])
+def test_mid_turn_peer_attachment_rejects_malformed_report_and_rendering(defect):
+    body = '' if defect == 'empty_body' else 'x' * 32769 if defect == 'oversized_body' else 'Useful report.'
+    frame = observations.HANDBACK_HEADER + '\n  ' + body
+    if defect == 'unindented_body': frame = frame.replace('\n  ', '\n')
+    if defect == 'missing_header': frame = frame.replace('[Subagent hand-back]', '[Agent report]')
+    peer = attachment_peer_record(dict(sessionId='root', cwd='/fixture', isSidechain=False, isMeta=True,
+        timestamp='2026-10-05T12:28:04.256Z', origin=dict(kind='peer', handback=True,
+            senderTaskId='child', **{'from': 'child'}, name='taskplane:tp-lens', body=frame)))
+    rendered = peer['rendered'][0]
+    if defect == 'prefix': rendered['content'] = rendered['content'].replace(' while you were working', '')
+    if defect == 'footer': rendered['content'] = rendered['content'].replace(observations.HANDBACK_FOOTER, '')
+    if defect == 'closing_reminder': rendered['content'] = rendered['content'].replace(
+        '</system-reminder id="42c0fdbd542aa236">', '</system-reminder>')
+    if defect == 'reply_instruction': rendered['content'] = rendered['content'].replace('After completing', 'Before completing')
+    if defect == 'extra_rendered': peer['rendered'].append({'content': 'ordinary user text'})
+    if defect == 'extra_content_metadata': rendered['type'] = 'text'
+    if defect == 'prompt_sender': peer['attachment']['prompt'] = peer['attachment']['prompt'].replace('from="child"', 'from="other"')
+    if defect == 'prompt_frame': peer['attachment']['prompt'] += '\n'
+    if defect == 'rendered_frame': rendered['content'] = rendered['content'].replace('Useful report.', 'Forged report.')
+    assert observations._peer_handback(peer) is None
+
+
+@pytest.mark.parametrize('defect', ['wrong_body', 'missing_ack', 'missing_stop', 'foreign_peer',
+    'foreign_parent', 'wrong_name', 'old_timestamp', 'future_timestamp', 'naive_timestamp',
+    'no_redirect', 'wrong_call', 'queue_row', 'ordinary_user'])
+def test_mid_turn_delivery_preserves_bound_handback_and_completion_requirements(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    body = 'Bounded startup diagnostic.'
+    event = host.event('SubagentHandback', {'message': body})
+    flow.hook(event)
+    peer = host.peer('Changed report.' if defect == 'wrong_body' else body)
+    if defect == 'foreign_peer': peer['origin']['from'] = peer['origin']['senderTaskId'] = 'foreign-child'
+    if defect == 'foreign_parent': peer['sessionId'] = 'foreign-parent'
+    if defect == 'wrong_name': peer['origin']['name'] = 'foreign-type'
+    if defect == 'old_timestamp': peer['timestamp'] = '2000-01-01T00:00:00Z'
+    if defect == 'future_timestamp': peer['timestamp'] = '2999-01-01T00:00:00Z'
+    if defect == 'naive_timestamp': peer['timestamp'] = '2026-10-05T12:28:04'
+    peer = attachment_peer_record(peer)
+    if defect == 'queue_row': peer['type'] = 'queue-operation'
+    if defect == 'ordinary_user':
+        peer['type'] = 'user'
+        peer['message'] = {'role': 'user', 'content': peer['rendered'][0]['content']}
+    host.append(peer)
+    if defect != 'missing_ack':
+        flow.hook({**event, 'hook_event_name': 'PostToolUse',
+                   'tool_response': {'message': 'Report delivered to your caller.', 'success': True}})
+    if defect != 'missing_stop': host.stop(None)
+    if defect != 'no_redirect':
+        note = host.redirect()
+        if defect == 'wrong_call': note['attachment']['prompt'] = note['attachment']['prompt'].replace(
+            '<tool-use-id>' + host.row()['call_id'], '<tool-use-id>foreign-call')
+        host.append(note)
+    host.root_hook()
+    assert not host.row().get('terminal_status')
+    assert host.row().get('handback', {}).get('status') not in {'delivered', 'startup_failed'}
+    with pytest.raises(w.Refusal): host.accept()
+
+
 @pytest.mark.parametrize('defect', ['runtime', 'automatic', 'principal', 'root', 'binding', 'call', 'input',
     'admission_runtime', 'admission_automatic', 'admission_run', 'revoked', 'replay_response'])
 def test_handback_acknowledgment_keeps_exact_automatic_admission(tmp_path, monkeypatch, defect):
@@ -413,11 +530,12 @@ def test_handback_acknowledgment_keeps_exact_automatic_admission(tmp_path, monke
 
 @pytest.mark.parametrize('defect', ['peer_span', 'source_replaced', 'source_missing', 'source_truncated',
     'competing_peer', 'peer_projection', 'ack_runtime', 'ack_binding', 'ack_call', 'ack_removed', 'stop_runtime'])
-def test_retained_peer_delivery_is_revalidated_before_acceptance(tmp_path, monkeypatch, defect):
+@pytest.mark.parametrize('variant', ['user', 'attachment'])
+def test_retained_peer_delivery_is_revalidated_before_acceptance(tmp_path, monkeypatch, defect, variant):
     host = Interactive(tmp_path, monkeypatch)
     host.launch()
     host.ready()
-    event, peer = host.deliver('Verified useful report.')
+    event, peer = host.deliver('Verified useful report.', variant=variant)
     assert host.row()['state'] == 'result_pending'
     if defect == 'peer_span':
         raw = host.parent.read_bytes()
@@ -427,7 +545,9 @@ def test_retained_peer_delivery_is_revalidated_before_acceptance(tmp_path, monke
     if defect == 'source_missing': host.parent.unlink()
     if defect == 'source_truncated': host.parent.write_bytes(encoded({'sessionId': 'root'}))
     if defect == 'competing_peer':
-        peer['timestamp'] = workers.now(); host.append(peer)
+        peer['timestamp'] = workers.now()
+        if variant == 'attachment': peer['attachment']['timestamp'] = peer['timestamp']
+        host.append(peer)
     if defect in {'peer_projection', 'ack_runtime', 'ack_binding', 'ack_call', 'ack_removed', 'stop_runtime'}:
         state = host.controller.report()
         row = state['workers'][host.grant]
@@ -451,10 +571,11 @@ def test_retained_peer_delivery_is_revalidated_before_acceptance(tmp_path, monke
         with pytest.raises(w.Refusal): host.accept()
 
 
-def test_peer_completion_waits_for_bounded_parent_scan_and_retains_full_proof(tmp_path, monkeypatch):
+@pytest.mark.parametrize('variant', ['user', 'attachment'])
+def test_peer_completion_waits_for_bounded_parent_scan_and_retains_full_proof(tmp_path, monkeypatch, variant):
     host = Interactive(tmp_path, monkeypatch)
     host.launch()
-    host.deliver('Bounded peer report.', terminal=False)
+    host.deliver('Bounded peer report.', terminal=False, variant=variant)
     with host.parent.open('ab') as stream:
         stream.write(encoded({'type': 'progress', 'data': 'x' * 8192}) * 550)
     host.append(host.redirect())

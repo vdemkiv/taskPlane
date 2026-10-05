@@ -461,13 +461,40 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
 
 def _peer_handback(row: Mapping[str, Any]) -> dict[str, Any] | None:
     """Only the native system-peer handback frame; never queue or user text."""
-    origin, message = row.get('origin'), row.get('message')
-    if (row.get('type') != 'user' or row.get('isMeta') is not True
-            or row.get('isSidechain') is not False or row.get('promptSource') != 'system'
-            or row.get('turnOrigin') != 'peer' or not isinstance(origin, Mapping)
+    if row.get('isSidechain') is not False:
+        return None
+    envelope: Mapping[str, Any]
+    if row.get('type') == 'user':
+        message = row.get('message')
+        if (row.get('isMeta') is not True or row.get('promptSource') != 'system'
+                or row.get('turnOrigin') != 'peer' or not isinstance(message, Mapping)
+                or message.get('role') != 'user'):
+            return None
+        envelope = message
+        origin = row.get('origin')
+    elif row.get('type') == 'attachment':
+        attachment = row.get('attachment')
+        if (row.get('renderedRole') != 'system' or not isinstance(attachment, Mapping)
+                or set(attachment) != {'type', 'prompt', 'source_uuid', 'delivery_id', 'commandMode',
+                                       'origin', 'timestamp', 'isMeta', 'reminderId'}
+                or attachment.get('type') != 'queued_command' or attachment.get('commandMode') != 'prompt'
+                or attachment.get('isMeta') is not True
+                or not isinstance(row.get('sessionId'), str) or not _ID.fullmatch(row['sessionId'])
+                or row.get('session_id') != row['sessionId']
+                or not isinstance(attachment.get('timestamp'), str)
+                or attachment['timestamp'] != row.get('timestamp')
+                or any(not isinstance(attachment.get(key), str) or not _UUID.fullmatch(attachment[key])
+                       for key in ('source_uuid', 'delivery_id'))
+                or not isinstance(attachment.get('reminderId'), str)
+                or not re.fullmatch(r'[a-f0-9]{16}', attachment['reminderId'])):
+            return None
+        envelope = attachment
+        origin = attachment.get('origin')
+    else:
+        return None
+    if (not isinstance(origin, Mapping)
             or set(origin) != {'kind', 'from', 'senderTaskId', 'name', 'handback', 'body'}
-            or origin.get('kind') != 'peer' or origin.get('handback') is not True
-            or not isinstance(message, Mapping) or message.get('role') != 'user'):
+            or origin.get('kind') != 'peer' or origin.get('handback') is not True):
         return None
     child, name, framed = origin.get('from'), origin.get('name'), origin.get('body')
     if (not isinstance(child, str) or not _ID.fullmatch(child) or origin.get('senderTaskId') != child
@@ -480,10 +507,24 @@ def _peer_handback(row: Mapping[str, Any]) -> dict[str, Any] | None:
     body = '\n'.join(line[2:] for line in lines)
     if not 0 < len(body.encode('utf-8')) <= 32768:
         return None
-    content = (f'Another Claude session sent a message:\n<agent-message from="{child}">\n'
-               + framed + '\n</agent-message>\n\n' + HANDBACK_FOOTER)
-    if message.get('content') != content:
-        return None
+    prompt = f'<agent-message from="{child}">\n' + framed + '\n</agent-message>'
+    if row['type'] == 'user':
+        content = 'Another Claude session sent a message:\n' + prompt + '\n\n' + HANDBACK_FOOTER
+        if envelope.get('content') != content:
+            return None
+    else:
+        # Mid-turn handback is a system attachment, with its own exact native
+        # reminder frame. Queue operations and merely embedded report text do
+        # not establish delivery. Preserve the same projection/span proof.
+        reminder = envelope['reminderId']
+        content = (f'<system-reminder id="{reminder}">\n'
+                   + 'Another Claude session sent a message while you were working:\n'
+                   + prompt + '\n\n' + HANDBACK_FOOTER
+                   + ' After completing your current task, decide whether/how to respond '
+                   + '(reply via SendMessage to the `from=` address).\n'
+                   + f'</system-reminder id="{reminder}">')
+        if envelope['prompt'] != prompt or row.get('rendered') != [{'content': content}]:
+            return None
     return {**{key: _scalar(row.get(key)) for key in ('sessionId', 'cwd', 'isSidechain', 'timestamp')},
             'worker_id': child, 'agent_type': name, 'body_digest': digest(body),
             'input_digest': digest({'message': body}), 'record_sha256': digest(row)}
