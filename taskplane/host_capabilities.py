@@ -382,10 +382,16 @@ def unavailable_worker_observation(parent: str, worker: dict[str, Any], call_id:
 MAX_RECOVERY_BYTES = 64 * 1024 * 1024
 
 
+def supported_recovery_reader() -> bool:
+    return hasattr(os, 'O_NONBLOCK') and hasattr(os, 'O_NOFOLLOW')
+
+
 def _recovery_transcript(session: str, workspace: str) -> tuple[Path, list[dict[str, Any]]]:
     """Read a complete bounded native snapshot, without following file symlinks."""
     import stat
     from . import native_session_meter as meter, workflow as w
+    w.require(supported_recovery_reader(), 'unsupported_authority',
+              'Native recovery requires nonblocking no-follow file reads unavailable on this platform.')
     home = Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))
     paths: list[Path] = []
     count = 0
@@ -399,7 +405,7 @@ def _recovery_transcript(session: str, workspace: str) -> tuple[Path, list[dict[
     w.require(not any(p.is_symlink() for p in (path, *path.parents)),
               'invalid_evidence', 'Native recovery transcript cannot be a symlink.')
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
             w.require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_RECOVERY_BYTES,

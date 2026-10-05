@@ -40,7 +40,7 @@ def test_all_collected_tests_have_one_suite_and_short_ids(tmp_path):
     assert binding and binding <= partitions['portability']
     assert len(recovery) == 2 and recovery <= partitions['portability']
     platform_regressions = {r['nodeid'] for r in rows if any(name in r['nodeid'] for name in (
-        'test_farm_telemetry.py::', 'test_farm_workers.py::',
+        'test_farm_telemetry.py::', 'test_farm_workers.py::', 'test_unbound_worker_recovery.py::',
         'test_exact_argv_foreign_interpreter_refused_in_execution_directory',
         'test_required_binding_allows_only_exact_installed_diagnostics',
         'test_windows_interpreter_search_respects_current_directory_policy',

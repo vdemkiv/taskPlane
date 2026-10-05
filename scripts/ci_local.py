@@ -21,7 +21,7 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
     if capacity:
         return "capacity"
     if (filename in ("test_context.py", "test_context_delivery.py", "test_workspace_binding.py")
-            or filename in ("test_farm_telemetry.py", "test_farm_workers.py")
+            or filename in ("test_farm_telemetry.py", "test_farm_workers.py", "test_unbound_worker_recovery.py")
             or (filename == "test_review_remediation.py" and name.startswith((
                 "test_required_binding_allows_only_exact_installed_diagnostics",
                 "test_exact_argv_foreign_interpreter_refused_in_execution_directory",

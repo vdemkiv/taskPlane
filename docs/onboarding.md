@@ -118,6 +118,8 @@ Linux only. On Windows it refuses these operations, so Claude delivery journeys
 that require context receipts cannot complete there. CI verifies that refusal
 and the remaining Windows package surfaces; complete Claude transport and
 capacity journeys run on Linux, alongside Codex journeys on Linux and Windows.
+Codex unbound-worker recovery also requires nonblocking no-follow file reads;
+runtimes without those flags refuse recovery before opening a transcript.
 
 No live Cowork certification is claimed. Claude fixtures must use Claude-shaped
 `session_id` and `Bash.command` events and assert the selected adapter; Codex-shaped

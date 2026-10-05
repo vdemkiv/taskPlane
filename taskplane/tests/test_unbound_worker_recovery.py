@@ -8,6 +8,9 @@ import pytest
 from taskplane import flow, host_capabilities as hc, worker_runtime as wr, workflow as w
 from taskplane.tests.test_worker_runtime import setup, reserve
 
+requires_recovery_reader = pytest.mark.skipif(
+    not hc.supported_recovery_reader(), reason='Transcript interpretation requires nonblocking no-follow reads')
+
 
 def transcript_fixture(tmp_path, monkeypatch, worker=None):
     home = tmp_path.parent / (tmp_path.name + '-native-home')
@@ -52,6 +55,7 @@ def observe(worker):
     return hc.unbound_worker_observation('root', worker, 'launch', 'terminal')
 
 
+@requires_recovery_reader
 def test_historical_native_observation_does_not_invent_admission(tmp_path, monkeypatch):
     worker, root, child, paths = transcript_fixture(tmp_path, monkeypatch)
     write_fixture(root, child, paths)
@@ -64,6 +68,7 @@ def test_historical_native_observation_does_not_invent_admission(tmp_path, monke
     assert 'call_id' not in worker and 'worker_id' not in worker
 
 
+@requires_recovery_reader
 @pytest.mark.parametrize('defect', [
     'root_identity', 'root_workspace', 'missing_root', 'duplicate_root', 'root_symlink', 'oversized',
     'incomplete', 'bad_json', 'list_record', 'null_payload', 'duplicate_launch', 'duplicate_result',
@@ -151,6 +156,7 @@ def test_unbound_observation_refuses_ambiguous_or_malformed_proof(tmp_path, monk
     with pytest.raises(w.Refusal): observe(worker)
 
 
+@requires_recovery_reader
 def test_recovery_releases_only_failed_reservation_and_allows_fresh_attempt(tmp_path, monkeypatch, capsys):
     c, s = setup(tmp_path, count=2)
     prepared = reserve(c, s)
@@ -188,6 +194,7 @@ def test_recovery_releases_only_failed_reservation_and_allows_fresh_attempt(tmp_
     assert fresh['state'] == 'prepared' and fresh['worker_id'] is None
 
 
+@requires_recovery_reader
 def test_revocation_can_record_failure_during_drift_but_cannot_bless_source_changes(tmp_path, monkeypatch):
     c, s = setup(tmp_path, count=1)
     prepared = reserve(c, s)
@@ -231,3 +238,14 @@ def test_recovery_refusal_preserves_controller_bytes(tmp_path, monkeypatch, defe
                  request={'request_reference': '' if defect == 'reference' else 'fixture/user-repair',
                           'launch_call_id': [] if defect == 'call' else 'launch', 'terminal_call_id': 'terminal'})
     assert control_path.read_bytes() == before
+
+
+@pytest.mark.parametrize('missing_flag', ['O_NONBLOCK', 'O_NOFOLLOW'])
+def test_unavailable_recovery_reader_refuses_before_file_access(tmp_path, monkeypatch, missing_flag):
+    worker, root, child, paths = transcript_fixture(tmp_path, monkeypatch)
+    write_fixture(root, child, paths)
+    monkeypatch.delattr(hc.os, missing_flag, raising=False)
+    monkeypatch.setattr(hc.os, 'open', lambda *args, **kwargs: pytest.fail('Unsupported recovery opened a file'))
+    with pytest.raises(w.Refusal, match='nonblocking no-follow') as error:
+        observe(worker)
+    assert error.value.reason == 'unsupported_authority'
