@@ -22,6 +22,7 @@ from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_re
 from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide, present
 from taskplane.tests.test_workflow_autonomy import exercise_autonomous, exercise_nonconsent_cli
 from taskplane.tests.test_native_workflow_cli import exercise_correction_cli
+from taskplane.tests.test_native_workflow_cli import CLAUDE_TRANSPORT_SUPPORTED, exercise_unsupported_claude_context
 from taskplane.tests import test_harness_review_regressions as review_regressions
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,6 +60,7 @@ def workflow_candidate_checks(root, workspace, host):
                               capture_output=True, text=True).stdout.strip()
 
     git('init')
+    git('config', 'core.autocrlf', 'false')
     git('config', 'user.email', 'fixture@example.invalid')
     git('config', 'user.name', 'Workflow package fixture')
     for name, body in {'main.py': 'answer = 41\n', 'dependency.py': 'limit = 42\n',
@@ -319,10 +321,18 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
         assert 'hooks/hooks.json' in archive.namelist()
         archive.extractall(extracted)
     exercise_workflow_candidate(extracted, tmp_path/(host+'-workflow-builder'), host)
-    # The ordinary shipped profile must work without the protected fixture.
-    exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
-    exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),
-                        'claude' if host=='claude' else 'codex', root=extracted)
+    # Successful Claude context transport requires the native POSIX adapter.
+    # Windows still verifies the extracted package, refusal and legacy surfaces.
+    if host != 'claude' or CLAUDE_TRANSPORT_SUPPORTED:
+        exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
+        exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),
+                            'claude' if host=='claude' else 'codex', root=extracted)
+        exercise_state_repairs((tmp_path/(host+'-state-repairs')).resolve(),
+                               'claude' if host=='claude' else 'codex', root=extracted)
+        exercise_correction_cli((tmp_path/(host+'-review-correction')).resolve(),
+                                'claude' if host=='claude' else 'codex', root=extracted)
+    else:
+        exercise_unsupported_claude_context((tmp_path/(host+'-unsupported')).resolve(), root=extracted)
     for entry in ('product','design','engineering'):
         exercise_harness_entry((tmp_path/(host+'-entry-'+entry)).resolve(),
                                'claude' if host=='claude' else 'codex',entry,root=extracted)
@@ -334,10 +344,6 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
                             'claude' if host=='claude' else 'codex', root=extracted)
     exercise_counter_freshness((tmp_path/(host+'-counter-freshness')).resolve(),
                                'claude' if host=='claude' else 'codex', root=extracted)
-    exercise_state_repairs((tmp_path/(host+'-state-repairs')).resolve(),
-                           'claude' if host=='claude' else 'codex', root=extracted)
-    exercise_correction_cli((tmp_path/(host+'-review-correction')).resolve(),
-                            'claude' if host=='claude' else 'codex', root=extracted)
     # The child interpreter sees only the extracted runtime and the standard library.
     # Test-only adapter code is embedded here, never exported by either package.
     helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
@@ -587,6 +593,7 @@ def test_claude_live_completion_requires_native_identity():
     assert capture.native_completion([valid], 'root', None, None) == []
 
 
+@pytest.mark.skipif(not CLAUDE_TRANSPORT_SUPPORTED, reason='Requires the POSIX Claude invocation parser')
 def test_live_launcher_uses_identity_parser_canonical_interpreter(tmp_path, monkeypatch):
     from scripts import verify_claude_workers as capture
     from taskplane import claude_worker_invocation as invocation

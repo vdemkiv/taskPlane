@@ -18,9 +18,12 @@ from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_local import decision, check_historical_finish_preserves_active
 
 ROOT=Path(__file__).resolve().parents[2]
+CLAUDE_TRANSPORT_SUPPORTED = os.name == 'posix' and sys.platform in {'linux', 'darwin'}
 
 
 def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
+    if host == 'claude' and args[0] in {'context', 'submit'} and code == 0 and not CLAUDE_TRANSPORT_SUPPORTED:
+        pytest.skip('Successful Claude context transport requires macOS or Linux; refusal is tested separately')
     workspace, root = Path(workspace).resolve(), Path(root).resolve()
     if args[0] == 'submit' and code == 0:
         # A legitimate fixture producer refreshes its receipt after corrections.
@@ -86,6 +89,25 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
                 tool_response={'exit_code':result.returncode})
     assert post.get('hookSpecificOutput', {}).get('permissionDecision') != 'deny', post
     return json.loads(result.stdout)
+
+
+def exercise_unsupported_claude_context(workspace, root=ROOT):
+    """A real unsupported host must refuse context, never forge a receipt."""
+    create(workspace)
+    state = cli(workspace, 'claude', 'start', '--scope', '.taskplane/scope.json',
+                '--request-reference', 'fixture/unsupported-transport', root=root)['workflow']
+    refused = cli(workspace, 'claude', 'context', '--run', state['run'], root=root, code=2)
+    assert refused['hook_refusal']
+    specific = refused['hookSpecificOutput']
+    assert specific['permissionDecision'] == 'deny' and 'updatedInput' not in specific
+    assert 'unsupported' in specific['permissionDecisionReason'] or 'unavailable' in specific['permissionDecisionReason']
+    current = cli(workspace, 'claude', 'report', root=root)['workflow']
+    assert current['revision'] == state['revision'] and current['decisions'] == state['decisions']
+
+
+@pytest.mark.skipif(CLAUDE_TRANSPORT_SUPPORTED, reason='Exercises a host without Claude invocation transport')
+def test_unsupported_claude_context_refuses_through_declared_hooks(tmp_path):
+    exercise_unsupported_claude_context(tmp_path)
 
 
 def handoff(workspace,host,root=ROOT):

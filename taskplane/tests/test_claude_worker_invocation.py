@@ -26,6 +26,8 @@ def clocks(monkeypatch):
 
 
 def words(action="worker", *, workspace="/project with spaces", run="run", task="task", grant="grant"):
+    if inv.os.name != 'posix' or inv.sys.platform not in {'linux', 'darwin'}:
+        pytest.skip('Successful Claude invocation transport requires macOS or Linux')
     python, script = inv._runtime(None, None)
     if action == "worker":
         return [python, script, "flow", "worker", "--operation", "claim", "--run", run,

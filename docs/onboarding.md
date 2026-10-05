@@ -113,6 +113,11 @@ Claude transcript-based worker identity also requires no-follow reads. Runtimes
 without them report the reader as unsupported and cannot admit a worker from
 that observation. Read-only installed version and help commands remain available
 to diagnose these capability limits before workspace binding.
+Claude's hook-to-CLI claim and context transport currently supports macOS and
+Linux only. On Windows it refuses these operations, so Claude delivery journeys
+that require context receipts cannot complete there. CI verifies that refusal
+and the remaining Windows package surfaces; complete Claude transport and
+capacity journeys run on Linux, alongside Codex journeys on Linux and Windows.
 
 No live Cowork certification is claimed. Claude fixtures must use Claude-shaped
 `session_id` and `Bash.command` events and assert the selected adapter; Codex-shaped

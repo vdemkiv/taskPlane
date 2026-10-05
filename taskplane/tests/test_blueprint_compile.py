@@ -34,7 +34,8 @@ def check_error(code, action):
 
 
 def git(root, *args):
-    return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.PIPE).decode().strip()
+    return subprocess.check_output(["git", "-c", "core.autocrlf=false", "-C", str(root), *args],
+                                   stderr=subprocess.PIPE).decode().strip()
 
 
 def commit(root, message):

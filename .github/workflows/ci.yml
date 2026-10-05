@@ -97,7 +97,8 @@ jobs:
       matrix:
         include:
           - {os: ubuntu-latest, host: codex}
-          - {os: windows-latest, host: claude}
+          - {os: ubuntu-latest, host: claude}
+          - {os: windows-latest, host: codex}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
