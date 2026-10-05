@@ -135,16 +135,22 @@ python3 /absolute/test/claude/scripts/verify_claude_interactive.py --prepare --w
   --plugin-dir /absolute/test/claude --output /absolute/test/interactive-prepared.json
 # Launch in a real terminal with the fixture directory returned above:
 python3 /absolute/test/claude/scripts/verify_claude_interactive.py --launch --fixture FIXTURE
+# After the pending checkpoint is sealed, close the terminal normally, then:
+python3 /absolute/test/claude/scripts/verify_claude_interactive.py --resume --fixture FIXTURE
+# Close normally after the read-only continuation check, then inspect:
 python3 /absolute/test/claude/scripts/verify_claude_interactive.py --inspect \
   --fixture FIXTURE --output /absolute/test/interactive-results.json
 ```
 
-The ten-worker scenario also requires actual tool discovery, an owned-worker
-message and the native decision-label dialog. Its UI fixture answer is never
+The ten-worker scenario also requires actual tool discovery, read-only worker
+listing, an owned-worker message and the native decision-label dialog. Its UI fixture answer is never
 treated as human checkpoint consent. The checkpoint stays pending. Deterministic
 tests separately cover delayed delivery, unsafe control targets, negative decision
 wording, large retained states, deduplicated bodies and native-layout continuation.
-Report those fixture checks separately from actual native execution. For a real
-resume, follow the exact request and same-session sequence in the
+The harness resumes the original native session, reads its original run and a
+registered result, and verifies that its checkpoint and accepted results remain
+unchanged. This does not transfer ownership to a new root or fabricate human
+consent. Report fixture checks separately from actual native execution. For
+general continuation, follow the exact request and same-session sequence in the
 [CLI reference](cli-reference.md#native-session-continuation); changing sessions
 does not itself transfer ownership or acceptance.

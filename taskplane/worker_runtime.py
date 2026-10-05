@@ -30,8 +30,9 @@ STATUS = {"list_agents", "collaboration.list_agents", "functions.collaboration.l
 WAIT = {"wait_agent", "collaboration.wait_agent", "functions.collaboration.wait_agent", "collaborationwait_agent"}
 HANDBACK = {"SubagentHandback"}
 CLAUDE_CONTROL = {"SendMessage", "TaskStop"}
+CLAUDE_STATUS = {"ListAgents"}
 DISCOVERY = {"ToolSearch"}
-TOOLS = SPAWN | FOLLOW | MESSAGE | INTERRUPT | STATUS | WAIT | HANDBACK | CLAUDE_CONTROL | DISCOVERY
+TOOLS = SPAWN | FOLLOW | MESSAGE | INTERRUPT | STATUS | WAIT | HANDBACK | CLAUDE_CONTROL | CLAUDE_STATUS | DISCOVERY
 LIVE = {"prepared", "launch_pending", "bootstrapping", "running", "cancel_requested", "unknown"}
 STATES = LIVE | {"result_pending", "accepted", "failed", "interrupted"}
 MARKER = re.compile(r"(?m)^Taskplane grant: ([0-9a-f]{32})$")
@@ -399,15 +400,15 @@ def worker_session(workspace: Path, state: dict[str, Any], row: dict[str, Any]) 
 
 
 def admit_discovery(args: dict[str, Any]) -> None:
-    """Only select the two supported Claude recovery tools; selection is no grant."""
+    """Only select supported Claude recovery tools; selection is no grant."""
     query = args.get('query')
     w.require(set(args) <= {'query', 'max_results'} and isinstance(query, str)
-              and re.fullmatch(r'select:(?:SendMessage|TaskStop)(?:,(?:SendMessage|TaskStop))?', query),
-              'scope_violation', 'Claude discovery supports only exact SendMessage/TaskStop selection.')
+              and re.fullmatch(r'select:(?:SendMessage|TaskStop|ListAgents)(?:,(?:SendMessage|TaskStop|ListAgents)){0,2}', query),
+              'scope_violation', 'Claude discovery supports only exact SendMessage/TaskStop/ListAgents selection.')
     assert isinstance(query, str)
     names = query.removeprefix('select:').split(',')
     w.require(len(set(names)) == len(names) and ('max_results' not in args
-              or type(args['max_results']) is int and len(names) <= args['max_results'] <= 2),
+              or type(args['max_results']) is int and len(names) <= args['max_results'] <= 3),
               'scope_violation', 'Claude discovery must use a bounded result count without duplicate tools.')
 
 
@@ -488,6 +489,20 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
     w.require(isinstance(args, dict), "scope_violation", "Invalid native worker arguments.")
     if tool in DISCOVERY:
         admit_discovery(args)
+        return True
+    if tool in CLAUDE_STATUS:
+        from .host_capabilities import runtime_identity
+        # Claude 2.1.290's observed empty inventory call. Its output is display
+        # only: never route these labels through Codex terminal-poll inference.
+        observed = event.get('taskplane_observed_binding', {})
+        call = event.get('tool_use_id') or event.get('call_id')
+        w.require(not args and event.get('host') == 'claude'
+                  and event.get('taskplane_automatic_hook') is True
+                  and observed.get('profile') == 'native_workflow'
+                  and observed.get('root') == observed.get('principal') == state['root']
+                  and event.get('taskplane_runtime_identity') == runtime_identity()
+                  and isinstance(call, str) and 0 < len(call) <= 512,
+                  'scope_violation', 'Claude inventory requires empty input and exact automatic root/runtime proof.')
         return True
     if tool in STATUS | WAIT:
         w.require(set(args) <= ({"path_prefix"} if tool in STATUS else {"timeout_ms"}),

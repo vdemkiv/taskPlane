@@ -54,6 +54,7 @@ MAX_LINE_BYTES = 256 * 1024
 MAX_RECORDS = 16384
 MAX_CANDIDATES = 64
 MAX_STATE_BYTES = 512 * 1024
+NOTIFICATION_VERSION = 2
 _ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -418,8 +419,15 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
     """
     origin = {'kind': 'task-notification', 'producer': 'session-task'}
     if row.get('type') == 'user':
+        # Claude 2.1.290 can persist the delivered system event as a
+        # transcript-only user row without turnOrigin. Require its complete
+        # observed queue framing; ordinary user XML and enqueue records fail.
+        transcript_only = ('turnOrigin' not in row
+            and row.get('queueSkipAttachments') is True and row.get('queueTranscriptOnly') is True
+            and all(isinstance(row.get(key), str) and _UUID.fullmatch(row[key])
+                    for key in ('uuid', 'promptId')))
         if (row.get('origin') != origin or row.get('promptSource') != 'system'
-                or row.get('turnOrigin') != 'task_notification'):
+                or not (row.get('turnOrigin') == 'task_notification' or transcript_only)):
             return None
         message = row.get('message')
         content = message.get('content') if isinstance(message, Mapping) and message.get('role') == 'user' else None
@@ -450,7 +458,8 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
     if match is None:
         return None
     child, call, output, status, body = match.groups()
-    if not _ID.fullmatch(child) or not 0 < len(call) <= 512 or not 0 < len(output) <= 4096 or not body:
+    if (not _ID.fullmatch(child) or not 0 < len(call) <= 512 or not 0 < len(output) <= 4096
+            or not body or '<task-notification>' in body or '</task-notification>' in body):
         return None
     return {**{key: _scalar(row.get(key)) for key in ('sessionId', 'cwd', 'isSidechain', 'timestamp')},
             'worker_id': child, 'call_id': call, 'output_file_sha256': digest(output), 'status': status,
@@ -762,12 +771,20 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
         if cursor is None:
             state = {"schema": "taskplane.claude-transcript-cursor/v1", "source_sha256": source["sha256"],
                      "offset": 0, "watermark": 0, "size": source["selected_size"], "turn": 0,
-                     "entries": {}, "conflict": None}
+                     "entries": {}, "conflict": None, "notification_version": NOTIFICATION_VERSION}
         else:
             if (not _valid_seal(cursor, "taskplane.claude-transcript-cursor/v1")
                     or cursor.get("source_sha256") != source["sha256"]):
                 raise ValueError("Corrupt cursor or changed selected source")
             state = deepcopy(dict(cursor))
+            # Older parsers may have scanned past a supported transcript-only
+            # event. Re-scan once, preserving and revalidating pinned evidence.
+            if 'notification_version' not in state:
+                state['notification_version'] = NOTIFICATION_VERSION
+                state['offset'] = 0
+            elif (type(state['notification_version']) is not int
+                    or state['notification_version'] != NOTIFICATION_VERSION):
+                raise ValueError('Unsupported native notification cursor version')
             # Older cursors predate completion observations. Re-scan from the
             # beginning, preserving and revalidating all retained launch spans.
             if not isinstance(state.get('entries'), dict):

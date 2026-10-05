@@ -1285,7 +1285,7 @@ class Controller:
         tool = event.get("tool_name") or event.get("tool")
         args = event.get("tool_input", {})
         w.require(isinstance(args, dict), "scope_violation", "Unrecognized tool arguments.")
-        if tool in workers.CLAUDE_CONTROL | workers.DISCOVERY:
+        if tool in workers.CLAUDE_CONTROL | workers.CLAUDE_STATUS | workers.DISCOVERY:
             w.require(self.adapter.profile == 'native_workflow' and self.adapter.name == 'claude',
                       'unsupported_authority', 'Claude worker controls require the Claude native workflow adapter.')
         if self.adapter.profile == "native_workflow" and tool in {"Bash", "exec_command"}:

@@ -98,7 +98,9 @@ def ten_worker_prompt(plugin: Path, workspace: Path) -> str:
     request = request.replace("Two is this", "Ten is this")
     control = """
 While fresh A is active and ready, discover actual tools using
-ToolSearch with query 'select:SendMessage,TaskStop', max_results:2. Send A one
+ToolSearch with query 'select:SendMessage,TaskStop,ListAgents', max_results:3.
+Call the exposed read-only ListAgents once with its exact empty input. Its status
+labels are observations, not substitutes for Taskplane's completion proof. Send A one
 plain-text scoped instruction through SendMessage using its actual native worker
 ID: 'Please include the exact reproduced result in your assigned report.'
 Use the actually exposed schema; do not guess recipients. Discovery of TaskStop
@@ -190,7 +192,7 @@ def launch(folder: Path, claude: str) -> None:
     # Handback is exposed by this host in auto mode (the incident's mode).
     # Normal scoped permissions remain active; no bypass or feature flag override.
     rules = [r for r in base.live_permissions(plugin, workspace) if not r.startswith('Write(')]
-    rules += ['Agent', 'SubagentHandback', 'ToolSearch', 'SendMessage', 'TaskStop', 'AskUserQuestion']
+    rules += ['Agent', 'SubagentHandback', 'ToolSearch', 'SendMessage', 'TaskStop', 'ListAgents', 'AskUserQuestion']
     if m.get('worker_count') == 10:
         rules += [f"Bash({shlex.join(['python3', '-c', row[4]])})" for row in base.EXTRA_REVIEWS]
     argv = [claude, '--ax-screen-reader', '--plugin-dir', str(plugin), '--session-id', m['session_id'],
@@ -203,6 +205,62 @@ def launch(folder: Path, claude: str) -> None:
     os.execvpe(claude, argv, base.clean_environment(workspace))
 
 
+def native_state(manifest: dict) -> dict:
+    states = []
+    for path in (Path(manifest['workspace']) / '.taskplane').glob('workflow-*.json'):
+        if path.name.endswith('.initialized.json'):
+            continue
+        db = base.load(path)
+        if db.get('root') == manifest['session_id']:
+            states.extend(db.get('runs', {}).values())
+    if len(states) != 1:
+        raise ValueError('Expected one matching native root run')
+    return states[0]
+
+
+def continuity(state: dict) -> dict:
+    """Only durable workflow identity and decisions; automatic reads may add telemetry."""
+    stage = state['visits'][state['index']]
+    return {key: state.get(key) for key in ('root', 'run', 'revision', 'index', 'finished')} | {
+        'visit': stage['id'], 'phase': stage['phase'], 'decision': stage['decision'],
+        'packet': base.digest(json.dumps(stage.get('packet'), sort_keys=True).encode()),
+        'decisions': base.digest(json.dumps(state.get('decisions'), sort_keys=True).encode()),
+        'task_results': base.digest(json.dumps(state.get('task_results'), sort_keys=True).encode())}
+
+
+def resume(folder: Path, claude: str) -> None:
+    manifest = validate(folder)
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise ValueError('Native resume requires a real terminal')
+    if (folder / 'resume.json').exists():
+        raise ValueError('Resume evidence already exists; do not overwrite an earlier attempt')
+    state = native_state(manifest)
+    original = base.load(folder / 'launch.json')
+    argv = list(original['argv'])
+    index = argv.index('--session-id')
+    if argv[index + 1] != manifest['session_id'] or original['session_id'] != manifest['session_id']:
+        raise ValueError('Original launch session mismatch')
+    argv[0], argv[index] = claude, '--resume'
+    runtime = shlex.join([str(Path(sys.executable).resolve()), str(Path(manifest['plugin']) / 'taskplane/tp.py')])
+    report = f"{runtime} flow report --workspace {manifest['workspace']} --run {state['run']}"
+    argv[-1] = f"""Continue this original native session for a read-only integration check.
+The original root is {manifest['session_id']} and run is {state['run']}.
+Execute exactly: {report}
+From its actual returned command summary, choose a registered result reference
+and read it using the same launcher and workspace/run with flow inspect --kind
+result --reference ACTUAL_SHA256. Follow any returned page cursor needed to read
+that result. Report the original run, phase and decision, then stop.
+Do not start or replace a run, claim another root, write source/reports, approve
+or advance a checkpoint, or invent a human decision/resume envelope. This checks
+native --resume continuity, not cross-session authority transfer. If any required
+read is refused, preserve that failure and stop."""
+    base.save(folder / 'resume.json', {'started_at': base.stamp(), 'argv': argv,
+              'mode': 'interactive-tty', 'session_id': manifest['session_id'],
+              'before': continuity(state), 'report_command': report})
+    os.chdir(manifest['workspace'])
+    os.execvpe(claude, argv, base.clean_environment(Path(manifest['workspace'])))
+
+
 def inspect(folder: Path, output: Path) -> None:
     m = validate(folder)
     session, workspace = m['session_id'], Path(m['workspace'])
@@ -213,16 +271,7 @@ def inspect(folder: Path, output: Path) -> None:
     selected = [c for c in captures if not c['input'].get('agent_id')
                 or c['input']['agent_id'] in started]
     native, _ = base.transcript_evidence(selected, session)
-    states = []
-    for p in (workspace / '.taskplane').glob('workflow-*.json'):
-        if p.name.endswith('.initialized.json'):
-            continue
-        db = base.load(p)
-        if db.get('root') == session:
-            states.extend(db.get('runs', {}).values())
-    if len(states) != 1:
-        raise ValueError('Expected one matching native root run')
-    state = states[0]
+    state = native_state(m)
     rows = list(state.get('workers', {}).values())
     successful = [r for r in rows if r.get('state') == 'accepted']
     count = m.get('worker_count', 2)
@@ -267,12 +316,35 @@ def inspect(folder: Path, output: Path) -> None:
         stage = state['visits'][state['index']]
         checks.extend([
             base.check('native control discovery exercised', observed_tool('ToolSearch'), 'Automatic admitted pre/post observations'),
+            base.check('native read-only worker listing exercised', observed_tool('ListAgents'), 'Listing alone cannot join a worker'),
             base.check('owned worker message exercised', observed_tool('SendMessage'), 'Actual native control, not binary-schema inference'),
             base.check('native decision label dialog exercised', observed_tool('AskUserQuestion'),
                        'UI fixture response only; no checkpoint consent is inferred'),
             base.check('ten-result Engineering checkpoint sealed', stage['phase'] == 'engineering'
                        and stage['decision'] == 'awaiting_human_approval' and bool(stage.get('packet'))
                        and expected <= set(state.get('task_results', {})), stage['decision']),
+        ])
+        resumed = base.load(folder / 'resume.json') if (folder / 'resume.json').exists() else {}
+        after_resume = [c for c in captures if resumed and c['started_at'] >= resumed['started_at']]
+        resumed_start = any(c['event'] == 'SessionStart'
+                            and c['input'].get('session_id') == session
+                            and c['input'].get('source') == 'resume' for c in after_resume)
+        def resumed_read(predicate):
+            pre = [c for c in after_resume if c['event'] == 'PreToolUse'
+                   and c['input'].get('tool_name') == 'Bash' and base.admitted(c)
+                   and predicate(c['input'].get('tool_input', {}).get('command', ''))]
+            return any(p['input'].get('tool_use_id') and any(
+                c['event'] == 'PostToolUse' and c['input'].get('tool_use_id') == p['input']['tool_use_id']
+                and not base.response_failed(c['input']) for c in after_resume) for p in pre)
+        checks.extend([
+            base.check('native same-session resume preserved workflow', resumed_start
+                       and resumed.get('before') == continuity(state)
+                       and resumed_read(lambda command: command == resumed.get('report_command')),
+                       'Actual SessionStart resume plus successful original-run report; no approval inferred'),
+            base.check('populated-state registered result read', resumed_read(
+                lambda command: ' flow inspect ' in command and '--kind result' in command
+                and '--reference ' in command and f"--run {state['run']}" in command),
+                       'Actual successful registered-result read after native resume'),
         ])
     report = {'schema': 'taskplane.claude-interactive-verification/v1', 'observed_at': base.stamp(),
               'status': 'pass' if all(c['status'] == 'pass' for c in checks) else 'fail',
@@ -291,6 +363,7 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--prepare', action='store_true')
     mode.add_argument('--launch', action='store_true')
+    mode.add_argument('--resume', action='store_true')
     mode.add_argument('--inspect', action='store_true')
     parser.add_argument('--plugin-dir', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--fixture', type=Path)
@@ -302,13 +375,15 @@ def main() -> None:
     if (args.prepare or args.inspect) and args.output is None:
         parser.error('--prepare and --inspect require --output')
     if not args.prepare and args.fixture is None:
-        parser.error('--launch and --inspect require --fixture')
-    if args.launch and not args.claude:
+        parser.error('--launch, --resume and --inspect require --fixture')
+    if (args.launch or args.resume) and not args.claude:
         parser.error('Claude executable unavailable; specify --claude')
     if args.prepare:
         prepare(args.plugin_dir.resolve(), args.output, args.worker_count)
     elif args.launch:
         launch(args.fixture.resolve(), args.claude)
+    elif args.resume:
+        resume(args.fixture.resolve(), args.claude)
     else:
         inspect(args.fixture.resolve(), args.output)
 

@@ -9,7 +9,10 @@ import pytest
 from taskplane import claude_worker_invocation as invocation
 from taskplane import claude_worker_observations as observations
 from taskplane import flow, workflow as w, workflow_host as h, worker_runtime as workers
-from taskplane.tests.test_claude_worker_lifecycle import encoded, notification_record, attachment_notification_record
+from taskplane.host_capabilities import runtime_identity
+from taskplane.tests.test_claude_worker_lifecycle import (
+    encoded, notification_record, attachment_notification_record, transcript_notification_record,
+)
 from taskplane.tests.test_worker_runtime import setup, reserve
 
 pytestmark = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
@@ -357,6 +360,27 @@ def test_delayed_parent_delivery_joins_accepts_and_replays_exact_attempt(tmp_pat
     assert {key: value for key, value in host.row()['handback'].items() if key != 'observed_at'} == proof
 
 
+def test_transcript_only_redirect_joins_exact_handback_and_accepts_once(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    body = 'Exact worker report, with <XML> and & literal entity text.'
+    host.deliver(body, terminal=False, delayed=True)
+    note = notification_record(host.row(), host.result, observations.handback_redirect(host.child_id))
+    note['sessionId'] = 'root'
+    host.append(transcript_notification_record(note))
+    host.root_hook()
+    row = host.row()
+    assert row['state'] == 'result_pending'
+    assert row['handback']['body_digest'] == workers.digest(body)
+    assert row['stop_observation']['textless'] is True
+    assert row['handback']['admission']['acknowledgment']['envelope_digest'] == workers.digest(row['handback_call']['envelope'])
+    host.accept()
+    host.root_hook()
+    assert host.row()['state'] == 'accepted'
+    assert len(host.controller.report()['task_results']) == 1
+
+
 def test_delayed_delivery_preserves_each_proof_and_chronology_boundary(tmp_path, monkeypatch):
     host = Interactive(tmp_path, monkeypatch)
     host.launch()
@@ -435,13 +459,19 @@ def test_claude_discovery_and_owned_current_worker_controls(tmp_path, monkeypatc
 
 @pytest.mark.parametrize('args', [
     {}, {'query': 'SendMessage'}, {'query': 'select:*'}, {'query': 'select:SendMessage,Monitor,TaskStop'},
-    {'query': 'select:SendMessage,SendMessage'}, {'query': 'select:TaskStop', 'max_results': 3},
+    {'query': 'select:SendMessage,SendMessage'}, {'query': 'select:TaskStop', 'max_results': 4},
     {'query': 'select:TaskStop', 'max_results': True}, {'query': 'select:TaskStop', 'max_results': 0},
     {'query': 'select:SendMessage,TaskStop', 'max_results': 1}, {'query': ['select:TaskStop']},
     {'query': 'select:TaskStop', 'execute': True}, {'query': 'select:TaskStop\n'},
 ])
 def test_claude_discovery_is_bounded_exact_selection(args):
     with pytest.raises(w.Refusal): workers.admit_discovery(args)
+
+
+@pytest.mark.parametrize('query', ['select:ListAgents', 'select:SendMessage,TaskStop,ListAgents',
+    'select:ListAgents,SendMessage', 'select:TaskStop,ListAgents'])
+def test_claude_inventory_discovery_is_exact_selection(query):
+    workers.admit_discovery({'query': query, 'max_results': 3})
 
 
 @pytest.mark.parametrize('tool', ['SendMessage', 'TaskStop'])
@@ -542,6 +572,48 @@ def test_claude_stop_request_never_joins_or_allows_new_input(tmp_path, monkeypat
     with pytest.raises(w.Refusal):
         flow.hook(host.root_control('SendMessage', {'to': host.child_id, 'message': 'Resume.'}), governor=host.controller)
     with pytest.raises(w.Refusal, match='not joined'): host.accept()
+
+
+def test_claude_listagents_empty_native_input_is_readonly_not_completion(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    event = host.root_control('ListAgents', {})
+    flow.hook(event, governor=host.controller)
+    # Deliberately tempting statuses must not use Codex's terminal-poll path.
+    flow.hook({**event, 'hook_event_name': 'PostToolUse', 'tool_response': {'agents': [
+        {'agent_id': host.child_id, 'status': 'completed'},
+        {'agent_id': 'foreign', 'status': 'completed'},
+    ]}}, governor=host.controller)
+    assert host.row()['state'] == 'running' and not host.row().get('terminal_status')
+    assert not host.controller.report().get('task_results')
+    assert not host.controller.report().get('worker_polls')
+    with pytest.raises(w.Refusal, match='not joined'): host.accept()
+    with pytest.raises(w.Refusal): flow.hook(host.event('ListAgents', {}))
+    host.controller.adapter.name = 'codex'
+    with pytest.raises(w.Refusal, match='Claude native workflow adapter'):
+        host.controller.guard(event, host.state['run'])
+
+
+@pytest.mark.parametrize('defect', ['args', 'path-prefix', 'root', 'principal', 'nonautomatic',
+    'runtime', 'missing-runtime', 'missing-call', 'wrong-host', 'binding-profile'])
+def test_claude_listagents_requires_exact_automatic_root_provenance(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    event = host.root_control('ListAgents', {})
+    event.update(host='claude', taskplane_automatic_hook=True,
+        taskplane_observed_binding={'root': 'root', 'principal': 'root', 'profile': 'native_workflow'},
+        taskplane_runtime_identity=runtime_identity())
+    if defect == 'args': event['tool_input']['session_id'] = 'foreign'
+    if defect == 'path-prefix': event['tool_input']['path_prefix'] = '/root'
+    if defect == 'root': event['taskplane_observed_binding']['root'] = 'foreign'
+    if defect == 'principal': event['taskplane_observed_binding']['principal'] = 'child'
+    if defect == 'nonautomatic': event['taskplane_automatic_hook'] = False
+    if defect == 'runtime': event['taskplane_runtime_identity']['root'] = '/foreign'
+    if defect == 'missing-runtime': event.pop('taskplane_runtime_identity')
+    if defect == 'missing-call': event.pop('tool_use_id')
+    if defect == 'wrong-host': event['host'] = 'codex'
+    if defect == 'binding-profile': event['taskplane_observed_binding']['profile'] = 'protected_host'
+    with pytest.raises(w.Refusal): workers.admit(host.controller.report(), event)
 
 
 
