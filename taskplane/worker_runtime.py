@@ -615,7 +615,8 @@ def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
                 expected_child = str(Path(source.get('path', '')).with_suffix('') / 'subagents' /
                                      ('agent-' + row['worker_id'] + '.jsonl'))
                 if (event.get('transcript_path') == source.get('path')
-                        and event.get('agent_transcript_path') == expected_child):
+                        and event.get('agent_transcript_path') == expected_child
+                        and (not event.get('textless') or event.get('runtime') == row.get('expected_runtime'))):
                     stops[event_id] = {**event, 'event_id': event_id}
             else:
                 terminal(row, event['status'], event_id)
@@ -631,6 +632,46 @@ def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
             row['stop_observation'] = row['stop_observations'][-1]
     return {'status': 'conflict' if row.get('completion_conflict') else 'matched',
             'state': row['state'], 'worker_id': row['worker_id']}
+
+
+def _handback_reports(row: dict[str, Any]) -> list[dict[str, Any]]:
+    report = row.get('handback_call', row.get('handback', {}))
+    return ([report] if report.get('envelope') else []) + list(row.get('startup_handbacks', {}).values())
+
+
+def _redirect_delivery(state: dict[str, Any], row: dict[str, Any], completed: dict[str, Any],
+                       peer: dict[str, Any] | None, stopped: dict[str, Any]) -> dict[str, Any] | None:
+    """A redirect is not a report. Join the separate native peer and admitted ack."""
+    if (peer is None or not stopped.get('textless') or stopped.get('agent_type') != peer.get('agent_type')
+            or stopped.get('runtime') != row.get('expected_runtime')):
+        return None
+    reports = []
+    for report in _handback_reports(row):
+        envelope, ack = report.get('envelope', {}), report.get('acknowledgment', {})
+        expected = {'parent': state['root'], 'worker': row['worker_id'], 'grant': row['grant_id'],
+                    'attempt': row['attempt'], 'task': row['task_id'], 'call_id': envelope.get('call_id'),
+                    'binding': binding(state), 'input_digest': peer['input_digest'], 'body_digest': peer['body_digest']}
+        if (envelope != expected or not isinstance(envelope.get('call_id'), str)
+                or report.get('status') != 'acknowledged'
+                or report.get('runtime') != row.get('expected_runtime')
+                or ack != {'schema': 'claude.SubagentHandback.ack/v1', 'envelope_digest': digest(envelope),
+                           'runtime': row.get('expected_runtime'), 'response_digest': digest({
+                               'message': 'Report delivered to your caller.', 'success': True}),
+                           'observed_at': report.get('observed_at')}
+                or report.get('response_digest') != ack.get('response_digest')):
+            continue
+        try:
+            def stamp(value: str) -> datetime:
+                return datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if not (stamp(report['admitted_at']) <= stamp(peer['timestamp']) <= stamp(stopped['observed_at'])
+                    <= stamp(completed['timestamp']) <= datetime.now(timezone.utc)
+                    and stamp(report['admitted_at']) <= stamp(ack['observed_at']) <= stamp(stopped['observed_at'])
+                    and peer['reference']['offset'] < completed['reference']['offset']):
+                continue
+        except (ValueError, TypeError, KeyError, OverflowError):
+            continue
+        reports.append(report)
+    return reports[0] if len(reports) == 1 else None
 
 
 def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]],
@@ -668,6 +709,17 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                 datetime.fromisoformat(stop['observed_at'])]
             stopped = preceding[-1] if preceding else None
             old = row.get('handback', {}).get('notification')
+            redirected = completed.get('handback_redirect') is True
+            report = (_redirect_delivery(state, row, completed, observation.get('peer_handback'), stopped)
+                      if redirected and stopped else None)
+            if redirected and report is None:
+                # Peer transcript, post-hook and stop can become readable on
+                # different hooks. Missing proof cannot establish completion.
+                if old is not None:
+                    row['completion_conflict'] = True
+                    row['state'] = 'unknown'
+                    _audit(row, 'completion_conflict', {'notification': completed['record_sha256']})
+                continue
             # Older runtimes mistook differing interim stops / the no-report
             # sentinel for body tampering. Reclassify only this exact, freshly
             # revalidated pre-claim failure; successful or identity conflicts
@@ -686,11 +738,20 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                 row['completion_conflict'] = False
             if (stopped and (old is None or old == completed)
                     and (completed.get('no_report') is True
+                         or redirected and report is not None
                          or completed['body_digest'] == stopped.get('notification_body_digest'))):
                 unsuccessful = completed.get('no_report') is True or bool(row.get('startup_handbacks'))
+                delivery = ({'peer_handback': observation['peer_handback'],
+                             'admission': deepcopy(report)} if redirected and report is not None else {})
+                if old is not None and any(row['handback'].get(key) != value for key, value in delivery.items()):
+                    row['completion_conflict'] = True
+                    row['state'] = 'unknown'
+                    _audit(row, 'completion_conflict', {'notification': completed['record_sha256']})
+                    continue
                 row['handback'] = {'schema': 'claude.session-task-notification/v1',
                     'status': 'no_report' if completed.get('no_report') else 'startup_failed' if unsuccessful else 'delivered',
-                    'body_digest': completed['body_digest'], 'notification': completed,
+                    'body_digest': report['envelope']['body_digest'] if report else completed['body_digest'],
+                    'notification': completed, **delivery,
                     'stop_event': stopped['event_id'], 'observed_at': now()}
                 row['stop_observation'] = stopped
                 if unsuccessful:
@@ -734,29 +795,56 @@ def admit_handback(state: dict[str, Any], row: dict[str, Any], event: dict[str, 
               "scope_violation", "Conflicting or competing handback delivery; reconcile the existing call.")
     if old is None:
         report = {"envelope": envelope, "status": "delivery_unknown", "admitted_at": now(),
+                  'runtime': deepcopy(event.get('taskplane_runtime_identity')),
                   "schema": "claude.SubagentHandback.message/v1"}
         if reports is not None:
             w.require(len(reports) < 8, 'scope_violation', 'Startup failure handback attempt bound reached.')
             reports[call] = report
         else:
             row['handback'] = report
+            row['handback_call'] = report
 
 
 def observe_handback(state: dict[str, Any], admission: dict[str, Any], event: dict[str, Any]) -> None:
     if admission.get("tool") not in HANDBACK:
         return
-    reports = [report for row in records(state).values() if row.get('worker_id') == admission.get('principal')
-               for report in [row.get('handback', {}), *row.get('startup_handbacks', {}).values()]
+    reports = [(row, report) for row in records(state).values() if row.get('worker_id') == admission.get('principal')
+               for report in _handback_reports(row)
                if report.get('envelope', {}).get('call_id') == admission.get('call_id')]
     if len(reports) != 1:
         return
-    handback = reports[0]
+    row, handback = reports[0]
+    from .host_capabilities import runtime_identity
+    envelope = handback['envelope']
+    observed = event.get('taskplane_observed_binding', {})
+    w.require(admission.get('automatic') is True and admission.get('host') == 'claude'
+              and admission.get('run') == state['run'] and admission.get('root') == state['root']
+              and admission.get('workspace') == state['workspace']
+              and admission.get('binding') == envelope['binding'] == row.get('binding') == binding(state)
+              and not row.get('revoked_at') and not row.get('identity_conflict')
+              and admission.get('runtime') == event.get('taskplane_runtime_identity')
+              == handback.get('runtime') == row.get('expected_runtime') == runtime_identity()
+              and event.get('taskplane_automatic_hook') is True and event.get('hook_event_name') == 'PostToolUse'
+              and (event.get('tool_name') or event.get('tool')) in HANDBACK
+              and (event.get('tool_use_id') or event.get('call_id')) == envelope['call_id']
+              and observed.get('root') == state['root'] and observed.get('principal') == row['worker_id']
+              and admission.get('input_digest') == digest(event.get('tool_input')) == envelope['input_digest'],
+              'scope_violation', 'Handback acknowledgment requires its exact automatic admission and runtime.')
     response_digest = digest(event.get("tool_response"))
     w.require(handback.get("response_digest", response_digest) == response_digest,
               "scope_violation", "Conflicting handback acknowledgement.")
-    handback.update(response_digest=response_digest, observed_at=now(),
-                    status="delivery_failed" if event.get("is_error") is True else "delivery_unknown",
-                    reason="No verified native handback success acknowledgement schema is available.")
+    response = event.get('tool_response')
+    acknowledged = (isinstance(response, dict) and response.get('success') is True
+                    and response == {'message': 'Report delivered to your caller.', 'success': True}
+                    and event.get('is_error') is not True)
+    handback.update(response_digest=response_digest,
+                    observed_at=handback.get('observed_at', now()),
+                    status='acknowledged' if acknowledged else
+                        'delivery_failed' if event.get('is_error') is True else 'delivery_unknown')
+    if acknowledged:
+        handback['acknowledgment'] = {'schema': 'claude.SubagentHandback.ack/v1',
+            'envelope_digest': digest(envelope), 'runtime': deepcopy(row['expected_runtime']),
+            'response_digest': response_digest, 'observed_at': handback['observed_at']}
 
 
 def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
@@ -794,17 +882,23 @@ def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
                 and event.get('stop_hook_active') is False
                 and event.get('taskplane_automatic_hook') is True
                 and observed.get('root') == state['root'] and observed.get('principal') == state['root']
-                and isinstance(event.get('last_assistant_message'), str)
-                and 0 < len(event['last_assistant_message'].encode('utf-8')) <= claude.MAX_LINE_BYTES)
+                and ('last_assistant_message' not in event and isinstance(event.get('agent_type'), str)
+                     and 0 < len(event['agent_type']) <= 200
+                     or isinstance(event.get('last_assistant_message'), str)
+                     and 0 < len(event['last_assistant_message'].encode('utf-8')) <= claude.MAX_LINE_BYTES))
             if name == "SubagentStart" or status in {'completed', 'failed', 'interrupted'} or stopped:
                 value = {'event': name, 'parent': parent, 'worker_id': identity,
                          'call_id': call, 'status': 'stopped' if stopped else status}
                 if stopped:
                     # The native notification XML-escapes &, < and > exactly once;
                     # quotes stay literal. Compare its bytes, never decode entities.
-                    value.update(body_digest=digest(event['last_assistant_message']),
-                        notification_body_digest=digest(escape(event['last_assistant_message'], quote=False)),
-                        transcript_path=event.get('transcript_path'),
+                    if 'last_assistant_message' in event:
+                        value.update(body_digest=digest(event['last_assistant_message']),
+                            notification_body_digest=digest(escape(event['last_assistant_message'], quote=False)))
+                    else:
+                        value.update(textless=True, agent_type=event['agent_type'],
+                                     runtime=deepcopy(event.get('taskplane_runtime_identity')))
+                    value.update(transcript_path=event.get('transcript_path'),
                         agent_transcript_path=event.get('agent_transcript_path'))
                 event_id = digest(value | {'event_id': event.get('event_id')})
                 pending = state.setdefault('unbound_worker_events', {})

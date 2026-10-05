@@ -17,6 +17,11 @@ Recovery preserves these boundaries:
   not satisfy claim, context, readiness or successful result acceptance.
 - A statusless stop alone does not establish report delivery. Correlate native
   launch identity, stop events and the parent completion notification.
+- In the observed auto-mode contract, `SubagentHandback` returns a delivery
+  acknowledgment and sends the report as a separate native peer message. The
+  stop has no report text, and completion refers to that child's message. Join
+  the exact admitted input, acknowledgment, pinned peer report, stop and redirect
+  by child, runtime and event order. A success flag or redirect alone is insufficient.
 - Preserve an unsuccessful terminal attempt and prepare a fresh grant. Never
   relabel an unknown/live attempt or a missing report as an accepted review.
 - The next attempt must claim, consume context and establish automatic hook

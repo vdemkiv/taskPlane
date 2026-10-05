@@ -180,7 +180,7 @@ def inspect(folder: Path, output: Path) -> None:
     useful_a = next((r for r in successful if r.get('task_id') == 'CW-LIVE-A'), {})
     denied = [c for c in captures if c['event'] == 'PreToolUse'
               and '2>&1 | head -50' in c['input'].get('tool_input', {}).get('command', '')
-              and c.get('delegate_exit_code') != 0]
+              and not base.admitted(c)]
     checks = [
         base.check('actual interactive launch', base.load(folder / 'launch.json')['mode'] == 'interactive-tty'
                    and any(c['input'].get('permission_mode') == 'auto' for c in captures),

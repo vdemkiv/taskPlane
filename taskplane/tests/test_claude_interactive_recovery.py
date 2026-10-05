@@ -9,7 +9,7 @@ import pytest
 from taskplane import claude_worker_invocation as invocation
 from taskplane import claude_worker_observations as observations
 from taskplane import flow, workflow as w, workflow_host as h, worker_runtime as workers
-from taskplane.tests.test_claude_worker_lifecycle import encoded, notification_record
+from taskplane.tests.test_claude_worker_lifecycle import encoded, notification_record, attachment_notification_record
 from taskplane.tests.test_worker_runtime import setup, reserve
 
 pytestmark = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
@@ -57,7 +57,8 @@ class Interactive:
         self.child_id = 'child-' + self.unique()
         event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(self.workspace),
             transcript_path=str(self.parent), tool_use_id=self.unique(), tool_name='Agent',
-            tool_input={'prompt': item['message'], 'description': 'interactive recovery', 'run_in_background': True})
+            tool_input={'prompt': item['message'], 'description': 'interactive recovery', 'run_in_background': True,
+                        'subagent_type': 'taskplane:tp-lens'})
         call = dict(type='assistant', sessionId='root', cwd=str(self.workspace), timestamp=workers.now(),
             message={'content': [dict(type='tool_use', id=event['tool_use_id'], name='Agent', input=event['tool_input'])]})
         self.append(call)
@@ -108,6 +109,9 @@ class Interactive:
         event = dict(hook_event_name='SubagentStop', session_id='root', agent_id=self.child_id,
             cwd=str(self.workspace), transcript_path=str(self.parent), agent_transcript_path=str(self.child),
             last_assistant_message=body, stop_hook_active=False, event_id=self.unique())
+        if body is None:
+            event.pop('last_assistant_message')
+            event['agent_type'] = 'taskplane:tp-lens'
         flow.hook({**event, **extra}, governor=self.controller)
 
     def notify(self, body, **extra):
@@ -121,6 +125,41 @@ class Interactive:
         return self.controller.worker(self.state['run'], 'accept-result', revision=self.state['revision'],
             task='T0', grant=self.grant, request={'outputs': ['T0.md'],
                 'checks': [{'name': 'Fixture verification', 'status': 'pass', 'evidence': 'T0.md'}]})
+
+    def ready(self):
+        self.consume()
+        event = self.event('Read', {'file_path': 'input.py'})
+        flow.hook(event)
+        flow.hook({**event, 'hook_event_name': 'PostToolUse'})
+        assert workers.readiness(self.row())['status'] == 'ready'
+
+    def peer(self, body):
+        frame = observations.HANDBACK_HEADER + '\n' + '\n'.join('  ' + line for line in body.split('\n'))
+        return dict(type='user', sessionId='root', cwd=str(self.workspace), isSidechain=False, isMeta=True,
+            timestamp=workers.now(), promptSource='system', turnOrigin='peer',
+            origin={'kind': 'peer', 'from': self.child_id, 'senderTaskId': self.child_id,
+                    'name': 'taskplane:tp-lens', 'handback': True, 'body': frame},
+            message={'role': 'user', 'content': 'Another Claude session sent a message:\n'
+                + f'<agent-message from="{self.child_id}">\n' + frame + '\n</agent-message>\n\n'
+                + observations.HANDBACK_FOOTER})
+
+    def redirect(self):
+        note = notification_record(self.row(), self.result, observations.handback_redirect(self.child_id))
+        note['sessionId'] = 'root'
+        return attachment_notification_record(note)
+
+    def deliver(self, body, *, terminal=True):
+        event = self.event('SubagentHandback', {'message': body})
+        flow.hook(event)
+        peer = self.peer(body)
+        self.append(peer)
+        flow.hook({**event, 'hook_event_name': 'PostToolUse',
+                   'tool_response': {'message': 'Report delivered to your caller.', 'success': True}})
+        self.stop(None)
+        if terminal:
+            self.append(self.redirect())
+            self.root_hook()
+        return event, peer
 
 
 @pytest.mark.parametrize('wrapper', [' 2>&1 | head -50', ' | head -80', ' && true', ' > /tmp/output'])
@@ -226,6 +265,229 @@ def test_stop_history_and_failure_handback_attempts_have_bounds(tmp_path, monkey
         flow.hook(host.event('SubagentHandback', {'message': 'Ninth failure'}))
     host.notify(observations.NO_REPORT_RESULT)
     assert host.row()['state'] == 'failed'
+
+
+@pytest.mark.parametrize('ready', [False, True])
+def test_native_peer_handback_textless_stop_and_redirect_complete_exact_attempt(tmp_path, monkeypatch, ready):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    if ready:
+        host.ready()
+    body = 'Verified useful report.\n<&> literal entities &amp; and "quotes"\n\nFinal line.\n'
+    event, peer = host.deliver(body)
+    row = host.row()
+    assert row['state'] == ('result_pending' if ready else 'failed'), row
+    assert row['terminal_status'] == ('completed' if ready else 'failed')
+    assert row['handback']['status'] == ('delivered' if ready else 'startup_failed')
+    assert row['handback']['body_digest'] == workers.digest(body)
+    assert row['handback']['peer_handback']['record_sha256'] == workers.digest(peer)
+    assert row['handback']['admission']['envelope']['call_id'] == event['tool_use_id']
+    assert row['stop_observation']['textless'] is True
+    assert 'notification_body_digest' not in row['stop_observation']
+    assert body not in json.dumps(row)
+    if ready:
+        # Repeated exact automatic post delivery is idempotent after completion.
+        flow.hook({**event, 'hook_event_name': 'PostToolUse',
+                   'tool_response': {'message': 'Report delivered to your caller.', 'success': True}})
+        host.accept()
+        assert host.row()['state'] == 'accepted'
+        host.launch(task='T1')
+    else:
+        with pytest.raises(w.Refusal, match='not joined'):
+            host.accept()
+        host.launch(retry_reason='Verified textless stop and native startup diagnostic; retry with full startup.')
+        host.ready()
+        host.deliver('Fresh ready worker report.')
+        host.accept()
+        assert host.row()['state'] == 'accepted'
+
+
+@pytest.mark.parametrize('defect', ['missing_peer', 'foreign_peer', 'sender', 'name', 'kind', 'handback',
+    'origin_extra', 'meta', 'sidechain', 'session', 'workspace', 'prompt_source', 'turn_origin', 'user_text',
+    'queue_row', 'frame_header', 'indentation', 'wrapper', 'footer', 'wrong_body', 'old_timestamp',
+    'future_timestamp', 'naive_timestamp', 'missing_stop', 'active_stop', 'stop_type', 'stop_path',
+    'stop_child', 'missing_ack', 'success_only', 'ack_text', 'ack_extra', 'ack_error', 'ack_false',
+    'ack_number', 'redirect_child', 'redirect_newline', 'notification_call', 'notification_queue'])
+def test_peer_redirect_requires_every_native_proof_part(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    body = 'Deliberate startup failure before claim/context; no review or files produced.'
+    event = host.event('SubagentHandback', {'message': body})
+    flow.hook(event)
+    peer = host.peer('Different report' if defect == 'wrong_body' else body)
+    if defect == 'foreign_peer':
+        peer['origin']['from'] = peer['origin']['senderTaskId'] = 'foreign-child'
+        peer['message']['content'] = peer['message']['content'].replace(host.child_id, 'foreign-child')
+    if defect == 'sender': peer['origin']['senderTaskId'] = 'foreign-child'
+    if defect == 'name': peer['origin']['name'] = 'foreign-type'
+    if defect == 'kind': peer['origin']['kind'] = 'user'
+    if defect == 'handback': peer['origin']['handback'] = False
+    if defect == 'origin_extra': peer['origin']['trusted'] = True
+    if defect == 'meta': peer['isMeta'] = False
+    if defect == 'sidechain': peer['isSidechain'] = True
+    if defect == 'session': peer['sessionId'] = 'foreign-parent'
+    if defect == 'workspace': peer['cwd'] += '-foreign'
+    if defect == 'prompt_source': peer['promptSource'] = 'user'
+    if defect == 'turn_origin': peer['turnOrigin'] = 'user'
+    if defect == 'user_text': peer.pop('origin')
+    if defect == 'queue_row': peer['type'] = 'queue-operation'
+    if defect == 'frame_header':
+        peer['origin']['body'] = peer['origin']['body'].replace('[Subagent hand-back]', '[Agent report]')
+        peer['message']['content'] = peer['message']['content'].replace('[Subagent hand-back]', '[Agent report]')
+    if defect == 'indentation':
+        peer['origin']['body'] = peer['origin']['body'].replace('\n  ', '\n')
+        peer['message']['content'] = peer['message']['content'].replace('\n  ', '\n')
+    if defect == 'wrapper': peer['message']['content'] = peer['origin']['body']
+    if defect == 'footer': peer['message']['content'] += '\n'
+    if defect == 'old_timestamp': peer['timestamp'] = '2000-01-01T00:00:00+00:00'
+    if defect == 'future_timestamp': peer['timestamp'] = '2999-01-01T00:00:00+00:00'
+    if defect == 'naive_timestamp': peer['timestamp'] = '2026-10-05T12:04:11'
+    # The automatic post hook is independent of parent transcript flushing.
+    response = {'message': 'Report delivered to your caller.', 'success': True}
+    if defect == 'success_only': response.pop('message')
+    if defect == 'ack_text': response['message'] += ' Changed.'
+    if defect == 'ack_extra': response['status'] = 'completed'
+    if defect == 'ack_false': response['success'] = False
+    if defect == 'ack_number': response['success'] = 1
+    if defect != 'missing_ack':
+        flow.hook({**event, 'hook_event_name': 'PostToolUse', 'tool_response': response,
+                   'is_error': defect == 'ack_error'})
+    if defect != 'missing_stop':
+        host.stop(None, **({'stop_hook_active': True} if defect == 'active_stop' else
+            {'agent_type': 'foreign-type'} if defect == 'stop_type' else
+            {'agent_transcript_path': str(host.child) + '-foreign'} if defect == 'stop_path' else
+            {'agent_id': 'foreign-child'} if defect == 'stop_child' else {}))
+    if defect != 'missing_peer': host.append(peer)
+    note = host.redirect()
+    if defect == 'redirect_child':
+        note['attachment']['prompt'] = note['attachment']['prompt'].replace(
+            f'message from "{host.child_id}"', 'message from "foreign-child"')
+    if defect == 'redirect_newline':
+        note['attachment']['prompt'] = note['attachment']['prompt'].replace('here.\n</result>', 'here.</result>')
+    if defect == 'notification_call':
+        note['attachment']['prompt'] = note['attachment']['prompt'].replace(
+            '<tool-use-id>' + host.row()['call_id'], '<tool-use-id>foreign-call')
+    if defect == 'notification_queue': note['type'] = 'queue-operation'
+    host.append(note)
+    host.root_hook()
+    row = host.row()
+    assert not row.get('terminal_status'), defect
+    assert row.get('handback', {}).get('status') not in {'delivered', 'startup_failed'}, defect
+    with pytest.raises(w.Refusal): host.accept()
+
+
+@pytest.mark.parametrize('defect', ['runtime', 'automatic', 'principal', 'root', 'binding', 'call', 'input',
+    'admission_runtime', 'admission_automatic', 'admission_run', 'revoked', 'replay_response'])
+def test_handback_acknowledgment_keeps_exact_automatic_admission(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    event = host.event('SubagentHandback', {'message': 'Startup diagnostic.'})
+    flow.hook(event)
+    state = host.controller.report()
+    row = state['workers'][host.grant]
+    report = row['startup_handbacks'][event['tool_use_id']]
+    admission = dict(tool='SubagentHandback', principal=host.child_id, root='root', run=state['run'],
+        workspace=str(tmp_path), binding=deepcopy(row['binding']), call_id=event['tool_use_id'],
+        runtime=deepcopy(row['expected_runtime']), host='claude', automatic=True,
+        input_digest=report['envelope']['input_digest'])
+    event.update(hook_event_name='PostToolUse', taskplane_automatic_hook=True,
+        taskplane_runtime_identity=deepcopy(row['expected_runtime']),
+        taskplane_observed_binding={'root': 'root', 'principal': host.child_id},
+        tool_response={'message': 'Report delivered to your caller.', 'success': True})
+    if defect == 'runtime': event['taskplane_runtime_identity']['root'] = '/foreign'
+    if defect == 'automatic': event['taskplane_automatic_hook'] = False
+    if defect == 'principal': event['taskplane_observed_binding']['principal'] = 'foreign'
+    if defect == 'root': event['taskplane_observed_binding']['root'] = 'foreign'
+    if defect == 'binding': admission['binding']['revision'] = -1
+    if defect == 'call': event['tool_use_id'] = 'foreign'
+    if defect == 'input': event['tool_input']['message'] += ' Changed.'
+    if defect == 'admission_runtime': admission['runtime']['root'] = '/foreign'
+    if defect == 'admission_automatic': admission['automatic'] = False
+    if defect == 'admission_run': admission['run'] = 'foreign'
+    if defect == 'revoked': row['revoked_at'] = workers.now()
+    if defect == 'replay_response':
+        workers.observe_handback(state, admission, event)
+        event['tool_response'] = {'success': True}
+    with pytest.raises(w.Refusal): workers.observe_handback(state, admission, event)
+
+
+@pytest.mark.parametrize('defect', ['peer_span', 'source_replaced', 'source_missing', 'source_truncated',
+    'competing_peer', 'peer_projection', 'ack_runtime', 'ack_binding', 'ack_call', 'ack_removed', 'stop_runtime'])
+def test_retained_peer_delivery_is_revalidated_before_acceptance(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    event, peer = host.deliver('Verified useful report.')
+    assert host.row()['state'] == 'result_pending'
+    if defect == 'peer_span':
+        raw = host.parent.read_bytes()
+        host.parent.write_bytes(raw.replace(b'Verified useful report.', b'Verified forged report.'))
+    if defect == 'source_replaced':
+        old = host.parent.with_suffix('.old'); host.parent.rename(old); host.parent.write_bytes(old.read_bytes())
+    if defect == 'source_missing': host.parent.unlink()
+    if defect == 'source_truncated': host.parent.write_bytes(encoded({'sessionId': 'root'}))
+    if defect == 'competing_peer':
+        peer['timestamp'] = workers.now(); host.append(peer)
+    if defect in {'peer_projection', 'ack_runtime', 'ack_binding', 'ack_call', 'ack_removed', 'stop_runtime'}:
+        state = host.controller.report()
+        row = state['workers'][host.grant]
+        if defect == 'peer_projection':
+            entry = next(iter(state['claude_transcript_cursor']['entries'].values()))
+            entry['peer_handback'][0]['projection']['body_digest'] = workers.digest('Forged report')
+            state['claude_transcript_cursor'] = observations._sealed(state['claude_transcript_cursor'])
+        if defect == 'ack_runtime': row['handback_call']['acknowledgment']['runtime']['root'] = '/foreign'
+        if defect == 'ack_binding': row['handback_call']['envelope']['binding']['revision'] = -1
+        if defect == 'ack_call': row['handback_call']['envelope']['call_id'] = 'foreign'
+        if defect == 'ack_removed': row['handback_call'].pop('acknowledgment')
+        if defect == 'stop_runtime':
+            for stop in state['unbound_worker_events'].values():
+                if stop.get('textless'): stop['runtime']['root'] = '/foreign'
+            row['stop_observations'][0]['runtime']['root'] = '/foreign'
+        (tmp_path / 'T0.md').write_text('Fixture verified result')
+        with pytest.raises(w.Refusal):
+            workers.accept_result(tmp_path, state, 'T0', {'grant': host.grant, 'outputs': ['T0.md'],
+                'checks': [{'name': 'Fixture verification', 'status': 'pass', 'evidence': 'T0.md'}]})
+    else:
+        with pytest.raises(w.Refusal): host.accept()
+
+
+def test_peer_completion_waits_for_bounded_parent_scan_and_retains_full_proof(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.deliver('Bounded peer report.', terminal=False)
+    with host.parent.open('ab') as stream:
+        stream.write(encoded({'type': 'progress', 'data': 'x' * 8192}) * 550)
+    host.append(host.redirect())
+    state = host.controller.report()
+    row = state['workers'][host.grant]
+    first = observations.observe('root', row, {}, source=state['claude_transcript_source'],
+                                 cursor=state['claude_transcript_cursor'])
+    assert first['status'] == 'not_yet_available' and 'completion' not in first
+    assert first['budget']['bytes'] <= observations.MAX_BYTES
+    second = observations.observe('root', row, {}, source=state['claude_transcript_source'],
+                                  cursor=json.loads(json.dumps(first['cursor'])))
+    assert second['status'] == 'matched' and second['completion']['handback_redirect']
+    assert second['peer_handback']['body_digest'] == workers.digest('Bounded peer report.')
+    assert set(second['proof']['records']) == {'call', 'result', 'header', 'notification', 'peer_handback'}
+    assert second['proof']['records']['peer_handback'][0]['reference'] == second['peer_handback']['reference']
+    assert 'Bounded peer report.' not in json.dumps(second)
+
+
+def test_same_body_multiple_acknowledged_calls_cannot_claim_one_peer(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    body = 'Identical diagnostic across competing calls.'
+    for index in range(2):
+        event = host.event('SubagentHandback', {'message': body})
+        flow.hook(event)
+        if index == 1: host.append(host.peer(body))
+        flow.hook({**event, 'hook_event_name': 'PostToolUse',
+                   'tool_response': {'message': 'Report delivered to your caller.', 'success': True}})
+    host.stop(None)
+    host.append(host.redirect())
+    host.root_hook()
+    assert host.row()['state'] == 'bootstrapping'
+    assert not host.row().get('terminal_status')
 
 
 @pytest.mark.parametrize('defect', ['missing_stop', 'wrong_stop_path', 'active_stop', 'wrong_child', 'wrong_call',

@@ -4,6 +4,7 @@
 
 - Diagnose invalid claim/context wrappers with exact startup recovery commands.
 - Separate bounded startup failure reporting, native terminal evidence and successful result acceptance for interactive Claude workers.
+- Correlate separately delivered native handback reports with the exact tool acknowledgment, textless stop and child-specific completion redirect.
 - Preserve unsuccessful attempts and test fresh native retry without replacing independent reviews with root execution.
 - Add an interactive terminal validation harness alongside the existing headless harness; retain separate coverage and exact-source package receipts.
 
