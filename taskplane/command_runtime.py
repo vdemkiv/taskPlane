@@ -19,6 +19,97 @@ from . import primitives, storage, workflow as w
 TERMINAL = {"completed", "failed", "cancelled"}
 STATES = {"running", "input_required", "cancelling"} | TERMINAL
 BINDINGS = ("workspace", "root", "run", "visit", "revision")
+RECOVERY_NODES = 4096
+RECOVERY_BYTES = 32 * 1024 * 1024
+
+
+def _retained_references(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Inventory reference-bearing evidence, not graph snapshots or scalar state."""
+    from .context import REFERENCE_SCHEMA
+    values: list[Any] = list(state.get("task_results", {}).values())
+    values.append(state.get("inherited_findings", {}))
+    for stage in [*state.get("visits", []), *state.get("history", [])]:
+        packet = stage.get("packet") or {}
+        values.extend([packet.get("output", {}), packet.get("finding_evidence", {}),
+                       packet.get("verification", {})])
+    for worker in state.get("workers", {}).values():
+        values.extend([worker.get("context_receipt", {}), worker.get("launch_proof_ref", {}),
+                       worker.get("launch_proof_refs", [])])
+    refs: list[dict[str, Any]] = []
+    examined = 0
+    while values:
+        value = values.pop()
+        examined += 1
+        w.require(examined <= 20000, "context_overflow", "Recovery evidence inventory exceeded its bound.")
+        if isinstance(value, dict):
+            if value.get("schema") == REFERENCE_SCHEMA:
+                refs.append(value)
+                w.require(len(refs) <= 4096, "context_overflow", "Recovery reference inventory exceeded its bound.")
+            else:
+                values.extend(child for child in value.values() if isinstance(child, (dict, list)))
+        elif isinstance(value, list):
+            values.extend(child for child in value if isinstance(child, (dict, list)))
+    return refs
+
+
+def _recovery_result(workspace: Path, state: dict[str, Any], reference: str) -> bytes:
+    from .context import Store, encode
+    from .context_handoff import binding, current_read_binding
+    store = Store(workspace)
+    store.path(reference)  # Reject invalid selectors before inventory or I/O.
+    roots = store.roots(binding(state))
+
+    def exact(refs: list[dict[str, Any]]) -> bytes | None:
+        for ref in refs:
+            if ref.get("sha256") == reference:
+                store.node(ref)  # Check the registered metadata as well as bytes.
+                return store._bytes(reference)
+        return None
+
+    raw = exact(roots)
+    if raw is not None:
+        return raw
+    # Official compact output registers under the current source-key binding.
+    # Recompute source freshness without building a view or its delivery trees.
+    # Do not enumerate old read-index files or accept another source generation.
+    try:
+        current = current_read_binding(workspace, state)
+    except w.Refusal:
+        current = None  # Retained sealed evidence remains independently readable.
+    if current is not None:
+        registered = store.roots(current)
+        raw = exact(registered)
+        if raw is not None:
+            return raw
+        roots.extend(registered)
+    retained = _retained_references(state)
+    raw = exact(retained)
+    if raw is not None:
+        return raw
+    # A child can be inspected too, but unrelated evidence cannot consume an
+    # unbounded amount of memory or I/O while establishing reachability.
+    pending = [(ref, 0) for ref in [*roots, *retained]]
+    visited: set[str] = set()
+    remaining_bytes = RECOVERY_BYTES
+    while pending:
+        ref, depth = pending.pop()
+        key = ref.get("sha256", "")
+        if key in visited:
+            continue
+        w.require(len(visited) < RECOVERY_NODES and depth <= 32 and remaining_bytes > 0,
+                  "context_overflow", "Recovery result reachability exceeded its bound.")
+        node = store.node(ref)
+        remaining_bytes -= len(encode(node))
+        w.require(remaining_bytes >= 0, "context_overflow", "Recovery result bytes exceeded their bound.")
+        visited.add(key)
+        if key == reference:
+            return store._bytes(reference)
+        children = store.children(node)
+        # Inspect the selected child next; every opened node retains the same
+        # depth, object, byte and metadata checks as the rest of the traversal.
+        pending.extend((child, depth + 1) for child in
+                       sorted(children, key=lambda child: child.get("sha256") == reference))
+    raise w.Refusal("scope_violation", "Result is not registered or reachable for this run; use its current report references.")
 
 
 def inspect_recovery(workspace: Path, state: dict[str, Any], kind: str,
@@ -40,41 +131,7 @@ def inspect_recovery(workspace: Path, state: dict[str, Any], kind: str,
             raw = stream.read(1024 * 1024 + 1)
             w.require(len(raw) <= 1024 * 1024, "invalid_evidence", "Contract grew beyond its read bound.")
     elif kind == "result":
-        from .context import Store, REFERENCE_SCHEMA
-        from .context_handoff import binding
-        store = Store(workspace)
-        pending = list(store.roots(binding(state)))
-        # Sealed packet and accepted worker result references remain reachable
-        # even when approval advances the current read-index revision.
-        values: list[Any] = [state]
-        examined = 0
-        while values:
-            value = values.pop()
-            examined += 1
-            w.require(examined <= 20000, "context_overflow", "Recovery reference inventory exceeded its bound.")
-            if isinstance(value, dict):
-                if value.get("schema") == REFERENCE_SCHEMA:
-                    pending.append(value)
-                else:
-                    values.extend(value.values())
-            elif isinstance(value, list):
-                values.extend(value)
-        visited: set[str] = set()
-        found = False
-        while pending:
-            ref = pending.pop()
-            key = ref.get("sha256", "")
-            if key in visited:
-                continue
-            w.require(len(visited) < 4096, "context_overflow", "Recovery result reachability exceeded its bound.")
-            node = store.node(ref)
-            visited.add(key)
-            if key == reference:
-                found = True
-                break
-            pending.extend(store.children(node))
-        w.require(found, "scope_violation", "Result is not registered or reachable for this run; use its current report references.")
-        raw = store._bytes(reference)
+        raw = _recovery_result(workspace, state, reference)
     else:
         raise w.Refusal("invalid_evidence", "Inspection kind must be contract or result.")
     w.require(offset <= len(raw), "invalid_evidence", "Inspection byte offset is beyond the result.")

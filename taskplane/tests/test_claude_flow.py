@@ -14,6 +14,28 @@ from taskplane import claude_flow_usage as claude, flow
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize('count', [2, 10])
+def test_interactive_review_fixture_pins_every_independent_source(tmp_path, monkeypatch, count):
+    from scripts import verify_claude_interactive as harness
+    folder = tmp_path / 'fixture'
+    folder.mkdir()
+    monkeypatch.setattr(harness.tempfile, 'mkdtemp', lambda **kwargs: str(folder))
+    output = tmp_path / 'prepared.json'
+    harness.prepare(ROOT, output, count)
+    manifest = harness.validate(folder)
+    workspace = Path(manifest['workspace'])
+    tasks = json.loads((workspace / '.taskplane/bootstrap/tasks.json').read_text())['tasks']
+    assert len(tasks) == count
+    assert len({task['review_lens'] for task in tasks}) == count
+    assert len({task['read_inputs'][0] for task in tasks}) == count
+    assert all(task['execution'] == 'native_required' for task in tasks)
+    assert len(manifest['input_sha256']) == count + 2
+    last = workspace / tasks[-1]['read_inputs'][0]
+    last.write_text(last.read_text() + '\n# changed after preparation\n')
+    with pytest.raises(ValueError, match='inputs changed'):
+        harness.validate(folder)
+
+
 def bound_workspace(tmp_path, monkeypatch, policy='any'):
     from taskplane.tests.binding_support import require_binding_runtime
     require_binding_runtime()

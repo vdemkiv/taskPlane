@@ -120,3 +120,25 @@ count and SHA-256 summary; the referenced immutable receipt still contains every
 returned root. Validation checks that exact set, the summary, the consumer binding
 and the delivery ledger. This bounds receipt overhead as delivery progresses and
 preserves compatibility with previously returned exact-list receipts.
+
+Identical full input bodies are delivered once within a handoff even when they
+have different evidence roles. The original role references and required-input
+entries remain distinct. A `body_reuse` reference in the view records the shared
+body reference, every input ID, role and required flag. Draining returns this
+provenance together with the shared bytes before completing the alias obligations.
+Preflight counts unique body bytes and delivery pages; `required_roots` still
+counts the original distinct references, while `unique_required_bodies` counts
+their content. Existing individual-reference and page reads remain supported.
+Changed content, source inputs, scope, revision or consumer binding invalidates
+the handoff or receipt; sharing body bytes never transfers approval or a receipt.
+
+`flow inspect --kind result --reference SHA256` first checks exact registered
+references under the current binding, including its current `source_key`.
+Source freshness is recomputed without writing a context or delivery receipt.
+Unrelated controller scalar data and sealed graph snapshots do not determine
+whether an official result can be opened. Retained packet output, finding
+evidence and result references also remain inspectable after approval advances
+the read-index revision. Child reachability is independently bounded to 4,096
+nodes, 32 levels and 32 MiB of canonical nodes. Every opened object retains its
+8 MiB limit, digest and metadata checks, regular-file requirement and symlink
+refusal. Unknown or foreign references and stale source registrations fail.

@@ -23,10 +23,39 @@ Recovery preserves these boundaries:
   stop has no report text, and completion refers to that child's message. Join
   the exact admitted input, acknowledgment, pinned peer report, stop and redirect
   by child, runtime and event order. A success flag or redirect alone is insufficient.
+  Keep worker timing separate from parent delivery timing: admission precedes the
+  acknowledgment, which precedes stop; stop precedes the completion's enqueue
+  timestamp. The peer report may reach the parent after both stop and that enqueue
+  timestamp. Its verified transcript span must still precede the completion span,
+  and its timestamp must fall between admission and the current observation.
+  Partial proof remains pending. Complete rejected redirect proof records a
+  `redirect_join_rejected` diagnostic without accepting a result.
 - Preserve an unsuccessful terminal attempt and prepare a fresh grant. Never
   relabel an unknown/live attempt or a missing report as an accepted review.
 - The next attempt must claim, consume context and establish automatic hook
   readiness before the remainder of the native cohort can launch.
+
+During an active Claude run, bounded `ToolSearch` requests can select `SendMessage`,
+`TaskStop`, or both (`query: "select:SendMessage,TaskStop", max_results: 2`). This
+read-only discovery grants no target authority. Other tools, free-text searches,
+duplicate selections and larger result limits remain unsupported by this adapter.
+
+The root may send a bounded plain-text message using `SendMessage` with `to` set
+to the exact native worker ID, `message`, and an optional `summary` of at most
+200 characters. `TaskStop` accepts only `task_id` set to that same exact ID.
+The worker must belong to this root, run, current binding and attempt, with fresh
+launch identity and matching automatic root/runtime proof. Foreign sessions,
+display names, broadcasts, remote/shell targets, structured approval/shutdown
+messages, subscriptions and ended attempts are refused. A worker can discover
+these tools after startup but cannot operate them on a sibling or parent; it uses
+its implicit-parent handback contract to return results.
+
+A stop request marks the attempt `cancel_requested`. Its response alone cannot
+prove termination, accept a report or release ownership. Preserve the attempt and
+wait for the supported independent native terminal evidence. Sending new input
+to a cancelled attempt is refused. Host discovery or permission may still report
+a tool unavailable; retain that limit instead of substituting another target or
+serial root work.
 
 `scripts/verify_claude_interactive.py` prepares a disposable candidate and review
 project, launches the real terminal UI, and inspects native evidence. It refuses

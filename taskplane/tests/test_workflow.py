@@ -8,6 +8,55 @@ def scope():
     return {"criteria": ["AC1"], "paths": {p: [] for p in w.PHASES}, "verification_inputs": []}
 
 
+def implementation_scope(kind="source"):
+    result = scope()
+    result.update(planning_contract="implementation/v1", execution_contract="native-default/v1")
+    outputs = dict(packet="build/output.json", report="build/report.md", verification_history="build/checks.json")
+    # The source input can itself be a Markdown template; extension heuristics
+    # cannot determine whether changing it implements behavior or documents it.
+    targets = ["src/rules.md"] if kind == "source" else ["guide"]
+    tests = ["tests/check_rules"] if kind == "source" else []
+    result["paths"]["build"] = [*outputs.values(), *targets, *tests, "optional.txt"]
+    result["implementation_intent"] = dict(kind=kind, implementation_paths=targets, test_paths=tests,
+        build_outputs=outputs, criteria={"AC1": dict(paths=targets, verification="Render rules and compare the expected behavior")})
+    return result
+
+
+@pytest.mark.parametrize("defect", ["missing-intent", "report-only", "missing-tests", "evidence-as-source", "criteria"])
+def test_source_scope_feasibility_is_checked_before_creating_a_route(defect):
+    value = implementation_scope()
+    intent = value["implementation_intent"]
+    if defect == "missing-intent":
+        value.pop("implementation_intent")
+    elif defect == "report-only":
+        value["paths"]["build"] = list(intent["build_outputs"].values())
+    elif defect == "missing-tests":
+        intent["test_paths"] = []
+    elif defect == "evidence-as-source":
+        intent["implementation_paths"] = [intent["build_outputs"]["report"]]
+    else:
+        intent["criteria"] = {"unrelated": intent["criteria"]["AC1"]}
+    with pytest.raises(w.Refusal):
+        w.new_state("/workspace", "root", "run", value)
+
+
+@pytest.mark.parametrize("kind", ["source", "documentation"])
+def test_explicit_implementation_intent_does_not_guess_from_file_extensions(kind):
+    value = implementation_scope(kind)
+    state = w.new_state("/workspace", "root", "run", value)
+    assert w.scope_preflight(state["scope"])["status"] == "declared_feasible"
+    assert state["scope"]["implementation_intent"]["kind"] == kind
+    w.validate_state(state)
+
+
+def test_old_scope_is_compatible_but_does_not_claim_source_feasibility():
+    value = scope()
+    value["execution_contract"] = "native-default/v1"
+    result = w.new_state("/workspace", "root", "run", value)
+    assert w.scope_preflight(result["scope"])["status"] == "legacy_unknown"
+    w.validate_state(result)
+
+
 def state(entry="product", standalone=False):
     return w.new_state("/workspace", "root", "run", scope(), entry=entry, standalone=standalone)
 

@@ -1,8 +1,9 @@
-# Test the 2.32.3 candidate
+# Test the 2.33.0 candidate
 
-This candidate addresses interactive Claude startup, failure handback and terminal
-recovery exposed by external testing of 2.32.1, while retaining the earlier host
-contract repairs and Workflow Builder.
+This candidate repairs delayed worker completion, native controls, decision
+wording, session continuation, source-scope planning and repeated context bodies
+exposed by the ten-lens 2.32.3 farm-viewer review. It retains the earlier startup,
+failure-handback and Workflow Builder repairs.
 Use a fresh test project/session. Keep the original farm-viewer runs as evidence;
 they are not fixtures to rewrite or reset.
 
@@ -15,8 +16,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.32.3.plugin` (Claude) and
-`dist/taskplane-2.32.3-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.0.plugin` (Claude) and
+`dist/taskplane-2.33.0-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit and per-member hashes. Require
 `matches_source_commit: true` and an empty `source_member_differences` list.
 Both sidecars must name the same commit. An archive receipt does not establish
@@ -25,13 +26,13 @@ that a host installed or invoked those bytes.
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.32.3.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.32.3-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.0.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.0-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.32.3` and `ok: true`.
+Both commands should report `2.33.0` and `ok: true`.
 
 ## Local regression and exact archive checks
 
@@ -124,5 +125,26 @@ Use the separate [interactive recovery guide](claude-interactive-recovery.md).
 The 2.32.1 farm-viewer failure exposed `SubagentHandback` enforcement in the
 interactive CLI, which the headless harness did not exercise. Run the prepared
 interactive test in a real terminal; it refuses a headless fallback. Require
-actual startup failure reporting, fresh retry, exact-command recovery and two
-accepted native review results. Retain failure captures when a check does not pass.
+actual startup failure reporting, fresh retry, exact-command recovery and ten
+distinct accepted native review results, followed by a sealed pending Engineering
+checkpoint. Select `--worker-count 10` for this complete review journey. The default
+remains the focused two-worker recovery scenario. Retain failures when a check does not pass.
+
+```sh
+python3 /absolute/test/claude/scripts/verify_claude_interactive.py --prepare --worker-count 10 \
+  --plugin-dir /absolute/test/claude --output /absolute/test/interactive-prepared.json
+# Launch in a real terminal with the fixture directory returned above:
+python3 /absolute/test/claude/scripts/verify_claude_interactive.py --launch --fixture FIXTURE
+python3 /absolute/test/claude/scripts/verify_claude_interactive.py --inspect \
+  --fixture FIXTURE --output /absolute/test/interactive-results.json
+```
+
+The ten-worker scenario also requires actual tool discovery, an owned-worker
+message and the native decision-label dialog. Its UI fixture answer is never
+treated as human checkpoint consent. The checkpoint stays pending. Deterministic
+tests separately cover delayed delivery, unsafe control targets, negative decision
+wording, large retained states, deduplicated bodies and native-layout continuation.
+Report those fixture checks separately from actual native execution. For a real
+resume, follow the exact request and same-session sequence in the
+[CLI reference](cli-reference.md#native-session-continuation); changing sessions
+does not itself transfer ownership or acceptance.

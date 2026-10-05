@@ -27,6 +27,104 @@ def test_other_clear_decisions(text, expected):
     assert local.choice(text) == expected
 
 
+@pytest.mark.parametrize('text,expected', [
+    ('Approve as is', 'approved'),
+    ('Please approve as is.', 'approved'),
+    ('fix it all', 'changes_requested'),
+    ('changes: retain deleted IDs and never reassign deleted user IDs', 'changes_requested'),
+    ('Request changes: never share user history', 'changes_requested'),
+    ('Request changes: never accept invalid IDs', 'changes_requested'),
+    ('Request changes: never approve invalid requests', 'changes_requested'),
+    ('Reject: this does not satisfy the requirements', 'rejected'),
+])
+def test_native_decisions_preserve_actual_response(tmp_path, text, expected):
+    c, state = setup(tmp_path)
+    state = submit(c, state)
+    assert local.choice(text) == expected
+    response = decision(state, text=text)
+    result = decide(c, state, response)
+    assert result['decisions'][response['event_id']]['provenance']['excerpt'] == text
+    assert result['decisions'][response['event_id']]['choice'] == expected
+
+
+@pytest.mark.parametrize('text', [
+    'Approve as is if tests pass', 'Approve as is, but fix it all',
+    'changes: fix IDs. Approved.', 'Fix it all, then approve',
+    'Request changes if tests fail', 'Stop before Retro',
+    'Cancel nothing', 'Reject nothing', 'Request changes? no, approve',
+])
+def test_native_decisions_do_not_erase_qualification(text):
+    assert local.choice(text) is None
+
+
+@pytest.mark.parametrize('bad,reason', [
+    ('grammar', 'decision_grammar'), ('provenance', 'decision_provenance'),
+    ('binding', 'decision_binding'), ('chronology', 'decision_chronology'),
+])
+def test_decision_failures_identify_the_failed_contract(tmp_path, bad, reason):
+    c, state = setup(tmp_path); state = submit(c, state)
+    response = decision(state, text='Approve as is')
+    if bad == 'grammar': response['excerpt'] += ' if tests pass'
+    elif bad == 'provenance': response['source']['actor'] = 'assistant'
+    elif bad == 'binding': response['binding']['root'] = 'other'
+    else: response['presentation']['at'] = response['source']['observed_at']
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal) as refused:
+        decide(c, state, response)
+    assert refused.value.reason == reason
+    assert c._path().read_bytes() == before
+
+
+def test_long_descriptive_dissent_is_preserved_completely(tmp_path):
+    c, state = setup(tmp_path); state = submit(c, state)
+    excerpt = 'changes: never reassign deleted user IDs. ' + 'Retain all historical references. ' * 22
+    response = decision(state, text=excerpt)
+    result = decide(c, state, response)
+    assert result['decisions'][response['event_id']]['provenance']['excerpt'] == excerpt
+
+
+def policy_choice(state):
+    from datetime import datetime, timezone
+    request = authorization(state)
+    request['excerpt'] = 'approve'
+    request['choice_context'] = {
+        'schema': 'taskplane.policy-choice/v1',
+        'question': 'Approve automatic phase approvals for this run under these instructions?',
+        'instructions': 'Auto-approve all phases.', 'selected_label': 'approve',
+        'proposal': {key: deepcopy(request.get(key)) for key in ('binding', 'mode', 'allowed_phases', 'stop_phases', 'conditions')},
+        'source': {'actor': 'assistant', 'conversation': state['root'], 'reference': 'assistant/policy-question',
+                   'observed_at': state['started_at']},
+    }
+    request['source']['observed_at'] = datetime.now(timezone.utc).isoformat()
+    return request
+
+
+def test_brief_policy_choice_requires_and_retains_actual_context(tmp_path):
+    c, state = setup(tmp_path)
+    request = policy_choice(state)
+    result = set_policy(c, state, request)
+    assert result['approval_policy']['provenance']['excerpt'] == 'approve'
+    assert result['approval_policy']['provenance']['choice_context'] == request['choice_context']
+    assert result['approval_policy']['conditions'][0]['instruction'] == 'Auto-approve all phases.'
+    assert not result['decisions']
+
+
+@pytest.mark.parametrize('bad', ['missing', 'foreign', 'stale', 'label', 'conditional', 'question_time', 'instructions'])
+def test_brief_policy_choice_cannot_invent_or_change_consent(tmp_path, bad):
+    c, state = setup(tmp_path); request = policy_choice(state)
+    context = request['choice_context']
+    if bad == 'missing': request.pop('choice_context')
+    elif bad == 'foreign': context['source']['conversation'] = 'other'
+    elif bad == 'stale': context['proposal']['binding']['revision'] += 1
+    elif bad == 'label': context['selected_label'] = 'Yes'
+    elif bad == 'conditional': request['excerpt'] = context['selected_label'] = 'approve if tests pass'
+    elif bad == 'question_time': context['source']['observed_at'] = request['source']['observed_at']
+    else: context['instructions'] = 'Keep manual approval.'
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal): set_policy(c, state, request)
+    assert c._path().read_bytes() == before
+
+
 @pytest.mark.parametrize('text', [
     'not approved', 'Do not proceed', 'Looks good but fix issues first',
     'Approved if tests pass', 'Proceed after tests pass', 'Approve when ready',

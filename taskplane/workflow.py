@@ -21,6 +21,7 @@ OUTPUT_FIELDS = {
 }
 BINDING_FIELDS = ("workspace", "root", "run", "visit", "checkpoint", "revision",
                   "manifest_digest", "scope_digest")
+PLANNING_CONTRACT = "implementation/v1"
 
 
 class Refusal(ValueError):
@@ -46,6 +47,59 @@ def visit(phase: str) -> dict[str, Any]:
             "decision": "not_requested", "packet": None, "superseded": False}
 
 
+def scope_preflight(scope: dict[str, Any]) -> dict[str, Any]:
+    """Check declared implementation feasibility without guessing intent from suffixes.
+
+    Older scopes retain their contract; absence is unknown feasibility, not proof
+    that a requested source repair can be performed in report-only paths.
+    """
+    contract = scope.get("planning_contract")
+    require(contract in (None, PLANNING_CONTRACT), "invalid_evidence", "Unknown planning contract.")
+    intent = scope.get("implementation_intent")
+    if contract is None and intent is None:
+        return {"status": "legacy_unknown", "detail": "Implementation feasibility was not declared."}
+    require(contract == PLANNING_CONTRACT and isinstance(intent, dict), "invalid_evidence",
+            "implementation/v1 requires an explicit implementation_intent before the first checkpoint.")
+    assert isinstance(intent, dict)
+    require(intent.get("kind") in ("source", "documentation"), "invalid_evidence",
+            "Implementation intent must explicitly select source or documentation work.")
+
+    def paths(key: str, *, required: bool = True) -> set[str]:
+        values = intent.get(key)
+        require(isinstance(values, list) and (bool(values) or not required)
+                and all(isinstance(value, str) and value.strip() for value in values)
+                and len(values) == len(set(values)), "invalid_evidence",
+                f"Implementation intent needs exact unique {key}.")
+        assert isinstance(values, list)
+        return set(values)
+
+    implementation = paths("implementation_paths")
+    tests = paths("test_paths", required=intent["kind"] == "source")
+    build = set(scope["paths"]["build"])
+    require(implementation <= build and tests <= build | set(scope.get("verification_inputs", [])),
+            "scope_violation", "Implementation and test paths must be authorized before Product; Plan cannot widen them.")
+    outputs = intent.get("build_outputs")
+    require(isinstance(outputs, dict) and set(outputs) == {"packet", "report", "verification_history"}
+            and all(isinstance(value, str) and value.strip() for value in outputs.values())
+            and len(set(outputs.values())) == 3, "invalid_evidence",
+            "Implementation scope needs distinct Build packet, report and verification history paths up front.")
+    assert isinstance(outputs, dict)
+    require(set(outputs.values()) <= build and not set(outputs.values()) & (implementation | tests),
+            "scope_violation", "Build evidence outputs cannot substitute for implementation or test paths.")
+    coverage = intent.get("criteria")
+    require(isinstance(coverage, dict) and set(coverage) == set(scope["criteria"]), "invalid_evidence",
+            "Implementation intent must map every stable acceptance criterion before Product.")
+    assert isinstance(coverage, dict)
+    for criterion, row in coverage.items():
+        require(isinstance(row, dict) and isinstance(row.get("paths"), list) and row["paths"]
+                and all(isinstance(value, str) for value in row["paths"])
+                and set(row["paths"]) <= implementation
+                and isinstance(row.get("verification"), str) and row["verification"].strip(),
+                "invalid_evidence", f"Implementation criterion {criterion} needs intended paths and verification.")
+    return {"status": "declared_feasible", "contract": contract, "kind": intent["kind"],
+            "detail": "Declared paths cover implementation, tests and Build evidence; behavior still requires verification."}
+
+
 def validate_scope(scope: dict[str, Any]) -> None:
     require(isinstance(scope, dict), "invalid_evidence", "Scope must be an object.")
     require(scope.get("execution_contract") in (None, "native-default/v1"),
@@ -62,8 +116,10 @@ def validate_scope(scope: dict[str, Any]) -> None:
         values = paths[phase]
         require(isinstance(values, list) and all(isinstance(p, str) and p for p in values),
                 "invalid_evidence", f"Invalid write scope for {phase}.")
-    require(isinstance(scope.get("verification_inputs", []), list),
+    require(isinstance(scope.get("verification_inputs", []), list)
+            and all(isinstance(p, str) and p for p in scope.get("verification_inputs", [])),
             "invalid_evidence", "Verification inputs must be a path list.")
+    scope_preflight(scope)
 
 
 def new_state(workspace: str, root: str, run: str, scope: dict[str, Any], *,

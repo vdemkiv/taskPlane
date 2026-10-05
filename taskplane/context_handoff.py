@@ -12,7 +12,7 @@ import uuid
 
 from . import depgraph, primitives, workflow as w, workflow_evidence as evidence
 from .context import Store, digest, encode, signed, PAGE_LIMIT, OBJECT_LIMIT, REFERENCE_SCHEMA
-from .context_views import PHASE_BYTES, collection, view
+from .context_views import PHASE_BYTES, collection, shared_bodies, view, view_source_key
 
 CONTRACT = "bounded/v1"
 SEMANTIC_CONTRACT = "bounded/v2"
@@ -187,6 +187,17 @@ def inputs(workspace: Path, state: dict[str, Any], task: str | None) -> tuple[li
     return items, [row["id"] for row in selected], criteria, {"authority": authority, "coverage": coverage}
 
 
+def current_read_binding(workspace: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Recompute root-source freshness without building a view or walking its trees."""
+    w.require(state.get("run") and state.get("visits") and not state.get("superseded_by"),
+              "invalid_context", "Context requires the current bound run.")
+    items, _, _, metadata = inputs(workspace, state, None)
+    store = Store(workspace)
+    refs = {item["id"]: store.reference(item.get("kind", "input"), item["body"]) for item in items}
+    current = binding(state)
+    return {**current, "source_key": view_source_key(current, refs, metadata["authority"], items)}
+
+
 class _PreviewStore(Store):
     """Exact canonical trees in memory, with read-through to existing evidence."""
 
@@ -259,9 +270,26 @@ class Session:
         for field in (self.view["references"], self.view["required_inputs"], self.handoff["accepted_inputs"]):
             if field.get("details"):
                 self.refs.append(field["details"])
+        reuse = shared_bodies(self.items, self.input_refs)
+        reuse_ref = self.view.get("body_reuse", {}).get("details")
+        if reuse_ref:
+            self.refs.append(reuse_ref)
         self.store.register(self.read_binding, self.refs)
-        self.required_trees = {item["ref"]["sha256"]: self.store.descendants(item["ref"])
+        self.original_trees = {item["ref"]["sha256"]: self.store.descendants(item["ref"])
                                for item in self.required}
+        self.delivery_trees = dict(self.original_trees)
+        self.required_trees = dict(self.original_trees)
+        if reuse_ref:
+            provenance = self.store.descendants(reuse_ref)
+            for group in reuse:
+                body = self.store.descendants(group["body_ref"])
+                for item in group["inputs"]:
+                    key = item["ref"]["sha256"]
+                    self.delivery_trees[key] = body
+                    if item["required"]:
+                        # Delivery of the shared bytes and the explicit role map
+                        # is needed before either provenance obligation completes.
+                        self.required_trees[key] = body | provenance
         self.allowed: set[str] | None = None
         self.ledger_path = evidence.path(self.workspace,
             f".taskplane/context-v1/delivery/{self.handoff_ref['sha256']}.json")
@@ -278,10 +306,11 @@ class Session:
     def preflight(self) -> dict[str, Any]:
         required = {item["ref"]["sha256"]: item for item in self.required}
         nodes = set().union(*self.required_trees.values()) if self.required_trees else set()
-        bodies = {self.input_refs[item["id"]]["sha256"]: item["body"] for item in self.items}
-        sizes = sorted(({"id": item["id"], "bytes": len(encode(bodies[key]))} for key, item in required.items()),
+        bodies = {digest(item["body"]): item for item in self.items if item.get("required", True)}
+        sizes = sorted(({"id": item["id"], "bytes": len(encode(item["body"]))} for item in bodies.values()),
                        key=lambda item: (-item["bytes"], item["id"]))
         return {"required_roots": len(required), "required_body_bytes": sum(item["bytes"] for item in sizes),
+                "unique_required_bodies": len(bodies),
                 "required_pages": sum(self.store.page(key)["pages"] for key in nodes),
                 "supporting_roots": sum(not item.get("required", True) for item in self.items),
                 "largest_required": sizes[:5], "basis": "Unique required bodies; page envelopes add transport cost."}
@@ -306,7 +335,11 @@ class Session:
             ledger["pages"][key] = pages
             if pages == list(range(total)):
                 seen.add(key)
-        returned = sorted(key for key, nodes in self.required_trees.items() if nodes <= seen)
+        for key, nodes in self.original_trees.items():
+            if nodes <= seen and (self.required_trees[key] - self.delivery_trees[key]) <= seen:
+                seen |= self.delivery_trees[key]
+        returned = sorted(key for key, nodes in self.required_trees.items()
+                          if nodes <= seen or self.original_trees[key] <= seen)
         receipt: dict[str, Any] = {"schema": "taskplane.context-delivery-receipt/v1",
             "binding": self.binding, "handoff_digest": self.handoff["digest"],
             "view_digest": self.view["digest"], "returned_refs": returned,
@@ -350,11 +383,11 @@ class Session:
 
     def consume(self, key: str) -> dict[str, Any]:
         w.require(key == self.handoff_ref["sha256"], "invalid_context", "Stale or foreign handoff.")
-        seen = set()
+        seen: set[str] = set()
         for item in self.items:
             if item["id"] in self.view["inline"]:
                 ref = self.input_refs[item["id"]]
-                seen |= self.required_trees[ref["sha256"]] if ref["sha256"] in self.required_trees else self.store.descendants(ref)
+                seen |= self.delivery_trees[ref["sha256"]] if ref["sha256"] in self.delivery_trees else self.store.descendants(ref)
         response = self._deliver({"schema": "taskplane.context-consumption/v1", "view": self.view}, seen,
                                  limit=PHASE_BYTES[self.phase])
         w.require(len(encode(response)) <= PHASE_BYTES[self.phase], "context_overflow", "Consumed view exceeds phase budget.")

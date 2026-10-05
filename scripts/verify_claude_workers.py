@@ -493,7 +493,37 @@ def main():
     return 0 if report["status"] in {"pass", "observed", "prepared"} else 1
 
 
-def make_project(folder, worktree):
+EXTRA_REVIEWS = (
+    ('C', 'bounds.py', 'lower-bound',
+     '"""Clamp a reading to the inclusive lower and upper bounds."""\ndef clamp(value, low, high):\n    return min(value, high)\n',
+     'from bounds import clamp; print(clamp(-5, 0, 10))'),
+    ('D', 'extensions.py', 'filename-parsing',
+     '"""Return the final filename extension."""\ndef extension(name):\n    return name.split(".")[1]\n',
+     'from extensions import extension; print(extension("archive.tar.gz"))'),
+    ('E', 'prices.py', 'percentage-arithmetic',
+     '"""Subtract a percentage discount from the price."""\ndef discounted(price, percent):\n    return price * (1 - percent)\n',
+     'from prices import discounted; print(discounted(100, 20))'),
+    ('F', 'distinct.py', 'duplicate-handling',
+     '"""Count distinct input values."""\ndef count_unique(values):\n    return len(values)\n',
+     'from distinct import count_unique; print(count_unique([1, 1, 2]))'),
+    ('G', 'flags.py', 'boolean-parsing',
+     '"""Parse the strings true and false as boolean values."""\ndef parse_flag(value):\n    return bool(value)\n',
+     'from flags import parse_flag; print(parse_flag("false"))'),
+    ('H', 'maximum.py', 'negative-values',
+     '"""Return the largest element of a nonempty sequence."""\ndef largest(values):\n    result = 0\n    for value in values:\n        result = max(result, value)\n    return result\n',
+     'from maximum import largest; print(largest([-7, -2]))'),
+    ('I', 'events.py', 'event-ordering',
+     '"""Return the latest item from a nonempty oldest-first event list."""\ndef latest(events):\n    return events[0]\n',
+     'from events import latest; print(latest(["old", "new"]))'),
+    ('J', 'chunks.py', 'trailing-data',
+     '"""Split all values into chunks, retaining a final partial chunk."""\ndef chunks(values, size):\n    return [values[i:i+size] for i in range(0, len(values)-size+1, size)]\n',
+     'from chunks import chunks; print(chunks([1, 2, 3], 2))'),
+)
+
+
+def make_project(folder, worktree, worker_count=2):
+    if worker_count not in (2, 10):
+        raise ValueError('The prepared review fixture supports two or ten workers')
     original = folder / "original-project"
     original.mkdir()
     (original / "averages.py").write_text(
@@ -502,7 +532,11 @@ def make_project(folder, worktree):
     (original / "settings.py").write_text(
         '"""Parse the HTTP listener configuration."""\n\n'
         'def listener_port(value):\n    return int(value)\n')
-    commands = [["git", "init", "-q"], ["git", "add", "averages.py", "settings.py"],
+    extra = EXTRA_REVIEWS if worker_count == 10 else ()
+    for _, source, _, body, _ in extra:
+        (original / source).write_text(body)
+    sources = ['averages.py', 'settings.py', *[row[1] for row in extra]]
+    commands = [["git", "init", "-q"], ["git", "add", *sources],
                 ["git", "-c", "user.name=Claude worker validation", "-c", "user.email=validation@example.invalid",
                  "commit", "-qm", "Disposable review inputs"]]
     evidence = []
@@ -521,7 +555,9 @@ def make_project(folder, worktree):
     bootstrap = workspace / ".taskplane/bootstrap"
     bootstrap.mkdir(parents=True)
     tasks = []
-    for suffix, source, lens in (("A", "averages.py", "correctness"), ("B", "settings.py", "input-validation")):
+    cases = [("A", "averages.py", "correctness"), ("B", "settings.py", "input-validation")]
+    cases.extend((suffix, source, lens) for suffix, source, lens, _, _ in extra)
+    for suffix, source, lens in cases:
         tasks.append({"id": "CW-LIVE-" + suffix, "phase": "engineering", "dependencies": [],
                       "execution": "native_required", "owner": "native-worker", "review_lens": lens,
                       "paths": [f".taskplane/review-{suffix.lower()}.md", f".taskplane/failure-{suffix.lower()}.md"],
@@ -531,9 +567,9 @@ def make_project(folder, worktree):
                       "verification": "Reproduce a real defect, cite source and expected behavior, write the scoped review and hand it back."})
     paths = [".taskplane/review.json", ".taskplane/review.md", ".taskplane/review-checks.json"]
     paths += [p for task in tasks for p in task["paths"]]
-    scope = {"execution_contract": "native-default/v1", "criteria": ["REVIEW-A", "REVIEW-B"],
+    scope = {"execution_contract": "native-default/v1", "criteria": ['REVIEW-' + row[0] for row in cases],
              "paths": {phase: paths if phase == "engineering" else [] for phase in PHASES},
-             "verification_inputs": ["averages.py", "settings.py"]}
+             "verification_inputs": sources}
     save(bootstrap / "scope.json", scope)
     save(bootstrap / "tasks.json", {"tasks": tasks})
     return original, workspace, evidence

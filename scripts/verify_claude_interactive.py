@@ -90,21 +90,73 @@ the captured terminal/session and all evidence available to the outer inspector.
 """
 
 
-def prepare(candidate: Path, output: Path) -> None:
+def ten_worker_prompt(plugin: Path, workspace: Path) -> str:
+    request = prompt(plugin, workspace)
+    request = request[:request.index('\nAfter both useful reviews are accepted')]
+    request = request.replace('two independent reviews', 'ten independent reviews')
+    request = request.replace('configured_limit:2', 'configured_limit:10')
+    request = request.replace("Two is this", "Ten is this")
+    control = """
+While fresh A is active and ready, discover actual tools using
+ToolSearch with query 'select:SendMessage,TaskStop', max_results:2. Send A one
+plain-text scoped instruction through SendMessage using its actual native worker
+ID: 'Please include the exact reproduced result in your assigned report.'
+Use the actually exposed schema; do not guess recipients. Discovery of TaskStop
+does not authorize cancelling a useful review. Preserve both automatic hook events.
+"""
+    request = request.replace('Use at most six readiness checks', control + '\nUse at most six readiness checks')
+    cases = '\n'.join(
+        f"CW-LIVE-{suffix}: Read {source}; reproduce with {shlex.join(['python3', '-c', reproduction])}; "
+        f"write .taskplane/review-{suffix.lower()}.md; lens {lens}."
+        for suffix, source, lens, _, reproduction in base.EXTRA_REVIEWS)
+    return request + f"""
+
+Also dispatch EIGHT additional independent useful native reviews, C through J,
+using the exact prepared task/grant/prefix and normal complete startup contract.
+They may run concurrently within the configured budget after fresh A is ready.
+Each must reproduce its distinct source defect and use actual SubagentHandback.
+{cases}
+Together with A and B this requires TEN distinct accepted useful native workers,
+plus A's preserved failed startup attempt. No duplicate reviewer or serial root
+review can substitute. Do not stop after A and B.
+
+After all ten useful reviews are accepted, use the native AskUserQuestion once
+to exercise the displayed decision labels. Ask 'Which label should this
+integration fixture exercise?' with options 'Approve as is' and
+'Request changes: reject deleted IDs; never normalize them'. This is a UI fixture
+selection, not a human checkpoint approval. Preserve its actual tool response;
+do not pass it to flow decide, policy or auto-decide or invent human provenance.
+
+Write .taskplane/review.md with ten-lens coverage and actual findings. Write the
+normal Engineering phase packet at .taskplane/review.json and its passing
+review-check evidence at .taskplane/review-checks.json. Use all ten exact task
+IDs, criteria and review_lens names from the prepared tasks; include real
+accepted native-result coverage. Read the candidate Engineering skill if needed.
+Refresh the strict decomposed graph, consume current required root context,
+prevalidate and submit the Engineering packet. Present its native dashboard and
+stop at the PENDING human checkpoint. Do not approve, advance, finish, retire,
+disable hooks or change any prepared inputs. Report TEN_WORKER_REVIEW_COMPLETE
+only after ten useful accepted results and a sealed pending checkpoint exist.
+"""
+
+
+def prepare(candidate: Path, output: Path, worker_count: int = 2) -> None:
     folder = Path(tempfile.mkdtemp(prefix='taskplane-claude-interactive-')).resolve()
     capture = folder / 'hooks'
     capture.mkdir()
     plugin = base.stage_plugin(candidate, folder, capture, None)
-    original, workspace, git = base.make_project(folder, False)
+    original, workspace, git = base.make_project(folder, False, worker_count)
     session = str(uuid.uuid4())
-    (folder / 'prompt.txt').write_text(prompt(plugin, workspace))
+    (folder / 'prompt.txt').write_text(
+        ten_worker_prompt(plugin, workspace) if worker_count == 10 else prompt(plugin, workspace))
     manifest = {'schema': 'taskplane.claude-interactive-fixture/v1',
-                'created_at': base.stamp(), 'session_id': session,
+                'created_at': base.stamp(), 'session_id': session, 'worker_count': worker_count,
                 'folder': str(folder), 'workspace': str(workspace),
                 'plugin': str(plugin), 'candidate': base.fingerprint(candidate),
                 'staged_candidate': base.fingerprint(plugin), 'git_setup': git,
                 'input_sha256': {p: base.digest(base.read_regular(workspace / p)) for p in
-                    ('averages.py', 'settings.py', '.taskplane/bootstrap/scope.json', '.taskplane/bootstrap/tasks.json')},
+                    [*base.load(workspace / '.taskplane/bootstrap/scope.json')['verification_inputs'],
+                     '.taskplane/bootstrap/scope.json', '.taskplane/bootstrap/tasks.json']},
                 'harness_sha256': base.digest(base.read_regular(Path(__file__))),
                 'prompt_sha256': base.digest(base.read_regular(folder / 'prompt.txt'))}
     base.save(folder / 'prepared.json', manifest)
@@ -138,7 +190,9 @@ def launch(folder: Path, claude: str) -> None:
     # Handback is exposed by this host in auto mode (the incident's mode).
     # Normal scoped permissions remain active; no bypass or feature flag override.
     rules = [r for r in base.live_permissions(plugin, workspace) if not r.startswith('Write(')]
-    rules += ['Agent', 'SubagentHandback', 'ToolSearch']
+    rules += ['Agent', 'SubagentHandback', 'ToolSearch', 'SendMessage', 'TaskStop', 'AskUserQuestion']
+    if m.get('worker_count') == 10:
+        rules += [f"Bash({shlex.join(['python3', '-c', row[4]])})" for row in base.EXTRA_REVIEWS]
     argv = [claude, '--ax-screen-reader', '--plugin-dir', str(plugin), '--session-id', m['session_id'],
             '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
             '--permission-mode', 'auto', '--add-dir', str(plugin),
@@ -171,6 +225,8 @@ def inspect(folder: Path, output: Path) -> None:
     state = states[0]
     rows = list(state.get('workers', {}).values())
     successful = [r for r in rows if r.get('state') == 'accepted']
+    count = m.get('worker_count', 2)
+    expected = {task['id'] for task in base.load(workspace / '.taskplane/bootstrap/tasks.json')['tasks']}
     first = [r for r in rows if r.get('task_id') == 'CW-LIVE-A' and r.get('attempt') == 1]
     handbacks = [c for c in captures if c['input'].get('tool_name') == 'SubagentHandback']
     startup_handbacks = [c for c in handbacks if len(first) == 1
@@ -185,11 +241,12 @@ def inspect(folder: Path, output: Path) -> None:
         base.check('actual interactive launch', base.load(folder / 'launch.json')['mode'] == 'interactive-tty'
                    and any(c['input'].get('permission_mode') == 'auto' for c in captures),
                    'Terminal enforced with observed auto permission mode, no --print fallback'),
-        base.check('three native attempts', len(rows) == 3, [(r.get('task_id'), r.get('attempt'), r.get('state')) for r in rows]),
+        base.check('exact native attempt count', len(rows) == count + 1, [(r.get('task_id'), r.get('attempt'), r.get('state')) for r in rows]),
         base.check('startup failure preserved unaccepted', len(first) == 1 and not first[0].get('claimed_at')
                    and first[0].get('state') == 'failed' and first[0].get('terminal_status') == 'failed', first),
-        base.check('both independent useful results accepted', {r['task_id'] for r in successful} == {'CW-LIVE-A', 'CW-LIVE-B'}
-                   and len({r.get('worker_id') for r in successful}) == 2, [r.get('grant_id') for r in successful]),
+        base.check('all independent useful results accepted', {r['task_id'] for r in successful} == expected
+                   and len(successful) == count
+                   and len({r.get('worker_id') for r in successful}) == count, [r.get('grant_id') for r in successful]),
         base.check('interactive handback actually invoked', bool(handbacks), len(handbacks)),
         base.check('startup handback admitted', len(startup_handbacks) == 1, len(startup_handbacks)),
         base.check('handback schema observed', bool(native['handback_schemas']), len(native['handback_schemas'])),
@@ -199,6 +256,24 @@ def inspect(folder: Path, output: Path) -> None:
         base.check('source and candidate remain unchanged', all(c.get('runtime_unchanged') for c in captures), 'Prepared hashes revalidated'),
         base.check('native evidence readable', not native['errors'], native['errors']),
     ]
+    if count == 10:
+        def observed_tool(name):
+            pre = [c for c in captures if c['event'] == 'PreToolUse'
+                   and c['input'].get('tool_name') == name and base.admitted(c)]
+            return any(p['input'].get('tool_use_id') and any(
+                c['event'] == 'PostToolUse' and c['input'].get('tool_use_id') == p['input']['tool_use_id']
+                and c['input'].get('tool_name') == name and not base.response_failed(c['input'])
+                for c in captures) for p in pre)
+        stage = state['visits'][state['index']]
+        checks.extend([
+            base.check('native control discovery exercised', observed_tool('ToolSearch'), 'Automatic admitted pre/post observations'),
+            base.check('owned worker message exercised', observed_tool('SendMessage'), 'Actual native control, not binary-schema inference'),
+            base.check('native decision label dialog exercised', observed_tool('AskUserQuestion'),
+                       'UI fixture response only; no checkpoint consent is inferred'),
+            base.check('ten-result Engineering checkpoint sealed', stage['phase'] == 'engineering'
+                       and stage['decision'] == 'awaiting_human_approval' and bool(stage.get('packet'))
+                       and expected <= set(state.get('task_results', {})), stage['decision']),
+        ])
     report = {'schema': 'taskplane.claude-interactive-verification/v1', 'observed_at': base.stamp(),
               'status': 'pass' if all(c['status'] == 'pass' for c in checks) else 'fail',
               'fixture': m, 'checks': checks, 'native_transcripts': native,
@@ -221,6 +296,8 @@ def main() -> None:
     parser.add_argument('--fixture', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--claude', default=shutil.which('claude'))
+    parser.add_argument('--worker-count', type=int, choices=(2, 10), default=2,
+                        help='Two preserves the recovery fixture; ten adds complete native review coverage')
     args = parser.parse_args()
     if (args.prepare or args.inspect) and args.output is None:
         parser.error('--prepare and --inspect require --output')
@@ -229,7 +306,7 @@ def main() -> None:
     if args.launch and not args.claude:
         parser.error('Claude executable unavailable; specify --claude')
     if args.prepare:
-        prepare(args.plugin_dir.resolve(), args.output)
+        prepare(args.plugin_dir.resolve(), args.output, args.worker_count)
     elif args.launch:
         launch(args.fixture.resolve(), args.claude)
     else:

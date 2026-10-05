@@ -1108,7 +1108,7 @@ def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = 
     from .context import Store, encode
     from .context_handoff import Session
     from .context_views import summary
-    if full or action in {'diagnose', 'recover'}:
+    if full or action in {'diagnose', 'recover', 'resume'}:
         print(json.dumps(payload, indent=2))
         return
     state = payload.get("workflow", payload)
@@ -1147,7 +1147,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "reconcile-maintenance", "inspect", "prevalidate", "context", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "resume", "reconcile-maintenance", "inspect", "prevalidate", "context", "retire", "worker"])
+    parser.add_argument("--resume-mode", choices=["inspect", "verify"], help="Read-only native same-session continuation step")
+    parser.add_argument("--resume-json", help="Observed human resume request with exact source run binding")
     parser.add_argument("--kind", choices=["contract", "result"])
     parser.add_argument("--reference")
     parser.add_argument("--offset", type=int, default=0)
@@ -1198,6 +1200,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     except ValueError as exc:
         parser.error(str(exc))
     args = parser.parse_args(arguments)
+    if args.action != 'resume' and (args.resume_mode is not None or args.resume_json is not None):
+        parser.error('resume options apply only to flow resume')
     if args.action != 'recover' and (args.recover_from is not None or args.expected_sha256 is not None):
         parser.error('recovery options apply only to flow recover')
     if args.task is not None and args.action not in {"context", "worker"}:
@@ -1242,6 +1246,26 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 or args.action == "worker" and args.operation == "claim"):
             raise workflow.Refusal("unsupported_authority",
                 "Claude invocation identity is unavailable; claim/context requires an automatic invocation reference.")
+        if args.action == 'resume':
+            from . import workflow_continuation as continuation
+            observed_request = continuation.read_request(args.resume_json or '')
+            requested_binding = observed_request.get('binding')
+            workflow.require(isinstance(requested_binding, dict)
+                             and isinstance(requested_binding.get('root'), str)
+                             and bool(requested_binding['root']) and args.run,
+                             'resume_binding', 'Resume requires the exact original root and run.')
+            assert isinstance(requested_binding, dict) and args.run is not None
+            actor = governor.principal if governor else session_id({})
+            workflow.require(governor is None or governor.root == requested_binding['root'],
+                             'resume_binding', 'Supplied controller differs from the requested original root.')
+            selected = governor or _controller(workspace, requested_binding['root'], args.profile, principal=actor)
+            resume_result = continuation.resume(selected, actor=actor, run=args.run,
+                    revision=args.expected_revision, mode=args.resume_mode or 'inspect', request=observed_request,
+                    parent=observed_parent({}, actor))
+            # This operation does not register context references, publish a
+            # dashboard, append a start event, or mutate either owner's store.
+            print(json.dumps(resume_result))
+            return 0
         if args.action == 'recover':
             session = session_id({})
             workflow.require(not observed_parent({}, session) or independent_fork({}, session),
@@ -1278,9 +1302,22 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             run = next((r for r in reversed(rows) if r.get("kind") == "start"
                         and (r.get("run") == args.run if args.run else r.get("session") == session)), None)
         parent = observed_parent({}, session)
-        controller, protected = select_controller(workspace, session, parent, profile=args.profile,
-                                                  legacy=run, governor=governor, pending_start=args.action == "start")
+        if args.action == 'report' and args.run and run and run.get('session') != session and governor is None:
+            # Explicit history selection must not silently report the current
+            # conversation's own run or the source owner's newer active run.
+            controller = _controller(workspace, str(run['session']), args.profile, principal=session)
+            protected = controller.report(args.run)
+        else:
+            controller, protected = select_controller(workspace, session, parent, profile=args.profile,
+                                                      legacy=run, governor=governor, pending_start=args.action == "start")
         if controller.principal != controller.root:
+            if args.action == 'report' and args.run and not parent:
+                from . import workflow_continuation as continuation
+                from .worker_runtime import find
+                workflow.require(find(protected, controller.principal) is None,
+                                 'scope_violation', 'Workers cannot inspect root continuation.')
+                print(json.dumps(continuation.guidance(protected)))
+                return 0
             workflow.require(args.action == "context" or args.action == "worker" and args.operation == "claim",
                              "scope_violation", "Worker CLI is limited to claim and scoped context.")
         if protected.get("visits") and "workflow_binding" in protected.get("scope", {}):
