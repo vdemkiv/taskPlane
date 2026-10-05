@@ -456,11 +456,14 @@ def test_fresh_start_rejects_used_outputs_while_continuation_verifies(source):
     check_error("output_exists", lambda: bc.verify_package(source, package["workflow_binding"], for_start=True))
 
 
-def test_git_replace_does_not_change_bound_commit_contents(source):
+@pytest.mark.parametrize('newline', [b'\n', b'\r\n'], ids=['lf', 'crlf'])
+def test_git_replace_does_not_change_bound_commit_contents(source, newline):
     git(source, "init", "-q")
+    original = b'answer = 42' + newline
+    (source / "main.py").write_bytes(original)
     first = commit(source, "first")
     (source / "main.py").write_text("different = True\n")
     second = commit(source, "second")
     git(source, "replace", first, second)
     # The binder reads immutable objects, not repository-local replacement views.
-    assert bc._blob(source, first, "main.py") == b"answer = 42\n"
+    assert bc._blob(source, first, "main.py") == original
