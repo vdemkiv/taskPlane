@@ -1,0 +1,324 @@
+"""Production-shaped interactive hooks and transcript replay, not live host certification."""
+from copy import deepcopy
+import json
+from pathlib import Path
+import shlex
+
+import pytest
+
+from taskplane import claude_worker_invocation as invocation
+from taskplane import claude_worker_observations as observations
+from taskplane import flow, workflow as w, workflow_host as h, worker_runtime as workers
+from taskplane.tests.test_claude_worker_lifecycle import encoded, notification_record
+from taskplane.tests.test_worker_runtime import setup, reserve
+
+pytestmark = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
+
+
+class Interactive:
+    def __init__(self, tmp_path, monkeypatch, *, count=4, scoped=False):
+        self.workspace = tmp_path
+        self.controller, self.state = setup(tmp_path, count=count)
+        self.slots = count + 1
+        if scoped:
+            tasks = deepcopy(self.state['initial_context_tasks'])
+            for task in tasks:
+                task.update(execution='native_required', read_inputs=['input.py'],
+                    purpose='Useful independent fixture review', context_budget_bytes=131072)
+            (tmp_path / '.taskplane/scoped-tasks.json').write_text(json.dumps({'tasks': tasks}))
+            self.state = self.controller.update_tasks(self.state['run'], self.state['revision'], '.taskplane/scoped-tasks.json')
+        self.controller.adapter.name = 'claude'
+        home = tmp_path.parent / (tmp_path.name + '-native-home')
+        monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+        monkeypatch.setenv('CLAUDE_SESSION_ID', 'root')
+        monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
+        monkeypatch.setattr(invocation, '_boot_identity', lambda: 'fixture-boot')
+        self.parent = home / '.claude/projects/interactive/root.jsonl'
+        self.parent.parent.mkdir(parents=True)
+        self.parent.write_bytes(encoded(dict(sessionId='root', cwd=str(tmp_path), type='user')))
+        self.sequence = 0
+        self.root_hook()
+        flow.append(tmp_path, dict(kind='start', run=self.state['run'], session='root', phase='product', host='claude'))
+
+    def unique(self):
+        self.sequence += 1
+        return 'interactive-' + str(self.sequence)
+
+    def root_hook(self):
+        event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(self.workspace),
+            transcript_path=str(self.parent), tool_use_id=self.unique(), tool_name='Read',
+            tool_input={'file_path': 'input.py'})
+        flow.hook(event, governor=self.controller)
+        flow.hook({**event, 'hook_event_name': 'PostToolUse'}, governor=self.controller)
+
+    def launch(self, task='T0', **extra):
+        item = reserve(self.controller, self.state, task=task, slots=self.slots, **extra)
+        self.grant = item['grant']['grant_id']
+        self.child_id = 'child-' + self.unique()
+        event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(self.workspace),
+            transcript_path=str(self.parent), tool_use_id=self.unique(), tool_name='Agent',
+            tool_input={'prompt': item['message'], 'description': 'interactive recovery', 'run_in_background': True})
+        call = dict(type='assistant', sessionId='root', cwd=str(self.workspace), timestamp=workers.now(),
+            message={'content': [dict(type='tool_use', id=event['tool_use_id'], name='Agent', input=event['tool_input'])]})
+        self.append(call)
+        flow.hook(event, governor=self.controller)
+        self.child = self.parent.with_suffix('') / 'subagents' / ('agent-' + self.child_id + '.jsonl')
+        self.child.parent.mkdir(parents=True, exist_ok=True)
+        self.child.write_bytes(encoded(dict(sessionId='root', agentId=self.child_id, isSidechain=True,
+            cwd=str(self.workspace), timestamp=workers.now())))
+        self.result = dict(type='user', sessionId='root', cwd=str(self.workspace), timestamp=workers.now(),
+            message={'content': [dict(type='tool_result', tool_use_id=event['tool_use_id'], content='native launch')]},
+            toolUseResult=dict(isAsync=True, status='async_launched', agentId=self.child_id, outputFile='/fixture/' + self.child_id))
+        self.append(self.result)
+        self.controller.observe(dict(hook_event_name='SubagentStart', host='claude', session_id='root',
+            agent_id=self.child_id), self.state['run'])
+        return item
+
+    def row(self):
+        return self.controller.report()['workers'][self.grant]
+
+    def append(self, record):
+        with self.parent.open('ab') as stream:
+            stream.write(encoded(record))
+
+    def event(self, tool, args):
+        return dict(hook_event_name='PreToolUse', session_id='root', agent_id=self.child_id,
+            cwd=str(self.workspace), transcript_path=str(self.parent), tool_use_id=self.unique(),
+            tool_name=tool, tool_input=args)
+
+    def invoke(self, command):
+        event = self.event('Bash', {'command': command})
+        answer = flow.hook(event)
+        updated = answer['hookSpecificOutput']['updatedInput']
+        result = h.Controller.invoke_claude(shlex.split(updated['command'])[1:])
+        flow.hook({**event, 'hook_event_name': 'PostToolUse', 'tool_input': updated, 'tool_response': result})
+        return result
+
+    def consume(self):
+        claim, context = workers.startup_commands(self.controller.report(), self.row())
+        self.invoke(claim)
+        descriptor = self.invoke(context)
+        result = self.invoke(context + ' --drain ' + descriptor['handoff_ref']['sha256'])
+        while result['remaining_required']:
+            runtime = shlex.join(invocation._runtime(None, None))
+            result = self.invoke(runtime + ' ' + result['next_action'])
+        assert result['done']
+
+    def stop(self, body, **extra):
+        event = dict(hook_event_name='SubagentStop', session_id='root', agent_id=self.child_id,
+            cwd=str(self.workspace), transcript_path=str(self.parent), agent_transcript_path=str(self.child),
+            last_assistant_message=body, stop_hook_active=False, event_id=self.unique())
+        flow.hook({**event, **extra}, governor=self.controller)
+
+    def notify(self, body, **extra):
+        note = notification_record(self.row(), self.result, body)
+        note['sessionId'] = 'root'
+        self.append({**note, **extra})
+        self.root_hook()
+
+    def accept(self):
+        (self.workspace / 'T0.md').write_text('Fixture verified result')
+        return self.controller.worker(self.state['run'], 'accept-result', revision=self.state['revision'],
+            task='T0', grant=self.grant, request={'outputs': ['T0.md'],
+                'checks': [{'name': 'Fixture verification', 'status': 'pass', 'evidence': 'T0.md'}]})
+
+
+@pytest.mark.parametrize('wrapper', [' 2>&1 | head -50', ' | head -80', ' && true', ' > /tmp/output'])
+def test_wrapped_startup_denial_has_exact_recovery_and_valid_retry(tmp_path, monkeypatch, wrapper):
+    host = Interactive(tmp_path, monkeypatch)
+    item = host.launch()
+    claim, context = workers.startup_commands(host.controller.report(), host.row())
+    assert 'without pipes' in item['message']
+    for command in (claim, context):
+        with pytest.raises(w.Refusal) as failure:
+            flow.hook(host.event('Bash', {'command': command + wrapper}))
+        assert claim in str(failure.value) and context in str(failure.value)
+        assert 'without pipes' in str(failure.value)
+    assert not host.row().get('claimed_at') and not host.row()['context_receipt']
+    host.consume()
+    assert host.row()['state'] == 'running'
+    assert host.row()['context_receipt']
+
+
+@pytest.mark.parametrize('notification', ['no_report', 'failure_report'])
+def test_startup_failure_handback_is_bounded_failure_and_fresh_retry_works(tmp_path, monkeypatch, notification):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    failed_grant = host.grant
+    for index in range(4):
+        event = host.event('SubagentHandback', {'message': f'Unable to start; retry {index}.'})
+        flow.hook(event)
+        flow.hook({**event, 'hook_event_name': 'PostToolUse', 'tool_response': {'status': 'unknown'}})
+        host.stop(f'Interim attempted report {index}.')
+        assert host.row()['state'] == 'bootstrapping'
+        assert not host.row().get('completion_conflict')
+        assert workers.readiness(host.row())['status'] == 'pending'
+    assert len(host.row()['startup_handbacks']) == 4
+    assert not host.row().get('claimed_at') and not host.row()['context_receipt']
+    with pytest.raises(w.Refusal):
+        flow.hook(host.event('Write', {'file_path': 'T0.md', 'content': 'forbidden'}))
+    body = observations.NO_REPORT_RESULT if notification == 'no_report' else 'Startup failure report delivered.'
+    if notification != 'no_report':
+        host.stop(body)
+    host.notify(body)
+    failed = host.row()
+    assert failed['state'] == 'failed' and failed['terminal_status'] == 'failed'
+    assert failed['handback']['status'] == ('no_report' if notification == 'no_report' else 'startup_failed')
+    assert not failed.get('completion_conflict')
+    with pytest.raises(w.Refusal, match='not joined'):
+        host.accept()
+    host.launch(retry_reason='Observed startup failure after invalid wrapped claim; use exact commands.')
+    assert host.grant != failed_grant and host.row()['attempt'] == 2
+    host.consume()
+    event = host.event('Read', {'file_path': 'input.py'})
+    flow.hook(event)
+    flow.hook({**event, 'hook_event_name': 'PostToolUse'})
+    assert workers.readiness(host.row())['status'] == 'ready'
+    host.stop('Interim stop; preparing final report.')
+    host.stop('Verified fresh result.')
+    host.notify('Verified fresh result.')
+    assert host.row()['state'] == 'result_pending'
+    host.accept()
+    assert host.row()['state'] == 'accepted'
+    assert host.controller.report()['workers'][failed_grant]['state'] == 'failed'
+    host.launch(task='T1')
+
+
+@pytest.mark.parametrize('defect', ['extra_target', 'empty', 'oversize', 'wrong_actor', 'wrong_runtime',
+    'stale_binding', 'revoked', 'identity_conflict', 'not_fresh', 'nonautomatic', 'missing_call', 'changed_body'])
+def test_startup_failure_admission_retains_identity_schema_and_binding_boundaries(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    state = host.controller.report()
+    row = state['workers'][host.grant]
+    event = host.event('SubagentHandback', {'message': 'Cannot start.'})
+    event.update(taskplane_automatic_hook=True, taskplane_observed_binding={'root': 'root', 'principal': host.child_id},
+        taskplane_runtime_identity=deepcopy(row['expected_runtime']))
+    if defect == 'extra_target': event['tool_input']['target'] = 'root'
+    if defect == 'empty': event['tool_input']['message'] = ''
+    if defect == 'oversize': event['tool_input']['message'] = 'é' * 16385
+    if defect == 'wrong_actor': event['taskplane_observed_binding']['principal'] = 'foreign'
+    if defect == 'wrong_runtime': event['taskplane_runtime_identity']['root'] = '/foreign'
+    if defect == 'stale_binding': row['binding']['revision'] = -1
+    if defect == 'revoked': row['revoked_at'] = workers.now()
+    if defect == 'identity_conflict': row['identity_conflict'] = True
+    if defect == 'not_fresh': row['identity_freshness']['status'] = 'not_yet_available'
+    if defect == 'nonautomatic': event['taskplane_automatic_hook'] = False
+    if defect == 'missing_call': event.pop('tool_use_id')
+    if defect == 'changed_body':
+        workers.admit_handback(state, row, event)
+        event['tool_input']['message'] = 'Changed body for the same call.'
+    with pytest.raises(w.Refusal):
+        workers.admit_handback(state, row, event)
+
+
+def test_stop_history_and_failure_handback_attempts_have_bounds(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    for index in range(40):
+        host.stop('Interim stop ' + str(index))
+    row = host.row()
+    assert len(row['stop_observations']) == 32 and not row.get('completion_conflict')
+    assert row['stop_observations'][0]['body_digest'] == workers.digest('Interim stop 8')
+    for index in range(8):
+        flow.hook(host.event('SubagentHandback', {'message': 'Failure ' + str(index)}))
+    with pytest.raises(w.Refusal, match='bound reached'):
+        flow.hook(host.event('SubagentHandback', {'message': 'Ninth failure'}))
+    host.notify(observations.NO_REPORT_RESULT)
+    assert host.row()['state'] == 'failed'
+
+
+@pytest.mark.parametrize('defect', ['missing_stop', 'wrong_stop_path', 'active_stop', 'wrong_child', 'wrong_call',
+    'wrong_output', 'wrong_origin', 'missing_newline', 'changed_body', 'old_notification', 'source_replaced'])
+def test_no_report_terminal_requires_exact_native_envelopes(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    if defect != 'missing_stop':
+        host.stop('Unsent body differs from the host sentinel.', **(
+            {'agent_transcript_path': str(host.child) + '-other'} if defect == 'wrong_stop_path' else
+            {'stop_hook_active': True} if defect == 'active_stop' else {}))
+    note = notification_record(host.row(), host.result, observations.NO_REPORT_RESULT)
+    note['sessionId'] = 'root'
+    content = note['message']['content']
+    if defect == 'wrong_child': content = content.replace(f'<task-id>{host.child_id}', '<task-id>foreign')
+    if defect == 'wrong_call': content = content.replace(f'<tool-use-id>{host.row()["call_id"]}', '<tool-use-id>foreign')
+    if defect == 'wrong_output': content = content.replace('/fixture/' + host.child_id, '/fixture/foreign')
+    if defect == 'wrong_origin': note['origin']['producer'] = 'user'
+    if defect == 'missing_newline': content = content.replace('report.\n</result>', 'report.</result>')
+    if defect == 'changed_body': content = content.replace('no report was delivered', 'a report was delivered')
+    if defect == 'old_notification': note['timestamp'] = host.row()['prepared_at']
+    note['message']['content'] = content
+    host.append(note)
+    if defect == 'source_replaced':
+        saved = host.parent.with_suffix('.saved')
+        host.parent.rename(saved)
+        host.parent.write_bytes(saved.read_bytes())
+    host.root_hook()
+    row = host.row()
+    assert row['state'] in workers.LIVE
+    assert row.get('handback', {}).get('status') not in {'delivered', 'no_report'}
+    with pytest.raises(w.Refusal):
+        host.accept()
+
+
+@pytest.mark.parametrize('defect', [None, 'report', 'identity', 'claimed', 'binding', 'body_tamper', 'delivered'])
+def test_legacy_preclaim_stop_conflict_only_recovers_with_fresh_exact_no_report(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.stop('First host-forced stop.')
+    host.stop('Second host-forced stop.')
+    state = host.controller.report()
+    row = state['workers'][host.grant]
+    # Model the persisted 2.32.1 conflict, without rewriting the live controller.
+    row.update(state='unknown', completion_conflict=True)
+    row.pop('stop_observations')
+    if defect == 'identity': row['identity_conflict'] = True
+    if defect == 'claimed': row['claimed_at'] = workers.now()
+    if defect == 'binding': row['binding']['revision'] = -1
+    if defect == 'delivered': row['handback'] = {'status': 'delivered', 'notification': {'old': 'proof'}}
+    body = 'A different reported result.' if defect == 'report' else observations.NO_REPORT_RESULT
+    note = notification_record(row, host.result, body)
+    note['sessionId'] = 'root'
+    host.append(note)
+    parsed = observations.observe_many('root', [row], {}, source=state['claude_transcript_source'],
+        cursor=state['claude_transcript_cursor'])
+    cursor = parsed['cursor']
+    for entry in cursor['entries'].values():
+        for value in entry['notification']:
+            value['projection'].pop('no_report', None)
+    state['claude_transcript_cursor'] = observations._sealed(cursor)
+    if defect == 'body_tamper':
+        host.parent.write_text(host.parent.read_text().replace('no report was delivered', 'a report was delivered'))
+    workers.observe_claude_launches(state, [row], {})
+    if defect is None:
+        assert row['state'] == 'failed' and row['completion_conflict'] is False
+        assert row['handback']['status'] == 'no_report'
+        assert any(event['kind'] == 'legacy_no_report_conflict_reclassified'
+                   for event in row['reconciliation_events'].values())
+    else:
+        assert row['state'] == 'unknown' and row['completion_conflict'] is True
+
+
+def test_failed_startup_then_ready_retry_releases_ten_task_cohort(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch, count=10, scoped=True)
+    host.launch()
+    with pytest.raises(w.Refusal, match='Cohort startup'):
+        reserve(host.controller, host.state, task='T1', slots=11)
+    host.stop('Could not claim this attempt.')
+    host.notify(observations.NO_REPORT_RESULT)
+    assert host.row()['state'] == 'failed'
+    with pytest.raises(w.Refusal, match='Cohort startup'):
+        reserve(host.controller, host.state, task='T1', slots=11)
+    host.launch(retry_reason='Exact native no-report proves first startup failed; retry corrected commands.')
+    host.consume()
+    with pytest.raises(w.Refusal, match='Cohort startup'):
+        reserve(host.controller, host.state, task='T1', slots=11)
+    event = host.event('Read', {'file_path': 'input.py'})
+    flow.hook(event)
+    flow.hook({**event, 'hook_event_name': 'PostToolUse'})
+    assert workers.readiness(host.row())['status'] == 'ready'
+    grants = [reserve(host.controller, host.state, task='T' + str(index), slots=11)['grant']
+              for index in range(1, 10)]
+    assert len({grant['grant_id'] for grant in grants}) == 9
+    assert {grant['task_id'] for grant in grants} == {'T' + str(index) for index in range(1, 10)}
+    assert len([row for row in host.controller.report()['workers'].values() if row['state'] in workers.LIVE]) == 10

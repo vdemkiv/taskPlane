@@ -18,6 +18,13 @@ from typing import Any, Mapping, Sequence
 
 from .context import digest
 
+# Exact system-origin result emitted by the interactive host after handback
+# retries end. It is terminal failure evidence, never the worker's report.
+NO_REPORT_RESULT = (
+    'The subagent ended without delivering a report through SubagentHandback, so no report was delivered. '
+    'Its unsent text is not shown. Send the agent a message (SendMessage) to ask it to deliver its report.\n'
+)
+
 MAX_BYTES = 4 * 1024 * 1024
 MAX_LINE_BYTES = 256 * 1024
 MAX_RECORDS = 16384
@@ -421,7 +428,8 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     return {**{key: _scalar(row.get(key)) for key in ('sessionId', 'cwd', 'isSidechain', 'timestamp')},
             'worker_id': child, 'call_id': call, 'output_file_sha256': digest(output), 'status': status,
-            'body_digest': digest(body), 'record_sha256': digest(row)}
+            'body_digest': digest(body), 'record_sha256': digest(row),
+            **({'no_report': True} if body == NO_REPORT_RESULT else {})}
 
 
 def _items(row: Mapping[str, Any], call: str) -> list[tuple[str, Mapping[str, Any]]]:
@@ -552,6 +560,10 @@ def _validate_entry(fd: int, path: Path, parent: str, attempt: Mapping[str, Any]
             row = _verify(fd, value["reference"], budget)
             if row is None:
                 return False
+            if role == 'notification' and 'no_report' not in value['projection']:
+                projected = _notification(row)
+                if projected and {k: v for k, v in projected.items() if k != 'no_report'} == value['projection']:
+                    value['projection'] = projected
             if role == 'result' and 'output_file_sha256' not in value['projection']:
                 # Upgrade only after re-reading the exact pinned native span.
                 for kind, item in _items(row, attempt['call_id']):

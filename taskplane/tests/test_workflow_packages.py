@@ -311,7 +311,9 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
                 'workflows/change-risk-review.workflow.json', 'workflows/design-brief.workflow.json',
                 'workflows/feature-delivery.workflow.json', 'taskplane/claude_worker_invocation.py',
                 'taskplane/claude_worker_observations.py', 'scripts/verify_claude_workers.py',
-                'docs/claude-worker-recovery.md', 'docs/test-candidate.md'} <= set(archive.namelist())
+                'scripts/verify_claude_interactive.py',
+                'docs/claude-worker-recovery.md', 'docs/claude-interactive-recovery.md',
+                'docs/test-candidate.md'} <= set(archive.namelist())
         dispatch = archive.read('skills/tp-go/references/codex-native-dispatch.md').decode()
         assert 'operation prepare' in dispatch and 'minimum live acceptance test' in dispatch
         assert 'hooks/hooks.json' in archive.namelist()

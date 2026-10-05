@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Prepare and inspect a real interactive Claude recovery session.
+
+Launch uses a terminal (never --print). Hooks delegate unchanged to an isolated
+candidate. The inspector reads automatic hook captures and native transcripts;
+it never authors lifecycle events or edits a workflow controller.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import sys
+import tempfile
+import uuid
+
+if __package__:
+    from . import verify_claude_workers as base
+else:
+    import verify_claude_workers as base
+
+
+def prompt(plugin: Path, workspace: Path) -> str:
+    runtime = shlex.join([str(Path(sys.executable).resolve()), str(plugin / 'taskplane/tp.py')])
+    return f"""Run the explicitly authorized bounded Taskplane standalone Engineering
+integration check in {workspace}. Use native Agent workers, not shell or serial
+root reviewers. The scoped fixture tests interactive startup-failure recovery.
+Use this exact candidate launcher: {runtime}
+Read {plugin / "skills/tp-go/references/shared-flow.md"} and
+{plugin / "skills/tp-go/references/codex-native-dispatch.md"} using Read with
+absolute paths. Keep the shell working directory at {workspace}; never cd into
+the plugin to read its documentation. Run pwd immediately before every worker
+preparation and native dispatch. If it differs, first execute cd {workspace}
+as a separate foreground command and verify pwd. Native worker identity requires
+this exact workspace. Execute exactly:
+{runtime} flow activate --workspace {workspace} --phase engineering --request-reference interactive-recovery-test
+{runtime} flow start --workspace {workspace} --standalone --phase engineering --scope .taskplane/bootstrap/scope.json --tasks .taskplane/bootstrap/tasks.json --request-reference interactive-recovery-test --goal 'Interactive worker failure recovery and two independent reviews'
+Consume root context and an ordinary Read, then prepare CW-LIVE-A. Use actual
+host capacity; when not exposed use host_slots:null, includes_root:false,
+configured_limit:2 with a reference to the actual Agent schema. Two is this
+test's configured budget, not a claimed host slot count.
+
+For A's FIRST attempt, pass the prepared dispatch prefix unchanged and then
+explicitly instruct this fault-injection exception: do not claim or read source;
+call the actually exposed SubagentHandback with only message text reporting
+'Deliberate startup failure before claim/context; no review or files produced.'
+This single bounded implicit-parent failure report is the behavior under test.
+If that tool is absent, report interactive capability unavailable and stop.
+Wait for its actual terminal notification and inspect worker status. Preserve
+the failed attempt; never accept it as completed review. Only after actual
+terminal evidence releases it, prepare ONE fresh CW-LIVE-A grant with retry_reason
+describing deliberate startup failure and now removing that injection.
+
+Fresh A must claim exactly, consume every context next_action until done, Read
+averages.py, run python3 -c 'import time; time.sleep(60)' to permit concurrent
+work, reproduce average([]) using python3 -c 'from averages import average; print(average([]))',
+write .taskplane/review-a.md with the defect, source line and actual result, then
+deliver the report using the actual SubagentHandback tool. Observe readiness
+(claim, full context, matching automatic hook pair) before preparing CW-LIVE-B while A
+is active. Use at most six readiness checks over 45 seconds, without a background
+watcher. Wait for host completion notifications instead of shell polling loops.
+
+B independently reviews settings.py and reproduces out-of-range port acceptance
+using python3 -c 'from settings import listener_port; print(listener_port("70000"))'.
+To exercise actionable startup recovery, instruct B to make its FIRST claim
+attempt with ' 2>&1 | head -50' appended, observe the expected hook refusal, then
+retry the exact original claim unmodified. This is one deliberate invalid call,
+not a request to bypass hooks. If the exact retry is refused, report failure and
+stop. B must fully consume context, Read source, run reproduction, write
+.taskplane/review-b.md, and deliver using SubagentHandback.
+
+Keep all runtime commands exact, without redirection/pipes except B's one deliberate
+negative call. Root must inspect actual output, independent terminal evidence,
+then accept each successful grant through flow worker --operation accept-result
+with outputs:[its review path] and checks:[{{name:'Actual independent review',status:'pass',evidence:its review path}}].
+The failure attempt never counts as a reviewed lens. Do not modify sources,
+plugin code, scope/tasks, permissions, hooks, native transcripts or controller
+files. Use normal Write/Edit for scoped reports. Never manually invoke hooks.
+If a required operation is denied, preserve the exact failure and stop, except
+the explicitly planned single invalid B command followed by its exact retry.
+
+After both useful reviews are accepted, write .taskplane/review.md with coverage
+and findings and report 'INTERACTIVE_RECOVERY_COMPLETE'. Do not submit a phase,
+approve a checkpoint, advance, retire a run or disable the harness. This is a
+bounded integration check; workflow completion is not a test objective. Leave
+the captured terminal/session and all evidence available to the outer inspector.
+"""
+
+
+def prepare(candidate: Path, output: Path) -> None:
+    folder = Path(tempfile.mkdtemp(prefix='taskplane-claude-interactive-')).resolve()
+    capture = folder / 'hooks'
+    capture.mkdir()
+    plugin = base.stage_plugin(candidate, folder, capture, None)
+    original, workspace, git = base.make_project(folder, False)
+    session = str(uuid.uuid4())
+    (folder / 'prompt.txt').write_text(prompt(plugin, workspace))
+    manifest = {'schema': 'taskplane.claude-interactive-fixture/v1',
+                'created_at': base.stamp(), 'session_id': session,
+                'folder': str(folder), 'workspace': str(workspace),
+                'plugin': str(plugin), 'candidate': base.fingerprint(candidate),
+                'staged_candidate': base.fingerprint(plugin), 'git_setup': git,
+                'input_sha256': {p: base.digest(base.read_regular(workspace / p)) for p in
+                    ('averages.py', 'settings.py', '.taskplane/bootstrap/scope.json', '.taskplane/bootstrap/tasks.json')},
+                'harness_sha256': base.digest(base.read_regular(Path(__file__))),
+                'prompt_sha256': base.digest(base.read_regular(folder / 'prompt.txt'))}
+    base.save(folder / 'prepared.json', manifest)
+    base.save(output, {'status': 'prepared', 'fixture': str(folder), 'session_id': session,
+                       'workspace': str(workspace), 'plugin': str(plugin)})
+    print(json.dumps({'fixture': str(folder), 'session_id': session, 'workspace': str(workspace)}))
+
+
+def validate(folder: Path) -> dict:
+    manifest = base.load(folder / 'prepared.json')
+    if Path(manifest['folder']) != folder:
+        raise ValueError('Fixture directory mismatch')
+    for key in ('workspace', 'plugin'):
+        if not Path(manifest[key]).is_relative_to(folder):
+            raise ValueError('Fixture path escapes prepared directory')
+    if base.fingerprint(Path(manifest['plugin'])) != manifest['staged_candidate']:
+        raise ValueError('Staged runtime changed; prepare a fresh fixture')
+    if base.digest(base.read_regular(folder / 'prompt.txt')) != manifest['prompt_sha256']:
+        raise ValueError('Prepared request changed')
+    for name, expected in manifest['input_sha256'].items():
+        if base.digest(base.read_regular(Path(manifest['workspace']) / name)) != expected:
+            raise ValueError('Prepared source/scope/task inputs changed')
+    return manifest
+
+
+def launch(folder: Path, claude: str) -> None:
+    m = validate(folder)
+    workspace, plugin = Path(m['workspace']), Path(m['plugin'])
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise ValueError('Interactive validation requires a real terminal; refusing headless fallback')
+    # Handback is exposed by this host in auto mode (the incident's mode).
+    # Normal scoped permissions remain active; no bypass or feature flag override.
+    rules = [r for r in base.live_permissions(plugin, workspace) if not r.startswith('Write(')]
+    rules += ['Agent', 'SubagentHandback', 'ToolSearch']
+    argv = [claude, '--ax-screen-reader', '--plugin-dir', str(plugin), '--session-id', m['session_id'],
+            '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+            '--permission-mode', 'auto', '--add-dir', str(plugin),
+            '--allowedTools', *rules, '--', (folder / 'prompt.txt').read_text()]
+    base.save(folder / 'launch.json', {'started_at': base.stamp(), 'argv': argv,
+              'mode': 'interactive-tty', 'session_id': m['session_id']})
+    os.chdir(workspace)
+    os.execvpe(claude, argv, base.clean_environment(workspace))
+
+
+def inspect(folder: Path, output: Path) -> None:
+    m = validate(folder)
+    session, workspace = m['session_id'], Path(m['workspace'])
+    captures = [base.load(p) for p in (folder / 'hooks').glob('*.json')]
+    # The host emits stops for auxiliary internal agents without persisted files.
+    # Require transcripts for actual registered workers; retain every raw hook.
+    started = {c['input'].get('agent_id') for c in captures if c['event'] == 'SubagentStart'}
+    selected = [c for c in captures if not c['input'].get('agent_id')
+                or c['input']['agent_id'] in started]
+    native, _ = base.transcript_evidence(selected, session)
+    states = []
+    for p in (workspace / '.taskplane').glob('workflow-*.json'):
+        if p.name.endswith('.initialized.json'):
+            continue
+        db = base.load(p)
+        if db.get('root') == session:
+            states.extend(db.get('runs', {}).values())
+    if len(states) != 1:
+        raise ValueError('Expected one matching native root run')
+    state = states[0]
+    rows = list(state.get('workers', {}).values())
+    successful = [r for r in rows if r.get('state') == 'accepted']
+    first = [r for r in rows if r.get('task_id') == 'CW-LIVE-A' and r.get('attempt') == 1]
+    handbacks = [c for c in captures if c['input'].get('tool_name') == 'SubagentHandback']
+    startup_handbacks = [c for c in handbacks if len(first) == 1
+                        and c['event'] == 'PreToolUse'
+                        and c['input'].get('agent_id') == first[0].get('worker_id')
+                        and base.admitted(c)]
+    useful_a = next((r for r in successful if r.get('task_id') == 'CW-LIVE-A'), {})
+    denied = [c for c in captures if c['event'] == 'PreToolUse'
+              and '2>&1 | head -50' in c['input'].get('tool_input', {}).get('command', '')
+              and c.get('delegate_exit_code') != 0]
+    checks = [
+        base.check('actual interactive launch', base.load(folder / 'launch.json')['mode'] == 'interactive-tty'
+                   and any(c['input'].get('permission_mode') == 'auto' for c in captures),
+                   'Terminal enforced with observed auto permission mode, no --print fallback'),
+        base.check('three native attempts', len(rows) == 3, [(r.get('task_id'), r.get('attempt'), r.get('state')) for r in rows]),
+        base.check('startup failure preserved unaccepted', len(first) == 1 and not first[0].get('claimed_at')
+                   and first[0].get('state') == 'failed' and first[0].get('terminal_status') == 'failed', first),
+        base.check('both independent useful results accepted', {r['task_id'] for r in successful} == {'CW-LIVE-A', 'CW-LIVE-B'}
+                   and len({r.get('worker_id') for r in successful}) == 2, [r.get('grant_id') for r in successful]),
+        base.check('interactive handback actually invoked', bool(handbacks), len(handbacks)),
+        base.check('startup handback admitted', len(startup_handbacks) == 1, len(startup_handbacks)),
+        base.check('handback schema observed', bool(native['handback_schemas']), len(native['handback_schemas'])),
+        base.check('useful native workers overlapped', bool(base.overlapping_workers(useful_a, successful)),
+                   'Uses actual claim and stop observations, not delayed reconciliation'),
+        base.check('invalid wrapper refused once', len(denied) == 1, len(denied)),
+        base.check('source and candidate remain unchanged', all(c.get('runtime_unchanged') for c in captures), 'Prepared hashes revalidated'),
+        base.check('native evidence readable', not native['errors'], native['errors']),
+    ]
+    report = {'schema': 'taskplane.claude-interactive-verification/v1', 'observed_at': base.stamp(),
+              'status': 'pass' if all(c['status'] == 'pass' for c in checks) else 'fail',
+              'fixture': m, 'checks': checks, 'native_transcripts': native,
+              'workers': rows, 'task_results': state.get('task_results', {}),
+              'observations': base.capture_summary(captures, native, []),
+              'coverage': 'Real interactive terminal and automatic captured hooks; no synthetic lifecycle events.'}
+    base.save(output, report)
+    print(json.dumps({'status': report['status'], 'checks': [{k: c[k] for k in ('name', 'status')} for c in checks], 'output': str(output)}))
+    if report['status'] != 'pass':
+        raise SystemExit(1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--prepare', action='store_true')
+    mode.add_argument('--launch', action='store_true')
+    mode.add_argument('--inspect', action='store_true')
+    parser.add_argument('--plugin-dir', type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument('--fixture', type=Path)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--claude', default=shutil.which('claude'))
+    args = parser.parse_args()
+    if (args.prepare or args.inspect) and args.output is None:
+        parser.error('--prepare and --inspect require --output')
+    if not args.prepare and args.fixture is None:
+        parser.error('--launch and --inspect require --fixture')
+    if args.launch and not args.claude:
+        parser.error('Claude executable unavailable; specify --claude')
+    if args.prepare:
+        prepare(args.plugin_dir.resolve(), args.output)
+    elif args.launch:
+        launch(args.fixture.resolve(), args.claude)
+    else:
+        inspect(args.fixture.resolve(), args.output)
+
+
+if __name__ == '__main__':
+    main()

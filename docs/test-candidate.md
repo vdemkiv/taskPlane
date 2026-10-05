@@ -1,21 +1,22 @@
-# Test the 2.32.1 candidate
+# Test the 2.32.2 candidate
 
-This candidate repairs Claude hook and worker contracts exposed by external testing
-of 2.32.0, while retaining Workflow Builder.
+This candidate addresses interactive Claude startup, failure handback and terminal
+recovery exposed by external testing of 2.32.1, while retaining the earlier host
+contract repairs and Workflow Builder.
 Use a fresh test project/session. Keep the original farm-viewer runs as evidence;
 they are not fixtures to rewrite or reset.
 
 ## Packages and source identity
 
-Build from the merged, committed checkout:
+Build from the committed checkout selected for validation:
 
 ```sh
 python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.32.1.plugin` (Claude) and
-`dist/taskplane-2.32.1-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.32.2.plugin` (Claude) and
+`dist/taskplane-2.32.2-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit and per-member hashes. Require
 `matches_source_commit: true` and an empty `source_member_differences` list.
 Both sidecars must name the same commit. An archive receipt does not establish
@@ -24,13 +25,13 @@ that a host installed or invoked those bytes.
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.32.1.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.32.1-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.32.2.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.32.2-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.32.1` and `ok: true`.
+Both commands should report `2.32.2` and `ok: true`.
 
 ## Local regression and exact archive checks
 
@@ -103,7 +104,7 @@ shell enters the project's `.taskplane` directory. Returning to the project must
 remain a narrow recovery action, without permitting a nested workflow store.
 
 Claude Code 2.1.289 exposes different Agent schemas across modes. The observed
-CLI background launch returned structured child identity and subsequently emitted
+headless CLI background launch returned structured child identity and subsequently emitted
 a statusless `SubagentStop` and a native completion notification. It exposed no
 `SubagentHandback`. Verify result delivery against the actual host contract;
 ordinary final prose or a stop alone does not establish accepted work. Preserve
@@ -116,3 +117,12 @@ failure and test in the normal permitted host environment. No capability or
 live pass is implied by a version number or package receipt. Use the current
 candidate's complete live report, and preserve failed/unknown attempts and raw
 captures. The external 2.32.0 farm-viewer run is historical failure evidence.
+
+## Interactive recovery check
+
+Use the separate [interactive recovery guide](claude-interactive-recovery.md).
+The 2.32.1 farm-viewer failure exposed `SubagentHandback` enforcement in the
+interactive CLI, which the headless harness did not exercise. Run the prepared
+interactive test in a real terminal; it refuses a headless fallback. Require
+actual startup failure reporting, fresh retry, exact-command recovery and two
+accepted native review results. Retain failure captures when a check does not pass.

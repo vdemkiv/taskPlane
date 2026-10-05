@@ -1328,12 +1328,15 @@ class Controller:
                     self.adapter.guard_input(event, state)
                     return  # Claim/context output can be drained before its receipt is complete.
             workers.current(state, worker)
-            w.require(worker["state"] == "running" and worker.get("context_receipt"),
-                      "invalid_context", "Worker must consume every required task input before execution.")
-            workers.worker_session(self.workspace, state, worker).validate(worker["context_receipt"])
             if tool in workers.HANDBACK:
                 workers.admit_handback(state, worker, event)
                 return
+            w.require(worker["state"] == "running" and worker.get("context_receipt"),
+                      "invalid_context", "Worker must consume every required task input before execution. "
+                      + workers.startup_guidance(state, worker))
+            w.require(not worker.get('startup_handbacks'), 'scope_violation',
+                      'This attempt reported startup failure; return diagnostics and use a fresh native attempt.')
+            workers.worker_session(self.workspace, state, worker).validate(worker["context_receipt"])
             if tool in workers.MESSAGE:
                 parent_name = str(worker.get('canonical_name', '')).rsplit('/', 1)[0]
                 w.require(set(args) == {'target', 'message'} and args.get('target') in

@@ -211,6 +211,7 @@ def readiness(row: dict[str, Any]) -> dict[str, Any]:
         ("native identity", bool(row.get("worker_id"))),
         ("claim", bool(row.get("claimed_at"))),
         ("complete context", bool(row.get("context_receipt"))),
+        ("startup without failure handback", not row.get("startup_handbacks")),
         ("matching automatic hook pair", bool(proof.get("matched_call"))
          and proof.get("root") == row.get("expected_runtime", {}).get("root")
          and proof.get("member_sha256") == row.get("expected_runtime", {}).get("member_sha256"))) if not passed]
@@ -355,17 +356,28 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     return row
 
 
-def dispatch_message(state: dict[str, Any], row: dict[str, Any]) -> str:
+def startup_commands(state: dict[str, Any], row: dict[str, Any]) -> tuple[str, str]:
     runtime = [str(Path(sys.executable).resolve()), str(Path(__file__).with_name("tp.py").resolve())]
     claim = shlex.join([*runtime, "flow", "worker", "--operation", "claim", "--run", state["run"],
                         "--grant", row["grant_id"], "--workspace", state["workspace"]])
     context = shlex.join([*runtime, "flow", "context", "--workspace", state["workspace"],
                           "--run", state["run"], "--task", row["task_id"]])
+    return claim, context
+
+
+def startup_guidance(state: dict[str, Any], row: dict[str, Any]) -> str:
+    claim, context = startup_commands(state, row)
+    return ("Run each startup command exactly as a separate foreground command, without pipes, "
+            "redirections, head, wrappers or output truncation. First claim: " + claim +
+            "\nThen consume every required task input: " + context +
+            "\nFollow every returned next_action using this same runtime; retain every response body.")
+
+
+def dispatch_message(state: dict[str, Any], row: dict[str, Any]) -> str:
     return (f"Taskplane grant: {row['grant_id']}\n"
             f"Workspace: {state['workspace']}\nRun: {state['run']}\nTask: {row['task_id']}\n"
-            f"Use the installed Taskplane runtime. First claim: {claim}\n"
-            f"Then consume every required input: {context}\n"
-            "Follow each context next_action with this same resolved runtime. Stay within the assigned paths and return evidence. "
+            f"Use the installed Taskplane runtime. {startup_guidance(state, row)}\n"
+            "Stay within the assigned paths and return evidence. "
             "The grant is a correlation value, not approval or root authority.")
 
 
@@ -577,19 +589,17 @@ def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
         return {'status': 'historical', 'state': row['state']}
     if row.get('identity_conflict'):
         return {'status': 'conflict', 'state': row['state']}
-    if row.get('completion_conflict'):
-        row['state'] = 'unknown'
-        return {'status': 'conflict', 'state': row['state']}
     identity = observation.get('worker_id')
     w.require(isinstance(identity, str), 'scope_violation', 'Invalid native worker identity.')
     assert isinstance(identity, str)
     if not bind_worker(state, row, identity, observation.get('canonical_name')):
         return {'status': 'conflict', 'state': row['state']}
-    if row['state'] == 'unknown' and not row.get('terminal_status'):
+    if row['state'] == 'unknown' and not row.get('terminal_status') and not row.get('completion_conflict'):
         row.update(state='bootstrapping', identity_bound_at=now())
     row['identity_observation'] = proof
     # Call-less lifecycle observations are joined only after this exact launch
     # proof. Reused native IDs always require an attempt-correlated call ID.
+    stops = {}
     for event_id, event in state.get('unbound_worker_events', {}).items():
         if event.get('worker_id') != row['worker_id'] or event.get('parent') != state['root']:
             continue
@@ -606,17 +616,21 @@ def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
                                      ('agent-' + row['worker_id'] + '.jsonl'))
                 if (event.get('transcript_path') == source.get('path')
                         and event.get('agent_transcript_path') == expected_child):
-                    previous = row.get('stop_observation')
-                    if previous is None or previous['body_digest'] == event['body_digest']:
-                        row['stop_observation'] = {**event, 'event_id': event_id}
-                    else:
-                        row['completion_conflict'] = True
-                        row['state'] = 'unknown'
+                    stops[event_id] = {**event, 'event_id': event_id}
             else:
                 terminal(row, event['status'], event_id)
         elif row['state'] in {'bootstrapping', 'running'}:
             row.setdefault('started_at', event['observed_at'])
-    return {'status': 'matched', 'state': row['state'], 'worker_id': row['worker_id']}
+    if stops:
+        # The interactive host can stop repeatedly while requiring a handback.
+        # Keep the most recent bounded sequence; different interim bodies are
+        # not conflicting final results. The native notification pins a stop.
+        row['stop_observations'] = sorted(stops.values(), key=lambda stop:
+            (stop['observed_at'], stop['event_id']))[-32:]
+        if not row.get('handback', {}).get('notification'):
+            row['stop_observation'] = row['stop_observations'][-1]
+    return {'status': 'conflict' if row.get('completion_conflict') else 'matched',
+            'state': row['state'], 'worker_id': row['worker_id']}
 
 
 def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]],
@@ -645,17 +659,44 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                                      "observed_at": now()}
         reconcile(Path(state["workspace"]), state, row, observation)
         completed = observation.get('completion')
-        stopped = row.get('stop_observation')
-        if (observation['status'] == 'matched' and completed and stopped
+        stops = row.get('stop_observations', [row['stop_observation']] if row.get('stop_observation') else [])
+        if (observation['status'] == 'matched' and completed and stops
                 and not row.get('revoked_at') and row.get('binding') == binding(state)
-                and not row.get('identity_conflict') and not row.get('completion_conflict')):
-            if (completed['body_digest'] == stopped.get('notification_body_digest')
-                    and datetime.fromisoformat(completed['timestamp'].replace('Z', '+00:00')) >=
-                    datetime.fromisoformat(stopped['observed_at'])):
-                row['handback'] = {'schema': 'claude.session-task-notification/v1', 'status': 'delivered',
+                and not row.get('identity_conflict')):
+            preceding = [stop for stop in stops if
+                datetime.fromisoformat(completed['timestamp'].replace('Z', '+00:00')) >=
+                datetime.fromisoformat(stop['observed_at'])]
+            stopped = preceding[-1] if preceding else None
+            old = row.get('handback', {}).get('notification')
+            # Older runtimes mistook differing interim stops / the no-report
+            # sentinel for body tampering. Reclassify only this exact, freshly
+            # revalidated pre-claim failure; successful or identity conflicts
+            # cannot be repaired by a failure notification.
+            if row.get('completion_conflict'):
+                recoverable = (completed.get('no_report') is True and stopped and old is None
+                    and row['state'] == 'unknown' and not row.get('terminal_status')
+                    and not row.get('claimed_at') and not row.get('context_receipt')
+                    and not any(result.get('grant') == row['grant_id']
+                                for result in state.get('task_results', {}).values()))
+                if not recoverable:
+                    continue
+                assert stopped is not None
+                _audit(row, 'legacy_no_report_conflict_reclassified', {
+                    'notification': completed['record_sha256'], 'stop_event': stopped['event_id']})
+                row['completion_conflict'] = False
+            if (stopped and (old is None or old == completed)
+                    and (completed.get('no_report') is True
+                         or completed['body_digest'] == stopped.get('notification_body_digest'))):
+                unsuccessful = completed.get('no_report') is True or bool(row.get('startup_handbacks'))
+                row['handback'] = {'schema': 'claude.session-task-notification/v1',
+                    'status': 'no_report' if completed.get('no_report') else 'startup_failed' if unsuccessful else 'delivered',
                     'body_digest': completed['body_digest'], 'notification': completed,
                     'stop_event': stopped['event_id'], 'observed_at': now()}
-                terminal(row, 'completed', digest(completed))
+                row['stop_observation'] = stopped
+                if unsuccessful:
+                    _audit(row, 'unsuccessful_completion', {'notification': completed['record_sha256'],
+                        'stop_event': stopped['event_id'], 'status': row['handback']['status']})
+                terminal(row, 'failed' if unsuccessful else 'completed', digest(completed))
             else:
                 row['completion_conflict'] = True
                 row['state'] = 'unknown'
@@ -667,10 +708,17 @@ def admit_handback(state: dict[str, Any], row: dict[str, Any], event: dict[str, 
     """Historical implicit-parent {message} compatibility; delivery is a separate observation."""
     current(state, row)
     args = event.get("tool_input", {})
-    w.require(row.get("host") == "claude" and row.get("claimed_at") and row["state"] == "running"
-              and not row.get("identity_conflict") and readiness(row)["status"] == "ready",
-              "scope_violation", "Handback requires the current Claude claim, context and automatic hook readiness.")
-    w.require(set(args) == {"message"} and isinstance(args.get("message"), str)
+    startup = not row.get('claimed_at') or not row.get('context_receipt') or bool(row.get('startup_handbacks'))
+    observed = event.get('taskplane_observed_binding', {})
+    w.require(row.get("host") == "claude" and row['state'] in {'bootstrapping', 'running'}
+              and not row.get("identity_conflict") and not row.get('completion_conflict')
+              and row.get('identity_observation', {}).get('status') == 'matched'
+              and row.get('identity_freshness', {}).get('status') == 'matched'
+              and observed.get('root') == state['root'] and observed.get('principal') == row.get('worker_id')
+              and row.get('expected_runtime') == event.get('taskplane_runtime_identity')
+              and (startup or readiness(row)["status"] == "ready"),
+              "scope_violation", "Handback requires the exact current observed Claude child and startup or ready context.")
+    w.require(isinstance(args, dict) and set(args) == {"message"} and isinstance(args.get("message"), str)
               and 0 < len(args["message"].encode("utf-8")) <= 32768,
               "scope_violation", "SubagentHandback supports only bounded message text to its implicit own parent.")
     call = event.get("tool_use_id") or event.get("call_id")
@@ -680,22 +728,29 @@ def admit_handback(state: dict[str, Any], row: dict[str, Any], event: dict[str, 
     envelope = {"parent": state["root"], "worker": row["worker_id"], "grant": row["grant_id"],
                 "attempt": row["attempt"], "task": row["task_id"], "call_id": call,
                 "binding": binding(state), "input_digest": digest(args), "body_digest": digest(args["message"])}
-    old = row.get("handback")
+    reports = row.setdefault('startup_handbacks', {}) if startup else None
+    old = reports.get(call) if reports is not None else row.get("handback")
     w.require(old is None or old.get("envelope") == envelope,
               "scope_violation", "Conflicting or competing handback delivery; reconcile the existing call.")
     if old is None:
-        row["handback"] = {"envelope": envelope, "status": "delivery_unknown", "admitted_at": now(),
-                           "schema": "claude.SubagentHandback.message/v1"}
+        report = {"envelope": envelope, "status": "delivery_unknown", "admitted_at": now(),
+                  "schema": "claude.SubagentHandback.message/v1"}
+        if reports is not None:
+            w.require(len(reports) < 8, 'scope_violation', 'Startup failure handback attempt bound reached.')
+            reports[call] = report
+        else:
+            row['handback'] = report
 
 
 def observe_handback(state: dict[str, Any], admission: dict[str, Any], event: dict[str, Any]) -> None:
     if admission.get("tool") not in HANDBACK:
         return
-    rows = [row for row in records(state).values() if row.get("handback", {}).get("envelope", {}).get("call_id")
-            == admission.get("call_id") and row.get("worker_id") == admission.get("principal")]
-    if len(rows) != 1:
+    reports = [report for row in records(state).values() if row.get('worker_id') == admission.get('principal')
+               for report in [row.get('handback', {}), *row.get('startup_handbacks', {}).values()]
+               if report.get('envelope', {}).get('call_id') == admission.get('call_id')]
+    if len(reports) != 1:
         return
-    handback = rows[0]["handback"]
+    handback = reports[0]
     response_digest = digest(event.get("tool_response"))
     w.require(handback.get("response_digest", response_digest) == response_digest,
               "scope_violation", "Conflicting handback acknowledgement.")
@@ -840,7 +895,7 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
             proof = executing.setdefault("hook_readiness", {})
             from . import workflow_local
             words = workflow_local.runtime_words(event) if tool == "Bash" else []
-            ordinary = not (len(words) >= 4 and words[2] == "flow" and words[3] in {"worker", "context"})
+            ordinary = tool not in HANDBACK and not (len(words) >= 4 and words[2] == "flow" and words[3] in {"worker", "context"})
             paired = event.get("taskplane_admission", {})
             admitted_post = (executing.get("host") != "claude" or
                 (paired.get("principal") == executing["worker_id"] and paired.get("call_id") == call

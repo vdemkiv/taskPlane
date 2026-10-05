@@ -87,8 +87,9 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
     files.update(p for p in (ROOT / "lenses").rglob("*") if p.suffix == ".md" or p.name == "catalog.json")
     files.update(ROOT / "docs" / name for name in
                  ("cli-reference.md", "lens-catalog.md", "onboarding.md", "workflow-builder.md",
-                  "claude-worker-recovery.md", "test-candidate.md"))
+                  "claude-worker-recovery.md", "claude-interactive-recovery.md", "test-candidate.md"))
     files.add(ROOT / "scripts" / "verify_claude_workers.py")
+    files.add(ROOT / "scripts" / "verify_claude_interactive.py")
     files.update(ROOT / "workflows" / name for name in
                  ("change-risk-review.workflow.json", "design-brief.workflow.json",
                   "feature-delivery.workflow.json"))
