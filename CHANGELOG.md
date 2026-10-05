@@ -1,5 +1,10 @@
 # taskplane changelog
 
+## v2.32.3 — Distinct recovery test packages
+
+- Repackage the verified interactive Claude recovery candidate under a distinct patch version to avoid confusion with earlier 2.32.2 packages.
+- Update both host manifests, marketplace metadata and candidate testing instructions. Plugin runtime code is unchanged.
+
 ## v2.32.2 — Interactive Claude recovery candidate
 
 - Diagnose invalid claim/context wrappers with exact startup recovery commands.

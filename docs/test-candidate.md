@@ -1,4 +1,4 @@
-# Test the 2.32.2 candidate
+# Test the 2.32.3 candidate
 
 This candidate addresses interactive Claude startup, failure handback and terminal
 recovery exposed by external testing of 2.32.1, while retaining the earlier host
@@ -15,8 +15,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.32.2.plugin` (Claude) and
-`dist/taskplane-2.32.2-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.32.3.plugin` (Claude) and
+`dist/taskplane-2.32.3-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit and per-member hashes. Require
 `matches_source_commit: true` and an empty `source_member_differences` list.
 Both sidecars must name the same commit. An archive receipt does not establish
@@ -25,13 +25,13 @@ that a host installed or invoked those bytes.
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.32.2.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.32.2-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.32.3.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.32.3-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.32.2` and `ok: true`.
+Both commands should report `2.32.3` and `ok: true`.
 
 ## Local regression and exact archive checks
 
