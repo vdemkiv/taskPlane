@@ -275,6 +275,11 @@ def integrated_claude(tmp_path, monkeypatch, count=2):
     parent.parent.mkdir(parents=True)
     parent.write_text(json.dumps({'sessionId':'root', 'type':'user', 'cwd':str(tmp_path)})+'\n')
     children = parent.with_suffix('')/'subagents'; children.mkdir(parents=True)
+    source_event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(tmp_path),
+                        transcript_path=str(parent), tool_name='Read', tool_use_id='prepare-source',
+                        tool_input={'file_path':'input.py'})
+    flow.hook(source_event, governor=c)
+    flow.hook({**source_event, 'hook_event_name':'PostToolUse'}, governor=c)
     items = []
     for index in range(count):
         item = reserve(c, state, f'T{index}')
@@ -282,15 +287,18 @@ def integrated_claude(tmp_path, monkeypatch, count=2):
                  'cwd':str(tmp_path), 'transcript_path':str(parent), 'tool_name':'Task',
                  'tool_use_id':f'launch-{index}', 'tool_input':{'prompt':item['message'],
                     'description':'fixture', 'subagent_type':'general-purpose', 'run_in_background':True}}
-        flow.hook(event, governor=c)
         offset = parent.stat().st_size
-        assert c.report()['workers'][item['grant']['grant_id']]['transcript_admission_offset'] == offset
         called = workers.now()
+        call = dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
+                    message={'content':[dict(type='tool_use', id=f'launch-{index}', name='Task', input=event['tool_input'])]})
+        with parent.open('a') as stream: stream.write(json.dumps(call)+'\n')
+        flow.hook(event, governor=c)
+        admitted = c.report()['workers'][item['grant']['grant_id']]
+        assert admitted['transcript_admission_offset'] == offset < parent.stat().st_size
+        assert called < admitted['launch_requested_at']
         header = {'sessionId':'root', 'agentId':f'child-{index}', 'isSidechain':True,
                   'cwd':str(tmp_path), 'timestamp':workers.now()}
-        records = [dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
-                        message={'content':[dict(type='tool_use', id=f'launch-{index}', name='Task', input=event['tool_input'])]}),
-                   dict(type='user', sessionId='root', cwd=str(tmp_path), timestamp=workers.now(),
+        records = [dict(type='user', sessionId='root', cwd=str(tmp_path), timestamp=workers.now(),
                         message={'content':[dict(type='tool_result', tool_use_id=f'launch-{index}', content='untrusted')]},
                         toolUseResult={'isAsync':True, 'status':'async_launched', 'agentId':f'child-{index}'})]
         with parent.open('a') as stream:

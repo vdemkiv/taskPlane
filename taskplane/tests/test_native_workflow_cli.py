@@ -62,7 +62,7 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     hooks=json.loads((root/'hooks/hooks.json').read_text())['hooks']
     call_id = 'fixture-' + uuid.uuid4().hex
     def hook(name, **extra):
-        identity=({'host':'claude', 'session_id':'root', 'transcript_path':str(transcript)}
+        identity=({'session_id':'root', 'transcript_path':str(transcript)}
                   if host=='claude' else {'thread_id':'root'})
         tool,key=('Bash','command') if host=='claude' else ('exec_command','cmd')
         event={'hook_event_name':name,'cwd':str(workspace),'tool_use_id':call_id,**identity,

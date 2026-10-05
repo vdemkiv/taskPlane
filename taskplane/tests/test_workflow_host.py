@@ -241,3 +241,42 @@ def test_protected_historical_finish_preserves_new_active_run(tmp_path):
     assert c.apply('finish', a['run'], expected_revision=a['revision']) == a
     b = c.start({})
     check_historical_finish_preserves_active(c, a, b)
+
+
+@pytest.mark.parametrize('defect', [None, 'question', 'metadata', 'answer-key', 'answer-type',
+                                  'annotation', 'call', 'session', 'tool', 'codex'])
+def test_claude_question_answer_enrichment_preserves_admitted_identity(tmp_path, defect):
+    from taskplane import flow
+    from taskplane.tests.test_worker_runtime import setup
+    c, s = setup(tmp_path)
+    c.adapter.name = 'claude'
+    original = {'questions': [{'question': 'Proceed?', 'header': 'Next step',
+                'options': [{'label': 'Yes', 'description': 'Continue'},
+                            {'label': 'No', 'description': 'Stop'}], 'multiSelect': False}]}
+    event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(tmp_path),
+                 tool_name='AskUserQuestion', tool_use_id='question-1', tool_input=original)
+    flow.hook(event, governor=c)
+    enriched = {**deepcopy(original), 'answers': {'Proceed?': 'A freeform answer'}, 'annotations': {}}
+    post = {**event, 'hook_event_name': 'PostToolUse', 'tool_input': enriched}
+    if defect == 'question': enriched['questions'][0]['question'] = 'Changed?'
+    if defect == 'metadata': enriched['other'] = 'changed'
+    if defect == 'answer-key': enriched['answers'] = {'Other question': 'Yes'}
+    if defect == 'answer-type': enriched['answers'] = {'Proceed?': ['Yes']}
+    if defect == 'annotation': enriched['annotations'] = {'unverified': 'shape'}
+    if defect == 'call': post['tool_use_id'] = 'other-call'
+    if defect == 'session':
+        identity = c._call(post)[1]
+        assert not c._post_matches({**identity, 'principal': 'other'}, identity, post)
+        return
+    if defect == 'tool': post['tool_name'] = 'Bash'
+    if defect == 'codex': c.adapter.name = 'codex'
+    if defect == 'call':
+        assert c.complete_admission(post) is None
+    elif defect is not None:
+        with pytest.raises(w.Refusal, match='Completion conflicts'):
+            flow.hook(post, governor=c)
+    else:
+        flow.hook(post, governor=c)
+        row = c.complete_admission(post)
+        assert row['state'] == 'completed'
+        assert 'A freeform answer' not in json.dumps(row)

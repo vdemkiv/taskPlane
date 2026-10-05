@@ -110,6 +110,10 @@ The root uses `flow worker --operation prepare --workspace PATH --run RUN --task
 --expected-revision N --worker-json JSON`. JSON supplies `capacity` with observed
 `host_slots`, `includes_root` and a real source `reference`; optional
 `configured_limit` and `resource_limit` narrow it. No default of two is applied.
+For Claude only, when the host exposes no capacity value, record `host_slots: null`,
+`includes_root: false`, a positive explicit `configured_limit` and the actual
+observed schema reference. This bounds local admission while keeping host capacity
+unknown; it is never a claim about the host's maximum or available slots.
 Count reservations, live attempts and unknown launches. Fill available capacity
 with useful ready tasks, then refill when results satisfy prerequisites. Two
 overlapping workers is the minimum live acceptance test, not the normal limit.

@@ -11,7 +11,7 @@ Read [the shared flow](../skills/tp-go/references/shared-flow.md). Product, Desi
 Plan, Build, Evaluate, Engineering, lenses and Retro all consume the same run ID,
 workspace, attached task decomposition, dependency graph and dashboard. Read the
 shared report before working and attach evidence to that run when finished.
-The root orchestrator advances only after explicit human checkpoint approval. Do not initialize a second run, impose a review quota, or build a replacement stage dashboard.
+The root orchestrator advances only after human checkpoint approval or a current user-authorized automatic approval policy passes its conditions. Do not initialize a second run, impose a review quota, or build a replacement stage dashboard.
 
 Read the assigned lens, shared task scope and relevant dependency impact. Return real findings and evidence to the orchestrator. Use the canonical native agent handle in the review index so telemetry can match the session.
 

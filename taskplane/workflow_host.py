@@ -758,10 +758,10 @@ class Controller:
                 self.adapter.before_action(state, "worker")
             row: dict[str, Any] | None
             if operation == "prepare":
-                row = workers.prepare(self.workspace, state, task, request)
+                row = workers.prepare(self.workspace, state, task, request, host=self.adapter.name)
                 result = {"grant": deepcopy(row), "message": workers.dispatch_message(state, row)}
             elif operation == 'capacity':
-                limit = workers.capacity(request.get('capacity'))
+                limit = workers.capacity(request.get('capacity'), host=self.adapter.name)
                 state['worker_capacity'] = {**request['capacity'], 'effective_limit': limit,
                                             'observed_at': workers.now()}
                 result = workers.summary(state, self.workspace)
@@ -1043,11 +1043,37 @@ class Controller:
                                              persist=persist, dispatch=dispatch)
 
     @staticmethod
+    def _claude_question_matches(row: dict[str, Any], event: dict[str, Any]) -> bool:
+        """Allow only the observed answer enrichment of an unchanged question.
+
+        The digest still covers every originally admitted input field. Answers
+        are data, never checkpoint authority; unsupported annotations refuse.
+        """
+        args = event.get('tool_input')
+        if (row.get('host') != 'claude' or event.get('host') != 'claude'
+                or row.get('tool') != 'AskUserQuestion' or not isinstance(args, dict)
+                or not isinstance(args.get('answers'), dict) or not args['answers']
+                or args.get('annotations', {}) != {}):
+            return False
+        original = {key: value for key, value in args.items() if key not in {'answers', 'annotations'}}
+        questions = original.get('questions')
+        if (not isinstance(questions, list) or not 1 <= len(questions) <= 4
+                or not all(isinstance(question, dict) and isinstance(question.get('question'), str)
+                           for question in questions)):
+            return False
+        names = {question['question'] for question in questions}
+        return (len(names) == len(questions) and set(args['answers']) <= names
+                and all(isinstance(value, str) and len(value.encode('utf-8')) <= 32768
+                        for value in args['answers'].values())
+                and primitives.content_fingerprint(original) == row.get('input_digest'))
+
+    @staticmethod
     def _post_matches(row: dict[str, Any], identity: dict[str, Any], event: dict[str, Any]) -> bool:
         from . import claude_worker_invocation as invocation
         return (all(row.get(k) == v for k, v in identity.items() if k != "input_digest")
                 and (invocation.post_input_matches(row["invocation"], event.get("tool_input", {}))
-                     if row.get("invocation") else row.get("input_digest") == identity["input_digest"]))
+                     if row.get("invocation") else row.get("input_digest") == identity["input_digest"]
+                     or Controller._claude_question_matches(row, event)))
 
     def claude_actor(self, actor: str, event: dict[str, Any]) -> str:
         """Resolve an actor only through exact admitted native launch evidence."""
@@ -1178,6 +1204,7 @@ class Controller:
             w.require(completed, "state_unavailable", "Pending tool call admission capacity exhausted.")
             del rows[completed[0]]
         row = {**identity, "run": state["run"], "binding": binding(state), "authority": authority,
+               "host": self.adapter.name,
                "state": "admitted", "admitted_at": datetime.now(timezone.utc).isoformat(),
                "automatic": event.get("taskplane_automatic_hook") is True,
                "runtime": deepcopy(event.get("taskplane_runtime_identity"))}

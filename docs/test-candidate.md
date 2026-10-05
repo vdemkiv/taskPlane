@@ -1,6 +1,7 @@
-# Test the 2.32.0 candidate
+# Test the 2.32.1 candidate
 
-This candidate combines Workflow Builder and Claude worker identity recovery.
+This candidate repairs Claude hook and worker contracts exposed by external testing
+of 2.32.0, while retaining Workflow Builder.
 Use a fresh test project/session. Keep the original farm-viewer runs as evidence;
 they are not fixtures to rewrite or reset.
 
@@ -13,8 +14,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.32.0.plugin` (Claude) and
-`dist/taskplane-2.32.0-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.32.1.plugin` (Claude) and
+`dist/taskplane-2.32.1-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit and per-member hashes. Require
 `matches_source_commit: true` and an empty `source_member_differences` list.
 Both sidecars must name the same commit. An archive receipt does not establish
@@ -23,13 +24,13 @@ that a host installed or invoked those bytes.
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.32.0.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.32.0-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.32.1.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.32.1-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.32.0` and `ok: true`.
+Both commands should report `2.32.1` and `ok: true`.
 
 ## Local regression and exact archive checks
 
@@ -94,18 +95,24 @@ python3 /absolute/test/claude/scripts/verify_claude_workers.py --live \
   --output /absolute/test/claude-live.json
 ```
 
-## Known live Claude blockers
+## Claude regression scenarios and evidence limits
 
-The observed Claude Code 2.1.289 host did not expose `SubagentHandback` or a
-verified successful handback acknowledgement. The candidate accepts only the
-historically observed message-only input shape and keeps delivery unknown until
-a supported acknowledgement adapter exists. Unknown delivery still blocks root
-result acceptance. A `SubagentStop` without explicit terminal status also cannot
-join a worker as completed; ordinary Task final text is not substituted for it.
+Exercise root context through real hooks that omit a `host` field; an Agent call
+using the currently exposed schema; an answered question; and recovery after the
+shell enters the project's `.taskplane` directory. Returning to the project must
+remain a narrow recovery action, without permitting a nested workflow store.
+
+Claude Code 2.1.289 exposes different Agent schemas across modes. The observed
+CLI background launch returned structured child identity and subsequently emitted
+a statusless `SubagentStop` and a native completion notification. It exposed no
+`SubagentHandback`. Verify result delivery against the actual host contract;
+ordinary final prose or a stop alone does not establish accepted work. Preserve
+unknown delivery, identity conflicts and incomplete context as failures.
 
 Exact asynchronous launch identity, automatic command rewriting, OS boot
 identity and ordinary child hook readiness must be available. A sandbox may
 deny the required macOS boot identity or Claude keychain access; capture that
 failure and test in the normal permitted host environment. No capability or
-live CW-07 pass is implied by these packages. Preserve failed/unknown reports
-and their capture directories for the next adapter repair.
+live pass is implied by a version number or package receipt. Use the current
+candidate's complete live report, and preserve failed/unknown attempts and raw
+captures. The external 2.32.0 farm-viewer run is historical failure evidence.

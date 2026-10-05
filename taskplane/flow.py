@@ -846,8 +846,9 @@ def _hook(event: dict[str, Any], *,
             and words[2:] in (['version', '--verify'], ['help', '--md'])):
         return {'hookSpecificOutput': {'hookEventName': event['hook_event_name'],
                 'additionalContext': 'Read-only runtime diagnostics do not create or validate workspace binding.'}}
+    escape = runtime_command.reserved_directory_escape(words, event)
     try:
-        workspace = workspace_binding.resolve_workspace(None, event=event)
+        workspace = workspace_binding.resolve_workspace(escape, event=event)
         contract = workspace_binding.ensure(workspace)
     except workflow.Refusal as exc:
         incidental = Path(event.get("cwd") or os.getcwd())
@@ -855,7 +856,8 @@ def _hook(event: dict[str, Any], *,
         words = workflow_local.runtime_words(event)
         invokes_runtime = len(words) > 2 and Path(words[1]).name == 'tp.py'
         if (not os.environ.get('TASKPLANE_WORKSPACE') and not workflow_local.execution_entry(event)
-                and not invokes_runtime and not (incidental / '.taskplane').exists()):
+                and not invokes_runtime and '.taskplane' not in incidental.parts
+                and '.taskplane' not in incidental.resolve().parts and not (incidental / '.taskplane').exists()):
             return {}
         if isinstance(exc, workspace_binding.MissingBinding) and governor is None:
             name = event.get('hook_event_name')
@@ -878,6 +880,16 @@ def _hook(event: dict[str, Any], *,
             return {}  # The exact CLI still validates recovery identity/hash; no phase action is admitted.
         raise
     name = event.get("hook_event_name")
+    if escape is not None:
+        workflow.require(controller.adapter.profile == 'native_workflow'
+                         and controller.principal == controller.root and not parent
+                         and workspace == escape,
+                         'scope_violation', 'Only the root may return from its store to the containing project.')
+        return {'hookSpecificOutput': {'hookEventName': name,
+                'additionalContext': 'Return to the containing project; workspace and workflow state are unchanged.'}}
+    # Host hooks need not carry a host field. Use the adapter actually selected
+    # for this event, including root Bash hooks, before observing provenance.
+    event["host"] = controller.adapter.name
     event["taskplane_observed_binding"] = {"root": controller.root, "principal": controller.principal,
                                            "profile": controller.adapter.profile}
     event["taskplane_workspace_contract"] = ({k: contract[k] for k in ("project_id", "digest")}
@@ -1003,6 +1015,13 @@ def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = N
             assert isinstance(parent, str)
             workspace = workspace_binding.resolve_workspace(None, event=event)
             parent_controller = _controller(workspace, parent, event=event)
+            # A globally installed plugin must not capture ordinary Claude
+            # children before this parent has selected or initialized Taskplane.
+            # Existing or corrupt state still goes through exact actor checks.
+            if (parent_controller.adapter.profile == 'native_workflow'
+                    and not cast(workflow_local.LocalWorkflow, parent_controller.adapter).state_exists()
+                    and not workflow_local.Harness(workspace, parent).read().get('selected')):
+                return {}
             parent_controller.claude_actor(actor, event)
             event = {**event, "host": "claude", "host_reported_session": reported, "thread_id": actor,
                      "parent_session_id": parent, "identity_basis": "structured Claude launch proof"}

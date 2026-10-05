@@ -552,3 +552,100 @@ def test_native_default_instruction_contract():
         assert 'returned `next_action`' in text and 'Only the root verifies' in text, name
         assert 'When authorized, use the installed native dispatch protocol' not in text, name
     assert 'Native worker dispatch remains unsupported by the current cooperative adapter' not in (ROOT/'docs/cli-reference.md').read_text()
+
+
+def test_claude_capture_handles_nested_schema_name_objects(tmp_path):
+    from scripts import verify_claude_workers as capture
+
+    transcript = tmp_path / 'session.jsonl'
+    transcript.write_text(json.dumps({
+        'name': {'description': 'A schema property, not a tool name'},
+        'tools': [{'name': 'Agent', 'input_schema': {
+            'type': 'object', 'properties': {'name': {'type': 'string'}}}}],
+        'content': [{'type': 'tool_use', 'id': 'call-1', 'name': 'Agent', 'input': {}}],
+    }) + '\n')
+    native, _ = capture.transcript_evidence([
+        {'input': {'session_id': 'session', 'transcript_path': str(transcript)}}
+    ], 'session')
+    assert native['errors'] == []
+    assert [schema['name'] for schema in native['tool_schemas']] == ['Agent']
+    assert native['calls'][0]['call']['id'] == 'call-1'
+
+
+def test_claude_live_completion_requires_native_identity():
+    from scripts import verify_claude_workers as capture
+
+    valid = {'type': 'system', 'subtype': 'task_notification', 'session_id': 'root',
+             'task_id': 'child', 'tool_use_id': 'launch', 'status': 'completed',
+             'summary': 'Returned a review finding.'}
+    assert capture.native_completion([valid], 'root', 'child', 'launch') == [valid]
+    for key, value in [('type', 'assistant'), ('session_id', 'other'), ('task_id', 'other'),
+                       ('tool_use_id', 'old'), ('status', 'running'), ('summary', '')]:
+        assert capture.native_completion([{**valid, key: value}], 'root', 'child', 'launch') == []
+    assert capture.native_completion([valid], 'root', None, None) == []
+
+
+def test_live_launcher_uses_identity_parser_canonical_interpreter(tmp_path, monkeypatch):
+    from scripts import verify_claude_workers as capture
+    from taskplane import claude_worker_invocation as invocation
+
+    executable = Path(sys.executable).resolve()
+    alias = tmp_path / 'python-alias'
+    alias.symlink_to(executable)
+    monkeypatch.setattr(capture.sys, 'executable', str(alias))
+    plugin = tmp_path / 'plugin'
+    project = tmp_path / 'project'
+    bootstrap = project / '.taskplane/bootstrap'
+    bootstrap.mkdir(parents=True)
+    (bootstrap / 'scope.json').write_text(json.dumps({'paths': {'engineering': ['report.md']}}))
+    permissions = capture.live_permissions(plugin, project)
+    context_rule = next(rule for rule in permissions if ' flow context ' in rule)
+    command = context_rule[len('Bash('):-len(' *)')] + ' --workspace ' + str(project) + ' --run ' + 'a' * 32
+    parsed = invocation.parse_command(command, python=str(alias), script=str(plugin / 'taskplane/tp.py'))
+    assert parsed.argv[0] == str(executable)
+    prompt = capture.live_prompt(plugin, project, project, False)
+    assert str(alias) not in prompt
+    assert parsed.argv[0] in prompt
+
+
+def test_claude_plugin_selection_preserves_each_initialization_snapshot():
+    from scripts import verify_claude_workers as capture
+
+    plugin = {'name': 'taskplane', 'path': '/candidate', 'version': '2.32.1'}
+    row = {'type': 'system', 'subtype': 'init', 'session_id': 'root', 'plugins': [plugin]}
+    assert capture.candidate_selections([row, row, row], 'root') == [[plugin], [plugin], [plugin]]
+    assert capture.candidate_selections([{**row, 'plugins': [plugin, plugin]}], 'root') == [[plugin, plugin]]
+    assert capture.candidate_selections([{**row, 'session_id': 'other'}], 'root') == []
+    changed = {**plugin, 'path': '/competing'}
+    assert capture.candidate_selections([row, {**row, 'plugins': [changed]}], 'root') == [[plugin], [changed]]
+
+
+def test_claude_live_overlap_ends_at_native_stop():
+    from scripts import verify_claude_workers as capture
+
+    a = {'claimed_at': '2026-10-05T04:19:48+00:00', 'ended_at': '2026-10-05T04:23:00+00:00',
+         'stop_observation': {'observed_at': '2026-10-05T04:20:50+00:00'}}
+    b = {'task_id': 'CW-LIVE-B', 'claimed_at': '2026-10-05T04:20:52+00:00',
+         'stop_observation': {'observed_at': '2026-10-05T04:21:32+00:00'}}
+    assert capture.overlapping_workers(a, [b]) == []
+    earlier = {**b, 'claimed_at': '2026-10-05T04:20:30+00:00'}
+    assert capture.overlapping_workers(a, [earlier]) == [earlier]
+    assert capture.overlapping_workers({**a, 'stop_observation': {}}, [earlier]) == []
+
+
+def test_claude_capture_records_system_midturn_delivery(tmp_path):
+    from scripts import verify_claude_workers as capture
+
+    valid = {'type': 'attachment', 'renderedRole': 'system', 'sessionId': 'session',
+             'attachment': {'type': 'queued_command', 'commandMode': 'task-notification',
+                            'origin': {'kind': 'task-notification', 'producer': 'session-task'},
+                            'prompt': '<task-notification>native content</task-notification>'}}
+    rows = [valid, {**valid, 'sessionId': 'other'}, {**valid, 'renderedRole': 'user'},
+            {**valid, 'attachment': {**valid['attachment'], 'type': 'queue-operation'}}]
+    transcript = tmp_path / 'session.jsonl'
+    transcript.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    native, _ = capture.transcript_evidence([
+        {'input': {'session_id': 'session', 'transcript_path': str(transcript)}}
+    ], 'session')
+    assert native['errors'] == []
+    assert [item['event'] for item in native['completion_notifications']] == [valid]

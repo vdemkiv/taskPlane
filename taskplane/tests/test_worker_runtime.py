@@ -631,3 +631,23 @@ def test_legacy_incomplete_read_manifests_require_fresh_verification(tmp_path, n
     if native:
         state['workers'][result['grant']]['input_manifest'].pop('config.json')
     assert not wr.result_valid(tmp_path, state, 'T0')
+
+
+@pytest.mark.parametrize('host', ['claude', 'codex'])
+@pytest.mark.parametrize('limit', [None, False, -1, 0, 2])
+def test_unknown_claude_capacity_uses_explicit_budget_only(tmp_path, host, limit):
+    c, s = setup(tmp_path)
+    c.adapter.name = host
+    value = dict(host_slots=None, includes_root=False, configured_limit=limit,
+                 reference='fixture/Claude schema has no host capacity field')
+    if host != 'claude' or limit != 2:
+        with pytest.raises(w.Refusal, match='admission budget'):
+            reserve(c, s, capacity=value)
+        return
+    reserve(c, s, task='T0', capacity=value)
+    reserve(c, s, task='T1', capacity=value)
+    with pytest.raises(w.Refusal, match='No available'):
+        reserve(c, s, task='T2', capacity=value)
+    observed = c.worker(s['run'], 'status')['capacity']
+    assert observed['host_slots'] is None and observed['configured_limit'] == observed['effective_limit'] == 2
+    assert observed['includes_root'] is False

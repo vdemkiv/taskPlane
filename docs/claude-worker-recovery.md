@@ -12,6 +12,10 @@ Build the candidate with the supported packaging script, unpack it, and pass its
 directory with `--plugin-dir`. The harness also accepts a source candidate during
 development. It uses Claude's supported session plugin loader; it never changes
 installed plugin registries, user settings, authentication or permission modes.
+Live mode supplies normal per-session allowances for the fixture's exact commands,
+declared report files and candidate reads. The recorded launch arguments retain
+these allowances. Arbitrary commands still require native permission, and all
+Taskplane hooks remain active. A denied required operation stops the attempt.
 An existing installed Taskplane may compete with the session candidate, so inspect
 the captured initialization plugin list and actual runtime paths. Matching version
 strings alone are insufficient.
@@ -68,10 +72,20 @@ cannot satisfy any scoped lifecycle check. `--live` never applies this rewrite.
 
 The harness reads schemas from the **fresh native transcript's** tool attachments.
 It also retains actual child `agent_id`, tool call identity, handback pre/post hooks,
-and SubagentStop payloads. A tool name or agent-written description does not prove
+native completion notifications, and SubagentStop payloads. A tool name or agent-written description does not prove
 the input schema. Absence of a handback post-hook is recorded as absence. A terminal
 handback may end the child before such a hook occurs; only an independently observed,
-supported transcript delivery/terminal adapter may resolve that case.
+supported transcript delivery/terminal adapter may resolve that case. Claude Code
+2.1.289 CLI captures include background Agent results and native completion
+notifications without exposing `SubagentHandback`. A completion adapter must bind
+the pinned root transcript, native origin metadata, exact launch call and child,
+and independently observed stop/result evidence. Neither ordinary user text that
+resembles a notification nor a statusless stop alone establishes delivery.
+Result comparison applies the observed XML encoding exactly once, preserving
+literal entity text. An actual content conflict remains unknown on later reads.
+Both observed delivery forms are supported: a system-origin user notification
+between turns and a structured system attachment during an active turn. Queue
+enqueue/removal records and rendered display wrappers do not prove delivery.
 
 ## Run the scoped end-to-end check
 
@@ -104,8 +118,12 @@ prepared native tasks and distinct output ownership. They review small supplied
 Python inputs with reproducible boundary defects. The root must observe the first
 worker's claim, fully delivered context and ordinary automatic hook pair before
 preparing the other. A bounded dwell permits observed overlapping worker lifetimes.
-Host capacity must have an actual source; a configured two-worker budget cannot
-invent host slots.
+Overlap is measured from each worker's claim to its independently observed stop;
+delayed controller reconciliation cannot extend a worker's lifetime.
+Report actual host capacity when exposed. Claude may omit a host limit; record
+that as unknown with the observed schema reference and the explicit two-worker
+fixture admission budget. A configured budget cannot invent host slots, and a
+host launch refusal remains a failed attempt.
 
 The second scenario uses a disposable Git worktree while Claude starts in the
 original project. Passing requires actual child execution in the worktree and the
@@ -124,8 +142,8 @@ pretending to exercise a cancellation interface the host has not exposed.
 The harness inspects actual controller records and raw automatic/native evidence
 for preparation, exact claim calls, real invocation rewriting, complete context,
 ordinary hook pairs, distinct native identities and scoped output hashes, delivered
-handback, independent terminal join and root `accept-result`. It also checks
-concurrency, fresh handback schema, selected runtime, worktree location and retained
+result delivery, independent terminal join and root `accept-result`. It also checks
+concurrency, the fresh native delivery contract, selected runtime, worktree location and retained
 failure/retry evidence. Agent prose or a JSON `pass` label cannot replace those
 records. No manual hook event is supplied to the candidate by the harness.
 

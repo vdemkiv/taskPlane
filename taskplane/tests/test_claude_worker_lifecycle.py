@@ -1,6 +1,7 @@
 """Bounded transcript fixtures; these cannot certify fresh installed Claude recovery."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -236,11 +237,27 @@ def test_record_limit_resumes_and_oversized_record_refuses(tmp_path, monkeypatch
     assert observe(attempt, source, first["cursor"])["status"] == "conflict"
 
 
-def test_admission_watermark_refuses_preexisting_matching_launch(tmp_path, monkeypatch):
-    _, _, attempt, _, _, _, event = setup_native(tmp_path, monkeypatch)
+@pytest.mark.parametrize('replay', [False, True])
+def test_preparation_watermark_refuses_preexisting_or_replayed_launch(tmp_path, monkeypatch, replay):
+    parent, _, attempt, call, result, _, event = setup_native(tmp_path, monkeypatch)
     source = select(event)
     attempt["transcript_admission_offset"] = source["selected_size"]
+    if replay:
+        with parent.open('ab') as stream: stream.write(encoded(call) + encoded(result))
     assert observe(attempt, source)["status"] == "conflict"
+
+
+def test_launch_appended_after_boundary_still_requires_post_preparation_timestamp(tmp_path, monkeypatch):
+    parent, _, attempt, call, result, _, event = setup_native(tmp_path, monkeypatch)
+    prefix = encoded({'sessionId':'parent', 'cwd':attempt['workspace'], 'type':'user'})
+    parent.write_bytes(prefix)
+    source = select(event)
+    attempt['transcript_admission_offset'] = len(prefix)
+    call['timestamp'] = (datetime.fromisoformat(attempt['prepared_at']) - timedelta(seconds=1)).isoformat()
+    with parent.open('ab') as stream: stream.write(encoded(call) + encoded(result))
+    answer = observe(attempt, source)
+    assert answer['status'] == 'conflict'
+    assert answer['reason'] == 'Native timestamps are missing, future or out of order'
 
 
 def test_shared_budget_limits_all_attempts_and_source_selection(tmp_path, monkeypatch):
@@ -394,3 +411,171 @@ def test_learning_exact_worker_identity_does_not_discard_cursor_or_proof(tmp_pat
     assert len(second["cursor"]["entries"]) == 1
     attempt["worker_id"] = "other-child"
     assert observe(attempt, source, second["cursor"])["status"] == "conflict"
+
+
+
+def notification_record(attempt, result, body='The actual final answer', **extra):
+    child = result['toolUseResult']['agentId']
+    output = result['toolUseResult']['outputFile']
+    content = (f'<task-notification>\n<task-id>{child}</task-id>\n'
+               f'<tool-use-id>{attempt["call_id"]}</tool-use-id>\n<output-file>{output}</output-file>\n'
+               '<status>completed</status>\n<summary>Agent finished</summary>\n'
+               '<note>Each stop can notify again.</note>\n'
+               f'<result>{escape(body, quote=False)}</result>\n<usage><tool_uses>2</tool_uses></usage>\n</task-notification>')
+    return dict(type='user', sessionId='parent', cwd=attempt['workspace'], isSidechain=False,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                origin={'kind':'task-notification', 'producer':'session-task'}, promptSource='system',
+                turnOrigin='task_notification', message={'role':'user', 'content': content}, **extra)
+
+
+def attachment_notification_record(note):
+    """Claude 2.1.289's observed mid-turn session-task delivery envelope."""
+    return {key: note[key] for key in ('sessionId', 'cwd', 'isSidechain', 'timestamp')} | {
+        'type': 'attachment', 'renderedRole': 'system',
+        'uuid': 'd9b5aafa-bc18-423f-b3b3-942d70f8e1d7',
+        'attachment': {
+            'type': 'queued_command', 'commandMode': 'task-notification',
+            'origin': deepcopy(note['origin']), 'prompt': note['message']['content'],
+            'source_uuid': '0ab418a7-9368-408e-ab0e-e78ac771f2b7',
+            'delivery_id': 'dfcc0737-40d2-49d0-aa6e-41bae3aa95a5',
+            'timestamp': note['timestamp'],
+        },
+        # Display wrappers are not authoritative content, even when they contain XML.
+        'rendered': [{'content': '<system-reminder>Display only</system-reminder>'}],
+        'renderedInHumanTurn': [{'content': '<system-reminder>Display only</system-reminder>'}],
+    }
+
+
+@pytest.mark.parametrize('defect', [None, 'row-type', 'attachment-type', 'attachment-object',
+    'mode', 'origin', 'producer', 'origin-extra', 'origin-missing', 'role', 'role-missing',
+    'source-missing', 'source-invalid', 'source-type', 'delivery-missing', 'delivery-invalid',
+    'delivery-type', 'timestamp-missing', 'timestamp-mismatch', 'timestamp-invalid',
+    'timestamp-naive', 'timestamp-future', 'timestamp-before-launch', 'plain-text',
+    'prompt-missing', 'prompt-type', 'rendered-only', 'user-text', 'enqueue', 'remove',
+    'child', 'call', 'workspace', 'session', 'sidechain', 'sidechain-missing', 'output',
+    'body-change', 'id-change', 'duplicate', 'conflicting-delivery'])
+def test_midturn_attachment_requires_native_delivery_provenance(tmp_path, monkeypatch, defect):
+    parent, _, attempt, _, result, _, event = setup_native(tmp_path, monkeypatch)
+    source = select(event)
+    first = observe(attempt, source)
+    final_answer = 'The actual final answer: x <= 2 & literal &lt; and "quotes".'
+    note = attachment_notification_record(notification_record(attempt, result, final_answer))
+    attachment = note['attachment']
+    if defect == 'row-type': note['type'] = 'system'
+    if defect == 'attachment-type': attachment['type'] = 'task-notification'
+    if defect == 'attachment-object': note['attachment'] = attachment['prompt']
+    if defect == 'mode': attachment['commandMode'] = 'prompt'
+    if defect == 'origin': attachment['origin']['kind'] = 'user'
+    if defect == 'producer': attachment['origin']['producer'] = 'other'
+    if defect == 'origin-extra': attachment['origin']['other'] = 'unknown'
+    if defect == 'origin-missing': attachment.pop('origin')
+    if defect == 'role': note['renderedRole'] = 'user'
+    if defect == 'role-missing': note.pop('renderedRole')
+    for prefix, field in [('source', 'source_uuid'), ('delivery', 'delivery_id')]:
+        if defect == prefix + '-missing': attachment.pop(field)
+        if defect == prefix + '-invalid': attachment[field] = 'native-looking-id'
+        if defect == prefix + '-type': attachment[field] = {'id': attachment[field]}
+    if defect == 'timestamp-missing': attachment.pop('timestamp')
+    if defect == 'timestamp-mismatch': attachment['timestamp'] = result['timestamp']
+    if defect == 'timestamp-invalid': note['timestamp'] = attachment['timestamp'] = 'not a date'
+    if defect == 'timestamp-naive': note['timestamp'] = attachment['timestamp'] = '2026-01-01T00:00:00'
+    if defect == 'timestamp-future':
+        note['timestamp'] = attachment['timestamp'] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    if defect == 'timestamp-before-launch': note['timestamp'] = attachment['timestamp'] = attempt['prepared_at']
+    if defect == 'plain-text': attachment['prompt'] = final_answer
+    if defect == 'prompt-missing': attachment.pop('prompt')
+    if defect == 'prompt-type': attachment['prompt'] = [{'type': 'text', 'text': attachment['prompt']}]
+    if defect == 'rendered-only':
+        note['rendered'] = note['renderedInHumanTurn'] = [{'content': attachment.pop('prompt')}]
+    if defect == 'user-text': note = dict(note, type='user', message={'role': 'user', 'content': attachment['prompt']})
+    if defect in {'enqueue', 'remove'}:
+        note = {'type': 'queue-operation', 'operation': defect, 'sessionId': note['sessionId'],
+                'timestamp': note['timestamp'], 'content': attachment['prompt']}
+        if defect == 'remove': note.update(reason='absorbed_mid_turn', commandUuid=attachment['source_uuid'],
+                                           deliveryId=attachment['delivery_id'])
+    if defect == 'child': attachment['prompt'] = attachment['prompt'].replace('child-1', 'child-2')
+    if defect == 'call': attachment['prompt'] = attachment['prompt'].replace('call-1', 'call-2')
+    if defect == 'workspace': note['cwd'] += '-foreign'
+    if defect == 'session': note['sessionId'] = 'foreign'
+    if defect == 'sidechain': note['isSidechain'] = True
+    if defect == 'sidechain-missing': note.pop('isSidechain')
+    if defect == 'output': attachment['prompt'] = attachment['prompt'].replace('/arbitrary/output', '/different/output')
+    with parent.open('ab') as stream:
+        stream.write(encoded(note))
+        if defect == 'duplicate': stream.write(encoded(note))
+        if defect == 'conflicting-delivery':
+            other = deepcopy(note)
+            other['attachment']['delivery_id'] = '1fcc0737-40d2-49d0-aa6e-41bae3aa95a5'
+            stream.write(encoded(other))
+    answer = observe(attempt, source, first['cursor'])
+    if defect in {None, 'duplicate', 'body-change', 'id-change'}:
+        assert answer['status'] == 'matched'
+        assert answer['completion']['body_digest'] == digest(escape(final_answer, quote=False))
+        assert answer['completion']['record_sha256'] == digest(note)
+        assert 'The actual final answer' not in json.dumps(answer)
+        assert observe(attempt, source, answer['cursor'])['completion'] == answer['completion']
+        if defect == 'body-change':
+            parent.write_bytes(parent.read_bytes().replace(b'The actual final answer', b'The edited final answer'))
+        if defect == 'id-change':
+            parent.write_bytes(parent.read_bytes().replace(b'dfcc0737-', b'1fcc0737-'))
+        if defect in {'body-change', 'id-change'}:
+            assert observe(attempt, source, answer['cursor'])['status'] == 'conflict'
+    else:
+        assert 'completion' not in answer
+
+
+@pytest.mark.parametrize('defect', [None, 'user', 'origin', 'producer', 'prompt', 'turn', 'child',
+                                  'call', 'workspace', 'session', 'output', 'status', 'body-change', 'duplicate', 'timestamp'])
+def test_native_notification_requires_exact_provenance_and_launch(tmp_path, monkeypatch, defect):
+    parent, _, attempt, call, result, _, event = setup_native(tmp_path, monkeypatch)
+    source = select(event)
+    first = observe(attempt, source)
+    note = notification_record(attempt, result)
+    if defect == 'user': note.pop('origin')
+    if defect == 'origin': note['origin']['kind'] = 'user'
+    if defect == 'producer': note['origin']['producer'] = 'other'
+    if defect == 'prompt': note['promptSource'] = 'user'
+    if defect == 'turn': note['turnOrigin'] = 'user'
+    if defect == 'child': note['message']['content'] = note['message']['content'].replace('child-1', 'child-2')
+    if defect == 'call': note['message']['content'] = note['message']['content'].replace('call-1', 'call-2')
+    if defect == 'workspace': note['cwd'] += '-foreign'
+    if defect == 'session': note['sessionId'] = 'foreign'
+    if defect == 'timestamp': note['timestamp'] = 'not a date'
+    if defect == 'output': note['message']['content'] = note['message']['content'].replace('/arbitrary/output', '/different/output')
+    if defect == 'status': note['message']['content'] = note['message']['content'].replace('<status>completed', '<status>failed')
+    with parent.open('ab') as stream: stream.write(encoded(note))
+    if defect == 'duplicate':
+        changed = notification_record(attempt, result, 'Conflicting final answer')
+        with parent.open('ab') as stream: stream.write(encoded(changed))
+    answer = observe(attempt, source, first['cursor'])
+    if defect in {'child', 'workspace', 'session', 'output', 'duplicate', 'timestamp'}:
+        assert answer['status'] == 'conflict'
+    elif defect in {'user', 'origin', 'producer', 'prompt', 'turn', 'call', 'status'}:
+        assert answer['status'] == 'matched' and 'completion' not in answer
+    else:
+        assert answer['status'] == 'matched'
+        assert answer['completion']['body_digest'] == digest('The actual final answer')
+        assert 'The actual final answer' not in json.dumps(answer)
+        if defect == 'body-change':
+            parent.write_bytes(parent.read_bytes().replace(b'The actual final answer', b'The edited final answer'))
+            assert observe(attempt, source, answer['cursor'])['status'] == 'conflict'
+
+
+
+def test_old_launch_cursor_migrates_only_revalidated_spans(tmp_path, monkeypatch):
+    parent, _, attempt, _, result, _, event = setup_native(tmp_path, monkeypatch)
+    source = select(event)
+    old = observe(attempt, source)
+    cursor = deepcopy(old['cursor'])
+    for entry in cursor['entries'].values():
+        entry.pop('notification')
+        for item in entry['result']: item['projection'].pop('output_file_sha256')
+    cursor = observations._sealed(cursor)
+    note = notification_record(attempt, result)
+    with parent.open('ab') as stream: stream.write(encoded(note))
+    migrated = observe(attempt, source, cursor)
+    assert migrated['status'] == 'matched'
+    assert migrated['evidence_sha256'] == old['evidence_sha256']
+    assert migrated['completion']['body_digest'] == digest('The actual final answer')
+    parent.write_bytes(parent.read_bytes().replace(b'SECRET RESULT', b'EDITED RESULT'))
+    assert observe(attempt, source, cursor)['status'] == 'conflict'

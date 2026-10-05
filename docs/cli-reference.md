@@ -16,6 +16,11 @@ Preparation needs `capacity` with `host_slots`, `includes_root`, and an actual
 observed source `reference`. Optional configured/resource limits narrow capacity.
 No default two-worker limit is applied.
 
+For Claude hosts that expose no capacity value, use `host_slots: null` with
+`includes_root: false`, a positive explicit `configured_limit`, and a reference
+to the observed host schema. This is an admission budget; host capacity remains
+unknown. It does not alter host permissions or turn a refused launch into success.
+
 New scopes created through the execution skills must declare
 `execution_contract: "native-default/v1"`. Publish every task with
 `execution: "native_required"` or `execution: "root"`; root exceptions require

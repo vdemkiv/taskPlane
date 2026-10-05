@@ -42,6 +42,34 @@ def execution_directory(event: dict[str, Any], fallback: Path) -> Path:
     return (cwd / value).resolve()
 
 
+def reserved_directory_escape(words: list[str], event: dict[str, Any]) -> Path | None:
+    """Recognize only a literal root-shell return from its reserved store.
+
+    This selects a containing project for hook inspection, never a new store or
+    a general command exception. The caller must still verify the root actor.
+    """
+    if (event.get('hook_event_name') not in {'PreToolUse', 'PostToolUse'}
+            or (event.get('tool_name') or event.get('tool')) != 'Bash'
+            or any(event.get(key) for key in ('parent_session_id', 'agent_id', 'subagent_id'))
+            or len(words) != 2 or words[0] != 'cd'):
+        return None
+    args = event.get('tool_input', {})
+    if (not isinstance(args, dict) or set(args) - {'command', 'description', 'timeout'}
+            or 'description' in args and not isinstance(args['description'], str)
+            or 'timeout' in args and (type(args['timeout']) is not int or not 0 < args['timeout'] <= 600000)):
+        return None
+    supplied = event.get('cwd')
+    if not isinstance(supplied, str) or not Path(supplied).is_absolute():
+        return None
+    cwd = Path(supplied)
+    if '.taskplane' not in cwd.parts or cwd != cwd.resolve():
+        return None
+    containing = Path(*cwd.parts[:cwd.parts.index('.taskplane')])
+    # An absolute exact spelling excludes cd options, traversal and shell
+    # expansion. command_words has already refused operators and substitutions.
+    return containing if words[1] == str(containing) else None
+
+
 def validate_workdir(words: list[str], event: dict[str, Any], fallback: Path) -> Path:
     cwd = execution_directory(event, fallback)
     if (len(words) >= 3 and Path(words[1]).name == 'tp.py' and not diagnostic(words)

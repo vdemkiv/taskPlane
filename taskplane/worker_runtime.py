@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from html import escape
 import json
 from pathlib import Path
 import re
@@ -166,7 +167,19 @@ def current(state: dict[str, Any], row: dict[str, Any]) -> None:
               "stale_checkpoint", "Worker grant belongs to an old authority or task generation.")
 
 
-def capacity(value: Any) -> int:
+def capacity(value: Any, *, host: str | None = None) -> int:
+    if isinstance(value, dict) and value.get('host_slots', False) is None:
+        w.require(host == 'claude' and value.get('includes_root') is False
+                  and type(value.get('configured_limit')) is int and value['configured_limit'] > 0
+                  and isinstance(value.get('reference'), str) and 0 < len(value['reference']) <= 512
+                  and value.get('status') in (None, 'available'),
+                  'invalid_evidence', 'Unknown Claude host capacity requires an explicit positive worker admission budget.')
+        limit = value['configured_limit']
+        if value.get('resource_limit') is not None:
+            w.require(type(value['resource_limit']) is int and value['resource_limit'] >= 0,
+                      'invalid_evidence', 'Invalid worker limit.')
+            limit = min(limit, value['resource_limit'])
+        return int(limit)
     w.require(isinstance(value, dict) and type(value.get("host_slots")) is int
               and value["host_slots"] >= 0 and type(value.get("includes_root")) is bool
               and isinstance(value.get("reference"), str) and 0 < len(value["reference"]) <= 512,
@@ -261,7 +274,8 @@ def startup_blockers(state: dict[str, Any], definition: dict[str, Any]) -> list[
     return blocked
 
 
-def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[str, Any]) -> dict[str, Any]:
+def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[str, Any], *,
+            host: str | None = None) -> dict[str, Any]:
     parent_proof = require_parent_readiness(state)
     from . import workspace_binding
     workspace_binding.ensure(workspace, worker=True, expected=state.get("workspace_contract"))
@@ -288,7 +302,7 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
         w.require(isinstance(retry_reason, str) and 8 <= len(retry_reason.strip()) <= 512,
                   "invalid_evidence", "A repeated scoped task needs a concrete retry_reason before another attempt.")
     live = [r for r in rows.values() if r["state"] in LIVE]
-    limit = capacity(request.get("capacity"))
+    limit = capacity(request.get("capacity"), host=host)
     w.require(len(live) < limit, "worker_capacity", "No available native worker slot; pending and unknown attempts count.")
     w.require(not any(set(paths) & set(r["paths"]) or r["task_id"] == task_id for r in live),
               "scope_violation", "Task has an active attempt or conflicting write ownership.")
@@ -323,6 +337,11 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
            "retry_reason": retry_reason, "context_preflight": preflight,
            "expected_runtime": runtime_identity(),
            "workspace_contract": deepcopy(state.get("workspace_contract"))}
+    if host == "claude" and state.get("claude_transcript_selection", {}).get("status") == "selected":
+        # Claude writes tool_use before PreToolUse. Freeze the root hook's
+        # verified boundary at preparation, before the grant can be dispatched.
+        row["transcript_source"] = deepcopy(state.get("claude_transcript_source"))
+        row["transcript_admission_offset"] = state.get("claude_transcript_watermark")
     w.require(not any(path_conflict(row, other) for other in live), "scope_violation",
               "Join workers before changing their read inputs or reading active writer outputs.")
     if row["worker_id"]:
@@ -427,14 +446,17 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
             w.require(row.get("worker_id") and args.get("target") in {row["worker_id"], row.get("canonical_name")},
                       "scope_violation", "Follow-up target does not match its new attempt.")
         elif claude:
-            w.require(args.get("run_in_background") is True, "unsupported_authority",
+            # Current Claude fork mode omits this parameter. Admission never
+            # binds a child: the returned structured async launch still must.
+            w.require("run_in_background" not in args or args["run_in_background"] is True, "unsupported_authority",
                       "Claude workers require an asynchronous launch with structured child identity proof.")
             w.require(event.get("taskplane_claude_root_source") is True
-                      and state.get("claude_transcript_source")
-                      and type(state.get("claude_transcript_watermark")) is int,
-                      "unsupported_authority", "Claude dispatch requires a fresh automatic root transcript source.")
-            row["transcript_source"] = deepcopy(state["claude_transcript_source"])
-            row["transcript_admission_offset"] = state["claude_transcript_watermark"]
+                      and row.get("transcript_source")
+                      and row["transcript_source"] == state.get("claude_transcript_source")
+                      and type(row.get("transcript_admission_offset")) is int
+                      and type(state.get("claude_transcript_watermark")) is int
+                      and 0 <= row["transcript_admission_offset"] <= state["claude_transcript_watermark"],
+                      "unsupported_authority", "Claude dispatch requires its prepared and fresh automatic root transcript source.")
             w.require((args.get('resume') == row.get('worker_id') if row.get('worker_id')
                        else not args.get('resume')), 'scope_violation',
                       'Claude resume must target the exact prepared known worker attempt.')
@@ -555,6 +577,9 @@ def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
         return {'status': 'historical', 'state': row['state']}
     if row.get('identity_conflict'):
         return {'status': 'conflict', 'state': row['state']}
+    if row.get('completion_conflict'):
+        row['state'] = 'unknown'
+        return {'status': 'conflict', 'state': row['state']}
     identity = observation.get('worker_id')
     w.require(isinstance(identity, str), 'scope_violation', 'Invalid native worker identity.')
     assert isinstance(identity, str)
@@ -575,7 +600,20 @@ def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
         if event.get('observed_at', '') < row.get('launch_requested_at', row['prepared_at']):
             continue
         if event['event'] == 'SubagentStop':
-            terminal(row, event['status'], event_id)
+            if event['status'] == 'stopped':
+                source = row.get('transcript_source', {})
+                expected_child = str(Path(source.get('path', '')).with_suffix('') / 'subagents' /
+                                     ('agent-' + row['worker_id'] + '.jsonl'))
+                if (event.get('transcript_path') == source.get('path')
+                        and event.get('agent_transcript_path') == expected_child):
+                    previous = row.get('stop_observation')
+                    if previous is None or previous['body_digest'] == event['body_digest']:
+                        row['stop_observation'] = {**event, 'event_id': event_id}
+                    else:
+                        row['completion_conflict'] = True
+                        row['state'] = 'unknown'
+            else:
+                terminal(row, event['status'], event_id)
         elif row['state'] in {'bootstrapping', 'running'}:
             row.setdefault('started_at', event['observed_at'])
     return {'status': 'matched', 'state': row['state'], 'worker_id': row['worker_id']}
@@ -606,6 +644,22 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
         row["identity_freshness"] = {"status": observation["status"], "reason": observation.get("reason"),
                                      "observed_at": now()}
         reconcile(Path(state["workspace"]), state, row, observation)
+        completed = observation.get('completion')
+        stopped = row.get('stop_observation')
+        if (observation['status'] == 'matched' and completed and stopped
+                and not row.get('revoked_at') and row.get('binding') == binding(state)
+                and not row.get('identity_conflict') and not row.get('completion_conflict')):
+            if (completed['body_digest'] == stopped.get('notification_body_digest')
+                    and datetime.fromisoformat(completed['timestamp'].replace('Z', '+00:00')) >=
+                    datetime.fromisoformat(stopped['observed_at'])):
+                row['handback'] = {'schema': 'claude.session-task-notification/v1', 'status': 'delivered',
+                    'body_digest': completed['body_digest'], 'notification': completed,
+                    'stop_event': stopped['event_id'], 'observed_at': now()}
+                terminal(row, 'completed', digest(completed))
+            else:
+                row['completion_conflict'] = True
+                row['state'] = 'unknown'
+                _audit(row, 'completion_conflict', {'notification': completed['record_sha256']})
     return list(result["observations"])
 
 
@@ -681,9 +735,22 @@ def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
         parent = event.get('session_id') or event.get('thread_id')
         if parent == state['root'] and isinstance(identity, str) and 0 < len(identity) <= 200 and identity != parent:
             status = event.get('status')
-            if name == "SubagentStart" or status in {'completed', 'failed', 'interrupted'}:
+            stopped = (name == 'SubagentStop' and status is None
+                and event.get('stop_hook_active') is False
+                and event.get('taskplane_automatic_hook') is True
+                and observed.get('root') == state['root'] and observed.get('principal') == state['root']
+                and isinstance(event.get('last_assistant_message'), str)
+                and 0 < len(event['last_assistant_message'].encode('utf-8')) <= claude.MAX_LINE_BYTES)
+            if name == "SubagentStart" or status in {'completed', 'failed', 'interrupted'} or stopped:
                 value = {'event': name, 'parent': parent, 'worker_id': identity,
-                         'call_id': call, 'status': status}
+                         'call_id': call, 'status': 'stopped' if stopped else status}
+                if stopped:
+                    # The native notification XML-escapes &, < and > exactly once;
+                    # quotes stay literal. Compare its bytes, never decode entities.
+                    value.update(body_digest=digest(event['last_assistant_message']),
+                        notification_body_digest=digest(escape(event['last_assistant_message'], quote=False)),
+                        transcript_path=event.get('transcript_path'),
+                        agent_transcript_path=event.get('agent_transcript_path'))
                 event_id = digest(value | {'event_id': event.get('event_id')})
                 pending = state.setdefault('unbound_worker_events', {})
                 if event_id not in pending and len(pending) < 1024:
@@ -692,8 +759,11 @@ def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
                 state["claude_terminal_observation"] = {"status": "unsupported", "worker_id": identity,
                     "reason": "SubagentStop without a supported explicit terminal status cannot prove completion.",
                     "event_digest": digest({k: event.get(k) for k in ("agent_id", "session_id", "status", "event_id")})}
-    candidates = [row for row in attempts if (row.get('call_id') == call if call else
-                  (not identity or row.get('worker_id') in (None, identity)))]
+    correlated_call = call if tool in {'Agent', 'Task'} or name in {'SubagentStart', 'SubagentStop'} else None
+    candidates = [row for row in attempts if not row.get('revoked_at')
+                  and row['state'] not in {'accepted', 'failed', 'interrupted'}
+                  and (row.get('call_id') == correlated_call if correlated_call else
+                       (not identity or row.get('worker_id') in (None, identity)))]
     # A lifecycle event does not select the sole/latest child. Each candidate
     # must independently supply its exact admitted call/result/header proof.
     observe_claude_launches(state, candidates[:64], event, budget=budget)
@@ -837,6 +907,8 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
             w.require(fresh[0]["status"] == "matched" and not row.get("identity_conflict"),
                       "invalid_evidence", "Claude result needs freshly revalidated exact launch proof.")
             w.require(row.get("handback", {}).get("status") == "delivered"
+                      and fresh[0].get('completion') == row.get('handback', {}).get('notification')
+                      and not row.get('completion_conflict')
                       and readiness(row)["status"] == "ready", "invalid_evidence",
                       "Claude result needs verified handback delivery and automatic readiness.")
         w.require(row.get('claimed_at') and not row.get('identity_conflict'), 'invalid_evidence',

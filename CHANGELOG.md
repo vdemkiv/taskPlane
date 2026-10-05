@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.32.1 — Claude host contract repairs
+
+- Normalize automatic root hook identity from the selected adapter, including real Claude hooks without a `host` field. Accept the current optional Agent background argument while requiring structured child launch proof.
+- Match supported answered-question enrichment without ignoring changed questions or call identity. Permit a narrow root return from `.taskplane` to its containing project, and leave ordinary children alone when no Taskplane workflow was selected or initialized.
+- Verify between-turn notifications and mid-turn system attachments against pinned transcript provenance and independent stop evidence, including the host's exact XML encoding of result text. Keep result delivery, terminal observation and root acceptance distinct; do not require a handback tool absent from the host.
+- Pin the native transcript boundary when preparing a grant so Claude's real launch record, written before its pre-tool hook, remains eligible while older calls still refuse.
+- Capture actual Claude payloads in disposable fixtures, retain failed attempts, and distinguish an explicit admission budget from unknown host capacity. Exact-source Claude and Codex package receipts remain separate from live acceptance evidence.
+
 ## v2.32.0 — Workflow Builder and Claude recovery test candidate
 
 - Add versioned reusable workflow definitions, validation, preview and compilation, with packaged review, design and delivery seeds.

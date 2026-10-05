@@ -24,6 +24,7 @@ MAX_RECORDS = 16384
 MAX_CANDIDATES = 64
 MAX_STATE_BYTES = 512 * 1024
 _ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
+_UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
 
 
@@ -368,10 +369,59 @@ def _projection(row: Mapping[str, Any], role: str, item: Mapping[str, Any] | Non
         result.update(is_error=item.get("is_error") is True, structured=isinstance(structured, Mapping))
         structured = structured if isinstance(structured, Mapping) else {}
         result.update(child=_scalar(structured.get("agentId"), 200), is_async=structured.get("isAsync") is True,
-                      status=_scalar(structured.get("status"), 200))
+                      status=_scalar(structured.get("status"), 200),
+                      output_file_sha256=digest(_scalar(structured.get("outputFile"))))
     else:
         result["child"] = _scalar(row.get("agentId"), 200)
     return result
+
+
+def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project the observed session-task notification, never ordinary user XML.
+
+    Claude escapes &, < and > in the final answer while retaining literal quotes.
+    Match the fixed outer envelope and hash its exact encoded body; decoding would
+    collapse distinct literal entity text. Never retain the answer body.
+    """
+    origin = {'kind': 'task-notification', 'producer': 'session-task'}
+    if row.get('type') == 'user':
+        if (row.get('origin') != origin or row.get('promptSource') != 'system'
+                or row.get('turnOrigin') != 'task_notification'):
+            return None
+        message = row.get('message')
+        content = message.get('content') if isinstance(message, Mapping) and message.get('role') == 'user' else None
+    elif row.get('type') == 'attachment':
+        attachment = row.get('attachment')
+        if (row.get('renderedRole') != 'system' or not isinstance(attachment, Mapping)
+                or attachment.get('type') != 'queued_command'
+                or attachment.get('commandMode') != 'task-notification'
+                or attachment.get('origin') != origin
+                or not isinstance(attachment.get('timestamp'), str)
+                or attachment['timestamp'] != row.get('timestamp')
+                or any(not isinstance(attachment.get(key), str) or not _UUID.fullmatch(attachment[key])
+                       for key in ('source_uuid', 'delivery_id'))):
+            return None
+        # Mid-turn delivery uses this structured prompt. Queue operations only
+        # record enqueue/removal; rendered wrappers are display text, not proof.
+        content = attachment.get('prompt')
+    else:
+        return None
+    if not isinstance(content, str) or len(content.encode('utf-8')) > MAX_LINE_BYTES:
+        return None
+    match = re.fullmatch(
+        r'<task-notification>\n<task-id>([^<>\n]+)</task-id>\n'
+        r'<tool-use-id>([^<>\n]+)</tool-use-id>\n<output-file>([^<>\n]+)</output-file>\n'
+        r'<status>(completed)</status>\n<summary>[^\n]*</summary>\n'
+        r'(?:<note>[^\n]*</note>\n)?<result>(.*)</result>\n'
+        r'(?:<usage>[^\n]*</usage>\n)?</task-notification>', content, re.DOTALL)
+    if match is None:
+        return None
+    child, call, output, status, body = match.groups()
+    if not _ID.fullmatch(child) or not 0 < len(call) <= 512 or not 0 < len(output) <= 4096 or not body:
+        return None
+    return {**{key: _scalar(row.get(key)) for key in ('sessionId', 'cwd', 'isSidechain', 'timestamp')},
+            'worker_id': child, 'call_id': call, 'output_file_sha256': digest(output), 'status': status,
+            'body_digest': digest(body), 'record_sha256': digest(row)}
 
 
 def _items(row: Mapping[str, Any], call: str) -> list[tuple[str, Mapping[str, Any]]]:
@@ -412,7 +462,7 @@ def _check_cursor(state: Mapping[str, Any]) -> None:
                 or not isinstance(entry["binding"].get("call_id"), str)
                 or entry.get("conflict") is not None and not isinstance(entry["conflict"], str)):
             raise ValueError("Malformed cached native binding")
-        for role in ("call", "result", "header"):
+        for role in ("call", "result", "header", "notification"):
             if not isinstance(entry.get(role), list) or len(entry[role]) > 2:
                 raise ValueError("Malformed cached native projections")
             for value in entry[role]:
@@ -491,19 +541,27 @@ def _open_child(path: Path, project_identity: Mapping[str, int]) -> int:
 def _validate_entry(fd: int, path: Path, parent: str, attempt: Mapping[str, Any],
                     entry: dict[str, Any], budget: ReadBudget,
                     project_identity: Mapping[str, int], *, reserve: int = 0) -> bool:
-    refs = [value for role in ("call", "result", "header") for value in entry[role]]
+    refs = [value for role in ("call", "result", "header", "notification") for value in entry[role]]
     if (sum(value["reference"]["bytes"] for value in refs) > max(0, budget.remaining - reserve)
             or len(refs) > budget.max_records - budget.records_read - bool(reserve)):
         return False
-    for role in ("call", "result"):
+    for role in ("call", "result", "notification"):
         for value in entry[role]:
             if value["reference"]["source"] != str(path):
                 raise ValueError("Foreign parent proof reference")
             row = _verify(fd, value["reference"], budget)
             if row is None:
                 return False
-            if not any(kind == role and _projection(row, role, item) == value["projection"]
-                       for kind, item in _items(row, attempt["call_id"])):
+            if role == 'result' and 'output_file_sha256' not in value['projection']:
+                # Upgrade only after re-reading the exact pinned native span.
+                for kind, item in _items(row, attempt['call_id']):
+                    projected = _projection(row, kind, item)
+                    if kind == 'result' and {k: v for k, v in projected.items()
+                            if k != 'output_file_sha256'} == value['projection']:
+                        value['projection'] = projected
+            if not (_notification(row) == value["projection"] if role == "notification" else
+                    any(kind == role and _projection(row, role, item) == value["projection"]
+                        for kind, item in _items(row, attempt["call_id"]))):
                 raise ValueError("Cached projection differs from native evidence")
     for value in entry["header"]:
         child_path = _child_path(path, parent, value["projection"]["child"])
@@ -591,6 +649,14 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                     or cursor.get("source_sha256") != source["sha256"]):
                 raise ValueError("Corrupt cursor or changed selected source")
             state = deepcopy(dict(cursor))
+            # Older cursors predate completion observations. Re-scan from the
+            # beginning, preserving and revalidating all retained launch spans.
+            if not isinstance(state.get('entries'), dict):
+                raise ValueError('Malformed native cursor entries')
+            for entry in state.get('entries', {}).values():
+                if isinstance(entry, dict) and 'notification' not in entry:
+                    entry['notification'] = []
+                    state['offset'] = 0
         _check_cursor(state)
         state_valid = True
         if state.get("conflict"):
@@ -601,7 +667,7 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
             if key not in state["entries"]:
                 if len(state["entries"]) >= MAX_CANDIDATES:
                     return finish("unsupported", "Native candidate inventory bound exceeded")
-                state["entries"][key] = {"binding": binding, "call": [], "result": [], "header": [], "conflict": None}
+                state["entries"][key] = {"binding": binding, "call": [], "result": [], "header": [], "notification": [], "conflict": None}
                 state["offset"] = 0
         fd, project = _open_source(path)
         with os.fdopen(fd, "rb", buffering=0) as stream:
@@ -655,6 +721,10 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                 active.setdefault(attempt["call_id"], [])
                 active[attempt["call_id"]].append((key, attempt))
             def retain(row: dict[str, Any], ref: dict[str, Any]) -> None:
+                notification = _notification(row)
+                if notification is not None:
+                    for key, attempt in active.get(notification['call_id'], []):
+                        _retain(state['entries'][key], 'notification', notification, ref)
                 for call, candidates in active.items():
                     for role, item in _items(row, call):
                         for key, attempt in candidates:
@@ -693,6 +763,23 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                     entry["conflict"] = answer["reason"]
                 elif not complete:
                     answer = _answer("not_yet_available", "Native transcript snapshot scan is incomplete")
+                if answer['status'] == 'matched' and entry['notification']:
+                    notification = entry['notification'][0]
+                    value = notification['projection']
+                    launched = entry['result'][0]['projection']
+                    try:
+                        consistent = (value['sessionId'] == parent and value['cwd'] == attempt['workspace']
+                            and value['isSidechain'] is False and value['worker_id'] == answer['worker_id']
+                            and value['output_file_sha256'] == launched['output_file_sha256']
+                            and notification['reference']['offset'] >= entry['result'][0]['reference']['offset']
+                            and _stamp(launched['timestamp']) <= _stamp(value['timestamp']) <= datetime.now(timezone.utc))
+                    except (ValueError, TypeError, OverflowError):
+                        consistent = False
+                    if consistent:
+                        answer['completion'] = {**value, 'reference': notification['reference']}
+                    else:
+                        entry['conflict'] = 'Native completion disagrees with exact launch identity'
+                        answer = _answer('conflict', entry['conflict'])
                 answers[key] = answer
             # A concurrent truncation must not create a fresh match.
             if _regular(stream.fileno()).st_size < state["size"]:

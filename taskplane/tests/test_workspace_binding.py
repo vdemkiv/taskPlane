@@ -1084,3 +1084,54 @@ def test_existing_unbound_local_history_retains_legacy_resolution(tmp_path):
     before = tree(tmp_path)
     assert b.resolve_workspace(tmp_path) == tmp_path.resolve()
     assert tree(tmp_path) == before
+
+
+@pytest.mark.parametrize("depth", [".taskplane", ".taskplane/nested"])
+def test_root_reserved_cwd_escape_is_exact_and_does_not_create_store(tmp_path, monkeypatch, depth):
+    from taskplane.tests.test_worker_runtime import setup
+    project = tmp_path.resolve()
+    c, _ = setup(project)
+    cwd = project / depth
+    cwd.mkdir(parents=True, exist_ok=True)
+    monkeypatch.delenv('TASKPLANE_WORKSPACE', raising=False)
+    before = tree(cwd)
+    event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(cwd),
+                 tool_name='Bash', tool_input={'command': 'cd ' + shlex.quote(str(project))})
+    result = flow.hook(event, governor=c)
+    assert 'Return to the containing project' in result['hookSpecificOutput']['additionalContext']
+    assert tree(cwd) == before
+    # Hosts can report either the original cwd or the resulting cwd after cd.
+    flow.hook({**event, 'hook_event_name':'PostToolUse'}, governor=c)
+    flow.hook({**event, 'hook_event_name':'PostToolUse', 'cwd':str(project)}, governor=c)
+    assert not (cwd / '.taskplane').exists()
+    # Selecting the store as a workspace remains invalid even for the root.
+    with pytest.raises(w.Refusal, match='reserved'):
+        b.resolve_workspace(cwd)
+
+
+@pytest.mark.parametrize('defect', ['command', 'chain', 'newline', 'substitution', 'relative',
+    'sibling', 'nested', 'background', 'parent', 'agent', 'worker', 'configured', 'symlink'])
+def test_reserved_cwd_escape_rejects_other_commands_and_actors(tmp_path, monkeypatch, defect):
+    from taskplane.tests.test_worker_runtime import setup
+    from taskplane import workflow_host as h
+    project = tmp_path.resolve()
+    c, _ = setup(project)
+    cwd = project / '.taskplane'
+    target = shlex.quote(str(project))
+    command = 'cd ' + target
+    event = dict(hook_event_name='PreToolUse', session_id='root', cwd=str(cwd),
+                 tool_name='Bash', tool_input={'command': command})
+    commands = {'command': 'pwd', 'chain': command + ' && pwd', 'newline': command + '\npwd',
+                'substitution': 'cd "$(pwd)"', 'relative': 'cd ..',
+                'sibling': 'cd ' + target + '-sibling', 'nested': 'cd ' + shlex.quote(str(cwd))}
+    if defect in commands: event['tool_input']['command'] = commands[defect]
+    if defect == 'background': event['tool_input']['run_in_background'] = True
+    if defect == 'parent': event['parent_session_id'] = 'other'
+    if defect == 'agent': event['agent_id'] = 'child'
+    if defect == 'worker': c = h.Controller(project, 'root', h.installed_adapter('claude'), principal='child')
+    if defect == 'configured': monkeypatch.setenv('TASKPLANE_WORKSPACE', str(cwd))
+    if defect == 'symlink':
+        alias = project / 'alias'; alias.symlink_to(cwd, target_is_directory=True)
+        event['cwd'] = str(alias)
+    with pytest.raises(w.Refusal): flow.hook(event, governor=c)
+    assert not (cwd / '.taskplane').exists()

@@ -428,3 +428,20 @@ def test_claude_cli_start_does_not_install_codex_launcher(tmp_path):
     assert json.loads(result.stdout)['status'] == 'blocked'
     assert json.loads(result.stdout)['reason'] == 'invalid_evidence'  # An exact scope is required.
     assert not (tmp_path / '.taskplane/codex-hook.py').exists()
+
+
+@pytest.mark.parametrize('event_name', ['PreToolUse', 'PostToolUse'])
+def test_unactivated_claude_child_does_not_require_taskplane_store(tmp_path, monkeypatch, event_name):
+    from taskplane import workflow_local
+    monkeypatch.setenv('CLAUDE_SESSION_ID', 'parent')
+    monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
+    monkeypatch.delenv('TASKPLANE_WORKSPACE', raising=False)
+    event = dict(hook_event_name=event_name, session_id='parent', agent_id='child',
+                 cwd=str(tmp_path), tool_name='Bash', tool_use_id='ordinary',
+                 tool_input={'command':'pwd'})
+    assert flow.hook(event) == {}
+    assert not list((tmp_path / '.taskplane').glob('workflow-*'))
+    workflow_local.Harness(tmp_path, 'parent').update(selected=True, entry='tp-go')
+    from taskplane.workflow import Refusal
+    with pytest.raises(Refusal, match='not initialized'):
+        flow.hook(event)

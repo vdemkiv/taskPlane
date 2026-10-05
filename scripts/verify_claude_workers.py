@@ -204,6 +204,7 @@ def transcript_evidence(captures, session):
             if directory.is_dir() and not directory.is_symlink():
                 paths.update(list(directory.glob("agent-*.jsonl"))[:32])
     schemas, tool_schemas, calls, results, records, sources, errors = [], [], [], [], [], [], []
+    notifications = []
     remaining = LIMIT
     for path in sorted(paths):
         rows, failures = stream_rows(path, remaining)
@@ -215,8 +216,19 @@ def transcript_evidence(captures, session):
         sources.append({"path": str(path), "sha256": digest(data), "bytes": len(data)})
         records.extend(rows)
         for number, row in enumerate(rows, 1):
+            attached = row.get("attachment", {})
+            midturn = (row.get("type") == "attachment" and row.get("renderedRole") == "system"
+                       and isinstance(attached, dict) and attached.get("type") == "queued_command"
+                       and attached.get("commandMode") == "task-notification"
+                       and attached.get("origin") == {"kind": "task-notification", "producer": "session-task"})
+            if ((row.get("type") == "user" and row.get("promptSource") == "system"
+                    and row.get("turnOrigin") == "task_notification"
+                    and row.get("origin") == {"kind": "task-notification", "producer": "session-task"}
+                    or midturn) and row.get("sessionId") == session):
+                notifications.append({"path": str(path), "record": number, "event": row})
             for obj in objects(row):
-                if obj.get("name") in {"SubagentHandback", "Task", "Agent", "TaskOutput", "TaskStop", "SendMessage"}:
+                if isinstance(obj.get("name"), str) and obj["name"] in {
+                        "SubagentHandback", "Task", "Agent", "TaskOutput", "TaskStop", "SendMessage"}:
                     schema = obj.get("input_schema", obj.get("inputSchema", obj.get("parameters")))
                     if isinstance(schema, dict):
                         item = {"name": obj["name"], "path": str(path), "record": number, "schema": schema,
@@ -229,6 +241,7 @@ def transcript_evidence(captures, session):
                 elif obj.get("type") == "tool_result":
                     results.append({"path": str(path), "record": number, "result": obj})
     return {"sources": sources, "handback_schemas": schemas, "tool_schemas": tool_schemas,
+            "completion_notifications": notifications,
             "calls": calls, "results": results, "errors": errors}, records
 
 
@@ -272,12 +285,34 @@ def capture_summary(captures, native, stream):
             "runtime_changed_during_hook": any(not r["runtime_unchanged"] for r in captures)}
 
 
+def live_permissions(plugin, workspace):
+    """Normal per-session approvals for the disposable fixture, never bypass mode."""
+    runtime = shlex.join([str(Path(sys.executable).resolve()), str(plugin / "taskplane/tp.py")])
+    reports = load(workspace / ".taskplane/bootstrap/scope.json")["paths"]["engineering"]
+    commands = ["pwd", "cd " + shlex.quote(str(workspace)),
+                "python3 -c 'import time; time.sleep(60)'",
+                "python3 -c 'raise SystemExit(17)'",
+                "python3 -c 'from averages import average; print(average([]))'",
+                "python3 -c 'from settings import listener_port; print(listener_port(\"70000\"))'",
+                "cat " + shlex.quote(str(plugin / "skills/tp-go/references/shared-flow.md"))]
+    permissions = [f"Bash({value})" for value in commands]
+    permissions += [f"Bash({runtime} flow {action} *)" for action in
+                    ("activate", "start", "context", "worker", "report", "prevalidate", "submit", "present")]
+    # Claude filesystem rules use // for absolute paths; a single / anchors a
+    # rule to the project root and would not authorize these fixture files.
+    permissions += [f"Bash({runtime} graph *)", f"Read(/{plugin}/**)", f"Read(/{workspace}/**)"]
+    permissions += [f"{tool}(/{workspace / path})" for path in reports for tool in ("Write", "Edit")]
+    return permissions
+
+
 def launch(claude, plugin, cwd, folder, prompt, timeout, model, workspace=None):
     session = str(uuid.uuid4())
     argv = [claude, "-p", "--output-format", "stream-json", "--verbose", "--include-hook-events",
             "--plugin-dir", str(plugin), "--session-id", session]
     if model:
         argv += ["--model", model]
+    if workspace is not None:
+        argv += ["--add-dir", str(plugin), str(workspace), "--allowedTools", *live_permissions(plugin, workspace)]
     (folder / "prompt.txt").write_text(prompt)
     started = stamp()
     timed_out = False
@@ -307,9 +342,13 @@ Use Bash to execute this exact harmless command once: {probe['original']}
 Record the actual output. A local diagnostic hook may change this one command.
 Use the exposed native Task or Agent tool to inspect sample.py for correctness and return a
 concise real finding to its caller with SubagentHandback if that tool is available.
+Launch the child in the background: set run_in_background=true only if the exposed
+schema includes that parameter; otherwise use the current fork-mode schema unchanged.
 The child must first Read sample.py and run the same harmless command once, then
 invoke SubagentHandback using the exact currently exposed schema. Do not guess a
-recipient field or use external messaging. Wait for the real native child result.
+recipient field or use external messaging. If SubagentHandback is unavailable, the
+child should return its ordinary final answer. Receive the real native child result
+through the host's actual completion notification or TaskOutput, using its returned ID.
 Report unavailable tools and failures exactly. Do not edit configuration, invoke
 hook entrypoints, create workflow state, skip permissions, or invent successful
 events. This capability inspection does not establish scoped worker recovery.
@@ -519,14 +558,14 @@ def prepare_fixtures(args, report):
 
 
 def live_prompt(plugin, workspace, original, failure_retry):
-    runtime = shlex.join([sys.executable, str(plugin / "taskplane/tp.py")])
+    runtime = shlex.join([str(Path(sys.executable).resolve()), str(plugin / "taskplane/tp.py")])
     selected = shlex.quote(str(workspace))
     retry = """
 For B's FIRST prepared attempt only, after successful claim, complete context and
 an ordinary Read, run Bash `python3 -c 'raise SystemExit(17)'`. This is deliberate
 real command fault injection, not a fabricated hook or terminal event. Write its
-actual failure to .taskplane/failure-b.md and deliver that failure using the real
-SubagentHandback. Observe its independent host terminal; do NOT accept that task
+actual failure to .taskplane/failure-b.md and return that failure using the host's
+native result delivery. Observe its independent host terminal; do NOT accept that task
 result. If joined, prepare exactly one FRESH B grant with retry_reason describing
 the observed exit17 and removal of the injected failing command. Its worker must
 claim/consume context anew, then do the useful settings.py review successfully.
@@ -544,46 +583,57 @@ it does not approve any phase checkpoint. All writes stay in declared report pat
 
 The actual loaded candidate launcher is: {runtime}
 The selected execution workspace is {workspace}. Claude was started in {original}.
-First use Bash `cd {selected}` so child cwd becomes the selected worktree. Confirm
-pwd. Preserve the parent host transcript in its original native project location.
+Read the installed shared-flow instructions before activation. Execute the exact
+activation and start commands below first; setup does not admit arbitrary shell
+commands. Then use Bash `cd {selected}` only if pwd differs, so child cwd becomes
+the selected worktree. Preserve the parent transcript in its native project location.
 Do not write transcript records or call hook entrypoints manually.
 
 Use the loaded CLI and these prepared inputs:
   {runtime} flow activate --workspace {selected} --phase engineering --request-reference live-harness-request
   {runtime} flow start --workspace {selected} --standalone --phase engineering --scope .taskplane/bootstrap/scope.json --tasks .taskplane/bootstrap/tasks.json --request-reference live-harness-request --goal 'Independent review of averages and listener settings'
-Read the installed shared-flow instructions, inspect the returned run/revision,
+Inspect the returned run/revision,
 fully drain root context, and run an ordinary admitted Read for parent readiness.
 The scope and tasks are already prepared; preserve their exact paths and task IDs.
 
-Obtain actual native Agent capacity from the exposed host if available, record its
-real reference in prepare's capacity. A selected budget of two is only a
-configured_limit; do not invent host_slots. If this host exposes no capacity,
-record the unavailable capability instead of asserting success.
+Obtain actual native Agent capacity from the exposed host if available and record
+its real reference in prepare's capacity. If this Claude host exposes no capacity,
+record host_slots:null, includes_root:false, configured_limit:2, and a reference to
+the actual exposed Agent schema that lacks a host limit. Two is this fixture's
+explicit admission budget, never an observed host limit. Preserve host launch
+refusals and unknown host capacity; do not invent host_slots.
 Prepare CW-LIVE-A with flow worker --operation prepare using the current revision.
 Launch its exact returned dispatch message with the native Task or Agent tool and
 the actual supported background mechanism. Never invent launch arguments; report
 unavailable background/concurrent execution if absent. Pass only the focused task, grant, launcher, workspace and
 context instruction, not this whole root history. Instruct A to claim, fully drain
 all required task context, Read averages.py, then keep its native task active with
-a 30-second Bash sleep while inspecting/reproducing the average([]) boundary.
+one bounded `python3 -c 'import time; time.sleep(60)'` command while
+inspecting/reproducing the average([]) boundary.
+Use this exact reproduction: `python3 -c 'from averages import average; print(average([]))'`.
 The dwell is solely to observe concurrent worker ownership; it is not success
 evidence. A must write .taskplane/review-a.md with its actual finding and source
-line, then use the real SubagentHandback tool with the exposed argument schema.
+line, then return its final answer normally. If SubagentHandback is actually
+exposed, use its exact schema; otherwise rely on the real native completion
+notification. Never fabricate a notification or its origin metadata.
 
 Observe A's actual claim, complete context and matching ordinary automatic hook
 pair using worker status before preparing B. Use at most six bounded readiness
 checks over 45 seconds. Prepare CW-LIVE-B while A remains running, and launch a
 distinct native background Agent with its own returned message and grant. B reads
 settings.py and reproduces listener_port('70000') violating a valid TCP port range,
-then writes .taskplane/review-b.md and hands it back through SubagentHandback.
+using `python3 -c 'from settings import listener_port; print(listener_port("70000"))'`,
+then writes .taskplane/review-b.md and returns its final answer through native
+result delivery in the same way as A.
 {retry}
 Each worker must complete normal source reads after context delivery. Neither
 worker may run root phase controls, delegate, write sibling reports or call hooks.
 If hooks refuse a claim/context because an actual launch record is delayed, allow
 at most three fresh calls with the observed reason. Never omit identity or weaken
-the checks. If the host lacks SubagentHandback, preserve that limitation.
+the checks. A missing SubagentHandback is not evidence of a missing native result:
+inspect the actual completion notification and separate stop observation.
 
-Root must wait for actual native handbacks and independent terminal observations.
+Root must wait for actual native results and independent terminal observations.
 Read the reports and inspect each current joined attempt. Accept each successful
 result with flow worker --operation accept-result, its exact grant and task,
 outputs:[the task's review path], checks:[{{name:'Reviewed reproduced source defect',
@@ -596,7 +646,11 @@ submit the normal Engineering packet with actual native lens coverage if all
 required evidence permits; present the native dashboard and stop at the pending
 human checkpoint. Do not call decide, auto-decide, policy, advance, or finish, and
 do not fabricate human messages. If blocked, report the exact blocker and leave
-unknown work unknown. Do not change permissions or install settings.
+unknown work unknown. The harness supplies normal per-session permissions for the
+exact fixture operations; arbitrary commands still require host permission. Use
+native Write/Edit for reports and exact CLI commands for workflow operations.
+Do not change permissions or install settings. A denied required operation ends
+the attempt with its exact blocker; do not repeatedly try denied commands.
 """
 
 
@@ -620,6 +674,33 @@ def admitted(capture):
         return False
     return (value.get("decision") != "block" and value.get("continue") is not False and
             value.get("hookSpecificOutput", {}).get("permissionDecision") != "deny")
+
+
+def native_completion(stream, session, actor, launch_call):
+    """Only structured host events count, never agent-authored report text."""
+    return [row for row in stream if actor and launch_call and row.get("type") == "system"
+            and row.get("subtype") == "task_notification" and row.get("session_id") == session
+            and row.get("task_id") == actor and row.get("tool_use_id") == launch_call
+            and row.get("status") == "completed" and isinstance(row.get("summary"), str)
+            and row["summary"].strip()]
+
+
+def candidate_selections(stream, session):
+    """Each init is a snapshot; repeated snapshots are not duplicate installs."""
+    return [[p for p in row.get("plugins", []) if isinstance(p, dict)
+             and str(p.get("name", "")).split("@")[0] == "taskplane"]
+            for row in stream if row.get("type") == "system" and row.get("subtype") == "init"
+            and row.get("session_id") == session and isinstance(row.get("plugins"), list)]
+
+
+def overlapping_workers(first, rows):
+    """Use actual stop observations, not delayed controller reconciliation."""
+    stopped = first.get("stop_observation", {}).get("observed_at")
+    return [row for row in rows if row.get("task_id") == "CW-LIVE-B"
+            and first.get("claimed_at") and stopped and row.get("claimed_at")
+            and row.get("stop_observation", {}).get("observed_at")
+            and max(first["claimed_at"], row["claimed_at"])
+            < min(stopped, row["stop_observation"]["observed_at"])]
 
 
 def inspect_live(workspace, original, plugin, captures, native, stream, process, retry):
@@ -687,6 +768,7 @@ def inspect_live(workspace, original, plugin, captures, native, stream, process,
         handback_calls = [call for call, c in pres.items() if c["input"].get("tool_name") == "SubagentHandback" and admitted(c)]
         stops = [c for c in events if c["event"] == "SubagentStop"]
         handback = row.get("handback", {})
+        notifications = native_completion(stream, process["session_id"], actor, row.get("call_id"))
         delivered = handback.get("status") == "delivered" or handback.get("state") == "delivered" or bool(handback.get("delivered_at"))
         receipt = row.get("context_receipt")
         proof = row.get("hook_readiness", {})
@@ -701,8 +783,9 @@ def inspect_live(workspace, original, plugin, captures, native, stream, process,
                    "context_receipt": receipt}),
             check(task_id + " ordinary automatic hook pair", bool(ordinary and proof.get("matched_call") and runtime_match),
                   {"calls": ordinary, "readiness": proof, "expected_runtime": runtime}),
-            check(task_id + " handback delivery", bool(handback_calls and delivered),
-                  {"calls": handback_calls, "controller": handback}, unknown=bool(handback_calls and not delivered)),
+            check(task_id + " result delivery", bool((handback_calls or notifications) and delivered),
+                  {"calls": handback_calls, "notifications": notifications, "controller": handback},
+                  unknown=bool((handback_calls or notifications) and not delivered)),
             check(task_id + " independent terminal and root acceptance", bool(stops and row.get("terminal_status") in {"completed", "idle"}
                   and row.get("state") == "accepted" and result.get("accepted_at") and result.get("worker_id") == actor
                   and actor != state.get("root") and not row.get("revoked_at") and not row.get("identity_conflict")),
@@ -728,18 +811,20 @@ def inspect_live(workspace, original, plugin, captures, native, stream, process,
     checks.append(check("distinct native workers", all(actors) and len(set(actors)) == 2, actors))
     # Any B attempt overlapping A establishes actual concurrent ownership even
     # when B's first deliberate failing attempt is followed by a fresh retry.
-    a = selected[0]
-    overlap = [r for r in rows if r.get("task_id") == "CW-LIVE-B" and a.get("claimed_at") and a.get("ended_at")
-               and r.get("claimed_at") and r.get("ended_at") and
-               max(a["claimed_at"], r["claimed_at"]) < min(a["ended_at"], r["ended_at"])]
+    overlap = overlapping_workers(selected[0], rows)
     checks.append(check("observed concurrent worker lifetimes", bool(overlap), [r["grant_id"] for r in overlap]))
     schema = native["handback_schemas"]
-    checks.append(check("fresh host handback schema", bool(schema), schema, unknown=not schema))
-    plugin_lists = [r.get("plugins", []) for r in stream if r.get("type") == "system" and r.get("subtype") == "init"]
-    plugins = [p for group in plugin_lists if isinstance(group, list) for p in group
-               if isinstance(p, dict) and str(p.get("name", "")).split("@")[0] == "taskplane"]
-    checks.append(check("single candidate plugin selected", len(plugins) == 1 and str(plugin) in json.dumps(plugins),
-                        plugins, unknown=not plugins))
+    completion_contract = bool(native.get("completion_notifications")) and all(
+        native_completion(stream, process["session_id"], row.get("worker_id"), row.get("call_id"))
+        for row in selected)
+    supported_delivery = bool(schema) or completion_contract
+    checks.append(check("fresh host result delivery contract", supported_delivery,
+                        {"handback_schemas": schema, "native_completion": completion_contract},
+                        unknown=not supported_delivery))
+    selections = candidate_selections(stream, process["session_id"])
+    checks.append(check("single candidate plugin selected", bool(selections) and all(
+        len(group) == 1 and group[0].get("path") == str(plugin) for group in selections),
+        selections, unknown=not selections))
     if workspace != original:
         parent = [s for s in native["sources"] if Path(s["path"]).stem == process["session_id"]]
         initial = [c["input"] for c in captures if c["event"] == "SessionStart"
@@ -839,8 +924,8 @@ def run_live(args, report):
         report["status"] = "pass" if len(report["scenarios"]) == 2 and all(
             s["verification"]["status"] == "pass" for s in report["scenarios"]) else "fail"
         save(args.output, report)  # Preserve a completed scenario even if the next one fails.
-        if process["timed_out"]:
-            break  # Unknown children are not replaced by another attempt.
+        if scenario["verification"]["status"] != "pass":
+            break  # Resolve the first blocker before spending another host session.
     report["e2e_status"] = report["status"]
 
 
