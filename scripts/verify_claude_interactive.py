@@ -228,6 +228,21 @@ def continuity(state: dict) -> dict:
         'task_results': base.digest(json.dumps(state.get('task_results'), sort_keys=True).encode())}
 
 
+def concurrent_reviews(rows: list[dict]) -> list[list[str]]:
+    """Corroborate distinct useful reviewers using actual claim and stop times."""
+    pairs = []
+    for index, first in enumerate(rows):
+        for second in rows[index + 1:]:
+            if any(not first.get(key) or not second.get(key) or first[key] == second[key]
+                   for key in ('task_id', 'worker_id', 'grant_id')):
+                continue
+            starts = [row.get('claimed_at') for row in (first, second)]
+            stops = [row.get('stop_observation', {}).get('observed_at') for row in (first, second)]
+            if all(starts + stops) and max(starts) < min(stops):
+                pairs.append([first['grant_id'], second['grant_id']])
+    return pairs
+
+
 def resume(folder: Path, claude: str) -> None:
     manifest = validate(folder)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -282,7 +297,6 @@ def inspect(folder: Path, output: Path) -> None:
                         and c['event'] == 'PreToolUse'
                         and c['input'].get('agent_id') == first[0].get('worker_id')
                         and base.admitted(c)]
-    useful_a = next((r for r in successful if r.get('task_id') == 'CW-LIVE-A'), {})
     denied = [c for c in captures if c['event'] == 'PreToolUse'
               and '2>&1 | head -50' in c['input'].get('tool_input', {}).get('command', '')
               and not base.admitted(c)]
@@ -299,8 +313,9 @@ def inspect(folder: Path, output: Path) -> None:
         base.check('interactive handback actually invoked', bool(handbacks), len(handbacks)),
         base.check('startup handback admitted', len(startup_handbacks) == 1, len(startup_handbacks)),
         base.check('handback schema observed', bool(native['handback_schemas']), len(native['handback_schemas'])),
-        base.check('useful native workers overlapped', bool(base.overlapping_workers(useful_a, successful)),
-                   'Uses actual claim and stop observations, not delayed reconciliation'),
+        base.check('useful native workers overlapped', bool(concurrent_reviews(successful)),
+                   {'basis': 'Distinct accepted workers with actual claim and stop observations',
+                    'grant_pairs': concurrent_reviews(successful)}),
         base.check('invalid wrapper refused once', len(denied) == 1, len(denied)),
         base.check('source and candidate remain unchanged', all(c.get('runtime_unchanged') for c in captures), 'Prepared hashes revalidated'),
         base.check('native evidence readable', not native['errors'], native['errors']),

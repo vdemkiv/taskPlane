@@ -14,6 +14,23 @@ from taskplane import claude_flow_usage as claude, flow
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_interactive_concurrency_does_not_require_first_reviewer_to_overlap():
+    from scripts import verify_claude_interactive as harness
+    def row(task, start, stop):
+        return {'task_id': task, 'worker_id': 'worker-' + task, 'grant_id': 'grant-' + task,
+                'claimed_at': start, 'stop_observation': {'observed_at': stop}}
+    a = row('A', '2026-10-05T21:50:44+00:00', '2026-10-05T21:52:28+00:00')
+    b = row('B', '2026-10-05T21:53:36+00:00', '2026-10-05T21:54:22+00:00')
+    c = row('C', '2026-10-05T21:53:27+00:00', '2026-10-05T21:54:12+00:00')
+    assert harness.concurrent_reviews([a, b, c]) == [['grant-B', 'grant-C']]
+    assert harness.concurrent_reviews([a, b]) == []
+    assert harness.concurrent_reviews([b, b]) == []
+    for key in ('task_id', 'worker_id', 'grant_id'):
+        assert harness.concurrent_reviews([b, {**c, key: b[key]}]) == []
+    assert harness.concurrent_reviews([b, {**c, 'stop_observation': {}}]) == []
+    assert harness.concurrent_reviews([b, {**c, 'claimed_at': b['stop_observation']['observed_at']}]) == []
+
+
 @pytest.mark.parametrize('count', [2, 10])
 def test_interactive_review_fixture_pins_every_independent_source(tmp_path, monkeypatch, count):
     from scripts import verify_claude_interactive as harness
