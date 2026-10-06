@@ -84,7 +84,7 @@ def _complete_approval_response(excerpt: str) -> bool:
     Quoted grants cannot establish assent; the caller checks the unquoted lead.
     """
     phase = r'(?:' + '|'.join(w.PHASES) + r')'
-    target = r'(?:' + phase + r'(?:\s+phase)?|phase|checkpoint|output|proposal|changes?|work)'
+    target = r'(?:' + phase + r'(?:\s+phase)?|phase|checkpoint|output|proposal|changes?|repairs?|work)'
     obj = (r'(?:it|this|that|(?:(?:the|this|that)\s+)?(?:current\s+)?' + target
            + r'|(?:checkpoint\s+)?[0-9a-f]{32})')
     actor = r'(?:(?:i|we)\s+(?:have\s+)?)?'
@@ -153,6 +153,12 @@ def conversational_choice(excerpt: str) -> str | None:
     """
     text = re.sub(r'\s+', ' ', decision_text(excerpt)).strip()
     qualifiers = re.sub(r'\s+', ' ', excerpt.casefold().replace("’", "'")).strip()
+    # A punctuation boundary must not hide a condition on any decision, including
+    # dissent. Negative implementation requirements are handled separately below.
+    if not text or '?' in qualifiers or re.search(
+        r"\b(?:if|unless|until|when|after|before|once|provided|assuming|hypothetically|example|would|might|maybe|perhaps|subject to|as long as)\b", qualifiers
+    ):
+        return None
     lead = re.sub(r'^(?:please\s+)?(?:i\s+)?', '', text).rstrip('.! ')
     dissent = {
         'cancelled': r'(?:cancel(?:led)?|stop|abort)',
@@ -162,6 +168,22 @@ def conversational_choice(excerpt: str) -> str | None:
     # A direct request for correction stays dissent when its explanation contains
     # negative requirements. Positive-consent restrictions must not erase it.
     # Conditions on the decision itself and mixed decisions still need clarification.
+    current_target = r'(?:(?:this|the)\s+)?(?:current\s+)?(?:workflow|run|checkpoint|output)'
+    dissent_target = r'(?:' + current_target + r'|here|it)?'
+    # An explicit workflow target remains a decision even with trailing prose.
+    # A bare verb needs a boundary or a modifier, not an implementation object.
+    decision_target = (r'(?:\s+(?:' + current_target + r'|here|it)\b|\s*$|'
+                       r'\s+(?=please\b|now\b|yet\b|again\b|anymore\b|today\b|tomorrow\b|'
+                       r'for\b|at\b|as\b|right\b|just\b|[a-z]+ly\b))')
+    direct_dissent = {
+        choice: r'(?:please\s+)?(?:i\s+)?' + pattern + r'\b' + decision_target
+        for choice, pattern in dissent.items()
+    }
+    assent_target = (r'(?:(?:the|this|that)\s+)?(?:current\s+)?(?:'
+                     + '|'.join(w.PHASES) + r'|phase|checkpoint|output|proposal|changes?|repairs?|work)')
+    targeted_assent = (r'\b(?:approv(?:e|ed)|accept(?:ed)?|confirm(?:ed)?|authori[sz](?:e|ed)|'
+                       r'consent(?:ed)?|assent(?:ed)?|sign(?:ed)? off)\s+'
+                       r'(?:' + assent_target + r'|it|this|that)\b')
     for choice, pattern in dissent.items():
         matched = re.match(r'^' + pattern + r'\b', lead)
         if matched:
@@ -169,22 +191,32 @@ def conversational_choice(excerpt: str) -> str | None:
             decision_tail = re.split(r'[:.!;\n]', tail, maxsplit=1)[0].strip()
             # Consume the decision clause. "Cancel nothing" and conditional
             # requests must not be mistaken for a direct cancellation/change.
-            if ('?' in qualifiers or not re.fullmatch(
-                    r'(?:(?:(?:this|the|current)\s+)?(?:workflow|run|checkpoint|output)|here|it)?', decision_tail)):
+            if not re.fullmatch(dissent_target, decision_tail):
                 return None
-            for clause in re.split(r'[.!;:\n]+|,|\b(?:then|but|and)\b', qualifiers):
-                clause = clause.strip()
+            for clause in re.split(r'[.!;:\n—–]+|,|\b(?:then|but|and)\b', qualifiers):
+                # Retain quoted qualifications instead of deleting their content.
+                clause = clause.strip(' \t\'"`“”')
+                if (re.fullmatch(r'(?:no|nope)', clause)
+                        or re.search(r'\b(?:never mind|on second thought|i changed my mind)\b', clause)):
+                    return None
+                if any(other != choice and re.search(r'\b' + direct, clause)
+                       for other, direct in direct_dissent.items()):
+                    return None
+                # Introductory prose must not conceal a complete conflicting or
+                # retracted decision. Keep the target bounded so implementation
+                # requirements such as "never cancel pending payments" survive.
+                if any(re.search(r"\b(?:not|never|cannot|no longer|\w+n't)\b.*?\b"
+                                 + direct, clause) for direct in direct_dissent.values()):
+                    return None
+                if re.search(targeted_assent, clause):
+                    return None
                 # Descriptive prohibitions ("never accept invalid IDs") are
                 # not positive decisions. A separate complete assent is mixed.
-                if (clause and _complete_approval_response(clause)
-                        and re.search(r'\b(?:approv(?:e|ed)|accept(?:ed)?|lgtm|yes|yep|yeah|ok(?:ay)?|go ahead|proceed|continue|ship it|looks? good|sounds? good)\b', clause)):
+                assent = r'\b(?:approv(?:e|ed)|accept(?:ed)?|lgtm|yes|yep|yeah|ok(?:ay)?|go ahead|proceed|continue|ship it|looks? good|sounds? good)\b'
+                if any(_complete_approval_response(clause[match.start():])
+                       for match in re.finditer(assent, clause)):
                     return None
             return choice
-    # Quotation cannot hide a qualification to an otherwise affirmative prefix.
-    if not text or '?' in qualifiers or re.search(
-        r"\b(?:if|unless|until|when|after|before|once|provided|assuming|hypothetically|example|would|might|maybe|perhaps|subject to|as long as)\b", qualifiers
-    ):
-        return None
     # A later qualification/negation must not be hidden by an affirmative prefix.
     if re.search(r"\b(?:but|however|except|yet|no|not|never|don't|cannot|can't|shouldn't|without)\b", qualifiers):
         return None

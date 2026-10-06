@@ -5,6 +5,7 @@
 - Join verified worker reports delivered after worker stop without weakening identity, acknowledgment, body or transcript-span checks.
 - Admit bounded native Claude tool discovery and controls for the current owned worker attempt.
 - Preserve ordinary decision labels and descriptive change requests, with separate grammar, provenance, binding and chronology diagnostics.
+- Accept plain repair approval while preserving the full response; refuse conditional, retracted or conflicting dissent across punctuation without changing the checkpoint or policy.
 - Inspect and verify continuation through Claude's original native session without adopting another root or copying approvals.
 - Validate declared implementation paths and task-specific serial exceptions before delivery checkpoints.
 - Read current compact recovery references directly and share identical required report bodies while retaining every provenance obligation.

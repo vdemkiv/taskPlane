@@ -30,11 +30,15 @@ def test_other_clear_decisions(text, expected):
 @pytest.mark.parametrize('text,expected', [
     ('Approve as is', 'approved'),
     ('Please approve as is.', 'approved'),
+    ('approve repair', 'approved'),
+    ('Approve the repair.', 'approved'),
     ('fix it all', 'changes_requested'),
     ('changes: retain deleted IDs and never reassign deleted user IDs', 'changes_requested'),
     ('Request changes: never share user history', 'changes_requested'),
     ('Request changes: never accept invalid IDs', 'changes_requested'),
     ('Request changes: never approve invalid requests', 'changes_requested'),
+    ('Request changes: never cancel pending payments', 'changes_requested'),
+    ('Request changes: reject invalid IDs', 'changes_requested'),
     ('Reject: this does not satisfy the requirements', 'rejected'),
 ])
 def test_native_decisions_preserve_actual_response(tmp_path, text, expected):
@@ -55,6 +59,76 @@ def test_native_decisions_preserve_actual_response(tmp_path, text, expected):
 ])
 def test_native_decisions_do_not_erase_qualification(text):
     assert local.choice(text) is None
+
+
+@pytest.mark.parametrize('separator', [': ', '. ', '; ', '! ', '\n', ' — '])
+@pytest.mark.parametrize('decision_text,qualification', [
+    ('Cancel', 'if tests fail'),
+    ('Reject', 'unless the missing tests pass'),
+    ('Request changes', 'only after tests fail'),
+    ('Cancel', 'hypothetically, if tests fail'),
+    ('Cancel', 'request changes'),
+    ('Request changes', 'cancel this workflow'),
+    ('Cancel', 'never mind, do not cancel'),
+    ('Cancel', "actually, I do not want to cancel"),
+    ('Cancel', 'actually do not cancel'),
+    ('Cancel', 'this must not be cancelled'),
+    ('Request changes', 'instead cancel this workflow'),
+    ('Cancel', 'actually do not cancel this workflow please'),
+    ('Request changes', 'instead cancel this workflow please'),
+    ('Cancel', 'actually do not cancel please'),
+    ('Cancel', 'actually do not cancel this workflow because it is needed'),
+    ('Request changes', 'instead cancel this workflow immediately'),
+    ('Request changes', 'instead cancel the current workflow please'),
+    ('Cancel', 'actually approve repair please'),
+    ('Cancel', 'instead confirm the proposal please'),
+    ('Cancel', 'I no longer want to cancel this workflow'),
+    ('Cancel', 'I do not wish to cancel this workflow please'),
+    ('Request changes', 'actually approve repair'),
+    ('Reject', 'do not reject'),
+    ('Request changes', 'approve repair'),
+])
+def test_dissent_qualifications_survive_punctuation(separator, decision_text, qualification):
+    assert local.choice(decision_text + separator + qualification) is None
+
+
+@pytest.mark.parametrize('text', [
+    'approve repair if checks pass', 'Approve repair: only when ready',
+    'Approve another repair', '"approve repair"', 'Do not approve repair',
+    'Approve repair; cancel',
+])
+def test_repair_approval_still_requires_unambiguous_consent(text):
+    assert local.choice(text) is None
+
+
+@pytest.mark.parametrize('text,incorrect_choice', [
+    ('Cancel: if tests fail', 'cancelled'),
+    ('Reject: unless the missing tests pass', 'rejected'),
+    ('Request changes: if tests fail', 'changes_requested'),
+    ('Cancel: request changes', 'cancelled'),
+    ('Cancel: never mind, do not cancel', 'cancelled'),
+    ('Cancel. Actually do not cancel', 'cancelled'),
+    ('Request changes: instead cancel this workflow', 'changes_requested'),
+    ('Cancel. Actually do not cancel this workflow please', 'cancelled'),
+    ('Request changes: instead cancel this workflow please', 'changes_requested'),
+])
+def test_qualified_dissent_does_not_change_checkpoint_or_policy(tmp_path, text, incorrect_choice):
+    c, state = setup(tmp_path)
+    state = set_policy(c, state)
+    state = submit(c, state)
+    response = decision(state, text=text)
+    response['choice'] = incorrect_choice
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal) as refused:
+        decide(c, state, response)
+    assert refused.value.result()['category'] == 'decision_grammar'
+    assert c._path().read_bytes() == before
+    current = c.report()
+    assert current['revision'] == state['revision']
+    assert current['decisions'] == state['decisions']
+    assert current['approval_policy'] == state['approval_policy']
+    assert current.get('policy_suspension') == state.get('policy_suspension')
+    assert w.current(current)['decision'] == 'awaiting_human_approval'
 
 
 @pytest.mark.parametrize('bad,category', [

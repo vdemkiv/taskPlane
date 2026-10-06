@@ -469,12 +469,14 @@ Example identifiers and times above are placeholders; never copy them as actual
 provenance. Choices are `approved`, `changes_requested`, `rejected` or `cancelled`.
 The excerpt must express a clear choice in the user's own words. Conversational
 responses such as “looks good, proceed”, “go ahead”, “build approved” and “fix
-issues” are supported, including the native option “Approve as is”, “fix it all”,
+issues” are supported, including “approve repair”, the native option “Approve as is”, “fix it all”,
 and “changes: never reassign deleted user IDs”. A direct change request can contain
 negative requirements in its explanation. The full actual excerpt is retained
 (up to 4096 characters); do not reduce “Approve as is” to “Approve” or drop a
-condition. A named phase must match the bound visit. Conditional or mixed positive
-decisions and quoted examples require clarification in ordinary language.
+condition. A named phase must match the bound visit. Conditional or mixed
+decisions, retractions and quoted examples require clarification in ordinary language.
+Punctuation and introductory words do not hide qualifications: “Cancel: if tests
+fail” and “Cancel. Actually do not cancel” leave the checkpoint and policy unchanged.
 Response grammar, provenance, binding and chronology refusals retain the compatible
 `reason: invalid_evidence`. Their full structured result adds `category` with
 `decision_grammar`, `decision_provenance`, `decision_binding`, or
