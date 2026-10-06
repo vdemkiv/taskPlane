@@ -31,6 +31,22 @@ EXCLUDED = {".git", ".taskplane", ".venv", "venv", "node_modules", "__pycache__"
             ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 
 
+class DecisionRefusal(w.Refusal):
+    """Keep the decision API's refusal reason while identifying its failed contract."""
+
+    def __init__(self, category: str, detail: str):
+        self.category = category
+        super().__init__("invalid_evidence", f"{category}: {detail}")
+
+    def result(self) -> dict[str, Any]:
+        return {**super().result(), "category": self.category}
+
+
+def _require_decision(condition: object, category: str, detail: str) -> None:
+    if not condition:
+        raise DecisionRefusal(category, detail)
+
+
 def choice(text: str) -> str | None:
     from .workflow_approval import conversational_choice
     return conversational_choice(text)
@@ -428,16 +444,18 @@ class LocalWorkflow:
         w.require(isinstance(value, dict) and value.get("schema") == "taskplane.observed-decision/v1",
                   "invalid_evidence", "Observed decision schema is missing.")
         source = value.get("source")
-        w.require(isinstance(source, dict) and source.get("kind") in {"conversation", "native_prompt"}
+        _require_decision(isinstance(source, dict) and source.get("kind") in {"conversation", "native_prompt"}
                   and source.get("conversation") == self.root and source.get("actor") == "user"
                   and source.get("automatic") is False and isinstance(source.get("reference"), str)
-                  and 0 < len(source["reference"]) <= 512, "invalid_evidence", "Human response provenance is incomplete.")
+                  and 0 < len(source["reference"]) <= 512, "decision_provenance", "Human response provenance is incomplete.")
         event_id, excerpt, recorder = value.get("event_id"), value.get("excerpt"), value.get("recorder")
-        w.require(isinstance(event_id, str) and 0 < len(event_id) <= 512
-                  and isinstance(excerpt, str) and 0 < len(excerpt) <= 512
-                  and recorder in {"root_orchestrator", "native_prompt_hook"}
-                  and value.get("choice") == choice(excerpt) and choice(excerpt) is not None,
-                  "invalid_evidence", "The response or its human provenance is unclear. Ask what the user wants to do with this checkpoint; no exact wording is required.")
+        _require_decision(isinstance(event_id, str) and 0 < len(event_id) <= 512
+                  and isinstance(excerpt, str) and 0 < len(excerpt) <= 4096
+                  and recorder in {"root_orchestrator", "native_prompt_hook"},
+                  "decision_provenance", "Preserve the complete bounded human excerpt, event reference and recorder.")
+        interpreted = choice(excerpt)
+        _require_decision(interpreted is not None and value.get("choice") == interpreted,
+                  "decision_grammar", "The response's decision is unclear or differs from its recorded choice. Clarify the intended decision; no exact wording is required.")
         observed = timestamp(source.get("observed_at"))
         if event_id in prior:
             old_source = prior[event_id].get("provenance", {}).get("source", {})
@@ -446,11 +464,11 @@ class LocalWorkflow:
         recorded_at = (prior[event_id].get("provenance", {}).get("recorded_at")
                        if event_id in prior else None) or datetime.now(timezone.utc).isoformat()
         expected = prior[event_id]["binding"] if event_id in prior else expected
-        w.require(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
-                  "stale_checkpoint", "Observed decision has a stale or foreign checkpoint binding.")
+        _require_decision(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
+                  "decision_binding", "Observed decision has a stale or foreign checkpoint binding.")
         named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
-        w.require(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
-                  "invalid_evidence", "The response names a different checkpoint.")
+        _require_decision(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
+                  "decision_binding", "The response names a different checkpoint.")
         from .workflow_approval import decision_phase
         named_phase = decision_phase(excerpt)
         supplied = value.get("binding") or {}
@@ -459,25 +477,25 @@ class LocalWorkflow:
         stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
         legacy_replay = event_id in prior and not prior[event_id].get("provenance", {}).get("recorded_at")
         if not legacy_replay:
-            w.require(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
-                      <= timestamp(recorded_at), "invalid_evidence",
+            _require_decision(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
+                      <= timestamp(recorded_at), "decision_chronology",
                       "Decision must follow run and checkpoint submission and cannot be in the future.")
         if named_phase:
             # Resolve the named visit under the Controller's existing store lock.
             # A correct binding cannot turn 'Build approved' into Product consent.
-            w.require(stage.get("phase") == named_phase, "invalid_evidence",
+            _require_decision(stage.get("phase") == named_phase, "decision_binding",
                       "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         if value.get("checkpoint_explicit") is not True:
             presentation = value.get("presentation")
-            w.require(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
+            _require_decision(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
                       and isinstance(presentation.get("reference"), str) and presentation["reference"],
-                      "invalid_evidence", "Brief approval needs the presented checkpoint and ordering evidence.")
-            w.require(timestamp(presentation.get("at")) < observed, "invalid_evidence", "Response precedes presentation.")
+                      "decision_binding", "Brief approval needs the presented checkpoint and ordering evidence.")
+            _require_decision(timestamp(presentation.get("at")) < observed, "decision_chronology", "Response precedes presentation.")
             if not legacy_replay:
-                w.require(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
-                          "invalid_evidence", "Presentation precedes checkpoint submission.")
+                _require_decision(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
+                          "decision_chronology", "Presentation precedes checkpoint submission.")
         else:
-            w.require(expected["checkpoint"] in excerpt, "invalid_evidence", "Explicit approval must name the checkpoint.")
+            _require_decision(expected["checkpoint"] in excerpt, "decision_binding", "Explicit approval must name the checkpoint.")
         result = {"event_id": event_id, "human": True, "automatic": False, "choice": value["choice"],
                 "binding": deepcopy(expected), "assurance": "observed", "provenance": {
                     "source": {k:source[k] for k in ("kind","reference","conversation","actor","automatic","observed_at")},
@@ -534,7 +552,7 @@ class LocalWorkflow:
         if words[2] == "workflow":
             action, _ = workflow_command(self.workspace, event, state)
             return action in {"catalog", "validate", "preview", "check"}
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "reconcile-maintenance", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "resume", "reconcile-maintenance", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -716,7 +734,7 @@ def workflow_diagnostic_event(workspace: Path, event: dict[str, Any], state: dic
                    and index + 1 < len(options) and options[index + 1] == operation
                    for index, word in enumerate(options) for operation in ("status", "recover-unbound"))
     return len(words) > 3 and words[2] == "flow" and words[3] in {
-        "report", "diagnose", "inspect", "recover", "reconcile-maintenance", "retire", "start", "wait", "present", "decide"}
+        "report", "diagnose", "inspect", "recover", "resume", "reconcile-maintenance", "retire", "start", "wait", "present", "decide"}
 
 
 def readonly_command(event: dict[str, Any]) -> bool:
@@ -1182,7 +1200,7 @@ class Harness:
                 return False
         except (w.Refusal, OSError, ValueError):
             return False
-        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'wait'})
+        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'resume', 'wait'})
                 or words[2] == 'graph' and 'scan' in words[3:]
                 or words[2:4] == ['review', 'start'])
 

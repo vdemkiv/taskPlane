@@ -14,6 +14,92 @@ from taskplane import claude_flow_usage as claude, flow
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_interactive_concurrency_does_not_require_first_reviewer_to_overlap():
+    from scripts import verify_claude_interactive as harness
+    def row(task, start, stop):
+        return {'task_id': task, 'worker_id': 'worker-' + task, 'grant_id': 'grant-' + task,
+                'claimed_at': start, 'stop_observation': {'observed_at': stop}}
+    a = row('A', '2026-10-05T21:50:44+00:00', '2026-10-05T21:52:28+00:00')
+    b = row('B', '2026-10-05T21:53:36+00:00', '2026-10-05T21:54:22+00:00')
+    c = row('C', '2026-10-05T21:53:27+00:00', '2026-10-05T21:54:12+00:00')
+    assert harness.concurrent_reviews([a, b, c]) == [['grant-B', 'grant-C']]
+    assert harness.concurrent_reviews([a, b]) == []
+    assert harness.concurrent_reviews([b, b]) == []
+    for key in ('task_id', 'worker_id', 'grant_id'):
+        assert harness.concurrent_reviews([b, {**c, key: b[key]}]) == []
+    assert harness.concurrent_reviews([b, {**c, 'stop_observation': {}}]) == []
+    assert harness.concurrent_reviews([b, {**c, 'claimed_at': b['stop_observation']['observed_at']}]) == []
+
+
+@pytest.mark.parametrize('count', [2, 10])
+def test_interactive_review_fixture_pins_every_independent_source(tmp_path, monkeypatch, count):
+    from scripts import verify_claude_interactive as harness
+    folder = tmp_path / 'fixture'
+    folder.mkdir()
+    monkeypatch.setattr(harness.tempfile, 'mkdtemp', lambda **kwargs: str(folder))
+    output = tmp_path / 'prepared.json'
+    harness.prepare(ROOT, output, count)
+    manifest = harness.validate(folder)
+    workspace = Path(manifest['workspace'])
+    tasks = json.loads((workspace / '.taskplane/bootstrap/tasks.json').read_text())['tasks']
+    assert len(tasks) == count
+    assert len({task['review_lens'] for task in tasks}) == count
+    assert len({task['read_inputs'][0] for task in tasks}) == count
+    assert all(task['execution'] == 'native_required' for task in tasks)
+    assert len(manifest['input_sha256']) == count + 2
+    last = workspace / tasks[-1]['read_inputs'][0]
+    last.write_text(last.read_text() + '\n# changed after preparation\n')
+    with pytest.raises(ValueError, match='inputs changed'):
+        harness.validate(folder)
+
+
+def test_interactive_resume_keeps_original_session_permissions_and_checkpoint(tmp_path, monkeypatch):
+    from scripts import verify_claude_interactive as harness
+    manifest = {'workspace': str(tmp_path), 'plugin': str(tmp_path / 'plugin'), 'session_id': 'original'}
+    state = {'root': 'original', 'run': 'run-1', 'revision': 4, 'index': 0,
+             'visits': [{'id': 'visit-1', 'phase': 'engineering',
+                         'decision': 'awaiting_human_approval', 'packet': {'checkpoint': 'sealed'}}],
+             'decisions': [], 'task_results': {'review-A': {'grant': 'grant-A'}}}
+    argv = ['claude', '--plugin-dir', manifest['plugin'], '--session-id', 'original',
+            '--permission-mode', 'auto', '--allowedTools', 'Read', '--', 'old prompt']
+    (tmp_path / 'launch.json').write_text(json.dumps({'argv': argv, 'session_id': 'original'}))
+    monkeypatch.setattr(harness, 'validate', lambda folder: manifest)
+    monkeypatch.setattr(harness, 'native_state', lambda value: state)
+    monkeypatch.setattr(harness.sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(harness.sys.stdout, 'isatty', lambda: True)
+    monkeypatch.setattr(harness.os, 'chdir', lambda path: None)
+    launched = []
+    monkeypatch.setattr(harness.os, 'execvpe', lambda *args: launched.append(args))
+    harness.resume(tmp_path, '/native/claude')
+    actual = launched[0][1]
+    assert actual[:3] == ['/native/claude', '--plugin-dir', manifest['plugin']]
+    assert actual[3:5] == ['--resume', 'original']
+    assert actual[5:-1] == argv[5:-1]
+    assert 'flow report' in actual[-1] and '--run run-1' in actual[-1]
+    assert '--session-id' not in actual and '--fork-session' not in actual
+    saved = json.loads((tmp_path / 'resume.json').read_text())
+    assert saved['before'] == harness.continuity(state)
+    state['visits'][0]['decision'] = 'approved'
+    assert saved['before'] != harness.continuity(state)
+    with pytest.raises(ValueError, match='already exists'):
+        harness.resume(tmp_path, '/native/claude')
+
+
+@pytest.mark.parametrize('tty, session', [(False, 'original'), (True, 'different')])
+def test_interactive_resume_rejects_headless_or_foreign_launch(tmp_path, monkeypatch, tty, session):
+    from scripts import verify_claude_interactive as harness
+    manifest = {'workspace': str(tmp_path), 'plugin': str(tmp_path / 'plugin'), 'session_id': 'original'}
+    (tmp_path / 'launch.json').write_text(json.dumps({
+        'argv': ['claude', '--session-id', session, '--', 'prompt'], 'session_id': session}))
+    monkeypatch.setattr(harness, 'validate', lambda folder: manifest)
+    monkeypatch.setattr(harness, 'native_state', lambda value: {})
+    monkeypatch.setattr(harness.sys.stdin, 'isatty', lambda: tty)
+    monkeypatch.setattr(harness.sys.stdout, 'isatty', lambda: tty)
+    with pytest.raises(ValueError, match='real terminal|session mismatch'):
+        harness.resume(tmp_path, 'claude')
+    assert not (tmp_path / 'resume.json').exists()
+
+
 def bound_workspace(tmp_path, monkeypatch, policy='any'):
     from taskplane.tests.binding_support import require_binding_runtime
     require_binding_runtime()

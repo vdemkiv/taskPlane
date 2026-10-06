@@ -1,5 +1,16 @@
 # taskplane changelog
 
+## v2.33.0 — Claude delivery and continuation repairs
+
+- Join verified worker reports delivered after worker stop without weakening identity, acknowledgment, body or transcript-span checks.
+- Admit bounded native Claude tool discovery and controls for the current owned worker attempt.
+- Preserve ordinary decision labels and descriptive change requests, with separate grammar, provenance, binding and chronology diagnostics.
+- Accept plain repair approval while preserving the full response; refuse conditional, retracted or conflicting dissent across punctuation without changing the checkpoint or policy.
+- Inspect and verify continuation through Claude's original native session without adopting another root or copying approvals.
+- Validate declared implementation paths and task-specific serial exceptions before delivery checkpoints.
+- Read current compact recovery references directly and share identical required report bodies while retaining every provenance obligation.
+- Expand interactive verification to ten distinct native reviews, startup failure and retry, scoped messaging, native decision labels and a sealed review checkpoint.
+
 ## v2.32.3 — Distinct recovery test packages
 
 - Repackage the verified interactive Claude recovery candidate under a distinct patch version to avoid confusion with earlier 2.32.2 packages.

@@ -260,4 +260,7 @@ class Store:
         value = evidence.object_file(self.workspace, relative)
         w.require(value.get("binding") == binding and isinstance(value.get("roots"), list),
                   "invalid_context", "Foreign context read index.")
+        w.require(len(value["roots"]) <= 4096 and all(isinstance(ref, dict) and
+                  ref.get("schema") == REFERENCE_SCHEMA for ref in value["roots"]),
+                  "invalid_context", "Invalid or oversized context read roots.")
         return list(value["roots"])

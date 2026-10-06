@@ -15,6 +15,10 @@ bootstrap, native dashboard handoff and legitimate user waits.
 Read [delivery](../tp-go/SKILL.md) and execute its flow. The root orchestrator
 owns completion. Clarify the outcome, inspect the existing implementation, make
 the smallest sufficient design, build, verify, and deliver.
+New delivery scopes require `planning_contract: "implementation/v1"` and the
+shared flow's explicit implementation intent. Declare actual source/test paths,
+stable criteria and Build packet/report/check-history paths before Product.
+Plan can narrow optional paths but cannot repair an initially unusable write scope.
 
 Use a visual when it helps settle a UI decision; do not require one for backend
 work. Discuss alternatives when a consequential trade-off needs a decision.
@@ -64,9 +68,13 @@ Retain failed/unknown results and findings; reuse never transfers approval.
 
 ## Scoped native workers
 
-When authorized, use the installed native dispatch protocol: root prepares a run-bound
-task grant, the observed worker claims its identity and consumes its own task context,
-and root verifies the joined result before satisfying dependencies. Fill observed
-capacity with useful independent work; two is only the minimum live acceptance test.
-Workers return evidence and cannot operate root phase controls or publish task definitions.
-Require actual loaded-runtime and native execution evidence for live claims.
+Native dispatch is the default for useful independent tasks in this flow, subject
+to explicit user serial constraints. This skill authorizes that bounded delegation.
+Keep independent producers `native_required`; dependencies govern their order.
+A root exception requires the task-specific proof in the shared scope preflight;
+earlier worker failures or generic shared-interface claims are insufficient.
+Use the installed prepare/claim/context/join/result protocol. Pass the first useful
+worker's claim, complete-context and automatic-hook startup gate, then fill observed
+capacity with the remaining ready cohort. Required native work remains incomplete
+when unavailable. Workers return evidence and cannot operate root phase controls
+or publish tasks. Require actual loaded-runtime and native evidence for live claims.

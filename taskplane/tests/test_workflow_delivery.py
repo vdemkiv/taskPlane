@@ -21,6 +21,32 @@ def output(c, s):
     return phase+".json"
 
 
+@pytest.mark.parametrize('kind', ['source', 'documentation'])
+def test_full_delivery_scope_is_usable_before_any_checkpoint(tmp_path, kind):
+    from taskplane.tests.test_workflow import implementation_scope
+    from taskplane import workflow_evidence as evidence
+    scope = implementation_scope(kind)
+    c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
+    request = dict(scope=scope, request_reference='user/repair-request')
+    if kind == 'source':
+        original = list(scope['paths']['build'])
+        # This is the captured setup error: only packet/report files were allowed.
+        scope['paths']['build'] = ['build/output.json', 'build/report.md']
+        with pytest.raises(w.Refusal, match='before Product'):
+            c.start(request)
+        assert not c.adapter.state_exists(allow_pending=True)
+        scope['paths']['build'] = original
+    state = c.start(request)
+    assert w.current(state)['phase'] == 'product'
+    assert all(visit['decision'] == 'not_requested' for visit in state['visits'])
+    assert w.scope_preflight(state['scope'])['status'] == 'declared_feasible'
+    if kind == 'source':
+        # Revalidation also refuses before reading/sealing a Product packet.
+        state['scope']['paths']['build'] = ['build/output.json', 'build/report.md']
+        with pytest.raises(w.Refusal, match='before Product'):
+            evidence.prevalidate(tmp_path, state, 'product.json', 'tasks.json')
+
+
 def test_all_public_phase_boundaries_require_human_decisions(tmp_path, capsys, monkeypatch):
     c, host, _ = controller(tmp_path)
     monkeypatch.setenv("CODEX_THREAD_ID", "root")

@@ -309,6 +309,33 @@ def decide(c,s,value=None):
     return c.apply("decide",s["run"],expected_revision=s["revision"],native_reference=json.dumps(value or decision(s)))
 
 
+def test_plain_repair_approval_reopens_build_and_preserves_history(tmp_path):
+    c, state = setup(tmp_path)
+    for next_phase in w.PHASES[1:6]:
+        state = submit(c, state)
+        state = decide(c, state, decision(state, event='accept-before-' + next_phase))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=next_phase)
+    previous_build = next(v for v in state['visits'] if v['phase'] == 'build')
+    previous_decisions = deepcopy(state['decisions'])
+    _, output, _ = prepare(tmp_path, 'engineering')
+    output.update(run=state['run'], visit=w.current(state)['id'], route_change={'kind': 'repair'})
+    (tmp_path / 'engineering.json').write_text(json.dumps(output))
+    state = c.apply('submit', state['run'], expected_revision=state['revision'],
+                    output='engineering.json', tasks='tasks.json')
+    present(c, state)
+    response = decision(state, text='approve repair', event='approve-the-repair')
+    accepted = decide(c, state, response)
+    assert accepted['decisions']['approve-the-repair']['provenance']['excerpt'] == 'approve repair'
+    assert all(accepted['decisions'][key] == value for key, value in previous_decisions.items())
+    historical = next(v for v in accepted['visits'] if v['id'] == previous_build['id'])
+    assert historical['superseded'] and historical['decision'] == 'approved'
+    present(c, accepted)
+    repaired = c.apply('advance', accepted['run'], expected_revision=accepted['revision'], phase='build')
+    assert w.current(repaired)['phase'] == 'build'
+    assert w.current(repaired)['id'] != previous_build['id']
+    assert w.current(repaired)['decision'] == 'not_requested'
+
+
 def test_local_profile_is_available_without_certifying_host(tmp_path):
     c,s=setup(tmp_path)
     report=c.report()

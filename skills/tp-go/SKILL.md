@@ -17,6 +17,10 @@ bootstrap, native dashboard handoff and legitimate user waits.
 
 Read [the shared flow](references/shared-flow.md) before execution. It owns the
 phase policy, shared artifacts, required evidence and host capability boundary.
+Before a new full delivery, use its `planning_contract: "implementation/v1"`
+scope preflight: declare actual implementation/test paths and three Build evidence
+outputs against stable criteria. Catch an unusable source-repair scope before
+Product; preserve explicit documentation-only intent and legacy history.
 Product, Design, Plan, Build, Evaluate, Engineering and Retro each require acceptance
 of concrete output before the next phase. Human approval is the default; explicit
 run-bound authorization may enable policy decisions under the shared flow. The orchestrator
@@ -44,7 +48,7 @@ protected_host profile must refuse without its trusted owner; never silently dow
 Usage remains advisory. Record meaningful progress and evidence, keep unknown usage
 visible and use waste advisories to simplify the next deliverable. A telemetry
 failure does not erase acceptance; missing required phase evidence blocks submission.
-Use [native delegation](references/codex-native-dispatch.md) only when authorized.
+Apply the [native delegation](references/codex-native-dispatch.md) default below within the accepted scope.
 
 Keep event references and observed command handles bound to their conversation,
 checkpoint and phase revision. Actor labels and hook activity alone never approve.
@@ -84,12 +88,16 @@ Retain failed/unknown results and findings; reuse never transfers approval.
 
 ## Scoped native workers
 
-When authorized, use the installed native dispatch protocol: root prepares a run-bound
-task grant, the observed worker claims its identity and consumes its own task context,
-and root verifies the joined result before satisfying dependencies. Fill observed
-capacity with useful independent work; two is only the minimum live acceptance test.
-Workers return evidence and cannot operate root phase controls or publish task definitions.
-Require actual loaded-runtime and native execution evidence for live claims.
+Native dispatch is the default for useful independent tasks in this flow, subject
+to explicit user serial constraints. This skill authorizes that bounded delegation.
+Keep independent producers `native_required`; dependencies govern their order.
+A root exception requires the task-specific proof in the shared scope preflight;
+earlier worker failures or generic shared-interface claims are insufficient.
+Use the installed prepare/claim/context/join/result protocol. Pass the first useful
+worker's claim, complete-context and automatic-hook startup gate, then fill observed
+capacity with the remaining ready cohort. Required native work remains incomplete
+when unavailable. Workers return evidence and cannot operate root phase controls
+or publish tasks. Require actual loaded-runtime and native evidence for live claims.
 
 
 ## Efficient native startup and context

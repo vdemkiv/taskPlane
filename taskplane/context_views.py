@@ -15,6 +15,26 @@ def collection(store: Store, values: list[Any], kind: str, limit: int = 4) -> di
             "details": store.put(kind, values) if len(values) > limit else None}
 
 
+def shared_bodies(inputs: list[dict[str, Any]], refs: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Share exact bodies while retaining every role and required obligation."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
+        groups.setdefault(digest(item["body"]), []).append(item)
+    return [{"body_ref": refs[items[0]["id"]], "inputs": [
+                {"id": item["id"], "kind": item.get("kind", "input"),
+                 "required": item.get("required", True), "ref": refs[item["id"]]}
+                for item in items]}
+            for items in groups.values()
+            if len({refs[item["id"]]["sha256"] for item in items}) > 1
+            and any(item.get("required", True) for item in items)]
+
+
+def view_source_key(binding: dict[str, Any], refs: dict[str, dict[str, Any]],
+                    authority: dict[str, Any], inputs: list[dict[str, Any]]) -> str:
+    return digest({"binding": binding, "refs": refs, "authority": authority,
+                   "delivery": [(item["id"], item.get("required", True), item.get("priority", 1)) for item in inputs]})
+
+
 def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
          criteria: list[str], authority: dict[str, Any], inputs: list[dict[str, Any]],
          coverage: dict[str, Any], *,
@@ -30,8 +50,7 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
     required = [{"id": item["id"], "ref": refs[item["id"]]}
                 for item in inputs if item.get("required", True)]
     required.sort(key=lambda x: x["id"])
-    source_key = digest({"binding": binding, "refs": refs, "authority": authority,
-                         "delivery": [(item["id"], item.get("required", True), item.get("priority", 1)) for item in inputs]})
+    source_key = view_source_key(binding, refs, authority, inputs)
     result: dict[str, Any] = {"schema": "taskplane.context-view/v1", "binding": binding,
               "source_key": source_key, "phase": phase,
               "task_ids": collection(store, task_ids, "task-ids", 16),
@@ -41,11 +60,16 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
               "inline": {}, "references": collection(store, [{"id": k, "ref": v} for k,v in refs.items()], "input-index", 0),
               "omissions": [], "coverage": coverage,
               "budget": {"limit_bytes": PHASE_BYTES[phase], "overflow": False}}
+    reuse = shared_bodies(inputs, refs)
+    if reuse:
+        result["body_reuse"] = collection(store, reuse, "body-reuse", 0)
     inline: dict[str, Any] = {}
+    inline_bodies: set[str] = set()
     for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
         key = item["id"]
         # Repeated bodies are referenced once, not repeatedly supplied inline.
-        if any(refs[other]["sha256"] == refs[key]["sha256"] for other in inline):
+        body_key = digest(bodies[key])
+        if body_key in inline_bodies:
             continue
         candidate = {**result, "inline": {**inline, key: bodies[key]}}
         returned = {refs[row['id']]['sha256'] for row in inputs
@@ -55,6 +79,7 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
         reserve = max(4096, 1024 + 67 * len(returned))
         if len(returned) <= 100 and len(encode(signed(candidate))) <= PHASE_BYTES[phase] - reserve:
             inline[key] = bodies[key]
+            inline_bodies.add(body_key)
     result["inline"] = inline
     result["omissions"] = [{"reason": "Read verified input references for bodies outside the inline budget.",
                             "count": len(refs) - len(inline)}] if len(inline) != len(refs) else []

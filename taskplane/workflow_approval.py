@@ -84,14 +84,14 @@ def _complete_approval_response(excerpt: str) -> bool:
     Quoted grants cannot establish assent; the caller checks the unquoted lead.
     """
     phase = r'(?:' + '|'.join(w.PHASES) + r')'
-    target = r'(?:' + phase + r'(?:\s+phase)?|phase|checkpoint|output|proposal|changes?|work)'
+    target = r'(?:' + phase + r'(?:\s+phase)?|phase|checkpoint|output|proposal|changes?|repairs?|work)'
     obj = (r'(?:it|this|that|(?:(?:the|this|that)\s+)?(?:current\s+)?' + target
            + r'|(?:checkpoint\s+)?[0-9a-f]{32})')
     actor = r'(?:(?:i|we)\s+(?:have\s+)?)?'
     adverb = r'(?:(?:hereby|explicitly|now)\s+)?'
     grant_verb = (r'(?:approv(?:e|ed)|accept(?:ed)?|confirm(?:ed)?|authori[sz](?:e|ed)|'
                   r'consent(?:ed)?|assent(?:ed)?|apparoved|apprvoed)')
-    active = actor + adverb + grant_verb + r'(?:\s+' + obj + r')?'
+    active = actor + adverb + grant_verb + r'(?:\s+' + obj + r')?(?:\s+as is)?'
     signed = (actor + adverb + r'sign(?:ed)?\s+(?:off(?:\s+(?:on\s+)?' + obj + r')?|'
               + obj + r'\s+off)')
     passive = obj + r'\s+(?:is\s+)?(?:approved|accepted|confirmed|authorized|authorised|signed\s+off)'
@@ -153,22 +153,74 @@ def conversational_choice(excerpt: str) -> str | None:
     """
     text = re.sub(r'\s+', ' ', decision_text(excerpt)).strip()
     qualifiers = re.sub(r'\s+', ' ', excerpt.casefold().replace("’", "'")).strip()
-    # Quotation cannot hide a qualification to an otherwise affirmative prefix.
+    # A punctuation boundary must not hide a condition on any decision, including
+    # dissent. Negative implementation requirements are handled separately below.
     if not text or '?' in qualifiers or re.search(
         r"\b(?:if|unless|until|when|after|before|once|provided|assuming|hypothetically|example|would|might|maybe|perhaps|subject to|as long as)\b", qualifiers
     ):
-        return None
-    # A later qualification/negation must not be hidden by an affirmative prefix.
-    if re.search(r"\b(?:but|however|except|yet|no|not|never|don't|cannot|can't|shouldn't|without)\b", qualifiers):
         return None
     lead = re.sub(r'^(?:please\s+)?(?:i\s+)?', '', text).rstrip('.! ')
     dissent = {
         'cancelled': r'(?:cancel(?:led)?|stop|abort)',
         'rejected': r'(?:reject(?:ed)?|decline(?:d)?)',
-        'changes_requested': r'(?:changes? requested|request changes|needs? (?:changes|revisions)|fix (?:the )?issues|revise)',
+        'changes_requested': r'(?:changes? requested|request changes|changes?(?=\s*:)|needs? (?:changes|revisions)|fix (?:it all|(?:the )?issues)|revise)',
     }
-    choices = {choice for choice, pattern in dissent.items()
-               if re.match(r'^' + pattern + r'\b', lead)}
+    # A direct request for correction stays dissent when its explanation contains
+    # negative requirements. Positive-consent restrictions must not erase it.
+    # Conditions on the decision itself and mixed decisions still need clarification.
+    current_target = r'(?:(?:this|the)\s+)?(?:current\s+)?(?:workflow|run|checkpoint|output)'
+    dissent_target = r'(?:' + current_target + r'|here|it)?'
+    # An explicit workflow target remains a decision even with trailing prose.
+    # A bare verb needs a boundary or a modifier, not an implementation object.
+    decision_target = (r'(?:\s+(?:' + current_target + r'|here|it)\b|\s*$|'
+                       r'\s+(?=please\b|now\b|yet\b|again\b|anymore\b|today\b|tomorrow\b|'
+                       r'for\b|at\b|as\b|right\b|just\b|[a-z]+ly\b))')
+    direct_dissent = {
+        choice: r'(?:please\s+)?(?:i\s+)?' + pattern + r'\b' + decision_target
+        for choice, pattern in dissent.items()
+    }
+    assent_target = (r'(?:(?:the|this|that)\s+)?(?:current\s+)?(?:'
+                     + '|'.join(w.PHASES) + r'|phase|checkpoint|output|proposal|changes?|repairs?|work)')
+    targeted_assent = (r'\b(?:approv(?:e|ed)|accept(?:ed)?|confirm(?:ed)?|authori[sz](?:e|ed)|'
+                       r'consent(?:ed)?|assent(?:ed)?|sign(?:ed)? off)\s+'
+                       r'(?:' + assent_target + r'|it|this|that)\b')
+    for choice, pattern in dissent.items():
+        matched = re.match(r'^' + pattern + r'\b', lead)
+        if matched:
+            tail = lead[matched.end():]
+            decision_tail = re.split(r'[:.!;\n]', tail, maxsplit=1)[0].strip()
+            # Consume the decision clause. "Cancel nothing" and conditional
+            # requests must not be mistaken for a direct cancellation/change.
+            if not re.fullmatch(dissent_target, decision_tail):
+                return None
+            for clause in re.split(r'[.!;:\n—–]+|,|\b(?:then|but|and)\b', qualifiers):
+                # Retain quoted qualifications instead of deleting their content.
+                clause = clause.strip(' \t\'"`“”')
+                if (re.fullmatch(r'(?:no|nope)', clause)
+                        or re.search(r'\b(?:never mind|on second thought|i changed my mind)\b', clause)):
+                    return None
+                if any(other != choice and re.search(r'\b' + direct, clause)
+                       for other, direct in direct_dissent.items()):
+                    return None
+                # Introductory prose must not conceal a complete conflicting or
+                # retracted decision. Keep the target bounded so implementation
+                # requirements such as "never cancel pending payments" survive.
+                if any(re.search(r"\b(?:not|never|cannot|no longer|\w+n't)\b.*?\b"
+                                 + direct, clause) for direct in direct_dissent.values()):
+                    return None
+                if re.search(targeted_assent, clause):
+                    return None
+                # Descriptive prohibitions ("never accept invalid IDs") are
+                # not positive decisions. A separate complete assent is mixed.
+                assent = r'\b(?:approv(?:e|ed)|accept(?:ed)?|lgtm|yes|yep|yeah|ok(?:ay)?|go ahead|proceed|continue|ship it|looks? good|sounds? good)\b'
+                if any(_complete_approval_response(clause[match.start():])
+                       for match in re.finditer(assent, clause)):
+                    return None
+            return choice
+    # A later qualification/negation must not be hidden by an affirmative prefix.
+    if re.search(r"\b(?:but|however|except|yet|no|not|never|don't|cannot|can't|shouldn't|without)\b", qualifiers):
+        return None
+    choices = set()
     phase = r'(?:' + '|'.join(w.PHASES) + r')'
     approval = (r'^(?:(?:' + phase + r'\s+(?:phase\s+)?(?:is\s+)?)?'
                 r'(?:approv(?:e|ed)|accept(?:ed)?|apparoved|apprvoed)|'
@@ -373,6 +425,37 @@ def affirmative_consent(excerpt: str) -> bool:
     return positive_seen
 
 
+def contextual_consent(state: dict[str, Any], request: dict[str, Any], observed: datetime) -> dict[str, Any] | None:
+    """Bind an exact brief choice to the actual previously presented policy.
+
+    This optional envelope is observed conversational evidence, just like the
+    decision envelope. It cannot turn a generic approval into a policy without
+    retaining the question, proposed instructions and exact policy fields.
+    """
+    context = request.get("choice_context")
+    if context is None:
+        return None
+    w.require(request.get("mode") == "autonomous" and isinstance(context, dict)
+              and context.get("schema") == "taskplane.policy-choice/v1",
+              "decision_provenance", "Policy choice requires its complete presented context.")
+    proposal = {key: request.get(key) for key in ("binding", "mode", "allowed_phases", "stop_phases", "conditions")}
+    w.require(context.get("proposal") == proposal, "decision_binding",
+              "Presented policy differs from this run's requested policy.")
+    source = context.get("source", {})
+    w.require(isinstance(source, dict) and source.get("conversation") == state["root"]
+              and source.get("actor") == "assistant" and _text(source.get("reference"), 512)
+              and _text(context.get("question")) and _text(context.get("instructions")),
+              "decision_provenance", "Policy choice needs the actual question, instructions and presentation source.")
+    from .workflow_local import timestamp
+    w.require(timestamp(state["started_at"]) <= timestamp(source.get("observed_at")) < observed,
+              "decision_chronology", "The automatic-policy question must follow run start and precede the response.")
+    w.require(context.get("selected_label") == request.get("excerpt")
+              and conversational_choice(request["excerpt"]) == "approved"
+              and affirmative_consent(context["instructions"]), "decision_grammar",
+              "Policy choice is unclear or its presented instructions do not authorize automatic phase approvals.")
+    return deepcopy(dict(context))
+
+
 def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     w.require(state.get("profile") == "native_workflow", "unsupported_authority",
               "Observed automatic authorization is available only in native_workflow.")
@@ -410,8 +493,9 @@ def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     mode = request.get("mode")
     w.require(mode in ("manual", "autonomous"), "invalid_evidence", "Choose manual or autonomous approval.")
     normalized = excerpt.casefold()
+    choice_context = contextual_consent(state, request, observed)
     if mode == "autonomous":
-        w.require(affirmative_consent(excerpt), "approval_required",
+        w.require(affirmative_consent(excerpt) or choice_context is not None, "approval_required",
                   "Automatic approval intent is unclear. Ask whether the user wants automatic phase approvals for this run, and preserve their answer in their own words. Negative, quoted or feature-only wording stays manual.")
     else:
         w.require(re.search(r"manual|(?:stop|disable|revoke|cancel).*(?:auto|automatic)", normalized),
@@ -438,9 +522,12 @@ def authorize(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     policy = {"schema": SCHEMA, "id": event, "revision": len(history) + 1, "mode": mode,
               "binding": policy_binding(state), "authorized_scope": deepcopy(state["scope"]),
               "allowed_phases": allowed, "stop_phases": stops,
-              "conditions": [{"id": "user_instructions", "kind": "observed", "instruction": excerpt}] + conditions,
+              "conditions": [{"id": "user_instructions", "kind": "observed",
+                              "instruction": choice_context["instructions"] if choice_context else excerpt}] + conditions,
               "provenance": {"source": deepcopy(source), "recorder": request["recorder"], "excerpt": excerpt},
               "assurance": "observed", "request_digest": digest}
+    if choice_context is not None:
+        policy["provenance"]["choice_context"] = choice_context
     policy["digest"] = content_fingerprint(policy)
     history.append(policy)
     s["approval_policy"] = deepcopy(policy)

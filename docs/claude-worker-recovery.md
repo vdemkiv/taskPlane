@@ -173,10 +173,23 @@ termination as unknown; it never creates an accepted result or a replacement tas
 5. If handback delivery or termination is unknown, reconcile its exact native call
    and independent terminal evidence. Do not equate report text, timeout, mailbox
    return or cancellation request with successful process termination.
+   Parent delivery may occur after worker stop: verify admission → acknowledgment
+   → stop separately from parent transcript peer → completion spans. A completion
+   attachment can retain its earlier enqueue timestamp. Do not rewrite timestamps
+   or increase timeouts to force this join.
 6. Use the installed root-only recovery operation only when its supported native
    evidence exists. Abandon only a reservation that was never launched. Retry under
    a fresh grant after real terminal/recovery evidence releases ownership, keeping
    the original failure. Do not substitute serial root work for required workers.
+
+For the observed Claude 2.1.289 contract, read-only discovery supports exact
+`select:SendMessage,TaskStop` (or either tool alone), with at most two results.
+The [interactive recovery contract](claude-interactive-recovery.md) documents
+the accepted plain-message and exact-worker-stop forms. Discovery never grants
+permission to address a foreign session, shell, sibling worker or ended attempt.
+Taskplane checks the owned current attempt when the actual operation is called;
+the host still controls whether the tool is available and permitted. A successful
+`TaskStop` response remains a cancellation request observation, not a joined result.
 
 These are cooperative local observations. They do not authenticate a hostile local
 account or establish protected-host authority. Required unknowns must remain visible

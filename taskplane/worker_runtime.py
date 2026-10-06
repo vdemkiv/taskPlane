@@ -29,7 +29,10 @@ INTERRUPT = {"interrupt_agent", "collaboration.interrupt_agent", "functions.coll
 STATUS = {"list_agents", "collaboration.list_agents", "functions.collaboration.list_agents", "collaborationlist_agents"}
 WAIT = {"wait_agent", "collaboration.wait_agent", "functions.collaboration.wait_agent", "collaborationwait_agent"}
 HANDBACK = {"SubagentHandback"}
-TOOLS = SPAWN | FOLLOW | MESSAGE | INTERRUPT | STATUS | WAIT | HANDBACK
+CLAUDE_CONTROL = {"SendMessage", "TaskStop"}
+CLAUDE_STATUS = {"ListAgents"}
+DISCOVERY = {"ToolSearch"}
+TOOLS = SPAWN | FOLLOW | MESSAGE | INTERRUPT | STATUS | WAIT | HANDBACK | CLAUDE_CONTROL | CLAUDE_STATUS | DISCOVERY
 LIVE = {"prepared", "launch_pending", "bootstrapping", "running", "cancel_requested", "unknown"}
 STATES = LIVE | {"result_pending", "accepted", "failed", "interrupted"}
 MARKER = re.compile(r"(?m)^Taskplane grant: ([0-9a-f]{32})$")
@@ -351,7 +354,8 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
                   "scope_violation", "Follow-up needs a known joined native worker.")
         row['canonical_name'] = max(prior, key=lambda r: r['prepared_at']).get('canonical_name')
     rows[key] = row
-    state["worker_capacity"] = {**request["capacity"], "effective_limit": limit, "observed_at": now()}
+    state["worker_capacity"] = {**request["capacity"], "effective_limit": limit, "observed_at": now(),
+                                "binding": {"run": state["run"], "visit": w.current(state)["id"]}}
     state["worker_sequence"] = state.get("worker_sequence", 0) + 1
     return row
 
@@ -395,12 +399,111 @@ def worker_session(workspace: Path, state: dict[str, Any], row: dict[str, Any]) 
                    snapshot=Store(workspace).resolve(row["snapshot"]))
 
 
+def admit_discovery(args: dict[str, Any]) -> None:
+    """Only select supported Claude recovery tools; selection is no grant."""
+    query = args.get('query')
+    w.require(set(args) <= {'query', 'max_results'} and isinstance(query, str)
+              and re.fullmatch(r'select:(?:SendMessage|TaskStop|ListAgents)(?:,(?:SendMessage|TaskStop|ListAgents)){0,2}', query),
+              'scope_violation', 'Claude discovery supports only exact SendMessage/TaskStop/ListAgents selection.')
+    assert isinstance(query, str)
+    names = query.removeprefix('select:').split(',')
+    w.require(len(set(names)) == len(names) and ('max_results' not in args
+              or type(args['max_results']) is int and len(names) <= args['max_results'] <= 3),
+              'scope_violation', 'Claude discovery must use a bounded result count without duplicate tools.')
+
+
+def _claude_control_target(tool: str, args: dict[str, Any]) -> str:
+    """The local Claude 2.1.289 plain-message and exact task-stop contracts."""
+    target = args.get('to' if tool == 'SendMessage' else 'task_id')
+    w.require(isinstance(target, str) and 0 < len(target) <= 200
+              and not any(char.isspace() for char in target),
+              'scope_violation', 'Claude control requires one exact native worker identity.')
+    assert isinstance(target, str)
+    if tool == 'TaskStop':
+        w.require(set(args) == {'task_id'}, 'scope_violation',
+                  'Claude worker stop supports only task_id; shell and remote targets are unsupported.')
+    else:
+        fields = {'to', 'message', 'summary'}
+        # Claude backfills these display-only fields before invoking hooks.
+        # They never select the recipient or replace the canonical message.
+        display = {'type', 'recipient', 'content'} & set(args)
+        message = args.get('message')
+        w.require(set(args) <= fields | display and isinstance(message, str)
+                  and bool(message.strip()) and len(message.encode('utf-8')) <= 32768
+                  and ('summary' not in args or isinstance(args['summary'], str)
+                       and len(args['summary']) <= 200),
+                  'scope_violation', 'Claude worker messages require bounded plain text; other message operations are unsupported.')
+        assert isinstance(message, str)
+        if display:
+            content = args.get('content')
+            w.require(display == {'type', 'recipient', 'content'} and args['type'] == 'message'
+                      and args['recipient'] == target and isinstance(content, str)
+                      and 0 < len(content.encode('utf-8')) <= 32768
+                      and (content == message or content.endswith('…')
+                           and bool(content[:-1]) and message.startswith(content[:-1])),
+                      'scope_violation', 'Claude message display fields disagree with the canonical input.')
+    return target
+
+
+def admit_claude_control(state: dict[str, Any], event: dict[str, Any]) -> None:
+    tool, args = event['tool_name'], event['tool_input']
+    target = _claude_control_target(tool, args)
+    row = find(state, target)
+    w.require(row is not None and row.get('worker_id') == target and row.get('host') == 'claude'
+              and row.get('root') == state['root'] and row.get('run') == state['run']
+              and sum(item.get('worker_id') == target and item['state'] in LIVE
+                      for item in records(state).values()) == 1,
+              'scope_violation', 'Claude control requires an owned native worker in this run.')
+    assert row is not None
+    current(state, row)
+    observed = event.get('taskplane_observed_binding', {})
+    call = event.get('tool_use_id') or event.get('call_id')
+    w.require(row['state'] in ({'bootstrapping', 'running', 'cancel_requested'} if tool == 'TaskStop'
+                              else {'bootstrapping', 'running'})
+              and not row.get('identity_conflict') and not row.get('completion_conflict')
+              and row.get('identity_observation', {}).get('status') == 'matched'
+              and row.get('identity_freshness', {}).get('status') == 'matched'
+              and event.get('taskplane_automatic_hook') is True
+              and observed.get('root') == observed.get('principal') == state['root']
+              and bool(row.get('expected_runtime'))
+              and event.get('taskplane_runtime_identity') == row.get('expected_runtime')
+              and isinstance(call, str) and 0 < len(call) <= 512,
+              'scope_violation', 'Claude control requires the current live attempt and exact automatic root/runtime proof.')
+    controls = state.setdefault('worker_controls', {})
+    proof = {'tool': tool, 'input_digest': digest(args), 'grant': row['grant_id'],
+             'attempt': row['attempt'], 'binding': binding(state)}
+    w.require(call not in controls or controls[call] == proof, 'scope_violation',
+              'Claude control call belongs to another attempt or input.')
+    w.require(call in controls or len(controls) < 4096, 'state_unavailable',
+              'Claude worker control observation limit reached.')
+    controls[call] = proof
+    if tool == 'TaskStop':
+        row['state'] = 'cancel_requested'  # A stop request or its tool response never joins work.
+
+
 def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
     """Recognize only explicit native schemas. Called in the same locked commit as guard."""
     tool, args = event.get("tool_name") or event.get("tool"), event.get("tool_input", {})
     if tool not in TOOLS:
         return False
     w.require(isinstance(args, dict), "scope_violation", "Invalid native worker arguments.")
+    if tool in DISCOVERY:
+        admit_discovery(args)
+        return True
+    if tool in CLAUDE_STATUS:
+        from .host_capabilities import runtime_identity
+        # Claude 2.1.290's observed empty inventory call. Its output is display
+        # only: never route these labels through Codex terminal-poll inference.
+        observed = event.get('taskplane_observed_binding', {})
+        call = event.get('tool_use_id') or event.get('call_id')
+        w.require(not args and event.get('host') == 'claude'
+                  and event.get('taskplane_automatic_hook') is True
+                  and observed.get('profile') == 'native_workflow'
+                  and observed.get('root') == observed.get('principal') == state['root']
+                  and event.get('taskplane_runtime_identity') == runtime_identity()
+                  and isinstance(call, str) and 0 < len(call) <= 512,
+                  'scope_violation', 'Claude inventory requires empty input and exact automatic root/runtime proof.')
+        return True
     if tool in STATUS | WAIT:
         w.require(set(args) <= ({"path_prefix"} if tool in STATUS else {"timeout_ms"}),
                   "scope_violation", "Unsupported worker status schema.")
@@ -413,10 +516,13 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
                 # when this native status call was admitted.
                 polls.setdefault(call, [r["grant_id"] for r in records(state).values() if r.get("call_id")])
         return True
-    if tool not in INTERRUPT:
+    if tool not in INTERRUPT | {'TaskStop'}:
         w.require(not state.get('invalidation_pending') and w.current(state)['decision'] in
                   {'not_requested', 'changes_requested', 'rejected'},
                   'stale_checkpoint', 'Native input requires a current unsealed phase.')
+    if tool in CLAUDE_CONTROL:
+        admit_claude_control(state, {**event, 'tool_name': tool, 'tool_input': args})
+        return True
     if tool in SPAWN | FOLLOW:
         claude = tool in {"Agent", "Task"}
         fields = ({"prompt", "description", "subagent_type", "model", "run_in_background", "resume"} if claude else
@@ -663,8 +769,12 @@ def _redirect_delivery(state: dict[str, Any], row: dict[str, Any], completed: di
         try:
             def stamp(value: str) -> datetime:
                 return datetime.fromisoformat(value.replace('Z', '+00:00'))
-            if not (stamp(report['admitted_at']) <= stamp(peer['timestamp']) <= stamp(stopped['observed_at'])
-                    <= stamp(completed['timestamp']) <= datetime.now(timezone.utc)
+            # Worker acknowledgement/stop and parent delivery use different
+            # timelines. A completion retains its enqueue time while the peer
+            # can flush later; their validated transcript spans order delivery.
+            observed_now = datetime.now(timezone.utc)
+            if not (stamp(report['admitted_at']) <= stamp(peer['timestamp']) <= observed_now
+                    and stamp(stopped['observed_at']) <= stamp(completed['timestamp']) <= observed_now
                     and stamp(report['admitted_at']) <= stamp(ack['observed_at']) <= stamp(stopped['observed_at'])
                     and peer['reference']['offset'] < completed['reference']['offset']):
                 continue
@@ -715,6 +825,12 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
             if redirected and report is None:
                 # Peer transcript, post-hook and stop can become readable on
                 # different hooks. Missing proof cannot establish completion.
+                if observation.get('peer_handback') and stopped and any(
+                        item.get('status') == 'acknowledged' for item in _handback_reports(row)):
+                    _audit(row, 'redirect_join_rejected', {
+                        'notification': completed['record_sha256'],
+                        'peer': observation['peer_handback']['record_sha256'],
+                        'reason': 'Complete redirect proof failed exact admission, acknowledgment, runtime or chronology correlation.'})
                 if old is not None:
                     row['completion_conflict'] = True
                     row['state'] = 'unknown'

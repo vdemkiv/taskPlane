@@ -164,6 +164,73 @@ and do not silently migrate old observation journals into accepted decisions.
 
 ## Shared evidence at every phase
 
+### Implementation scope preflight
+
+For a new full delivery or source-repair extension, declare
+`planning_contract: "implementation/v1"` alongside
+`execution_contract: "native-default/v1"` before starting or presenting Product.
+Inspect the requested implementation first. Supply exact source/deliverable paths,
+existing or planned tests, stable criterion IDs and all three distinct Build
+evidence outputs in the outer scope. A scope containing only the packet and report
+cannot implement a source repair. Resolve that scope before the first checkpoint;
+Plan may remove optional paths but cannot widen the scope or remove these required
+deliverables. Do not infer intent from filename extensions: editing a Markdown
+runtime template can implement behavior; a documentation request is legitimate.
+
+The scope's explicit contract is:
+
+```json
+{
+  "planning_contract": "implementation/v1",
+  "implementation_intent": {
+    "kind": "source",
+    "implementation_paths": ["src/service.py"],
+    "test_paths": ["tests/test_service.py"],
+    "build_outputs": {
+      "packet": ".taskplane/build/output.json",
+      "report": ".taskplane/build/report.md",
+      "verification_history": ".taskplane/build/checks.json"
+    },
+    "criteria": {
+      "AC-1": {"paths": ["src/service.py"], "verification": "Exercise the repaired service behavior and regression case."}
+    }
+  }
+}
+```
+
+Add implementation and evidence paths to `paths.build`; tests belong there when
+edited, or in `verification_inputs` when existing read-only inputs. Every criterion
+needs intended implementation paths and a concrete verification description. Use
+`kind: "documentation"` for documentation delivery; `test_paths: []` is then valid
+with the criterion's review method. These fields declare feasibility, not successful
+implementation or verified behavior. Legacy scopes/packages retain their original
+contract and report `legacy_unknown` feasibility; never describe them as source-ready
+without inspecting their actual authority. Do not mutate existing scopes or copy
+approvals merely to add this contract.
+
+Within this contract every `execution: "root"` task also supplies
+`execution_exception: {"schema": "taskplane.execution-exception/v1", "task": "TASK-ID", "basis": "..."}`
+plus its existing substantive `execution_reason` and `execution_reference`.
+Choose a current task-specific basis:
+
+- `integration`: name `related_tasks` that are prerequisites and `paths` this task
+  reads from their declared outputs. Final assembly and shared verification belong here.
+- `task_conflict`: name `related_tasks` and actual read/write conflict `paths`;
+  dependency edges must order the conflicting tasks. Merely sharing a subsystem is insufficient.
+- `trivial`: the phase has a single integrated task whose small scope makes delegation unhelpful.
+- `user_serial`: include `request` with the exact `reference` and `excerpt` also
+  declared as `scope.serial_execution`. Preserve the actual instruction.
+- `capability`: include `observation` with `run`, `visit`, `reference`, and
+  `observed_at` matching the controller's current recorded unavailable capacity.
+  Record the real host observation first. Previous runs and changed observations
+  cannot supply this exception. Frozen `native_required` tasks remain required;
+  changing their ownership needs a newly accepted Plan, never a silent fallback.
+
+The validator checks declarations, task relationships and recorded observation
+bindings. It cannot prove free-text rationale or user excerpts independently.
+Review those claims against the actual request and source. A copied historical
+failure rationale is not evidence that today's independent tasks must run serially.
+
 Before submission, use `flow prevalidate --workspace ROOT --run RUN
 --expected-revision N --output PACKET --tasks TASKS` to check the same packet
 contract without sealing it. Prevalidation grants no authority and submission
@@ -377,14 +444,21 @@ tasks for ready independent work and one worker per selected Engineering lens,
 with a unique `review_lens` on each lens task. This instruction authorizes that
 bounded delegation; do not ask again solely because the user did not name agents.
 
-Explicit user serial/no-delegation constraints take priority. Dependencies,
-read/write conflicts and trivial scope can justify `execution: "root"` with a
-substantive `execution_reason` and `execution_reference`. Root lens coverage is
-`serial_scope`, never native independence. Observe host capacity, launch ready
-independent tasks together and refill slots as prerequisites complete. Limited
-capacity queues distinct workers; reusing one identity for several lenses does
-not satisfy independence. An unavailable adapter needs an observed reason/reference;
-required native tasks remain incomplete and block sealing.
+Explicit user serial/no-delegation constraints take priority. For the versioned
+planning contract, each root task needs `execution_reason`, `execution_reference`
+and a task-specific `execution_exception` as defined in the
+[scope preflight](shared-flow.md#implementation-scope-preflight). Cite an actual
+read/write relationship, a single integrated task, the user's serial request, or
+this run's current recorded capability observation. Dependencies order work;
+shared-interface prose and earlier failed workers do not justify making all
+independent producers root tasks. Preserve legitimate final root integration.
+Root lens coverage is `serial_scope`, never native independence. Observe host capacity.
+Launch the first
+useful native task, pass its startup gate, then fill observed capacity with the
+ready independent cohort and refill as prerequisites complete. Limited capacity
+queues distinct workers. An unavailable adapter needs an observed reference;
+required native tasks remain incomplete and block sealing. A capability exception
+cannot rewrite their frozen definitions.
 
 Use the installed prepare/claim/context/join/result protocol. Execute the exact
 returned `next_action` with the installed runtime launcher; it retains workspace,

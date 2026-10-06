@@ -446,6 +446,130 @@ def attachment_notification_record(note):
     }
 
 
+def transcript_notification_record(note):
+    """Exact transcript-only system shape observed in Claude 2.1.290, line 439."""
+    note = deepcopy(note)
+    note.pop('turnOrigin')
+    return {**note, 'queueSkipAttachments': True, 'queueTranscriptOnly': True,
+            'uuid': '8da9cff0-db55-499c-8d9e-78caa4ac4910',
+            'promptId': 'c0db83a5-3beb-46c2-be6d-0bcf1851d102', 'permissionMode': 'auto',
+            'userType': 'external', 'entrypoint': 'cli', 'version': '2.1.290'}
+
+
+@pytest.mark.parametrize('defect', [None, 'origin', 'producer', 'origin-extra', 'origin-missing',
+    'prompt-source', 'turn-origin', 'skip-missing', 'skip-false', 'skip-string', 'skip-int',
+    'transcript-missing', 'transcript-false', 'transcript-string', 'transcript-int',
+    'uuid-missing', 'uuid-invalid', 'prompt-id-missing', 'prompt-id-invalid',
+    'role', 'type', 'content-list', 'rendered-only', 'batch', 'nested-notification',
+    'child', 'call', 'output', 'session', 'workspace', 'sidechain', 'sidechain-missing',
+    'future', 'before-launch', 'naive', 'duplicate', 'conflicting-delivery', 'changed-span'])
+def test_transcript_only_notification_requires_exact_native_provenance(tmp_path, monkeypatch, defect):
+    parent, _, attempt, _, result, _, event = setup_native(tmp_path, monkeypatch)
+    source = select(event)
+    first = observe(attempt, source)
+    body = observations.handback_redirect('child-1')
+    note = transcript_notification_record(notification_record(attempt, result, body))
+    if defect == 'origin': note['origin']['kind'] = 'user'
+    if defect == 'producer': note['origin']['producer'] = 'other'
+    if defect == 'origin-extra': note['origin']['claimed'] = True
+    if defect == 'origin-missing': note.pop('origin')
+    if defect == 'prompt-source': note['promptSource'] = 'user'
+    if defect == 'turn-origin': note['turnOrigin'] = 'human'
+    for prefix, key in [('skip', 'queueSkipAttachments'), ('transcript', 'queueTranscriptOnly')]:
+        if defect == prefix + '-missing': note.pop(key)
+        if defect == prefix + '-false': note[key] = False
+        if defect == prefix + '-string': note[key] = 'true'
+        if defect == prefix + '-int': note[key] = 1
+    for prefix, key in [('uuid', 'uuid'), ('prompt-id', 'promptId')]:
+        if defect == prefix + '-missing': note.pop(key)
+        if defect == prefix + '-invalid': note[key] = 'native-looking-id'
+    if defect == 'role': note['message']['role'] = 'assistant'
+    if defect == 'type': note['type'] = 'queue-operation'
+    if defect == 'content-list': note['message']['content'] = [note['message']['content']]
+    if defect == 'rendered-only': note['rendered'] = note.pop('message')
+    if defect == 'batch': note['message']['content'] += '\n' + note['message']['content']
+    if defect == 'nested-notification': note['message']['content'] = note['message']['content'].replace('<result>', '<result><task-notification>')
+    if defect == 'child': note['message']['content'] = note['message']['content'].replace('<task-id>child-1', '<task-id>other')
+    if defect == 'call': note['message']['content'] = note['message']['content'].replace('<tool-use-id>call-1', '<tool-use-id>other')
+    if defect == 'output': note['message']['content'] = note['message']['content'].replace('<output-file>/', '<output-file>/other/')
+    if defect == 'session': note['sessionId'] = 'foreign'
+    if defect == 'workspace': note['cwd'] += '-foreign'
+    if defect == 'sidechain': note['isSidechain'] = True
+    if defect == 'sidechain-missing': note.pop('isSidechain')
+    if defect == 'future': note['timestamp'] = '2999-01-01T00:00:00Z'
+    if defect == 'before-launch': note['timestamp'] = attempt['prepared_at']
+    if defect == 'naive': note['timestamp'] = '2020-01-01T00:00:00'
+    with parent.open('ab') as stream:
+        stream.write(encoded(note))
+        if defect == 'duplicate': stream.write(encoded(note))
+        if defect == 'conflicting-delivery':
+            stream.write(encoded(transcript_notification_record(notification_record(attempt, result, 'Other report'))))
+    answer = observe(attempt, source, first['cursor'])
+    if defect in {None, 'duplicate', 'changed-span'}:
+        assert answer['status'] == 'matched' and answer['completion']['handback_redirect'] is True
+        assert answer['completion']['body_digest'] == digest(body)
+        assert answer['completion']['record_sha256'] == digest(note)
+        assert len(next(iter(answer['cursor']['entries'].values()))['notification']) == 1
+        assert body not in json.dumps(answer)
+        if defect == 'changed-span':
+            parent.write_bytes(parent.read_bytes().replace(b'Agent finished', b'Agent replaced'))
+            assert observe(attempt, source, answer['cursor'])['status'] == 'conflict'
+        else:
+            assert observe(attempt, source, answer['cursor'])['completion'] == answer['completion']
+    elif defect in {'child', 'output', 'session', 'workspace', 'sidechain', 'sidechain-missing',
+                    'future', 'before-launch', 'naive', 'conflicting-delivery'}:
+        assert answer['status'] == 'conflict' and 'completion' not in answer
+    else:
+        assert answer['status'] == 'matched' and 'completion' not in answer
+
+
+def test_transcript_notification_cursor_upgrade_rescans_once_and_revalidates(tmp_path, monkeypatch):
+    parent, _, attempt, _, result, _, event = setup_native(tmp_path, monkeypatch)
+    source = select(event)
+    note = transcript_notification_record(notification_record(attempt, result))
+    with parent.open('ab') as stream: stream.write(encoded(note))
+    observed = observe(attempt, source)
+    cursor = deepcopy(observed['cursor'])
+    cursor.pop('notification_version', None)
+    for entry in cursor['entries'].values(): entry['notification'] = []
+    old = observations._sealed(cursor)
+    assert old['offset'] == parent.stat().st_size
+    migrated = observe(attempt, source, old)
+    assert migrated['status'] == 'matched' and migrated['completion']['record_sha256'] == digest(note)
+    assert migrated['evidence_sha256'] == observed['evidence_sha256']
+    assert migrated['cursor']['notification_version'] == 2
+    scans = []
+    original = observations._scan
+    def scan(fd, path, start, end, budget, retain):
+        scans.append((start, end))
+        return original(fd, path, start, end, budget, retain)
+    monkeypatch.setattr(observations, '_scan', scan)
+    replay = observe(attempt, source, migrated['cursor'])
+    assert replay['completion'] == migrated['completion']
+    assert all(start == end for start, end in scans)
+    parent.write_bytes(parent.read_bytes().replace(b'SECRET RESULT', b'EDITED RESULT'))
+    assert observe(attempt, source, old)['status'] == 'conflict'
+
+
+@pytest.mark.parametrize('variant', ['user', 'transcript-only', 'attachment'])
+@pytest.mark.parametrize('escaped', [False, True])
+def test_direct_notification_preserves_literal_and_escaped_report_text(tmp_path, monkeypatch, variant, escaped):
+    parent, _, attempt, _, result, _, event = setup_native(tmp_path, monkeypatch)
+    source = select(event)
+    body = 'Report <XML> x <= 2 & literal &lt; "quotes" and <result>text</result>.\n'
+    note = notification_record(attempt, result, body)
+    if not escaped:
+        note['message']['content'] = note['message']['content'].replace(escape(body, quote=False), body)
+    if variant == 'transcript-only': note = transcript_notification_record(note)
+    if variant == 'attachment': note = attachment_notification_record(note)
+    with parent.open('ab') as stream: stream.write(encoded(note))
+    answer = observe(attempt, source)
+    assert answer['status'] == 'matched'
+    assert answer['completion']['body_digest'] == digest(escape(body, quote=False) if escaped else body)
+    assert not answer['completion'].get('handback_redirect')
+    assert observe(attempt, source, answer['cursor'])['completion'] == answer['completion']
+
+
 @pytest.mark.parametrize('defect', [None, 'row-type', 'attachment-type', 'attachment-object',
     'mode', 'origin', 'producer', 'origin-extra', 'origin-missing', 'role', 'role-missing',
     'source-missing', 'source-invalid', 'source-type', 'delivery-missing', 'delivery-invalid',

@@ -763,7 +763,8 @@ class Controller:
             elif operation == 'capacity':
                 limit = workers.capacity(request.get('capacity'), host=self.adapter.name)
                 state['worker_capacity'] = {**request['capacity'], 'effective_limit': limit,
-                                            'observed_at': workers.now()}
+                                            'observed_at': workers.now(),
+                                            'binding': {'run': state['run'], 'visit': w.current(state)['id']}}
                 result = workers.summary(state, self.workspace)
             elif operation == "accept-result":
                 result = workers.accept_result(self.workspace, state, task, {**request, **({"grant": grant} if grant else {})})
@@ -1153,7 +1154,7 @@ class Controller:
             state.update(candidate)
             self._guard(event, state)
             # Commit mandatory admission before returning permission to the host.
-            for key in ("workers", "worker_sequence", "worker_polls"):
+            for key in ("workers", "worker_sequence", "worker_polls", "worker_controls"):
                 if key in state:
                     candidate[key] = state[key]
             admission = self._admission(db, event, candidate, "phase_grant")
@@ -1284,6 +1285,9 @@ class Controller:
         tool = event.get("tool_name") or event.get("tool")
         args = event.get("tool_input", {})
         w.require(isinstance(args, dict), "scope_violation", "Unrecognized tool arguments.")
+        if tool in workers.CLAUDE_CONTROL | workers.CLAUDE_STATUS | workers.DISCOVERY:
+            w.require(self.adapter.profile == 'native_workflow' and self.adapter.name == 'claude',
+                      'unsupported_authority', 'Claude worker controls require the Claude native workflow adapter.')
         if self.adapter.profile == "native_workflow" and tool in {"Bash", "exec_command"}:
             words = workflow_local.runtime_words(event)
             from . import runtime_command
@@ -1337,6 +1341,9 @@ class Controller:
             w.require(not worker.get('startup_handbacks'), 'scope_violation',
                       'This attempt reported startup failure; return diagnostics and use a fresh native attempt.')
             workers.worker_session(self.workspace, state, worker).validate(worker["context_receipt"])
+            if tool in workers.DISCOVERY:
+                workers.admit_discovery(args)
+                return  # Discovery grants neither sibling control nor root authority.
             if tool in workers.MESSAGE:
                 parent_name = str(worker.get('canonical_name', '')).rsplit('/', 1)[0]
                 w.require(set(args) == {'target', 'message'} and args.get('target') in

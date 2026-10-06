@@ -645,3 +645,197 @@ def test_start_refuses_unscoped_reads_before_initializing(tmp_path):
     with pytest.raises(w.Refusal, match='read inputs'):
         controller.start({'scope':state['scope'], 'tasks':'tasks.json', 'request_reference':'fixture'})
     assert not controller.adapter.state_exists()
+
+
+def serial_plan(tmp_path):
+    from taskplane.tests.test_workflow import implementation_scope
+    scope = implementation_scope()
+    scope['paths']['build'] += ['src/database', 'src/api']
+    state = w.new_state(str(tmp_path), 'root', 'run', scope)
+    state['index'] = w.PHASES.index('plan')
+    rows = [dict(id=name, phase='build', execution='native_required', owner='native', dependencies=[],
+                 paths=[relative], read_inputs=[], criteria=['AC1'], verification='Exercise the changed behavior')
+            for name, relative in [('RULES', 'src/rules.md'), ('DATABASE', 'src/database'), ('API', 'src/api')]]
+    return state, rows
+
+
+def root_exception(row, basis, **details):
+    row.update(execution='root', owner='root', execution_reason='Integrate the declared work in its current dependency order.',
+               execution_reference='plan/current', execution_exception=dict(
+                   schema='taskplane.execution-exception/v1', task=row['id'], basis=basis, **details))
+
+
+def test_blanket_historical_serial_build_is_rejected_but_legacy_contract_remains_readable(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    # Reproduce the observed three disjoint ready producers plus six dependent
+    # tasks. Adding downstream edges does not justify serializing the producers.
+    for i in range(6):
+        path = 'src/dependent-' + str(i)
+        state['scope']['paths']['build'].append(path)
+        rows.append(dict(rows[i % 3], id='FOLLOW-' + str(i), paths=[path], dependencies=[rows[i % 3]['id']]))
+    for row in rows:
+        row.update(execution='root', owner='root', execution_reason='Shared interfaces and earlier stranded native runs require serial suite execution.',
+                   execution_reference='prior-review/report')
+    with pytest.raises(w.Refusal, match='task-specific'):
+        e.freeze_tasks(tmp_path, state, {'tasks': rows})
+    historical = deepcopy(state)
+    historical['scope'].pop('planning_contract')
+    historical['scope'].pop('implementation_intent')
+    assert len(e.freeze_tasks(tmp_path, historical, {'tasks': rows})) == 9
+
+
+def test_native_producers_and_root_integration_have_a_real_read_dependency(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    root = dict(id='INTEGRATE', phase='build', owner='root', dependencies=[row['id'] for row in rows],
+                paths=['build/output.json', 'build/report.md', 'build/checks.json'],
+                read_inputs=[path for row in rows for path in row['paths']], criteria=['AC1'], verification='Run the combined suite')
+    root_exception(root, 'integration', related_tasks=root['dependencies'], paths=root['read_inputs'])
+    rows.append(root)
+    assert e.freeze_tasks(tmp_path, state, {'tasks': rows})[-1]['execution'] == 'root'
+    root['read_inputs'] = []
+    with pytest.raises(w.Refusal, match='read/write'):
+        e.freeze_tasks(tmp_path, state, {'tasks': rows})
+
+
+def test_serial_conflict_requires_actual_paths_and_order_not_shared_interface_prose(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    rows[1]['read_inputs'] = rows[0]['paths']
+    rows[1]['dependencies'] = [rows[0]['id']]
+    root_exception(rows[1], 'task_conflict', related_tasks=[rows[0]['id']], paths=rows[0]['paths'])
+    assert e.freeze_tasks(tmp_path, state, {'tasks': rows})[1]['execution'] == 'root'
+    for defect in ('disjoint', 'unordered'):
+        broken = deepcopy(rows)
+        if defect == 'disjoint':
+            broken[1]['read_inputs'] = []
+        else:
+            broken[1]['dependencies'] = []
+        with pytest.raises(w.Refusal, match='read/write'):
+            e.freeze_tasks(tmp_path, state, {'tasks': broken})
+
+
+def test_trivial_exception_only_covers_one_integrated_task(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    root_exception(rows[0], 'trivial')
+    assert e.freeze_tasks(tmp_path, state, {'tasks': rows[:1]})
+    with pytest.raises(w.Refusal, match='one integrated task'):
+        e.freeze_tasks(tmp_path, state, {'tasks': rows})
+
+
+def test_explicit_user_serial_constraint_applies_to_each_named_task(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    request = dict(reference='user/this-run', excerpt='Please do this work serially without additional agents.')
+    state['scope']['serial_execution'] = request
+    for row in rows:
+        root_exception(row, 'user_serial', request=request)
+        row['execution_reference'] = request['reference']
+    assert len(e.freeze_tasks(tmp_path, state, {'tasks': rows})) == 3
+    rows[0]['execution_exception']['request'] = dict(request, reference='user/previous-run')
+    with pytest.raises(w.Refusal, match='exact request'):
+        e.freeze_tasks(tmp_path, state, {'tasks': rows})
+
+
+@pytest.mark.parametrize('defect', [None, 'old-run', 'old-visit', 'prior-visit-capacity', 'changed-observation', 'available'])
+def test_capability_serial_exception_uses_current_recorded_observation(tmp_path, defect):
+    state, rows = serial_plan(tmp_path)
+    state['worker_capacity'] = dict(status='unavailable', effective_limit=0, reference='host/current',
+                                   reason='The current host has no worker adapter.', observed_at='2026-10-05T12:00:00Z',
+                                   binding=dict(run=state['run'], visit=w.current(state)['id']))
+    observation = dict(run=state['run'], visit=w.current(state)['id'], reference='host/current',
+                       observed_at=state['worker_capacity']['observed_at'])
+    root_exception(rows[0], 'capability', observation=observation)
+    rows[0]['execution_reference'] = 'host/current'
+    if defect == 'old-run': observation['run'] = 'previous-run'
+    elif defect == 'old-visit': observation['visit'] = 'previous-visit'
+    elif defect == 'prior-visit-capacity': state['worker_capacity']['binding']['visit'] = 'previous-visit'
+    elif defect == 'changed-observation': state['worker_capacity']['observed_at'] = '2026-10-05T13:00:00Z'
+    elif defect == 'available': state['worker_capacity']['status'] = 'available'
+    if defect:
+        with pytest.raises(w.Refusal, match='recorded unavailable'):
+            e.freeze_tasks(tmp_path, state, {'tasks': rows})
+    else:
+        assert e.freeze_tasks(tmp_path, state, {'tasks': rows})
+        # The observation does not convert the remaining native task definitions.
+        assert [row['execution'] for row in rows] == ['root', 'native_required', 'native_required']
+
+
+def test_plan_cannot_remove_source_contract_or_widen_its_outer_scope(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    output = dict(write_scope=state['scope']['paths']['build'])
+    for change in ('remove-source', 'remove-test', 'widen'):
+        broken = deepcopy(output)
+        if change == 'remove-source': broken['write_scope'].remove('src/rules.md')
+        elif change == 'remove-test': broken['write_scope'].remove('tests/check_rules')
+        else: broken['write_scope'].append('outside.py')
+        with pytest.raises(w.Refusal, match='cannot remove|exceed'):
+            e.plan_preflight(tmp_path, state, broken, rows)
+
+
+def test_feasible_plan_can_narrow_optional_paths_and_preserve_root_integration(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    rows[0]['paths'].append('tests/check_rules')
+    inputs = [path for row in rows for path in row['paths']]
+    for relative in inputs:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('fixture source or executable check\n')
+    intent = state['scope']['implementation_intent']
+    root = dict(id='INTEGRATE', phase='build', dependencies=[row['id'] for row in rows],
+                paths=list(intent['build_outputs'].values()), read_inputs=inputs,
+                criteria=['AC1'], verification='Run service regression and assemble the evidence')
+    root_exception(root, 'integration', related_tasks=root['dependencies'], paths=inputs)
+    rows.append(root)
+    output = dict(write_scope=[path for row in rows for path in row['paths']],
+                  build_outputs=[dict(kind=kind, path=path, task='INTEGRATE') for kind, path in intent['build_outputs'].items()],
+                  integration_order=[row['id'] for row in rows], verification_strategy=dict(
+                      schema=e.VERIFICATION_STRATEGY, checks=[dict(id='CHECK', name='service regression', task='INTEGRATE',
+                          kind='unit', environment='local', required=True, criteria=['AC1'], command=['check-service'],
+                          source_inputs=['src/rules.md', 'src/database', 'src/api'], test_inputs=['tests/check_rules'],
+                          evidence_outputs=['build/report.md'])]))
+    assert e.plan_preflight(tmp_path, state, output, rows)['status'] == 'validated'
+    assert 'optional.txt' not in output['write_scope']
+    for defect in ('unrelated-source', 'unrelated-test'):
+        unrelated = deepcopy(output)
+        check = unrelated['verification_strategy']['checks'][0]
+        if defect == 'unrelated-source': check['source_inputs'] = ['src/database']
+        else: check['test_inputs'] = ['src/api']
+        with pytest.raises(w.Refusal, match='declared implementation|declared test'):
+            e.plan_preflight(tmp_path, state, unrelated, rows)
+    packet = dict(phase='plan', visit=w.current(state)['id'], checkpoint='plan-checkpoint', output=output)
+    state = w.submit(state, packet)
+    state = w.decide(state, dict(event_id='human-plan', human=True, automatic=False, choice='approved',
+                                 binding=w.binding(state, w.current(state)['packet'])))
+    assert state['scope']['paths']['build'] == output['write_scope']
+    w.validate_scope(state['scope'])
+
+
+def test_documentation_only_plan_has_real_deliverable_and_review_without_fabricated_tests(tmp_path):
+    from taskplane.tests.test_workflow import implementation_scope
+    scope = implementation_scope('documentation')
+    state = w.new_state(str(tmp_path), 'root', 'run', scope)
+    state['index'] = w.PHASES.index('plan')
+    intent = scope['implementation_intent']
+    row = dict(id='GUIDE', phase='build', dependencies=[], paths=['guide', *intent['build_outputs'].values()],
+               read_inputs=[], criteria=['AC1'], verification='Review every documented step')
+    root_exception(row, 'trivial')
+    output = dict(write_scope=row['paths'], integration_order=['GUIDE'],
+                  build_outputs=[dict(kind=kind, path=path, task='GUIDE') for kind, path in intent['build_outputs'].items()],
+                  verification_strategy=dict(schema=e.VERIFICATION_STRATEGY, checks=[dict(
+                      id='DOC-REVIEW', name='Review all guide steps', task='GUIDE', kind='static', environment='local',
+                      required=True, criteria=['AC1'], command=['review-guide'], source_inputs=['guide'], test_inputs=[],
+                      evidence_outputs=['build/report.md'])]))
+    assert e.plan_preflight(tmp_path, state, output, [row])['status'] == 'validated'
+
+
+def test_stronger_contract_still_requires_unavailable_native_results(tmp_path):
+    state, rows = serial_plan(tmp_path)
+    state['index'] = w.PHASES.index('build')
+    state['task_context'] = dict(visit=w.current(state)['id'], tasks=rows)
+    state['worker_capacity'] = dict(status='unavailable', effective_limit=0, reason='Current host lacks a native worker adapter')
+    with pytest.raises(w.Refusal, match='RULES.*fresh accepted native result.*unavailable'):
+        e.execution_evidence(tmp_path, state, rows, {})
+    assert all(row['execution'] == 'native_required' for row in rows)
+
+
+def test_legacy_checkpoint_reports_unknown_feasibility(tmp_path):
+    state, _, _ = prepare(tmp_path)
+    assert e.prevalidate(tmp_path, state, 'product.json', 'tasks.json')['scope_preflight']['status'] == 'legacy_unknown'

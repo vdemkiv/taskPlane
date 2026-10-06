@@ -9,7 +9,10 @@ import pytest
 from taskplane import claude_worker_invocation as invocation
 from taskplane import claude_worker_observations as observations
 from taskplane import flow, workflow as w, workflow_host as h, worker_runtime as workers
-from taskplane.tests.test_claude_worker_lifecycle import encoded, notification_record, attachment_notification_record
+from taskplane.host_capabilities import runtime_identity
+from taskplane.tests.test_claude_worker_lifecycle import (
+    encoded, notification_record, attachment_notification_record, transcript_notification_record,
+)
 from taskplane.tests.test_worker_runtime import setup, reserve
 
 pytestmark = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
@@ -69,6 +72,10 @@ class Interactive:
             tool_input={'file_path': 'input.py'})
         flow.hook(event, governor=self.controller)
         flow.hook({**event, 'hook_event_name': 'PostToolUse'}, governor=self.controller)
+
+    def root_control(self, tool, args):
+        return dict(hook_event_name='PreToolUse', session_id='root', cwd=str(self.workspace),
+            transcript_path=str(self.parent), tool_use_id=self.unique(), tool_name=tool, tool_input=args)
 
     def launch(self, task='T0', **extra):
         item = reserve(self.controller, self.state, task=task, slots=self.slots, **extra)
@@ -168,16 +175,25 @@ class Interactive:
         note['sessionId'] = 'root'
         return attachment_notification_record(note)
 
-    def deliver(self, body, *, terminal=True, variant='user'):
+    def deliver(self, body, *, terminal=True, variant='user', delayed=False):
         event = self.event('SubagentHandback', {'message': body})
         flow.hook(event)
-        peer = self.peer(body, variant)
-        self.append(peer)
+        if not delayed:
+            peer = self.peer(body, variant)
+            self.append(peer)
         flow.hook({**event, 'hook_event_name': 'PostToolUse',
                    'tool_response': {'message': 'Report delivered to your caller.', 'success': True}})
         self.stop(None)
+        note = self.redirect()
+        if delayed:
+            self.root_hook()
+            assert not self.row().get('terminal_status')
+            peer = self.peer(body, variant)
+            self.append(peer)
+            self.root_hook()
+            assert not self.row().get('terminal_status')
         if terminal:
-            self.append(self.redirect())
+            self.append(note)
             self.root_hook()
         return event, peer
 
@@ -321,6 +337,285 @@ def test_native_peer_handback_textless_stop_and_redirect_complete_exact_attempt(
         host.deliver('Fresh ready worker report.', variant=variant)
         host.accept()
         assert host.row()['state'] == 'accepted'
+
+
+@pytest.mark.parametrize('variant', ['user', 'attachment'])
+def test_delayed_parent_delivery_joins_accepts_and_replays_exact_attempt(tmp_path, monkeypatch, variant):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    host.deliver('Report delivered after worker stopped.', variant=variant, delayed=True)
+    row = host.row()
+    assert row['state'] == 'result_pending'
+    proof = {key: value for key, value in row['handback'].items() if key != 'observed_at'}
+    assert proof['admission']['acknowledgment']['observed_at'] <= row['stop_observation']['observed_at']
+    assert row['stop_observation']['observed_at'] <= proof['notification']['timestamp']
+    assert proof['notification']['timestamp'] < proof['peer_handback']['timestamp']
+    assert proof['peer_handback']['reference']['offset'] < proof['notification']['reference']['offset']
+    host.root_hook()
+    assert {key: value for key, value in host.row()['handback'].items() if key != 'observed_at'} == proof
+    host.accept()
+    host.root_hook()
+    assert host.row()['state'] == 'accepted'
+    assert {key: value for key, value in host.row()['handback'].items() if key != 'observed_at'} == proof
+
+
+def test_transcript_only_redirect_joins_exact_handback_and_accepts_once(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    body = 'Exact worker report, with <XML> and & literal entity text.'
+    host.deliver(body, terminal=False, delayed=True)
+    note = notification_record(host.row(), host.result, observations.handback_redirect(host.child_id))
+    note['sessionId'] = 'root'
+    host.append(transcript_notification_record(note))
+    host.root_hook()
+    row = host.row()
+    assert row['state'] == 'result_pending'
+    assert row['handback']['body_digest'] == workers.digest(body)
+    assert row['stop_observation']['textless'] is True
+    assert row['handback']['admission']['acknowledgment']['envelope_digest'] == workers.digest(row['handback_call']['envelope'])
+    host.accept()
+    host.root_hook()
+    assert host.row()['state'] == 'accepted'
+    assert len(host.controller.report()['task_results']) == 1
+
+
+def test_delayed_delivery_preserves_each_proof_and_chronology_boundary(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    host.deliver('Delayed report with exact correlation.', delayed=True)
+    original = host.controller.report()
+    for defect in ['envelope_worker', 'envelope_grant', 'envelope_attempt', 'envelope_binding', 'body',
+                   'runtime', 'ack_missing', 'ack_digest', 'ack_before_admission', 'ack_after_stop',
+                   'peer_before_admission', 'peer_future', 'completion_before_stop', 'completion_future',
+                   'peer_after_completion_span', 'competing_report', 'stop_type']:
+        state = deepcopy(original)
+        row = state['workers'][host.grant]
+        proof = row['handback']
+        peer, completed, stopped = proof['peer_handback'], proof['notification'], row['stop_observation']
+        report = row['handback_call']
+        if defect.startswith('envelope_'):
+            report['envelope'][defect.removeprefix('envelope_')] = 'foreign'
+        if defect == 'body': peer['body_digest'] = workers.digest('different report')
+        if defect == 'runtime': report['runtime']['root'] = '/foreign'
+        if defect == 'ack_missing': report.pop('acknowledgment')
+        if defect == 'ack_digest': report['acknowledgment']['envelope_digest'] = '0' * 64
+        if defect in {'ack_before_admission', 'ack_after_stop'}:
+            stamp = '2000-01-01T00:00:00Z' if defect == 'ack_before_admission' else '2999-01-01T00:00:00Z'
+            report['observed_at'] = report['acknowledgment']['observed_at'] = stamp
+        if defect == 'peer_before_admission': peer['timestamp'] = '2000-01-01T00:00:00Z'
+        if defect == 'peer_future': peer['timestamp'] = '2999-01-01T00:00:00Z'
+        if defect == 'completion_before_stop': completed['timestamp'] = '2000-01-01T00:00:00Z'
+        if defect == 'completion_future': completed['timestamp'] = '2999-01-01T00:00:00Z'
+        if defect == 'peer_after_completion_span': peer['reference']['offset'] = completed['reference']['offset'] + 1
+        if defect == 'competing_report': row['startup_handbacks'] = {'competing': deepcopy(report)}
+        if defect == 'stop_type': stopped['agent_type'] = 'foreign'
+        assert workers._redirect_delivery(state, row, completed, peer, stopped) is None, defect
+
+
+def test_complete_rejected_redirect_has_diagnostic_without_success(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    host.deliver('Delayed report.', terminal=False, delayed=True)
+    host.append(host.redirect())
+    state = host.controller.report()
+    row = state['workers'][host.grant]
+    row['handback_call']['acknowledgment']['envelope_digest'] = '0' * 64
+    workers.observe_claude_launches(state, [row], {})
+    assert row['state'] == 'running' and not row.get('terminal_status')
+    rejected = [value for value in row['reconciliation_events'].values() if value['kind'] == 'redirect_join_rejected']
+    assert len(rejected) == 1 and 'acknowledgment' in rejected[0]['value']['reason']
+    workers.observe_claude_launches(state, [row], {})
+    assert sum(value['kind'] == 'redirect_join_rejected' for value in row['reconciliation_events'].values()) == 1
+
+
+@pytest.mark.parametrize('tool,args', [
+    ('ToolSearch', {'query': 'select:SendMessage,TaskStop', 'max_results': 2}),
+    ('SendMessage', {'message': 'Please finish your handback.', 'summary': 'Finish handback'}),
+    ('TaskStop', {}),
+])
+def test_claude_discovery_and_owned_current_worker_controls(tmp_path, monkeypatch, tool, args):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    args = dict(args)
+    if tool == 'SendMessage': args['to'] = host.child_id
+    if tool == 'TaskStop': args['task_id'] = host.child_id
+    event = host.root_control(tool, args)
+    flow.hook(event, governor=host.controller)
+    flow.hook({**event, 'hook_event_name': 'PostToolUse',
+        'tool_response': {'success': True, 'task_id': host.child_id, 'task_type': 'local_agent'}},
+        governor=host.controller)
+    assert host.row()['state'] == ('cancel_requested' if tool == 'TaskStop' else 'running')
+    assert not host.row().get('terminal_status')
+    assert not host.controller.report().get('task_results')
+    if tool != 'ToolSearch':
+        control = host.controller.report()['worker_controls'][event['tool_use_id']]
+        assert control['grant'] == host.grant and control['attempt'] == host.row()['attempt']
+
+
+@pytest.mark.parametrize('args', [
+    {}, {'query': 'SendMessage'}, {'query': 'select:*'}, {'query': 'select:SendMessage,Monitor,TaskStop'},
+    {'query': 'select:SendMessage,SendMessage'}, {'query': 'select:TaskStop', 'max_results': 4},
+    {'query': 'select:TaskStop', 'max_results': True}, {'query': 'select:TaskStop', 'max_results': 0},
+    {'query': 'select:SendMessage,TaskStop', 'max_results': 1}, {'query': ['select:TaskStop']},
+    {'query': 'select:TaskStop', 'execute': True}, {'query': 'select:TaskStop\n'},
+])
+def test_claude_discovery_is_bounded_exact_selection(args):
+    with pytest.raises(w.Refusal): workers.admit_discovery(args)
+
+
+@pytest.mark.parametrize('query', ['select:ListAgents', 'select:SendMessage,TaskStop,ListAgents',
+    'select:ListAgents,SendMessage', 'select:TaskStop,ListAgents'])
+def test_claude_inventory_discovery_is_exact_selection(query):
+    workers.admit_discovery({'query': query, 'max_results': 3})
+
+
+@pytest.mark.parametrize('tool', ['SendMessage', 'TaskStop'])
+@pytest.mark.parametrize('defect', ['foreign', 'root', 'display_name', 'terminal', 'unknown', 'revoked',
+    'stale_binding', 'foreign_run', 'foreign_root', 'wrong_host', 'identity_conflict', 'completion_conflict',
+    'identity_missing', 'not_fresh', 'runtime', 'nonautomatic', 'principal', 'parent', 'missing_call',
+    'extra_field', 'competing_attempt', 'reused_call', 'changed_input'])
+def test_claude_controls_keep_owned_current_attempt_and_automatic_proof(tmp_path, monkeypatch, tool, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    state = host.controller.report()
+    row = state['workers'][host.grant]
+    row['canonical_name'] = 'display-name'
+    target_key = 'to' if tool == 'SendMessage' else 'task_id'
+    args = {target_key: host.child_id}
+    if tool == 'SendMessage': args['message'] = 'Return your report.'
+    event = host.root_control(tool, args)
+    event.update(taskplane_automatic_hook=True,
+        taskplane_observed_binding={'root': 'root', 'principal': 'root'},
+        taskplane_runtime_identity=deepcopy(row['expected_runtime']))
+    if defect == 'foreign': args[target_key] = 'foreign'
+    if defect == 'root': args[target_key] = 'root'
+    if defect == 'display_name': args[target_key] = 'display-name'
+    if defect == 'terminal': row['state'] = 'accepted'
+    if defect == 'unknown': row['state'] = 'unknown'
+    if defect == 'revoked': row['revoked_at'] = workers.now()
+    if defect == 'stale_binding': row['binding']['revision'] = -1
+    if defect == 'foreign_run': row['run'] = 'other'
+    if defect == 'foreign_root': row['root'] = 'other'
+    if defect == 'wrong_host': row['host'] = 'codex'
+    if defect == 'identity_conflict': row['identity_conflict'] = True
+    if defect == 'completion_conflict': row['completion_conflict'] = True
+    if defect == 'identity_missing': row.pop('identity_observation')
+    if defect == 'not_fresh': row['identity_freshness']['status'] = 'not_yet_available'
+    if defect == 'runtime': event['taskplane_runtime_identity']['root'] = '/foreign'
+    if defect == 'nonautomatic': event['taskplane_automatic_hook'] = False
+    if defect == 'principal': event['taskplane_observed_binding']['principal'] = host.child_id
+    if defect == 'parent': event['taskplane_observed_binding']['root'] = 'other'
+    if defect == 'missing_call': event.pop('tool_use_id')
+    if defect == 'extra_field': args['shell_id'] = 'shell'
+    if defect == 'competing_attempt':
+        state['workers']['other-grant'] = {**row, 'grant_id': 'other-grant', 'attempt': row['attempt'] + 1}
+    if defect == 'reused_call':
+        workers.admit(state, event)
+        row['attempt'] += 1
+    if defect == 'changed_input':
+        workers.admit(state, event)
+        state['worker_controls'][event['tool_use_id']]['input_digest'] = workers.digest('different input')
+    with pytest.raises(w.Refusal): workers.admit(state, event)
+
+
+@pytest.mark.parametrize('args', [
+    {'to': 'child', 'message': {'type': 'shutdown_request'}},
+    {'to': 'child', 'message': ''}, {'to': 'child', 'message': ' '},
+    {'to': 'child', 'message': 'é' * 16385}, {'to': 'child', 'message': 'x', 'summary': 's' * 201},
+    {'to': 'child', 'message': 'x', 'notify_when_idle': True},
+    {'to': 'child', 'message': 'x', 'recipient': 'other', 'type': 'message', 'content': 'x'},
+    {'to': 'child', 'message': 'x', 'recipient': 'child'},
+    {'to': 'child', 'message': 'x', 'recipient': 'child', 'type': 'shutdown_request', 'content': 'x'},
+    {'to': 'child', 'message': 'x', 'recipient': 'child', 'type': 'message', 'content': 'other'},
+])
+def test_claude_message_schema_rejects_broadcast_structured_or_conflicting_input(args):
+    with pytest.raises(w.Refusal): workers._claude_control_target('SendMessage', args)
+
+
+@pytest.mark.parametrize('message', ['Short report.', 'Please provide the full report. ' * 8])
+def test_claude_message_observable_backfill_is_display_only(message):
+    args = {'to': 'child', 'message': message, 'type': 'message', 'recipient': 'child',
+            'content': message if len(message) <= 50 else message[:49] + '…'}
+    assert workers._claude_control_target('SendMessage', args) == 'child'
+
+
+def test_claude_discovery_cannot_grant_child_or_foreign_target_control(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    flow.hook(host.event('ToolSearch', {'query': 'select:SendMessage,TaskStop', 'max_results': 2}))
+    for tool, args in [('TaskStop', {'task_id': host.child_id}),
+                       ('SendMessage', {'to': host.child_id, 'message': 'Do more work.'})]:
+        with pytest.raises(w.Refusal, match='Nested delegation'):
+            flow.hook(host.event(tool, args))
+        args['task_id' if tool == 'TaskStop' else 'to'] = 'foreign'
+        with pytest.raises(w.Refusal, match='owned native worker'):
+            flow.hook(host.root_control(tool, args), governor=host.controller)
+    host.controller.adapter.name = 'codex'
+    with pytest.raises(w.Refusal, match='Claude native workflow adapter'):
+        host.controller.guard(host.root_control('ToolSearch', {'query': 'select:SendMessage'}), host.state['run'])
+
+
+def test_claude_stop_request_never_joins_or_allows_new_input(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    event = host.root_control('TaskStop', {'task_id': host.child_id})
+    flow.hook(event, governor=host.controller)
+    flow.hook(event, governor=host.controller)  # Exact same-attempt request is idempotent.
+    assert host.row()['state'] == 'cancel_requested'
+    assert not workers.joined(host.controller.report())
+    with pytest.raises(w.Refusal):
+        flow.hook(host.root_control('SendMessage', {'to': host.child_id, 'message': 'Resume.'}), governor=host.controller)
+    with pytest.raises(w.Refusal, match='not joined'): host.accept()
+
+
+def test_claude_listagents_empty_native_input_is_readonly_not_completion(tmp_path, monkeypatch):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    host.ready()
+    event = host.root_control('ListAgents', {})
+    flow.hook(event, governor=host.controller)
+    # Deliberately tempting statuses must not use Codex's terminal-poll path.
+    flow.hook({**event, 'hook_event_name': 'PostToolUse', 'tool_response': {'agents': [
+        {'agent_id': host.child_id, 'status': 'completed'},
+        {'agent_id': 'foreign', 'status': 'completed'},
+    ]}}, governor=host.controller)
+    assert host.row()['state'] == 'running' and not host.row().get('terminal_status')
+    assert not host.controller.report().get('task_results')
+    assert not host.controller.report().get('worker_polls')
+    with pytest.raises(w.Refusal, match='not joined'): host.accept()
+    with pytest.raises(w.Refusal): flow.hook(host.event('ListAgents', {}))
+    host.controller.adapter.name = 'codex'
+    with pytest.raises(w.Refusal, match='Claude native workflow adapter'):
+        host.controller.guard(event, host.state['run'])
+
+
+@pytest.mark.parametrize('defect', ['args', 'path-prefix', 'root', 'principal', 'nonautomatic',
+    'runtime', 'missing-runtime', 'missing-call', 'wrong-host', 'binding-profile'])
+def test_claude_listagents_requires_exact_automatic_root_provenance(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    event = host.root_control('ListAgents', {})
+    event.update(host='claude', taskplane_automatic_hook=True,
+        taskplane_observed_binding={'root': 'root', 'principal': 'root', 'profile': 'native_workflow'},
+        taskplane_runtime_identity=runtime_identity())
+    if defect == 'args': event['tool_input']['session_id'] = 'foreign'
+    if defect == 'path-prefix': event['tool_input']['path_prefix'] = '/root'
+    if defect == 'root': event['taskplane_observed_binding']['root'] = 'foreign'
+    if defect == 'principal': event['taskplane_observed_binding']['principal'] = 'child'
+    if defect == 'nonautomatic': event['taskplane_automatic_hook'] = False
+    if defect == 'runtime': event['taskplane_runtime_identity']['root'] = '/foreign'
+    if defect == 'missing-runtime': event.pop('taskplane_runtime_identity')
+    if defect == 'missing-call': event.pop('tool_use_id')
+    if defect == 'wrong-host': event['host'] = 'codex'
+    if defect == 'binding-profile': event['taskplane_observed_binding']['profile'] = 'protected_host'
+    with pytest.raises(w.Refusal): workers.admit(host.controller.report(), event)
+
+
 
 
 @pytest.mark.parametrize('defect', ['missing_peer', 'foreign_peer', 'sender', 'name', 'kind', 'handback',
@@ -531,11 +826,12 @@ def test_handback_acknowledgment_keeps_exact_automatic_admission(tmp_path, monke
 @pytest.mark.parametrize('defect', ['peer_span', 'source_replaced', 'source_missing', 'source_truncated',
     'competing_peer', 'peer_projection', 'ack_runtime', 'ack_binding', 'ack_call', 'ack_removed', 'stop_runtime'])
 @pytest.mark.parametrize('variant', ['user', 'attachment'])
-def test_retained_peer_delivery_is_revalidated_before_acceptance(tmp_path, monkeypatch, defect, variant):
+@pytest.mark.parametrize('delayed', [False, True])
+def test_retained_peer_delivery_is_revalidated_before_acceptance(tmp_path, monkeypatch, defect, variant, delayed):
     host = Interactive(tmp_path, monkeypatch)
     host.launch()
     host.ready()
-    event, peer = host.deliver('Verified useful report.', variant=variant)
+    event, peer = host.deliver('Verified useful report.', variant=variant, delayed=delayed)
     assert host.row()['state'] == 'result_pending'
     if defect == 'peer_span':
         raw = host.parent.read_bytes()

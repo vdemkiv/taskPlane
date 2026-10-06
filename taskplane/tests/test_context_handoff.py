@@ -369,3 +369,102 @@ def test_explicit_source_artifact_support_and_required_override(tmp_path):
     required = Session(tmp_path, state)
     assert next(i for i in required.items if i['id'] == 'artifact/' + artifact['path'])['required']
     assert optional.view['source_key'] != required.view['source_key']
+
+
+def duplicated_reports(tmp_path):
+    """The incident shape: ten accepted reports also retained by open findings."""
+    state, output, _ = prepare(tmp_path)
+    output.update(artifacts=[], finding_references=[])
+    for i in range(10):
+        name = f'lens-{i:02}.md'
+        body = {'path': name, 'encoding': 'utf-8', 'text': ''}
+        size = (19548 if i < 8 else 19547) - len(encode(body))
+        line = f'Report {i:02}: retain finding obligations and provenance. '
+        text = (line * (size // len(line) + 1))[:size]
+        (tmp_path/name).write_text(text)
+        output['artifacts'].append({'path': name, 'kind': 'report', 'schema': 'markdown/v1',
+            'phase': 'product', 'visit': w.current(state)['id'], 'criteria': ['AC1'], 'tasks': ['T1']})
+        output['finding_references'].append({'id': f'CL-{i}', 'evidence': name})
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    state = w.submit(state, e.seal(tmp_path, state, 'product.json', 'tasks.json'))
+    state = w.decide(state, {'event_id': 'fixture', 'human': True, 'automatic': False,
+        'choice': 'approved', 'binding': w.binding(state, w.current(state)['packet'])})
+    state = w.advance(state, 'design'); state['context_contract'] = 'bounded/v2'
+    return state
+
+
+@pytest.mark.parametrize('mode', ['drain', 'consume', 'legacy-read'])
+def test_ten_reports_share_body_delivery_but_keep_each_role_obligation(tmp_path, mode):
+    session = Session(tmp_path, duplicated_reports(tmp_path))
+    reports = [item for item in session.items if item['kind'] == 'accepted-artifact']
+    assert sum(len(encode(item['body'])) for item in reports) == 195478
+    before = {session.input_refs[item['id']]['sha256']: item['body']
+              for item in session.items if item.get('required', True)}
+    preflight = session.preflight()
+    assert preflight['required_roots'] == len(before)
+    assert preflight['unique_required_bodies'] == len(before) - 10
+    assert sum(len(encode(body)) for body in before.values()) - preflight['required_body_bytes'] == 195478
+    groups = session.store.resolve(session.view['body_reuse']['details'])
+    assert len(groups) == 10
+    for group in groups:
+        assert {item['kind'] for item in group['inputs']} == {'accepted-artifact', 'finding-evidence'}
+        assert all(item['required'] for item in group['inputs'])
+        assert len({item['id'] for item in group['inputs']}) == 2
+        # Original reference APIs continue to return exact bodies and role kinds.
+        assert len({encode(session.store.resolve(item['ref'])) for item in group['inputs']}) == 1
+        assert all(session.store.node(item['ref'])['kind'] == item['kind'] for item in group['inputs'])
+    if mode == 'consume':
+        receipt, responses = consume_required(session)
+    elif mode == 'legacy-read':
+        responses = [session.consume(session.handoff_ref['sha256'])]
+        for key in sorted(set().union(*session.original_trees.values()) - set(session.ledger()['seen'])):
+            first = session.read(key); responses.append(first)
+            responses.extend(session.read(key, page) for page in range(1, first['page']['pages']))
+        receipt = responses[-1]['context_receipt']
+    else:
+        responses = []
+        for _ in range(100):
+            response = session.drain(session.handoff_ref['sha256']); responses.append(response)
+            if response['done']: break
+            with pytest.raises(w.Refusal): session.validate(response['context_receipt'])
+        else: pytest.fail('deduplicated drain did not complete')
+        receipt = responses[-1]['context_receipt']
+        pages = [page['sha256'] for response in responses for page in response['pages']]
+        assert set(pages) == set().union(*session.required_trees.values())
+        assert len(pages) == len(set(pages))
+        for group in groups:
+            for item in group['inputs']:
+                if item['ref'] != group['body_ref']:
+                    assert not (session.store.descendants(item['ref']) & set(pages))
+        assert sum(len(response['pages']) for response in responses) == preflight['required_pages']
+        repeated = Session(tmp_path, session.state).drain(session.handoff_ref['sha256'])
+        assert repeated['done'] and repeated['pages'] == []
+    assert responses[-1]['remaining_required'] == 0
+    assert all(len(encode(response)) < (32768 if mode == 'drain' or 'view' in response else 16384)
+               for response in responses)
+    session.validate(receipt)
+    observed = session.store.resolve(receipt['receipt'])
+    assert set(observed['returned_refs']) == set(before)
+
+
+def test_reuse_requires_role_provenance_and_rejects_changed_body_or_binding(tmp_path):
+    state = duplicated_reports(tmp_path)
+    session = Session(tmp_path, state)
+    groups = session.store.resolve(session.view['body_reuse']['details'])
+    group = groups[0]
+    canonical = group['body_ref']['sha256']
+    other = next(item['ref']['sha256'] for item in group['inputs'] if item['ref']['sha256'] != canonical)
+    for key in session.store.descendants(group['body_ref']):
+        response = session.read(key)
+    returned = session.store.resolve(response['context_receipt']['receipt'])['returned_refs']
+    assert canonical in returned and other not in returned
+    with pytest.raises(w.Refusal): session.validate(response['context_receipt'])
+    receipt, _ = consume_required(session); session.validate(receipt)
+    (tmp_path/'lens-00.md').write_text('Changed accepted report; original finding evidence is retained.')
+    changed = Session(tmp_path, state)
+    with pytest.raises(w.Refusal): changed.validate(receipt)
+    assert len(changed.store.resolve(changed.view['body_reuse']['details'])) == 9
+    assert changed.preflight()['unique_required_bodies'] == session.preflight()['unique_required_bodies'] + 1
+    for field, value in [('root', 'other'), ('run', 'other'), ('revision', state['revision'] + 1)]:
+        with pytest.raises(w.Refusal): Session(tmp_path, {**state, field: value}).validate(receipt)

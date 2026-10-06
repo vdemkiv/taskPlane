@@ -127,7 +127,7 @@ def execution_fields(rows: list[dict[str, Any]], *, required: bool = False,
                 w.require(row.get("owner") in {"root", root}, "invalid_evidence",
                           "Root execution conflicts with native ownership.")
         else:
-            w.require(not any(key in row for key in ("execution_reason", "execution_reference")),
+            w.require(not any(key in row for key in ("execution_reason", "execution_reference", "execution_exception")),
                       "invalid_evidence", "Root execution exception conflicts with native or untyped execution.")
         if "review_lens" in row:
             lens = row["review_lens"]
@@ -136,6 +136,88 @@ def execution_fields(rows: list[dict[str, Any]], *, required: bool = False,
                       and (row.get("phase", phase) in (None, "engineering")), "invalid_evidence",
                       "Each review_lens needs one typed Engineering task and unique lens ID.")
             lenses.add(lens)
+
+
+def execution_preflight(state: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Validate specific serial exceptions against this task graph and observations.
+
+    Free text is retained for review, never classified using a blacklist of words.
+    Legacy native-default/v1 scopes remain readable under their original contract.
+    """
+    strict = state["scope"].get("planning_contract") == w.PLANNING_CONTRACT
+    phase = w.current(state)["phase"]
+    index = {row["id"]: row for row in rows}
+
+    def ancestors(key: str, seen: set[str] | None = None) -> set[str]:
+        seen = set() if seen is None else seen
+        w.require(key not in seen, "invalid_evidence", "Serial exception has cyclic dependencies.")
+        seen = seen | {key}
+        result: set[str] = set()
+        for dependency in index[key].get("dependencies", []):
+            w.require(dependency in index, "invalid_evidence", "Serial exception names a missing prerequisite.")
+            result.add(dependency)
+            result.update(ancestors(dependency, seen))
+        return result
+
+    for row in rows:
+        exception = row.get("execution_exception")
+        if row.get("execution") != "root" or not (strict or exception is not None):
+            continue
+        key = row["id"]
+        task_phase = row.get("phase", phase)
+        w.require(isinstance(exception, dict) and exception.get("schema") == "taskplane.execution-exception/v1"
+                  and exception.get("task") == key, "invalid_evidence",
+                  f"Root task {key} needs a task-specific execution_exception; historical failures alone do not justify serial work.")
+        assert isinstance(exception, dict)
+        basis = exception.get("basis")
+        if basis == "trivial":
+            w.require(sum(other.get("phase", phase) == task_phase for other in rows) == 1,
+                      "invalid_evidence", "A trivial serial exception requires one integrated task in its phase.")
+        elif basis in ("integration", "task_conflict"):
+            related = _strings(exception.get("related_tasks"), "Serial exception related tasks")
+            w.require(all(other in index and other != key
+                          and index[other].get("phase", phase) == task_phase for other in related),
+                      "invalid_evidence", "Serial exception must identify other tasks in the same phase.")
+            cited = set(_strings(exception.get("paths"), "Serial exception paths"))
+            actual: set[str] = set()
+            for other in related:
+                peer = index[other]
+                reads, peer_reads = set(read_inputs(state, row)), set(read_inputs(state, peer))
+                writes, peer_writes = set(row["paths"]), set(peer["paths"])
+                if basis == "integration":
+                    conflict = reads & peer_writes
+                    ordered = other in ancestors(key)
+                else:
+                    conflict = (writes & (peer_writes | peer_reads)) | (reads & peer_writes)
+                    ordered = other in ancestors(key) or key in ancestors(other)
+                w.require(conflict & cited and ordered, "invalid_evidence",
+                          f"Serial {basis} for {key} needs a current read/write relationship and dependency with {other}.")
+                actual.update(conflict)
+            w.require(cited <= actual, "invalid_evidence", "Serial exception cites paths outside its actual task relationships.")
+        elif basis == "user_serial":
+            request = state["scope"].get("serial_execution")
+            w.require(isinstance(request, dict) and isinstance(request.get("reference"), str)
+                      and request["reference"] == row["execution_reference"]
+                      and isinstance(request.get("excerpt"), str) and request["excerpt"].strip()
+                      and exception.get("request") == request, "invalid_evidence",
+                      "User serial execution needs the exact request reference and excerpt declared in the scope.")
+        elif basis == "capability":
+            observation = exception.get("observation")
+            capacity = state.get("worker_capacity", {})
+            visits = {w.current(state)["id"]}
+            visits.update(stage["id"] for stage in state["visits"][:state["index"]]
+                          if stage["phase"] == "plan" and stage["decision"] == "approved" and not stage["superseded"])
+            w.require(isinstance(observation, dict) and observation.get("run") == state["run"]
+                      and isinstance(observation.get("visit"), str) and observation["visit"] in visits
+                      and capacity.get("binding") == {"run": state["run"], "visit": observation["visit"]}
+                      and capacity.get("status") == "unavailable"
+                      and capacity.get("effective_limit") == 0 and substantive(capacity.get("reason"))
+                      and substantive(capacity.get("observed_at"))
+                      and observation.get("observed_at") == capacity.get("observed_at")
+                      and observation.get("reference") == capacity.get("reference") == row["execution_reference"],
+                      "invalid_evidence", "Capability exception needs the current run's recorded unavailable observation.")
+        else:
+            raise w.Refusal("invalid_evidence", "Serial exception basis must be integration, task_conflict, trivial, user_serial or capability.")
 
 
 def task_dag(data: dict[str, Any], criteria: list[str]) -> list[dict[str, Any]]:
@@ -232,8 +314,10 @@ def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> lis
     """Validate an explicit run-bound publication without consulting global files."""
     from copy import deepcopy
     rows = task_dag(data, state["scope"]["criteria"])
-    execution_fields(rows, required=state["scope"].get("execution_contract") == "native-default/v1",
+    execution_fields(rows, required=state["scope"].get("execution_contract") == "native-default/v1"
+                     or state["scope"].get("planning_contract") == w.PLANNING_CONTRACT,
                      phase=w.current(state)["phase"], root=state["root"])
+    execution_preflight(state, rows)
     for row in rows:
         phase = row.get("phase", w.current(state)["phase"])
         w.require(phase in state["scope"]["paths"], "invalid_evidence", "Unknown task phase.")
@@ -304,12 +388,21 @@ def _plan(state: dict[str, Any]) -> dict[str, Any]:
 def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
                    tasks: list[dict[str, Any]]) -> dict[str, Any]:
     """Check declared production/read dependencies, never expand their authority."""
-    strict = state["scope"].get("execution_contract") == "native-default/v1" or typed_plan(output)
+    strict = (state["scope"].get("execution_contract") == "native-default/v1"
+              or state["scope"].get("planning_contract") == w.PLANNING_CONTRACT or typed_plan(output))
     if not strict:
         return {"status": "legacy_untyped"}
     planned = set(_strings(output.get("write_scope"), "Plan write scope"))
     outer = set(state["scope"]["paths"]["build"])
     w.require(planned <= outer, "scope_violation", "Plan writes exceed the authorized Build scope.")
+    execution_preflight(state, tasks)
+    intent = state["scope"].get("implementation_intent")
+    if intent is not None:
+        w.scope_preflight(state["scope"])
+        required = set(intent["implementation_paths"]) | set(intent["build_outputs"].values())
+        required.update(set(intent["test_paths"]) & outer)
+        w.require(required <= planned, "scope_violation",
+                  "Plan cannot remove the declared implementation, owned tests or required Build evidence.")
     index = {row["id"]: row for row in tasks}
     build = {key: row for key, row in index.items() if row.get("phase") == "build"}
     owners: dict[str, str] = {}
@@ -336,6 +429,10 @@ def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
         kinds.append(row["kind"])
     w.require(kinds.count("packet") == 1 and "report" in kinds and "verification_history" in kinds,
               "invalid_evidence", "Plan requires one Build packet and at least one report and verification history.")
+    if intent is not None:
+        w.require(all(any(row["kind"] == kind and row["path"] == relative for row in outputs)
+                      for kind, relative in intent["build_outputs"].items()), "invalid_evidence",
+                  "Plan Build outputs must retain the implementation intent's declared evidence paths.")
     strategy = output.get("verification_strategy")
     w.require(isinstance(strategy, dict) and strategy.get("schema") == VERIFICATION_STRATEGY
               and isinstance(strategy.get("checks"), list) and strategy["checks"],
@@ -373,7 +470,8 @@ def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
         w.require(isinstance(command, list) and command and all(isinstance(arg, str) and arg for arg in command),
                   "invalid_evidence", "Check command must be an explicit argument vector.")
         inputs = _strings(check.get("source_inputs"), "Check source inputs")
-        inputs += _strings(check.get("test_inputs"), "Check test inputs")
+        inputs += _strings(check.get("test_inputs"), "Check test inputs",
+                           nonempty=not intent or intent["kind"] != "documentation")
         task_reads = set(read_inputs(state, task)) | set(task["paths"])
         deps = ancestors(task["id"])
         for relative in inputs:
@@ -393,6 +491,16 @@ def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
             path(root, relative)
             w.require(owners.get(relative) == task["id"], "invalid_evidence",
                       "Every verification log/output must be owned by its checking task.")
+    if intent is not None:
+        required_checks = [check for check in strategy["checks"] if check["required"]]
+        for criterion, declaration in intent["criteria"].items():
+            relevant = [check for check in required_checks if criterion in check["criteria"]]
+            w.require(relevant and set(declaration["paths"]) <= {
+                relative for check in relevant for relative in check["source_inputs"]}, "invalid_evidence",
+                "Plan required checks must verify each criterion's declared implementation paths.")
+        w.require(set(intent["test_paths"]) <= {
+            relative for check in required_checks for relative in check["test_inputs"]}, "invalid_evidence",
+            "Plan required checks must retain the declared test inputs.")
     return {"status": "validated", "checks": sorted(ids), "outputs": deepcopy(outputs)}
 
 
@@ -872,11 +980,13 @@ def execution_evidence(root: Path, state: dict[str, Any], tasks: list[dict[str, 
     """Frozen execution requirements must be discharged by actual current results."""
     from . import worker_runtime as workers
     frozen = context_tasks(state)
-    contracted = state["scope"].get("execution_contract") == "native-default/v1"
+    contracted = (state["scope"].get("execution_contract") == "native-default/v1"
+                  or state["scope"].get("planning_contract") == w.PLANNING_CONTRACT)
     typed = any("execution" in row or "review_lens" in row for row in [*tasks, *frozen])
     if not contracted and not typed:
         return []  # Historical untyped evidence has no invented native requirement.
     execution_fields(tasks, required=contracted, phase=w.current(state)["phase"], root=state["root"])
+    execution_preflight(state, tasks)
     w.require(task_definitions(tasks) == task_definitions(frozen), "invalid_evidence",
               "Execution task definitions must match the published frozen context.")
     phase = w.current(state)["phase"]
@@ -1065,7 +1175,7 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
     if receipt and (receipt.get("workspace") != str(root.resolve())
                     or receipt.get("graph_digest") != content_fingerprint(graph)):
         receipt = None
-    return {"phase": phase, "visit": stage["id"],
+    return {"phase": phase, "visit": stage["id"], "scope_preflight": w.scope_preflight(state["scope"]),
             "output": output, "manifest": manifest(root, files, task_path=tasks_path),
             "execution_evidence": "native-results/v1" if any("execution" in row for row in tasks) else None,
             "source_manifest": manifest(root, state["scope"]["paths"]["build"] +

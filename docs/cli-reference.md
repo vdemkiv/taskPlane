@@ -469,9 +469,19 @@ Example identifiers and times above are placeholders; never copy them as actual
 provenance. Choices are `approved`, `changes_requested`, `rejected` or `cancelled`.
 The excerpt must express a clear choice in the user's own words. Conversational
 responses such as “looks good, proceed”, “go ahead”, “build approved” and “fix
-issues” are supported; no exact phrase is required. A named phase must match the
-bound visit. Questions, conditions, negations, quoted examples and contradictory
-responses require clarification in ordinary language. A brief approval needs presentation identity and earlier
+issues” are supported, including “approve repair”, the native option “Approve as is”, “fix it all”,
+and “changes: never reassign deleted user IDs”. A direct change request can contain
+negative requirements in its explanation. The full actual excerpt is retained
+(up to 4096 characters); do not reduce “Approve as is” to “Approve” or drop a
+condition. A named phase must match the bound visit. Conditional or mixed
+decisions, retractions and quoted examples require clarification in ordinary language.
+Punctuation and introductory words do not hide qualifications: “Cancel: if tests
+fail” and “Cancel. Actually do not cancel” leave the checkpoint and policy unchanged.
+Response grammar, provenance, binding and chronology refusals retain the compatible
+`reason: invalid_evidence`. Their full structured result adds `category` with
+`decision_grammar`, `decision_provenance`, `decision_binding`, or
+`decision_chronology`; the readable detail begins with the same category.
+A brief approval needs presentation identity and earlier
 presentation time. If ordering is unavailable, use `checkpoint_explicit: true` and
 an actual response such as `Approve: <checkpoint ID>`; the response must itself
 name the checkpoint. Automatic, assistant/tool, timeout/cleanup, ambiguous, stale
@@ -548,6 +558,77 @@ Reports do not start a workflow. Legacy progress/finish is shown as
 `legacy_unverified`, never accepted or automatically migrated. Missing counters
 are unknown, not zero. Tokens remain advisory and are not billing totals.
 
+## Native session continuation
+
+An explicit `flow report --run ID` from another independent conversation returns
+`resume_required`, the source binding, and the supported next step. It does not
+turn the requesting conversation into the old root. For Claude Code, continue by
+resuming the **original native session in its original workspace**. The installed
+CLI supports `claude --resume SESSION_ID`; `--fork-session` creates another owner
+and does not satisfy this contract. Cross-workspace relocation and owner adoption
+are not supported by `flow resume`.
+
+First preserve the actual human request in this bounded envelope. Replace the
+binding with the complete object returned by the exact-run report, and replace
+every example source reference and timestamp with observed data:
+
+```json
+{
+  "schema": "taskplane.resume-request/v1",
+  "binding": {
+    "workspace": "/actual/checkout",
+    "root": "original-native-session-id",
+    "run": "actual-32-character-run-id",
+    "revision": 7,
+    "visit": "actual-visit-id",
+    "scope_digest": "actual-scope-sha256"
+  },
+  "excerpt": "continue run actual-run-id at the Product phase",
+  "recorder": "root_orchestrator",
+  "source": {
+    "kind": "conversation",
+    "reference": "actual-user-message-reference",
+    "conversation": "requesting-native-session-id",
+    "actor": "user",
+    "automatic": false,
+    "observed_at": "actual-ISO-8601-time-with-timezone"
+  }
+}
+```
+
+The supported request grammar is `continue run ID` or `resume run ID`, optionally
+prefixed by “please” and followed by `at [the] PHASE [phase]`. `ID` is the complete
+run ID or an 8–32-character prefix of the **explicitly selected** run. A named phase
+must be current. Bare “continue”, quoted examples, conditions, and requests naming
+another run refuse. Preserve the actual user text; do not generate a replacement
+excerpt to make a request pass.
+
+Pass the envelope as one shell-quoted argument (or a single subprocess argument):
+
+```text
+python3 /absolute/plugin/taskplane/tp.py flow resume --workspace PATH --run ID --expected-revision N --resume-mode inspect --resume-json JSON
+```
+
+Inspection returns `resume_required`, `native_resume.cwd` and the exact argument
+array `native_resume.argv`, plus the unchanged request. Exit any process using the
+original session, launch that argument array from the returned workspace, and in
+the resumed conversation run the same installed command with
+`--resume-mode verify` and the unchanged envelope. Verification returns `resumed`
+only when current native root lineage is the original session. Consume fresh
+`flow context` for the same run, then follow its current phase/checkpoint gates.
+No phase advances just because resume verification succeeds.
+
+Both steps are read-only with respect to the workflow store. They preserve its
+run ID, owner, decisions, grants, policy, revision, artifacts and history. They
+never start a replacement run or copy authority. Child actors, known live workers,
+running command handles, pending source calls during cross-session inspection,
+stale revisions/scopes/evidence, replaced or foreign transcripts, ended runs and
+foreign workspaces refuse. The source must have an automatically observed Claude
+root transcript. A missing observation requires reopening the original session;
+it cannot be supplied as a caller assertion. These are cooperative native lineage
+checks; an exhaustive host process census is unavailable. A host that forks instead
+of resuming remains `resume_required` and fails verification.
+
 ## Automatic approval policy
 
 Manual is the default. `native_workflow` additionally supports **explicit user-authorized**
@@ -609,6 +690,20 @@ an exact passing Build check name). A required check absent in the current phase
 pauses; authorize that condition only for the phases where it can be satisfied.
 No policy field is evaluated as shell code. Conditions the runtime cannot interpret
 mechanically stay observed, with that limitation visible.
+
+A brief answer such as “approve” can authorize an automatic policy only when the
+actual previously presented automatic-policy question is retained in optional
+`choice_context`. Without it, brief checkpoint approval does not enable automatic
+decisions. This observed envelope must have schema `taskplane.policy-choice/v1`,
+the complete `question`, explicit `instructions` such as the actual “Auto-approve
+all phases”, and `selected_label` exactly equal to the human `excerpt`. Its
+`proposal` must contain `binding`, `mode`, `allowed_phases`, `stop_phases`, and
+`conditions` exactly equal to those in the policy request. Its `source` contains
+the current `conversation`, `actor: "assistant"`, the actual question `reference`,
+and `observed_at`, after run start and before the human answer. Preserve both
+question and answer in their own words. The stored `user_instructions` condition
+uses the presented instructions; provenance retains the original brief answer and
+the entire context. A recorder must never invent a question, choice or timestamp.
 
 Submit the phase normally. Read the **new** `pending_checkpoint` and policy digest,
 present its native dashboard, then pass the assessment as `--assessment-json` to

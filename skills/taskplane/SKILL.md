@@ -67,6 +67,11 @@ permissions, waiting, and session identity with the
 host. Load only the selected workflow's references; don't recite internal setup or
 introduce approval steps that the user has already satisfied.
 
+For a new implementation route, use the shared flow's
+`planning_contract: "implementation/v1"` preflight before Product. Declare the
+actual source/test paths and stable criteria alongside Build evidence outputs;
+preserve explicit documentation-only intent and existing legacy scope history.
+
 Native discovery is observational. Use the installed named hook entry points and
 report their actual capability status; restoring native routines does not admit
 a host owner or change any human checkpoint.
@@ -80,14 +85,21 @@ tasks for ready independent work and one worker per selected Engineering lens,
 with a unique `review_lens` on each lens task. This instruction authorizes that
 bounded delegation; do not ask again solely because the user did not name agents.
 
-Explicit user serial/no-delegation constraints take priority. Dependencies,
-read/write conflicts and trivial scope can justify `execution: "root"` with a
-substantive `execution_reason` and `execution_reference`. Root lens coverage is
-`serial_scope`, never native independence. Observe host capacity, launch ready
-independent tasks together and refill slots as prerequisites complete. Limited
-capacity queues distinct workers; reusing one identity for several lenses does
-not satisfy independence. An unavailable adapter needs an observed reason/reference;
-required native tasks remain incomplete and block sealing.
+Explicit user serial/no-delegation constraints take priority. For the versioned
+planning contract, each root task needs `execution_reason`, `execution_reference`
+and a task-specific `execution_exception` as defined in the
+[scope preflight](../tp-go/references/shared-flow.md#implementation-scope-preflight). Cite an actual
+read/write relationship, a single integrated task, the user's serial request, or
+this run's current recorded capability observation. Dependencies order work;
+shared-interface prose and earlier failed workers do not justify making all
+independent producers root tasks. Preserve legitimate final root integration.
+Root lens coverage is `serial_scope`, never native independence. Observe host capacity.
+Launch the first
+useful native task, pass its startup gate, then fill observed capacity with the
+ready independent cohort and refill as prerequisites complete. Limited capacity
+queues distinct workers. An unavailable adapter needs an observed reference;
+required native tasks remain incomplete and block sealing. A capability exception
+cannot rewrite their frozen definitions.
 
 Use the installed prepare/claim/context/join/result protocol. Execute the exact
 returned `next_action` with the installed runtime launcher; it retains workspace,
