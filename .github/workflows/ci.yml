@@ -7,8 +7,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 env:
   PYTHONUTF8: "1"
 jobs:
@@ -37,14 +37,20 @@ jobs:
           path: reports/portability.xml
           if-no-files-found: error
   suites:
-    name: ${{ matrix.suite }} (${{ matrix.os }})
+    name: ${{ matrix.suite }} ${{ matrix.shard }}/${{ matrix.shards }} (${{ matrix.os }})
     needs: portability
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        suite: [core, native]
+        suite: [core]
+        shard: [1, 2, 3, 4]
+        shards: [4]
+        include:
+          - {os: ubuntu-latest, suite: native, shard: 1, shards: 1}
+          - {os: windows-latest, suite: native, shard: 1, shards: 1}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
@@ -55,11 +61,11 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --junitxml reports/${{ matrix.suite }}.xml
+      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --shard-index ${{ matrix.shard }} --shard-count ${{ matrix.shards }} --junitxml reports/${{ matrix.suite }}-${{ matrix.shard }}.xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: ${{ matrix.suite }}-${{ matrix.os }}
+          name: ${{ matrix.suite }}-${{ matrix.shard }}-${{ matrix.os }}
           path: reports/*.xml
           if-no-files-found: error
   archive-journeys:

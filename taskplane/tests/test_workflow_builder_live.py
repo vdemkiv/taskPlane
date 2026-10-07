@@ -104,7 +104,7 @@ class Fixture:
 
     def tty(self, number, flag):
         return self.transcript(f"{number}-{flag[2:]}.jsonl", self.pair(
-            {"cmd": f"claude --plugin-dir {self.runtime_root} {flag} session", "tty": True}, {"session_id": number}, name="exec_command"))
+            {"cmd": shlex.join(["claude", "--plugin-dir", str(self.runtime_root), flag, "session"]), "tty": True}, {"session_id": number}, name="exec_command"))
 
     def invocation(self, number):
         run, visit = f"run-{number}", f"visit-{number}"
@@ -146,7 +146,7 @@ class Fixture:
                 "origin": {"kind": "task-notification", "producer": "session-task"}, "promptSource": "system", "turnOrigin": "task_notification",
                 "message": {"role": "user", "content": f"Task {identity} completed"}}
             child = self.pair(f"flow worker --operation claim --run {run} --grant {grant}", {"grant_id": grant, "task_id": task["id"]}, worker=identity)
-            child += self.pair(f"flow context --workspace {workspace} --run {run} --task {task['id']} --drain {context.handoff_ref['sha256']}", response, worker=identity)
+            child += self.pair(f"flow context --workspace {shlex.quote(workspace)} --run {run} --task {task['id']} --drain {context.handoff_ref['sha256']}", response, worker=identity)
             hook_call = f"hook-{number}-{index}"
             child += self.pair("cat source.py", "source", worker=identity, call=hook_call)
             worker_transcripts.append({"worker_id": identity, "transcript": self.transcript(f"child-{number}-{index}.jsonl", child)})
@@ -233,7 +233,7 @@ def relay_evidence(evidence, monkeypatch):
     bound = {**{k:v for k,v in binding.items() if k != "packet_revision"}, "revision": 1}
     rows = evidence.transcripts[0]
     rows[:] = [row for row in rows if not (row.get("type") == "user" and row.get("uuid") == "human-1")]
-    cli = f"python3 {evidence.runtime_root}/taskplane/tp.py flow"
+    cli = shlex.join(["python3", str(evidence.runtime_root / "taskplane/tp.py"), "flow"])
     for action in ("submit", "present"):
         rows += evidence.pair(f"{cli} {action} --run run-1 --workspace {shlex.quote(state['workspace'])}", {
             "schema": "taskplane.command-summary/v1", "action": action, "run": "run-1",
@@ -256,13 +256,13 @@ def relay_evidence(evidence, monkeypatch):
         {"type": "session_meta", "timestamp": "2026-10-06T02:00:00Z", "payload": {"id": origin, "session_id": origin, "source": "vscode"}},
         {"type": "response_item", "timestamp": "2026-10-06T02:58:00Z", "payload": {"type": "function_call",
             "call_id": "launch", "name": "exec_command", "arguments": json.dumps({
-                "cmd": "/usr/local/bin/claude --session-id session", "tty": True, "workdir": state["workspace"]})}},
+                "cmd": shlex.join([str(evidence.root / "bin/claude"), "--session-id", "session"]), "tty": True, "workdir": state["workspace"]})}},
         {"type": "response_item", "timestamp": "2026-10-06T02:58:01Z", "payload": {"type": "function_call_output",
             "call_id": "launch", "output": json.dumps({"session_id": 123})}},
         {"type": "response_item", "timestamp": "2026-10-06T03:01:00Z", "payload": {"type": "message", "id": "shown",
             "role": "assistant", "content": [{"type": "output_text", "text": (
                 f"Review checkpoint {bound['checkpoint']}: [A checkpoint]({html['path']}) "
-                f"[A dashboard]({evidence.root}/.taskplane/dashboard.html)")}]},
+                f"[A dashboard]({evidence.root / '.taskplane/dashboard.html'})")}]},
             "metadata": {"retained_source": {"complete": True, "id": {"message_id": "shown", "role": "assistant"}}}},
         {"type": "response_item", "timestamp": "2026-10-06T03:02:00Z", "payload": {"type": "message", "id": "human",
             "role": "user", "content": [{"type": "input_text", "text": "approve\n"}],
@@ -514,7 +514,7 @@ def test_remapped_v1_is_historical_inspection_only(relay_evidence, recorded):
 @pytest.mark.parametrize("terminator", [";", ""])
 def test_v2_single_json_exec_wrapper_and_native_result_blocks(relay_evidence, terminator):
     e = relay_evidence
-    args = {"cmd": "/usr/local/bin/claude --session-id session", "workdir": str(e.root), "tty": True}
+    args = {"cmd": shlex.join([str(e.root / "bin/claude"), "--session-id", "session"]), "workdir": str(e.root), "tty": True}
     def wrapper(row):
         payload = row["payload"]
         payload.pop("arguments")
@@ -532,8 +532,8 @@ def test_v2_versioned_executable_resume_and_literal_prompt(relay_evidence):
     relay = e.index["invocations"][0]["approval_relay"]
     relay["launch_flag"] = relay["decision"]["relay"]["launch_flag"] = "--resume"
     mutate_launch_frame(e, 0, lambda row: row["payload"].update(arguments=json.dumps({
-        "cmd": "/Users/test/.local/share/claude/versions/2.1.290 --plugin-dir /candidate --resume session "
-            + shlex.quote("Use $taskplane.\nContinue this exact session."), "workdir": str(e.root), "tty": True})))
+        "cmd": shlex.join([str(e.root / "claude/versions/2.1.290"), "--plugin-dir", str(e.root / "candidate"),
+            "--resume", "session", "Use $taskplane.\nContinue this exact session."]), "workdir": str(e.root), "tty": True})))
     sync_relay_record(e)
     assert verify_relay(e)["recorded"] is True
 
@@ -721,7 +721,7 @@ def context_trace(root, *, mode="small", shared=False, task="review", body=None)
     fixture = object.__new__(Fixture)
     fixture.root, fixture.serial = root, 0
     session = context_session(root, binding, task, large=True, shared=shared, body=body)
-    prefix = f"flow context --workspace {root} --run context-run" + (f" --task {task}" if task else "")
+    prefix = f"flow context --workspace {shlex.quote(str(root))} --run context-run" + (f" --task {task}" if task else "")
     key, rows, responses = session.handoff_ref["sha256"], [], []
     def emit(command, result):
         rows.extend(fixture.pair(prefix + " " + command, result))

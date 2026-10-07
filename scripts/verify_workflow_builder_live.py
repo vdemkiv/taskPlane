@@ -796,7 +796,7 @@ def verify_approval_relay(reader, item, state, transcript, decision=None):
             "Relay must reference the original native Codex session, not a copied log")
     if source_preserving:
         require(re.fullmatch(r"\d{4}/\d{2}/\d{2}/rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
-                + re.escape(origin) + r"\.jsonl", str(original.relative_to(Path.home() / ".codex" / "sessions"))),
+                + re.escape(origin) + r"\.jsonl", original.relative_to(Path.home() / ".codex" / "sessions").as_posix()),
                 "Original-source relay needs the original native session directory and filename")
 
     def original_refs(ref):

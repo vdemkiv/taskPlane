@@ -16,12 +16,18 @@ def pytest_addoption(parser):
     parser.addoption("--taskplane-suite", choices=['all', 'portability', 'core', 'native', 'packages', 'capacity'], default='all')
     parser.addoption("--taskplane-host", choices=['codex', 'claude'])
     parser.addoption("--taskplane-collection-report", default=None)
+    parser.addoption("--taskplane-shard-index", type=int, default=1)
+    parser.addoption("--taskplane-shard-count", type=int, default=1)
 
 
 def pytest_collection_modifyitems(config, items):
-    from scripts.ci_local import suite_for
+    from scripts.ci_local import shard_for, suite_for
     suite = config.getoption('--taskplane-suite')
     host = config.getoption('--taskplane-host')
+    shard_index = config.getoption('--taskplane-shard-index')
+    shard_count = config.getoption('--taskplane-shard-count')
+    if not 1 <= shard_index <= shard_count:
+        raise pytest.UsageError('Require 1 <= --taskplane-shard-index <= --taskplane-shard-count')
     if host and suite not in ('packages', 'capacity'):
         raise pytest.UsageError('--taskplane-host requires the packages or capacity suite')
     selected, deselected, report = [], [], []
@@ -30,10 +36,13 @@ def pytest_collection_modifyitems(config, items):
         param = getattr(item, 'callspec', None)
         item_host = param.params.get('host') if param else None
         if item_host == 'openai': item_host = 'codex'
-        keep = (suite == 'all' or suite == category) and (not host or item_host == host)
+        shard = shard_for(item.nodeid, shard_count)
+        keep = ((suite == 'all' or suite == category) and (not host or item_host == host)
+                and shard == shard_index)
         (selected if keep else deselected).append(item)
         item.user_properties.append(('taskplane_suite', category))
-        report.append({'nodeid': item.nodeid, 'suite': category, 'host': item_host, 'selected': keep})
+        report.append({'nodeid': item.nodeid, 'suite': category, 'host': item_host,
+                       'shard': shard, 'selected': keep})
     if config.getoption('--taskplane-collection-report'):
         target = Path(config.getoption('--taskplane-collection-report'))
         target.parent.mkdir(parents=True, exist_ok=True)

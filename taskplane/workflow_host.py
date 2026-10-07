@@ -410,7 +410,7 @@ class Controller:
             w.require(evidence.changed(self.workspace, state) is None,
                       'stale_checkpoint', 'Maintenance cannot bless changed accepted evidence.')
             before, after = state['source_baseline'], workflow_local.inventory(self.workspace)
-            allowed = set(state['scope']['paths'][w.current(state)['phase']])
+            allowed = {str(Path(p)) for p in state['scope']['paths'][w.current(state)['phase']]}
             drift = {p for p in set(before) | set(after) if before.get(p) != after.get(p)} - allowed
             w.require(set(changes) == drift and all(change == {'before': before.get(p), 'after': after.get(p)}
                       for p, change in changes.items()), 'stale_checkpoint',

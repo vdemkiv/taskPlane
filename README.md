@@ -4,7 +4,7 @@
 
 Taskplane is a plugin for coding agents. It connects your requirements, source dependencies, tasks, implementation, tests and review findings in one project-local workflow and dashboard. Use it for a complete delivery, a standalone design or code review, or a reusable workflow you can run with new inputs.
 
-Current version: **2.33.2**. Fresh Claude acceptance testing for this version remains external and pending. Local tests and package checks do not establish that an installed host can complete the same work. See the [candidate test guide](docs/test-candidate.md).
+Current version: **2.33.3**. Fresh Claude acceptance testing for this version remains external and pending. Local tests and package checks do not establish that an installed host can complete the same work. See the [candidate test guide](docs/test-candidate.md).
 
 ![Taskplane workflow overview: design, build, review and status](docs/assets/taskplane-cowork-flow.gif)
 
@@ -55,7 +55,7 @@ Check the runtime actually loaded by the host:
 python3 /actual/plugin/taskplane/tp.py version --verify
 ```
 
-Both manifests should agree on `2.33.2`. A source checkout, an archive and an installed plugin cache are separate copies. Updating one does not update an already running session. Keep loaded skills and hooks on the same installation; reload or start a fresh chat after an update. See [onboarding and troubleshooting](docs/onboarding.md).
+Both manifests should agree on `2.33.3`. A source checkout, an archive and an installed plugin cache are separate copies. Updating one does not update an already running session. Keep loaded skills and hooks on the same installation; reload or start a fresh chat after an update. See [onboarding and troubleshooting](docs/onboarding.md).
 
 ### Try a small real change
 
@@ -123,7 +123,7 @@ Ask `taskplane status` for the current owner, completed work and next action. Re
 ## Host support and limits
 
 - **Codex:** plugin and hook availability depend on the installed host. Verify the loaded runtime and actual hook activity after installation.
-- **Claude Code:** the claim and context transport supports macOS and Linux. Required Claude context operations refuse on Windows. Fresh live acceptance of the 2.33.2 candidate remains pending; see [external tests](docs/test-candidate.md) and [worker recovery](docs/claude-worker-recovery.md).
+- **Claude Code:** the claim and context transport supports macOS and Linux. Required Claude context operations refuse on Windows. Fresh live acceptance of the 2.33.3 candidate remains pending; see [external tests](docs/test-candidate.md) and [worker recovery](docs/claude-worker-recovery.md).
 - **Cowork:** requires an explicit selected-project binding and separate observations of command and worker execution. A connected folder alone does not prove local execution. Live Cowork certification remains unavailable; see [Cowork setup](docs/onboarding.md#cowork-workspace-and-execution).
 
 Taskplane's ordinary workflow controls use observed host events and local state. They do not provide an OS sandbox or host-wide protection. Normal host permissions remain in effect. Unit tests, extracted-package checks and native installed-host acceptance are separate evidence.
@@ -143,7 +143,7 @@ python3 scripts/package_openai.py
 
 The browser check needs Chrome or Chromium. `python3 scripts/ci_local.py` runs tests, quality checks and packaging; add `--browser` for browser coverage.
 
-Packages are written to `dist/taskplane-2.33.2.plugin` for Claude and `dist/taskplane-2.33.2-openai.zip` for Codex. Each JSON sidecar records the source commit, working-tree status, archive hash and member hashes. Building a package does not install or publish it. Follow the [candidate test guide](docs/test-candidate.md) to load and validate those exact bytes.
+Packages are written to `dist/taskplane-2.33.3.plugin` for Claude and `dist/taskplane-2.33.3-openai.zip` for Codex. Each JSON sidecar records the source commit, working-tree status, archive hash and member hashes. Building a package does not install or publish it. Follow the [candidate test guide](docs/test-candidate.md) to load and validate those exact bytes.
 
 ## Documentation
 

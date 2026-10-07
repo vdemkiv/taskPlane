@@ -1,11 +1,17 @@
 """Public operations and hooks share guarded policy; optional telemetry does not."""
 import io
 import json
+import os
 from unittest.mock import patch
 import pytest
 from taskplane import flow, flow_dashboard, workflow as w, workflow_host as h
 from taskplane.tests.test_workflow_host import controller, native
 from taskplane.tests.test_workflow_evidence import prepare
+
+requires_relay_reader = pytest.mark.skipif(
+    not (hasattr(os, 'O_DIRECTORY') and hasattr(os, 'O_NOFOLLOW')
+         and os.open in os.supports_dir_fd),
+    reason='Accepting original-source relay evidence requires secure descriptor-relative reads')
 
 
 def cli(c, capsys, *args):
@@ -412,6 +418,7 @@ def relay_fixture(tmp_path, monkeypatch):
     return c, state, value, rows, rewrite
 
 
+@requires_relay_reader
 def test_original_source_relay_preserves_origin_and_exact_replay(tmp_path, monkeypatch):
     from copy import deepcopy
     from taskplane.tests.test_workflow_local import decide
@@ -517,7 +524,7 @@ def test_original_source_relay_refuses_atomically(tmp_path, monkeypatch, bad):
     elif bad == 'snapshot_missing': Path(relay['snapshot']['path']).unlink()
     elif bad == 'native_presentation': local.Harness(c.workspace, c.root).update(presentation=None)
     elif bad == 'relay_missing': value.pop('relay')
-    elif bad == 'missing_nofollow': monkeypatch.delattr(os, 'O_NOFOLLOW')
+    elif bad == 'missing_nofollow': monkeypatch.delattr(os, 'O_NOFOLLOW', raising=False)
     before = c._path().read_bytes()
     with pytest.raises(w.Refusal):
         decide(c, state, value)
@@ -526,6 +533,7 @@ def test_original_source_relay_refuses_atomically(tmp_path, monkeypatch, bad):
 
 @pytest.mark.parametrize('flag', ['--session-id', '--resume'])
 @pytest.mark.parametrize('native', [False, True])
+@requires_relay_reader
 def test_original_source_relay_exact_launch_forms(tmp_path, monkeypatch, flag, native):
     from taskplane.tests.test_workflow_local import decide
     c, state, value, rows, rewrite = relay_fixture(tmp_path, monkeypatch)
@@ -540,6 +548,7 @@ def test_original_source_relay_exact_launch_forms(tmp_path, monkeypatch, flag, n
     assert accepted['decisions'][value['event_id']]['provenance']['relay'] == value['relay']
 
 
+@requires_relay_reader
 def test_original_source_relay_replay_pins_original_frames(tmp_path, monkeypatch):
     from taskplane.tests.test_workflow_local import decide
     c, state, value, rows, rewrite = relay_fixture(tmp_path, monkeypatch)
@@ -577,6 +586,17 @@ def test_original_source_relay_duplicate_json_is_refused(tmp_path, monkeypatch):
     assert c._path().read_bytes() == before
 
 
+def test_original_source_relay_refuses_without_secure_file_support(tmp_path, monkeypatch):
+    from taskplane import workflow_local as local
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, _, _ = relay_fixture(tmp_path, monkeypatch)
+    monkeypatch.delattr(os, 'O_NOFOLLOW', raising=False)
+    before = c._path().read_bytes()
+    with pytest.raises(local.DecisionRefusal, match='cannot safely open'):
+        decide(c, state, value)
+    assert c._path().read_bytes() == before
+
+
 @pytest.mark.parametrize('bad', ['index', 'missing', 'nonfinite', 'nul', 'fifo'])
 def test_original_source_relay_malformed_snapshot_has_named_refusal(tmp_path, monkeypatch, bad):
     import hashlib
@@ -588,6 +608,8 @@ def test_original_source_relay_malformed_snapshot_has_named_refusal(tmp_path, mo
     ref = value['relay']['snapshot']; path = Path(ref['path'])
     if bad == 'nul': ref['path'] = str(path).replace('snapshot-', '\x00snapshot-')
     elif bad == 'fifo':
+        if not hasattr(os, 'mkfifo'):
+            pytest.skip('FIFO snapshots require POSIX named pipes')
         path.unlink(); os.mkfifo(path)
     else:
         model = json.loads(path.read_text())

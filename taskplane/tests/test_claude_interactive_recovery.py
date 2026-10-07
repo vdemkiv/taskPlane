@@ -39,6 +39,8 @@ def attachment_peer_record(peer):
 
 class Interactive:
     def __init__(self, tmp_path, monkeypatch, *, count=4, scoped=False):
+        if not observations.supported_reader():
+            pytest.skip('Interactive Claude fixtures require native no-follow transcript reads')
         self.workspace = tmp_path
         self.controller, self.state = setup(tmp_path, count=count)
         self.slots = count + 1

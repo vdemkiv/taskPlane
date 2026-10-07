@@ -2,6 +2,7 @@
 """Run the same product checks used by CI, with failures visible in the log."""
 from __future__ import annotations
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SUITES = ("all", "portability", "core", "native", "packages", "capacity")
 
 
+def shard_for(nodeid: str, count: int) -> int:
+    """Stable, one-based partition; every collected test has exactly one owner."""
+    if count < 1:
+        raise ValueError("shard count must be positive")
+    key = nodeid.replace("\\", "/").encode("utf-8")
+    return int.from_bytes(hashlib.sha256(key).digest()[:8], "big") % count + 1
+
+
 def suite_for(nodeid: str, *, capacity: bool = False) -> str:
     """One owner for every test; adding an ordinary test keeps it in core."""
     path, _, name = nodeid.replace("\\", "/").partition("::")
@@ -20,7 +29,11 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
         return "browser"
     if capacity:
         return "capacity"
-    if (filename in ("test_context.py", "test_context_delivery.py", "test_workspace_binding.py")
+    if (filename in ("test_context.py", "test_context_delivery.py", "test_workspace_binding.py",
+                     "test_blueprint_harness.py", "test_workflow_builder_live.py")
+            or (filename == "test_workflow_delivery.py" and name.startswith("test_original_source_relay"))
+            or (filename == "test_workflow_local.py"
+                and name.startswith("test_nested_scope_matches_native_inventory"))
             or filename in ("test_farm_telemetry.py", "test_farm_workers.py", "test_unbound_worker_recovery.py")
             or (filename == "test_review_remediation.py" and name.startswith((
                 "test_required_binding_allows_only_exact_installed_diagnostics",
@@ -48,6 +61,8 @@ def main() -> int:
     parser.add_argument("--host", choices=["codex", "claude"])
     parser.add_argument("--junitxml", type=Path)
     parser.add_argument("--package-output", type=Path)
+    parser.add_argument("--shard-index", type=int)
+    parser.add_argument("--shard-count", type=int)
     args = parser.parse_args()
     if args.suite != "all" and args.check != "tests":
         parser.error("--suite requires --check tests")
@@ -57,6 +72,10 @@ def main() -> int:
         parser.error("--junitxml requires --check tests or browser")
     if args.package_output and args.check not in (None, "package"):
         parser.error("--package-output requires the package check")
+    if args.shard_index is not None or args.shard_count is not None:
+        if (args.check != "tests" or args.shard_index is None or args.shard_count is None
+                or not 1 <= args.shard_index <= args.shard_count):
+            parser.error("test sharding requires --check tests and 1 <= --shard-index <= --shard-count")
     checks = {
         "tests": [[sys.executable, "-m", "pytest", "taskplane/tests", "--ignore=taskplane/tests/test_dashboard_browser.py", "-q", "--durations=25", "--taskplane-suite", args.suite]],
         "quality": [[sys.executable, "-m", "ruff", "check", "taskplane", "scripts"],
@@ -67,6 +86,9 @@ def main() -> int:
     }
     if args.host:
         checks["tests"][0] += ["--taskplane-host", args.host]
+    if args.shard_count is not None:
+        checks["tests"][0] += ["--taskplane-shard-index", str(args.shard_index),
+                               "--taskplane-shard-count", str(args.shard_count)]
     if args.junitxml:
         checks[args.check][0] += ["--junitxml", str(args.junitxml.resolve())]
     if args.package_output:

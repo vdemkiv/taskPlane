@@ -12,12 +12,14 @@ from scripts import ci_local
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def collect(tmp_path, suite='all', host=None):
+def collect(tmp_path, suite='all', host=None, shard=None):
     target = tmp_path/'collection.json'
     args = [sys.executable, '-m', 'pytest', 'taskplane/tests',
             '--ignore=taskplane/tests/test_dashboard_browser.py', '--collect-only', '-q',
             '--taskplane-suite', suite, '--taskplane-collection-report', str(target)]
     if host: args += ['--taskplane-host', host]
+    if shard:
+        args += ['--taskplane-shard-index', str(shard[0]), '--taskplane-shard-count', str(shard[1])]
     result = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout+result.stderr
     return json.loads(target.read_text())
@@ -41,6 +43,9 @@ def test_all_collected_tests_have_one_suite_and_short_ids(tmp_path):
     assert len(recovery) == 2 and recovery <= partitions['portability']
     platform_regressions = {r['nodeid'] for r in rows if any(name in r['nodeid'] for name in (
         'test_farm_telemetry.py::', 'test_farm_workers.py::', 'test_unbound_worker_recovery.py::',
+        'test_blueprint_harness.py::', 'test_workflow_builder_live.py::',
+        'test_workflow_delivery.py::test_original_source_relay',
+        'test_workflow_local.py::test_nested_scope_matches_native_inventory',
         'test_exact_argv_foreign_interpreter_refused_in_execution_directory',
         'test_required_binding_allows_only_exact_installed_diagnostics',
         'test_windows_interpreter_search_respects_current_directory_policy',
@@ -59,6 +64,20 @@ def test_expensive_host_selection_is_exact(tmp_path, suite, host):
     assert len(selected) == 1
     assert selected[0]['suite'] == suite and selected[0]['host'] == host
     assert len([r for r in rows if r['suite']==suite]) == 2
+
+
+def test_core_shards_cover_actual_collection_once(tmp_path):
+    baseline = {row['nodeid'] for row in collect(tmp_path, 'core') if row['selected']}
+    partitions = []
+    for index in range(1, 5):
+        rows = collect(tmp_path, 'core', shard=(index, 4))
+        selected = [row for row in rows if row['selected']]
+        assert selected and all(row['suite'] == 'core' and row['shard'] == index for row in selected)
+        partitions.append({row['nodeid'] for row in selected})
+    assert set().union(*partitions) == baseline
+    assert sum(map(len, partitions)) == len(baseline)
+    assert ci_local.shard_for(r'taskplane\tests\test_probe.py::test_a', 4) == ci_local.shard_for(
+        'taskplane/tests/test_probe.py::test_a', 4)
 
 
 @pytest.mark.parametrize('fail', [False, True], ids=['passing', 'failing'])
@@ -82,6 +101,11 @@ def test_runner_preserves_failure_and_writes_junit(tmp_path, monkeypatch, fail):
 @pytest.mark.parametrize('args', [
     ['--check','quality','--suite','core'], ['--check','tests','--host','codex'],
     ['--check','package','--junitxml','result.xml'], ['--check','browser','--package-output','tmp'],
+    ['--check','quality','--shard-index','1','--shard-count','4'],
+    ['--check','tests','--shard-index','1'], ['--check','tests','--shard-count','4'],
+    ['--check','tests','--shard-index','0','--shard-count','4'],
+    ['--check','tests','--shard-index','5','--shard-count','4'],
+    ['--check','tests','--shard-index','1','--shard-count','0'],
 ])
 def test_incompatible_selections_fail_before_running(monkeypatch, args):
     monkeypatch.setattr(sys, 'argv', ['ci_local', *args])

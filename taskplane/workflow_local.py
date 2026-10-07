@@ -253,7 +253,7 @@ def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run:
     original = Path(refs[0]["path"])
     _require_decision(original.is_relative_to(Path.home() / ".codex/sessions")
                       and re.fullmatch(r"\d{4}/\d{2}/\d{2}/rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
-                                       + re.escape(origin) + r"\.jsonl", str(original.relative_to(Path.home() / ".codex/sessions")))
+                                       + re.escape(origin) + r"\.jsonl", original.relative_to(Path.home() / ".codex/sessions").as_posix())
                       and all(ref["path"] == str(original) for ref in refs),
                       "decision_relay", "Relay must use one original native Codex session, never a copied log.")
     rows = [_relay_json(_relay_bytes(ref, frame=True)) for ref in refs]
@@ -684,7 +684,7 @@ class LocalWorkflow:
     def before_action(self, state: dict[str, Any], action: str) -> None:
         verify_workflow(self.workspace, state)
         before, after = state["source_baseline"], inventory(self.workspace)
-        allowed = set(state["scope"]["paths"][w.current(state)["phase"]])
+        allowed = {str(Path(p)) for p in state["scope"]["paths"][w.current(state)["phase"]]}
         changed = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
         w.require(not changed - allowed, "scope_violation",
                   "Source changed outside this phase scope: " + ", ".join(sorted(changed - allowed)[:10]))

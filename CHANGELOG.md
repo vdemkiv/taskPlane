@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.33.3 — Windows portability and bounded CI
+
+- Compare accepted scope paths using native separators, preserving existing audit baselines and rejection of out-of-scope changes.
+- Make original-session path checks and verifier fixtures portable; retain safe refusal where secure file-reading primitives are unavailable.
+- Apply the Claude fixture capability requirement when helpers are reused by other test modules; keep unsupported-host refusal coverage.
+- Split core tests into four deterministic, non-overlapping shards per OS and run the affected portability cases before them. Cancel superseded branch runs and bound each core/native job to 30 minutes.
+- Preserve the failed 2.33.2 Windows CI evidence and keep live Claude validation deferred to external testing.
+
 ## v2.33.2 — Local recovery closeout and external test candidate
 
 - Refresh the README around installation, everyday requests, phase approvals, reusable workflows and current host limits.

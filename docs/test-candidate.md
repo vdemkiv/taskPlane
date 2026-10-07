@@ -1,4 +1,4 @@
-# Test the 2.33.2 candidate
+# Test the 2.33.3 candidate
 
 This candidate repairs the Workflow Builder freshness cycle by keeping generated
 phase evidence outside graph source inputs. It also preserves required native
@@ -7,16 +7,18 @@ Regression checks cover convergence and rejection of real source drift and
 altered evidence. It retains the earlier Claude delivery and recovery repairs.
 This version also includes exact launch-denial recovery and retention of late
 lifecycle contradictions when the optional observation cache is full.
-Fresh installed-host acceptance of this version is still required.
+Version 2.33.3 also corrects Windows scope-path comparisons and the cross-platform
+CI fixtures, with four disjoint core-test shards and cancellation of superseded
+branch runs. Fresh installed-host acceptance of this version is still required.
 
 Live Claude validation was explicitly deferred to external testing after the
-local closeout and Retro. The local suite passed 6,774 tests, with 6 skipped and
+local closeout and Retro. The preceding 2.33.2 local suite passed 6,774 tests, with 6 skipped and
 7 subtests passed. A separate integrity check verified the preserved result
 against 284 unchanged file fingerprints and the recorded command, runtime and
 environment. External dependency coverage remains incomplete; this is not a
 fresh installed-host result or automatic test-cache hit.
 
-The subsequent local archive check passed 11 tests and failed one Claude fixture
+The 2.33.2 local archive check passed 11 tests and failed one Claude fixture
 with `OS boot identity or invocation clock is unavailable.` Both archives and
 their member hashes matched the source. The failed fixture remains recorded;
 it was not retried or counted as passing. Fresh Claude host testing remains
@@ -40,8 +42,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.2.plugin` (Claude) and
-`dist/taskplane-2.33.2-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.3.plugin` (Claude) and
+`dist/taskplane-2.33.3-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -52,13 +54,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.2.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.2-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.3.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.3-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.2` and `ok: true`.
+Both commands should report `2.33.3` and `ok: true`.
 
 ## Local regression and exact archive checks
 

@@ -404,6 +404,25 @@ def test_out_of_scope_source_drift_prevents_sealing(tmp_path,change):
         c.adapter.before_action(c.report(),"submit")
 
 
+@pytest.mark.parametrize('flavor', ['windows', 'posix'])
+@pytest.mark.parametrize('change', ['create', 'modify', 'delete'])
+def test_nested_scope_matches_native_inventory_without_admitting_neighbors(tmp_path, monkeypatch, flavor, change):
+    from pathlib import PurePosixPath, PureWindowsPath
+    c, state = setup(tmp_path)
+    path_type = PureWindowsPath if flavor == 'windows' else PurePosixPath
+    scoped = str(path_type('reports/review.md'))
+    neighbor = str(path_type('reports/private.md'))
+    state['scope']['paths']['product'] = ['reports/review.md']
+    state['source_baseline'] = {} if change == 'create' else {scoped: 'before'}
+    after = {} if change == 'delete' else {scoped: 'after'}
+    monkeypatch.setattr(local, 'Path', path_type)
+    monkeypatch.setattr(local, 'inventory', lambda workspace: dict(after))
+    c.adapter.before_action(state, 'submit')
+    after[neighbor] = 'unapproved'
+    with pytest.raises(w.Refusal, match='outside this phase scope'):
+        c.adapter.before_action(state, 'submit')
+
+
 def test_known_processes_block_seal_and_stale_input(tmp_path):
     c,s=setup(tmp_path)
     event={"hook_event_name":"PostToolUse","tool_name":"exec_command","tool_input":{},"tool_response":{"session_id":123}}
