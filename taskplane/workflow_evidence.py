@@ -290,6 +290,75 @@ def context_tasks(state: dict[str, Any]) -> list[dict[str, Any]]:
     return list(rows)
 
 
+def context_task_phase(state: dict[str, Any]) -> str:
+    """Phase of the published context, including the gap before a new publication."""
+    phase: str = state["visits"][0]["phase"]
+    for stage in state["visits"][:state["index"]]:
+        if (stage["decision"] == "approved" and not stage.get("superseded")
+                and stage.get("packet", {}).get("context", {}).get("tasks") is not None):
+            phase = stage["phase"]
+    if state.get("task_context", {}).get("visit") == w.current(state)["id"]:
+        phase = w.current(state)["phase"]
+    return phase
+
+
+def native_refinement(compilation: dict[str, Any], rows: list[dict[str, Any]], phase: str,
+                      *, build_paths: list[str] | None = None, root_id: str = "root") -> None:
+    """Preserve native obligations from an already authenticated compilation.
+
+    This pure check neither authenticates a package nor changes state. Build may
+    narrow optional paths and split work among compatible native tasks, retaining
+    the original nonempty producer. Earlier cumulative obligations remain intact.
+    """
+    rows = task_dag({"tasks": rows}, [])
+    w.require(phase in w.PHASES and all(row.get("phase", phase) in w.PHASES for row in rows),
+              "binding_mismatch", "Compiled native obligation refinement has an unknown phase.")
+    patterns = compilation["task_patterns"]
+    last = max(patterns, key=w.PHASES.index)
+    originals = patterns[last]["tasks"]
+    phases = set(w.PHASES[:w.PHASES.index(phase) + 1])
+    phases.update(row.get("phase", phase) for row in rows)
+    if phase == "plan":
+        phases.add("build")
+    index = {row["id"]: row for row in rows}
+    outer = compilation["semantic_scope"]
+    planned = set(_strings(build_paths, "Plan write scope", nonempty=False) if build_paths is not None else
+                  [p for row in rows if row.get("phase", phase) == "build" for p in row["paths"]])
+    w.require(planned <= set(outer["paths"]["build"]), "binding_mismatch",
+              "Compiled native obligation refinement exceeds the outer Build scope.")
+
+    def compatible(original: dict[str, Any], candidate: dict[str, Any]) -> bool:
+        return (candidate.get("phase") == original["phase"]
+                and candidate.get("capability") == original["capability"]
+                and candidate.get("review_lens") == original.get("review_lens")
+                and candidate.get("execution") == "native_required"
+                and candidate.get("owner") not in ("root", root_id)
+                and not any(key in candidate for key in
+                            ("execution_reason", "execution_reference", "execution_exception"))
+                and set(task_criteria(original)) <= set(task_criteria(candidate))
+                and set(original["read_inputs"]) <= set(candidate.get(
+                    "read_inputs", outer.get("verification_inputs", []))))
+
+    for original in originals:
+        if original.get("execution") != "native_required" or original["phase"] not in phases:
+            continue
+        key = original["id"]
+        anchor = index.get(key)
+        w.require(anchor is not None and compatible(original, anchor), "binding_mismatch",
+                  f"Compiled native obligation {key} must retain its ID, phase, capability, lens, execution, criteria and inputs.")
+        assert anchor is not None
+        retained = set(original["paths"])
+        if original["phase"] == "build":
+            retained &= planned
+        w.require(retained and retained & set(anchor["paths"]), "binding_mismatch",
+                  f"Compiled native obligation {key} needs a nonempty retained producer; placeholders cannot replace it.")
+        for relative in sorted(retained):
+            owners = [row for row in rows if relative in row["paths"]]
+            w.require(len(owners) == 1 and compatible(original, owners[0])
+                      and (original["phase"] == "build" or owners[0]["id"] == key),
+                      "binding_mismatch", f"Compiled native obligation {key} path {relative} needs exactly one compatible native owner.")
+
+
 def read_inputs(state: dict[str, Any], definition: dict[str, Any]) -> list[str]:
     """One source-selection contract for delivery, freshness and scheduling.
 
@@ -314,6 +383,8 @@ def freeze_tasks(root: Path, state: dict[str, Any], data: dict[str, Any]) -> lis
     """Validate an explicit run-bound publication without consulting global files."""
     from copy import deepcopy
     rows = task_dag(data, state["scope"]["criteria"])
+    from .workflow_local import verify_workflow
+    verify_workflow(root, state, tasks=rows)
     execution_fields(rows, required=state["scope"].get("execution_contract") == "native-default/v1"
                      or state["scope"].get("planning_contract") == w.PLANNING_CONTRACT,
                      phase=w.current(state)["phase"], root=state["root"])
@@ -388,6 +459,14 @@ def _plan(state: dict[str, Any]) -> dict[str, Any]:
 def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
                    tasks: list[dict[str, Any]]) -> dict[str, Any]:
     """Check declared production/read dependencies, never expand their authority."""
+    from .workflow_local import verify_workflow
+    verify_workflow(root, state, tasks=tasks, build_paths=output.get("write_scope"))
+    return _plan_preflight(root, state, output, tasks)
+
+
+def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
+                    tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Plan checks after the public caller authenticated its workflow binding."""
     strict = (state["scope"].get("execution_contract") == "native-default/v1"
               or state["scope"].get("planning_contract") == w.PLANNING_CONTRACT or typed_plan(output))
     if not strict:
@@ -1050,6 +1129,9 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
         from .context_handoff import Session
         Session(root, state, persist=False).validate(output.get("context_receipt"))
     tasks = task_dag(object_file(root, tasks_path), criteria)
+    from .workflow_local import verify_workflow
+    verify_workflow(root, state, tasks=tasks,
+                    build_paths=output.get("write_scope") if phase == "plan" else None)
     files = [output_path, *execution_evidence(root, state, tasks, output)]
     for t in tasks:
         for p in t["paths"]:
@@ -1083,7 +1165,7 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
         build_tasks = [t for t in tasks if t.get("phase") == "build"]
         w.require(build_tasks and set(planned) == {p for t in build_tasks for p in t["paths"]},
                   "invalid_evidence", "Plan write scope must exactly match its Build task paths.")
-        plan_preflight(root, state, output, tasks)
+        _plan_preflight(root, state, output, tasks)
     if phase == "build":
         build_task_map(state, tasks, output["task_acceptance_map"], criteria)
         inventory = output["change_inventory"]

@@ -55,6 +55,19 @@ MAX_RECORDS = 16384
 MAX_CANDIDATES = 64
 MAX_STATE_BYTES = 512 * 1024
 NOTIFICATION_VERSION = 2
+LEGACY_LAUNCH_CONFLICT = "Native launch disagrees with admitted parent, workspace or arguments"
+_DENIAL_BODY_BYTES = 1856
+_DENIAL_BODY_SHA256 = "e293470ef2aa8a4727c32ce61e79fc464558df203254586b47c215bd0d63a07d"
+# Missing fields may be added only after comparing every retained field with
+# the original native span. Unknown or changed cached fields never migrate.
+_DENIAL_PROVENANCE = {"type", "message_role", "session_id", "session_alias_consistent",
+                      "uuid", "parentUuid", "sourceToolAssistantUUID", "item_sha256"}
+_PROJECTION_ADDITIONS = {
+    "call": _DENIAL_PROVENANCE | {"agent_type"},
+    "result": _DENIAL_PROVENANCE | {"output_file_sha256", "denial_kind", "content_sha256",
+                                      "content_bytes", "error_wrapper_exact"},
+    "notification": {"no_report", "handback_redirect"},
+}
 _ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
 _SHA = re.compile(r"[a-f0-9]{64}\Z")
@@ -119,10 +132,25 @@ def correlate_records(parent: str, attempt: Mapping[str, Any],
     if (use["item"].get("name") not in {"Agent", "Task"}
             or not isinstance(use["item"].get("input"), Mapping)
             or digest(use["item"]["input"]) != attempt["dispatch_digest"]
-            or result["item"].get("is_error") is True
             or any(row.get("sessionId") != parent or row.get("cwd") != workspace
                    or row.get("isSidechain") is True for row in (call, returned))):
         return _answer("conflict", "Native launch disagrees with admitted parent, workspace or arguments")
+    entry: dict[str, Any] = {"call": [{"projection": _projection(call, "call", use["item"])}],
+             "result": [{"projection": _projection(returned, "result", result["item"])}],
+             "header": [], "notification": [], "peer_handback": []}
+    entry["call"][0]["sequence"] = next(index for index, row in enumerate(records) if row == call)
+    entry["result"][0]["sequence"] = next(index for index, row in enumerate(records) if row == returned)
+    # Call-less, unrelated child headers do not identify a rejected attempt.
+    # An explicit call association is contradictory even without a child ID.
+    entry["header"] = [row for row in child_headers
+                       if row.get("call_id") == call_id or row.get("tool_use_id") == call_id]
+    entry["notification"] = [value for row in records if (value := _notification(row))
+                             and value["call_id"] == call_id]
+    denial = _launch_denial(parent, attempt, entry, observed_at=observed_at)
+    if denial is not None:
+        return denial
+    if result["item"].get("is_error") is True:
+        return _answer("conflict", LEGACY_LAUNCH_CONFLICT)
     if not isinstance(structured, Mapping):
         return _answer("unsupported", "Native result has no supported structured identity")
     child = structured.get("agentId")
@@ -391,6 +419,13 @@ def _scalar(value: Any, limit: int = 4096) -> Any:
 def _projection(row: Mapping[str, Any], role: str, item: Mapping[str, Any] | None = None) -> dict[str, Any]:
     result = {key: _scalar(row.get(key)) for key in ("sessionId", "cwd", "isSidechain", "timestamp")}
     result["record_sha256"] = digest(row)
+    if role in {"call", "result"}:
+        message = row.get("message")
+        result.update({key: _scalar(row.get(key), 200) for key in
+                       ("type", "session_id", "uuid", "parentUuid", "sourceToolAssistantUUID")})
+        result.update(message_role=_scalar(message.get("role"), 200) if isinstance(message, Mapping) else None,
+                      session_alias_consistent="session_id" not in row or row["session_id"] == row.get("sessionId"),
+                      item_sha256=digest(item))
     if role == "call":
         assert item is not None
         result.update(name=_scalar(item.get("name"), 200),
@@ -401,6 +436,13 @@ def _projection(row: Mapping[str, Any], role: str, item: Mapping[str, Any] | Non
         assert item is not None
         structured = row.get("toolUseResult")
         result.update(is_error=item.get("is_error") is True, structured=isinstance(structured, Mapping))
+        content = item.get("content")
+        body = content.encode("utf-8") if isinstance(content, str) else None
+        result.update(denial_kind=_scalar(row.get("toolDenialKind"), 200),
+                      content_sha256=hashlib.sha256(body).hexdigest() if body is not None else None,
+                      content_bytes=len(body) if body is not None else None,
+                      error_wrapper_exact=isinstance(content, str) and isinstance(structured, str)
+                          and structured == "Error: " + content)
         structured = structured if isinstance(structured, Mapping) else {}
         result.update(child=_scalar(structured.get("agentId"), 200), is_async=structured.get("isAsync") is True,
                       status=_scalar(structured.get("status"), 200),
@@ -408,6 +450,73 @@ def _projection(row: Mapping[str, Any], role: str, item: Mapping[str, Any] | Non
     else:
         result["child"] = _scalar(row.get("agentId"), 200)
     return result
+
+
+def _launch_denial(parent: str, attempt: Mapping[str, Any], entry: Mapping[str, Any], *,
+                   observed_at: str | None = None) -> dict[str, Any] | None:
+    """One exact predicate shared by raw fixtures and reverified native spans.
+
+    No-match leaves ordinary error handling intact. Pure inputs cannot certify
+    byte offsets or source provenance; only the secure reader emits a proof.
+    """
+    if len(entry["call"]) != 1 or len(entry["result"]) != 1:
+        return None
+    call, result = (entry[role][0]["projection"] for role in ("call", "result"))
+    workspace = attempt.get("workspace")
+    if (call.get("name") not in {"Agent", "Task"}
+            or call.get("input_digest") != attempt.get("dispatch_digest")
+            or any(row.get("sessionId") != parent or row.get("cwd") != workspace
+                   or row.get("isSidechain") is not False
+                   or row.get("session_alias_consistent") is not True for row in (call, result))
+            or result.get("session_id") != parent
+            or call.get("type") != "assistant" or call.get("message_role") != "assistant"
+            or result.get("type") != "user" or result.get("message_role") != "user"
+            or not isinstance(call.get("uuid"), str) or not _UUID.fullmatch(call["uuid"])
+            or result.get("sourceToolAssistantUUID") != call["uuid"] or result.get("parentUuid") != call["uuid"]
+            or result.get("is_error") is not True or result.get("denial_kind") != "automode-blocked"
+            or result.get("content_bytes") != _DENIAL_BODY_BYTES
+            or result.get("content_sha256") != _DENIAL_BODY_SHA256
+            or result.get("error_wrapper_exact") is not True
+            or any(entry.get(role) for role in ("header", "notification", "peer_handback"))
+            or any(attempt.get(key) for key in ("worker_id", "claimed_at", "started_at", "native_session_started_at",
+                "context_receipt", "context_delivery", "result", "result_ref", "launch_proof_ref", "events",
+                "handback", "stop_observation", "stop_observations", "startup_handbacks", "completion_conflict"))
+            or attempt.get("terminal_status") not in (None, "launch_denied")):
+        return None
+    try:
+        prepared = _stamp(attempt.get("prepared_at"))
+        called, returned = (_stamp(row.get("timestamp")) for row in (call, result))
+        observed = _stamp(observed_at) if observed_at is not None else datetime.now(timezone.utc)
+        if not prepared <= called <= returned <= observed:
+            return None
+        for key in ("launch_requested_at", "admitted_at"):
+            if attempt.get(key) is not None and not prepared <= _stamp(attempt[key]) <= returned:
+                return None
+        call_ref, result_ref = (entry[role][0].get("reference") for role in ("call", "result"))
+        if ('sequence' in entry['call'][0]
+                and entry['result'][0]['sequence'] <= entry['call'][0]['sequence']):
+            return None
+        if call_ref is not None or result_ref is not None:
+            admission = attempt.get("transcript_admission_offset")
+            admission = 0 if admission is None else admission
+            if (type(admission) is not int or admission < 0 or not call_ref or not result_ref
+                    or call_ref["offset"] < admission
+                    or result_ref["offset"] < call_ref["offset"] + call_ref["bytes"]):
+                return None
+    except (ValueError, TypeError, OverflowError, KeyError):
+        return None
+    hashes = {role: entry[role][0]["projection"]["record_sha256"] for role in ("call", "result")}
+    return _answer("launch_denied", "Exact native auto-mode launch denial", parent=parent,
+                   workspace=workspace, call_id=attempt["call_id"], grant_id=attempt.get("grant_id"),
+                   attempt=attempt.get("attempt"), dispatch_digest=attempt["dispatch_digest"],
+                   denial_kind="automode-blocked", denial_code="auto-mode-bypass",
+                   record_sha256=hashes, evidence_sha256=digest(hashes), called_at=call["timestamp"],
+                   denied_at=result["timestamp"], observed_at=result["timestamp"])
+
+
+def _compatible_projection(old: Mapping[str, Any], fresh: Mapping[str, Any], role: str) -> bool:
+    added = _PROJECTION_ADDITIONS.get(role, set()) - old.keys()
+    return digest({key: value for key, value in fresh.items() if key not in added}) == digest(old)
 
 
 def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -552,9 +661,12 @@ def _items(row: Mapping[str, Any], call: str) -> list[tuple[str, Mapping[str, An
 
 def _retain(entry: dict[str, Any], role: str, projection: dict[str, Any], ref: dict[str, Any]) -> None:
     values = entry[role]
-    if not any(value["projection"] == projection for value in values) and len(values) < 2:
+    # A shared rescan can encounter old projections for candidates not requested
+    # this turn. Deduplicate their exact content without upgrading the cache;
+    # _validate_entry must still reverify their original spans before use.
+    if not any(_compatible_projection(value["projection"], projection, role) for value in values) and len(values) < 2:
         values.append({"projection": projection, "reference": ref})
-    if len(values) > 1:
+    if len(values) > 1 and not entry.get("conflict"):
         entry["conflict"] = "Conflicting native " + role + " records"
 
 
@@ -595,14 +707,21 @@ def _check_cursor(state: Mapping[str, Any]) -> None:
 def _correlate(parent: str, attempt: Mapping[str, Any], entry: Mapping[str, Any]) -> dict[str, Any]:
     if entry.get("conflict"):
         return _answer("conflict", entry["conflict"])
+    if len(entry["call"]) > 1 or len(entry["result"]) > 1:
+        return _answer("conflict", "Conflicting native launch call or result")
     if not entry["call"] or not entry["result"]:
         return _answer("not_yet_available", "Exact native launch call/result is not readable")
     call, result = (entry[role][0]["projection"] for role in ("call", "result"))
     workspace = attempt.get("workspace")
     if (call["name"] not in {"Agent", "Task"} or call["input_digest"] != attempt.get("dispatch_digest")
-            or result["is_error"] or any(row["sessionId"] != parent or row["cwd"] != workspace
+            or any(row["sessionId"] != parent or row["cwd"] != workspace
             or row["isSidechain"] is True for row in (call, result))):
         return _answer("conflict", "Native launch disagrees with admitted parent, workspace or arguments")
+    denial = _launch_denial(parent, attempt, entry)
+    if denial is not None:
+        return denial
+    if result["is_error"]:
+        return _answer("conflict", LEGACY_LAUNCH_CONFLICT)
     if not result["structured"] or not result["is_async"] or result["status"] != "async_launched":
         return _answer("unsupported", "Native result has no supported asynchronous identity")
     child = result["child"]
@@ -667,29 +786,17 @@ def _validate_entry(fd: int, path: Path, parent: str, attempt: Mapping[str, Any]
             row = _verify(fd, value["reference"], budget)
             if row is None:
                 return False
-            if role == 'notification':
-                projected = _notification(row)
-                added = {'no_report', 'handback_redirect'} - value['projection'].keys()
-                if projected and {k: v for k, v in projected.items() if k not in added} == value['projection']:
-                    value['projection'] = projected
-            if role == 'call' and 'agent_type' not in value['projection']:
-                for kind, item in _items(row, attempt['call_id']):
-                    projected = _projection(row, kind, item)
-                    if kind == 'call' and {k: v for k, v in projected.items()
-                            if k != 'agent_type'} == value['projection']:
-                        value['projection'] = projected
-            if role == 'result' and 'output_file_sha256' not in value['projection']:
-                # Upgrade only after re-reading the exact pinned native span.
-                for kind, item in _items(row, attempt['call_id']):
-                    projected = _projection(row, kind, item)
-                    if kind == 'result' and {k: v for k, v in projected.items()
-                            if k != 'output_file_sha256'} == value['projection']:
-                        value['projection'] = projected
-            if not (_peer_handback(row) == value['projection'] if role == 'peer_handback' else
-                    _notification(row) == value["projection"] if role == "notification" else
-                    any(kind == role and _projection(row, role, item) == value["projection"]
-                        for kind, item in _items(row, attempt["call_id"]))):
+            candidates = ([_peer_handback(row)] if role == 'peer_handback' else
+                          [_notification(row)] if role == 'notification' else
+                          [_projection(row, role, item) for kind, item in _items(row, attempt['call_id'])
+                           if kind == role])
+            matches = [candidate for candidate in candidates if candidate is not None
+                       and _compatible_projection(value['projection'], candidate, role)]
+            if len({digest(candidate) for candidate in matches}) != 1:
                 raise ValueError("Cached projection differs from native evidence")
+            # Includes all new denial provenance only after original-span read
+            # and strict comparison of every existing field, including types.
+            value['projection'] = matches[0]
     for value in entry["header"]:
         child_path = _child_path(path, parent, value["projection"]["child"])
         if value["reference"]["source"] != str(child_path) or value["reference"]["offset"] != 0:
@@ -745,6 +852,14 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                         "source_sha256": source["sha256"], "binding": _binding(parent, attempt),
                         "records": {role: entry[role] for role in
                             ("call", "result", "header", "notification", "peer_handback")}})
+                if source is not None and state is not None and answer['status'] == 'launch_denied':
+                    answer['denial_proof'] = _sealed({"schema": "taskplane.claude-launch-denial-proof/v1",
+                        "source": deepcopy(dict(source)), "source_sha256": source['sha256'],
+                        "binding": _binding(parent, attempt),
+                        "admission_timestamps": {key: attempt[key] for key in
+                            ('launch_requested_at', 'admitted_at') if attempt.get(key) is not None},
+                        "records": {role: deepcopy(entry[role]) for role in ('call', 'result')},
+                        "watermark": state['watermark']})
             result.append(answer)
         return {"observations": result, "cursor": _sealed(state) if state is not None else None,
                 "budget": budget.report()}
@@ -777,6 +892,8 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                     or cursor.get("source_sha256") != source["sha256"]):
                 raise ValueError("Corrupt cursor or changed selected source")
             state = deepcopy(dict(cursor))
+            if 'legacy_denial_reobservation' in state:
+                raise ValueError('Private legacy reobservation requires its dedicated API')
             # Older parsers may have scanned past a supported transcript-only
             # event. Re-scan once, preserving and revalidating pinned evidence.
             if 'notification_version' not in state:
@@ -876,7 +993,7 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                             admission = attempt.get("transcript_admission_offset")
                             admission = 0 if admission is None else admission
                             if type(admission) is not int or admission < 0 or ref["offset"] < admission:
-                                entry["conflict"] = "Native launch predates its admission watermark"
+                                entry["conflict"] = entry.get("conflict") or "Native launch predates its admission watermark"
                             _retain(entry, role, _projection(row, role, item), ref)
             state["offset"] = _scan(stream.fileno(), path, state["offset"], state["watermark"], budget, retain)
             complete = state["offset"] == state["watermark"] and state["watermark"] == info.st_size
@@ -960,3 +1077,88 @@ def observe(parent: str, attempt: Mapping[str, Any], event: Mapping[str, Any], *
                           source=source if source is not None else attempt.get("transcript_source"),
                           cursor=cursor if cursor is not None else attempt.get("transcript_cursor"), budget=budget)
     return {**result["observations"][0], "cursor": result["cursor"], "budget": result["budget"]}
+
+
+def reobserve_legacy_denial(parent: str, attempt: Mapping[str, Any], *,
+                           source: Mapping[str, Any], cursor: Mapping[str, Any],
+                           expected_call_sha256: str, expected_result_sha256: str,
+                           budget: ReadBudget | None = None) -> dict[str, Any]:
+    """Reconsider one legacy misclassification, never controller authorization.
+
+    Hash arguments are raw original-span hashes. Inputs are never mutated. Only
+    a fresh launch_denied answer carries denial_proof and a commit-ready cursor.
+    A not_yet_available cursor may carry private bounded scan progress; resume
+    it only through this API with identical parameters, not ordinary observe.
+    The caller must separately check root/run/revision, history and lifecycle
+    eligibility under its lock before committing any recovery transition.
+    """
+    budget = budget if budget is not None else ReadBudget()
+
+    def refusal(status: str, reason: str) -> dict[str, Any]:
+        return {**_answer(status, reason), 'cursor': deepcopy(cursor), 'budget': budget.report()}
+
+    if not supported_reader():
+        return refusal('unsupported', 'Native no-follow transcript reads are unavailable')
+    try:
+        if (not _valid_seal(source, 'taskplane.claude-transcript-source/v1')
+                or source.get('parent') != parent
+                or not _valid_seal(cursor, 'taskplane.claude-transcript-cursor/v1')
+                or cursor.get('source_sha256') != source['sha256']
+                or any(not isinstance(value, str) or not _SHA.fullmatch(value)
+                       for value in (expected_call_sha256, expected_result_sha256))):
+            raise ValueError('Invalid legacy source, cursor or span hashes')
+        state = deepcopy(dict(cursor))
+        _check_cursor(state)
+        if state.get('conflict'):
+            raise ValueError('Global native conflict cannot be recovered')
+        binding = _binding(parent, attempt)
+        key = digest(binding)
+        entry = state['entries'].get(key)
+        marker = {'entry': key, 'call_sha256': expected_call_sha256,
+                  'result_sha256': expected_result_sha256, 'conflict': LEGACY_LAUNCH_CONFLICT}
+        resuming = state.get('legacy_denial_reobservation') == marker
+        if ('legacy_denial_reobservation' in state and not resuming
+                or not isinstance(entry, dict) or digest(entry['binding']) != digest(binding)
+                or entry.get('conflict') != (None if resuming else LEGACY_LAUNCH_CONFLICT)
+                or any(len(entry[role]) != 1 for role in ('call', 'result'))
+                or any(entry[role] for role in ('header', 'notification', 'peer_handback'))
+                or entry['call'][0]['reference']['sha256'] != expected_call_sha256
+                or entry['result'][0]['reference']['sha256'] != expected_result_sha256
+                or attempt.get('launch_proof_ref')):
+            raise ValueError('Legacy entry is not the exact unbound misclassification')
+        path = _source_path(parent, source['path'])
+        fd, project = _open_source(path)
+        with os.fdopen(fd, 'rb', buffering=0) as stream:
+            info = _regular(stream.fileno())
+            if (project != source['project_identity'] or _identity(info) != source['identity']
+                    or info.st_size < max(source['selected_size'], state['size'])
+                    or source['session_reference']['source'] != str(path)):
+                raise ValueError('Original legacy source changed')
+            session = _verify(stream.fileno(), source['session_reference'], budget)
+            if session is None:
+                return refusal('not_yet_available', 'Legacy source revalidation budget exhausted')
+            if session.get('sessionId') != parent or session.get('isSidechain') is True:
+                raise ValueError('Original legacy session changed')
+            if not _validate_entry(stream.fileno(), path, parent, attempt, entry, budget, project):
+                return refusal('not_yet_available', 'Legacy span revalidation budget exhausted')
+        # Clear only this private entry, after both original spans and every
+        # existing projection field were reverified. All other conflicts stay.
+        entry['conflict'] = None
+        if _correlate(parent, attempt, entry)['status'] != 'launch_denied':
+            raise ValueError('Original spans are not the exact supported denial')
+        if not resuming:
+            state['offset'] = 0
+        state.pop('legacy_denial_reobservation', None)
+        answer = observe(parent, attempt, {}, source=source, cursor=_sealed(state), budget=budget)
+        if answer['status'] == 'launch_denied':
+            return answer
+        if answer['status'] == 'not_yet_available' and answer.get('cursor') is not None:
+            progress = deepcopy(answer['cursor'])
+            progress['legacy_denial_reobservation'] = marker
+            answer['cursor'] = _sealed(progress)
+            return answer
+        return refusal(answer['status'], answer['reason'])
+    except FileNotFoundError:
+        return refusal('not_yet_available', 'Original legacy transcript is unavailable')
+    except (OSError, ValueError, TypeError, UnicodeError, KeyError, IndexError):
+        return refusal('conflict', 'Legacy denial source, binding, spans or projections disagree')

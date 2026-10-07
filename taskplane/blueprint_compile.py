@@ -239,7 +239,11 @@ def _assemble(root: Path, data: dict[str, Any], bindings: dict[str, Any],
               capabilities: dict[str, Any], destination: str) -> dict[str, Any]:
     """Build semantic artifacts. All input data is already strictly validated."""
     phases = list(w.PHASES) if data["route"]["kind"] == "delivery" else [data["route"]["phase"]]
-    prefix = _prefix(data, bindings)
+    _prefix(data, bindings)  # Retain the required user output-directory contract.
+    # Phase packets contain context receipts and must not become graph source
+    # inputs themselves. Keep this mutable evidence separate from both declared
+    # task outputs and the immutable, exact-inventory bootstrap package.
+    prefix = destination.replace(".taskplane/bootstrap/", ".taskplane/runtime-evidence/", 1)
     values = bindings["values"]
     criteria: dict[str, str] = {}
     for name, spec in sorted(data["inputs"].items()):

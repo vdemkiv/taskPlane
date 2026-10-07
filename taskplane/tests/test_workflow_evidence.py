@@ -839,3 +839,149 @@ def test_stronger_contract_still_requires_unavailable_native_results(tmp_path):
 def test_legacy_checkpoint_reports_unknown_feasibility(tmp_path):
     state, _, _ = prepare(tmp_path)
     assert e.prevalidate(tmp_path, state, 'product.json', 'tasks.json')['scope_preflight']['status'] == 'legacy_unknown'
+
+
+@pytest.mark.parametrize('change', ['root', 'rename', 'remove', 'phase', 'capability', 'criteria',
+                                     'inputs', 'owner', 'empty', 'placeholder', 'duplicate', 'split_root',
+                                     'split_criteria', 'split_inputs', 'split_capability', 'all_work_removed'])
+def test_compiled_native_refinement_rejects_lost_obligations(tmp_path, change):
+    from taskplane.tests.test_blueprint_harness import delivery_plan
+    state, compiled, rows, output = delivery_plan(tmp_path)
+    native = next(row for row in rows if row['id'] == 'implementation')
+    checkpoint = next(row for row in rows if row['id'] == 'workflow-build-checkpoint')
+    if change == 'root':
+        native.update(execution='root', owner='root', execution_reason='Integration', execution_reference='fixture')
+    elif change in {'rename', 'remove'}:
+        old = native['id']
+        if change == 'rename':
+            native['id'] = 'replacement'
+        else:
+            rows.remove(native)
+        for row in rows:
+            row['dependencies'] = [d if d != old else 'replacement' for d in row['dependencies']
+                                   if change != 'remove' or d != old]
+    elif change == 'phase':
+        native['phase'] = 'design'
+    elif change == 'capability':
+        native['capability'] = 'taskplane.phase.synthesis'
+    elif change == 'criteria':
+        native['criteria'] = []
+    elif change == 'inputs':
+        native['read_inputs'] = []
+    elif change == 'owner':
+        native['owner'] = 'root'
+    elif change == 'empty':
+        checkpoint['paths'] += native['paths']
+        native['paths'] = []
+    elif change == 'placeholder':
+        checkpoint['paths'] += native['paths']
+        native['paths'] = [checkpoint['paths'].pop(0)]
+    elif change == 'duplicate':
+        checkpoint['paths'].append('main.py')
+    elif change.startswith('split_'):
+        sibling = deepcopy(native)
+        sibling.update(id='implementation-more', paths=['new.py'])
+        native['paths'] = ['main.py']
+        if change == 'split_root':
+            sibling.update(execution='root', owner='root', execution_reason='Integration', execution_reference='fixture')
+        elif change == 'split_criteria':
+            sibling['criteria'] = []
+        elif change == 'split_inputs':
+            sibling['read_inputs'] = []
+        else:
+            sibling['capability'] = 'taskplane.phase.synthesis'
+        rows.append(sibling)
+    else:
+        output['write_scope'] = [p for p in output['write_scope'] if p not in native['paths']]
+        native['paths'] = [checkpoint['paths'].pop(0)]
+    before = deepcopy(state)
+    with pytest.raises(w.Refusal, match='native obligation'):
+        e.native_refinement(compiled['compilation'], rows, 'plan', build_paths=output['write_scope'])
+    assert state == before
+
+
+def test_compiled_native_split_narrowing_and_progress_are_valid(tmp_path):
+    from taskplane.tests.test_blueprint_harness import delivery_plan
+    state, compiled, rows, output = delivery_plan(tmp_path)
+    native = next(row for row in rows if row['id'] == 'implementation')
+    sibling = deepcopy(native)
+    sibling.update(id='implementation-more', paths=['new.py'], status='running')
+    native.update(paths=['main.py'], status='complete')
+    rows.append(sibling)
+    checkpoint = next(row for row in rows if row['id'] == 'workflow-build-checkpoint')
+    checkpoint['dependencies'].append(sibling['id'])
+    output['integration_order'].insert(-1, sibling['id'])
+    assert e.plan_preflight(tmp_path, state, output, rows)['status'] == 'validated'
+    assert len(e.freeze_tasks(tmp_path, state, {'tasks': rows})) == len(rows)
+    rows.remove(sibling)
+    checkpoint['dependencies'].remove(sibling['id'])
+    output['integration_order'].remove(sibling['id'])
+    output['write_scope'].remove('new.py')
+    assert e.plan_preflight(tmp_path, state, output, rows)['status'] == 'validated'
+
+
+@pytest.mark.parametrize('strict', [False, True])
+def test_root_exception_cannot_discharge_compiled_native_obligation(tmp_path, strict):
+    from taskplane.tests.test_blueprint_harness import delivery_plan
+    state, compiled, rows, _ = delivery_plan(tmp_path)
+    native = next(row for row in rows if row['id'] == 'implementation')
+    sibling = deepcopy(native)
+    sibling.update(id='implementation-more', paths=['new.py'])
+    rows.append(sibling)
+    native.update(paths=['main.py'], read_inputs=['main.py', 'dependency.py', 'new.py'],
+                  dependencies=[*native['dependencies'], sibling['id']])
+    root_exception(native, 'integration', related_tasks=[sibling['id']], paths=['new.py'])
+    # The exception is structurally valid; other generated root tasks get their
+    # own valid proof when exercising the strict implementation contract.
+    if strict:
+        state['scope']['planning_contract'] = w.PLANNING_CONTRACT
+        for row in rows:
+            if row['execution'] == 'root' and row['id'] != 'implementation':
+                peers = [p for p in rows if p['phase'] == row['phase'] and p['id'] != row['id']]
+                if peers:
+                    row['dependencies'] = [p['id'] for p in peers]
+                    row['read_inputs'] = [p for peer in peers for p in peer['paths']]
+                    root_exception(row, 'integration', related_tasks=row['dependencies'], paths=row['read_inputs'])
+                else:
+                    root_exception(row, 'trivial')
+    e.execution_preflight(state, rows)
+    with pytest.raises(w.Refusal, match='native obligation'):
+        e.native_refinement(compiled['compilation'], rows, 'plan')
+
+
+@pytest.mark.parametrize('operation', ['preflight', 'prevalidate', 'seal'])
+def test_plan_boundaries_authenticate_and_reject_native_downgrade_before_writes(tmp_path, operation):
+    from taskplane.tests.test_blueprint_harness import delivery_plan
+    state, compiled, rows, output = delivery_plan(tmp_path)
+    native = next(row for row in rows if row['id'] == 'implementation')
+    native.update(execution='root', owner='root', execution_reason='Integration', execution_reference='fixture')
+    output['ownership'][native['id']] = 'root'
+    files = compiled['compilation']['phase_files']['plan']
+    (tmp_path / files['packet']).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / files['packet']).write_text(json.dumps(output))
+    (tmp_path / files['tasks']).write_text(json.dumps({'tasks': rows}))
+    before_state = deepcopy(state)
+    before_files = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    with pytest.raises(w.Refusal, match='native obligation'):
+        if operation == 'preflight':
+            e.plan_preflight(tmp_path, state, output, rows)
+        else:
+            getattr(e, operation)(tmp_path, state, files['packet'], files['tasks'])
+    assert state == before_state
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before_files
+
+
+def test_plan_prevalidation_and_sealing_keep_valid_compiled_native_work(tmp_path):
+    from taskplane import depgraph
+    from taskplane.tests.test_blueprint_harness import delivery_plan
+    state, compiled, rows, output = delivery_plan(tmp_path)
+    files = compiled['compilation']['phase_files']['plan']
+    (tmp_path / files['packet']).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / files['packet']).write_text(json.dumps(output))
+    (tmp_path / files['tasks']).write_text(json.dumps({'tasks': rows}))
+    (tmp_path / '.taskplane/dashboard.html').write_text('<html>Fixture dashboard</html>')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before_state = deepcopy(state)
+    assert e.prevalidate(tmp_path, state, files['packet'], files['tasks'])['phase'] == 'plan'
+    assert e.seal(tmp_path, state, files['packet'], files['tasks'])['phase'] == 'plan'
+    assert state == before_state

@@ -117,9 +117,10 @@ provenance are outside native_workflow's guarantees.
 
 These commands describe the source candidate's strict
 `taskplane.workflow-blueprint/v1` contract. Use the actually loaded plugin's
-launcher and confirm its `workflow catalog` support. The installed 2.31.7
-runtime used for this development does not contain Workflow Builder; source or
-extracted-package fixtures do not establish candidate-loaded live behavior.
+launcher and confirm its `workflow catalog` support. The original development
+used installed 2.31.7 without Workflow Builder and recorded live acceptance as
+`not_run`. That historical result remains intact; source or extracted-package
+fixtures and newer installed version labels do not establish live behavior.
 See [Workflow Builder](workflow-builder.md) for the schema, reusable seeds,
 authoring checkpoint, occupied-run handling and explicit WFB-LIVE gap.
 
@@ -149,6 +150,12 @@ refuse. Declare source, dependency and test reads explicitly. Delivery reserves
 an exact outer Build allowlist; actual Build tasks and typed checks are accepted
 through Plan before implementation.
 
+Compiled delivery still has `legacy_unknown` implementation feasibility: it
+does not emit a complete `implementation/v1` intent. `native-default/v1` requires
+native work but is not source/test feasibility preflight. Preserve historical
+package semantics; a strict intent migration needs all implementation, test,
+coverage, Build-output and exception bindings, not just a contract label.
+
 Compilation returns `start_arguments` for the existing `flow start` control,
 including the compiled scope and first-phase tasks. Only root starts an
 authorized invocation with the actual request reference. There is no `workflow
@@ -165,6 +172,23 @@ governs legitimate Build mutations. Use the existing native claim/context/join/
 accept-result protocol and shared dashboard. Missing native capacity cannot be
 downgraded into serial coverage. Required live host verification remains separate
 from fixture results; installation, schedules and external actions are excluded.
+
+The source acceptance inspector is a separate read-only command:
+
+```sh
+python3 scripts/verify_workflow_builder_live.py --evidence FILE
+```
+
+It emits JSON to stdout, exits zero only for complete passing observations, and
+returns nonzero for missing, stale, failing or `not_run` evidence. It does not
+execute the host or referenced commands. The [evidence-index contract](workflow-builder.md#read-only-actual-host-evidence-verifier)
+requires two actual runs from one saved definition, differing inputs, actual
+package/controller/native transcript references, distinct native workers with
+claims/full context/automatic hooks/accepted terminal joins, an observed
+same-session interruption and resume, rendered native dashboards and authorized
+finished outcomes. It supports bounded byte slices of large native JSONL files.
+Fixture tests validate the inspector only; cooperative evidence is not host
+attestation, and missing actual observations cannot be replaced with prose.
 
 ## Workspace binding and execution policy
 
@@ -467,6 +491,32 @@ output to the user, wait for their actual response and supply this envelope thro
 
 Example identifiers and times above are placeholders; never copy them as actual
 provenance. Choices are `approved`, `changes_requested`, `rejected` or `cancelled`.
+Here `source.conversation` is the bound **workflow root**. It is not a field for
+relabeling the original native human conversation. This v1 envelope remains the
+same-session contract. An observed response in a coordinating Codex chat uses
+the explicit **`taskplane.observed-decision/v2`** contract: keep
+`source.conversation` as the original Codex ID and `binding.root` as the target
+Claude ID. Preserve the original native byte reference, full excerpt and timestamp.
+Add `relay` with schema `taskplane.original-source-relay/v1`, exact original
+`session_meta`, `human`, `presentation`, two `launch.segments`, `launch_flag`,
+and whole immutable `html`/`snapshot` references. Each reference is exactly
+`{path, offset, bytes, sha256}`. The controller verifies original complete
+human/presentation frames, the parent's real target launch, chronology, and the
+target's native immutable checkpoint presentation. It records the unchanged
+source and relay in provenance; replay must match that full original record.
+It does not create a Claude human message, transfer a prior checkpoint's approval,
+or independently authenticate the account supplying cooperative local evidence.
+See the complete native evidence requirements in the invocation-index
+[`approval_relay` contract](workflow-builder.md#original-human-approval-relayed-from-codex).
+The read-only `verify_approval_relay(reader, item, state, transcript, decision=None)`
+helper checks that evidence independently for a pending or approved checkpoint.
+Its pass does not apply a decision, create human-origin host attestation, override
+a host refusal, or satisfy full Workflow Builder acceptance. Historical v1 relay
+evidence with a remapped source remains inspectable only as unrecorded history;
+it cannot certify an applied cross-session approval or authorize a new checkpoint.
+The target runtime must actually support v2 before recording it; package selection
+and fresh validation remain separate from source-test or inspector success.
+
 The excerpt must express a clear choice in the user's own words. Conversational
 responses such as “looks good, proceed”, “go ahead”, “build approved” and “fix
 issues” are supported, including “approve repair”, the native option “Approve as is”, “fix it all”,
@@ -479,8 +529,9 @@ Punctuation and introductory words do not hide qualifications: “Cancel: if tes
 fail” and “Cancel. Actually do not cancel” leave the checkpoint and policy unchanged.
 Response grammar, provenance, binding and chronology refusals retain the compatible
 `reason: invalid_evidence`. Their full structured result adds `category` with
-`decision_grammar`, `decision_provenance`, `decision_binding`, or
-`decision_chronology`; the readable detail begins with the same category.
+`decision_grammar`, `decision_provenance`, `decision_binding`,
+`decision_chronology`, or `decision_relay`; the readable detail begins with the
+same category.
 A brief approval needs presentation identity and earlier
 presentation time. If ordering is unavailable, use `checkpoint_explicit: true` and
 an actual response such as `Approve: <checkpoint ID>`; the response must itself
@@ -1031,6 +1082,31 @@ Terminal responses have `done: true` and no action. Accumulate all subprocess/to
 chunks until exit before parsing; never parse a running handle's partial output.
 Keep the combined response budget large enough and use bounded long waits (up to
 60 seconds between user updates), not repeated short model-facing polls.
+
+For installed-host acceptance where the host persists large 32 KiB results, use
+the supported smaller transport before the first required-body read:
+
+```text
+python3 <actual-plugin>/taskplane/tp.py flow context --workspace ROOT --run RUN --task TASK --read-required HANDOFF_SHA
+```
+
+Retain the full foreground result, then repeat that exact bound command while
+`remaining_required` is nonzero. Each `--read-required` response is below 16 KiB,
+including pages and receipt. Once it reaches zero, retain one terminal response:
+
+```text
+python3 <actual-plugin>/taskplane/tp.py flow context --workspace ROOT --run RUN --task TASK --drain HANDOFF_SHA
+```
+
+That final drain normally has `pages: []`, `done: true`, and
+`remaining_required: 0`. It proves completion only together with all earlier
+body results. Whole-phase reads omit `--task`; complete `--consume` inline
+bodies and individual `--read SHA --page N` responses are also supported.
+Do not pipe, filter, redirect, use `head` or suppress these responses or native
+`flow worker --operation accept-result` responses. A `<persisted-output>` preview,
+receipt-only extraction or denied cache read is missing evidence, even if the
+controller later records zero remaining inputs. Preserve that failed attempt;
+the live verifier compares every delivered page to digest-verified CAS bytes.
 
 After a narrow repair, repeat affected checks and reviewers only. Unchanged
 scoped results remain fresh within their original binding; across visits use

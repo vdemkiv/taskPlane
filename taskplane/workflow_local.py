@@ -62,6 +62,258 @@ def timestamp(value: Any) -> datetime:
         raise w.Refusal("invalid_evidence", "Decision time is invalid.") from None
 
 
+def _relay_json(raw: str | bytes) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            _require_decision(key not in result, "decision_relay", "Duplicate relay JSON key.")
+            result[key] = value
+        return result
+    def nonfinite(value: str) -> Any:
+        raise DecisionRefusal("decision_relay", "Non-finite relay JSON number: " + value)
+    try:
+        value = json.loads(raw, object_pairs_hook=unique, parse_constant=nonfinite)
+    except w.Refusal:
+        raise
+    except (ValueError, UnicodeError, RecursionError):
+        raise DecisionRefusal("decision_relay", "Invalid bounded relay JSON.") from None
+    _require_decision(isinstance(value, dict), "decision_relay", "Relay JSON must be an object.")
+    return cast(dict[str, Any], value)
+
+
+def _relay_bytes(ref: Any, *, frame: bool = False) -> bytes:
+    """Read pinned original bytes through no-follow directory/file descriptors."""
+    _require_decision(isinstance(ref, dict) and set(ref) == {"path", "offset", "bytes", "sha256"},
+                      "decision_relay", "Relay needs an exact bounded byte reference.")
+    location, offset, size = ref["path"], ref["offset"], ref["bytes"]
+    _require_decision(isinstance(location, str) and 0 < len(location) <= 4096
+                      and type(offset) is int and 0 <= offset < 2**63
+                      and type(size) is int and 0 < size <= (131072 if frame else MAX_BYTES)
+                      and isinstance(ref["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", ref["sha256"]),
+                      "decision_relay", "Invalid relay byte reference bounds.")
+    target = Path(location)
+    _require_decision(target.is_absolute() and str(target) == location and ".." not in target.parts,
+                      "decision_relay", "Relay requires a literal absolute original path.")
+    _require_decision(hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd,
+                      "decision_relay", "This host cannot safely open original relay paths without following links.")
+    descriptor = -1
+    try:
+        descriptor = os.open(target.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        for part in target.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        child = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=descriptor)
+        os.close(descriptor)
+        descriptor = child
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            info = os.fstat(stream.fileno())
+            _require_decision(stat.S_ISREG(info.st_mode) and offset + size <= info.st_size,
+                              "decision_relay", "Relay source is not a complete regular file range.")
+            if frame and offset:
+                stream.seek(offset - 1)
+                _require_decision(stream.read(1) == b"\n", "decision_relay", "Relay frame starts inside a row.")
+            if not frame:
+                _require_decision(offset == 0 and size == info.st_size, "decision_relay", "Snapshot reference must cover the whole file.")
+            stream.seek(offset)
+            raw = stream.read(size)
+            _require_decision(len(raw) == size and hashlib.sha256(raw).hexdigest() == ref["sha256"],
+                              "decision_relay", "Relay source bytes drifted.")
+            if frame:
+                _require_decision(raw.endswith(b"\n") and raw.count(b"\n") == 1,
+                                  "decision_relay", "Relay reference must select one complete native frame.")
+            return raw
+    except w.Refusal:
+        raise
+    except (OSError, ValueError):
+        raise DecisionRefusal("decision_relay", "Original relay evidence is unavailable or contains a symlink.") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _relay_message(row: dict[str, Any], role: str) -> str:
+    payload, metadata = row.get("payload", {}), row.get("metadata", {})
+    _require_decision(isinstance(payload, dict) and isinstance(metadata, dict),
+                      "decision_relay", "Invalid native message metadata.")
+    retained = metadata.get("retained_source", {})
+    kinds = payload.get("internal_chat_message_metadata_passthrough", {})
+    _require_decision(row.get("type") == "response_item" and payload.get("type") == "message"
+                      and payload.get("role") == role and isinstance(payload.get("id"), str) and payload["id"]
+                      and isinstance(retained, dict) and retained.get("complete") is True
+                      and isinstance(retained.get("id"), dict)
+                      and retained["id"].get("message_id") == payload["id"] and retained["id"].get("role") == role
+                      and isinstance(kinds, dict) and (role != "user" or kinds.get("content_item_kinds") == ["user.text"])
+                      and not any(obj.get(key) for obj in (row, payload, metadata, kinds)
+                                  for key in ("origin", "promptSource", "turnOrigin", "automation_id", "scheduled_task_id",
+                                              "toolUseResult", "tool_call_id", "is_automation", "isSidechain")),
+                      "decision_relay", "Relay needs a complete original human/presentation frame, not tool or automation text.")
+    blocks = payload.get("content")
+    _require_decision(isinstance(blocks, list) and blocks and all(isinstance(block, dict)
+                      and block.get("type") == ("input_text" if role == "user" else "output_text")
+                      and isinstance(block.get("text"), str) for block in blocks),
+                      "decision_relay", "Unsupported native relay message content.")
+    return "".join(block["text"] for block in blocks)
+
+
+def _relay_launch(call: dict[str, Any], result: dict[str, Any], expected: dict[str, Any], flag: Any) -> None:
+    """Recognize actual direct execution frames, never evaluate JavaScript."""
+    tool, output = call.get("payload", {}), result.get("payload", {})
+    _require_decision(isinstance(tool, dict) and isinstance(output, dict)
+                      and call.get("type") == result.get("type") == "response_item"
+                      and isinstance(tool.get("call_id"), str) and tool["call_id"]
+                      and output.get("call_id") == tool["call_id"]
+                      and flag in {"--session-id", "--resume"}, "decision_relay", "Missing native parent launch/result pair.")
+    args: dict[str, Any]
+    if tool.get("type") == "function_call" and tool.get("name") in {"exec_command", "functions.exec_command"}:
+        _require_decision(output.get("type") == "function_call_output" and isinstance(tool.get("arguments"), str),
+                          "decision_relay", "Invalid direct launch frame.")
+        args = _relay_json(tool["arguments"])
+    else:
+        _require_decision(tool.get("type") == "custom_tool_call" and tool.get("name") in {"exec", "functions.exec"}
+                          and output.get("type") == "custom_tool_call_output" and isinstance(tool.get("input"), str),
+                          "decision_relay", "Unsupported relay launch tool.")
+        match = re.fullmatch(r"\s*text\(await tools\.exec_command\((\{.*\})\)\);?\s*", tool["input"], re.S)
+        _require_decision(match is not None, "decision_relay", "Relay requires one direct JSON exec_command wrapper.")
+        assert match is not None
+        args = _relay_json(match[1])
+    tokens = command_words({"tool_input": args})
+    _require_decision(args.get("tty") is True and args.get("workdir") == expected["workspace"] and bool(tokens),
+                      "decision_relay", "Relay launch needs the actual target workspace and TTY.")
+    executable = Path(tokens[0])
+    _require_decision(executable.is_absolute() and (executable.name == "claude" or
+                      (executable.parent.name == "versions" and executable.parent.parent.name == "claude"
+                       and re.fullmatch(r"\d+\.\d+\.\d+", executable.name))),
+                      "decision_relay", "Relay launch must directly execute Claude.")
+    options: dict[str, str] = {}
+    index = 1
+    while index < len(tokens) and tokens[index].startswith("--"):
+        key = tokens[index]
+        _require_decision(key in {"--session-id", "--resume", "--plugin-dir"} and key not in options and index + 1 < len(tokens),
+                          "decision_relay", "Unsupported or duplicate native launch option.")
+        options[key] = tokens[index + 1]
+        index += 2
+    _require_decision(index >= len(tokens) - 1 and options.get(flag) == expected["root"]
+                      and ("--resume" if flag == "--session-id" else "--session-id") not in options,
+                      "decision_relay", "Native parent launched a different target session.")
+    body = output.get("output")
+    if isinstance(body, list):
+        _require_decision(body and len(body) <= 2 and all(isinstance(block, dict)
+                          and block.get("type") == "input_text" and isinstance(block.get("text"), str) for block in body),
+                          "decision_relay", "Invalid native launch result blocks.")
+        if len(body) == 2:
+            _require_decision(body[0]["text"].startswith("Script completed\n"), "decision_relay", "Launch wrapper did not complete.")
+        body = body[-1]["text"]
+    _require_decision(isinstance(body, str), "decision_relay", "Native launch result is missing.")
+    observed = _relay_json(body)
+    _require_decision(type(observed.get("session_id")) is int and observed["session_id"] > 0
+                      and observed.get("exit_code") is None and not observed.get("error"),
+                      "decision_relay", "Parent launch has no actual running native session result.")
+
+
+def verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    """Read-only v2 original-source consistency check; cooperative, not host attestation.
+
+    The target controller supplies its own state/binding. Exact original frame and
+    immutable snapshot references remain part of recorded provenance and replay.
+    """
+    try:
+        return _verify_decision_relay(value, expected, run)
+    except w.Refusal:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, OverflowError, RecursionError):
+        raise DecisionRefusal("decision_relay", "Malformed original-source relay evidence.") from None
+
+
+def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+    relay, source = value.get("relay"), value.get("source", {})
+    fields = {"schema", "session_meta", "human", "presentation", "launch", "launch_flag", "html", "snapshot"}
+    _require_decision(value.get("schema") == "taskplane.observed-decision/v2"
+                      and isinstance(relay, dict) and set(relay) == fields
+                      and relay.get("schema") == "taskplane.original-source-relay/v1"
+                      and isinstance(source, dict) and set(source) == {"kind", "reference", "conversation", "actor", "automatic", "observed_at"}
+                      and source.get("kind") == "conversation" and source.get("actor") == "user" and source.get("automatic") is False
+                      and value.get("recorder") == "root_orchestrator"
+                      and isinstance(value.get("event_id"), str) and 0 < len(value["event_id"]) <= 512
+                      and value.get("checkpoint_explicit", False) is False
+                      and primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
+                      "decision_relay", "Invalid explicit original-source relay contract.")
+    assert isinstance(relay, dict)
+    origin = source.get("conversation")
+    _require_decision(isinstance(origin, str) and re.fullmatch(r"[0-9a-f-]{36}", origin)
+                      and origin != expected["root"], "decision_relay", "Relay must preserve its distinct original conversation.")
+    launch = relay["launch"]
+    _require_decision(isinstance(launch, dict) and set(launch) == {"segments"}
+                      and isinstance(launch["segments"], list) and len(launch["segments"]) == 2,
+                      "decision_relay", "Relay needs exactly one original launch/result pair.")
+    refs = [relay["session_meta"], *launch["segments"], relay["presentation"], relay["human"]]
+    _require_decision(all(isinstance(ref, dict) and isinstance(ref.get("path"), str) for ref in refs),
+                      "decision_relay", "Invalid original session references.")
+    original = Path(refs[0]["path"])
+    _require_decision(original.is_relative_to(Path.home() / ".codex/sessions")
+                      and re.fullmatch(r"\d{4}/\d{2}/\d{2}/rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
+                                       + re.escape(origin) + r"\.jsonl", str(original.relative_to(Path.home() / ".codex/sessions")))
+                      and all(ref["path"] == str(original) for ref in refs),
+                      "decision_relay", "Relay must use one original native Codex session, never a copied log.")
+    rows = [_relay_json(_relay_bytes(ref, frame=True)) for ref in refs]
+    meta, call, result, shown, human = rows
+    _require_decision(refs[0]["offset"] == 0 and meta.get("type") == "session_meta"
+                      and isinstance(meta.get("payload"), dict) and meta["payload"].get("id") == origin
+                      and meta["payload"].get("session_id", origin) == origin
+                      and meta["payload"].get("source") in {"vscode", "cli"}
+                      and not any(obj.get(key) for obj in (meta, meta["payload"])
+                                  for key in ("isSidechain", "subagent", "automation_id", "scheduled_task_id")),
+                      "decision_relay", "Foreign original native session metadata.")
+    excerpt, shown_text = _relay_message(human, "user"), _relay_message(shown, "assistant")
+    def reference(ref: dict[str, Any]) -> str:
+        return f"{ref['path']}#offset={ref['offset']}&bytes={ref['bytes']}"
+    _require_decision(source["reference"] == reference(refs[4]) and source["observed_at"] == human.get("timestamp")
+                      and value.get("excerpt") == excerpt and 0 < len(excerpt) <= 4096
+                      and choice(excerpt) is not None and choice(excerpt) == value.get("choice")
+                      and value.get("presentation") == {"checkpoint": expected["checkpoint"], "reference": reference(refs[3]), "at": shown.get("timestamp")},
+                      "decision_relay", "Relay changed original human text, reference, time or presentation.")
+    stage: dict[str, Any] = next((item for item in run.get("visits", []) if item.get("id") == expected["visit"]), {})
+    _require_decision(all(run.get(key) == expected[key] for key in ("root", "run", "workspace")) and bool(stage)
+                      and timestamp(meta.get("timestamp")) <= timestamp(run.get("started_at"))
+                      <= timestamp(stage.get("submitted_at")) <= timestamp(shown.get("timestamp")) < timestamp(human.get("timestamp"))
+                      <= datetime.now(timezone.utc)
+                      and all(timestamp(a.get("timestamp")) <= timestamp(b.get("timestamp")) for a, b in zip(rows, rows[1:]))
+                      and all(a["offset"] + a["bytes"] <= b["offset"] for a, b in zip(refs, refs[1:])),
+                      "decision_relay", "Relay evidence is stale or precedes its target checkpoint presentation.")
+    _relay_launch(call, result, expected, relay["launch_flag"])
+    _require_decision(isinstance(relay["html"], dict) and isinstance(relay["snapshot"], dict),
+                      "decision_relay", "Missing immutable presentation references.")
+    artifact = Path(relay["html"]["path"])
+    _require_decision(artifact.parent == Path(expected["workspace"]) / ".taskplane"
+                      and re.fullmatch(r"snapshot-[a-f0-9-]+\.html", artifact.name)
+                      and Path(relay["snapshot"]["path"]) == artifact.with_suffix(".json"),
+                      "decision_relay", "Relay needs the original immutable native checkpoint snapshot.")
+    html, model_raw = _relay_bytes(relay["html"]), _relay_bytes(relay["snapshot"])
+    model = _relay_json(model_raw)
+    snapshot = model.get("snapshot", {})
+    checkpoint = {**{k: v for k, v in expected.items() if k != "revision"}, "packet_revision": expected["revision"]}
+    harness = Harness(Path(expected["workspace"]), expected["root"])
+    named = set(re.findall(r"\b[0-9a-f]{32}\b", shown_text))
+    links = re.findall(r"\[[^\]\n]+\]\(<?([^\n<>]+?)>?\)", shown_text)
+    snapshots = {link for link in links if re.fullmatch(r"snapshot-[a-f0-9-]+\.html", Path(link).name)}
+    _require_decision(isinstance(snapshot, dict) and isinstance(model.get("workflow"), dict)
+                      and all(snapshot.get(k) == expected[k] for k in ("root", "run", "workspace", "visit", "revision"))
+                      and not snapshot.get("historical") and harness.checkpoint(model["workflow"]) == checkpoint
+                      and timestamp(snapshot.get("generated_at")) <= timestamp(shown.get("timestamp"))
+                      and expected["checkpoint"] in named and named <= {expected[key] for key in ("checkpoint", "run", "visit")}
+                      and snapshots == {str(artifact)},
+                      "decision_relay", "Parent presentation or native snapshot identifies a different checkpoint.")
+    if value.get("event_id") not in run.get("decisions", {}):
+        native = harness.read().get("presentation", {})
+        _require_decision(harness.presentation_valid(run) and native.get("outcome") in {"linked", "verified"}
+                          and native.get("artifact") == str(artifact) and native.get("checkpoint") == checkpoint
+                          and native.get("digest") == hashlib.sha256(html).hexdigest()
+                          and native.get("model_digest") == hashlib.sha256(model_raw).hexdigest(),
+                          "decision_relay", "Relay lacks the target's current native checkpoint presentation.")
+    return deepcopy(relay)
+
+
 def inventory(workspace: Path) -> dict[str, str]:
     """Bounded source audit, including additions/deletions and symlink identity."""
     result: dict[str, str] = {}
@@ -194,7 +446,9 @@ def workflow_options(arguments: list[str]) -> tuple[str, dict[str, str]]:
     return action, values
 
 
-def verify_workflow(workspace: Path, state: dict[str, Any]) -> dict[str, Any] | None:
+def verify_workflow(workspace: Path, state: dict[str, Any], *,
+                    tasks: list[dict[str, Any]] | None = None,
+                    build_paths: list[str] | None = None) -> dict[str, Any] | None:
     """Validate optional pinned provenance at use, never when loading diagnostics."""
     scope = state.get("scope", {})
     if "workflow_binding" not in scope:
@@ -235,8 +489,23 @@ def verify_workflow(workspace: Path, state: dict[str, Any]) -> dict[str, Any] | 
                   "state_mismatch", "Workflow state belongs to another workspace.")
         if checked["definition"]["route"]["kind"] == "standalone":
             expected_tasks = checked["compilation"]["task_patterns"][checked["compilation"]["entry_phase"]]["tasks"]
-            w.require(evidence.task_definitions(evidence.context_tasks(state)) == evidence.task_definitions(expected_tasks),
+            w.require(evidence.task_definitions(evidence.context_tasks(state) if tasks is None else tasks)
+                      == evidence.task_definitions(expected_tasks),
                       "binding_mismatch", "Current standalone tasks differ from the pinned workflow.")
+        else:
+            if plan:
+                planned_tasks = plan["packet"]["output"].get("task_dag")
+                w.require(isinstance(planned_tasks, list) and planned_tasks, "binding_mismatch",
+                          "Accepted Plan must retain compiled native obligations in its task DAG.")
+                evidence.native_refinement(checked["compilation"], planned_tasks, "plan",
+                                           build_paths=mutable, root_id=state["root"])
+            rows = evidence.context_tasks(state) if tasks is None else tasks
+            phase = evidence.context_task_phase(state) if tasks is None else w.current(state)["phase"]
+            evidence.native_refinement(checked["compilation"], rows, phase,
+                                       build_paths=mutable if plan else build_paths, root_id=state["root"])
+            if plan and w.current(state)["phase"] == "build":
+                w.require(evidence.task_definitions(rows) == evidence.task_definitions(planned_tasks),
+                          "binding_mismatch", "Build task definitions differ from the accepted Plan.")
         return checked
     except blueprint.BlueprintError as exc:
         raise w.Refusal(exc.code, str(exc) + " " + exc.remedy) from None
@@ -441,17 +710,21 @@ class LocalWorkflow:
             value = json.loads(reference)
         except ValueError:
             raise w.Refusal("invalid_evidence", "Supply an observed decision JSON envelope, not an actor flag.") from None
-        w.require(isinstance(value, dict) and value.get("schema") == "taskplane.observed-decision/v1",
+        w.require(isinstance(value, dict) and isinstance(value.get("schema"), str)
+                  and value.get("schema") in {"taskplane.observed-decision/v1", "taskplane.observed-decision/v2"},
                   "invalid_evidence", "Observed decision schema is missing.")
+        relayed = value["schema"] == "taskplane.observed-decision/v2"
+        if relayed:
+            value = _relay_json(reference)
         source = value.get("source")
-        _require_decision(isinstance(source, dict) and source.get("kind") in {"conversation", "native_prompt"}
-                  and source.get("conversation") == self.root and source.get("actor") == "user"
+        _require_decision(isinstance(source, dict) and source.get("kind") in ("conversation", "native_prompt")
+                  and (relayed or source.get("conversation") == self.root) and source.get("actor") == "user"
                   and source.get("automatic") is False and isinstance(source.get("reference"), str)
                   and 0 < len(source["reference"]) <= 512, "decision_provenance", "Human response provenance is incomplete.")
         event_id, excerpt, recorder = value.get("event_id"), value.get("excerpt"), value.get("recorder")
         _require_decision(isinstance(event_id, str) and 0 < len(event_id) <= 512
                   and isinstance(excerpt, str) and 0 < len(excerpt) <= 4096
-                  and recorder in {"root_orchestrator", "native_prompt_hook"},
+                  and recorder in ("root_orchestrator", "native_prompt_hook"),
                   "decision_provenance", "Preserve the complete bounded human excerpt, event reference and recorder.")
         interpreted = choice(excerpt)
         _require_decision(interpreted is not None and value.get("choice") == interpreted,
@@ -475,6 +748,7 @@ class LocalWorkflow:
         db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
         run = db.get("runs", {}).get(supplied.get("run"), {})
         stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
+        relay = verify_decision_relay(value, expected, run) if relayed else None
         legacy_replay = event_id in prior and not prior[event_id].get("provenance", {}).get("recorded_at")
         if not legacy_replay:
             _require_decision(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
@@ -505,6 +779,8 @@ class LocalWorkflow:
                     "checkpoint_explicit": value.get("checkpoint_explicit", False)}}
         if not legacy_replay:
             result["provenance"].update(recorded_at=recorded_at, chronology="verified/v1")
+        if relayed:
+            result["provenance"].update(schema=value["schema"], relay=relay)
         if event_id in prior:
             w.require(result == prior[event_id], "stale_checkpoint", "Conflicting native event replay.")
         return result

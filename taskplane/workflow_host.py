@@ -206,6 +206,12 @@ class LocalAdapter(workflow_local.LocalWorkflow, HostAdapter):
     def __init__(self, host: str):
         self.name = host
 
+    def can_seal(self, state: dict[str, Any]) -> bool:
+        from . import worker_runtime as workers
+        # Direct continuation/diagnostic callers stay read-only. Mutation owners
+        # separately persist refreshed evidence before relying on quiescence.
+        return super().can_seal(state) and workers.launch_denials_verified(state)
+
 
 def installed_adapter(host: str, profile: str = "native_workflow") -> HostAdapter:
     w.require(host in {"codex", "claude"} and profile in {"native_workflow", "protected_host"},
@@ -397,6 +403,7 @@ class Controller:
             w.require(w.current(state)['decision'] in {'not_requested', 'changes_requested', 'rejected'}
                       and not state.get('finished') and not state.get('retired'),
                       'approval_required', 'Maintenance cannot amend a sealed or inactive phase.')
+            self._refresh_denials_locked(db, state)
             w.require(workers.joined(state)
                       and not any(h['state'] == 'running' for h in state.get('observed_handles', {}).values()),
                       'scope_violation', 'Join or recover live workers and commands before reconciling maintenance.')
@@ -516,6 +523,7 @@ class Controller:
                     return self._started_result(active)
                 w.require(db["active"] == replace_run and previous["revision"] == revision,
                           "stale_checkpoint", "The run or revision selected for replacement changed.")
+                self._refresh_denials_locked(db, previous)
                 w.require(self.adapter.can_seal(previous), "scope_violation",
                           "Live tool processes must stop before replacing a run.")
                 replaced = deepcopy(previous)
@@ -566,6 +574,143 @@ class Controller:
                 # the committed result so callers can close the old interval.
                 result["start_observation_errors"] = ["Run started; harness binding observation unavailable."]
         return result
+
+    def _refresh_denials_locked(self, db: dict[str, Any], state: dict[str, Any]) -> None:
+        from . import worker_runtime as workers
+        if self.adapter.profile != 'native_workflow' or not any(
+                workers.is_launch_denial(row) for row in state.get('workers', {}).values()):
+            return
+        before = deepcopy(state)
+        workers.refresh_launch_denials(state)
+        if state != before:
+            # Persist uncertainty and sticky contradictions even if the caller
+            # subsequently refuses scheduling, ownership release or sealing.
+            self._write(self._path(), db)
+
+    def can_seal(self, run: str) -> bool:
+        """Mutable observation boundary used by Stop; no phase authority granted."""
+        target = self._path()
+        with primitives.file_lock(str(target)):
+            db = self._read(target)
+            w.require(db['active'] == run, 'state_unavailable', 'Quiescence requires the active run.')
+            state = db['runs'][run]
+            self._refresh_denials_locked(db, state)
+            return self.adapter.can_seal(state)
+
+    def _recover_launch_denied(self, db: dict[str, Any], state: dict[str, Any], grant: str,
+                               request: dict[str, Any]) -> dict[str, Any]:
+        from . import claude_worker_observations as claude, worker_runtime as workers
+        from .context import Store, digest
+        from .context_handoff import binding
+        row = workers.records(state).get(grant)
+        w.require(self.adapter.name == 'claude' and row and row.get('host') == 'claude',
+                  'scope_violation', 'Launch-denial recovery requires the exact Claude attempt.')
+        assert row is not None
+        w.require(set(request) == {'request_reference', 'call_id', 'expected_call_sha256', 'expected_result_sha256'}
+                  and isinstance(request.get('request_reference'), str)
+                  and 0 < len(request['request_reference'].strip()) <= 512
+                  and request.get('call_id') == row.get('call_id') and bool(row.get('call_id'))
+                  and all(isinstance(request.get(key), str) and re.fullmatch(r'[0-9a-f]{64}', request[key])
+                          for key in ('expected_call_sha256', 'expected_result_sha256')),
+                  'invalid_evidence', 'Recovery requires the original call, raw span hashes and actual request reference.')
+        w.require(row.get('binding') == binding(state) and row.get('workspace') == str(self.workspace)
+                  and row.get('task_digest') == digest(workers.task(state, row['task_id']))
+                  and row.get('workspace_contract') == state.get('workspace_contract'),
+                  'stale_checkpoint', 'Recovery attempt binding or frozen task changed.')
+        w.require(not any(handle['state'] == 'running' for handle in state.get('observed_handles', {}).values()),
+                  'scope_violation', 'Known live commands prevent launch-denial recovery.')
+        store = Store(self.workspace)
+        frozen = store.resolve(row['snapshot'])
+        w.require(frozen.get('binding') == row['binding'] and frozen.get('task') == row['task_id']
+                  and row.get('input_manifest') == evidence.manifest(self.workspace, list(row['input_manifest']))
+                  and row.get('dependency_results') == workers.dependency_results(state,
+                      workers.task(state, row['task_id'])['dependencies']),
+                  'stale_checkpoint', 'Original frozen worker inputs changed.')
+        admissions = [admission for admission in db.get('admissions', {}).values()
+                      if admission.get('run') == state['run'] and admission.get('call_id') == row['call_id']]
+        w.require(len(admissions) == 1, 'invalid_evidence', 'Original launch admission is missing or ambiguous.')
+        admission = admissions[0]
+        w.require(all(admission.get(key) == value for key, value in {
+            'root': self.root, 'principal': self.root, 'workspace': str(self.workspace), 'host': 'claude',
+            'binding': row['binding'], 'input_digest': row.get('dispatch_digest'), 'authority': 'phase_grant',
+            'automatic': True}.items()) and admission.get('tool') in {'Agent', 'Task'}
+            and row.get('transcript_source') == state.get('claude_transcript_source'),
+            'invalid_evidence', 'Original admitted launch differs from its frozen binding.')
+        replay = row.get('denial_recovery')
+        if replay:
+            w.require(replay['request'] == request, 'invalid_evidence', 'Conflicting denial recovery replay.')
+            self._refresh_denials_locked(db, state)
+            w.require(row['state'] == 'failed' and not row.get('identity_conflict')
+                      and row.get('denial_freshness', {}).get('status') == 'launch_denied',
+                      'invalid_evidence', 'Recovered denial no longer verifies.')
+            return deepcopy(row)
+        w.require(row['state'] == 'unknown' and row.get('identity_conflict') is True
+                  and not row.get('revoked_at') and not row.get('ended_at') and not row.get('terminal_status')
+                  and not row.get('identity_observation') and not workers.denial_has_work(state, row),
+                  'scope_violation', 'Recovery requires an unbound legacy denial with no child or work evidence.')
+        history = row.get('reconciliation_events', {})
+        w.require(isinstance(history, dict) and 0 < len(history) < 128 and not row.get('reconciliation_overflow')
+                  and all(item.get('kind') == 'identity_observation'
+                          and item.get('value', {}).get('status') in {'conflict', 'not_yet_available', 'unsupported'}
+                          and (item['value']['status'] != 'conflict'
+                               or item['value'].get('reason') == claude.LEGACY_LAUNCH_CONFLICT)
+                          for item in history.values())
+                  and any(item['value']['status'] == 'conflict' for item in history.values()),
+                  'invalid_evidence', 'Legacy history is ambiguous or contains an independent contradiction.')
+        cursor = state.get('claude_transcript_cursor')
+        w.require(isinstance(cursor, dict) and claude._valid_seal(cursor, 'taskplane.claude-transcript-cursor/v1')
+                  and not cursor.get('conflict'), 'invalid_evidence', 'Original legacy cursor is missing or conflicted.')
+        assert isinstance(cursor, dict)
+        entry_key = digest(claude._binding(self.root, row))
+        progress = row.get('denial_recovery_progress')
+        if progress:
+            w.require(progress['request'] == request, 'invalid_evidence', 'Conflicting private recovery request.')
+            original = store.resolve(progress['before_ref'])
+            changing = {'denial_recovery_progress', 'identity_freshness', 'reconciliation_events'}
+            w.require(original['cursor']['entries'].get(entry_key) == cursor['entries'].get(entry_key)
+                      and original['cursor']['source_sha256'] == cursor['source_sha256']
+                      and original['admission'] == admission
+                      and {key: value for key, value in original['row'].items() if key not in changing}
+                          == {key: value for key, value in row.items() if key not in changing},
+                      'invalid_evidence', 'Legacy recovery inputs changed while scanning.')
+        else:
+            progress = {'request': deepcopy(request), 'before_ref': store.put('claude-denial-recovery-before',
+                {'row': deepcopy(row), 'cursor': deepcopy(cursor), 'admission': deepcopy(admission)})}
+        answer = claude.reobserve_legacy_denial(self.root, row, source=state['claude_transcript_source'],
+            cursor=progress.get('cursor', cursor), expected_call_sha256=request['expected_call_sha256'],
+            expected_result_sha256=request['expected_result_sha256'])
+        if answer['status'] != 'launch_denied':
+            if answer['status'] == 'not_yet_available':
+                row['denial_recovery_progress'] = {**progress, 'cursor': answer['cursor']}
+                self._write(self._path(), db)
+            raise w.Refusal('invalid_evidence', 'Legacy launch denial did not verify: ' + answer['reason'])
+        try:
+            admitted = datetime.fromisoformat(admission['admitted_at'].replace('Z', '+00:00'))
+            prepared = datetime.fromisoformat(row['prepared_at'].replace('Z', '+00:00'))
+            denied = datetime.fromisoformat(answer['denied_at'].replace('Z', '+00:00'))
+            valid_time = prepared <= admitted <= denied
+        except (KeyError, TypeError, ValueError):
+            valid_time = False
+        w.require(valid_time, 'invalid_evidence', 'Original admission timestamp disagrees with native denial.')
+        candidate = deepcopy(row)
+        candidate.pop('denial_recovery_progress', None)
+        candidate['identity_conflict'] = False
+        candidate['state'] = 'launch_pending'
+        w.require(workers.record_launch_denial(state, candidate, answer),
+                  'invalid_evidence', 'Reobserved denial does not satisfy the runtime failure contract.')
+        candidate['denial_recovery'] = {'request': deepcopy(request), 'before_ref': progress['before_ref'],
+            'proof_ref': candidate['denial_proof_ref'], 'recovered_at': workers.now(), 'authority': 'none'}
+        workers._audit(candidate, 'legacy_launch_denial_recovered', candidate['denial_recovery'])
+        state['workers'][grant] = candidate
+        committed = deepcopy(answer['cursor'])
+        for key, entry in cursor['entries'].items():
+            if key != entry_key and committed['entries'].get(key) != entry:
+                # Preserve observations made by intervening hooks. Registering
+                # additional candidates needs a full scan on their next read.
+                committed['entries'][key] = deepcopy(entry)
+                committed['offset'] = 0
+        state['claude_transcript_cursor'] = claude._sealed(committed)
+        return deepcopy(candidate)
 
     def report(self, run: str | None = None, *, diagnostics: bool = True) -> dict[str, Any]:
         """Read current authority; hooks omit expensive presentation-only diagnostics.
@@ -623,6 +768,7 @@ class Controller:
             w.require(db["active"] == run, "state_unavailable", "Prevalidation needs the active run.")
             state = db["runs"][run]
             w.require(state["revision"] == revision, "stale_checkpoint", "Expected state revision changed.")
+            self._refresh_denials_locked(db, state)
             drift = evidence.changed(self.workspace, state, skip_current=True)
             w.require(not drift, "stale_checkpoint", str(drift))
             self.adapter.before_action(state, "submit")
@@ -702,6 +848,7 @@ class Controller:
             db = self._read(target)
             w.require(db["active"] == run, "stale_checkpoint", "Task publication requires the active run.")
             state = db["runs"][run]
+            self._refresh_denials_locked(db, state)
             frozen = evidence.freeze_tasks(self.workspace, state, evidence.object_file(self.workspace, tasks))
             prior = state.get("task_context", {})
             if (prior.get("visit") == w.current(state)["id"] and prior.get("tasks") == frozen
@@ -748,10 +895,11 @@ class Controller:
             w.require(self.principal == self.root, "scope_violation", "Workers cannot schedule or accept task results.")
             if operation == "status":
                 return workers.summary(state, self.workspace)
-            w.require(revision == state["revision"], "stale_checkpoint", "Expected worker revision changed.")
+            w.require(type(revision) is int and revision == state["revision"], "stale_checkpoint", "Expected worker revision changed.")
             w.require(w.current(state)["decision"] in {"not_requested", "changes_requested", "rejected"}
                       and not state.get("finished") and not state.get("retired"), "approval_required", "Current phase is sealed or inactive.")
             w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Accepted evidence changed.")
+            self._refresh_denials_locked(db, state)
             # Verified revocation accepts no source changes. Drift must continue
             # to block new work, but cannot prevent retiring a missed launch.
             if operation != 'recover-unbound':
@@ -760,6 +908,16 @@ class Controller:
             if operation == "prepare":
                 row = workers.prepare(self.workspace, state, task, request, host=self.adapter.name)
                 result = {"grant": deepcopy(row), "message": workers.dispatch_message(state, row)}
+            elif operation == 'recover-launch-denied':
+                replay = bool(workers.records(state).get(grant, {}).get('denial_recovery'))
+                try:
+                    result = self._recover_launch_denied(db, state, grant, request)
+                except w.Refusal:
+                    raise
+                except (KeyError, TypeError, ValueError, IndexError):
+                    raise w.Refusal('invalid_evidence', 'Malformed retained launch-denial recovery evidence.') from None
+                if replay:
+                    return result
             elif operation == 'capacity':
                 limit = workers.capacity(request.get('capacity'), host=self.adapter.name)
                 state['worker_capacity'] = {**request['capacity'], 'effective_limit': limit,
@@ -837,6 +995,8 @@ class Controller:
             w.require(db["active"] == run or action == "finish" and run in db["runs"],
                       "state_unavailable", "Mutation must address the bound active run.")
             s = db["runs"][run]
+            if action != 'decide':
+                self._refresh_denials_locked(db, s)
             if action == "retire":
                 w.require(self.adapter.profile == "native_workflow", "unsupported_authority",
                           "Protected run retirement requires its trusted owner.")
@@ -897,6 +1057,8 @@ class Controller:
                 self._write(target, db)
                 raise w.Refusal("stale_checkpoint", drift[1])
             if not negative:
+                if action == 'decide':
+                    self._refresh_denials_locked(db, s)
                 self.adapter.before_action(s, action)
             if replay:
                 return w.decide(s, verified)
@@ -1150,6 +1312,7 @@ class Controller:
             w.require(not db["runs"].get(run, {}).get("retired"), "scope_violation", "The retired run has no active grants.")
             w.require(db["active"] == run and db["runs"][run]["revision"] == state["revision"],
                       "stale_checkpoint", "Tool grant changed during admission.")
+            self._refresh_denials_locked(db, db['runs'][run])
             candidate = deepcopy(db["runs"][run])
             state.update(candidate)
             self._guard(event, state)

@@ -125,6 +125,71 @@ def test_compile_reuse_verify_and_no_clobber(source):
     assert (target / "definition.json").read_bytes() == before["definition.json"]
 
 
+def test_phase_evidence_has_separate_invocation_namespace_and_preserves_declared_outputs(source):
+    first = bc.compile_package(source, definition(), inputs(), ".taskplane/bootstrap/workflow-first")
+    second = bc.build_package(source, definition(), inputs(), ".taskplane/bootstrap/workflow-second")
+    files = first['compilation']['phase_files']['engineering']
+    assert files == {name: '.taskplane/runtime-evidence/workflow-first/engineering/' + filename
+                     for name, filename in [('packet', 'packet.json'), ('tasks', 'tasks.json'),
+                                            ('report', 'report.md'), ('evidence', 'evidence.json')]}
+    assert set(files.values()).isdisjoint(second['compilation']['phase_files']['engineering'].values())
+    assert first['compilation']['task_outputs'] == second['compilation']['task_outputs'] == {
+        'security/findings': ['reports/first/security.md'], 'synthesis/report': ['reports/first/report.md']}
+    assert not (source / '.taskplane/runtime-evidence').exists()
+    assert bc.preview(source, definition(), inputs(), out=first['package_path'])['phase_files'] == first['compilation']['phase_files']
+    assert bc.compile_package(source, definition(), inputs(), first['package_path'])['status'] == 'unchanged'
+    implicit = bc.build_package(source, definition(), inputs())
+    other = bc.build_package(source, definition(), inputs(output_prefix='reports/other'))
+    assert implicit['compilation']['phase_files'] != other['compilation']['phase_files']
+
+
+@pytest.mark.parametrize('name', ['packet', 'tasks', 'report', 'evidence'])
+def test_existing_phase_evidence_refuses_recompilation_and_fresh_start_without_clobber(source, name):
+    package = bc.compile_package(source, definition(), inputs())
+    path = source / package['compilation']['phase_files']['engineering'][name]
+    path.parent.mkdir(parents=True)
+    path.write_text('Existing invocation evidence\n')
+    before = {p.relative_to(source): p.read_bytes() for p in source.rglob('*') if p.is_file()}
+    check_error('output_exists', lambda: bc.compile_package(source, definition(), inputs()))
+    check_error('output_exists', lambda: bc.verify_package(source, package['workflow_binding'], for_start=True))
+    assert bc.verify_package(source, package['workflow_binding'])['status'] == 'valid'
+    assert {p.relative_to(source): p.read_bytes() for p in source.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('relative', ['engineering/packet.json', 'engineering', 'engineering/packet.json/child'])
+def test_declared_output_cannot_collide_with_internal_phase_evidence(source, relative):
+    data = definition()
+    data['tasks'][0]['outputs'][0]['relative_path'] = relative
+    # User paths cannot enter .taskplane at all, so the typed binder refuses
+    # even before the compiler's exact/ancestor output collision check.
+    check_error('invalid_path', lambda: bc.compile_package(source, data,
+        inputs(output_prefix='.taskplane/runtime-evidence/workflow-explicit'),
+        '.taskplane/bootstrap/workflow-explicit'))
+    assert not (source / '.taskplane').exists()
+
+
+@pytest.mark.parametrize('kind', ['symlink', 'file'])
+def test_internal_phase_evidence_parent_must_be_a_safe_directory(source, kind):
+    parent = source / '.taskplane/runtime-evidence'
+    parent.parent.mkdir()
+    if kind == 'symlink':
+        parent.symlink_to(source, target_is_directory=True)
+    else:
+        parent.write_text('Existing regular file\n')
+    check_error('invalid_harness_contract' if kind == 'symlink' else 'invalid_path',
+                lambda: bc.compile_package(source, definition(), inputs()))
+    assert not (source / '.taskplane/bootstrap').exists()
+
+
+def test_compilation_still_requires_a_declared_output_directory(source):
+    data = delivery_definition()
+    data['tasks'] = [data['tasks'][1]]
+    data['tasks'][0]['depends_on'] = []
+    del data['inputs']['output_prefix']
+    check_error('missing_output_prefix', lambda: bc.build_package(source, data,
+        {'source_files': ['main.py'], 'build_files': ['main.py']}))
+
+
 def test_all_declared_dependency_test_inventory_is_pinned(source):
     data = definition()
     for name in ("dependency_files", "test_files"):
@@ -403,30 +468,30 @@ def test_delivery_plan_can_use_reserved_history_and_retry_logs_but_not_widen(sou
     data = delivery_definition()
     history = "reports/first/build/history.json"
     logs = ["reports/first/build/check-1.log", "reports/first/build/check-2.log"]
-    package = bc.build_package(source, data, inputs(source_files=["main.py", "test_main.py"],
-                                                  build_files=["main.py", history, *logs]))
+    package = bc.compile_package(source, data, inputs(source_files=["main.py", "test_main.py"],
+                                                    build_files=["main.py", history, *logs]))
     state = w.new_state(str(source), "root", "fixture", package["scope"])
     state["index"] = 2
     rows = deepcopy(package["compilation"]["task_patterns"]["build"]["tasks"])
     checkpoint = next(row for row in rows if row["id"] == "workflow-build-checkpoint")
     implementation = next(row for row in rows if row["id"] == "implementation")
-    implementation["paths"] = ["main.py"]
-    checkpoint["paths"] += [history, *logs]
+    # Reserved native outputs remain with their original producer, including logs.
     checkpoint["read_inputs"] += ["test_main.py"]
     phase = package["compilation"]["phase_files"]["build"]
     planned = {"write_scope": sorted(package["scope"]["paths"]["build"]),
-               "build_outputs": [{"kind": kind, "path": path, "task": checkpoint["id"]}
+               "build_outputs": [{"kind": kind, "path": path,
+                                  "task": implementation["id"] if kind == "verification_history" else checkpoint["id"]}
                                   for kind, path in [("packet", phase["packet"]), ("report", phase["report"]),
                                                      ("verification_history", history)]],
                "verification_strategy": {"schema": ev.VERIFICATION_STRATEGY, "checks": [{
-                   "id": "check", "name": "Actual project verification", "task": checkpoint["id"],
+                   "id": "check", "name": "Actual project verification", "task": implementation["id"],
                    "kind": "unit", "environment": "fixture", "required": True,
                    "criteria": ["CR1"], "command": ["python3", "test_main.py"],
                    "source_inputs": ["main.py"], "test_inputs": ["test_main.py"], "evidence_outputs": logs}]},
                "integration_order": [row["id"] for row in rows]}
     assert ev.plan_preflight(source, state, planned, rows)["status"] == "validated"
     planned["write_scope"].append("unreserved.py")
-    with pytest.raises(w.Refusal, match="authorized Build scope"):
+    with pytest.raises(w.Refusal, match="outer Build scope"):
         ev.plan_preflight(source, state, planned, rows)
 
 
@@ -467,3 +532,15 @@ def test_git_replace_does_not_change_bound_commit_contents(source, newline):
     git(source, "replace", first, second)
     # The binder reads immutable objects, not repository-local replacement views.
     assert bc._blob(source, first, "main.py") == original
+
+
+@pytest.mark.parametrize('field,value', [('review_lens', 'code-quality'), ('capability', 'taskplane.phase.synthesis'),
+                                         ('criteria', []), ('read_inputs', []), ('paths', [])])
+def test_delivery_review_native_anchors_survive_later_phase_refinement(source, field, value):
+    from taskplane import workflow_evidence as evidence
+    package = bc.build_package(source, delivery_definition(), inputs(build_files=['main.py']))
+    rows = deepcopy(package['compilation']['task_patterns']['engineering']['tasks'])
+    evidence.native_refinement(package['compilation'], rows, 'engineering')
+    next(row for row in rows if row['id'] == 'security')[field] = value
+    with pytest.raises(w.Refusal, match='native obligation'):
+        evidence.native_refinement(package['compilation'], rows, 'engineering')

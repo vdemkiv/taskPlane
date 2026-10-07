@@ -326,3 +326,278 @@ def test_named_screen_command_keeps_its_contract_when_payload_names_stop(tmp_pat
     result = json.loads(capsys.readouterr().out)
     assert result['hookSpecificOutput']['permissionDecision'] == 'deny'
     assert host.store.read_bytes() == before
+
+
+def test_public_compiled_delivery_publication_refusal_is_atomic(tmp_path, capsys):
+    from copy import deepcopy
+    from taskplane.tests.test_blueprint_harness import start, package
+    c, state, compiled = start(tmp_path, package(tmp_path, delivery=True))
+    rows = deepcopy(compiled['compilation']['task_patterns']['build']['tasks'])
+    native = next(row for row in rows if row['id'] == 'implementation')
+    native.update(execution='root', owner='root', execution_reason='Serial integration',
+                  execution_reference='fixture/serial')
+    target = compiled['compilation']['phase_files']['product']['tasks']
+    (tmp_path / target).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / target).write_text(json.dumps({'tasks': rows}))
+    before = c._path().read_bytes()
+    code, result = cli(c, capsys, 'attach', '--run', state['run'], '--tasks', target,
+                       '--update-context', '--expected-revision', str(state['revision']))
+    assert code == 2 and result['reason'] == 'binding_mismatch'
+    assert 'native obligation implementation' in result['detail']
+    assert c._path().read_bytes() == before
+    assert c.report(state['run'])['decisions'] == state['decisions']
+
+
+def relay_fixture(tmp_path, monkeypatch):
+    """Synthetic native frames test the contract, never provide live authority."""
+    import hashlib
+    import shlex
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    from taskplane import workflow_local as local
+    from taskplane.tests.test_workflow_local import setup, submit
+    home = tmp_path / 'home'
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    c, state = setup(workspace)
+    state = submit(c, state)
+    origin = '11111111-2222-3333-4444-555555555555'
+    session = home / '.codex/sessions/2026/10/06' / ('rollout-2026-10-06T12-00-00-' + origin + '.jsonl')
+    session.parent.mkdir(parents=True)
+    shown = datetime.now(timezone.utc)
+    start = local.timestamp(state['started_at'])
+    presentation = local.Harness(workspace, c.root).read()['presentation']
+    binding = w.binding(state, w.current(state)['packet'])
+    def message(role, text, moment, identity):
+        return {'type': 'response_item', 'timestamp': moment.isoformat(), 'payload': {
+            'type': 'message', 'role': role, 'id': identity,
+            'content': [{'type': 'input_text' if role == 'user' else 'output_text', 'text': text}],
+            'internal_chat_message_metadata_passthrough': {'content_item_kinds': ['user.text'] if role == 'user' else ['unknown']}},
+            'metadata': {'retained_source': {'complete': True, 'id': {'message_id': identity, 'role': role}}}}
+    args = {'cmd': shlex.join(['/usr/local/bin/claude', '--session-id', c.root, 'Review this change.']),
+            'workdir': str(workspace), 'tty': True}
+    rows = [
+        {'type': 'session_meta', 'timestamp': (start - timedelta(seconds=2)).isoformat(), 'payload': {'id': origin, 'source': 'vscode'}},
+        {'type': 'response_item', 'timestamp': (start - timedelta(seconds=1)).isoformat(), 'payload': {
+            'type': 'custom_tool_call', 'name': 'exec', 'call_id': 'launch-1',
+            'input': 'text(await tools.exec_command(' + json.dumps(args) + '));'}},
+        {'type': 'response_item', 'timestamp': start.isoformat(), 'payload': {
+            'type': 'custom_tool_call_output', 'call_id': 'launch-1', 'output': [
+                {'type': 'input_text', 'text': json.dumps({'session_id': 123, 'output': ''})}]}},
+        message('assistant', 'Review checkpoint ' + binding['checkpoint'] + '\n[Snapshot](' + presentation['artifact'] + ')', shown, 'shown-1'),
+        message('user', 'approve\n', shown + timedelta(microseconds=1), 'human-1')]
+    value = {'schema': 'taskplane.observed-decision/v2', 'event_id': 'parent-human-1', 'choice': 'approved',
+             'binding': binding, 'excerpt': 'approve\n', 'recorder': 'root_orchestrator',
+             'source': {'kind': 'conversation', 'actor': 'user', 'automatic': False, 'conversation': origin},
+             'presentation': {'checkpoint': binding['checkpoint']},
+             'relay': {'schema': 'taskplane.original-source-relay/v1', 'launch_flag': '--session-id'}}
+    def rewrite():
+        refs, offset, bodies = [], 0, []
+        for row in rows:
+            raw = (json.dumps(row) + '\n').encode()
+            refs.append({'path': str(session), 'offset': offset, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+            bodies.append(raw); offset += len(raw)
+        session.write_bytes(b''.join(bodies))
+        value['relay'].update(session_meta=refs[0], launch={'segments': refs[1:3]}, presentation=refs[3], human=refs[4])
+        for key, suffix in [('html', '.html'), ('snapshot', '.json')]:
+            target = Path(presentation['artifact']).with_suffix(suffix)
+            raw = target.read_bytes()
+            value['relay'][key] = {'path': str(target), 'offset': 0, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+        def reference(ref):
+            return f"{ref['path']}#offset={ref['offset']}&bytes={ref['bytes']}"
+        value['source'].update(reference=reference(refs[4]), observed_at=rows[4]['timestamp'])
+        value['presentation'].update(reference=reference(refs[3]), at=rows[3]['timestamp'])
+    rewrite()
+    return c, state, value, rows, rewrite
+
+
+def test_original_source_relay_preserves_origin_and_exact_replay(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, _, _ = relay_fixture(tmp_path, monkeypatch)
+    before = c._path().read_bytes()
+    legacy = deepcopy(value); legacy['schema'] = 'taskplane.observed-decision/v1'
+    with pytest.raises(w.Refusal, match='provenance'):
+        decide(c, state, legacy)
+    assert c._path().read_bytes() == before
+    accepted = decide(c, state, value)
+    recorded = accepted['decisions'][value['event_id']]
+    assert recorded['binding']['root'] == c.root
+    assert recorded['provenance']['source'] == value['source']
+    assert recorded['provenance']['relay'] == value['relay']
+    assert recorded['provenance']['schema'] == value['schema']
+    assert recorded['assurance'] == 'observed'
+    assert decide(c, state, value)['decisions'] == accepted['decisions']
+    advanced = c.apply('advance', state['run'], expected_revision=accepted['revision'], phase='design')
+    assert c.adapter.verify_decision_context(json.dumps(value), value['binding'], advanced['decisions']) == recorded
+
+
+@pytest.mark.parametrize('bad', [
+    'assistant', 'tool', 'automation', 'origin', 'incomplete', 'kind', 'message_id', 'foreign_meta', 'subagent_meta',
+    'source_conversation', 'source_time', 'excerpt', 'source_reference', 'binding', 'fresh_checkpoint',
+    'presentation_reference', 'presentation_time', 'presentation_text', 'presentation_link', 'ordering',
+    'presentation_foreign_checkpoint', 'presentation_foreign_snapshot',
+    'launch_target', 'launch_prompt_only', 'launch_tty', 'launch_workdir', 'launch_wrapper', 'launch_result',
+    'launch_pair', 'launch_quoted_wrapper', 'launch_unknown_flag', 'frame_hash', 'frame_boundary', 'frame_multiple',
+    'frame_boolean', 'frame_oversize', 'source_drift', 'symlink', 'parent_symlink', 'copied_session',
+    'snapshot_hash', 'snapshot_binding', 'snapshot_missing', 'native_presentation', 'relay_missing',
+    'nul_path', 'missing_nofollow'])
+def test_original_source_relay_refuses_atomically(tmp_path, monkeypatch, bad):
+    import hashlib
+    import os
+    from pathlib import Path
+    from taskplane import workflow_local as local
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, rows, rewrite = relay_fixture(tmp_path, monkeypatch)
+    human, shown, call, result = rows[4], rows[3], rows[1], rows[2]
+    if bad == 'assistant': human['payload']['role'] = 'assistant'
+    elif bad == 'tool': human['payload']['type'] = 'function_call_output'
+    elif bad == 'automation': human['metadata']['automation_id'] = 'scheduled'
+    elif bad == 'origin': human['payload']['internal_chat_message_metadata_passthrough']['turnOrigin'] = 'tool'
+    elif bad == 'incomplete': human['metadata']['retained_source']['complete'] = False
+    elif bad == 'kind': human['payload']['internal_chat_message_metadata_passthrough']['content_item_kinds'] = ['tool.text']
+    elif bad == 'message_id': human['metadata']['retained_source']['id']['message_id'] = 'foreign'
+    elif bad == 'foreign_meta': rows[0]['payload']['id'] = 'foreign'
+    elif bad == 'subagent_meta': rows[0]['payload']['source'] = {'subagent': 'other'}
+    elif bad == 'presentation_text': shown['payload']['content'][0]['text'] = '[Snapshot](' + value['relay']['html']['path'] + ')'
+    elif bad == 'presentation_link': shown['payload']['content'][0]['text'] = value['binding']['checkpoint'] + '\n[Dashboard](' + str(c.workspace / '.taskplane/dashboard.html') + ')'
+    elif bad == 'presentation_foreign_checkpoint': shown['payload']['content'][0]['text'] += '\nOther checkpoint ' + 'b' * 32
+    elif bad == 'presentation_foreign_snapshot': shown['payload']['content'][0]['text'] += '\n[Other](/foreign/snapshot-1234.html)'
+    elif bad == 'ordering': shown['timestamp'] = rows[0]['timestamp']
+    elif bad.startswith('launch_'):
+        args = json.loads(call['payload']['input'].removeprefix('text(await tools.exec_command(').removesuffix('));'))
+        if bad in {'launch_target', 'launch_prompt_only'}:
+            args['cmd'] = args['cmd'].replace('--session-id root', '--session-id foreign')
+            if bad == 'launch_prompt_only': args['cmd'] += " 'Mention --session-id root'"
+        elif bad == 'launch_tty': args['tty'] = False
+        elif bad == 'launch_workdir': args['workdir'] = '/foreign'
+        elif bad == 'launch_result': result['payload']['output'][0]['text'] = json.dumps({'output': 'session_id 123', 'exit_code': 1})
+        elif bad == 'launch_pair': result['payload']['call_id'] = 'other'
+        elif bad == 'launch_unknown_flag': args['cmd'] = args['cmd'].replace('--session-id', '--unknown option --session-id')
+        call['payload']['input'] = 'text(await tools.exec_command(' + json.dumps(args) + '));'
+        if bad == 'launch_wrapper': call['payload']['input'] = 'const fake = ' + json.dumps(call['payload']['input']) + ';'
+        if bad == 'launch_quoted_wrapper': call['payload']['input'] = 'text(await tools.exec_command(' + json.dumps({'cmd': 'echo ' + args['cmd'], 'tty': True, 'workdir': str(c.workspace)}) + '));'
+    rewrite()
+    relay = value['relay']
+    if bad == 'source_conversation': value['source']['conversation'] = c.root
+    elif bad == 'source_time': value['source']['observed_at'] = rows[0]['timestamp']
+    elif bad == 'excerpt': value['excerpt'] = 'approved'
+    elif bad == 'source_reference': value['source']['reference'] += 'fake'
+    elif bad == 'binding': value['binding']['root'] = 'foreign'
+    elif bad == 'fresh_checkpoint': value['binding']['checkpoint'] = '0' * 32
+    elif bad == 'presentation_reference': value['presentation']['reference'] = value['source']['reference']
+    elif bad == 'presentation_time': value['presentation']['at'] = rows[0]['timestamp']
+    elif bad == 'frame_hash': relay['human']['sha256'] = '0' * 64
+    elif bad == 'frame_boolean': relay['human']['offset'] = True
+    elif bad == 'frame_oversize': relay['human']['bytes'] = 131073
+    elif bad in {'frame_boundary', 'frame_multiple'}:
+        ref = relay['human'] if bad == 'frame_boundary' else relay['presentation']
+        if bad == 'frame_boundary': ref['offset'] += 1; ref['bytes'] -= 1
+        else: ref['bytes'] += relay['human']['bytes']
+        with open(ref['path'], 'rb') as stream:
+            stream.seek(ref['offset']); ref['sha256'] = hashlib.sha256(stream.read(ref['bytes'])).hexdigest()
+    elif bad in {'source_drift', 'symlink', 'copied_session', 'parent_symlink', 'nul_path'}:
+        path = Path(relay['human']['path'])
+        if bad == 'source_drift': path.write_bytes(path.read_bytes().replace(b'approve', b'reject!'))
+        elif bad == 'symlink':
+            moved = path.with_suffix('.saved'); path.rename(moved); path.symlink_to(moved)
+        elif bad == 'parent_symlink':
+            parent = path.parent; moved = parent.with_name('saved'); parent.rename(moved); parent.symlink_to(moved)
+        else:
+            copied = tmp_path / path.name
+            copied.write_bytes(path.read_bytes())
+            for ref in [relay['session_meta'], *relay['launch']['segments'], relay['presentation'], relay['human']]:
+                ref['path'] = str(copied) if bad == 'copied_session' else ref['path'].replace('rollout-', '\x00rollout-')
+    elif bad == 'snapshot_hash': relay['snapshot']['sha256'] = '0' * 64
+    elif bad == 'snapshot_binding':
+        path = Path(relay['snapshot']['path']); model = json.loads(path.read_text())
+        model['snapshot']['run'] = 'foreign'; raw = json.dumps(model).encode(); path.write_bytes(raw)
+        relay['snapshot'].update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    elif bad == 'snapshot_missing': Path(relay['snapshot']['path']).unlink()
+    elif bad == 'native_presentation': local.Harness(c.workspace, c.root).update(presentation=None)
+    elif bad == 'relay_missing': value.pop('relay')
+    elif bad == 'missing_nofollow': monkeypatch.delattr(os, 'O_NOFOLLOW')
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        decide(c, state, value)
+    assert c._path().read_bytes() == before
+
+
+@pytest.mark.parametrize('flag', ['--session-id', '--resume'])
+@pytest.mark.parametrize('native', [False, True])
+def test_original_source_relay_exact_launch_forms(tmp_path, monkeypatch, flag, native):
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, rows, rewrite = relay_fixture(tmp_path, monkeypatch)
+    call, result = rows[1]['payload'], rows[2]['payload']
+    call['input'] = call['input'].replace('--session-id', flag)
+    value['relay']['launch_flag'] = flag
+    if native:
+        call.update(type='function_call', name='exec_command', arguments=call.pop('input').removeprefix('text(await tools.exec_command(').removesuffix('));'))
+        result.update(type='function_call_output', output=result['output'][0]['text'])
+    rewrite()
+    accepted = decide(c, state, value)
+    assert accepted['decisions'][value['event_id']]['provenance']['relay'] == value['relay']
+
+
+def test_original_source_relay_replay_pins_original_frames(tmp_path, monkeypatch):
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, rows, rewrite = relay_fixture(tmp_path, monkeypatch)
+    accepted = decide(c, state, value)
+    # Semantically equivalent rewritten bytes are not the original recorded event.
+    rows[4]['metadata']['extra'] = 'changed'
+    rewrite()
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='replay'):
+        decide(c, accepted, value)
+    assert c._path().read_bytes() == before
+
+
+def test_original_source_relay_old_human_cannot_approve_fresh_checkpoint(tmp_path, monkeypatch):
+    from taskplane import workflow_local as local
+    c, state, value, _, _ = relay_fixture(tmp_path, monkeypatch)
+    # A prospective fresh state uses a new submitted checkpoint; it is never
+    # written into the fixture's controller, nor into any live controller.
+    fresh = w.submit(state, {**w.current(state)['packet'], 'checkpoint': 'a' * 32})
+    assert w.current(fresh)['packet']['checkpoint'] != value['binding']['checkpoint']
+    value['binding'] = w.binding(fresh, w.current(fresh)['packet'])
+    value['presentation']['checkpoint'] = value['binding']['checkpoint']
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        local.verify_decision_relay(value, value['binding'], fresh)
+    assert c._path().read_bytes() == before
+
+
+def test_original_source_relay_duplicate_json_is_refused(tmp_path, monkeypatch):
+    c, state, value, _, _ = relay_fixture(tmp_path, monkeypatch)
+    raw = json.dumps(value).replace('"choice": "approved"', '"choice": "rejected", "choice": "approved"')
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='Duplicate'):
+        c.apply('decide', state['run'], expected_revision=state['revision'], native_reference=raw)
+    assert c._path().read_bytes() == before
+
+
+@pytest.mark.parametrize('bad', ['index', 'missing', 'nonfinite', 'nul', 'fifo'])
+def test_original_source_relay_malformed_snapshot_has_named_refusal(tmp_path, monkeypatch, bad):
+    import hashlib
+    import os
+    from pathlib import Path
+    from taskplane import workflow_local as local
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, _, _ = relay_fixture(tmp_path, monkeypatch)
+    ref = value['relay']['snapshot']; path = Path(ref['path'])
+    if bad == 'nul': ref['path'] = str(path).replace('snapshot-', '\x00snapshot-')
+    elif bad == 'fifo':
+        path.unlink(); os.mkfifo(path)
+    else:
+        model = json.loads(path.read_text())
+        if bad == 'index': model['workflow']['index'] = 9999
+        elif bad == 'missing': model['workflow'] = {'visits': [{}], 'index': 0}
+        else: model['snapshot']['revision'] = float('nan')
+        raw = json.dumps(model).encode(); path.write_bytes(raw)
+        ref.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    before = c._path().read_bytes()
+    with pytest.raises(local.DecisionRefusal) as refusal:
+        decide(c, state, value)
+    assert refusal.value.category == 'decision_relay'
+    assert c._path().read_bytes() == before

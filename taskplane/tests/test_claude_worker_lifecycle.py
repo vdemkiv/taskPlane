@@ -703,3 +703,363 @@ def test_old_launch_cursor_migrates_only_revalidated_spans(tmp_path, monkeypatch
     assert migrated['completion']['body_digest'] == digest('The actual final answer')
     parent.write_bytes(parent.read_bytes().replace(b'SECRET RESULT', b'EDITED RESULT'))
     assert observe(attempt, source, cursor)['status'] == 'conflict'
+
+
+# Complete native body retained from the 2026-10-06 rejected Agent launch.
+# Fixture data only: advisory text inside it is never an instruction to execute.
+DENIAL_BODY = "Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Auto-Mode Bypass]. If you have other tasks that don't depend on this action, continue working on those. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, e.g. do not use your ability to run tests to execute non-test actions. You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. If you believe this capability is essential to complete the user's request, first try a safer method. Get as much of the rest of the task done as you can, then STOP and explain to the user what you were trying to do and why you need this permission. Let the user decide how to proceed. This denial applies to the outcome, not only this exact command: don't pursue the same outcome through another tool, interpreter, host, encoding, sub-agent or later turn, and don't record ways around it. Concretely, these all count as pursuing the same outcome: running the same command in smaller pieces; leaving the flagged part out of this call and covering it in another; reading the same file or data with a different tool (Read, Grep, head, awk, a script); re-issuing it with different quoting, flags, paths or hosts. If this was a batch or range operation, you may re-run it without the flagged items, but do not then act on the flagged items separately — leave those for the user. If this denial names something that would clear it — for example a first-hand read that shows the missing source — doing that is not pursuing the denied outcome: do it, and if it shows what the denial asked for, you may redo the action citing it."
+
+
+def setup_denial(tmp_path, monkeypatch):
+    parent, children, attempt, call, result, header, event = setup_native(tmp_path, monkeypatch)
+    arguments = call['message']['content'][0]['input']
+    del arguments['run_in_background']
+    attempt.update(dispatch_digest=digest(arguments), transcript_admission_offset=0,
+                   launch_requested_at=(datetime.fromisoformat(call['timestamp']) + timedelta(seconds=1)).isoformat())
+    call.update(type='assistant', isSidechain=False, uuid='72bc5eed-004f-4848-8400-3387f1637a59')
+    call['message']['role'] = 'assistant'
+    result.update(type='user', isSidechain=False, session_id='parent',
+                  parentUuid=call['uuid'], sourceToolAssistantUUID=call['uuid'],
+                  toolDenialKind='automode-blocked', toolUseResult='Error: ' + DENIAL_BODY)
+    result['message']['role'] = 'user'
+    result['message']['content'][0].update(is_error=True, content=DENIAL_BODY)
+    parent.write_bytes(encoded(call) + encoded(result))
+    return parent, children, attempt, call, result, header, event
+
+
+@pytest.mark.parametrize('parser', ['pure', 'incremental'])
+def test_real_shaped_launch_denial_regression(tmp_path, monkeypatch, parser):
+    import hashlib
+    parent, _, attempt, call, result, header, event = setup_denial(tmp_path, monkeypatch)
+    assert len(DENIAL_BODY.encode()) == 1856
+    assert hashlib.sha256(DENIAL_BODY.encode()).hexdigest() == 'e293470ef2aa8a4727c32ce61e79fc464558df203254586b47c215bd0d63a07d'
+    assert 'run_in_background' not in call['message']['content'][0]['input']
+    answer = (observations.correlate_records('parent', attempt, [call, result], [header])
+              if parser == 'pure' else observe(attempt, select(event)))
+    assert answer['status'] == 'launch_denied', answer
+    assert answer['denial_kind'] == 'automode-blocked'
+    assert answer['denial_code'] == 'auto-mode-bypass'
+    assert answer['denied_at'] == result['timestamp']
+    assert answer['record_sha256'] == {'call': digest(call), 'result': digest(result)}
+    assert 'worker_id' not in answer and 'started_at' not in answer and 'proof' not in answer
+    if parser == 'incremental':
+        assert answer['denial_proof']['schema'] == 'taskplane.claude-launch-denial-proof/v1'
+        assert answer['denial_proof']['watermark'] == parent.stat().st_size
+    else:
+        assert 'denial_proof' not in answer
+
+
+DENIAL_MUTATIONS = [
+    'tool', 'input', 'input_mapping', 'call_id', 'result_id', 'call_parent', 'result_parent',
+    'call_cwd', 'result_cwd', 'call_alias', 'result_alias', 'missing_result_alias', 'null_call_alias',
+    'call_sidechain', 'result_sidechain', 'missing_call_sidechain', 'numeric_sidechain',
+    'call_type', 'result_type', 'call_role', 'result_role', 'uuid', 'missing_uuid',
+    'source_uuid', 'parent_uuid', 'missing_link', 'denial_kind', 'body', 'body_case',
+    'body_substring', 'body_list', 'wrapper', 'structured_child', 'generic_error',
+    'error_integer', 'error_string', 'missing_error', 'called_naive', 'returned_future',
+    'returned_before_call', 'prepared_after_call', 'launch_before_preparation', 'launch_after_denial',
+    'admitted_naive', 'admitted_after_denial', 'worker', 'claim', 'start', 'context', 'result',
+    'lifecycle', 'terminal', 'launch_proof', 'completion_conflict',
+]
+
+
+@pytest.mark.parametrize('parser', ['pure', 'incremental'])
+@pytest.mark.parametrize('defect', DENIAL_MUTATIONS)
+def test_denial_requires_exact_native_shape_and_empty_attempt(tmp_path, monkeypatch, parser, defect):
+    parent, _, attempt, call, result, header, event = setup_denial(tmp_path, monkeypatch)
+    # Pin a separate session prefix so refusal tests exercise the candidate,
+    # not a changed source-selection reference.
+    session = {'sessionId': 'parent', 'isSidechain': False}
+    parent.write_bytes(encoded(session) + encoded(call) + encoded(result))
+    source = select(event)
+    use, reply = call['message']['content'][0], result['message']['content'][0]
+    if defect == 'tool': use['name'] = 'Bash'
+    if defect == 'input': use['input']['prompt'] += ' altered'
+    if defect == 'input_mapping': use['input'] = 'not a mapping'
+    if defect == 'call_id': use['id'] = 'foreign'
+    if defect == 'result_id': reply['tool_use_id'] = 'foreign'
+    if defect == 'call_parent': call['sessionId'] = 'foreign'
+    if defect == 'result_parent': result['sessionId'] = 'foreign'
+    if defect == 'call_cwd': call['cwd'] += '-foreign'
+    if defect == 'result_cwd': result['cwd'] += '-foreign'
+    if defect == 'call_alias': call['session_id'] = 'foreign'
+    if defect == 'result_alias': result['session_id'] = 'foreign'
+    if defect == 'missing_result_alias': del result['session_id']
+    if defect == 'null_call_alias': call['session_id'] = None
+    if defect == 'call_sidechain': call['isSidechain'] = True
+    if defect == 'result_sidechain': result['isSidechain'] = True
+    if defect == 'missing_call_sidechain': del call['isSidechain']
+    if defect == 'numeric_sidechain': result['isSidechain'] = 0
+    if defect == 'call_type': call['type'] = 'user'
+    if defect == 'result_type': result['type'] = 'assistant'
+    if defect == 'call_role': call['message']['role'] = 'user'
+    if defect == 'result_role': result['message']['role'] = 'assistant'
+    if defect == 'uuid': call['uuid'] = 'not-a-uuid'
+    if defect == 'missing_uuid': del call['uuid']
+    if defect == 'source_uuid': result['sourceToolAssistantUUID'] = 'foreign'
+    if defect == 'parent_uuid': result['parentUuid'] = 'foreign'
+    if defect == 'missing_link': del result['sourceToolAssistantUUID']
+    if defect == 'denial_kind': result['toolDenialKind'] = 'AUTOMODE-BLOCKED'
+    if defect == 'body': reply['content'] += ' '
+    if defect == 'body_case': reply['content'] = DENIAL_BODY.lower()
+    if defect == 'body_substring': reply['content'] = DENIAL_BODY[:115]
+    if defect == 'body_list': reply['content'] = [{'type': 'text', 'text': DENIAL_BODY}]
+    if defect in {'body', 'body_case', 'body_substring'}: result['toolUseResult'] = 'Error: ' + reply['content']
+    if defect == 'wrapper': result['toolUseResult'] = DENIAL_BODY
+    if defect == 'structured_child': result['toolUseResult'] = {'agentId': 'child-1', 'isAsync': True, 'status': 'async_launched'}
+    if defect == 'generic_error':
+        reply['content'] = 'An unrelated failure'
+        result['toolUseResult'] = 'Error: An unrelated failure'
+    if defect == 'error_integer': reply['is_error'] = 1
+    if defect == 'error_string': reply['is_error'] = 'true'
+    if defect == 'missing_error': del reply['is_error']
+    if defect == 'called_naive': call['timestamp'] = '2026-01-01T00:00:00'
+    if defect == 'returned_future': result['timestamp'] = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    if defect == 'returned_before_call': result['timestamp'] = attempt['prepared_at']
+    if defect == 'prepared_after_call': attempt['prepared_at'] = result['timestamp']
+    if defect == 'launch_before_preparation': attempt['launch_requested_at'] = '2000-01-01T00:00:00Z'
+    if defect == 'launch_after_denial': attempt['launch_requested_at'] = datetime.now(timezone.utc).isoformat()
+    if defect == 'admitted_naive': attempt['admitted_at'] = '2026-01-01T00:00:00'
+    if defect == 'admitted_after_denial': attempt['admitted_at'] = datetime.now(timezone.utc).isoformat()
+    field = {'worker': 'worker_id', 'claim': 'claimed_at', 'start': 'started_at', 'context': 'context_receipt',
+             'result': 'result_ref', 'lifecycle': 'events', 'terminal': 'terminal_status',
+             'launch_proof': 'launch_proof_ref', 'completion_conflict': 'completion_conflict'}.get(defect)
+    if field: attempt[field] = 'contradictory evidence'
+    parent.write_bytes(encoded(session) + encoded(call) + encoded(result))
+    answer = (observations.correlate_records('parent', attempt, [call, result], [header])
+              if parser == 'pure' else observe(attempt, source))
+    assert answer['status'] != 'launch_denied', (defect, answer)
+    assert 'denial_proof' not in answer
+
+
+@pytest.mark.parametrize('parser', ['pure', 'incremental'])
+@pytest.mark.parametrize('variant', ['Task', 'call_alias', 'duplicates', 'historical_denial'])
+def test_denial_supported_variants_and_revalidation(tmp_path, monkeypatch, parser, variant):
+    parent, _, attempt, call, result, header, event = setup_denial(tmp_path, monkeypatch)
+    if variant == 'Task': call['message']['content'][0]['name'] = 'Task'
+    if variant == 'call_alias': call['session_id'] = 'parent'
+    if variant == 'historical_denial':
+        attempt.update(terminal_status='launch_denied', revoked_at=result['timestamp'], ended_at=result['timestamp'])
+    records = [call, result] * (2 if variant == 'duplicates' else 1)
+    parent.write_bytes(b''.join(encoded(row) for row in records))
+    answer = (observations.correlate_records('parent', attempt, records, [header])
+              if parser == 'pure' else observe(attempt, select(event)))
+    assert answer['status'] == 'launch_denied'
+    assert DENIAL_BODY not in json.dumps(answer) and 'SECRET' not in json.dumps(answer)
+    if parser == 'incremental':
+        second = observe(attempt, answer['denial_proof']['source'], json.loads(json.dumps(answer['cursor'])))
+        assert second['denial_proof'] == answer['denial_proof']
+
+
+@pytest.mark.parametrize('parser', ['pure', 'incremental'])
+@pytest.mark.parametrize('defect', ['call', 'result', 'same_row_item', 'notification', 'reverse', 'ordinary_user', 'ordinary_assistant'])
+def test_denial_rejects_competing_records_and_text_only_claims(tmp_path, monkeypatch, parser, defect):
+    parent, _, attempt, call, result, header, event = setup_denial(tmp_path, monkeypatch)
+    records = [call, result]
+    if defect in {'call', 'result'}:
+        other = deepcopy(call if defect == 'call' else result)
+        other['extra'] = 'competing native frame'
+        records.append(other)
+    if defect == 'same_row_item':
+        other = deepcopy(result['message']['content'][0]); other['extra'] = 'distinct item'
+        result['message']['content'].append(other)
+    if defect == 'notification':
+        records.append(notification_record(attempt, {'toolUseResult': {'agentId': 'child-1', 'outputFile': '/native'}}))
+    if defect == 'reverse': records.reverse()
+    if defect.startswith('ordinary_'):
+        result.pop('toolDenialKind')
+        result['message'] = {'role': defect.removeprefix('ordinary_'), 'content': DENIAL_BODY}
+        result['type'] = result['message']['role']
+    parent.write_bytes(b''.join(encoded(row) for row in records))
+    answer = (observations.correlate_records('parent', attempt, records, [header])
+              if parser == 'pure' else observe(attempt, select(event)))
+    assert answer['status'] != 'launch_denied', answer
+
+
+def legacy_denial_cursor(attempt, source):
+    answer = observe(attempt, source)
+    assert answer['status'] == 'launch_denied'
+    cursor = deepcopy(answer['cursor'])
+    entry = next(iter(cursor['entries'].values()))
+    for role in ('call', 'result'):
+        for key in observations._PROJECTION_ADDITIONS[role] - {'agent_type', 'output_file_sha256'}:
+            entry[role][0]['projection'].pop(key)
+    entry['conflict'] = observations.LEGACY_LAUNCH_CONFLICT
+    return observations._sealed(cursor)
+
+
+def reobserve_denial(attempt, source, cursor, **kwargs):
+    entry = cursor['entries'][digest(observations._binding('parent', attempt))]
+    expected = {f'expected_{role}_sha256': entry[role][0]['reference']['sha256'] for role in ('call', 'result')}
+    return observations.reobserve_legacy_denial('parent', attempt, source=source, cursor=cursor,
+                                               **{**expected, **kwargs})
+
+
+def test_legacy_denial_requires_explicit_reverified_migration(tmp_path, monkeypatch):
+    _, _, attempt, call, result, _, event = setup_denial(tmp_path, monkeypatch)
+    source = select(event)
+    cursor = legacy_denial_cursor(attempt, source)
+    unrelated = deepcopy(next(iter(cursor['entries'].values())))
+    unrelated['binding']['grant_id'] = 'other-grant'
+    unrelated['conflict'] = 'Unrelated sticky conflict'
+    cursor['entries'][digest(unrelated['binding'])] = unrelated
+    cursor = observations._sealed(cursor)
+    original = deepcopy(cursor)
+    assert observe(attempt, source, cursor)['status'] == 'conflict'
+    repaired = reobserve_denial(attempt, source, cursor)
+    assert repaired['status'] == 'launch_denied', repaired
+    assert cursor == original
+    assert repaired['cursor']['entries'][digest(unrelated['binding'])] == unrelated
+    proof = repaired['denial_proof']
+    assert observations._valid_seal(proof, 'taskplane.claude-launch-denial-proof/v1')
+    assert set(proof['records']) == {'call', 'result'}
+    assert proof['source'] == source and proof['binding'] == observations._binding('parent', attempt)
+    assert proof['admission_timestamps'] == {'launch_requested_at': attempt['launch_requested_at']}
+    assert proof['records']['call'][0]['projection']['record_sha256'] == digest(call)
+    assert proof['records']['result'][0]['projection']['record_sha256'] == digest(result)
+    assert 'proof' not in repaired and 'launch_proof_ref' not in attempt
+
+
+@pytest.mark.parametrize('defect', ['old_field', 'new_field', 'new_type', 'unknown_field', 'span_hash',
+                                  'global_conflict', 'other_reason', 'binding', 'expected_call', 'expected_result',
+                                  'header', 'notification', 'peer_handback', 'launch_proof', 'seal', 'source_seal'])
+def test_legacy_denial_recovery_cannot_clear_other_or_forged_evidence(tmp_path, monkeypatch, defect):
+    _, _, attempt, _, _, _, event = setup_denial(tmp_path, monkeypatch)
+    source = select(event); cursor = legacy_denial_cursor(attempt, source)
+    entry = next(iter(cursor['entries'].values()))
+    projection = entry['result'][0]['projection']
+    if defect == 'old_field': projection['timestamp'] = attempt['prepared_at']
+    if defect == 'new_field': projection['denial_kind'] = 'forged'
+    if defect == 'new_type': projection['error_wrapper_exact'] = 1
+    if defect == 'unknown_field': projection['invented_provenance'] = True
+    if defect == 'span_hash': entry['result'][0]['reference']['sha256'] = '0' * 64
+    if defect == 'global_conflict': cursor['conflict'] = 'Independent source contradiction'
+    if defect == 'other_reason': entry['conflict'] = 'Changed source span'
+    if defect == 'binding': entry['binding']['workspace'] += '-foreign'
+    if defect in {'header', 'notification', 'peer_handback'}: entry[defect] = deepcopy(entry['result'])
+    if defect == 'launch_proof': attempt['launch_proof_ref'] = {'sha256': '0' * 64}
+    cursor = observations._sealed(cursor)
+    if defect == 'seal': cursor['sha256'] = '0' * 64
+    if defect == 'source_seal': source = {**source, 'sha256': '0' * 64}
+    original = deepcopy(cursor)
+    kwargs = {f'{defect}_sha256': '0' * 64} if defect.startswith('expected_') else {}
+    answer = reobserve_denial(attempt, source, cursor, **kwargs)
+    assert answer['status'] == 'conflict', answer
+    assert cursor == original and answer['cursor'] == original
+    assert 'denial_proof' not in answer
+
+
+def test_old_nonconflicting_projection_adds_only_reverified_denial_fields(tmp_path, monkeypatch):
+    _, _, attempt, _, _, _, event = setup_denial(tmp_path, monkeypatch)
+    source = select(event); cursor = legacy_denial_cursor(attempt, source)
+    entry = next(iter(cursor['entries'].values())); entry['conflict'] = None
+    cursor = observations._sealed(cursor)
+    original = deepcopy(cursor)
+    answer = observe(attempt, source, cursor)
+    assert answer['status'] == 'launch_denied'
+    assert cursor == original
+    entry = next(iter(answer['cursor']['entries'].values()))
+    assert entry['result'][0]['projection']['error_wrapper_exact'] is True
+
+
+@pytest.mark.parametrize('defect', ['lost', 'replace', 'leaf_symlink', 'project_symlink', 'truncate', 'call', 'result'])
+@pytest.mark.parametrize('legacy', [False, True])
+def test_denial_source_must_stay_pinned_and_readable(tmp_path, monkeypatch, defect, legacy):
+    parent, _, attempt, call, result, _, event = setup_denial(tmp_path, monkeypatch)
+    source = select(event)
+    cursor = legacy_denial_cursor(attempt, source) if legacy else observe(attempt, source)['cursor']
+    original = deepcopy(cursor)
+    if defect in {'lost', 'replace', 'leaf_symlink'}:
+        saved = parent.with_name('saved.jsonl'); parent.rename(saved)
+        if defect == 'replace': parent.write_bytes(saved.read_bytes())
+        if defect == 'leaf_symlink': parent.symlink_to(saved)
+    if defect == 'project_symlink':
+        project = parent.parent; saved = project.with_name('saved-project')
+        project.rename(saved); project.symlink_to(saved, target_is_directory=True)
+    if defect == 'truncate': parent.write_bytes(encoded(call))
+    if defect == 'call':
+        call['uuid'] = '72bc5eed-004f-4848-8400-3387f1637a50'
+        parent.write_bytes(encoded(call) + encoded(result))
+    if defect == 'result':
+        result['parentUuid'] = '72bc5eed-004f-4848-8400-3387f1637a50'
+        parent.write_bytes(encoded(call) + encoded(result))
+    answer = reobserve_denial(attempt, source, cursor) if legacy else observe(attempt, source, cursor)
+    assert answer['status'] == ('not_yet_available' if defect == 'lost' else 'conflict')
+    assert 'denial_proof' not in answer and cursor == original
+    if defect == 'lost':
+        saved.rename(parent)
+        recovered = reobserve_denial(attempt, source, answer['cursor']) if legacy else observe(attempt, source, answer['cursor'])
+        assert recovered['status'] == 'launch_denied'
+    elif not legacy:
+        assert observe(attempt, source, answer['cursor'])['status'] == 'conflict'
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_denial_waits_for_complete_watermark_and_finds_late_competitor(tmp_path, monkeypatch, legacy):
+    parent, _, attempt, call, result, _, event = setup_denial(tmp_path, monkeypatch)
+    source = select(event)
+    cursor = legacy_denial_cursor(attempt, source) if legacy else None
+    filler = encoded({'type': 'progress', 'data': 'x' * 8192})
+    competitor = deepcopy(result); competitor['toolUseResult'] = {'agentId': 'late-child', 'isAsync': True, 'status': 'async_launched'}
+    with parent.open('ab') as stream: stream.write(filler * 600 + encoded(competitor))
+    first = reobserve_denial(attempt, source, cursor) if legacy else observe(attempt, source)
+    assert first['status'] == 'not_yet_available'
+    assert first['cursor']['offset'] < first['cursor']['watermark']
+    assert 'denial_proof' not in first and first['budget']['bytes'] <= observations.MAX_BYTES
+    resumed = json.loads(json.dumps(first['cursor']))
+    second = reobserve_denial(attempt, source, resumed) if legacy else observe(attempt, source, resumed)
+    assert second['status'] == 'conflict' and 'denial_proof' not in second
+
+
+def test_legacy_denial_bounded_progress_is_private_and_resumes(tmp_path, monkeypatch):
+    parent, _, attempt, _, _, _, event = setup_denial(tmp_path, monkeypatch)
+    source = select(event); original = legacy_denial_cursor(attempt, source)
+    with parent.open('ab') as stream: stream.write(encoded({'type': 'progress', 'data': 'x' * 8192}) * 600)
+    first = reobserve_denial(attempt, source, original)
+    assert first['status'] == 'not_yet_available'
+    assert first['cursor']['legacy_denial_reobservation']['conflict'] == observations.LEGACY_LAUNCH_CONFLICT
+    assert observe(attempt, source, first['cursor'])['status'] == 'conflict'
+    refused = reobserve_denial(attempt, source, first['cursor'], expected_result_sha256='0' * 64)
+    assert refused['status'] == 'conflict'
+    second = reobserve_denial(attempt, source, json.loads(json.dumps(first['cursor'])))
+    assert second['status'] == 'launch_denied'
+    assert 'legacy_denial_reobservation' not in second['cursor']
+    assert second['denial_proof']['watermark'] == parent.stat().st_size
+    assert next(iter(original['entries'].values()))['conflict'] == observations.LEGACY_LAUNCH_CONFLICT
+
+
+def test_denial_partial_line_and_budget_exhaustion_preserve_unknown(tmp_path, monkeypatch):
+    parent, _, attempt, call, result, _, event = setup_denial(tmp_path, monkeypatch)
+    parent.write_bytes(encoded(call) + encoded(result)[:-1])
+    source = select(event)
+    first = observe(attempt, source)
+    assert first['status'] == 'not_yet_available' and 'denial_proof' not in first
+    with parent.open('ab') as stream: stream.write(b'\n')
+    second = observe(attempt, source, first['cursor'])
+    assert second['status'] == 'launch_denied'
+    exhausted = observe(attempt, source, second['cursor'], budget=observations.ReadBudget(max_bytes=0))
+    assert exhausted['status'] == 'not_yet_available' and 'denial_proof' not in exhausted
+    legacy = legacy_denial_cursor(attempt, source)
+    exhausted = reobserve_denial(attempt, source, legacy, budget=observations.ReadBudget(max_records=1))
+    assert exhausted['status'] == 'not_yet_available' and exhausted['cursor'] == legacy
+
+
+def test_denial_admission_offsets_and_late_completion_remain_blocked(tmp_path, monkeypatch):
+    parent, _, attempt, _, result, _, event = setup_denial(tmp_path, monkeypatch)
+    source = select(event)
+    replay = deepcopy(attempt); replay['transcript_admission_offset'] = 1
+    assert observe(replay, source)['status'] == 'conflict'
+    answer = observe(attempt, source)
+    notification = notification_record(attempt, {'toolUseResult': {'agentId': 'child-1', 'outputFile': '/native'}})
+    with parent.open('ab') as stream: stream.write(encoded(notification))
+    late = observe(attempt, source, answer['cursor'])
+    assert late['status'] == 'conflict' and 'denial_proof' not in late
+    assert observe(attempt, source, late['cursor'])['status'] == 'conflict'
+
+
+def test_pure_denial_explicit_lifecycle_and_observation_time_refuse(tmp_path, monkeypatch):
+    _, _, attempt, call, result, header, _ = setup_denial(tmp_path, monkeypatch)
+    header['call_id'] = attempt['call_id']
+    assert observations.correlate_records('parent', attempt, [call, result], [header])['status'] == 'conflict'
+    for stamp in ('2026-01-01T00:00:00', call['timestamp']):
+        assert observations.correlate_records('parent', attempt, [call, result], [], observed_at=stamp)['status'] == 'conflict'

@@ -947,7 +947,7 @@ def _hook(event: dict[str, Any], *,
         if not startup_observed:
             controller.observe(event, str(run))
         guarded = controller.report(str(run), diagnostics=False)
-        if name == "Stop" and not controller.adapter.can_seal(guarded):
+        if name == "Stop" and not controller.can_seal(str(run)):
             return {"systemMessage": "Taskplane is waiting for process quiescence before sealing. No phase has advanced; unknown host coverage remains explicit."}
     guarded_run = guarded.get("run") or (run if controller.adapter.profile == "protected_host" else None)
     if guarded_run and name == "PreToolUse":
@@ -1155,7 +1155,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=32768)
     parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
-    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound"])
+    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound", "recover-launch-denied"])
     parser.add_argument("--invocation-ref", help=argparse.SUPPRESS)
     parser.add_argument("--grant", default="")
     parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")
@@ -1324,7 +1324,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             diagnostic = args.action in {"report", "diagnose", "inspect", "recover", "reconcile-maintenance",
                                          "retire", "wait", "present", "decide"}
             replacement = args.action == "start" and args.replace_run
-            worker_recovery = args.action == "worker" and args.operation in {"status", "recover-unbound", "abandon"}
+            worker_recovery = args.action == "worker" and args.operation in {"status", "recover-unbound", "recover-launch-denied", "abandon"}
             if not (diagnostic or replacement or worker_recovery):
                 workflow_local.verify_workflow(workspace, protected)
         if args.action in {"inspect", "prevalidate"}:

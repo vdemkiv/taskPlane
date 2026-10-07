@@ -1,5 +1,21 @@
 # taskplane changelog
 
+## v2.33.2 — Local recovery closeout and external test candidate
+
+- Refresh the README around installation, everyday requests, phase approvals, reusable workflows and current host limits.
+- Bind verified pre-launch Claude rejection to its exact admitted native call and preserve narrow legacy recovery evidence.
+- Retain late lifecycle contradictions before the bounded diagnostic cache fills; denied or revoked attempts cannot silently become quiescent.
+- Preserve the Workflow Builder freshness and worker-acceptance repairs from the current candidate.
+- Local regression evidence: 6,774 passed, 6 skipped and 7 subtests passed on unchanged runtime source.
+- Defer fresh live Claude validation to external testing at the user's request. Preserve incomplete checkpoints and failed history; package verification is not native-host acceptance.
+
+## v2.33.1 — Workflow Builder freshness repair
+
+- Keep generated phase evidence outside graph source inputs so context consumption, prevalidation and sealing converge.
+- Preserve native worker requirements through workflow refinement, task publication, Plan acceptance and guarded execution.
+- Verify rejection of actual source drift and altered accepted or sealed evidence; retain the original failing reproduction.
+- Build distinct Claude and Codex test packages. Fresh installed-host acceptance remains separate from source and archive verification.
+
 ## v2.33.0 — Claude delivery and continuation repairs
 
 - Join verified worker reports delivered after worker stop without weakening identity, acknowledgment, body or transcript-span checks.

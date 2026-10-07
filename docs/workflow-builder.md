@@ -209,6 +209,16 @@ Its immutable phase task patterns are proposals. Plan must finalize the actual
 Build DAG, exact ownership and typed check commands within that outer scope;
 Build must match the accepted Plan. No template or compiler approves Build.
 
+Compiled delivery currently declares `native-default/v1`, but does not emit the
+separate `implementation/v1` planning contract or a complete implementation
+intent. Its implementation feasibility is therefore `legacy_unknown`.
+Compilation and a runnable preview do not establish source/test readiness.
+Native ownership and the accepted Plan still constrain the work. Adding only a
+planning-contract label would not supply the missing implementation/test
+bindings, per-criterion coverage, three Build outputs and root exception data;
+historical packages retain their original contract. A complete compiler intent
+migration is separate work, not part of the native ownership repair.
+
 All source/dependency/test lists are fingerprinted, including lists not inferred
 from a diff. Fresh invocation outputs must not already exist. A new invocation
 uses fresh outputs and run/grant/decision identities. Continuation uses the same
@@ -231,14 +241,250 @@ observation, not host attestation or an OS sandbox. Matching version strings,
 source edits and extracted-package tests do not prove that a host loaded the
 candidate or that its automatic hooks and worker protocol function there.
 
-This source candidate is distinct from the installed 2.31.7 runtime used to
-develop it, which does not contain Workflow Builder. WFB-LIVE remains
-`not_run` until a separately authorized host actually loads the candidate and
+The original development evidence used installed 2.31.7, which did not contain
+Workflow Builder, and recorded WFB-LIVE as `not_run`. That historical result is
+preserved. Newer source, release archives or installed version labels do not
+replace it with a passing live result. WFB-LIVE remains unverified until a
+separately authorized host actually loads the selected package and
 executes two compiled change reviews with distinct native lens identities,
 claim/context/hooks, joined accepted results, root synthesis, same-run dashboard
 and interruption/resumption evidence. Parser/compiler, CLI and package fixtures
 are reported separately and cannot close that gate. Installation or reload is
-outside this feature's Build scope.
+separate from definition authoring and requires the applicable user authority.
+
+## Read-only actual-host evidence verifier
+
+From the source checkout, run:
+
+```sh
+python3 scripts/verify_workflow_builder_live.py --evidence FILE
+```
+
+The command prints one JSON result to stdout and exits zero only when all
+required evidence checks pass. Missing files, stale hashes, `not_run`, partial
+context, unobserved termination, missing rendering and incomplete final outcomes
+return nonzero. It reads evidence and installed files; it does not launch a
+host, execute a referenced command, import the referenced runtime, generate
+hook events, mutate a controller or write the index. Passing tests of this
+inspector establish inspector behavior only. They never close WFB-LIVE.
+
+The index schema is `taskplane.workflow-builder-live-evidence/v1`. Every `REF`
+below is `{"path":"/absolute/or/index-relative/path","sha256":"64 lowercase hex"}`.
+Paths resolve relative to the index, not the shell working directory. A large
+native JSONL transcript may use `{"path":"...","offset":123,"bytes":456,
+"sha256":"..."}`: the hash covers those exact original bytes, and the slice
+must contain complete original JSONL records. A transcript field also accepts
+`{"segments":[REF,REF]}` for noncontiguous original records. Retain both halves
+of each tool call/result pair and the referenced native headers/notifications;
+do not author replacement transcript records. Reads are bounded to 32 MiB per
+reference, 128 segments per transcript and 256 MiB overall. Symlink references,
+duplicate JSON keys, non-finite numbers and stale bytes refuse.
+
+```json
+{
+  "schema": "taskplane.workflow-builder-live-evidence/v1",
+  "status": "observed",
+  "definition": "REF to the exact saved definition",
+  "authoring_transcript": "REF or segments containing the actual save call/result",
+  "invocations": [
+    {
+      "workspace": "/actual/durable/acceptance/checkout",
+      "root": "actual-native-session-id",
+      "run": "actual-run-id",
+      "controller": "REF to the raw native controller store or run-state snapshot",
+      "compilation": "REF to the actual package compilation.json",
+      "root_transcript": "REF or segments from the native Claude JSONL",
+      "worker_transcripts": [
+        {"worker_id": "actual-security-worker", "transcript": "REF or segments"},
+        {"worker_id": "actual-quality-worker", "transcript": "REF or segments"}
+      ],
+      "launch": "REF or segments from the parent's actual TTY call/result",
+      "dashboard": {
+        "snapshot": "REF to the native snapshot JSON",
+        "html": "REF to its native HTML",
+        "render": "REF or segments from the actual CUA tool call/result",
+        "screenshot": "REF to the retained PNG or JPEG"
+      },
+      "interruption": {
+        "before": "REF to the same run's unaccepted controller snapshot",
+        "interrupt": "REF or segments with the terminal interrupt and exit result",
+        "resume": "REF or segments from the same session's actual --resume TTY call/result"
+      }
+    },
+    "Second complete invocation object; interruption is optional on this one"
+  ]
+}
+```
+
+The strings standing for references in this example are explanatory placeholders,
+not valid evidence. Exactly two complete invocation objects are required. At
+least one needs the interruption object. An honest unperformed index can contain
+`"status":"not_run"` and explain the blocker; it intentionally cannot pass.
+
+### Original human approval relayed from Codex
+
+An invocation may add `approval_relay` when its actual human checkpoint response
+occurred in the coordinating Codex conversation. Recorded cross-session approval
+requires the controller's explicit `taskplane.observed-decision/v2` contract.
+The read-only inspector checks the corresponding native evidence and does not
+record a decision.
+Keep the full original response, including whitespace and conditions. Never
+create a Claude user frame or rewrite the original conversation identity.
+
+```json
+{
+  "schema": "taskplane.approval-relay/v1",
+  "origin_conversation": "original-Codex-session-id",
+  "session_meta": "REF to the first original Codex JSONL row, offset 0",
+  "human": "REF to one complete original native human message",
+  "presentation": "REF to the preceding parent assistant presentation",
+  "launch": { "segments": ["REF to the actual launch call", "REF to its actual result"] },
+  "launch_flag": "--session-id",
+  "native_presentation": "REF to the raw target harness containing presentation",
+  "snapshot": "REF to that presentation's immutable native snapshot JSON",
+  "html": "REF to that presentation's immutable native snapshot HTML",
+  "binding": {
+    "root": "target-native-session-id", "run": "target-run-id",
+    "workspace": "/actual/acceptance/checkout", "visit": "target-visit-id",
+    "checkpoint": "target-checkpoint-id", "packet_revision": 1,
+    "scope_digest": "actual-scope-digest", "manifest_digest": "actual-packet-digest"
+  },
+  "decision": "complete taskplane.observed-decision/v2 envelope, including relay"
+}
+```
+
+Every parent reference must include explicit `path`, `offset`, `bytes` and
+`sha256` fields and select complete records from the same original
+`~/.codex/sessions/.../rollout-...-ORIGIN.jsonl`; copied logs are rejected.
+`session_meta` pins the native session identity and its `vscode` or `cli` human
+session source; subagent or automation session origins are rejected. The human source must be a
+retained complete native `response_item/message`, role `user`, with
+`content_item_kinds: ["user.text"]`, matching retained message ID and no system,
+automation or tool origin. The assistant presentation also needs complete retained
+message metadata. It must name the exact checkpoint ID and link its immutable
+native `snapshot-....html`; a dashboard link alone is insufficient. Native target
+submit/present results, the harness checkpoint binding and both immutable snapshot
+digests must agree. HTML and snapshot references cover the whole bounded regular
+files, with explicit `offset: 0`, byte count and SHA-256.
+Chronology requires run start, submission, presentation, then human response.
+The launch flag is `--session-id` or `--resume`; the selected native parent
+call/result must actually launch that target, before the presentation.
+
+The v2 envelope keeps **`source.conversation` equal to the original Codex session**;
+`binding.root` remains the target Claude session. `origin_conversation` in the
+index must equal that unchanged source identity. Its source reference is exactly
+`ORIGINAL_ABSOLUTE_JSONL#offset=N&bytes=N`, its timestamp is the original frame's
+timestamp, and its excerpt is the full exact human text. Its presentation
+reference uses the same byte-reference format and exact presentation timestamp.
+Its `binding` uses `revision` in place of the relay's `packet_revision`.
+Use `recorder: "root_orchestrator"`, `source.kind: "conversation"`,
+`source.actor: "user"`, `source.automatic: false`, and `choice: "approved"`.
+The envelope's `relay` object has schema `taskplane.original-source-relay/v1`
+and exactly these fields copied from the verified index evidence: `session_meta`,
+`human`, `presentation`, `launch`, `launch_flag`, `html` and `snapshot`. It contains
+no invented human message or target-session replacement for the source identity.
+The actual parent launch must use a direct native `exec_command` JSON call or
+the single wrapper `text(await tools.exec_command(<JSON object>));`, with
+`tty: true`, the exact target `workdir`, an absolute Claude executable, only
+`--plugin-dir`, `--session-id` or `--resume` options, and at most one prompt.
+The paired result must contain an actual running native session ID. Dynamic
+JavaScript launch construction is outside this v2 contract.
+
+The inspector currently accepts only the complete simple approval phrases
+`approve`, `approved`, `approve as is`, `approved as is`, `looks good, proceed`,
+or `go ahead`, ignoring case and surrounding whitespace only for interpretation.
+Other wording needs review, not excerpt editing.
+
+`verify_approval_relay(reader, item, state, transcript, decision=None)` can inspect
+a pending or approved checkpoint independently of finish or invocation B. A
+pending pass returns `recorded: false`. An approved checkpoint additionally needs
+the exact recorded event/binding/provenance, including `provenance.schema` and
+the unchanged `provenance.relay`, and a successful native direct
+`python .../tp.py flow decide` call with the identical parsed envelope. Quoted
+commands, `flow wait` notes, assistant assertions and nested claimed results
+cannot satisfy that call. Existing direct-native human/dialog evidence remains
+supported with v1 when no relay is declared. Historical v1 evidence that remapped
+the source to the target can be inspected only while unrecorded, returning
+`historical_only: true`; it cannot certify an applied cross-session approval.
+Old evidence, including a passing pending inspection, cannot authorize a fresh
+checkpoint. A relay pass is cooperative evidence
+consistency, not host attestation, a new authorization, or permission to bypass a
+host refusal. All two-invocation, finish, context, worker, recovery and rendered
+dashboard checks remain required for the full verifier.
+
+Collection requirements:
+
+- Save the controller evidence after actual finish. The store may contain both
+  runs; the index selects each exact run. Keep the original context objects under
+  `.taskplane/context-v1/objects/`, pinned source files, review outputs and
+  installed runtime files readable. Do not copy approvals or context receipts
+  into a replacement run. Preserve failed attempts and retired history.
+- The compilation reference must point at the actual immutable package inside
+  the selected workspace. The verifier checks its digest and member bytes,
+  identical saved definition, actual differing input values (differences only
+  in labels or output prefixes do not count), fresh output prefixes and package
+  and run identities. Installed module/interpreter/member hashes are checked
+  against the package's loaded-runtime observation and worker hook evidence.
+- Retain actual native Claude call/result frames for compilation/start,
+  Agent/Task dispatch, claims, every required `flow context` body response and
+  the final drain, ordinary matched
+  automatic-hook calls, native completion notifications, accepted results,
+  decisions and `flow finish`. Distinct security and code-quality workers must
+  have their own grants, full immutable receipts, fresh inputs/outputs and
+  accepted terminal results. A done message or result file alone cannot pass.
+- Required context delivery is checked against the digest-verified canonical
+  CAS handoff, signed view and required trees in `.taskplane/context-v1/objects`.
+  Every body page must appear completely in the consumer's native tool results,
+  with matching data, digest, kind, form and cursor metadata. Complete inline
+  `--consume` views and shared-body provenance are supported. A valid final
+  receipt cannot replace an omitted page, truncated output or a
+  `<persisted-output>` preview. Preserve failed delivery history separately;
+  a later empty drain does not repair missing original response bodies.
+- On a host that persists 32 KiB drain results, use the installed runtime's
+  supported `--read-required HANDOFF_SHA` transport, which keeps each complete
+  response below 16 KiB. Run one unfiltered foreground command at a time with
+  the exact workspace/run/task binding, retain every full response, and repeat
+  until `remaining_required` is zero. Then run `--drain HANDOFF_SHA` once for
+  the terminal `done: true` receipt (normally with an empty `pages` array).
+  Individual `--read SHA --page N` results are also valid when every required
+  page is delivered. Never pipe, filter, use `head`, redirect or discard context
+  or `flow worker --operation accept-result` responses. If a host persists a
+  response, stop and preserve that failed evidence; a cache pathname alone is
+  not delivery to the consumer.
+- Launch and resume references are actual parent Codex or Claude execution tool
+  frames. They must show `tty: true`, `--session-id` or `--resume`, the original
+  session identity and returned terminal handle/result. The actual compile call
+  must use the pinned installed runtime path, whether Claude selected it through
+  its global plugin configuration or an explicit plugin argument. An interruption needs observed terminal exit;
+  sending Ctrl-C alone is insufficient. After resume, retain successful
+  `workflow check` and `flow report` calls for the original run, with unchanged
+  package and prior decisions. Do not start a replacement invocation.
+- Retain native `.taskplane/dashboard.html` snapshots before the next invocation
+  regenerates that shared file. The JSON/HTML and actual CUA output must identify
+  the same run, visit and revision. Retain the screenshot from that rendering.
+  A generated artifact, queued opening, link or `rendered: true` assertion alone
+  is insufficient. A denied rendering remains a named blocker.
+- Finish requires the actual accepted checkpoint, native controller decision
+  and `flow finish`, plus the original user message or native AskUserQuestion
+  result cited by its provenance. Automatic policy must belong to this run;
+  another run's authorization cannot transfer.
+
+These are cooperative consistency checks, not cryptographic host attestation or
+proof against a local account rewriting every source. The verifier cannot
+observe model attention, interpret screenshot pixels, independently determine
+human intent or certify the semantic quality of a review. Review the retained
+tool output and screenshot as well as the JSON result. A partial export or
+unsupported native frame stays a failure with its reason; do not replace absent
+observations with convenient boolean assertions. The native dashboard and
+`.taskplane/knowledge/graph.json` remain the shared runtime surfaces.
+
+The Python helper `verify_context_delivery(reader, workspace, transcript,
+binding, receipt, task=None)` uses the same strict checks for a worker, root task,
+or whole phase. Supply the exact expected binding and native transcript records
+for that handoff; omit `task` only for whole-phase context. Its returned coverage
+counts are a partial context audit, never a full live acceptance result. The
+normal `--evidence` CLI still requires both complete invocations, actual human
+authority, rendered dashboards and recovery evidence.
 
 v1 excludes arbitrary phases/order, branches, loops, nested workflows, schedules,
 event triggers, business connectors, external writes, credentials, a marketplace

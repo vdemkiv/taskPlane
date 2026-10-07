@@ -8,6 +8,296 @@ from taskplane import workflow as w, workflow_host as h
 from taskplane.tests.test_workflow_evidence import prepare
 
 
+def test_denial_controller_recovery_regression(tmp_path, monkeypatch):
+    from taskplane.tests.test_worker_runtime import denied_launch
+    from taskplane import claude_worker_observations as observations
+    from taskplane.context import digest
+    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch, legacy=True)
+    state = host.controller.report()
+    row = state['workers'][grant]
+    entry = state['claude_transcript_cursor']['entries'][digest(observations._binding('root', row))]
+    request = dict(request_reference='human/recover-observed-denial', call_id=event['tool_use_id'],
+                   **{f'expected_{role}_sha256': entry[role][0]['reference']['sha256'] for role in ('call', 'result')})
+    recovered = host.controller.worker(state['run'], 'recover-launch-denied', revision=state['revision'],
+                                       grant=grant, request=request)
+    assert recovered['state'] == 'failed' and recovered['terminal_status'] == 'launch_denied'
+    assert recovered.get('denial_recovery') and not recovered.get('identity_conflict')
+
+
+def denial_request(state, grant):
+    from taskplane import claude_worker_observations as observations
+    from taskplane.context import digest
+    row = state['workers'][grant]
+    entry = state['claude_transcript_cursor']['entries'][digest(observations._binding('root', row))]
+    return dict(request_reference='human/recover-observed-denial', call_id=row['call_id'],
+                **{f'expected_{role}_sha256': entry[role][0]['reference']['sha256'] for role in ('call', 'result')})
+
+
+@pytest.mark.parametrize('variant', ['start', 'explicit', 'modern', 'textless'])
+@pytest.mark.parametrize('timing', ['before_recovery', 'after_recovery'])
+def test_denial_lifecycle_ingestion_blocks_saturated_legacy_recovery(tmp_path, monkeypatch, variant, timing):
+    from taskplane.tests.test_worker_runtime import denied_launch, denial_lifecycle_event, ingest_unrelated_lifecycle
+    from taskplane import worker_runtime as workers
+    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch, legacy=True)
+    c = host.controller; run = host.state['run']
+    ingest_unrelated_lifecycle(host, 1024)
+    original = c.report(); request = denial_request(original, grant)
+    if timing == 'after_recovery':
+        c.worker(run, 'recover-launch-denied', revision=original['revision'], grant=grant, request=request)
+        assert c.can_seal(run)
+    before = deepcopy(c.report()['workers'][grant])
+    c.observe(denial_lifecycle_event(host, event['tool_use_id'], variant), run)
+    with pytest.raises(w.Refusal):
+        c.worker(run, 'recover-launch-denied', revision=original['revision'], grant=grant, request=request)
+    after = c.report()
+    row = after['workers'][grant]
+    assert row['state'] == 'unknown' and row['identity_conflict']
+    assert not c.can_seal(run) and not workers.joined(after)
+    assert not row.get('worker_id') and not row.get('claimed_at') and not row.get('context_receipt')
+    for key in ('denial_recovery', 'denial_proof_ref', 'revoked_at', 'ended_at', 'terminal_status'):
+        assert row.get(key) == before.get(key)
+    assert after['decisions'] == original['decisions'] and after['history'] == original['history']
+    assert not after.get('task_results')
+
+
+@pytest.mark.parametrize('defect', ['child', 'wrong_root', 'wrong_run', 'wrong_revision', 'boolean_revision',
+    'call', 'call_hash', 'result_hash', 'missing_reference', 'extra_field', 'binding', 'digest',
+    'admission', 'admission_hash', 'admission_time', 'sealed', 'inactive', 'source_drift',
+    'source_absent', 'cursor', 'global_conflict', 'unrelated_history', 'history_overflow', 'worker',
+    'claim', 'context', 'context_delivery', 'native_start', 'terminal', 'result', 'live_handle', 'revoked', 'codex'])
+def test_denial_recovery_refusals_preserve_original_attempt(tmp_path, monkeypatch, defect):
+    from taskplane.tests.test_worker_runtime import denied_launch
+    from taskplane import claude_worker_observations as observations, worker_runtime as workers
+    host, grant, _, _, _ = denied_launch(tmp_path, monkeypatch, legacy=True)
+    c = host.controller; db = c._read(c._path()); state = db['runs'][host.state['run']]
+    row = state['workers'][grant]; request = denial_request(state, grant)
+    revision, run = state['revision'], state['run']
+    if defect == 'child': c.principal = 'other-worker'
+    if defect == 'wrong_root': c.root = 'foreign-root'
+    if defect == 'wrong_run': run = 'foreign-run'
+    if defect == 'wrong_revision': revision += 1
+    if defect == 'boolean_revision': revision = False
+    if defect == 'call': request['call_id'] = 'foreign-call'
+    if defect == 'call_hash': request['expected_call_sha256'] = '0' * 64
+    if defect == 'result_hash': request['expected_result_sha256'] = '0' * 64
+    if defect == 'missing_reference': request['request_reference'] = ''
+    if defect == 'extra_field': request['force'] = True
+    if defect == 'binding': row['binding']['revision'] += 1
+    if defect == 'digest': row['dispatch_digest'] = '0' * 64
+    if defect.startswith('admission'):
+        admitted = next((key, value) for key, value in db['admissions'].items() if value['call_id'] == row['call_id'])
+        if defect == 'admission': del db['admissions'][admitted[0]]
+        if defect == 'admission_hash': admitted[1]['input_digest'] = '0' * 64
+        if defect == 'admission_time': admitted[1]['admitted_at'] = '2999-01-01T00:00:00Z'
+    if defect == 'sealed':
+        stage = state['visits'][state['index']]
+        stage.update(decision='awaiting_human_approval', packet=dict(phase=stage['phase'], visit=stage['id'],
+            checkpoint='fixture', manifest={}, source_manifest={}, context={}, output={}))
+    if defect == 'inactive': db['active'] = None
+    if defect == 'source_drift': (tmp_path / 'input.py').write_text('changed = 1\n')
+    if defect == 'source_absent': host.parent.unlink()
+    if defect == 'cursor': state['claude_transcript_cursor']['sha256'] = '0' * 64
+    if defect == 'global_conflict':
+        state['claude_transcript_cursor']['conflict'] = 'Independent source contradiction'
+        state['claude_transcript_cursor'] = observations._sealed(state['claude_transcript_cursor'])
+    if defect == 'unrelated_history': workers._audit(row, 'late_identity', {'worker_id': 'unrelated-child'})
+    if defect == 'history_overflow': row['reconciliation_overflow'] = True
+    for key, field in [('worker', 'worker_id'), ('claim', 'claimed_at'), ('context', 'context_receipt'),
+                       ('context_delivery', 'context_delivery'), ('native_start', 'native_session_started_at'),
+                       ('terminal', 'terminal_status'), ('result', 'result_ref'), ('revoked', 'revoked_at')]:
+        if defect == key: row[field] = 'contradictory-evidence'
+    if defect == 'live_handle':
+        state['observed_handles']['123'] = dict(state='running', revision=state['revision'], visit=w.current(state)['id'])
+    if defect == 'codex': c.adapter.name = 'codex'
+    target = host.controller.adapter.control_path(tmp_path, 'root')
+    # Fixture mutation only, preserving the full original controller shape.
+    target.write_text(json.dumps(db))
+    before = target.read_bytes()
+    with pytest.raises(w.Refusal):
+        c.worker(run, 'recover-launch-denied', revision=revision, grant=grant, request=request)
+    after = json.loads(target.read_text())['runs'][host.state['run']]['workers'][grant]
+    assert {k: v for k, v in after.items() if k != 'denial_recovery_progress'} == row
+    assert not after.get('denial_recovery')
+    if defect != 'source_absent': assert target.read_bytes() == before
+
+
+def test_denial_recovery_cli_preserves_before_history_and_revalidates_replay(tmp_path, monkeypatch, capsys):
+    from taskplane.tests.test_worker_runtime import denied_launch
+    from taskplane import flow, claude_worker_observations as observations
+    from taskplane.context import Store, digest
+    host, grant, _, _, result = denied_launch(tmp_path, monkeypatch, legacy=True)
+    c = host.controller; db = c._read(c._path()); state = db['runs'][host.state['run']]
+    request = denial_request(state, grant)
+    # An unrelated cursor entry's sticky conflict is never reset by recovery.
+    entry = deepcopy(next(iter(state['claude_transcript_cursor']['entries'].values())))
+    entry['binding']['grant_id'] = 'another-grant'; entry['binding']['call_id'] = 'another-call'
+    entry['conflict'] = 'Independent sticky contradiction'
+    other_key = digest(entry['binding'])
+    state['claude_transcript_cursor']['entries'][other_key] = entry
+    state['claude_transcript_cursor'] = observations._sealed(state['claude_transcript_cursor'])
+    c._write(c._path(), db)
+    before = deepcopy(state)
+    command = ['worker', '--workspace', str(tmp_path), '--run', state['run'], '--operation', 'recover-launch-denied',
+               '--grant', grant, '--expected-revision', str(state['revision']), '--worker-json', json.dumps(request)]
+    assert flow.main(command, governor=c) == 0
+    answer = json.loads(capsys.readouterr().out)
+    retained = Store(tmp_path).resolve(answer['denial_recovery']['before_ref'])
+    assert retained['row'] == before['workers'][grant]
+    assert retained['cursor'] == before['claude_transcript_cursor']
+    assert retained['admission']['input_digest'] == before['workers'][grant]['dispatch_digest']
+    current = c.report()
+    assert current['claude_transcript_cursor']['entries'][other_key] == entry
+    assert current['decisions'] == before['decisions'] and current['history'] == before['history']
+    sequence = current['worker_sequence']
+    replay = c.worker(state['run'], 'recover-launch-denied', revision=state['revision'], grant=grant, request=request)
+    assert replay == answer and c.report()['worker_sequence'] == sequence
+    changed = deepcopy(result); changed['extra'] = 'competing result'
+    host.append(changed)
+    with pytest.raises(w.Refusal):
+        c.worker(state['run'], 'recover-launch-denied', revision=state['revision'], grant=grant, request=request)
+    failed = c.report()['workers'][grant]
+    assert failed['state'] == 'unknown' and failed['identity_conflict']
+    assert failed['denial_recovery'] == answer['denial_recovery']
+
+
+def test_denial_recovery_partial_scan_stays_private_and_resumes(tmp_path, monkeypatch):
+    from taskplane.tests.test_worker_runtime import denied_launch
+    from taskplane.tests.test_claude_worker_lifecycle import encoded
+    from taskplane import claude_worker_observations as observations
+    host, grant, _, _, _ = denied_launch(tmp_path, monkeypatch, legacy=True)
+    c = host.controller; state = c.report(); request = denial_request(state, grant)
+    with host.parent.open('ab') as stream:
+        stream.write(encoded({'progress': 'x' * 8192}) * 600)
+    with pytest.raises(w.Refusal, match='incomplete'):
+        c.worker(state['run'], 'recover-launch-denied', revision=state['revision'], grant=grant, request=request)
+    partial = c.report(); row = partial['workers'][grant]
+    assert row['state'] == 'unknown' and row['identity_conflict'] and not row.get('revoked_at')
+    assert partial['claude_transcript_cursor'] == state['claude_transcript_cursor']
+    progress = row['denial_recovery_progress']['cursor']
+    assert progress.get('legacy_denial_reobservation')
+    assert observations.observe('root', row, {}, source=state['claude_transcript_source'], cursor=progress)['status'] == 'conflict'
+    unchanged = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        c.worker(state['run'], 'recover-launch-denied', revision=state['revision'], grant=grant,
+                 request={**request, 'expected_result_sha256': '0' * 64})
+    assert c._path().read_bytes() == unchanged
+    # Ordinary hooks may move the shared scan and refresh diagnostic history;
+    # they cannot consume the private recovery cursor or clear its conflict.
+    c.observe(dict(host='claude', hook_event_name='PostToolUse', session_id='root'), state['run'])
+    fixed = c.worker(state['run'], 'recover-launch-denied', revision=state['revision'], grant=grant, request=request)
+    assert fixed['state'] == 'failed' and not fixed.get('denial_recovery_progress')
+    assert 'legacy_denial_reobservation' not in c.report()['claude_transcript_cursor']
+
+
+@pytest.mark.parametrize('boundary', ['prepare', 'dispatch', 'write', 'update_tasks', 'prevalidate',
+                                    'submit', 'advance', 'finish', 'auto-decide', 'retire', 'replace', 'stop', 'maintenance'])
+@pytest.mark.parametrize('defect', ['late_result', 'missing', 'partial'])
+def test_denial_mutable_boundaries_refresh_and_persist_before_refusal(tmp_path, monkeypatch, boundary, defect):
+    from taskplane.tests.test_worker_runtime import recorded_denial
+    from taskplane import flow
+    host, grant, event, _, result = recorded_denial(tmp_path, monkeypatch)
+    c = host.controller; state = c.report()
+    if boundary == 'maintenance':
+        (tmp_path / '.taskplane/maintenance.json').write_text(json.dumps(dict(schema='taskplane.maintenance-request/v1',
+            request_reference='human/maintenance', reason='Authorized exact maintenance.',
+            changes={'unrelated.py': {'before': None, 'after': '0' * 64}})))
+    if defect == 'late_result':
+        changed = deepcopy(result); changed['extra'] = 'late competing result'; host.append(changed)
+    if defect == 'missing': host.parent.unlink()
+    if defect == 'partial':
+        with host.parent.open('ab') as stream: stream.write(b'{')
+    run, revision = state['run'], state['revision']
+    def execute():
+        if boundary == 'prepare':
+            return c.worker(run, 'prepare', revision=revision, task='T0',
+                request={'retry_reason': 'Host conditions changed in explicit request.',
+                         'capacity': dict(host_slots=5, includes_root=True, reference='fixture')})
+        if boundary == 'dispatch': return c.guard(event, run)
+        if boundary == 'write': return c.guard(dict(tool_name='Write', tool_input={'file_path': 'T0.md'}), run)
+        if boundary == 'update_tasks': return c.update_tasks(run, revision, 'tasks.json')
+        if boundary == 'prevalidate': return c.prevalidate(run, revision=revision, output='product.json', tasks='tasks.json')
+        if boundary == 'maintenance': return c.reconcile_maintenance(run, revision, '.taskplane/maintenance.json')
+        if boundary == 'replace':
+            return c.start(dict(replace_run=run, expected_revision=revision, request_reference='human/new-run',
+                                scope=state['scope'], entry='product', standalone=True, tasks='tasks.json'))
+        if boundary == 'stop':
+            return flow._hook(dict(hook_event_name='Stop', session_id='root', cwd=str(tmp_path)), governor=c)
+        return c.apply(boundary, run, expected_revision=revision, output='product.json', tasks='tasks.json',
+                       native_reference=json.dumps(dict(request_reference='human/retire', reason='Requested retirement.')))
+    if boundary == 'stop':
+        assert 'quiescence' in execute()['systemMessage']
+    else:
+        with pytest.raises(w.Refusal): execute()
+    persisted = json.loads(c._path().read_text())['runs'][run]
+    row = persisted['workers'][grant]
+    assert row['state'] == 'unknown' and row['denial_proof_ref'] == state['workers'][grant]['denial_proof_ref']
+    assert bool(row.get('identity_conflict')) is (defect == 'late_result')
+    assert persisted['revision'] == revision and persisted['decisions'] == state['decisions']
+
+
+@pytest.mark.parametrize('defect', [None, 'late_result', 'missing', 'partial', 'budget', 'sticky'])
+def test_denial_direct_resume_and_adapter_checks_are_read_only(tmp_path, monkeypatch, defect):
+    from taskplane.tests.test_worker_runtime import recorded_denial
+    from taskplane import workflow_continuation as continuation
+    from taskplane.context import Store
+    from datetime import datetime, timezone
+    host, grant, _, _, result = recorded_denial(tmp_path, monkeypatch)
+    c = host.controller; state = c.report()
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude'))
+    request = dict(schema=continuation.SCHEMA, binding=continuation.binding(state),
+        excerpt=f"continue run {state['run']}", recorder='root_orchestrator', source=dict(kind='conversation',
+            actor='user', automatic=False, conversation='root', reference='human/resume',
+            observed_at=datetime.now(timezone.utc).isoformat()))
+    if defect == 'late_result':
+        changed = deepcopy(result); changed['extra'] = 'late competing result'; host.append(changed)
+    if defect == 'missing': host.parent.unlink()
+    if defect == 'partial':
+        with host.parent.open('ab') as stream: stream.write(b'{')
+    if defect == 'budget':
+        from taskplane import claude_worker_observations as observations
+        budget_type = observations.ReadBudget
+        monkeypatch.setattr(observations, 'ReadBudget', lambda: budget_type(max_bytes=0))
+    if defect == 'sticky':
+        db = c._read(c._path()); db['runs'][state['run']]['workers'][grant]['identity_conflict'] = True
+        c._write(c._path(), db); state = c.report()
+    if defect is None: host.append({'progress': 'new captured watermark needs no CAS write'})
+    before = c._path().read_bytes()
+    store = Store(tmp_path)
+    objects = {p.name: p.read_bytes() for p in store.root.rglob('*.json')}
+    assert c.adapter.can_seal(state) is (defect is None)
+    if defect is None:
+        answer = continuation.resume(c, actor='root', run=state['run'], revision=state['revision'],
+                                     mode='verify', request=request)
+        assert answer['status'] == 'resumed' and answer['state_changed'] is False
+    else:
+        with pytest.raises(w.Refusal, match='Stop or join'):
+            continuation.resume(c, actor='root', run=state['run'], revision=state['revision'],
+                                 mode='verify', request=request)
+    assert c._path().read_bytes() == before
+    assert {p.name: p.read_bytes() for p in store.root.rglob('*.json')} == objects
+
+
+@pytest.mark.parametrize('choice', ['changes_requested', 'rejected', 'cancelled'])
+def test_denial_does_not_veto_bound_negative_human_decision(tmp_path, monkeypatch, choice):
+    from taskplane.tests.test_worker_runtime import recorded_denial
+    from taskplane.tests.test_workflow_local import decision
+    from taskplane.worker_runtime import now
+    host, grant, _, _, _ = recorded_denial(tmp_path, monkeypatch)
+    c = host.controller; db = c._read(c._path()); state = db['runs'][host.state['run']]
+    stage = state['visits'][state['index']]
+    stage.update(decision='awaiting_human_approval', submitted_at=now(), packet=dict(phase=stage['phase'], visit=stage['id'],
+        checkpoint='fixture', manifest={}, source_manifest={}, context={}, output={}))
+    c._write(c._path(), db)
+    original = deepcopy(state['workers'][grant])
+    host.parent.unlink()
+    words = {'changes_requested': 'Changes requested', 'rejected': 'Rejected', 'cancelled': 'Cancelled'}[choice]
+    updated = c.apply('decide', state['run'], expected_revision=state['revision'],
+                      native_reference=json.dumps(decision(state, text=words)))
+    assert w.current(updated)['decision'] == choice
+    assert updated['workers'][grant] == original
+    assert not c.can_seal(state['run'])
+
+
 class FixtureHost(h.HostAdapter):
     name = "isolated-test-host"
 

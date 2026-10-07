@@ -651,3 +651,296 @@ def test_unknown_claude_capacity_uses_explicit_budget_only(tmp_path, host, limit
     observed = c.worker(s['run'], 'status')['capacity']
     assert observed['host_slots'] is None and observed['configured_limit'] == observed['effective_limit'] == 2
     assert observed['includes_root'] is False
+
+
+def denied_launch(tmp_path, monkeypatch, *, legacy=False):
+    """Real-shaped native refusal with an admitted call and no child."""
+    from taskplane import claude_worker_observations as observations, flow
+    from taskplane.tests.test_claude_interactive_recovery import Interactive
+    from taskplane.tests.test_claude_worker_lifecycle import DENIAL_BODY
+    from taskplane.context import digest
+    initial_hook = Interactive.root_hook
+    def root_hook_with_explicit_lineage(host):
+        host.parent.write_text(json.dumps(dict(sessionId='root', cwd=str(tmp_path),
+                                              type='user', isSidechain=False)) + '\n')
+        initial_hook(host)
+    with monkeypatch.context() as patch:
+        patch.setattr(Interactive, 'root_hook', root_hook_with_explicit_lineage)
+        host = Interactive(tmp_path, monkeypatch)
+    item = reserve(host.controller, host.state)
+    grant = item['grant']['grant_id']
+    event = host.root_control('Agent', {'prompt': item['message'], 'description': 'denial regression',
+                                      'subagent_type': 'taskplane:tp-lens'})
+    call = dict(type='assistant', sessionId='root', cwd=str(tmp_path), isSidechain=False,
+                uuid='72bc5eed-004f-4848-8400-3387f1637a59', timestamp=wr.now(),
+                message={'role': 'assistant', 'content': [dict(type='tool_use', name='Agent',
+                    id=event['tool_use_id'], input=event['tool_input'])]})
+    host.append(call)
+    flow.hook(event, governor=host.controller)
+    result = dict(type='user', sessionId='root', session_id='root', cwd=str(tmp_path), isSidechain=False,
+                  parentUuid=call['uuid'], sourceToolAssistantUUID=call['uuid'], timestamp=wr.now(),
+                  toolDenialKind='automode-blocked', toolUseResult='Error: ' + DENIAL_BODY,
+                  message={'role': 'user', 'content': [dict(type='tool_result',
+                      tool_use_id=event['tool_use_id'], is_error=True, content=DENIAL_BODY)]})
+    host.append(result)
+    if legacy:
+        db = host.controller._read(host.controller._path())
+        state = db['runs'][host.state['run']]
+        row = state['workers'][grant]
+        answer = observations.observe('root', row, {}, source=state['claude_transcript_source'])
+        assert answer['status'] == 'launch_denied'
+        cursor = deepcopy(answer['cursor'])
+        entry = cursor['entries'][digest(observations._binding('root', row))]
+        for role in ('call', 'result'):
+            for key in observations._PROJECTION_ADDITIONS[role] - {'agent_type', 'output_file_sha256'}:
+                entry[role][0]['projection'].pop(key)
+        entry['conflict'] = observations.LEGACY_LAUNCH_CONFLICT
+        state['claude_transcript_cursor'] = observations._sealed(cursor)
+        row.update(state='unknown', identity_conflict=True,
+                   identity_freshness={'status': 'conflict', 'reason': observations.LEGACY_LAUNCH_CONFLICT})
+        wr._audit(row, 'identity_observation', {'status': 'conflict', 'host': 'claude',
+                                               'reason': observations.LEGACY_LAUNCH_CONFLICT})
+        host.controller._write(host.controller._path(), db)
+    return host, grant, event, call, result
+
+
+def test_denial_runtime_regression(tmp_path, monkeypatch):
+    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch)
+    host.controller.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, host.state['run'])
+    row = host.controller.report()['workers'][grant]
+    assert row['state'] == 'failed' and row['terminal_status'] == 'launch_denied'
+    assert row.get('revoked_at') and row.get('ended_at') and row.get('denial_proof_ref')
+    assert not any(row.get(key) for key in ('worker_id', 'claimed_at', 'context_receipt', 'events', 'launch_proof_ref'))
+    assert not host.controller.report().get('task_results')
+
+
+def recorded_denial(tmp_path, monkeypatch):
+    host, grant, event, call, result = denied_launch(tmp_path, monkeypatch)
+    host.controller.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, host.state['run'])
+    return host, grant, event, call, result
+
+
+def denial_lifecycle_event(host, call_id, variant='start', **extra):
+    """Synthetic native payload delivered through the real lifecycle ingester."""
+    event = dict(hook_event_name='SubagentStart' if variant == 'start' else 'SubagentStop',
+        host='claude', session_id='root', agent_id='observed-child', tool_use_id=call_id,
+        taskplane_automatic_hook=True, taskplane_observed_binding={'root': 'root', 'principal': 'root'},
+        cwd=str(host.workspace), transcript_path=str(host.parent),
+        agent_transcript_path=str(host.parent.with_suffix('') / 'subagents/agent-observed-child.jsonl'))
+    if variant == 'explicit': event['status'] = 'completed'
+    if variant in {'modern', 'textless'}:
+        event['stop_hook_active'] = False
+        if variant == 'modern': event['last_assistant_message'] = 'Observed child report'
+        else: event['agent_type'] = 'taskplane:tp-lens'
+    return {**event, **extra}
+
+
+def ingest_unrelated_lifecycle(host, count):
+    # Populate via ingestion, not by inserting preconstructed cache records.
+    c = host.controller; db = c._read(c._path()); state = db['runs'][host.state['run']]
+    for index in range(count):
+        wr.observe(state, denial_lifecycle_event(host, f'unrelated-call-{index}', agent_id=f'unrelated-{index}'))
+    assert len(state.get('unbound_worker_events', {})) == count
+    c._write(c._path(), db)
+
+
+@pytest.mark.parametrize('prior_events', [0, 1023, 1024])
+@pytest.mark.parametrize('variant', ['start', 'explicit', 'modern', 'textless'])
+@pytest.mark.parametrize('timing', ['before_denial', 'after_denial'])
+def test_denial_lifecycle_ingestion_survives_cache_capacity(tmp_path, monkeypatch, prior_events, variant, timing):
+    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch)
+    c = host.controller; run = host.state['run']
+    ingest_unrelated_lifecycle(host, prior_events)
+    if timing == 'after_denial':
+        c.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, run)
+        assert c.can_seal(run)
+    original = deepcopy(c.report()['workers'][grant])
+    lifecycle = denial_lifecycle_event(host, event['tool_use_id'], variant)
+    c.observe(lifecycle, run)
+    changed = c.report()['workers'][grant]
+    assert changed['state'] == 'unknown' and changed.get('identity_conflict') is True
+    retained = changed['denial_lifecycle_observation']
+    assert retained['parent'] == 'root' and retained['call_id'] == event['tool_use_id']
+    assert retained['worker_id'] == 'observed-child' and retained['automatic'] is True
+    assert not any(key in retained for key in ('transcript_path', 'runtime', 'body_digest'))
+    assert not wr.joined(c.report()) and not c.can_seal(run)
+    assert not any(changed.get(key) for key in ('worker_id', 'claimed_at', 'context_receipt', 'result_ref'))
+    for key in ('denial_proof_ref', 'denial_observation', 'revoked_at', 'ended_at', 'terminal_status'):
+        assert changed.get(key) == original.get(key)
+    assert len(c.report()['unbound_worker_events']) == min(prior_events + 1, 1024)
+    history = deepcopy(changed['reconciliation_events'])
+    c.observe(lifecycle, run)
+    host.append({'type': 'progress', 'message': 'unchanged denial remains readable'})
+    assert not c.can_seal(run)
+    repeated = c.report()['workers'][grant]
+    assert repeated['identity_conflict'] is True and repeated['reconciliation_events'] == history
+    assert repeated['denial_lifecycle_observation'] == retained
+    # Optional diagnostic retention cannot become the sole contradiction proof.
+    db = c._read(c._path()); db['runs'][run]['unbound_worker_events'] = {}
+    c._write(c._path(), db)
+    assert not c.can_seal(run)
+    assert c.report()['workers'][grant]['denial_lifecycle_observation'] == retained
+    assert not c.report().get('task_results')
+
+
+@pytest.mark.parametrize('defect', ['parent', 'call', 'missing_call', 'automatic', 'observed_root',
+                                   'observed_principal', 'identity', 'unsupported_stop'])
+def test_denial_saturated_ingestion_requires_exact_automatic_lifecycle(tmp_path, monkeypatch, defect):
+    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch)
+    c = host.controller; run = host.state['run']
+    ingest_unrelated_lifecycle(host, 1024)
+    c.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, run)
+    original = deepcopy(c.report()['workers'][grant])
+    lifecycle = denial_lifecycle_event(host, event['tool_use_id'])
+    if defect == 'parent': lifecycle['session_id'] = 'foreign'
+    if defect == 'call': lifecycle['tool_use_id'] = 'unrelated-call'
+    if defect == 'missing_call': lifecycle.pop('tool_use_id')
+    if defect == 'automatic': lifecycle['taskplane_automatic_hook'] = False
+    if defect == 'observed_root': lifecycle['taskplane_observed_binding']['root'] = 'foreign'
+    if defect == 'observed_principal': lifecycle['taskplane_observed_binding']['principal'] = 'foreign'
+    if defect == 'identity': lifecycle['agent_id'] = 'root'
+    if defect == 'unsupported_stop': lifecycle.update(hook_event_name='SubagentStop', status='unknown')
+    c.observe(lifecycle, run)
+    assert c.can_seal(run) and wr.joined(c.report())
+    assert c.report()['workers'][grant] == original
+    assert len(c.report()['unbound_worker_events']) == 1024
+
+
+def test_exact_automatic_lifecycle_preserves_successful_claude_launch(tmp_path, monkeypatch):
+    from taskplane.tests.test_claude_interactive_recovery import Interactive
+    host = Interactive(tmp_path, monkeypatch)
+    original_observe = host.controller.observe
+    def observe_exact_start(event, run):
+        if event.get('hook_event_name') != 'SubagentStart':
+            return original_observe(event, run)
+        row = host.controller.report()['workers'][host.grant]
+        return original_observe({**event, 'tool_use_id': row['call_id'],
+            'taskplane_automatic_hook': True,
+            'taskplane_observed_binding': {'root': 'root', 'principal': 'root'}}, run)
+    with monkeypatch.context() as patch:
+        patch.setattr(host.controller, 'observe', observe_exact_start)
+        host.launch()
+    row = host.row()
+    assert row['worker_id'] == host.child_id and row['state'] == 'bootstrapping'
+    assert row['denial_lifecycle_observation']['worker_id'] == host.child_id
+    assert row['launch_proof_ref'] and not row.get('identity_conflict')
+    host.ready()
+    host.deliver('Successful exact-call lifecycle report')
+    host.accept()
+    assert host.row()['state'] == 'accepted'
+
+
+def test_denial_is_idempotent_unsatisfied_and_requires_fresh_grant_reason(tmp_path, monkeypatch):
+    host, grant, event, _, _ = recorded_denial(tmp_path, monkeypatch)
+    c, s = host.controller, host.controller.report()
+    original = deepcopy(s['workers'][grant])
+    assert c.can_seal(s['run'])
+    assert c.can_seal(s['run'])
+    assert c.report()['workers'][grant] == original
+    with pytest.raises(w.Refusal): c.guard(event, s['run'])
+    with pytest.raises(w.Refusal): c.worker(s['run'], 'claim', grant=grant)
+    with pytest.raises(w.Refusal):
+        c.worker(s['run'], 'accept-result', revision=s['revision'], task='T0', grant=grant,
+                 request={'outputs': ['T0.md'], 'checks': []})
+    assert not wr.result_valid(tmp_path, s, 'T0')
+    with pytest.raises(w.Refusal, match='retry_reason'): reserve(c, s)
+    fresh = reserve(c, s, retry_reason='Host permission changed in a separate authorized request.')
+    assert fresh['grant']['grant_id'] != grant and fresh['grant']['attempt'] == 2
+    assert not fresh['grant']['worker_id']
+    assert c.report()['workers'][grant]['denial_proof_ref'] == original['denial_proof_ref']
+
+
+@pytest.mark.parametrize('defect', ['missing', 'partial', 'budget', 'changed_span', 'late_child',
+                                   'late_notification', 'late_lifecycle', 'proof', 'source', 'bound'])
+def test_revoked_denial_refresh_never_uses_stale_quiescence(tmp_path, monkeypatch, defect):
+    from taskplane import claude_worker_observations as observations
+    from taskplane.context import Store
+    from taskplane.tests.test_claude_worker_lifecycle import encoded, notification_record
+    host, grant, _, _, result = recorded_denial(tmp_path, monkeypatch)
+    c, s = host.controller, host.controller.report()
+    original = deepcopy(s['workers'][grant]); original_bytes = host.parent.read_bytes()
+    saved = host.parent.with_suffix('.saved')
+    if defect == 'missing': host.parent.rename(saved)
+    if defect == 'partial':
+        with host.parent.open('ab') as stream: stream.write(b'{"incomplete":')
+    if defect == 'budget':
+        budget_type = observations.ReadBudget
+        monkeypatch.setattr(observations, 'ReadBudget', lambda: budget_type(max_bytes=0))
+    if defect == 'changed_span':
+        host.parent.write_bytes(original_bytes.replace(b'denial regression', b'changed regression'))
+    if defect == 'late_child':
+        competing = deepcopy(result)
+        competing['toolUseResult'] = dict(agentId='late-child', isAsync=True, status='async_launched')
+        host.append(competing)
+    if defect == 'late_notification':
+        note = notification_record(original, {'toolUseResult': {'agentId': 'late-child', 'outputFile': '/native'}})
+        note['sessionId'] = 'root'
+        host.append(note)
+    if defect in {'proof', 'source', 'late_lifecycle', 'bound'}:
+        db = c._read(c._path()); current = db['runs'][s['run']]
+        if defect == 'proof':
+            path = Store(tmp_path).path(original['denial_proof_ref']['sha256'])
+            path.write_text('{}')
+        if defect == 'source': current['claude_transcript_source']['sha256'] = '0' * 64
+        if defect == 'late_lifecycle':
+            current.setdefault('unbound_worker_events', {})['late'] = dict(parent='root', call_id=original['call_id'],
+                worker_id='late-child', event='SubagentStart')
+        if defect == 'bound':
+            for index in range(observations.MAX_CANDIDATES):
+                other = deepcopy(original); other['grant_id'] = f'{index:032x}'
+                current['workers'][other['grant_id']] = other
+        c._write(c._path(), db)
+    assert c.can_seal(s['run']) is False
+    changed = c.report()['workers'][grant]
+    assert changed['state'] == 'unknown' and not wr.joined(c.report())
+    assert changed['revoked_at'] == original['revoked_at'] and changed['denial_proof_ref'] == original['denial_proof_ref']
+    assert not changed.get('worker_id') and not c.report().get('task_results')
+    sticky = defect not in {'missing', 'partial', 'budget', 'bound'}
+    assert bool(changed.get('identity_conflict')) is sticky
+    if defect == 'missing':
+        saved.rename(host.parent)
+        assert c.can_seal(s['run']) is True
+    if defect == 'partial':
+        with host.parent.open('ab') as stream: stream.write(b'1}\n')
+        assert c.can_seal(s['run']) is True
+    if defect == 'changed_span':
+        host.parent.write_bytes(original_bytes)
+        assert c.can_seal(s['run']) is False
+    if defect == 'late_child':
+        host.parent.rename(saved)
+        assert c.can_seal(s['run']) is False
+        saved.rename(host.parent)
+        assert c.can_seal(s['run']) is False
+    # Unrelated appended rows make a fresh proof while retaining the first one.
+    if defect in {'missing', 'partial'}:
+        with host.parent.open('ab') as stream: stream.write(encoded({'progress': 1}))
+        assert c.can_seal(s['run'])
+        latest = c.report()['workers'][grant]
+        assert latest['denial_proof_ref'] == original['denial_proof_ref']
+        assert latest['denial_latest_proof_ref'] != original['denial_proof_ref']
+
+
+@pytest.mark.parametrize('field', ['worker_id', 'claimed_at', 'context_receipt', 'result_ref', 'events',
+                                   'started_at', 'native_session_started_at', 'context_delivery',
+                                   'completion_conflict', 'identity_conflict'])
+def test_new_denial_refuses_existing_child_or_work(tmp_path, monkeypatch, field):
+    from taskplane import claude_worker_observations as observations
+    host, grant, _, _, _ = denied_launch(tmp_path, monkeypatch)
+    state = host.controller.report(); row = state['workers'][grant]
+    observation = observations.observe('root', row, {}, source=state['claude_transcript_source'])
+    row[field] = 'contradictory work'
+    answer = wr.reconcile(tmp_path, state, row, observation)
+    assert answer['status'] == 'conflict' and row['state'] == 'unknown'
+    assert not row.get('revoked_at') and not row.get('denial_proof_ref')
+
+
+@pytest.mark.parametrize('field', ['called_at', 'denied_at', 'observed_at', 'host', 'schema', 'assurance',
+                                   'denial_code', 'denial_kind', 'dispatch_digest', 'worker_id'])
+def test_denial_transition_requires_observation_to_match_sealed_proof(tmp_path, monkeypatch, field):
+    from taskplane import claude_worker_observations as observations
+    host, grant, _, _, _ = denied_launch(tmp_path, monkeypatch)
+    state = host.controller.report(); row = state['workers'][grant]
+    observation = observations.observe('root', row, {}, source=state['claude_transcript_source'])
+    observation[field] = 'altered-metadata'
+    assert wr.reconcile(tmp_path, state, row, observation)['status'] == 'conflict'
+    assert row['state'] == 'unknown' and not row.get('ended_at') and not row.get('denial_proof_ref')

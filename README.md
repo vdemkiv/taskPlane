@@ -1,124 +1,61 @@
-# taskplane
+# Taskplane
 
-**Design, build, and review AI-assisted software with a clear plan and evidence that it works.**
+**Plan, build and review software with Claude Code or Codex, keeping decisions and verification connected.**
 
-Taskplane coordinates software delivery in Claude and Codex. Give it a goal: it helps define the outcome, understand the affected code, plan the work, implement it, and verify the result. Requirements, decisions, dependencies and review findings stay connected throughout the task.
+Taskplane is a plugin for coding agents. It connects your requirements, source dependencies, tasks, implementation, tests and review findings in one project-local workflow and dashboard. Use it for a complete delivery, a standalone design or code review, or a reusable workflow you can run with new inputs.
 
-It is for developers and teams who use coding agents for more than a one-off edit and want to understand what is being built, why, and whether it is ready.
+Current version: **2.33.2**. Fresh Claude acceptance testing for this version remains external and pending. Local tests and package checks do not establish that an installed host can complete the same work. See the [candidate test guide](docs/test-candidate.md).
 
 ![Taskplane workflow overview: design, build, review and status](docs/assets/taskplane-cowork-flow.gif)
 
-*Choose a task, agree on the outcome, and follow the work through verified results. Review each stage yourself or authorize automatic continuation with your conditions.*
+## Choose the work
 
-## Why Taskplane
+Describe the outcome in your chat; the agent handles Taskplane's commands and state.
 
-Authorized native workers share the run, accepted task plan and dashboard. Ready
-independent tasks can run concurrently up to observed host capacity; dependent
-tasks wait for verified results. Two overlapping workers is a minimum live
-acceptance test, not a scheduling limit. Each worker consumes its own bounded
-context and receives exact task paths. See the
-[native worker protocol](skills/tp-go/references/codex-native-dispatch.md).
-
-Long coding tasks can lose the original requirement, overlook a dependency, or finish with a claim that has little verification behind it. Taskplane keeps the work connected:
-
-- **Agree on the outcome before building.** Turn a request into a clear scope and observable acceptance criteria.
-- **Understand the effects of a change.** Use the source dependency graph and component map to inform planning and review.
-- **Carry decisions into implementation.** Keep the design, task plan and implementation tied to the same goal.
-- **Know what was verified.** Link completed work to test results and review findings, and make gaps visible.
-- **See where the work stands.** One dashboard shows progress, dependencies, open findings and available token usage.
-
-## Four prompts are enough
-
-| What you need | Ask Taskplane | What you get |
-| --- | --- | --- |
-| Design a change | `taskplane design safe order cancellation before we build it` | A design with trade-offs, affected components and a validation plan. |
-| Build a feature | `taskplane build CSV export for the monthly report` | A planned implementation with verification and review tied to the agreed outcome. |
-| Review code | `taskplane review this branch against main; do not change code` | Actionable findings, source locations and supporting evidence. |
-| Check progress | `taskplane status` | The current stage, remaining work, responsible owner and available usage. |
-
-Use `taskplane help` to see the available routes. You do not need to choose review lenses or operate Taskplane's internal commands yourself.
-
-## Reuse a workflow
-
-Workflow Builder turns a repeatable request into a versioned project-local JSON
-definition. Ask `taskplane create a reusable change risk review with security and
-code-quality reviewers; save it without running it`, then preview or invoke the
-saved version with fresh inputs. Packaged seeds cover change review, a Design
-brief and full feature delivery.
-
-Authoring has a Design checkpoint. Saving and previewing launch no work; the root
-starts an authorized invocation through the existing harness after resolving
-that checkpoint and any occupied run. See the
-[Workflow Builder guide](docs/workflow-builder.md) for commands and limits.
-This source candidate still requires separate candidate-loaded live verification;
-fixture checks do not establish installed-host execution.
-
-## From a goal to working software
-
-A full delivery follows **Product → Design → Plan → Build → Evaluate → Engineering → Retro**:
-
-| Stage | The question it answers |
+| What you need | Example request |
 | --- | --- |
-| Product | What should change, for whom, and how will we know it worked? |
-| Design | How should it work, and what choices or dependencies matter? |
-| Plan | What needs doing, in what order, and how will it be checked? |
-| Build | What implementation delivers the agreed result? |
-| Evaluate | Does the implementation meet each acceptance criterion? |
-| Engineering | What correctness, design, security or maintenance risks remain? |
-| Retro | What was delivered, learned or deliberately left for later? |
+| Define the outcome | `taskplane define the scope and acceptance criteria for CSV export` |
+| Design a change | `taskplane design safe order cancellation before we build it` |
+| Build a feature | `taskplane build CSV export for the monthly report` |
+| Review code | `taskplane review this branch against main; do not change code` |
+| Create a reusable workflow | `taskplane create a reusable change risk review with security and code-quality reviewers; save it without running it` |
+| Check progress | `taskplane status` |
 
-You can also request Product, Design or Engineering review on its own. A review request does not authorize changing the code. Existing review findings can become the inputs to a later delivery, so repairs remain connected to the problems they address.
-
-By default, you review each stage's concrete result and approve it before the next stage. Ask for changes when the result needs correcting. Taskplane keeps the accepted decisions and evidence with the run.
-
-### Working autonomously
-
-Give explicit permission and useful boundaries when you want Taskplane to continue between stages:
-
-```text
-taskplane build CSV export for the monthly report.
-For this run, auto-approve phases after the required checks pass.
-Keep the existing report format and permissions. Pause on a failed check,
-uncertain result or scope change. Stop before Retro for my review.
-```
-
-The dashboard shows those instructions and which stages may continue automatically. Say **"Return to manual approval"** to take back each checkpoint. Automatic continuation still needs the phase's evidence and your conditions to pass.
+Use `taskplane help` for the available routes. Help and status inspect existing state without starting a run. Product, Design and Engineering can run on their own; a review request does not authorize code changes.
 
 ## Install and run your first task
 
-You need Python **3.10 or newer**, Git, a local project folder and a Claude Code or Codex installation that supports plugins. Your organization must permit the plugin. Check Python with `python3 --version` on macOS/Linux or `py -3 --version` on Windows.
+You need **Python 3.10+**, **Git**, a local project folder and a Claude Code or Codex host with plugin support. Your host or organization must allow the plugin and its hooks. Check Python with `python3 --version` on macOS/Linux or `py -3 --version` on Windows.
 
 ### Codex
 
 1. Open **Plugins** in the desktop app, or `/plugins` in Codex CLI.
-2. Install and enable **taskplane** from your permitted marketplace. If your organization manages plugins, use its catalog or ask an administrator to add the package.
-3. Review and trust Taskplane's hook definitions once after installation, and again when definitions change. Codex CLI exposes this under `/hooks`; desktop controls depend on the host version.
-4. Start a new task in your project so the installed skills load.
+2. Install and enable **taskplane** from your permitted marketplace.
+3. Review and trust its hook definitions. Codex CLI exposes this under `/hooks`; desktop controls depend on the host version. Changed hook definitions need renewed review.
+4. Start a new chat in the intended project so the installed skills load.
 
-For a configured CLI marketplace, `codex plugin list` shows the available entries and `codex plugin add taskplane@MARKETPLACE` installs the selected one. Confirm the loaded version when updating; a catalog label alone does not prove which package a current task is using.
+For a configured CLI marketplace, use `codex plugin list` to find the entry and `codex plugin add taskplane@MARKETPLACE` to install it. Managed installations use the organization's catalog.
 
 ### Claude Code
 
-Where your organization allows adding a marketplace:
+Where adding a marketplace is permitted:
 
 ```text
 /plugin marketplace add vdemkiv/taskPlane
 /plugin install taskplane@taskplane-marketplace
 ```
 
-Follow the installation's activation or reload instructions, inspect `/plugin` for errors and `/hooks` for the loaded definitions, and accept the host's project trust prompts as appropriate. Managed users install through their organization's catalog.
+Follow the host's activation or reload instructions. Check `/plugin` for loading errors, inspect `/hooks`, and respond to the project's trust and permission prompts. Managed installations use the organization's catalog.
 
-### Cowork and connected folders
+### Verify an update
 
-Select the durable project and establish its explicit host/execution path binding
-before starting Taskplane. A connected Mac folder establishes neither macOS command
-execution nor local worker execution. Preserve the user's execution restriction:
-`darwin-local` requires Darwin and current local observations; unknown or conflicting
-required observations stop startup or worker dispatch. Installation alone does not
-establish Cowork hook, worker or dashboard support. See the
-[Cowork setup and evidence limits](docs/onboarding.md#cowork-workspace-and-execution)
-before using a connected folder. Live Cowork certification remains unavailable;
-the documented contract has automated fixture coverage.
+Check the runtime actually loaded by the host:
+
+```sh
+python3 /actual/plugin/taskplane/tp.py version --verify
+```
+
+Both manifests should agree on `2.33.2`. A source checkout, an archive and an installed plugin cache are separate copies. Updating one does not update an already running session. Keep loaded skills and hooks on the same installation; reload or start a fresh chat after an update. See [onboarding and troubleshooting](docs/onboarding.md).
 
 ### Try a small real change
 
@@ -129,33 +66,92 @@ taskplane build a CSV export for the monthly report.
 First show me the proposed scope, acceptance criteria and Taskplane dashboard.
 ```
 
-Taskplane should clarify the result, identify affected components and show the first stage in its own dashboard. Review the scope and reply `approved` or `Changes requested: ...`. Continue with the same task so the decisions and evidence remain connected.
+Review the proposed outcome and dashboard, then approve or request changes. Continue in the same chat so the run, decisions and evidence stay connected. If setup is blocked, Taskplane should identify the missing capability or permission and preserve the requested work.
 
-For detailed setup, version checks, updates and troubleshooting, see [Onboarding](docs/onboarding.md). Taskplane's controls use the host's available integration; normal host permissions remain in effect.
+## How delivery works
 
-## Follow the work
+A full delivery follows **Product → Design → Plan → Build → Evaluate → Engineering → Retro**.
 
-The shared dashboard lives at `.taskplane/dashboard.html`. It brings together the current goal and stage, task dependencies, the source graph, review findings and verification evidence.
+| Phase | Result |
+| --- | --- |
+| Product | Outcome, scope and observable acceptance criteria. |
+| Design | Approach, trade-offs, dependencies and validation strategy. |
+| Plan | Ordered tasks, ownership, permitted changes and required checks. |
+| Build | Implementation and recorded verification results. |
+| Evaluate | Evidence showing whether each acceptance criterion is met. |
+| Engineering | Independent reviews of the relevant correctness, security and maintenance risks. |
+| Retro | Delivery summary, lessons and explicit remaining work. |
 
-Available token measurements help you understand the work already done. Missing measurements are shown as unknown, not zero. Phase and run usage must refer to the same run. The dashboard is a snapshot: regenerate it after progress, then refresh the view. Always check that its goal and checkout match the task you are following.
+Each phase submits a concrete result for acceptance before the next phase starts. Manual approval is the default. Accepted decisions, failed checks and requested changes remain in the run's history.
 
-## Learn more
+The coordinating agent assigns useful independent work to native host workers. Each receives scoped files and required context; dependent tasks wait for verified results. Concurrency follows observed host capacity. A required worker that cannot start or complete remains incomplete and is reported as such.
 
-- [Onboarding and troubleshooting](docs/onboarding.md)
+### Working autonomously
+
+Authorize automatic phase approvals with explicit boundaries:
+
+```text
+taskplane build CSV export for the monthly report.
+For this run, auto-approve phases after the required checks pass.
+Keep the existing report format and permissions. Pause on a failed check,
+uncertain result or scope change. Stop before Retro for my review.
+```
+
+The dashboard records the policy and permitted phases. Automatic approval still requires the phase evidence and your conditions to pass. Say **"Return to manual approval"** to take back checkpoint decisions. Phase approval does not grant separate host tool permissions or authorize a scope change.
+
+## Reuse a workflow
+
+Workflow Builder saves repeatable work as a versioned JSON definition in the project. Packaged seeds cover a **change risk review**, **design brief** and **full feature delivery**.
+
+```text
+taskplane create a reusable change risk review with separate security and
+code-quality reviewers and one combined report. Save it without running it.
+
+taskplane preview that workflow for this branch against main.
+
+taskplane run the saved workflow with these inputs.
+```
+
+Authoring uses a Design checkpoint. Saving and previewing do not execute the workflow. An authorized invocation binds fresh inputs and outputs, then uses Taskplane's existing phases, workers, decisions and dashboard. A saved definition carries no approval for future runs. See the [Workflow Builder guide](docs/workflow-builder.md) for inputs, commands and current limits.
+
+## Follow progress and handle interruptions
+
+The dashboard at `.taskplane/dashboard.html` shows the goal, phase, task dependencies, source graph, findings, checks and available token usage. It is a generated snapshot: refresh it after regeneration and check that its project and run match the work you are following. Missing measurements remain unknown.
+
+Ask `taskplane status` for the current owner, completed work and next action. Resume an interrupted run through its original session and supported recovery controls. Preserve failed attempts and incomplete checkpoints; a retry needs a changed condition, not repeated execution of the same blocked command. See [continuation and recovery](docs/cli-reference.md#native-session-continuation).
+
+## Host support and limits
+
+- **Codex:** plugin and hook availability depend on the installed host. Verify the loaded runtime and actual hook activity after installation.
+- **Claude Code:** the claim and context transport supports macOS and Linux. Required Claude context operations refuse on Windows. Fresh live acceptance of the 2.33.2 candidate remains pending; see [external tests](docs/test-candidate.md) and [worker recovery](docs/claude-worker-recovery.md).
+- **Cowork:** requires an explicit selected-project binding and separate observations of command and worker execution. A connected folder alone does not prove local execution. Live Cowork certification remains unavailable; see [Cowork setup](docs/onboarding.md#cowork-workspace-and-execution).
+
+Taskplane's ordinary workflow controls use observed host events and local state. They do not provide an OS sandbox or host-wide protection. Normal host permissions remain in effect. Unit tests, extracted-package checks and native installed-host acceptance are separate evidence.
+
+## Development and packages
+
+From the source checkout, create a virtual environment and install the pinned dependencies in `requirements-dev.lock`.
+
+```sh
+python3 -m pip install --require-hashes --no-deps -r requirements-dev.lock
+python3 scripts/ci_local.py --check quality
+python3 scripts/ci_local.py --check tests --suite all
+python3 scripts/ci_local.py --check browser
+python3 scripts/package_claude.py
+python3 scripts/package_openai.py
+```
+
+The browser check needs Chrome or Chromium. `python3 scripts/ci_local.py` runs tests, quality checks and packaging; add `--browser` for browser coverage.
+
+Packages are written to `dist/taskplane-2.33.2.plugin` for Claude and `dist/taskplane-2.33.2-openai.zip` for Codex. Each JSON sidecar records the source commit, working-tree status, archive hash and member hashes. Building a package does not install or publish it. Follow the [candidate test guide](docs/test-candidate.md) to load and validate those exact bytes.
+
+## Documentation
+
+- [Onboarding, updates and troubleshooting](docs/onboarding.md)
 - [CLI reference](docs/cli-reference.md)
-- [Workflow Builder and reusable seeds](docs/workflow-builder.md)
+- [Workflow Builder](docs/workflow-builder.md)
 - [Candidate packages and external tests](docs/test-candidate.md)
-- [Claude worker verification and recovery](docs/claude-worker-recovery.md)
+- [Claude interactive recovery](docs/claude-interactive-recovery.md)
 - [Engineering review lenses](docs/lens-catalog.md)
 - [Release history](CHANGELOG.md)
-- [Privacy](PRIVACY.md) and [Apache-2.0 license](LICENSE)
-
-## Development
-
-Install the pinned developer dependencies from `requirements-dev.lock` in a virtual environment. Run `python3 scripts/ci_local.py` for the standard checks; add `--browser` for the browser suite. Build the Codex upload archive with `python3 scripts/package_openai.py`. Generated packages go to `dist/`.
-
-Taskplane now supplies bounded phase context and command summaries. Use
-`flow context` to consume current required inputs; new runs require the returned
-receipt in phase evidence. Complete reports remain available with `--full`.
-See [context optimization](docs/cli-reference.md#bounded-context-transport) for receipt semantics,
-verification reuse, and the distinction between transport bytes and billed tokens.
+- [Privacy](PRIVACY.md) · [Terms](TERMS.md) · [Apache-2.0 license](LICENSE)

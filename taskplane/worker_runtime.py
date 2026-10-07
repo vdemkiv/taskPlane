@@ -59,7 +59,9 @@ def validate(state: dict[str, Any]) -> None:
 
 
 def joined(state: dict[str, Any]) -> bool:
-    return not any(r["state"] in LIVE for r in state.get("workers", {}).values())
+    return not any(r["state"] in LIVE or is_launch_denial(r) and (
+        r.get('identity_conflict') or r.get('denial_freshness', {}).get('status') != 'launch_denied')
+        for r in state.get("workers", {}).values())
 
 
 def task(state: dict[str, Any], task_id: str) -> dict[str, Any]:
@@ -302,7 +304,7 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
               "Cohort startup needs the declared child's current claim, complete context and matching automatic hooks.")
     previous = [r for r in rows.values() if r["task_id"] == task_id]
     retry_reason = request.get("retry_reason")
-    if previous and "read_inputs" in definition:
+    if previous and ("read_inputs" in definition or any(is_launch_denial(r) for r in previous)):
         w.require(isinstance(retry_reason, str) and 8 <= len(retry_reason.strip()) <= 512,
                   "invalid_evidence", "A repeated scoped task needs a concrete retry_reason before another attempt.")
     live = [r for r in rows.values() if r["state"] in LIVE]
@@ -604,6 +606,8 @@ def bind_worker(state: dict[str, Any], row: dict[str, Any], identity: str, name:
               "scope_violation", "Invalid native worker identity.")
     if row.get('revoked_at'):
         _audit(row, 'late_identity', {'worker_id': identity})
+        if is_launch_denial(row):
+            _denial_unknown(row, 'conflict', 'Native child identity arrived after denial')
         return False
     if row.get('binding') != binding(state):
         _audit(row, 'historical_identity', {'worker_id': identity})
@@ -629,6 +633,8 @@ def terminal(row: dict[str, Any], status: str, event_id: str) -> None:
         return
     if row.get('revoked_at'):
         _audit(row, 'late_terminal', {'status': status, 'event_id': event_id})
+        if is_launch_denial(row):
+            _denial_unknown(row, 'conflict', 'Native terminal evidence arrived after denial')
         return
     previous = row["events"].get(event_id)
     if previous == status:
@@ -649,6 +655,127 @@ def _audit(row: dict[str, Any], kind: str, value: dict[str, Any]) -> None:
     key = digest({'kind': kind, 'value': value})
     if key not in events and len(events) < 128:
         events[key] = {'kind': kind, 'value': deepcopy(value), 'observed_at': now()}
+    elif key not in events:
+        row['reconciliation_overflow'] = True
+
+
+def is_launch_denial(row: dict[str, Any]) -> bool:
+    return row.get('terminal_status') == 'launch_denied' or bool(row.get('denial_proof_ref'))
+
+
+def denial_has_work(state: dict[str, Any], row: dict[str, Any]) -> bool:
+    """A rejection must never acquire child, task-result or lifecycle evidence."""
+    return (any(row.get(key) for key in ('worker_id', 'claimed_at', 'started_at', 'native_session_started_at',
+        'identity_bound_at', 'identity_observation', 'context_receipt', 'context_delivery',
+        'result', 'result_ref', 'events', 'launch_proof_ref', 'launch_proof_refs',
+        'handback', 'stop_observation', 'stop_observations', 'startup_handbacks', 'completion_conflict',
+        'denial_lifecycle_observation'))
+        or any(result.get('grant') == row['grant_id'] for result in state.get('task_results', {}).values())
+        or any(event.get('parent') == row['root'] and event.get('call_id') == row.get('call_id')
+               for event in state.get('unbound_worker_events', {}).values()))
+
+
+def _denial_unknown(row: dict[str, Any], status: str, reason: str) -> None:
+    row['state'] = 'unknown'
+    if status == 'conflict':
+        row['identity_conflict'] = True
+    value = {'status': status, 'reason': reason}
+    row['denial_freshness'] = value
+    _audit(row, 'denial_revalidation', value)
+
+
+def record_launch_denial(state: dict[str, Any], row: dict[str, Any], observation: dict[str, Any], *,
+                         persist_proof: bool = True) -> bool:
+    """Commit only secure reader output; this is failure evidence, never authority."""
+    from . import claude_worker_observations as claude
+    proof = observation.get('denial_proof')
+    historical = is_launch_denial(row)
+    try:
+        if not isinstance(proof, dict):
+            raise ValueError('Missing secure denial proof')
+        expected = claude._binding(state['root'], row)
+        exact = (row.get('host') == 'claude' and row.get('workspace') == state['workspace']
+            and row.get('run') == state['run'] and row.get('root') == state['root']
+            and (historical or row.get('binding') == binding(state) and not row.get('revoked_at')
+                 and row['state'] == 'launch_pending')
+            and not row.get('identity_conflict') and not denial_has_work(state, row)
+            and row.get('terminal_status') in (None, 'launch_denied')
+            and claude._valid_seal(proof, 'taskplane.claude-launch-denial-proof/v1')
+            and proof['binding'] == expected and proof['source'] == row.get('transcript_source')
+            and proof['source'] == state.get('claude_transcript_source')
+            and proof['source_sha256'] == proof['source']['sha256']
+            and proof['admission_timestamps'] == {key: row[key] for key in
+                ('launch_requested_at', 'admitted_at') if row.get(key) is not None}
+            and set(proof['records']) == {'call', 'result'}
+            and all(len(proof['records'][role]) == 1 for role in ('call', 'result'))
+            and type(proof.get('watermark')) is int and proof['watermark'] >=
+                proof['records']['result'][0]['reference']['offset'] + proof['records']['result'][0]['reference']['bytes']
+            and observation.get('status') == 'launch_denied' and observation.get('host') == 'claude'
+            and observation.get('schema') == 'taskplane.worker-identity-observation/v1'
+            and observation.get('assurance') == 'observed'
+            and not any(observation.get(key) for key in ('worker_id', 'started_at', 'proof', 'completion', 'peer_handback'))
+            and observation.get('denial_kind') == 'automode-blocked'
+            and observation.get('denial_code') == 'auto-mode-bypass'
+            and observation.get('called_at') == proof['records']['call'][0]['projection']['timestamp']
+            and observation.get('denied_at') == observation.get('observed_at') ==
+                proof['records']['result'][0]['projection']['timestamp']
+            and all(observation.get(key) == expected[key] for key in
+                ('parent', 'workspace', 'call_id', 'grant_id', 'attempt', 'dispatch_digest'))
+            and observation.get('record_sha256') == {role: proof['records'][role][0]['projection']['record_sha256']
+                                                    for role in ('call', 'result')}
+            and observation.get('evidence_sha256') == digest(observation['record_sha256']))
+        store = Store(Path(state['workspace']))
+        if exact and historical:
+            old = store.resolve(row['denial_proof_ref'])
+            latest = store.resolve(row['denial_latest_proof_ref'])
+            exact = (row.get('terminal_status') == 'launch_denied' and bool(row.get('revoked_at'))
+                     and row['state'] in {'failed', 'unknown'}
+                     and row.get('ended_at') == old['records']['result'][0]['projection']['timestamp'])
+            for retained in (old, latest):
+                exact = exact and claude._valid_seal(retained, 'taskplane.claude-launch-denial-proof/v1') and all(
+                    retained[key] == proof[key] for key in
+                    ('binding', 'source', 'source_sha256', 'admission_timestamps', 'records'))
+                exact = exact and type(retained['watermark']) is int and retained['watermark'] <= proof['watermark']
+        if not exact:
+            raise ValueError('Denial proof or no-child binding disagrees')
+        reference = (store.put if persist_proof else store.reference)('claude-launch-denial-proof', proof)
+        row.setdefault('denial_proof_ref', reference)
+        row['denial_latest_proof_ref'] = reference
+        row.setdefault('denial_observation', {key: deepcopy(value) for key, value in observation.items()
+            if key not in {'cursor', 'budget', 'denial_proof'}})
+        row.setdefault('revoked_at', now())
+        row.setdefault('ended_at', observation['denied_at'])
+        row.update(state='failed', terminal_status='launch_denied',
+                   identity_freshness={'status': 'launch_denied', 'reason': observation.get('reason')},
+                   denial_freshness={'status': 'launch_denied', 'proof_ref': reference,
+                                     'watermark': proof['watermark']})
+        _audit(row, 'launch_denied', {'proof_ref': row['denial_proof_ref']})
+        return True
+    except (w.Refusal, KeyError, TypeError, ValueError, IndexError):
+        _denial_unknown(row, 'conflict', 'Denial proof or no-child binding disagrees')
+        return False
+
+
+def refresh_launch_denials(state: dict[str, Any], event: dict[str, Any] | None = None, *, budget: Any = None) -> None:
+    """Caller holds the controller lock and persists progress before any refusal."""
+    attempts = [row for row in records(state).values() if is_launch_denial(row)]
+    observe_claude_launches(state, attempts, event or {}, budget=budget)
+
+
+def launch_denials_verified(state: dict[str, Any]) -> bool:
+    """Read-only quiescence: reobserve a copy without storing new proof objects."""
+    from . import claude_worker_observations as claude
+    if not any(is_launch_denial(row) for row in state.get('workers', {}).values()):
+        return True
+    candidate = deepcopy(state)
+    attempts = [row for row in records(candidate).values() if is_launch_denial(row)]
+    if len(attempts) > claude.MAX_CANDIDATES:
+        return False
+    result = claude.observe_many(candidate['root'], attempts, {}, source=candidate.get('claude_transcript_source'),
+                                cursor=candidate.get('claude_transcript_cursor'))
+    return all(observation['status'] == 'launch_denied'
+               and record_launch_denial(candidate, row, observation, persist_proof=False)
+               for row, observation in zip(attempts, result['observations']))
 
 
 def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
@@ -664,8 +791,15 @@ def reconcile(workspace: Path, state: dict[str, Any], row: dict[str, Any],
               and row.get('root') == state.get('root') and row.get('run') == state.get('run'),
               'scope_violation', 'Worker reconciliation belongs to another attempt or workspace.')
     status = observation.get('status')
-    w.require(status in {'matched', 'not_yet_available', 'unsupported', 'conflict'},
+    w.require(status in {'matched', 'launch_denied', 'not_yet_available', 'unsupported', 'conflict'},
               'invalid_evidence', 'Unsupported worker identity observation.')
+    if status == 'launch_denied':
+        accepted = record_launch_denial(state, row, observation)
+        return {'status': 'launch_denied' if accepted else 'conflict', 'state': row['state']}
+    if is_launch_denial(row):
+        _denial_unknown(row, status if status in {'not_yet_available', 'unsupported'} else 'conflict',
+                        observation.get('reason', 'Native evidence contradicts denial'))
+        return {'status': status, 'state': row['state']}
     # Parsers return only compact metadata. Never persist transcript/prompt bytes.
     fields = ('status', 'reason', 'host', 'parent', 'workspace', 'call_id', 'worker_id',
               'grant_id', 'attempt', 'dispatch_digest', 'evidence_sha256', 'record_sha256',
@@ -790,7 +924,15 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
     from . import claude_worker_observations as claude
     if not attempts:
         return []
-    w.require(len(attempts) <= claude.MAX_CANDIDATES, "state_unavailable", "Claude attempt observation bound exceeded.")
+    if len(attempts) > claude.MAX_CANDIDATES:
+        # Do not verify a prefix and silently release the omitted candidates.
+        for row in attempts:
+            observation = {'status': 'unsupported', 'reason': 'Claude attempt observation bound exceeded.'}
+            if is_launch_denial(row):
+                _denial_unknown(row, observation['status'], observation['reason'])
+            else:
+                row['state'] = 'unknown'
+        return [dict(observation) for _ in attempts]
     result = claude.observe_many(state["root"], attempts, event,
         source=state.get("claude_transcript_source"), cursor=state.get("claude_transcript_cursor"), budget=budget)
     if result["cursor"] is not None:
@@ -798,7 +940,7 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
     state["claude_transcript_budget"] = result["budget"]
     store = Store(Path(state["workspace"]))
     for row, observation in zip(attempts, result["observations"]):
-        if observation.get("proof"):
+        if observation.get("proof") and not is_launch_denial(row):
             # References stay reachable in attempts and archived workflow state.
             ref = store.put("claude-launch-proof", observation["proof"])
             refs = row.setdefault("launch_proof_refs", [])
@@ -1017,6 +1159,20 @@ def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
                     value.update(transcript_path=event.get('transcript_path'),
                         agent_transcript_path=event.get('agent_transcript_path'))
                 event_id = digest(value | {'event_id': event.get('event_id')})
+                # Exact automatic child evidence must survive the bounded
+                # diagnostic cache, including before denial or legacy recovery.
+                # Retaining it never binds a child or establishes completion.
+                if (isinstance(call, str) and 0 < len(call) <= 512
+                        and event.get('taskplane_automatic_hook') is True
+                        and observed.get('root') == state['root'] and observed.get('principal') == state['root']):
+                    for row in attempts:
+                        if (row.get('call_id') == call and not row.get('worker_id')
+                                and row.get('workspace') == state['workspace']):
+                            row.setdefault('denial_lifecycle_observation',
+                                {'event': name, 'parent': parent, 'worker_id': identity, 'call_id': call,
+                                 'event_id': event_id, 'automatic': True, 'observed_at': now()})
+                            if is_launch_denial(row):
+                                _denial_unknown(row, 'conflict', 'Native lifecycle evidence contradicts denial')
                 pending = state.setdefault('unbound_worker_events', {})
                 if event_id not in pending and len(pending) < 1024:
                     pending[event_id] = {**value, 'observed_at': now()}
@@ -1025,13 +1181,13 @@ def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
                     "reason": "SubagentStop without a supported explicit terminal status cannot prove completion.",
                     "event_digest": digest({k: event.get(k) for k in ("agent_id", "session_id", "status", "event_id")})}
     correlated_call = call if tool in {'Agent', 'Task'} or name in {'SubagentStart', 'SubagentStop'} else None
-    candidates = [row for row in attempts if not row.get('revoked_at')
+    candidates = [row for row in attempts if is_launch_denial(row) or (not row.get('revoked_at')
                   and row['state'] not in {'accepted', 'failed', 'interrupted'}
                   and (row.get('call_id') == correlated_call if correlated_call else
-                       (not identity or row.get('worker_id') in (None, identity)))]
+                       (not identity or row.get('worker_id') in (None, identity))))]
     # A lifecycle event does not select the sole/latest child. Each candidate
     # must independently supply its exact admitted call/result/header proof.
-    observe_claude_launches(state, candidates[:64], event, budget=budget)
+    observe_claude_launches(state, candidates, event, budget=budget)
     return True
 
 
