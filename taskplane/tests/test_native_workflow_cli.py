@@ -338,7 +338,7 @@ def test_native_state_repairs_through_production_interfaces(tmp_path,host):
     exercise_state_repairs(tmp_path.resolve()/'native',host)
 
 
-def exercise_repeated_repair_capacity(workspace, host, root=ROOT):
+def exercise_repeated_repair_capacity(workspace, host, root=ROOT, *, stress=True):
     """Retain eleven real checkpoints across two accepted repair routes."""
     create(workspace)
     state = cli(workspace, host, 'start', '--scope', '.taskplane/scope.json',
@@ -368,7 +368,7 @@ def exercise_repeated_repair_capacity(workspace, host, root=ROOT):
         # retained graph/task contexts push the old indented store past 8 MiB.
         out['retained_check_details'] = [
             {'check':f'fixture-{i}', 'observations':{'status':'pass', 'detail':['retained', 'é']}}
-            for i in range(3000)]
+            for i in range(3000 if stress else 3)]
         (workspace/target).write_text(json.dumps(out))
         state = cli(workspace, host, 'submit', '--output', target, '--tasks', 'tasks.json',
                     '--expected-revision', str(state['revision']), root=root)['workflow']
@@ -399,13 +399,22 @@ def exercise_repeated_repair_capacity(workspace, host, root=ROOT):
                     '--expected-revision', str(state['revision']), root=root)['workflow']
         resumed = cli(workspace, host, 'report', '--run', state['run'], root=root)['workflow']
         assert resumed['revision'] == state['revision'] and not resumed.get('invalidation_pending')
-    assert largest_pretty > 8 * 1024 * 1024 > largest_compact
+    assert largest_compact < 8 * 1024 * 1024
+    if stress:
+        assert largest_pretty > 8 * 1024 * 1024
     assert state['finished'] and len(state['decisions']) == len(previous_packets) == 11
     assert sum('route_change' in item for item in state['history']) == 2
     if os.name == 'posix':
         assert store.stat().st_mode & 0o777 == 0o600
     return {'host':host, 'checkpoints':11, 'repair_routes':2, 'largest_pretty_bytes':largest_pretty,
             'largest_compact_bytes':largest_compact, 'prior_packets_and_decisions_preserved':True}
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_native_repeated_repairs_preserve_checkpoint_history(tmp_path, host):
+    # Routine integration checks all eleven transitions and both repair routes.
+    # The capacity suite repeats them with the actual >8 MiB historical payload.
+    exercise_repeated_repair_capacity((tmp_path/'repairs').resolve(), host, stress=False)
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])

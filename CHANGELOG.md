@@ -5,7 +5,9 @@
 - Compare accepted scope paths using native separators, preserving existing audit baselines and rejection of out-of-scope changes.
 - Make original-session path checks and verifier fixtures portable; retain safe refusal where secure file-reading primitives are unavailable.
 - Apply the Claude fixture capability requirement when helpers are reused by other test modules; keep unsupported-host refusal coverage.
-- Split core tests into four deterministic, non-overlapping shards per OS and run the affected portability cases before them. Cancel superseded branch runs and bound each core/native job to 30 minutes.
+- Split core/native tests into four/two deterministic, non-overlapping shards per OS. Run portability checks concurrently, cancel superseded branch runs and bound routine test jobs to 15 minutes.
+- Remove repeated archive behavior suites and full-workflow setup for exhaustive parser cases. Retain extracted-runtime journeys, representative controller integration and the complete language corpus.
+- Run the full 8 MiB storage stress fixture weekly and on demand; retain byte-boundary and repeated-repair history checks in routine CI. The full local suite still includes the stress fixture.
 - Preserve the failed 2.33.2 Windows CI evidence and keep live Claude validation deferred to external testing.
 
 ## v2.33.2 — Local recovery closeout and external test candidate

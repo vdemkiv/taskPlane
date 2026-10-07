@@ -1,9 +1,6 @@
 """Source policy reachability and isolated archive parity/behavior evidence."""
-from contextlib import redirect_stdout
-from copy import deepcopy
 import hashlib
 import inspect
-import io
 import json
 import os
 from pathlib import Path
@@ -14,16 +11,10 @@ import zipfile
 import pytest
 
 from scripts import package_plugin
-from taskplane.tests.test_workflow_host import FixtureHost, controller, native
-from taskplane.tests.test_workflow_evidence import prepare
-from taskplane.tests.test_workflow_delivery import output
-from taskplane.tests.test_native_workflow_cli import exercise_harness_entry, shipped_execution_prompts
-from taskplane.tests.test_native_workflow_cli import exercise, exercise_state_repairs, exercise_counter_freshness, exercise_dashboard_publication_order
-from taskplane.tests.test_workflow_local import task_observation_checkpoint, decision, decide, present
-from taskplane.tests.test_workflow_autonomy import exercise_autonomous, exercise_nonconsent_cli
-from taskplane.tests.test_native_workflow_cli import exercise_correction_cli
-from taskplane.tests.test_native_workflow_cli import CLAUDE_TRANSPORT_SUPPORTED, exercise_unsupported_claude_context
-from taskplane.tests import test_harness_review_regressions as review_regressions
+from taskplane.tests.test_native_workflow_cli import (
+    CLAUDE_TRANSPORT_SUPPORTED, exercise, exercise_harness_entry,
+    exercise_unsupported_claude_context,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -321,197 +312,17 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
         assert 'hooks/hooks.json' in archive.namelist()
         archive.extractall(extracted)
     exercise_workflow_candidate(extracted, tmp_path/(host+'-workflow-builder'), host)
-    # Successful Claude context transport requires the native POSIX adapter.
-    # Windows still verifies the extracted package, refusal and legacy surfaces.
+    # Member parity above ties the source regression suite to these exact bytes.
+    # Execute the packaging seams once: extracted imports/CLI, declared hooks,
+    # a complete native journey and standalone activation. Exhaustive behavior
+    # variations belong to the source suite, not a second copy in each archive.
+    adapter = 'claude' if host == 'claude' else 'codex'
     if host != 'claude' or CLAUDE_TRANSPORT_SUPPORTED:
-        exercise((tmp_path/(host+'-native')).resolve(), 'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_autonomous((tmp_path/(host+'-autonomous')).resolve(),
-                            'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_state_repairs((tmp_path/(host+'-state-repairs')).resolve(),
-                               'claude' if host=='claude' else 'codex', root=extracted)
-        exercise_correction_cli((tmp_path/(host+'-review-correction')).resolve(),
-                                'claude' if host=='claude' else 'codex', root=extracted)
+        exercise((tmp_path/(host+'-native')).resolve(), adapter, root=extracted)
     else:
         exercise_unsupported_claude_context((tmp_path/(host+'-unsupported')).resolve(), root=extracted)
-    for entry in ('product','design','engineering'):
-        exercise_harness_entry((tmp_path/(host+'-entry-'+entry)).resolve(),
-                               'claude' if host=='claude' else 'codex',entry,root=extracted)
-    for name,prompt,phase,standalone in shipped_execution_prompts():
-        exercise_harness_entry((tmp_path/(host+'-shipped-'+name)).resolve(),
-                               'claude' if host=='claude' else 'codex',phase,root=extracted,
-                               prompt=prompt,standalone=standalone)
-    exercise_nonconsent_cli((tmp_path/(host+'-nonconsent')).resolve(),
-                            'claude' if host=='claude' else 'codex', root=extracted)
-    exercise_counter_freshness((tmp_path/(host+'-counter-freshness')).resolve(),
-                               'claude' if host=='claude' else 'codex', root=extracted)
-    # The child interpreter sees only the extracted runtime and the standard library.
-    # Test-only adapter code is embedded here, never exported by either package.
-    helpers = '\n\n'.join(inspect.getsource(f) for f in (FixtureHost, prepare, controller, native, output, decision, decide, present, task_observation_checkpoint, exercise_dashboard_publication_order))
-    helpers += '\n\n' + '\n\n'.join(inspect.getsource(getattr(review_regressions, name)) for name in (
-        'setup', 'submit', 'authorization', 'set_policy', 'refused', 'exercise_correction',
-        'exercise_handles', 'exercise_child_lineage', 'exercise_routing'))
-    script = '''import sys, json, io, shlex
-from datetime import datetime, timezone
-from pathlib import Path
-from copy import deepcopy
-from contextlib import redirect_stdout
-from unittest.mock import patch
-sys.path.insert(0, sys.argv[1])
-from taskplane import flow, workflow as w, workflow_host as h, workflow_local as local
-from taskplane import workflow_approval as approval
-assert Path(flow.__file__).resolve().is_relative_to(Path(sys.argv[1]))
-''' + helpers + '''
-temp = Path(sys.argv[2]); temp.mkdir()
-c, host, initial = controller(temp)
-assert not h.installed_adapter('codex' if sys.argv[3] == 'openai' else sys.argv[3]).capabilities()['human_origin']
-def command(*args):
-    global last_result
-    stream = io.StringIO()
-    with redirect_stdout(stream):
-        code = flow.main([*args, '--workspace', str(c.workspace)], governor=c)
-    last_result = json.loads(stream.getvalue())
-    return code
-assert command('start') == 0
-before = host.store.read_bytes()
-for hook_command in ('screen', 'session-verify'):
-    stream = io.StringIO()
-    with patch('sys.stdin', io.StringIO('[]')), redirect_stdout(stream):
-        assert flow.run_hook(command=hook_command, governor=c) == 0
-    result = json.loads(stream.getvalue())
-    if hook_command == 'screen':
-        assert result['hookSpecificOutput']['permissionDecision'] == 'deny'
-    else:
-        assert result.get('systemMessage') and 'decision' not in result
-assert host.store.read_bytes() == before
-for i, phase in enumerate(w.PHASES):
-    s = c.report()
-    target = output(c, s)
-    before = host.store.read_bytes()
-    if phase == 'product':
-        graph_path = c.workspace/'.taskplane/knowledge/graph.json'
-        graph_bytes = graph_path.read_bytes()
-        graph = json.loads(graph_bytes)
-        graph['meta']['graph_scan_quality']['degraded'] = True
-        graph_path.write_text(json.dumps(graph))
-        assert command('submit', '--output', target, '--tasks', 'tasks.json', '--expected-revision', str(s['revision'])) == 2
-        assert host.store.read_bytes() == before
-        graph_path.write_bytes(graph_bytes)
-    if phase == 'plan':
-        tasks_path = c.workspace/'tasks.json'
-        tasks = json.loads(tasks_path.read_text())
-        for task in tasks['tasks']:
-            task['acceptance_criteria'] = task.pop('criteria')
-        tasks_path.write_text(json.dumps(tasks))
-        out = json.loads((c.workspace/target).read_text())
-        out['task_dag'] = tasks['tasks']
-        (c.workspace/target).write_text(json.dumps(out))
-    if phase == 'build':
-        source_path = c.workspace/'app.py'
-        source_bytes = source_path.read_bytes()
-        source_path.write_text('value = 999')
-        assert command('submit', '--output', target, '--tasks', 'tasks.json', '--expected-revision', str(s['revision'])) == 2
-        assert last_result['reason'] == 'invalid_evidence' and 'stale' in last_result['detail']
-        assert host.store.read_bytes() == before
-        source_path.write_bytes(source_bytes)
-        out_path = c.workspace/target
-        out_bytes = out_path.read_bytes()
-        out = json.loads(out_bytes)
-        tasks_path = c.workspace/'tasks.json'
-        task_bytes = tasks_path.read_bytes()
-        tasks = json.loads(task_bytes)
-        out['task_acceptance_map'] = {'AC1': ['UNAPPROVED']}
-        out_path.write_text(json.dumps(out))
-        assert command('submit', '--output', target, '--tasks', 'tasks.json', '--expected-revision', str(s['revision'])) == 2
-        assert host.store.read_bytes() == before
-        tasks['tasks'][0]['id'] = 'UNAPPROVED'
-        tasks_path.write_text(json.dumps(tasks))
-        assert command('submit', '--output', target, '--tasks', 'tasks.json', '--expected-revision', str(s['revision'])) == 2
-        assert host.store.read_bytes() == before
-        out_path.write_bytes(out_bytes)
-        tasks = json.loads(task_bytes)
-        tasks['tasks'][0].update(status='complete', elapsed_seconds=5)
-        tasks_path.write_text(json.dumps(tasks))
-    assert command('submit', '--output', target, '--tasks', 'tasks.json', '--expected-revision', str(s['revision'])) == 0
-    s = c.report()
-    before = host.store.read_bytes()
-    assert command('finish', '--expected-revision', str(s['revision'])) == 2
-    assert host.store.read_bytes() == before
-    key = native(host, s, key='package-human-'+phase)
-    with patch.object(flow, 'append', side_effect=OSError('journal unavailable')):
-        assert command('decide', '--native-event', key, '--expected-revision', str(s['revision'])) == 0
-        assert last_result['workflow']['status'] == 'approved' and last_result['evidence_errors']
-        assert command('decide', '--native-event', key, '--expected-revision', str(s['revision'])) == 0
-        assert len(last_result['workflow']['decisions']) == i+1
-    s = c.report()
-    if phase != 'retro':
-        assert command('advance', '--phase', w.PHASES[i+1], '--expected-revision', str(s['revision'])) == 0
-assert command('finish', '--expected-revision', str(s['revision'])) == 0
-assert c.report(initial['run'])['status'] == 'accepted'
-assert len(c.report(initial['run'])['decisions']) == 7
-# Standalone review cannot label a new delivery as repair to obtain Build writes.
-standalone = temp/'standalone'; standalone.mkdir()
-c, host, s = controller(standalone, {'entry': 'engineering', 'standalone': True})
-target = output(c, s)
-out = json.loads((c.workspace/target).read_text())
-out['route_change'] = {'kind': 'repair'}
-(c.workspace/target).write_text(json.dumps(out))
-assert command('submit', '--output', target, '--tasks', 'tasks.json', '--expected-revision', str(s['revision'])) == 0
-s = c.report()
-before = host.store.read_bytes()
-key = native(host, s, key='standalone-repair')
-assert command('decide', '--native-event', key, '--expected-revision', str(s['revision'])) == 2
-assert command('advance', '--phase', 'build', '--expected-revision', str(s['revision'])) == 2
-try:
-    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, s['run'])
-except w.Refusal:
-    pass
-else:
-    raise AssertionError('Standalone review obtained a Build write grant')
-assert host.store.read_bytes() == before
-# Production entry refuses despite forged environment and command-shaped input.
-import os
-os.environ['TASKPLANE_TEST_APPROVAL'] = 'approved'
-with redirect_stdout(io.StringIO()):
-    assert flow.main(['start', '--workspace', str(c.workspace)]) == 2
-# EV-F02: exercise the extracted native adapter with progress and normative edits.
-task_ws = temp/'task-observations'; task_ws.mkdir()
-c, task_state, task_relative = task_observation_checkpoint(task_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
-task_file=task_ws/task_relative
-task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='working';task_file.write_text(json.dumps(task_data))
-assert not c.report().get('invalidation_pending')
-task_data['tasks'][0]['owner']='different';task_file.write_text(json.dumps(task_data))
-assert c.report().get('invalidation_pending')
-legacy_ws = temp/'legacy-task-observations'; legacy_ws.mkdir()
-c, task_state, task_relative = task_observation_checkpoint(legacy_ws, legacy=True, host='claude' if sys.argv[3]=='claude' else 'codex')
-assert not c.report().get('invalidation_pending')
-task_file=legacy_ws/task_relative;task_data=json.loads(task_file.read_text());task_data['tasks'][0]['status']='working';task_file.write_text(json.dumps(task_data))
-assert c.report().get('invalidation_pending')
-print('EV-F02 progress, normative and legacy packet regressions passed')
-publication_ws = temp/'publication-order'; publication_ws.mkdir()
-c, publication_state, _ = task_observation_checkpoint(publication_ws, host='claude' if sys.argv[3]=='claude' else 'codex')
-for select in (False, True):
-    exercise_dashboard_publication_order(c, publication_state, select=select)
-print('ENG-F01 concurrent publication regressions passed')
-print('seven accepted fixture checkpoints; production authority refused')
-print('EV-F01 EV-F02 EV-F03 archive regressions passed')
-print('EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed')
-for exercise_review in (exercise_correction, exercise_handles, exercise_child_lineage):
-    exercise_review(temp/exercise_review.__name__)
-exercise_routing()
-print('HR-01 HR-02 HR-03 HR-04 archive regressions passed')
-'''
-    harness = tmp_path/(host+'-harness.py')
-    harness.write_text(script)
-    result = subprocess.run([sys.executable, '-I', str(harness), str(extracted),
-                             str(tmp_path/(host+'-behavior')), host],
-                            cwd=tmp_path, capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert 'EV-F02 progress, normative and legacy packet regressions passed' in result.stdout
-    assert 'ENG-F01 concurrent publication regressions passed' in result.stdout
-    assert 'seven accepted fixture checkpoints; production authority refused' in result.stdout
-    assert 'EV-F01 EV-F02 EV-F03 archive regressions passed' in result.stdout
-    assert 'EM-F01 EM-F02 EM-F03 EM-F04 archive regressions passed' in result.stdout
-    assert 'HR-01 HR-02 HR-03 HR-04 archive regressions passed' in result.stdout
+    exercise_harness_entry((tmp_path/(host+'-entry-engineering')).resolve(),
+                           adapter, 'engineering', root=extracted)
 
 
 def test_package_receipt_distinguishes_bytes_from_commit_and_unrelated_dirt(tmp_path, monkeypatch):

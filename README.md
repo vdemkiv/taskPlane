@@ -143,6 +143,8 @@ python3 scripts/package_openai.py
 
 The browser check needs Chrome or Chromium. `python3 scripts/ci_local.py` runs tests, quality checks and packaging; add `--browser` for browser coverage.
 
+Routine CI runs Linux and Windows regression, native and archive checks in parallel. The full 8 MiB storage stress fixture runs weekly and on demand; the local `all` suite includes it. See [CI coverage and performance](docs/ci-performance.md) for suite ownership and release checks.
+
 Packages are written to `dist/taskplane-2.33.3.plugin` for Claude and `dist/taskplane-2.33.3-openai.zip` for Codex. Each JSON sidecar records the source commit, working-tree status, archive hash and member hashes. Building a package does not install or publish it. Follow the [candidate test guide](docs/test-candidate.md) to load and validate those exact bytes.
 
 ## Documentation

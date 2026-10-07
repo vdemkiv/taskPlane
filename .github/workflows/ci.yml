@@ -13,8 +13,9 @@ env:
   PYTHONUTF8: "1"
 jobs:
   portability:
-    name: portability preflight (${{ matrix.os }})
+    name: portability (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +39,8 @@ jobs:
           if-no-files-found: error
   suites:
     name: ${{ matrix.suite }} ${{ matrix.shard }}/${{ matrix.shards }} (${{ matrix.os }})
-    needs: portability
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -49,8 +49,10 @@ jobs:
         shard: [1, 2, 3, 4]
         shards: [4]
         include:
-          - {os: ubuntu-latest, suite: native, shard: 1, shards: 1}
-          - {os: windows-latest, suite: native, shard: 1, shards: 1}
+          - {os: ubuntu-latest, suite: native, shard: 1, shards: 2}
+          - {os: ubuntu-latest, suite: native, shard: 2, shards: 2}
+          - {os: windows-latest, suite: native, shard: 1, shards: 2}
+          - {os: windows-latest, suite: native, shard: 2, shards: 2}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
@@ -70,8 +72,8 @@ jobs:
           if-no-files-found: error
   archive-journeys:
     name: archive ${{ matrix.host }} (${{ matrix.os }})
-    needs: portability
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -93,34 +95,6 @@ jobs:
         with:
           name: archive-${{ matrix.host }}-${{ matrix.os }}
           path: reports/archive.xml
-          if-no-files-found: error
-  capacity:
-    name: full capacity ${{ matrix.host }} (${{ matrix.os }})
-    needs: portability
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {os: ubuntu-latest, host: codex}
-          - {os: ubuntu-latest, host: claude}
-          - {os: windows-latest, host: codex}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {persist-credentials: false}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "3.12", cache: pip}
-      - name: Install test dependencies
-        shell: bash
-        run: |
-          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
-          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite capacity --host ${{ matrix.host }} --junitxml reports/capacity.xml
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: capacity-${{ matrix.host }}-${{ matrix.os }}
-          path: reports/capacity.xml
           if-no-files-found: error
   quality-package:
     name: quality + package + release provenance
@@ -200,7 +174,7 @@ jobs:
   tests:
     name: tests (python 3.12)
     if: always()
-    needs: [portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, security, interpreter-import]
+    needs: [portability, suites, archive-journeys, quality-package, dashboard-browser, security, interpreter-import]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI suite
@@ -210,7 +184,7 @@ jobs:
   native-portability:
     name: native portability (windows)
     if: always()
-    needs: [portability, suites, archive-journeys, capacity, quality-package, dashboard-browser, security, interpreter-import]
+    needs: [portability, suites, archive-journeys, quality-package, dashboard-browser, security, interpreter-import]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI suite

@@ -66,13 +66,14 @@ def test_expensive_host_selection_is_exact(tmp_path, suite, host):
     assert len([r for r in rows if r['suite']==suite]) == 2
 
 
-def test_core_shards_cover_actual_collection_once(tmp_path):
-    baseline = {row['nodeid'] for row in collect(tmp_path, 'core') if row['selected']}
+@pytest.mark.parametrize('suite,count', [('core', 4), ('native', 2)])
+def test_shards_cover_actual_collection_once(tmp_path, suite, count):
+    baseline = {row['nodeid'] for row in collect(tmp_path, suite) if row['selected']}
     partitions = []
-    for index in range(1, 5):
-        rows = collect(tmp_path, 'core', shard=(index, 4))
+    for index in range(1, count + 1):
+        rows = collect(tmp_path, suite, shard=(index, count))
         selected = [row for row in rows if row['selected']]
-        assert selected and all(row['suite'] == 'core' and row['shard'] == index for row in selected)
+        assert selected and all(row['suite'] == suite and row['shard'] == index for row in selected)
         partitions.append({row['nodeid'] for row in selected})
     assert set().union(*partitions) == baseline
     assert sum(map(len, partitions)) == len(baseline)
