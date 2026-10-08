@@ -457,6 +457,16 @@ in-scope corrections and ordinary `flow submit` resubmission. The prior packet
 remains in history. Accepted predecessors and sealed current outputs still detect
 drift; cancellation does not open a correction grant.
 
+A fresh, correctly bound `Cancelled` decision also applies after approval and
+before advancement or finish. It appends a `taskplane.cancellation/v1` record
+and retains the earlier approval unchanged. The cancelled run grants no further
+submission, advancement, automatic approval or worker execution. Exact decision
+retries remain idempotent, including replay of the earlier approval; they cannot
+clear cancellation. Read/status, native interruption and terminal observations
+remain available. Cancellation never proves that a running process has ended.
+To restart, stop/join outstanding work and use an explicitly requested new run;
+its checkpoints, worker obligations and approvals start fresh.
+
 Bare, plugin-tagged and direct `Use/Run Taskplane` requests use the leading action
 to select the route. For example, `build export with design and engineering review`
 selects full delivery in each form. Help and status requests remain non-executing.
@@ -520,11 +530,17 @@ and fresh validation remain separate from source-test or inspector success.
 The excerpt must express a clear choice in the user's own words. Conversational
 responses such as “looks good, proceed”, “go ahead”, “build approved” and “fix
 issues” are supported, including “approve repair”, the native option “Approve as is”, “fix it all”,
-and “changes: never reassign deleted user IDs”. A direct change request can contain
+and “changes: never reassign deleted user IDs”. Sign-off, passive consent and
+courtesy wording such as “I sign off on this checkpoint”, “The current checkpoint
+is approved”, “Looks good to me” and “Approved, thanks” use the same interpretation
+as an active approval. Supporting explanations or thanks alone grant nothing.
+A direct change request can contain
 negative requirements in its explanation. The full actual excerpt is retained
 (up to 4096 characters); do not reduce “Approve as is” to “Approve” or drop a
-condition. A named phase must match the bound visit. Conditional or mixed
-decisions, retractions and quoted examples require clarification in ordinary language.
+condition. Every named approval phase must match the bound visit. Conditional or
+mixed decisions, same-message retractions and quoted examples require clarification
+in ordinary language. A separate, later “I withdraw my approval” or “Cancel this
+workflow” is cancellation when its current binding and human provenance validate.
 Punctuation and introductory words do not hide qualifications: “Cancel: if tests
 fail” and “Cancel. Actually do not cancel” leave the checkpoint and policy unchanged.
 Response grammar, provenance, binding and chronology refusals retain the compatible
@@ -681,6 +697,50 @@ checks; an exhaustive host process census is unavailable. A host that forks inst
 of resuming remains `resume_required` and fails verification.
 
 ## Automatic approval policy
+
+### Explicit delegated user observation
+
+`flow policy --policy-json` also accepts `taskplane.approval-policy/v2` for an
+original user response carried into the native root by Codex delegation. This is
+an opt-in cooperative observation contract. It does not authenticate human origin
+and does not make arbitrary tool output a user message. Direct v1 policy evidence
+and the native-transcript `observed-decision/v2` contract are unchanged.
+
+Preserve `source.conversation` as the original coordinating conversation and use
+`source.kind: delegated_user_observation`, `actor: user`, `automatic: false`.
+The event ID equals the original message reference. Retain a complete
+`taskplane.policy-choice/v1` question, original answer and exact bounded proposal.
+The question's source conversation also stays original. Intermediate-phase
+offers conditioned on required checks and a final human stop are interpreted in
+context; their supported phase mapping is Product through Engineering, stop Retro.
+This does not approve a phase until its actual sealed evidence passes assessment.
+
+The new `relay` object has schema `taskplane.delegated-user-observation/v1` and
+exactly these additional fields:
+
+- `transport: codex_delegation`, a descriptive observed `reference`, original
+  `source_thread`, receiving `receiver_thread`, and root observation `recorded_at`.
+- `human` and `presentation`, each containing `conversation`, `role`, original
+  message `reference`, original `observed_at` and full exact `text`.
+- `binding`, the complete current pending checkpoint, and `proposal`, identical
+  to the policy choice and requested policy fields.
+- `assurance: relayed_observation`, `host_attested: false`, and
+  `independent_source_verification: unavailable`.
+- `digest`, the canonical content fingerprint of all other relay fields.
+
+The receipt checks integrity, chronology, source preservation, receiving root,
+checkpoint/scope/manifest binding and exact replay. It requires a submitted
+checkpoint and preserves the full relay in policy provenance. The root remains
+responsible for recording only actually observed delegated human evidence. A local
+account can fabricate observations; hashes are not authorship authentication.
+Unknown transports, generic tool sources, stale/foreign bindings, altered evidence
+and changed retries refuse. No host protection, source grant, worker dispatch,
+ownership transfer or external-action authority is added.
+
+This contract can retain the original approval when repairing a relay integration;
+never generate a replacement human message or change the source conversation to
+the receiving root. A code candidate must still be installed and loaded through
+the host's supported update path before its API can be used on a live run.
 
 Manual is the default. `native_workflow` additionally supports **explicit user-authorized**
 automatic approval for one run. Existing runs with no policy stay manual. This does
@@ -1178,3 +1238,37 @@ Exact setup/control command handles are recorded when the host reports them runn
 including before the first run. Empty stdin polls and Ctrl-C can drain those current
 handles across startup; executable input, terminal/foreign/stale handles are refused.
 Known running handles block sealing. Unobserved host processes remain unknown.
+
+
+### Delegated owner checkpoint observations
+
+`taskplane.observed-decision/v3` is a separate cooperative native-workflow contract
+for an original owner observation relayed by the trusted root. The request contains
+only schema, event_id, recorder (`root_orchestrator`), derived choice, exact binding
+and relay. The relay uses `taskplane.delegated-checkpoint-observation/v1` and binds
+transport (`codex_delegation`), source/receiver threads, reference, recorded_at, exact
+pending checkpoint binding, original question, verified owner, and complete current
+`user_message.read_messages` observation. Its digest covers every relay field except
+itself. Assurance remains `relayed_observation`, host_attested is false, and
+independent_source_verification is unavailable. These assertions are cooperative
+source observations, not independently authenticated identities.
+
+The original question retains message_id, channel, full text, sent_at, phase and
+binding. It must directly ask whether the user accepts or approves that phase.
+Owner verification retains user_id, verified=true, reference and source_thread.
+The observation retains kind (`owner_reaction` or `owner_text`), method, observed_at,
+precision (`second` or `minute`), current=true, complete_message=true and the entire
+raw read result. An undeleted ChatGPT message must match the question exactly for
+a reaction; the verified owner's current reaction must be 👍. For text, the owner
+must directly reply to that question and the existing text grammar applies.
+
+Normalization derives approved from that contextual owner reaction; it never turns
+👍 into a typed “Approve” excerpt. Raw reaction, question and read result remain in
+provenance. A missing reaction timestamp remains null; observation time and its
+precision remain separate. Chronology must follow checkpoint submission. Generic
+tool/emoji inputs, wrong owner/question/phase, changed binding or digest, deleted
+messages and replayed source events refuse. The source event ID is `delegated:`
+plus the canonical content fingerprint of kind/channel/message_id/owner (and
+reaction for owner_reaction). Replaying even an identical v3 event refuses; use a
+read-only report after an uncertain response. This new contract neither modifies
+automatic-policy conditions nor authorizes another checkpoint or worker dispatch.

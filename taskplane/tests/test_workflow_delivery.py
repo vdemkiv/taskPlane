@@ -162,7 +162,14 @@ def test_dashboard_uses_protected_decision_even_without_journal(tmp_path, choice
     assert 'class="stage recorded"' in page if choice == "approved" else 'class="stage recorded"' not in page
     (c.workspace/target).write_text("{}")
     page = flow_dashboard.render(str(c.workspace), flow.report(c.workspace, s["run"], governor=c))
-    assert "Human decision: Stale" in page and "Evidence: Stale" in page
+    # Evidence can drift after cancellation without reviving correction grants
+    # or replacing the recorded human cancellation with a stale decision.
+    assert "Human decision: " + ('Cancelled' if choice == 'cancelled' else 'Stale') in page
+    assert "Evidence: Stale" in page
+    if choice == 'cancelled':
+        state = c.report()
+        assert state['status'] == 'cancelled' and state['invalidation_pending']
+        assert state['cancellation']['event_id'] in state['decisions']
     assert 'class="stage recorded"' not in page
 
 

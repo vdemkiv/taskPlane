@@ -710,6 +710,12 @@ class LocalWorkflow:
             value = json.loads(reference)
         except ValueError:
             raise w.Refusal("invalid_evidence", "Supply an observed decision JSON envelope, not an actor flag.") from None
+        from . import delegated_approval
+        if isinstance(value, dict) and value.get("schema") == delegated_approval.DECISION_SCHEMA:
+            value = _relay_json(reference)
+            db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
+            run = db.get("runs", {}).get(expected.get("run"), {})
+            return delegated_approval.verify_checkpoint(run, value, expected, prior)
         w.require(isinstance(value, dict) and isinstance(value.get("schema"), str)
                   and value.get("schema") in {"taskplane.observed-decision/v1", "taskplane.observed-decision/v2"},
                   "invalid_evidence", "Observed decision schema is missing.")
@@ -742,8 +748,8 @@ class LocalWorkflow:
         named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
         _require_decision(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
                   "decision_binding", "The response names a different checkpoint.")
-        from .workflow_approval import decision_phase
-        named_phase = decision_phase(excerpt)
+        from .workflow_approval import decision_phases
+        named_phases = decision_phases(excerpt)
         supplied = value.get("binding") or {}
         db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
         run = db.get("runs", {}).get(supplied.get("run"), {})
@@ -754,10 +760,17 @@ class LocalWorkflow:
             _require_decision(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
                       <= timestamp(recorded_at), "decision_chronology",
                       "Decision must follow run and checkpoint submission and cannot be in the future.")
-        if named_phase:
+        if value.get("choice") == "cancelled" and event_id not in prior:
+            for old in prior.values():
+                earlier = old.get("provenance", {}).get("source", {}).get("observed_at")
+                if (old.get("choice") == "approved" and old.get("binding", {}).get("visit") == stage.get("id")
+                        and earlier):
+                    _require_decision(observed > timestamp(earlier), "decision_chronology",
+                                      "Cancellation must follow the approval it revokes.")
+        if named_phases:
             # Resolve the named visit under the Controller's existing store lock.
             # A correct binding cannot turn 'Build approved' into Product consent.
-            _require_decision(stage.get("phase") == named_phase, "decision_binding",
+            _require_decision(named_phases == {stage.get("phase")}, "decision_binding",
                       "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         if value.get("checkpoint_explicit") is not True:
             presentation = value.get("presentation")
@@ -1293,6 +1306,10 @@ class Harness:
                 'assurance': 'observed; not host authentication'}
 
     def guidance(self, state: dict[str, Any]) -> str:
+        if state.get('cancellation'):
+            return (f'Taskplane run {state["run"]} is cancelled; continuation grants are revoked. '
+                    'Preserve its decision history. Observe/stop any remaining native work; '
+                    'cancellation alone does not prove termination. An explicit new run is required to restart.')
         if not state.get('visits'):
             entry = self.read().get('entry', 'taskplane')
             phase = {'tp-engineering': 'engineering', 'tp-northstar': 'engineering',

@@ -183,6 +183,17 @@ def validate_state(state: dict[str, Any]) -> None:
                     "state_unavailable", "Stored decision has no matching native record.")
     require(not state["finished"] or all(v["superseded"] or v["decision"] == "approved" for v in state["visits"]),
             "state_unavailable", "Finished route contains unaccepted visits.")
+    cancellation = state.get("cancellation")
+    if cancellation is not None:
+        require(isinstance(cancellation, dict) and isinstance(cancellation.get("event_id"), str),
+                "state_unavailable", "Invalid cancellation record.")
+        event = state["decisions"].get(cancellation.get("event_id"), {})
+        require(cancellation.get("schema") == "taskplane.cancellation/v1"
+                and event.get("choice") == "cancelled" and approval.decision_authorized(state, event)
+                and cancellation.get("binding") == event.get("binding")
+                and current(state)["decision"] == "cancelled" and not state["finished"]
+                and state["history"].count({"cancellation": cancellation}) == 1,
+                "state_unavailable", "Cancellation must retain its bound decision and append-only history.")
 
 
 def binding(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
@@ -193,6 +204,7 @@ def binding(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
 
 
 def submit(state: dict[str, Any], packet: dict[str, Any]) -> dict[str, Any]:
+    require(not state.get("cancellation"), "approval_required", "This run was cancelled; an explicit new run is required.")
     require(not state["finished"], "approval_required", "This route is already accepted.")
     s = deepcopy(state)
     stage = s["visits"][s["index"]]
@@ -229,12 +241,15 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
         require(state["decisions"][event_id] == verified, "stale_checkpoint", "Conflicting native event replay.")
         return deepcopy(state)
     stage = current(state)
-    require(stage["decision"] == "awaiting_human_approval" and stage["packet"],
+    choice = verified.get("choice")
+    require(not state.get("cancellation") and not state["finished"],
+            "approval_required", "An ended run cannot receive new checkpoint decisions.")
+    require((stage["decision"] == "awaiting_human_approval"
+             or stage["decision"] == "approved" and choice == "cancelled") and stage["packet"],
             "approval_required", "Submit the current stage's evidence before requesting a decision.")
     expected = binding(state, stage["packet"])
     require(verified.get("binding") == expected, "stale_checkpoint",
             "Decision does not match the current root, visit, revision and artifact checkpoint.")
-    choice = verified.get("choice")
     require(choice in ("approved", "changes_requested", "rejected", "cancelled"),
             "invalid_evidence", "Unknown human decision.")
     s = deepcopy(state)
@@ -242,6 +257,14 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     stage["decision"] = choice
     stage["work"] = "ready" if choice == "approved" else "working"
     s["decisions"][event_id] = deepcopy(verified)
+    if choice == "cancelled":
+        # Preserve the original approval/event unchanged. This new bound event
+        # revokes continuation, including resubmission and stale worker grants;
+        # it is not evidence that any native process has terminated.
+        cancellation = {"schema": "taskplane.cancellation/v1", "event_id": event_id,
+                        "binding": deepcopy(expected)}
+        s["cancellation"] = cancellation
+        s["history"].append({"cancellation": deepcopy(cancellation)})
     if choice != "approved" or stage["packet"].get("route_change"):
         approval.suspend(s, "Human intervention or route change requires renewed automatic authorization.")
     if choice == "approved" and stage["phase"] == "plan":
@@ -286,6 +309,7 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
 
 
 def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
+    require(not state.get("cancellation"), "approval_required", "This run was cancelled; no continuation is authorized.")
     require(not state["finished"], "approval_required", "The accepted route cannot be reopened by progress.")
     stage = current(state)
     require(stage["decision"] == "approved", "approval_required", f"Human or authorized policy approval for {stage['phase']} is required.")
@@ -302,6 +326,7 @@ def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
 
 
 def finish(state: dict[str, Any]) -> dict[str, Any]:
+    require(not state.get("cancellation"), "approval_required", "A cancelled run cannot be accepted.")
     require(all(v["superseded"] or v["decision"] == "approved" for v in state["visits"]),
             "approval_required", "Every required stage visit needs current human acceptance or valid policy acceptance.")
     s = deepcopy(state)
@@ -314,6 +339,8 @@ def finish(state: dict[str, Any]) -> dict[str, Any]:
 
 def invalidate(state: dict[str, Any], visit_id: str, reason: str) -> dict[str, Any]:
     s = deepcopy(state)
+    if state.get("cancellation"):
+        return s  # Source drift cannot reopen a cancelled run's write scope.
     first = next(i for i, v in enumerate(s["visits"]) if v["id"] == visit_id)
     for v in s["visits"][first:]:
         if not v["superseded"] and v["packet"]:

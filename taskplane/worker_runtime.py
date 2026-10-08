@@ -163,6 +163,7 @@ def dependency_manifest(state: dict[str, Any], dependencies: list[str], seen: se
 
 def current(state: dict[str, Any], row: dict[str, Any]) -> None:
     from . import workspace_binding
+    w.require(not state.get('cancellation'), 'scope_violation', 'The cancelled run has no worker execution grants.')
     workspace_binding.ensure(Path(state["workspace"]), worker=True,
                              expected=state.get("workspace_contract"))
     w.require(not row.get('revoked_at'), 'scope_violation', 'Worker grant is permanently revoked.')
