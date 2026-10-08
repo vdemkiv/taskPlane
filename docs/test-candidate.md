@@ -1,4 +1,4 @@
-# Test the 2.33.3 candidate
+# Test the 2.33.4 candidate
 
 This candidate repairs the Workflow Builder freshness cycle by keeping generated
 phase evidence outside graph source inputs. It also preserves required native
@@ -9,7 +9,10 @@ This version also includes exact launch-denial recovery and retention of late
 lifecycle contradictions when the optional observation cache is full.
 Version 2.33.3 also corrects Windows scope-path comparisons and the cross-platform
 CI fixtures, with four disjoint core-test shards and cancellation of superseded
-branch runs. Fresh installed-host acceptance of this version is still required.
+branch runs. Version 2.33.4 adds approval wording and cancellation repairs plus
+preserved delegated policy, checkpoint and reaction observations. It uses regular
+version numbering; plugin runtime behavior is unchanged from the preceding
+2.33.4-proofplane.3 package. Fresh installed-host acceptance is still required.
 
 Live Claude validation was explicitly deferred to external testing after the
 local closeout and Retro. The preceding 2.33.2 local suite passed 6,774 tests, with 6 skipped and
@@ -42,8 +45,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.3.plugin` (Claude) and
-`dist/taskplane-2.33.3-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.4.plugin` (Claude) and
+`dist/taskplane-2.33.4-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -54,13 +57,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.3.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.3-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.4.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.4-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.3` and `ok: true`.
+Both commands should report `2.33.4` and `ok: true`.
 
 ## Local regression and exact archive checks
 
