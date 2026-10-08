@@ -124,7 +124,7 @@ def test_skip_direct_build_wrong_binding_and_conflicting_replay():
         w.decide(accepted, {**a, "choice": "rejected"})
 
 
-@pytest.mark.parametrize("choice", ["changes_requested", "rejected", "cancelled"])
+@pytest.mark.parametrize("choice", ["changes_requested", "rejected"])
 def test_changes_need_new_checkpoint_and_decision(choice):
     s = ready(state())
     a = answer(s, choice)

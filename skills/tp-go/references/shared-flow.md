@@ -263,7 +263,12 @@ run. Preserve failed verification attempts when a repaired attempt passes.
    into the profile-bound checkpoint. Refreshing token counters does not stale approval.
 5. Present the result and dashboard link, name gaps and resolve the applicable human or policy decision.
    Changes requested or rejection returns to the current scope for correction and
-   a new checkpoint. Cancellation grants no continuation. Stale normative artifacts
+   a new checkpoint. Cancellation grants no continuation, including after an
+   approval but before advancement. Record the later bound cancellation without
+   replacing the earlier decision. Exact retries cannot revive the cancelled run;
+   restarting requires an explicitly requested new run with fresh approvals.
+   Preserve live-worker obligations until actual terminal observations arrive.
+   Stale normative artifacts
    or verified source invalidate affected acceptance and descendants while retaining
    history. Finish only after every required visit, including Retro, is accepted.
 

@@ -203,6 +203,8 @@ def _workflow(m: dict[str, Any]) -> str:
             details += '<p class="muted">New run carrying context from ' + _e(authority['replaces']['run']) + '. Approvals were not carried over.</p>'
         if any(v.get('superseded') for v in visits):
             details += '<p class="muted">Visit history: ' + _e(' → '.join(v['phase'].title() for v in visits)) + '</p>'
+        stale_from = next((i for i, visit in enumerate(visits)
+                           if visit['id'] == authority.get('evidence_drift', {}).get('visit')), len(visits))
         for i, visit in enumerate(visits):
             phase = visit['phase']
             anchor = 'phase-' + phase + '-' + visit['id']
@@ -211,7 +213,8 @@ def _workflow(m: dict[str, Any]) -> str:
             superseded = visit.get('superseded')
             active = i == authority['index'] and not authority.get('finished') and not authority.get('superseded_by') and not authority.get('retired')
             work = 'Produced' if packet else 'In progress' if active else 'Not started'
-            validated = 'Stale' if decision == 'stale' else 'Validated' if packet else 'Not submitted'
+            stale = decision == 'stale' or bool(packet and not superseded and i >= stale_from)
+            validated = 'Stale' if stale else 'Validated' if packet else 'Not submitted'
             records = [d for d in authority.get("decisions", {}).values()
                        if d.get("binding", {}).get("visit") == visit["id"]
                        and d.get("binding", {}).get("checkpoint") == (packet or {}).get("checkpoint")]
@@ -231,6 +234,9 @@ def _workflow(m: dict[str, Any]) -> str:
                              if d.get('binding', {}).get('visit') == visit['id']]
                 for d in decisions:
                     details += f'<p class="muted">{"Policy event" if d.get("kind") == "policy" else "Human event"} {_e(d.get("event_id"))} · {_e(d.get("choice"))} · reviewed revision {_e(d.get("binding", {}).get("revision"))} · packet {_e(d.get("binding", {}).get("manifest_digest"))}</p>'
+                    normalization = d.get('provenance', {}).get('normalization', {})
+                    if normalization.get('schema') == 'taskplane.owner-reaction-normalization/v1':
+                        details += '<p class="muted">Verified-owner reaction, relayed observation: ' + _e(normalization.get('raw_reaction')) + '. Approval is derived from the exact question; no typed approval or independent host authentication is claimed.</p>'
                 details += '<pre>' + _e(json.dumps(packet.get('output', {}), indent=2)) + '</pre>'
             details += '</details>'
     else:
@@ -270,6 +276,8 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         header += '<div><span class="muted">'+label+': </span><code>'+_e(snapshot.get(key, m.get(key)) or ('Unknown' if key.startswith('measurement') else None))+'</code></div>'
     header += '<p><strong>Static snapshot — freshness is not monitored.</strong> Regenerate this run, then refresh or reopen this file. Reload only reads the generated file.</p><button type="button" onclick="location.reload()">Reload generated snapshot</button></div>'
     policy = authority.get('approval_policy') or {}
+    if policy.get('source_assurance') == 'relayed_observation':
+        header += '<p>Authorization was recorded as a delegated user observation. Original conversation and message references are retained; human origin is not independently host-authenticated.</p>'
     header += '<div class="note"><strong>Approval mode: '+_e(policy.get('mode', 'manual'))+'</strong>'
     if policy:
         header += '<p>Policy '+_e(policy.get('id'))+' · version '+_e(policy.get('revision'))+' · stops: '+_e(', '.join(policy.get('stop_phases', [])) or 'none')+'</p>'

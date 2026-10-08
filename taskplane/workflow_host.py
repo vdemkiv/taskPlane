@@ -743,6 +743,7 @@ class Controller:
                 # A read-only projection cannot advertise a revision not yet committed.
                 s["revision"] = revision
                 s["invalidation_pending"] = True
+                s["evidence_drift"] = {"visit": changed[0], "reason": changed[1]}
             details = {**self.adapter.decorate(s),
                        "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace)} if diagnostics else {}
             return {**s, **self.availability(), **details, "phase": w.current(s)["phase"], "archived": archived,
@@ -1045,6 +1046,9 @@ class Controller:
             replay = action in ("decide", "auto-decide") and verified.get("event_id") in s["decisions"]
             policy_replay = action == "policy" and policy_request.get("event_id") in s.get("policy_events", {})
             w.require(replay or policy_replay or expected_revision == s["revision"], "stale_checkpoint", "Expected state revision changed.")
+            if s.get("cancellation"):
+                w.require(replay, "approval_required", "This run was cancelled; an explicit new run is required.")
+                return w.decide(s, verified)  # Exact retries retain cancellation and write nothing.
             negative = (action == "decide" and self.adapter.profile == "native_workflow"
                         and verified.get("choice") in {"changes_requested", "rejected", "cancelled"})
             # An exactly bound negative response accepts no evidence. Source drift must
@@ -1095,7 +1099,7 @@ class Controller:
                   "stale_checkpoint", "Invocation admission is no longer current and pending.")
         state = db["runs"][run]
         w.require(admission["binding"] == binding(state) and not state.get("invalidation_pending")
-                  and not any(state.get(k) for k in ("retired", "finished", "superseded_by")),
+                  and not any(state.get(k) for k in ("retired", "finished", "superseded_by", "cancellation")),
                   "stale_checkpoint", "Invocation belongs to an inactive workflow binding.")
         w.require(evidence.changed(self.workspace, state) is None, "stale_checkpoint", "Invocation evidence changed.")
         runtime = host_capabilities.runtime_identity()

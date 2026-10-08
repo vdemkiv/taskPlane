@@ -1,5 +1,19 @@
 # taskplane changelog
 
+## v2.33.4-proofplane.3 — Consolidated local approval repair candidate
+
+- Consolidate preserved approval wording/cancellation, delegated policy and exact-owner checkpoint text/reaction repairs on the known 2.33.3 source base.
+- Keep cooperative observation provenance explicit; preserve original direct/native transcript contracts and reject stale, foreign or replayed decisions.
+- Freeze hooks and runtime during active proofPlane builds; perform upgrades only between runs with safe stop/restart, compatibility checks and rollback.
+- Local candidate only: upstream freshness, merge, platform CI, installed-host behavior and final proofPlane acceptance remain unverified.
+
+## v2.33.4-proofplane.1 — Local delegated approval integration
+
+- Add an explicit policy envelope for cooperative user observations carried by Codex delegation, preserving original messages, question, receiving root and exact pending checkpoint/scope binding.
+- Accept contextual offers to handle intermediate phase approvals after required checks, retaining the final Retro stop. Keep direct-source and native-transcript gates unchanged.
+- Display the relayed observation's lack of independently authenticated human origin.
+- Preserve the previously prepared approval wording/cancellation repair in this local candidate. This build is not a published release or a claim of complete host verification.
+
 ## v2.33.3 — Windows portability and bounded CI
 
 - Compare accepted scope paths using native separators, preserving existing audit baselines and rejection of out-of-scope changes.

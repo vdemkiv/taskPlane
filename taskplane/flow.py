@@ -973,7 +973,9 @@ def _hook(event: dict[str, Any], *,
             controller.apply("policy", str(run), expected_revision=guarded["revision"],
                              native_reference=json.dumps(policy_event))
             guarded = controller.report(str(run), diagnostics=False)
-        if guarded.get("status") == "awaiting_human_approval" and not policy_event:
+        if (guarded.get("status") == "awaiting_human_approval"
+                or guarded.get("status") in {"approved", "cancelled"}
+                and isinstance(event.get("taskplane_decision"), dict)) and not policy_event:
             reference = controller.adapter.prompt_reference(event, guarded)
             if reference:
                 controller.apply("decide", str(run), expected_revision=guarded["revision"], native_reference=reference)
