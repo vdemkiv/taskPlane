@@ -1,5 +1,11 @@
 # taskplane changelog
 
+## v2.33.4 — Approval and delegation repairs
+
+- Use the regular patch version for the consolidated approval wording, durable cancellation, delegated policy and checkpoint/reaction repairs.
+- Align Codex and Claude manifests, marketplace metadata, README and package testing instructions on 2.33.4. Plugin runtime code and hooks are unchanged from the preceding candidate.
+- Preserve candidate history and validation limits. Fresh installed-host acceptance and unresolved proofPlane checkpoints remain separate from release CI and package verification.
+
 ## v2.33.4-proofplane.3 — Consolidated local approval repair candidate
 
 - Consolidate preserved approval wording/cancellation, delegated policy and exact-owner checkpoint text/reaction repairs on the known 2.33.3 source base.
