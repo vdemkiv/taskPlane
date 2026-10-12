@@ -1,5 +1,12 @@
 # taskplane changelog
 
+## v2.33.6 — Claude launch transcript ordering
+
+- Permit an exact current automatic root-hook launch reservation when the pinned, fully read transcript has not flushed that call yet. Report `launch_pending` and `awaiting_transcript` without asserting child identity or successful work.
+- Require the prepared runtime and current root/session/workspace observation; clear stale source-selection hints. Preserve bounded no-follow reads, mismatched-call refusal and the barrier for a pre-existing unadmitted result.
+- Retain exact native call/result/child correlation, claim and required context, permission-denial handling, unknown-attempt barriers, result verification and human approvals. Codex dispatch remains unchanged.
+- Cover both transcript flush orders and deferred conflicts with production hook/controller fixtures. Fresh native worker lifecycle and post-dispatch child-hook timing remain unverified; source fixtures, CI and archive checks are not native acceptance. No installed hooks or active runs are changed by the release.
+
 ## v2.33.5 — Cross-host admission and native readiness repairs
 
 - Report saved workflows as pending or stale until the current automatic parent hook pair is observed; support the exact Python `-B` launcher.

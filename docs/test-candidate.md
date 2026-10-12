@@ -1,6 +1,6 @@
-# Validate the local follow-up to 2.33.5
+# Validate the 2.33.6 release
 
-The 2.33.5 baseline added cross-host tool/recovery preflight, exact Claude message metadata handling and a launch-input check before dispatch. This unreleased follow-up corrects that check's assumption that Claude flushes the current call before PreToolUse. It retains the earlier initialization and approval repairs. No version bump, package publication or installation is included in this local correction.
+The 2.33.5 baseline added cross-host tool/recovery preflight, exact Claude message metadata handling and a launch-input check before dispatch. The 2.33.6 release corrects that check's assumption that Claude flushes the current call before PreToolUse. It retains the earlier initialization and approval repairs. Both host packages carry this same correction. No installation, hook activation or new native test is included in this release.
 
 Bounded testing of the preceding candidate with Claude Code 2.1.294 verified startup, session-only plugin loading and automatic parent hook activity. Native worker dispatch, full worker context, completion/result acceptance, messaging and a review checkpoint were not completed. The smoke stopped after bootstrap refusals; a later attempt stopped at a trust-dialog/controller mismatch before model work. Those failures are retained in private audit evidence. They are not native lifecycle passes. The 2.33.5 release included no further native run, installed-plugin activation or human checkpoint acceptance. Relative to that preceding candidate, the release changed only version/documentation and two fixtures: resume guidance assertions use stable phase/visit identities, and approval fixtures retain only synthetic project text with the required consent structure.
 
@@ -8,7 +8,7 @@ The launch preflight compares any readable native call with the automatic hook i
 
 Claude 2.1.293 exposed Agent fields `description`, `prompt`, `subagent_type`, `model`, `effort` and `isolation`. Use the smaller implemented subset: prompt/description, optional subagent_type/model. Omit legacy `run_in_background` and `resume`, and Codex-only task_name/fork_turns. Effort, isolation and resumed-attempt dispatch are not newly supported by this candidate. Use owned-current-worker SendMessage for supported in-flight messages; do not infer new-attempt authority from native continuation.
 
-Claude custom configuration roots must be absolute normalized paths. The worker reader follows the explicitly configured root and still rejects symlinks and foreign/replaced evidence. Automatic parent hook delivery was observed on the preceding candidate. A real Claude 2.1.296 run of 2.33.5 subsequently refused two valid Agent calls because the current call was not readable during PreToolUse, although the later transcript and hook journal input fingerprints agree. Local file-ordering regressions exercise both flush orders and preserved denial/identity barriers. First worker claim/context and actual message/completion behavior still require live observations; source tests do not certify them.
+Claude custom configuration roots must be absolute normalized paths. The worker reader follows the explicitly configured root and still rejects symlinks and foreign/replaced evidence. Automatic parent hook delivery was observed on the preceding candidate. A real Claude 2.1.296 run of 2.33.5 subsequently refused two valid Agent calls because the current call was not readable during PreToolUse, although the later transcript and hook journal input fingerprints agree. Local file-ordering regressions exercise both flush orders and preserved denial/identity barriers. First worker claim/context and actual message/completion behavior still require live observations; source tests do not certify them. In particular, real post-dispatch child-hook timing relative to transcript result/header availability remains unverified; the child gate still refuses until that exact evidence is available.
 
 No activation is included. Review the candidate diff and member hashes, retain the current versioned installations, then obtain action-time approval before changing either host's installed plugin/hook runtime. Use a fresh disposable project/session for acceptance. Do not upgrade active workflows or rewrite their state. Rollback selects the retained prior version and restarts the disposable session; it does not replay candidate state under older code.
 
@@ -61,8 +61,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.5.plugin` (Claude) and
-`dist/taskplane-2.33.5-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.6.plugin` (Claude) and
+`dist/taskplane-2.33.6-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -73,13 +73,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.5.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.5-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.6.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.6-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.5` and `ok: true`.
+Both commands should report `2.33.6` and `ok: true`.
 
 ## Local regression and exact archive checks
 
