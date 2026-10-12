@@ -947,7 +947,11 @@ def runtime_words(event: dict[str, Any]) -> list[str]:
     # Declared Windows hooks use this exact launcher selector. The launcher and
     # a PATH-selected Python can resolve to different installed interpreters.
     if os.name == 'nt' and words[:2] == ['py', '-3']:
-        return [sys.executable, *words[2:]]
+        words = [sys.executable, *words[2:]]
+    # -B only suppresses bytecode writes. Keep the executable and script intact
+    # for the existing exact-runtime checks; no other Python flags are admitted.
+    if len(words) >= 4 and words[1] == '-B' and Path(words[2]).name == 'tp.py':
+        words = [words[0], *words[2:]]
     return words
 
 
@@ -1298,9 +1302,18 @@ class Harness:
         self.update(waiting={'binding': self.binding(state), 'reason': reason.strip()})
 
     def readiness(self, state: dict[str, Any]) -> dict[str, Any]:
+        from .worker_runtime import parent_readiness
         data = self.read()
-        active = bool(state.get('visits') and not state.get('finished'))
-        return {'status': 'active' if active else 'initialization_required' if data.get('selected') and not state.get('finished') else 'inactive',
+        terminal = bool(state.get('finished') or state.get('retired') or state.get('cancellation'))
+        created = bool(state.get('visits'))
+        parent = parent_readiness(state) if created and not terminal else None
+        status = ('inactive' if terminal else
+                  'active' if parent and parent['status'] == 'ready' else
+                  'initialization_stale' if parent and parent['status'] == 'mismatch' else
+                  'initialization_pending' if created else
+                  'initialization_required' if data.get('selected') else 'inactive')
+        return {'status': status, 'run_created': created,
+                'observed_at': datetime.now(timezone.utc).isoformat(), 'parent_hook': parent,
                 'hook_observed': bool(data.get('hook_observed')), 'entry': data.get('entry'),
                 'binding': self.binding(state), 'presentation': data.get('presentation'),
                 'assurance': 'observed; not host authentication'}
@@ -1320,7 +1333,19 @@ class Harness:
                     f'{route}, --scope and --request-reference. Read/search, loading skills, asking the user and exact '
                     'Taskplane setup commands remain available. Standalone review does not require seven delivery phases.')
         stage = w.current(state)
-        return (f'Taskplane harness active: run {state["run"]}, {stage["phase"]} visit {stage["id"]}, revision {state["revision"]}. '
+        readiness = self.readiness(state)
+        if readiness['status'] in {'initialization_pending', 'initialization_stale'}:
+            return (f'Taskplane run {state["run"]} is saved, but native initialization is {readiness["parent_hook"]["status"]}. '
+                    f'Current phase: {stage["phase"]}, visit {stage["id"]}, revision {state["revision"]}. '
+                    'A selected skill, saved run or single hook event does not establish native readiness. '
+                    'Observe an ordinary admitted command through the native host in the selected workspace, '
+                    'then inspect flow report for a current automatic parent pre/post pair. '
+                    'If the pair is absent, report the host hook initialization blocker; do not dispatch workers '
+                    'or substitute serial work. Preserve this run and its approval state.')
+        if readiness['status'] == 'inactive':
+            return (f'Taskplane run {state["run"]} is inactive. Preserve its evidence and decisions; '
+                    'an explicit new run is required for new work.')
+        return (f'Taskplane harness {readiness["status"]}: run {state["run"]}, {stage["phase"]} visit {stage["id"]}, revision {state["revision"]}. '
                 'Use flow context to obtain and consume the current handoff; read every required input before phase submission. '
                 'Context receipts prove returned data, never approval or model attention. '
                 f'Use the native dashboard at {self.workspace / ".taskplane/dashboard.html"}. '

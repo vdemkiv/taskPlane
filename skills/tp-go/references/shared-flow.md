@@ -96,6 +96,17 @@ remain available. Arbitrary shell commands are not bootstrap exceptions. After a
 run starts, the ordinary profile still relies on native permissions and source
 audits for opaque shell effects; this is not host-wide containment.
 
+Before calling a host tool, check its actual exposed schema and supported host/surface.
+A listed or discoverable tool may still be restricted to another host. Codex app
+operations such as `open_in_codex` do not provide a Claude dashboard opener. In
+Claude, use a permitted native opening surface when available or link the current
+dashboard artifact. Record missing tools, disabled configuration, runtime/version
+mismatch and unsupported host capability separately. A tool refusal is not success;
+preserve the refusal and use a supported alternative only within the same scope.
+Do not change permissions, disable guards or substitute inline execution for required
+native work. When a question tool is unavailable, use the existing `flow wait` and
+plain-language question; only the actual later human response can provide consent.
+
 At each checkpoint, submit evidence, regenerate the native dashboard for the exact
 run/visit/revision, provide its link and use the host's permitted opening surface.
 Record the actual outcome with `flow present --workspace PATH --run ID --evidence
@@ -485,7 +496,8 @@ Missing read inputs retain conservative legacy coverage. Inspect preparation's
 `source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
 reports normative. Use `required_for` when supporting bodies are mandatory.
 
-Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+For Codex, supply `fork_turns: "none"` explicitly. For Claude, use the exposed
+Agent/Task schema and prepared prompt; do not send Codex-only fields. Start the first useful scoped task,
 then observe its successful claim, complete context and matching automatic pre/post
 hook pair before preparing the rest of the cohort. Scoped preparation enforces
 this automatically; `readiness_after` can name an additional same-phase startup

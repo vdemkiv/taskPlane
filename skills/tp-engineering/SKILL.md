@@ -144,7 +144,8 @@ Missing read inputs retain conservative legacy coverage. Inspect preparation's
 `source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
 reports normative. Use `required_for` when supporting bodies are mandatory.
 
-Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+For Codex, supply `fork_turns: "none"` explicitly. For Claude, use the exposed
+Agent/Task schema and prepared prompt; do not send Codex-only fields. Start the first useful scoped task,
 then observe its successful claim, complete context and matching automatic pre/post
 hook pair before preparing the rest of the cohort. Scoped preparation enforces
 this automatically; `readiness_after` can name an additional same-phase startup

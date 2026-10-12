@@ -267,7 +267,10 @@ def _source_path(parent: str, supplied: Any) -> Path:
             or "\x00" in supplied or os.path.normpath(supplied) != supplied):
         raise ValueError("Invalid native transcript path")
     path = Path(supplied)
-    base = Path.home() / ".claude" / "projects"
+    config = os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude'))
+    if not config or not Path(config).is_absolute() or os.path.normpath(config) != config:
+        raise ValueError('Claude config root must be an absolute normalized path')
+    base = Path(config) / "projects"
     if (not path.is_absolute() or path.parent.parent != base
             or path.name != parent + ".jsonl" or path.parent.name in {".", ".."}):
         raise ValueError("Hook transcript is outside the exact native parent layout")
@@ -409,6 +412,87 @@ def _verify(fd: int, ref: Mapping[str, Any], budget: ReadBudget) -> dict[str, An
     if not raw.endswith(b"\n"):
         raise ValueError("Incomplete evidence reference")
     return _decode(raw)
+
+
+def preflight_launch(parent: str, attempt: Mapping[str, Any], event: Mapping[str, Any], *,
+                     source: Mapping[str, Any] | None,
+                     budget: ReadBudget | None = None) -> dict[str, Any]:
+    """Refuse an unjoinable launch before admission; never normalize authority.
+
+    Claude persists the call before PreToolUse. Compare that exact call with
+    the hook input, after the prepared source offset. No result or child is
+    asserted here. Missing/changed evidence leaves the reservation unlaunched.
+    """
+    budget = budget if budget is not None else ReadBudget()
+    if not supported_reader():
+        return _answer('unsupported', 'Native no-follow transcript reads are unavailable')
+    if source is None:
+        return _answer('not_yet_available', 'A validated root transcript source is required')
+    result_reference: dict[str, Any] | None = None
+    try:
+        call_id = event.get('tool_use_id') or event.get('call_id')
+        offset = attempt.get('transcript_admission_offset')
+        if (not _valid_seal(source, 'taskplane.claude-transcript-source/v1')
+                or source.get('parent') != parent or attempt.get('root') != parent
+                or not isinstance(call_id, str) or not 0 < len(call_id) <= 512
+                or type(offset) is not int or offset < 0
+                or not isinstance(event.get('tool_input'), Mapping)):
+            raise ValueError('Incomplete prepared launch binding')
+        path = _source_path(parent, source['path'])
+        fd, project = _open_source(path)
+        with os.fdopen(fd, 'rb', buffering=0) as stream:
+            info = _regular(stream.fileno())
+            if (project != source['project_identity'] or _identity(info) != source['identity']
+                    or info.st_size < max(source['selected_size'], offset)
+                    or source['session_reference']['source'] != str(path)):
+                raise ValueError('Prepared transcript source changed')
+            session = _verify(stream.fileno(), source['session_reference'], budget)
+            if session is None:
+                return _answer('not_yet_available', 'Source revalidation budget exhausted')
+            if session.get('sessionId') != parent or session.get('isSidechain') is True:
+                raise ValueError('Prepared transcript lineage changed')
+            if offset and budget.read(stream.fileno(), offset - 1, 1) != b'\n':
+                raise ValueError('Prepared transcript offset is not a record boundary')
+            calls: dict[str, dict[str, Any]] = {}
+            problems: list[str] = []
+
+            def accept(row: dict[str, Any], ref: dict[str, Any]) -> None:
+                nonlocal result_reference
+                for role, item in _items(row, call_id):
+                    if role != 'call':
+                        result_reference = ref
+                        continue
+                    if (item.get('name') != (event.get('tool_name') or event.get('tool'))
+                            or not isinstance(item.get('input'), Mapping)
+                            or digest(item['input']) != digest(event['tool_input'])
+                            or row.get('sessionId') != parent or row.get('cwd') != attempt.get('workspace')
+                            or row.get('isSidechain') is True
+                            or not _stamp(attempt.get('prepared_at')) <= _stamp(row.get('timestamp'))
+                            <= datetime.now(timezone.utc)):
+                        problems.append('Native call differs from prepared hook input or lineage')
+                    calls[digest(row)] = ref
+
+            end = _scan(stream.fileno(), path, offset, info.st_size, budget, accept)
+            if result_reference:
+                raise ValueError('The unadmitted launch already has a native result')
+            if end != info.st_size:
+                return _answer('not_yet_available', 'Native call snapshot is incomplete or exceeds the read budget')
+            if problems:
+                raise ValueError(problems[0])
+            if not calls:
+                return _answer('not_yet_available', 'Exact native call is not readable before dispatch')
+            if len(calls) != 1:
+                raise ValueError('Competing native calls for the prepared dispatch')
+            return _answer('matched', 'Exact native call agrees with the hook before dispatch',
+                           call_id=call_id, input_digest=digest(event['tool_input']),
+                           reference=next(iter(calls.values())))
+    except FileNotFoundError:
+        return _answer('not_yet_available', 'Prepared native transcript is not readable')
+    except (OSError, ValueError, TypeError, KeyError, UnicodeError, OverflowError) as exc:
+        return _answer('conflict', str(exc) if isinstance(exc, ValueError) else
+                       'Prepared native transcript cannot be verified',
+                       **({'unadmitted_result': result_reference, 'call_id': event.get('tool_use_id')
+                           or event.get('call_id')} if result_reference else {}))
 
 
 def _scalar(value: Any, limit: int = 4096) -> Any:

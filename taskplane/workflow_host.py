@@ -885,6 +885,12 @@ class Controller:
                task: str = "", grant: str = "", request: dict[str, Any] | None = None) -> dict[str, Any]:
         from . import worker_runtime as workers
         w.require(self.adapter.profile == "native_workflow", "unsupported_authority", "Worker adapter is cooperative native_workflow only.")
+        required_host = workers.RECOVERY_HOSTS.get(operation)
+        if required_host and required_host != self.adapter.name:
+            raise w.Refusal('unsupported_authority',
+                f'{operation} is unavailable for {self.adapter.name}; it requires {required_host} native evidence. '
+                'Inspect flow worker --operation status before offering recovery. '
+                + workers.recovery_capabilities(self.adapter.name)['next_action'])
         target = self._path()
         with primitives.file_lock(str(target)):
             db = self._read(target)
@@ -895,7 +901,8 @@ class Controller:
                 return self._claim_locked(db, run, grant)
             w.require(self.principal == self.root, "scope_violation", "Workers cannot schedule or accept task results.")
             if operation == "status":
-                return workers.summary(state, self.workspace)
+                return {**workers.summary(state, self.workspace),
+                        'recovery': workers.recovery_capabilities(self.adapter.name)}
             w.require(type(revision) is int and revision == state["revision"], "stale_checkpoint", "Expected worker revision changed.")
             w.require(w.current(state)["decision"] in {"not_requested", "changes_requested", "rejected"}
                       and not state.get("finished") and not state.get("retired"), "approval_required", "Current phase is sealed or inactive.")
@@ -1319,7 +1326,24 @@ class Controller:
             self._refresh_denials_locked(db, db['runs'][run])
             candidate = deepcopy(db["runs"][run])
             state.update(candidate)
-            self._guard(event, state)
+            try:
+                self._guard(event, state)
+            except w.Refusal:
+                # A native result before admission is an escaped-launch hazard,
+                # not permission to dispatch or proof that no child exists.
+                # Retain only that diagnostic barrier, never other guard work.
+                changed = False
+                retained = deepcopy(db['runs'][run])
+                for grant, row in state.get('workers', {}).items():
+                    prior = retained.get('workers', {}).get(grant)
+                    if (prior and prior.get('state') == 'prepared' and prior.get('call_id') is None
+                            and row.get('state') == 'unknown' and row.get('preflight_blocker')):
+                        prior.update(state='unknown', preflight_blocker=deepcopy(row['preflight_blocker']))
+                        changed = True
+                if changed:
+                    db['runs'][run] = retained
+                    self._write(target, db)
+                raise
             # Commit mandatory admission before returning permission to the host.
             for key in ("workers", "worker_sequence", "worker_polls", "worker_controls"):
                 if key in state:
@@ -1452,9 +1476,19 @@ class Controller:
         tool = event.get("tool_name") or event.get("tool")
         args = event.get("tool_input", {})
         w.require(isinstance(args, dict), "scope_violation", "Unrecognized tool arguments.")
-        if tool in workers.CLAUDE_CONTROL | workers.CLAUDE_STATUS | workers.DISCOVERY:
-            w.require(self.adapter.profile == 'native_workflow' and self.adapter.name == 'claude',
-                      'unsupported_authority', 'Claude worker controls require the Claude native workflow adapter.')
+        if tool in workers.TOOLS:
+            native_host = 'claude' if tool in workers.CLAUDE_TOOLS else 'codex'
+            alternative = ('Claude Agent/Task with observed lifecycle tools' if self.adapter.name == 'claude'
+                           else 'Codex collaboration tools with observed lifecycle evidence')
+            w.require(self.adapter.profile == 'native_workflow' and self.adapter.name == native_host,
+                      'unsupported_authority', f'{tool} requires the {native_host.capitalize()} native workflow adapter. '
+                      f'Use {alternative} when exposed; otherwise keep required native work blocked. '
+                      'No worker admission or approval was granted.')
+        if tool in {'mcp__codex_app__open_in_codex', 'mcp__codex_app.open_in_codex'}:
+            w.require(self.adapter.name == 'codex', 'unsupported_authority',
+                      'Codex dashboard opening is unavailable in this host. Link the current native dashboard '
+                      'and record flow present --presentation linked, or blocked with an accessible artifact '
+                      'fallback. Only observed rendering supports verified; opening never grants approval.')
         if self.adapter.profile == "native_workflow" and tool in {"Bash", "exec_command"}:
             words = workflow_local.runtime_words(event)
             from . import runtime_command
@@ -1511,6 +1545,10 @@ class Controller:
             if tool in workers.DISCOVERY:
                 workers.admit_discovery(args)
                 return  # Discovery grants neither sibling control nor root authority.
+            if tool == 'SendMessage':
+                raise w.Refusal('unsupported_authority', 'Claude child SendMessage is unavailable in this adapter. '
+                                'Use the native final handback or supported startup-failure handback; '
+                                'the root can inspect observed status. Nested delegation and sibling control remain unsupported.')
             if tool in workers.MESSAGE:
                 parent_name = str(worker.get('canonical_name', '')).rsplit('/', 1)[0]
                 w.require(set(args) == {'target', 'message'} and args.get('target') in

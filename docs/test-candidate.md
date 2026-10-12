@@ -1,4 +1,20 @@
-# Test the 2.33.4 candidate
+# Validate the 2.33.5 release
+
+This release adds cross-host tool/recovery preflight, exact Claude message metadata handling and a launch-input check before dispatch. It retains the earlier initialization and approval repairs. Both packages come from one source revision; installing only one preserves version skew.
+
+Bounded testing of the preceding candidate with Claude Code 2.1.294 verified startup, session-only plugin loading and automatic parent hook activity. Native worker dispatch, full worker context, completion/result acceptance, messaging and a review checkpoint were not completed. The smoke stopped after bootstrap refusals; a later attempt stopped at a trust-dialog/controller mismatch before model work. Those failures are retained in private audit evidence. They are not native lifecycle passes. No further native run, installed-plugin activation or human checkpoint acceptance is included in this release. The release changes only version/documentation beyond that candidate runtime, plus two fixture corrections: resume guidance assertions use stable phase/visit identities, and approval fixtures retain only synthetic project text with the required consent structure.
+
+The launch preflight compares the exact native call with the automatic hook input without coercion. A missing/mismatched call is refused while the grant remains prepared, so a corrected exposed-schema call can reuse it. If no dispatch escaped, the reservation can be abandoned while required work stays pending. A native result already present before admission instead preserves an unknown-attempt barrier; it cannot be abandoned or reported as completed. Existing admitted identity conflicts are not rewritten or automatically recovered.
+
+Claude 2.1.293 exposed Agent fields `description`, `prompt`, `subagent_type`, `model`, `effort` and `isolation`. Use the smaller implemented subset: prompt/description, optional subagent_type/model. Omit legacy `run_in_background` and `resume`, and Codex-only task_name/fork_turns. Effort, isolation and resumed-attempt dispatch are not newly supported by this candidate. Use owned-current-worker SendMessage for supported in-flight messages; do not infer new-attempt authority from native continuation.
+
+Claude custom configuration roots must be absolute normalized paths. The worker reader follows the explicitly configured root and still rejects symlinks and foreign/replaced evidence. Missing native pre-dispatch records fail before launch. Automatic parent hook delivery was observed on the preceding candidate. First worker claim/context and actual message/completion behavior still require live observations; source tests do not certify them.
+
+No activation is included. Review the candidate diff and member hashes, retain the current versioned installations, then obtain action-time approval before changing either host's installed plugin/hook runtime. Use a fresh disposable project/session for acceptance. Do not upgrade active workflows or rewrite their state. Rollback selects the retained prior version and restarts the disposable session; it does not replay candidate state under older code.
+
+## Earlier candidate evidence (historical)
+
+The following notes describe earlier versions, not acceptance of this candidate.
 
 This candidate repairs the Workflow Builder freshness cycle by keeping generated
 phase evidence outside graph source inputs. It also preserves required native
@@ -45,8 +61,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.4.plugin` (Claude) and
-`dist/taskplane-2.33.4-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.5.plugin` (Claude) and
+`dist/taskplane-2.33.5-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -57,13 +73,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.4.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.4-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.5.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.5-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.4` and `ok: true`.
+Both commands should report `2.33.5` and `ok: true`.
 
 ## Local regression and exact archive checks
 

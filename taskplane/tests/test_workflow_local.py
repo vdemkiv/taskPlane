@@ -513,7 +513,7 @@ def test_native_prompt_needs_envelope_and_journal_failure_keeps_decision(tmp_pat
     monkeypatch.setattr(flow,"_observe_hook",failed)
     value=decision(s);value["source"]["kind"]="native_prompt";value["recorder"]="native_prompt_hook"
     event["taskplane_decision"]=value
-    assert "harness active" in flow.hook(event)["hookSpecificOutput"]["additionalContext"]
+    assert "native initialization is missing" in flow.hook(event)["hookSpecificOutput"]["additionalContext"]
     resumed=h.Controller(c.workspace,"root",h.installed_adapter("codex"))
     assert resumed.report()["status"]=="approved"
     assert resumed.report()["phase"]=="product"
@@ -809,7 +809,10 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     run=s['run']
     for i,phase in enumerate(w.PHASES):
         result=flow.hook(event,governor=c)
-        assert phase+' visit' in result['hookSpecificOutput']['additionalContext']
+        # A saved fixture has no automatic parent pair. Guidance still identifies
+        # the same phase/visit while accurately reporting pending initialization.
+        assert phase in result['hookSpecificOutput']['additionalContext']
+        assert w.current(c.report())['id'] in result['hookSpecificOutput']['additionalContext']
         assert run in result['hookSpecificOutput']['additionalContext']
         assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
         s=submit(c,s)

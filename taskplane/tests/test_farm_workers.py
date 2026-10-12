@@ -42,6 +42,7 @@ def fixture(tmp_path):
 def native_files(tmp_path, monkeypatch, state, records, headers):
     home = tmp_path / 'native-home'
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
     project = re.sub(r'[^A-Za-z0-9]', '-', state['workspace'])
     parent = home / '.claude' / 'projects' / project / 'parent.jsonl'
     parent.parent.mkdir(parents=True)
@@ -267,6 +268,7 @@ def integrated_claude(tmp_path, monkeypatch, count=2):
     c.adapter.name = 'claude'
     home = tmp_path.parent/(tmp_path.name+'-native-home')
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
     monkeypatch.setenv('CLAUDE_SESSION_ID', 'root')
     monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
     # OS boot probe may fail inside the test sandbox. This is an explicit fixture.

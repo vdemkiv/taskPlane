@@ -41,6 +41,31 @@ relative executable paths and relative or empty `PATH` entries. If the hook repo
 an interpreter mismatch, use the reported absolute hook interpreter with the exact
 installed launcher. Changing `exec_command.workdir` cannot authorize another
 directory's executable through the setup or diagnostic exception.
+The harmless Python `-B` flag is supported with the same exact interpreter and
+launcher checks. Other Python flags do not receive this command exception.
+
+## Confirm initialization before work
+
+`flow start` saves a run; it does not prove that the host has initialized its
+automatic hooks or executed the requested work. Both full reports and compact
+command summaries expose readiness with its observation time, independently of
+phase work and human approval:
+
+- `initialization_pending`: a run exists but no admitted automatic parent pre/post
+  hook pair has been observed.
+- `initialization_stale`: the saved pair does not match the current run, visit,
+  revision, workspace, root or executing runtime.
+- `active`: the current parent pair matches. Child startup and task checks remain
+  separate requirements; this status does not prove execution or acceptance.
+
+An ordinary admitted command through the native host can establish the pair.
+Inspect `flow report` after its post hook has returned. A report emitted before
+that post hook may still show pending readiness. If no pair arrives, preserve the
+run and report the host hook initialization blocker. Restarting a run, manually
+invoking hook handlers, or substituting serial work does not establish readiness.
+The CLI's `--workspace` does not change the workspace supplied to automatic host
+hooks; both must select the same project. Finished, retired and cancelled runs
+remain inactive and retain their decisions.
 
 ## Cowork workspace and execution
 

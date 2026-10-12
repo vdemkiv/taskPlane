@@ -123,6 +123,7 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
     c.adapter.name = 'claude'
     home=tmp_path.parent/(tmp_path.name+'-native-home')
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
     parent=home/'.claude/projects'/re.sub(r'[^A-Za-z0-9]', '-', str(tmp_path))/'root.jsonl'
     parent.parent.mkdir(parents=True)
     prefix=json.dumps({'sessionId':'root','cwd':str(tmp_path),'type':'user'})+'\n'
@@ -412,6 +413,7 @@ def test_claude_launch_requires_source_pinned_before_preparation(tmp_path, monke
     c.adapter.name = 'claude'
     home = tmp_path.parent / (tmp_path.name + '-native-home')
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
     parent = home / '.claude/projects/original-project/root.jsonl'
     parent.parent.mkdir(parents=True)
     parent.write_text(json.dumps({'sessionId':'root', 'cwd':str(tmp_path), 'type':'user'}) + '\n')
@@ -442,6 +444,9 @@ def test_claude_launch_requires_source_pinned_before_preparation(tmp_path, monke
             flow.hook(event, governor=c)
         assert c.report()['workers'][row['grant_id']]['state'] == 'prepared'
         return
+    with parent.open('a') as stream:
+        stream.write(json.dumps(dict(sessionId='root', cwd=str(tmp_path), timestamp=wr.now(),
+            message={'content': [dict(type='tool_use', id='launch', name='Agent', input=event['tool_input'])]})) + '\n')
     flow.hook(event, governor=c)
     admitted = c.report()['workers'][row['grant_id']]
     # Exact duplicate admission is idempotent. It cannot move the frozen boundary.
