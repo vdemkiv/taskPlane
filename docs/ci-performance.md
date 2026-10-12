@@ -27,8 +27,10 @@ separate from routine CI; it has its own required pass/fail result when invoked.
 
 Portability, core, native and archive jobs start independently. The aggregate gates
 still require all of them; a portability failure cannot become a successful CI run.
-Superseded branch runs are cancelled. Test jobs have a 15-minute timeout, and the
-separate capacity jobs have a 20-minute timeout. Timeouts fail the job.
+Superseded branch runs are cancelled. Windows core shards have a 20-minute timeout;
+other routine test jobs retain 15 minutes. The separate capacity jobs have a
+20-minute timeout. Timeouts fail the job; every selected test and aggregate gate
+remains required.
 
 Coverage has an explicit owner. The exact approval-language regression corpus runs
 against the parser; representative controller cases check atomic refusal, blocked

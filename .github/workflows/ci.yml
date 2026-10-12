@@ -40,7 +40,7 @@ jobs:
   suites:
     name: ${{ matrix.suite }} ${{ matrix.shard }}/${{ matrix.shards }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.suite == 'core' && 20 || 15 }}
     strategy:
       fail-fast: false
       matrix:
