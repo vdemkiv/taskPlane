@@ -33,10 +33,32 @@ CLAUDE_CONTROL = {"SendMessage", "TaskStop"}
 CLAUDE_STATUS = {"ListAgents"}
 DISCOVERY = {"ToolSearch"}
 TOOLS = SPAWN | FOLLOW | MESSAGE | INTERRUPT | STATUS | WAIT | HANDBACK | CLAUDE_CONTROL | CLAUDE_STATUS | DISCOVERY
+CLAUDE_TOOLS = {"Agent", "Task"} | HANDBACK | CLAUDE_CONTROL | CLAUDE_STATUS | DISCOVERY
 LIVE = {"prepared", "launch_pending", "bootstrapping", "running", "cancel_requested", "unknown"}
 STATES = LIVE | {"result_pending", "accepted", "failed", "interrupted"}
 MARKER = re.compile(r"(?m)^Taskplane grant: ([0-9a-f]{32})$")
 NAME_GRANT = re.compile(r"[a-z0-9_]{1,46}__([0-9a-f]{32})")
+RECOVERY_HOSTS = {'recover-unbound': 'codex', 'recover-unavailable': 'codex',
+                  'recover-launch-denied': 'claude'}
+
+
+def recovery_capabilities(host: str) -> dict[str, Any]:
+    """Host routing only. Eligibility still needs current state and native evidence."""
+    return {
+        'host': host,
+        'operations': {operation: {'status': 'requires_evidence' if owner == host else 'unsupported_host',
+                                   'host': owner}
+                       for operation, owner in RECOVERY_HOSTS.items()},
+        'abandon': 'Only a prepared reservation with no admitted launch; never erase an actual escaped launch.',
+        'next_action': (
+            'Claude recover-launch-denied only reconciles an exact proven legacy launch denial with no child/work. '
+            'For a launched owned worker, use exposed TaskStop and observed native completion under its current grant. '
+            'An unbound identity conflict has no general recovery adapter: preserve the attempt and evidence, '
+            'use flow wait for the capability repair, and do not promise a retry or substitute root work.'
+            if host == 'claude' else
+            'Codex recover-unbound requires an unadmitted prepared grant and distinct native spawn/terminal calls; '
+            'recover-unavailable requires the exact interruption/not-found proof. Neither accepts results or proves process exit.'),
+        'authority': 'No eligibility, tool availability, approval or process termination is inferred.'}
 
 
 def now() -> str:
@@ -429,7 +451,7 @@ def _claude_control_target(tool: str, args: dict[str, Any]) -> str:
         fields = {'to', 'message', 'summary'}
         # Claude backfills these display-only fields before invoking hooks.
         # They never select the recipient or replace the canonical message.
-        display = {'type', 'recipient', 'content'} & set(args)
+        display = {'type', 'recipient', 'recipient_kind', 'content'} & set(args)
         message = args.get('message')
         w.require(set(args) <= fields | display and isinstance(message, str)
                   and bool(message.strip()) and len(message.encode('utf-8')) <= 32768
@@ -439,7 +461,11 @@ def _claude_control_target(tool: str, args: dict[str, Any]) -> str:
         assert isinstance(message, str)
         if display:
             content = args.get('content')
-            w.require(display == {'type', 'recipient', 'content'} and args['type'] == 'message'
+            # Claude 2.1.293/294 adds recipient_kind in backfillObservableInput;
+            # it is absent from the model-facing schema and is never authority.
+            w.require(display in ({'type', 'recipient', 'content'},
+                                  {'type', 'recipient', 'recipient_kind', 'content'})
+                      and args.get('recipient_kind', 'agent') == 'agent' and args['type'] == 'message'
                       and args['recipient'] == target and isinstance(content, str)
                       and 0 < len(content.encode('utf-8')) <= 32768
                       and (content == message or content.endswith('…')
@@ -581,6 +607,20 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
             w.require((args.get('resume') == row.get('worker_id') if row.get('worker_id')
                        else not args.get('resume')), 'scope_violation',
                       'Claude resume must target the exact prepared known worker attempt.')
+            from . import claude_worker_observations as observations
+            preflight = observations.preflight_launch(state['root'], row, event,
+                                                       source=row['transcript_source'])
+            if preflight.get('unadmitted_result'):
+                row.update(state='unknown', preflight_blocker=preflight)
+                raise w.Refusal('worker_readiness', 'Native evidence already contains an unadmitted launch result. '
+                                'Preserve this unknown attempt and use flow wait for evidence-based recovery. '
+                                'It cannot be abandoned, retried or treated as completed; no identity is inferred.')
+            w.require(preflight['status'] == 'matched', 'worker_readiness',
+                      'Claude launch preflight ' + preflight['status'] + ': ' + preflight['reason'] + '. '
+                      'No launch is admitted; the grant remains prepared. Retry only after the native call '
+                      'and exposed-schema hook input agree. If unavailable, abandon the unlaunched reservation '
+                      'and use flow wait for capability repair; required work and approvals are preserved.')
+            row['launch_preflight'] = preflight
         else:
             w.require(args.get("task_name") == row["task_name"] and args.get("fork_turns") == "none"
                       and not row.get("worker_id"), "scope_violation", "Spawn needs the prepared name and a task-focused handoff.")
@@ -1452,4 +1492,7 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
                              "basis": "Delivered context bytes and responses, not native tokens or Codex allowance."},
             "attempts": [{**{k: r.get(k) for k in ("grant_id", "task_id", "worker_id", "attempt", "state",
                 "prepared_at", "started_at", "ended_at", "purpose", "retry_reason", "context_preflight", "context_delivery")},
-                "readiness": readiness(r)} for r in rows]}
+                "readiness": readiness(r),
+                **({'launch_blocker': deepcopy(r['preflight_blocker'])} if r.get('preflight_blocker') else {}),
+                **({'identity_freshness': deepcopy(r['identity_freshness'])} if r.get('identity_freshness') else {})}
+                for r in rows]}

@@ -19,6 +19,7 @@ from .primitives import content_fingerprint
 
 CAPABILITIES = ("protected_store", "human_origin", "tool_containment", "process_tracking")
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+codex\.[0-9A-Za-z.-]+)?$")
+_INSTALLED_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$")
 
 
 def codex_readonly_runtime(workspace: str) -> str | None:
@@ -141,7 +142,10 @@ def valid_plugin_root(root: str, family: str, host: str = "codex") -> tuple[tupl
     except (OSError, ValueError):
         return None
     version = value.get("version") if isinstance(value, dict) else None
-    match = _VERSION.fullmatch(str(version or ""))
+    # Diagnose an explicitly selected candidate without opting cache-family
+    # discovery into unpublished prereleases or changing its selection order.
+    pattern = _INSTALLED_VERSION if candidate == base else _VERSION
+    match = pattern.fullmatch(str(version or ""))
     if not match or value.get("name") != "taskplane" or candidate != base and candidate.name != version:
         return None
     return tuple(int(v) for v in match.groups()), str(version), str(engine.resolve())

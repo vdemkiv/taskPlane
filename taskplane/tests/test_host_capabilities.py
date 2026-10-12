@@ -80,3 +80,23 @@ def test_observations_never_certify_protection(tmp_path):
     assert h.runtime_hook_observations([row],host='codex',session='other',workspace=str(tmp_path))['events_seen']==[]
     assert not h.runtime_hook_observations([row],host='codex',session='s',workspace=str(tmp_path))['authority_verified']
     assert not h.inspect_native('codex',tmp_path,'s')['authority_verified']
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('version', ['2.33.4-policy-reply.1', '2.33.4-initialization.1'])
+def test_explicit_candidate_runtime_is_valid_without_changing_family_selection(tmp_path, host, version):
+    candidate = tmp_path/version
+    plugin(candidate, version, host)
+    selected = h.valid_plugin_root(str(candidate), str(candidate), host)
+    assert selected == ((2, 33, 4), version, str(candidate/'taskplane/tp.py'))
+    # Explicit runtime diagnostics must not opt a family into prerelease discovery.
+    assert h.resolve_plugin_engine(str(tmp_path), host) is None
+    plugin(tmp_path/'2.33.3', '2.33.3', host)
+    assert h.resolve_plugin_engine(str(tmp_path), host) == str(tmp_path/'2.33.3/taskplane/tp.py')
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('version', ['2.33.4/other', '2.33.4-', '2.33.4 candidate'])
+def test_explicit_runtime_rejects_malformed_versions(tmp_path, host, version):
+    plugin(tmp_path, version, host)
+    assert h.valid_plugin_root(str(tmp_path), str(tmp_path), host) is None

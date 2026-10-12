@@ -49,8 +49,10 @@ context small; do not copy whole histories, catalogs, or unrelated source trees.
 Avoid conflicting writes by assigning disjoint files or isolated checkouts.
 
 Use native status observations to join the attempt, inspect the actual output, and integrate it.
-`wait_agent` only waits for mailbox activity; neither it nor an interrupt request
-proves completion. Native terminal/idle status and root result verification are separate.
+In Codex, `list_agents` reports native status and `wait_agent` only waits for mailbox
+activity. In Claude, use observed completion notifications/handback and available
+`ListAgents`, `SendMessage` or `TaskStop` controls under the installed contract.
+Claude inventory labels, either host's wait, and stop requests do not prove completion. Native terminal/idle status and root result verification are separate.
 Fix concrete defects without repeating all reviews. Interruptions and missing
 results are not successful completion. Telemetry records available activity and
 usage; missing observations never prevent collection or progress.
@@ -125,9 +127,14 @@ Count reservations, live attempts and unknown launches. Fill available capacity
 with useful ready tasks, then refill when results satisfy prerequisites. Two
 overlapping workers is the minimum live acceptance test, not the normal limit.
 
-Preparation returns a grant and bounded message. Pass the message unchanged as
-the prefix of the native task request, with the prepared `task_name` and
-`fork_turns: "none"`. Use the actual exposed native tool schema. An observed call
+Preparation returns a grant and bounded message. In Codex, pass the message unchanged
+as the prefix of `collaboration.spawn_agent` with the prepared `task_name` and
+`fork_turns: "none"`. In Claude, pass it unchanged as the prefix of Agent/Task
+`prompt`, with a concise `description` and the exposed `subagent_type` when required.
+Do not send `task_name`, `fork_turns` or `reasoning_effort` to Claude. Use
+`run_in_background: true` only when exposed; otherwise the native launch must still
+return structured asynchronous child identity. An explicit foreground launch is
+unsupported. Use the actual exposed native tool schema. An observed call
 binds the reservation; a returned canonical name is correlated to the real session
 ID through native parent/name metadata. Ambiguous correlation remains blocked.
 The prepared name includes the reservation ID because Codex desktop can expose
@@ -135,6 +142,18 @@ encrypted message text to hooks. Preserve that exact name; custom name prefixes
 are limited to 46 characters. This is a correlation token, not worker authority.
 Opaque follow-up messages without an observable grant remain unsupported; use a
 new prepared native spawn for a fresh attempt instead of weakening grant checks.
+
+Claude launch preflight verifies the native transcript call against the automatic
+hook input before admission, without coercing strings or dropping fields. If the
+call is missing, incomplete or mismatched, no launch is admitted and the prepared
+grant remains available for a corrected call using the exposed schema. If no
+launch escaped, an unlaunched reservation may be abandoned while required work
+stays pending. A native result already present before admission instead preserves
+an unknown-attempt barrier: do not abandon, retry, clear identity or mark it done.
+Use `flow wait` for evidence-based recovery. Current Agent sessions may omit
+legacy `run_in_background` and `resume`; do not add them when unexposed. Native
+`effort` and scope-changing `isolation` are outside this adapter's implemented
+dispatch subset; omit them, or wait if that capability is required.
 
 The worker claims its observed identity using `flow worker --operation claim
 --workspace PATH --run RUN --grant GRANT`, then obtains `flow context --task ID`
@@ -144,8 +163,10 @@ Pinned inputs survive own output edits; changed read inputs require revalidation
 Grants pin exact prerequisite results and deliver their output evidence in task
 context. Join affected readers before replacing prerequisites. Accepted results
 retain read-input and prerequisite fingerprints, so later source edits invalidate
-dependent admission until fresh verification. Workers may report progress only to
-their bound parent; this does not permit nested delegation or root controls.
+dependent admission until fresh verification. Codex workers may report progress
+only to their bound parent. Claude child SendMessage-to-main is not supported by
+this adapter; use the supported native final handback/startup-failure path and let
+the root inspect observed status. Neither path permits nested delegation or root controls.
 Preparation and launch reject both write/write and read/write conflicts, including
 replacement workers that would change a live reader's prerequisite evidence.
 Workers cannot operate root controls, publish tasks, start a run or delegate.
@@ -161,11 +182,16 @@ verify actual outputs first; assertions in check records are not independent pro
 
 `--operation status` shows attempts and ready/waiting reasons. `capacity` updates
 observed limits; a reduction stops admission without cancelling live work.
-`abandon --grant GRANT` releases only an unlaunched reservation. An idle worker's
+`abandon --grant GRANT` releases only an unlaunched reservation. A Codex idle worker's
 follow-up needs a new preparation with its actual `worker_id`, a fresh grant and
-fresh task context. Unknown attempts remain visible and block sealing.
+fresh task context. Claude native SendMessage continuation is not new-attempt
+authority: use a fresh prepared Agent after the preceding attempt is joined.
+Unknown attempts remain visible and block sealing.
+Before proposing any recovery or retry, inspect `flow worker --operation status`
+and its `recovery` host capabilities, then verify the exact attempt and evidence.
+A host-supported operation still requires evidence; it is not a release grant.
 When an actual launch escaped hook admission, do not label it unlaunched or edit
-the controller. If the prepared grant has no admitted call, identity, claim,
+the controller. **Codex only:** if the prepared grant has no admitted call, identity, claim,
 context or result, `recover-unbound --grant GRANT` can revoke it after the root
 supplies the actual `request_reference`, `launch_call_id` and `terminal_call_id`
 in `--worker-json`, with the current run and revision. The installed CLI validates
@@ -173,6 +199,16 @@ native spawn/terminal inventory pairs, independent child lineage and chronology,
 and refuses later child input/activity or known live commands. Historical proof
 only releases the reservation as failed; it cannot replace startup hooks, accept
 work or prove process exit. Retry with a fresh grant after hooks are restored.
+**Claude:** `recover-unbound` and `recover-unavailable` have no Claude adapter.
+`recover-launch-denied` is only for the exact retained legacy denial with no child
+or work evidence described in the CLI reference. It cannot resolve an admitted
+launch with a child identity conflict. Use native TaskStop only for an owned bound
+worker and retain observed completion evidence; a stop request alone cannot release
+the attempt. If identity or termination remains unknown, preserve the blocked
+attempt, record `flow wait` with the precise missing capability, and request a
+scoped adapter repair. Do not promise a retry, call abandon on a launched worker,
+rewrite a frozen native task as root work or manufacture terminal evidence.
+
 For a reused worker, join with a native status call admitted during the new
 attempt, or a terminal event correlated to that attempt's launch. An old poll
 or an uncorrelated stop cannot complete a newer attempt.
@@ -199,7 +235,8 @@ Missing read inputs retain conservative legacy coverage. Inspect preparation's
 `source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
 reports normative. Use `required_for` when supporting bodies are mandatory.
 
-Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+For Codex, supply `fork_turns: "none"` explicitly. For Claude, use the exposed
+Agent/Task schema and prepared prompt; do not send Codex-only fields. Start the first useful scoped task,
 then observe its successful claim, complete context and matching automatic pre/post
 hook pair before preparing the rest of the cohort. Scoped preparation enforces
 this automatically; `readiness_after` can name an additional same-phase startup

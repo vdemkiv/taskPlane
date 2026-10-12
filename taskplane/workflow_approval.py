@@ -429,7 +429,8 @@ def affirmative_consent(excerpt: str) -> bool:
     return positive_seen
 
 
-def conditional_intermediate_consent(instructions: str, request: dict[str, Any]) -> bool:
+def conditional_intermediate_consent(instructions: str, request: dict[str, Any],
+                                     *, phase: str | None = None) -> bool:
     """Interpret a bounded, check-dependent offer followed by explicit assent.
 
     This is only used with the complete contextual question, never as standalone
@@ -440,9 +441,22 @@ def conditional_intermediate_consent(instructions: str, request: dict[str, Any])
                r'(?:accept|approve) (?:the )?intermediate phases '
                r'(?:when|after|once) (?:their|the|all) required checks pass,? '
                r'(?:stopping|and stop) (?:for|before) your final (?:acceptance|approval)')
-    return bool(re.fullmatch(pattern, text)
-                and request.get('allowed_phases') == list(w.PHASES[:-1])
-                and request.get('stop_phases') == ['retro'])
+    if request.get('stop_phases') != ['retro']:
+        return False
+    if re.fullmatch(pattern, text):
+        return request.get('allowed_phases') == list(w.PHASES[:-1])
+    # A combined current-phase decision and remaining-phase offer is narrower
+    # than the original whole-route offer. Keep its scope/pause sentence intact.
+    remaining = (r'do you (?:approve|accept) (?:this|the) (?P<phase>'
+                 + '|'.join(w.PHASES[:-1]) + r') and let (?:the )?remaining intermediate phases '
+                 r'(?:proceed|continue) (?:when|after|once) (?:their|the|all) required checks pass,? '
+                 r'(?:stopping|and stop) (?:for|before) your final (?:review|acceptance|approval)\? '
+                 r'this applies only to this (?:landing[- ]page draft|draft|task|run|workflow); '
+                 r'blockers or scope changes pause it')
+    match = re.fullmatch(remaining, text)
+    if not match or (phase is not None and match['phase'] != phase):
+        return False
+    return request.get('allowed_phases') == list(w.PHASES[w.PHASES.index(match['phase']):-1])
 
 
 def contextual_consent(state: dict[str, Any], request: dict[str, Any], observed: datetime,
@@ -471,10 +485,21 @@ def contextual_consent(state: dict[str, Any], request: dict[str, Any], observed:
     from .workflow_local import timestamp
     w.require(timestamp(state["started_at"]) <= timestamp(source.get("observed_at")) < observed,
               "decision_chronology", "The automatic-policy question must follow run start and precede the response.")
+    if 'remaining intermediate phases' in re.sub(r'\s+', ' ', context["instructions"].casefold()):
+        # Do not select a convenient substring and discard a later stop,
+        # qualification or contradictory instruction from the presentation.
+        prefix, separator, final_paragraph = context["question"].rpartition('\n\n')
+        w.require(context["instructions"] == (final_paragraph if separator else context["question"])
+                  and context["question"].count('?') == 1
+                  and not re.search(r'\b(?:stop|stopping|pause|pausing|ignore|skip|waive|omit|remove|'
+                                    r'bypass|cancel|proceed|continue|auto[ -]?approve|automatically|manual|final)\b',
+                                    prefix, re.IGNORECASE), "decision_grammar",
+                  "Remaining-phase consent must retain the complete final scope/pause paragraph without competing instructions.")
     w.require(context.get("selected_label") == request.get("excerpt")
               and conversational_choice(request["excerpt"]) == "approved"
               and (affirmative_consent(context["instructions"])
-                   or conditional_intermediate_consent(context["instructions"], request)), "decision_grammar",
+                   or conditional_intermediate_consent(context["instructions"], request,
+                                                       phase=w.current(state)["phase"])), "decision_grammar",
               "Policy choice is unclear or its presented instructions do not authorize automatic phase approvals.")
     return deepcopy(dict(context))
 

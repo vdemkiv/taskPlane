@@ -1,5 +1,39 @@
 # taskplane changelog
 
+## v2.33.5 — Cross-host admission and native readiness repairs
+
+- Report saved workflows as pending or stale until the current automatic parent hook pair is observed; support the exact Python `-B` launcher.
+- Preserve complete owner-response evidence for ordinary delegated checkpoint replies and bounded remaining-phase consent, retaining scope stops and final human acceptance.
+- Reject wrong-host worker and recovery calls before dispatch, accept Claude owned-agent message metadata, and validate Claude launch input against native evidence before admitting it. Keep missing capabilities and unresolved identity conflicts explicit.
+- Honor normalized Claude configuration roots, distinguish selected prerelease runtimes, and document supported dashboard and worker alternatives.
+- Align Codex and Claude packages on one regular patch release. Native Claude startup, candidate loading and automatic parent hooks were observed on the preceding byte-matched runtime candidate; native worker lifecycle and checkpoint completion remain unverified. Release CI and archive checks do not certify installed-host behavior.
+
+## v2.33.4-host-compat.1 — Cross-host admission and recovery preflight
+
+- Reject native worker and recovery operations belonging to the other host before admission; preserve required work and approval evidence, with explicit supported alternatives.
+- Accept Claude's exact owned-agent SendMessage display backfill, retaining canonical target/message and current-attempt checks.
+- Verify a Claude launch's native call against the prepared hook input before dispatch. Missing or mismatched calls leave the reservation available for a corrected call; an already-observed unadmitted result retains an unknown-attempt barrier. No identity conflict is cleared or historical run repaired.
+- Honor the explicit absolute Claude configuration root with the same no-follow transcript checks. Validate explicitly selected prerelease plugin roots without automatically selecting unpublished versions.
+- Align both candidate packages and host-specific instructions. This is an uninstalled local candidate; tests and packages are not live acceptance evidence.
+
+## v2.33.4-policy-reply.1 — Remaining-phase contextual consent
+
+- Recognize a combined current-phase approval and checked remaining-phase continuation offer, preserving the complete original scope/pause paragraph and final human review.
+- Bind the offer to the current phase through Engineering only; refuse missing safeguards, competing instructions, ambiguous or foreign consent and broader phase lists.
+- Keep hooks, permissions, evidence assessment, workflow schemas and final acceptance unchanged. Local candidate activation and live continuation require separate verification.
+
+## v2.33.4-approval-reply.1 — Ordinary delegated checkpoint reply
+
+- Recognize a verified owner's ordinary approval with null connector reply IDs only from a complete immediate observation containing the exact pending question.
+- Preserve original messages, null linkage, owner/source observations and sealed binding; reject incomplete, ambiguous, conflicting, foreign and replayed consent.
+- Keep direct replies, reactions, approval policies, workflow schemas and hooks unchanged. This local candidate requires separate installed native-runtime verification.
+
+## v2.33.4-initialization.1 — Native initialization readiness repair
+
+- Report saved runs as initialization pending or stale until a current automatic parent hook pair is observed. Keep phase work and human acceptance separate.
+- Support the exact Python -B launcher without relaxing interpreter, workspace or worker checks.
+- Focused source regression checks passed; live installed-host hook delivery remains to be verified.
+
 ## v2.33.4 — Approval and delegation repairs
 
 - Use the regular patch version for the consolidated approval wording, durable cancellation, delegated policy and checkpoint/reaction repairs.

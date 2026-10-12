@@ -1,0 +1,44 @@
+{
+  "message": {
+    "message_id": "fixture-remaining-answer",
+    "channel": "chatgpt",
+    "author": "user",
+    "author_id": "fixture-owner",
+    "content": {
+      "text": "Approve",
+      "library_attachments": []
+    },
+    "reactions": {},
+    "message_metadata": null,
+    "attachment_reactions": [],
+    "reply_to_id": null,
+    "reply_root_message_id": null,
+    "sent_at": "2020-01-01T00:01:00+00:00",
+    "deleted_at": null,
+    "request_id": "fixture-request"
+  },
+  "before": [
+    {
+      "message_id": "fixture-remaining-question",
+      "channel": "chatgpt",
+      "author": "aeon",
+      "author_id": "fixture-assistant",
+      "content": {
+        "text": "The example design describes a sample page and an unconnected demonstration form.\n\nDo you approve this design and let the remaining intermediate phases proceed when their required checks pass, stopping for your final review? This applies only to this landing-page draft; blockers or scope changes pause it.",
+        "library_attachments": []
+      },
+      "reactions": {},
+      "message_metadata": {
+        "turn_trigger": "parent_notification"
+      },
+      "attachment_reactions": [],
+      "reply_to_id": null,
+      "reply_root_message_id": null,
+      "sent_at": "2020-01-01T00:00:00+00:00",
+      "deleted_at": null,
+      "request_id": null
+    }
+  ],
+  "after": [],
+  "partial": false
+}

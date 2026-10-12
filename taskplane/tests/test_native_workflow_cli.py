@@ -45,10 +45,9 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None):
     env.update(CODEX_HOME=str(host_data/'codex'),CLAUDE_CONFIG_DIR=str(host_data/'claude'))
     env.update(environment or {})  # Explicit fixture observations only; no ambient session identity.
     if host == 'claude':
-        # The source reader uses Path.home(), independently of CLAUDE_CONFIG_DIR.
-        # Keep native-layout provenance entirely inside this test's isolated HOME.
+        # Both worker and usage readers use the explicit isolated config root.
         env['HOME'] = str(host_data/'home')
-        transcript = Path(env['HOME'])/'.claude/projects/fixture/root.jsonl'
+        transcript = Path(env['CLAUDE_CONFIG_DIR'])/'projects/fixture/root.jsonl'
         transcript.parent.mkdir(parents=True, exist_ok=True)
         if not transcript.exists():
             transcript.write_text(json.dumps({'sessionId': 'root', 'cwd': str(workspace),
@@ -847,7 +846,10 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
             '--note','Fixture artifact linked; host display unavailable (unverified)')
     assert hook('Stop')=={}
     report=command('report','--run',state['run'])
-    assert report['harness']['status']=='active'
+    # This helper emits pre hooks only, without matched call IDs or post hooks.
+    # Phase evidence and a saved run must not imply host initialization.
+    assert report['harness']['status']=='initialization_pending'
+    assert report['harness']['hook_observed'] and report['harness']['parent_hook']['status']=='missing'
     assert report['harness']['presentation']['outcome']=='blocked'
     assert report['workflow']['status']=='awaiting_human_approval' and not report['workflow']['decisions']
     resumed=hook('SessionStart',source='resume')

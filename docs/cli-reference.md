@@ -378,6 +378,16 @@ Malformed native call/result JSON, metadata or timestamp fields return
 `invalid_evidence` without changing the grant. Preserve the evidence and diagnose
 the malformed observation before retrying.
 
+Before offering recovery, inspect `flow worker --operation status`. Its `recovery`
+map separates `unsupported_host` from `requires_evidence`; neither grants eligibility.
+`recover-unbound` and `recover-unavailable` require Codex. Claude
+`recover-launch-denied` only handles the exact proven legacy denial with no child
+or work evidence; it is not an equivalent for an admitted unbound launch. For that
+Claude case, preserve the unresolved attempt and approval history, use `flow wait`
+to report the missing identity/recovery capability, and obtain a scoped adapter
+repair. An owned bound worker can use permitted TaskStop and observed completion;
+no cancellation request alone proves exit. Required native work remains incomplete.
+
 If hooks missed an actual launch and the reservation is still `prepared` with no
 admitted call, worker identity, claim, context or result, use the explicit
 `flow worker --operation recover-unbound --workspace PATH --run RUN --grant GRANT
@@ -714,6 +724,19 @@ The question's source conversation also stays original. Intermediate-phase
 offers conditioned on required checks and a final human stop are interpreted in
 context; their supported phase mapping is Product through Engineering, stop Retro.
 This does not approve a phase until its actual sealed evidence passes assessment.
+
+The combined offer “Do you approve this design and let the remaining intermediate
+phases proceed when their required checks pass, stopping for your final review?”
+is also supported when its complete final paragraph retains the scope restriction
+and “blockers or scope changes pause it.” Preserve that paragraph verbatim as
+`choice_context.instructions`, with the full presentation in `question`. Its named
+phase must be current; `allowed_phases` is exactly the current phase through
+Engineering (Design, Plan, Build, Evaluate, Engineering in this example), with
+`stop_phases: ["retro"]`. It cannot include an earlier phase or final acceptance.
+Missing checks/final human control, extra or conflicting instructions, a trimmed
+scope/pause sentence, ambiguous phases and quoted third-party answers refuse.
+Recording a policy still accepts no phase; each sealed checkpoint requires its
+normal evidence assessment and a current native handoff.
 
 The new `relay` object has schema `taskplane.delegated-user-observation/v1` and
 exactly these additional fields:
@@ -1127,7 +1150,8 @@ Missing read inputs retain conservative legacy coverage. Inspect preparation's
 `source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
 reports normative. Use `required_for` when supporting bodies are mandatory.
 
-Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
+For Codex, supply `fork_turns: "none"` explicitly. For Claude, use the exposed
+Agent/Task schema and prepared prompt; do not send Codex-only fields. Start the first useful scoped task,
 then observe its successful claim, complete context and matching automatic pre/post
 hook pair before preparing the rest of the cohort. Scoped preparation enforces
 this automatically; `readiness_after` can name an additional same-phase startup
@@ -1259,8 +1283,22 @@ Owner verification retains user_id, verified=true, reference and source_thread.
 The observation retains kind (`owner_reaction` or `owner_text`), method, observed_at,
 precision (`second` or `minute`), current=true, complete_message=true and the entire
 raw read result. An undeleted ChatGPT message must match the question exactly for
-a reaction; the verified owner's current reaction must be 👍. For text, the owner
-must directly reply to that question and the existing text grammar applies.
+a reaction; the verified owner's current reaction must be 👍. Text with a direct
+reply to that question retains the existing text grammar and checks.
+
+An ordinary text reply with explicitly null `reply_to_id` and
+`reply_root_message_id` can approve only the current checkpoint when its original
+read result is complete (`partial=false`), contains exactly that assistant
+question in `before`, and has an empty `after` list. The undeleted preceding
+message must match the question's identity, channel, time and full text. There
+must be one unambiguous approval question. Conditional, conflicting, unrelated,
+different-phase or different-checkpoint responses refuse, as do non-approval
+responses through this narrow fallback. Missing linkage fields, broader/partial
+windows, third-party authors and conflicting explicit reply IDs refuse. The
+recorder must not trim the original read result to make it fit. Existing owner,
+source, sealed binding, chronology and replay checks still apply. The complete
+raw result stays in provenance, with an additional `contextual_reply` receipt
+identifying the preceding question. No reply ID or human wording is fabricated.
 
 Normalization derives approved from that contextual owner reaction; it never turns
 👍 into a typed “Approve” excerpt. Raw reaction, question and read result remain in

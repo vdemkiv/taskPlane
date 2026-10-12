@@ -101,8 +101,19 @@ def summary(store: Store, payload: dict[str, Any], action: str,
     if payload.get("reason"):
         errors.insert(0, str(payload.get("detail", payload["reason"])))
     blocking = status in {"blocked", "capability_blocked", "stale", "cancelled", "rejected"}
+    harness = payload.get("harness")
+    initialization = ({key: harness.get(key) for key in
+                       ("status", "observed_at", "run_created", "hook_observed", "binding", "parent_hook")}
+                      if isinstance(harness, dict) else None)
+    initialization_blocked = (isinstance(initialization, dict) and initialization.get("status") in
+                              {"initialization_pending", "initialization_stale", "unavailable"})
+    if initialization_blocked:
+        errors.append("Native initialization is incomplete; a current automatic parent hook pair is not verified.")
     phase = state.get("phase") or stage.get("phase") or payload.get("phase")
     next_action = ("Resolve the reported refusal before continuing." if blocking else
+                   "Native initialization is incomplete. Observe an admitted automatic parent pre/post hook pair "
+                   "in the selected workspace and exact runtime, then inspect flow report. Preserve the saved run; "
+                   "do not dispatch workers or substitute serial execution while readiness is missing." if initialization_blocked else
                    "Initialize the requested scoped workflow." if status in {"no_workflow", "available", "legacy_unverified"} else
                    "Request the human decision for this checkpoint." if status == "awaiting_human_approval" else
                    "Advance to the next authorized phase or finish the accepted route." if status == "approved" else
@@ -128,11 +139,13 @@ def summary(store: Store, payload: dict[str, Any], action: str,
                            "allowed_phases": state.get("approval_policy", {}).get("allowed_phases", []),
                            "stop_phases": state.get("approval_policy", {}).get("stop_phases", [])},
               "next_action": next_action, "context": context or {"status": "not_prepared"},
+              "initialization": initialization,
               "artifacts": {"dashboard": payload.get("dashboard"), "details": details},
               "coverage": {"workflow": state.get("coverage", {}),
                            "graph": (payload.get("graph") or payload.get("source_graph") or {}).get("status", "unknown"),
                            "tokens": payload.get("token_coverage", "unknown")},
-              "errors": {"blocking": blocking, "reason": payload.get("reason"),
+              "errors": {"blocking": blocking or initialization_blocked,
+                         "reason": payload.get("reason") or ("native_initialization" if initialization_blocked else None),
                          **collection(store, errors, "errors", 0)}, "details": details}
     accounting = payload.get("phase_usage", {}).get("accounting")
     if accounting:

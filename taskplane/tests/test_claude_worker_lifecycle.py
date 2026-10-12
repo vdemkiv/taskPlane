@@ -21,6 +21,7 @@ def encoded(row):
 def setup_native(tmp_path, monkeypatch):
     home = tmp_path / "native-home"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
     parent = home / ".claude" / "projects" / "original-project" / "parent.jsonl"
     parent.parent.mkdir(parents=True)
     children = parent.with_suffix("") / "subagents"
@@ -71,6 +72,64 @@ def test_root_source_uses_original_project_with_worktree_cwd(tmp_path, monkeypat
     changed = deepcopy(attempt); changed["workspace"] += "-foreign"
     assert observe(changed, source)["status"] == "conflict"
     assert observations.correlate_records("parent", attempt, [call, result], [header])["evidence_sha256"] == answer["evidence_sha256"]
+
+
+@pytest.mark.parametrize('config', ['custom', 'default', 'relative', 'traversal', 'symlink'])
+def test_worker_source_honors_exact_config_root_without_path_relaxation(tmp_path, monkeypatch, config):
+    parent, _, attempt, _, _, _, event = setup_native(tmp_path, monkeypatch)
+    if config == 'default':
+        monkeypatch.delenv('CLAUDE_CONFIG_DIR')
+    elif config == 'custom':
+        custom = tmp_path / 'custom-claude-config'
+        parent.parent.parent.parent.rename(custom)
+        parent = custom / 'projects/original-project/parent.jsonl'
+        event['transcript_path'] = str(parent)
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(custom))
+    elif config == 'relative':
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', 'relative-root')
+    elif config == 'traversal':
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(parent.parent.parent.parent) + '/sub/..')
+    else:
+        alias = tmp_path / 'config-link'
+        alias.symlink_to(parent.parent.parent.parent, target_is_directory=True)
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(alias))
+        event['transcript_path'] = str(alias / 'projects/original-project/parent.jsonl')
+    selected = observations.select_source('parent', event, automatic=True)
+    if config in {'custom', 'default'}:
+        assert selected['status'] == 'selected'
+        assert observe(attempt, selected['source'])['status'] == 'matched'
+    else:
+        assert selected['status'] == 'conflict'
+
+
+@pytest.mark.parametrize('defect', ['none', 'budget', 'incomplete', 'truncated', 'symlink', 'offset', 'future'])
+def test_preflight_retains_bounded_no_follow_native_proof(tmp_path, monkeypatch, defect):
+    parent, _, attempt, call, _, _, event = setup_native(tmp_path, monkeypatch)
+    parent.write_bytes(encoded(call))
+    source = select(event)
+    prepared = {**attempt, 'root': 'parent', 'transcript_admission_offset': 0}
+    dispatch = {**event, 'tool_use_id': attempt['call_id'], 'tool_name': 'Agent',
+                'tool_input': call['message']['content'][0]['input']}
+    options = {}
+    if defect == 'budget':
+        options['budget'] = observations.ReadBudget(max_bytes=1)
+    elif defect == 'incomplete':
+        with parent.open('ab') as stream:
+            stream.write(b'{"partial":')
+    elif defect == 'truncated':
+        parent.write_bytes(b'')
+    elif defect == 'symlink':
+        moved = parent.with_suffix('.moved')
+        parent.rename(moved)
+        parent.symlink_to(moved)
+    elif defect == 'offset':
+        prepared['transcript_admission_offset'] = 2
+    elif defect == 'future':
+        prepared['prepared_at'] = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    result = observations.preflight_launch('parent', prepared, dispatch, source=source, **options)
+    assert result['status'] == ('matched' if defect == 'none' else
+                                'not_yet_available' if defect in {'budget', 'incomplete'} else 'conflict')
+    assert 'SECRET' not in json.dumps(result)
 
 
 def test_unpinned_worker_cannot_select_or_override_source(tmp_path, monkeypatch):

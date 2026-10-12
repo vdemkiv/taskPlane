@@ -54,6 +54,7 @@ class Interactive:
         self.controller.adapter.name = 'claude'
         home = tmp_path.parent / (tmp_path.name + '-native-home')
         monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
         monkeypatch.setenv('CLAUDE_SESSION_ID', 'root')
         monkeypatch.delenv('CODEX_THREAD_ID', raising=False)
         monkeypatch.setattr(invocation, '_boot_identity', lambda: 'fixture-boot')
