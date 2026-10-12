@@ -417,11 +417,12 @@ def _verify(fd: int, ref: Mapping[str, Any], budget: ReadBudget) -> dict[str, An
 def preflight_launch(parent: str, attempt: Mapping[str, Any], event: Mapping[str, Any], *,
                      source: Mapping[str, Any] | None,
                      budget: ReadBudget | None = None) -> dict[str, Any]:
-    """Refuse an unjoinable launch before admission; never normalize authority.
+    """Check readable evidence before dispatch; never normalize authority.
 
-    Claude persists the call before PreToolUse. Compare that exact call with
-    the hook input, after the prepared source offset. No result or child is
-    asserted here. Missing/changed evidence leaves the reservation unlaunched.
+    PreToolUse supplies the current call, which may not be flushed yet. A
+    complete, unchanged source without that call yields awaiting_transcript,
+    not identity proof. Only the controller's automatic root hook may reserve
+    it; exact call/result/child correlation remains required after dispatch.
     """
     budget = budget if budget is not None else ReadBudget()
     if not supported_reader():
@@ -480,7 +481,9 @@ def preflight_launch(parent: str, attempt: Mapping[str, Any], event: Mapping[str
             if problems:
                 raise ValueError(problems[0])
             if not calls:
-                return _answer('not_yet_available', 'Exact native call is not readable before dispatch')
+                return _answer('awaiting_transcript', 'Current call is not in the complete native snapshot yet',
+                               call_id=call_id, input_digest=digest(event['tool_input']),
+                               source_sha256=source['sha256'], watermark=end)
             if len(calls) != 1:
                 raise ValueError('Competing native calls for the prepared dispatch')
             return _answer('matched', 'Exact native call agrees with the hook before dispatch',

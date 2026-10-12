@@ -143,12 +143,19 @@ are limited to 46 characters. This is a correlation token, not worker authority.
 Opaque follow-up messages without an observable grant remain unsupported; use a
 new prepared native spawn for a fresh attempt instead of weakening grant checks.
 
-Claude launch preflight verifies the native transcript call against the automatic
-hook input before admission, without coercing strings or dropping fields. If the
-call is missing, incomplete or mismatched, no launch is admitted and the prepared
-grant remains available for a corrected call using the exposed schema. If no
-launch escaped, an unlaunched reservation may be abandoned while required work
-stays pending. A native result already present before admission instead preserves
+Claude's current call may reach PreToolUse before it is flushed to the transcript.
+Launch preflight verifies the pinned source and compares any readable call with
+the automatic hook input, without coercing strings or dropping fields. If a
+complete snapshot lacks the current call, the current root hook may reserve it as
+`launch_pending` with preflight status `awaiting_transcript`. This binds only the
+call ID and input digest; child identity, claim, context and execution remain
+blocked until the exact native call/result and child header agree. Do not retry
+the launch or abandon that admitted attempt; use `flow wait` if evidence stays
+unavailable. Later conflicts retain an unknown-attempt barrier.
+
+An unreadable/incomplete source or mismatched call still refuses before dispatch;
+the unlaunched reservation may be corrected or abandoned while required work
+stays pending. A native result already present before admission also preserves
 an unknown-attempt barrier: do not abandon, retry, clear identity or mark it done.
 Use `flow wait` for evidence-based recovery. Current Agent sessions may omit
 legacy `run_in_background` and `resume`; do not add them when unexposed. Native

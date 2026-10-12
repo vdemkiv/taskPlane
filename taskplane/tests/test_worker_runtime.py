@@ -653,7 +653,7 @@ def test_unknown_claude_capacity_uses_explicit_budget_only(tmp_path, host, limit
     assert observed['includes_root'] is False
 
 
-def denied_launch(tmp_path, monkeypatch, *, legacy=False):
+def denied_launch(tmp_path, monkeypatch, *, legacy=False, hook_first=False):
     """Real-shaped native refusal with an admitted call and no child."""
     from taskplane import claude_worker_observations as observations, flow
     from taskplane.tests.test_claude_interactive_recovery import Interactive
@@ -675,8 +675,11 @@ def denied_launch(tmp_path, monkeypatch, *, legacy=False):
                 uuid='72bc5eed-004f-4848-8400-3387f1637a59', timestamp=wr.now(),
                 message={'role': 'assistant', 'content': [dict(type='tool_use', name='Agent',
                     id=event['tool_use_id'], input=event['tool_input'])]})
-    host.append(call)
+    if not hook_first:
+        host.append(call)
     flow.hook(event, governor=host.controller)
+    if hook_first:
+        host.append(call)
     result = dict(type='user', sessionId='root', session_id='root', cwd=str(tmp_path), isSidechain=False,
                   parentUuid=call['uuid'], sourceToolAssistantUUID=call['uuid'], timestamp=wr.now(),
                   toolDenialKind='automode-blocked', toolUseResult='Error: ' + DENIAL_BODY,
@@ -704,8 +707,9 @@ def denied_launch(tmp_path, monkeypatch, *, legacy=False):
     return host, grant, event, call, result
 
 
-def test_denial_runtime_regression(tmp_path, monkeypatch):
-    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch)
+@pytest.mark.parametrize('hook_first', [False, True])
+def test_denial_runtime_regression(tmp_path, monkeypatch, hook_first):
+    host, grant, event, _, _ = denied_launch(tmp_path, monkeypatch, hook_first=hook_first)
     host.controller.observe({**event, 'hook_event_name': 'PostToolUse', 'host': 'claude'}, host.state['run'])
     row = host.controller.report()['workers'][grant]
     assert row['state'] == 'failed' and row['terminal_status'] == 'launch_denied'
