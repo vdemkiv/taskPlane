@@ -121,7 +121,7 @@ def test_claude_backfilled_message_retains_owned_attempt_and_does_not_join(tmp_p
     assert not current.get('task_results')
 
 
-@pytest.mark.parametrize('defect', ['normalized', 'missing', 'foreign', 'duplicate', 'result'])
+@pytest.mark.parametrize('defect', ['normalized', 'foreign', 'duplicate', 'result'])
 def test_claude_unjoinable_launch_refuses_before_admission_and_can_abandon(tmp_path, monkeypatch, defect):
     from copy import deepcopy
     from taskplane import flow
@@ -139,8 +139,7 @@ def test_claude_unjoinable_launch_refuses_before_admission_and_can_abandon(tmp_p
         call['message']['content'][0]['input']['run_in_background'] = 'true'
     if defect == 'foreign':
         call['cwd'] += '-foreign'
-    if defect != 'missing':
-        host.append(call)
+    host.append(call)
     if defect == 'duplicate':
         host.append({**call, 'uuid': 'competing-native-record'})
     if defect == 'result':
@@ -181,9 +180,12 @@ def test_claude_preflight_rejected_call_can_be_corrected_without_new_grant(tmp_p
     host = Interactive(tmp_path, monkeypatch)
     item = reserve(host.controller, host.state)
     args = {'prompt': item['message'], 'description': 'corrected current-schema launch'}
-    missing = host.root_control('Agent', args)
-    with pytest.raises(w.Refusal, match='not_yet_available'):
-        flow.hook(missing, governor=host.controller)
+    mismatched = host.root_control('Agent', args)
+    host.append(dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=workers.now(),
+        message={'content': [dict(type='tool_use', id=mismatched['tool_use_id'], name='Agent',
+                                 input={**args, 'run_in_background': 'true'})]}))
+    with pytest.raises(w.Refusal, match='conflict'):
+        flow.hook(mismatched, governor=host.controller)
     corrected = host.root_control('Agent', args)
     host.append(dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=workers.now(),
         message={'content': [dict(type='tool_use', id=corrected['tool_use_id'], name='Agent', input=args)]}))

@@ -142,7 +142,7 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
     called=wr.now()
     call=dict(type='assistant', sessionId='root', cwd=str(tmp_path), timestamp=called,
               message={'content':[dict(type='tool_use', id='claude-call', name='Agent', input=event['tool_input'])]})
-    # Claude persists the actual tool_use before invoking automatic PreToolUse.
+    # Exercise the already-flushed order; deferred flushing has separate coverage.
     with parent.open('a') as stream: stream.write(json.dumps(call)+'\n')
     flow.hook(event, governor=c)
     admitted=c.report()['workers'][row['grant_id']]

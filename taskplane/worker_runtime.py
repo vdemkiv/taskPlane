@@ -597,6 +597,17 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
             # binds a child: the returned structured async launch still must.
             w.require("run_in_background" not in args or args["run_in_background"] is True, "unsupported_authority",
                       "Claude workers require an asynchronous launch with structured child identity proof.")
+            from .host_capabilities import runtime_identity
+            observed = event.get('taskplane_observed_binding', {})
+            w.require(event.get('host') == 'claude' and event.get('hook_event_name') == 'PreToolUse'
+                      and event.get('taskplane_automatic_hook') is True
+                      and observed.get('profile') == 'native_workflow'
+                      and observed.get('root') == observed.get('principal') == state['root']
+                      and event.get('session_id') == state['root']
+                      and event.get('cwd') == state['workspace']
+                      and not event.get('agent_id') and not event.get('parent_session_id')
+                      and event.get('taskplane_runtime_identity') == row.get('expected_runtime') == runtime_identity(),
+                      'unsupported_authority', 'Claude dispatch requires the current automatic root hook and prepared runtime.')
             w.require(event.get("taskplane_claude_root_source") is True
                       and row.get("transcript_source")
                       and row["transcript_source"] == state.get("claude_transcript_source")
@@ -615,10 +626,10 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
                 raise w.Refusal('worker_readiness', 'Native evidence already contains an unadmitted launch result. '
                                 'Preserve this unknown attempt and use flow wait for evidence-based recovery. '
                                 'It cannot be abandoned, retried or treated as completed; no identity is inferred.')
-            w.require(preflight['status'] == 'matched', 'worker_readiness',
+            w.require(preflight['status'] in {'matched', 'awaiting_transcript'}, 'worker_readiness',
                       'Claude launch preflight ' + preflight['status'] + ': ' + preflight['reason'] + '. '
-                      'No launch is admitted; the grant remains prepared. Retry only after the native call '
-                      'and exposed-schema hook input agree. If unavailable, abandon the unlaunched reservation '
+                      'No launch is admitted; the grant remains prepared. Repair the transcript source '
+                      'or conflicting exposed-schema input before retrying. If unavailable, abandon the unlaunched reservation '
                       'and use flow wait for capability repair; required work and approvals are preserved.')
             row['launch_preflight'] = preflight
         else:
@@ -1162,6 +1173,7 @@ def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
     from . import claude_worker_observations as claude
     budget = claude.ReadBudget()
     observed = event.get("taskplane_observed_binding", {})
+    event.pop('taskplane_claude_root_source', None)
     if (event.get("taskplane_automatic_hook") is True and observed.get("principal") == state["root"]
             and observed.get("root") == state["root"] and event.get("session_id") == state["root"]
             and not event.get("agent_id") and not event.get("parent_session_id")
@@ -1493,6 +1505,7 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
             "attempts": [{**{k: r.get(k) for k in ("grant_id", "task_id", "worker_id", "attempt", "state",
                 "prepared_at", "started_at", "ended_at", "purpose", "retry_reason", "context_preflight", "context_delivery")},
                 "readiness": readiness(r),
+                **({'launch_preflight': deepcopy(r['launch_preflight'])} if r.get('launch_preflight') else {}),
                 **({'launch_blocker': deepcopy(r['preflight_blocker'])} if r.get('preflight_blocker') else {}),
                 **({'identity_freshness': deepcopy(r['identity_freshness'])} if r.get('identity_freshness') else {})}
                 for r in rows]}
