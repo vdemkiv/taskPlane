@@ -934,6 +934,26 @@ class Controller:
                 result = workers.summary(state, self.workspace)
             elif operation == "accept-result":
                 result = workers.accept_result(self.workspace, state, task, {**request, **({"grant": grant} if grant else {})})
+            elif operation == 'reconcile-handback':
+                row = workers.records(state).get(grant)
+                w.require(row and row.get('host') == 'claude' and row.get('worker_id')
+                          and row.get('state') in {'running', 'bootstrapping', 'result_pending', 'accepted'}
+                          and (not task or task == row.get('task_id')) and not request,
+                          'invalid_evidence', 'Select an exact owned Claude handback grant; no supplied proof or overrides are accepted.')
+                assert row is not None
+                workers.current(state, row)
+                if row['state'] != 'accepted':
+                    fresh = workers.observe_claude_launches(state, [row], {})
+                    w.require(fresh[0]['status'] == 'matched' and row['state'] == 'result_pending'
+                              and row.get('handback', {}).get('status') == 'delivered'
+                              and fresh[0].get('completion') == row['handback'].get('notification')
+                              and not row.get('identity_conflict') and not row.get('completion_conflict'),
+                              'worker_readiness', 'Recorded handback cannot yet be joined. Preserve the attempt; '
+                              'native launch, original report, acknowledgment, stop and delivered completion must all agree.')
+                result = {'status': 'reconciled', 'grant': grant, 'task': row['task_id'],
+                          'state': row['state'], 'result_accepted': row['state'] == 'accepted',
+                          'next_action': 'accept-result with independent output checks' if row['state'] == 'result_pending'
+                                         else 'Existing accepted result preserved'}
             elif operation == "abandon":
                 row = workers.records(state).get(grant)
                 w.require(row and row["state"] == "prepared" and row["call_id"] is None,

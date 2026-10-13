@@ -95,6 +95,42 @@ unavailable. That run is retained as a failed validation attempt. Permission
 mode is part of the host contract: a terminal session alone does not establish
 that the handback tool is exposed. No feature flag is forced by this harness.
 
+## Guarded report reconciliation
+
+Claude Code 2.1.296 can prepend its exact `settings-json` harness notice to a
+delivered peer report. An observed native completion had an intact admitted
+report after that notice; exact equality with the delivered text previously
+prevented its join. The adapter recognizes only that fixed notice and version,
+inside a verified native peer envelope, with a matching settings-path pattern.
+It preserves the complete delivered record and body hashes and separately
+compares the unchanged remainder's body and input hashes with the original
+automatic handback admission. The acknowledgment, runtime, child, grant, attempt,
+binding, stop, chronology and pinned transcript span checks still apply.
+
+This is a bounded correlation rule, not permission to trust instructions in a
+report. Arbitrary prefixes, near-match notices, changed report bytes, additional
+guard transforms, unrecognized host versions, model-authored claims and missing
+proof cannot authorize a join. A literal notice already present in the admitted
+report remains part of that report. Existing cached projections gain the new
+field only after their original transcript spans are revalidated.
+
+From the current root, `flow worker --operation reconcile-handback --workspace
+PATH --run RUN --grant GRANT --expected-revision N` revalidates an existing
+attempt without sending input to the child. Do not provide `--worker-json` proof
+or edit the state. A successful join leaves the result pending; ordinary result
+verification, declared inputs, live-command checks, DoR/DoD and human approval
+remain required. Other accepted results and the original attempt are retained.
+`flow worker --operation status` exposes the reconciliation outcome; unsupported
+evidence stays blocked with a diagnostic rather than claiming completion.
+
+The regression fixtures cover the actual notice, a retained old cursor and
+15 already accepted peers, plus near-match notices, report mutations, foreign
+children, forged cached projections and missing native evidence. A read-only
+replay of captured native evidence is separate from fresh installed-runtime
+acceptance. Installing a corrected runtime and continuing a live run require
+explicit activation authorization; source tests never activate hooks or repair
+active state.
+
 ## Claude 2.1.290 repair evidence, 2026-10-05
 
 The clean `92b98186014a272294b520fa161550394acea092` candidate retained nine

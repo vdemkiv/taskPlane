@@ -1,6 +1,6 @@
-# Validate the 2.33.6 release
+# Validate the 2.33.7 release
 
-The 2.33.5 baseline added cross-host tool/recovery preflight, exact Claude message metadata handling and a launch-input check before dispatch. The 2.33.6 release corrects that check's assumption that Claude flushes the current call before PreToolUse. It retains the earlier initialization and approval repairs. Both host packages carry this same correction. No installation, hook activation or new native test is included in this release.
+The 2.33.5 baseline added cross-host tool/recovery preflight, exact Claude message metadata handling and a launch-input check before dispatch. The 2.33.7 release corrects that check's assumption that Claude flushes the current call before PreToolUse. It retains the earlier initialization and approval repairs. Both host packages carry this same correction. No installation, hook activation or new native test is included in this release.
 
 Bounded testing of the preceding candidate with Claude Code 2.1.294 verified startup, session-only plugin loading and automatic parent hook activity. Native worker dispatch, full worker context, completion/result acceptance, messaging and a review checkpoint were not completed. The smoke stopped after bootstrap refusals; a later attempt stopped at a trust-dialog/controller mismatch before model work. Those failures are retained in private audit evidence. They are not native lifecycle passes. The 2.33.5 release included no further native run, installed-plugin activation or human checkpoint acceptance. Relative to that preceding candidate, the release changed only version/documentation and two fixtures: resume guidance assertions use stable phase/visit identities, and approval fixtures retain only synthetic project text with the required consent structure.
 
@@ -61,8 +61,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.6.plugin` (Claude) and
-`dist/taskplane-2.33.6-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.7.plugin` (Claude) and
+`dist/taskplane-2.33.7-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -73,13 +73,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.6.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.6-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.7.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.7-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.6` and `ok: true`.
+Both commands should report `2.33.7` and `ok: true`.
 
 ## Local regression and exact archive checks
 

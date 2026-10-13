@@ -207,6 +207,12 @@ and refuses later child input/activity or known live commands. Historical proof
 only releases the reservation as failed; it cannot replace startup hooks, accept
 work or prove process exit. Retry with a fresh grant after hooks are restored.
 **Claude:** `recover-unbound` and `recover-unavailable` have no Claude adapter.
+For an owned worker with a recorded report and completion, use
+`reconcile-handback --grant GRANT` with the current run/revision to revalidate the
+original native evidence. It accepts no supplied proof or overrides, preserves
+the attempt and other results, and only advances a matched report to
+`result_pending`. Follow normal `accept-result` and approval gates. If it refuses,
+preserve its precise blocker; do not relaunch or ask for a duplicate handback.
 `recover-launch-denied` is only for the exact retained legacy denial with no child
 or work evidence described in the CLI reference. It cannot resolve an admitted
 launch with a child identity conflict. Use native TaskStop only for an owned bound

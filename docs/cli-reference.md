@@ -8,10 +8,10 @@ editing a checkout or matching version strings does not update the installed plu
 
 ## Scoped native workers and task publication
 
-`flow worker --operation prepare|claim|accept-result|status|capacity|abandon|recover-unavailable|recover-unbound` operates
+`flow worker --operation prepare|claim|accept-result|status|capacity|abandon|recover-unavailable|recover-unbound|recover-launch-denied|reconcile-handback` operates
 on the existing run. Supply `--workspace` and `--run`; root mutations also require
 `--expected-revision`. Prepare/result commands use `--task`; claim/result/abandon
-and both recovery operations use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
+and recovery/reconciliation operations use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
 Preparation needs `capacity` with `host_slots`, `includes_root`, and an actual
 observed source `reference`. Optional configured/resource limits narrow capacity.
 No default two-worker limit is applied.
@@ -387,6 +387,16 @@ Claude case, preserve the unresolved attempt and approval history, use `flow wai
 to report the missing identity/recovery capability, and obtain a scoped adapter
 repair. An owned bound worker can use permitted TaskStop and observed completion;
 no cancellation request alone proves exit. Required native work remains incomplete.
+
+For an owned Claude attempt whose report and completion are already recorded, use
+`flow worker --operation reconcile-handback --workspace PATH --run RUN --grant GRANT
+--expected-revision N` from the current root. It accepts no supplied proof or
+overrides. It rereads the pinned native evidence and joins only the original
+admitted report, acknowledgment, child stop and completion. It preserves the
+attempt, other results, and approval evidence; it does not relaunch the worker.
+Success leaves a verified report `result_pending` for ordinary `accept-result`
+with independent checks. Missing or conflicting proof refuses without changing
+the attempt. See [the bounded native guard handling](claude-interactive-recovery.md#guarded-report-reconciliation).
 
 If hooks missed an actual launch and the reservation is still `prepared` with no
 admitted call, worker identity, claim, context or result, use the explicit

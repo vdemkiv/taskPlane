@@ -53,7 +53,7 @@ def test_dashboard_host_mismatch_keeps_supported_link_and_checkpoint(tmp_path, h
 
 @pytest.mark.parametrize('host,operation', [
     ('claude', 'recover-unbound'), ('claude', 'recover-unavailable'),
-    ('codex', 'recover-launch-denied'),
+    ('codex', 'recover-launch-denied'), ('codex', 'reconcile-handback'),
 ])
 def test_recovery_host_preflight_preserves_grant_and_offers_status(tmp_path, host, operation):
     c, state = setup(tmp_path)
@@ -70,7 +70,7 @@ def test_recovery_host_preflight_preserves_grant_and_offers_status(tmp_path, hos
 
 @pytest.mark.parametrize('host,operation', [
     ('codex', 'recover-unbound'), ('codex', 'recover-unavailable'),
-    ('claude', 'recover-launch-denied'),
+    ('claude', 'recover-launch-denied'), ('claude', 'reconcile-handback'),
 ])
 def test_matching_recovery_host_still_requires_evidence(tmp_path, host, operation):
     c, state = setup(tmp_path)
