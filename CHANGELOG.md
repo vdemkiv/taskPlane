@@ -1,5 +1,12 @@
 # taskplane changelog
 
+## v2.33.8 — Claude approval and native worker compatibility
+
+- Package the prepared approval capture and shared approval wording fixes, bounded large-history reader, exact Claude 2.1.296 dispatch/completion correlation, journaled startup reconciliation, and protection for other active runs' sealed artifacts.
+- Preserve required context, native identity, readiness, DoR/DoD, verification and human approval evidence. A new workflow starts normally; reconciliation remains an explicit option for its narrowly supported historical failure.
+- Align Claude and Codex manifests, README and package instructions on 2.33.8. Runtime behavior is byte-identical to the previously checked 2.33.8-claude-recovery.1 candidate.
+- Local packages are unpublished and not installed by this build. Prior focused regressions and isolated native-log replays are retained as evidence; fresh live Claude and Codex acceptance remains unverified.
+
 ## v2.33.8-claude-recovery.1 — Local Claude recovery candidate
 
 - Handle bounded oversized unrelated human history and the exact observed Claude 2.1.296 background-call and completion-origin framing, retaining raw proof and strict identity checks.

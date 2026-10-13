@@ -1,4 +1,4 @@
-# Validate the 2.33.8-claude-recovery.1 local candidate
+# Validate the 2.33.8 local packages
 
 This unpublished candidate adds bounded Claude history handling, exact observed
 2.1.296 fork/completion framing, automatic native human approval capture,
@@ -80,8 +80,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.8-claude-recovery.1.plugin` (Claude) and
-`dist/taskplane-2.33.8-claude-recovery.1-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.8.plugin` (Claude) and
+`dist/taskplane-2.33.8-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -92,13 +92,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.8-claude-recovery.1.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.8-claude-recovery.1-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.8.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.8-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.8-claude-recovery.1` and `ok: true`.
+Both commands should report `2.33.8` and `ok: true`.
 
 ## Local regression and exact archive checks
 
@@ -116,6 +116,16 @@ checks member hashes, and exercises both extracted runtimes in isolated fixtures
 It covers Workflow Builder compilation and existing workflow behavior. It does
 not establish native host execution. For dashboard browser testing, configure a
 real Chrome/Chromium executable and run `python3 scripts/ci_local.py --check browser`.
+
+## Start a fresh project
+
+For a fresh start, use a new project folder or checkout and a new host session.
+Keep previous project state, proofPlane records and backups in their original
+location; do not copy the previous `.taskplane` store into the new project.
+The normal new-workflow path does not need a recovery command.
+
+After loading this version, ask: `Use taskplane to start a new workflow for
+[my goal].` Existing human approvals do not transfer to the new run.
 
 ## Load the candidate
 
