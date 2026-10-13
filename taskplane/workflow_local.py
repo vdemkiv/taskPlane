@@ -711,6 +711,16 @@ class LocalWorkflow:
         except ValueError:
             raise w.Refusal("invalid_evidence", "Supply an observed decision JSON envelope, not an actor flag.") from None
         from . import delegated_approval
+        from . import native_approval
+        native_proof = None
+        if isinstance(value, dict) and value.get('schema') == native_approval.SCHEMA:
+            db = evidence.object_file(self.workspace, '.taskplane/' + self.filename)
+            run = db.get('runs', {}).get(expected.get('run'), {})
+            harness = Harness(self.workspace, self.root)
+            w.require(harness.presentation_valid(run), 'invalid_evidence',
+                      'Native approval requires the original current checkpoint handoff.')
+            value = native_approval.verify(value, run, getattr(self, 'name', 'unsupported'), harness.read().get('presentation') or {})
+            native_proof = value['native_proof']
         if isinstance(value, dict) and value.get("schema") == delegated_approval.DECISION_SCHEMA:
             value = _relay_json(reference)
             db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
@@ -792,6 +802,8 @@ class LocalWorkflow:
                     "checkpoint_explicit": value.get("checkpoint_explicit", False)}}
         if not legacy_replay:
             result["provenance"].update(recorded_at=recorded_at, chronology="verified/v1")
+        if native_proof is not None:
+            result['provenance']['native_proof'] = deepcopy(native_proof)
         if relayed:
             result["provenance"].update(schema=value["schema"], relay=relay)
         if event_id in prior:

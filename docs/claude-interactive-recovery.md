@@ -131,6 +131,30 @@ acceptance. Installing a corrected runtime and continuing a live run require
 explicit activation authorization; source tests never activate hooks or repair
 active state.
 
+## Bounded Claude history-limit startup reconciliation
+
+Unrelated human transcript records can exceed the native evidence record limit.
+The reader classifies only bounded, structurally verified human text separately;
+oversized tool, assistant, notification or ambiguous records remain unsupported.
+For observed Claude 2.1.296 framing it also preserves native and admitted input
+hashes when the native `run_in_background: "true"` field was omitted from the
+automatic admission, and recognizes the exact system completion origin containing
+`runId`. All other launch arguments, source spans and actor checks remain exact.
+
+Existing sealed conflicts are not silently cleared. The owning root may invoke
+`flow worker --operation reconcile-startup --workspace PATH --run RUN --grant GRANT
+--expected-revision N` for the exact retained history-limit startup case. It accepts
+no supplied proofs or identities. Original admission, frozen inputs, empty legacy
+cursor, oversized human record, native launch/child/stop and no-report completion
+must agree. The original failure and proof are retained in immutable objects.
+Only the failed attempt changes; phases, approvals, accepted results and historical
+runtime identity stay intact. Retry one unfinished task with a new grant after
+the currently executing runtime's parent hooks are observed. Do not repeat accepted
+phases, erase evidence, retarget a run or manufacture a successful result.
+
+The isolated original-log command replay and synthetic controller tests are not
+a fresh native lifecycle smoke test or evidence that an installed runtime changed.
+
 ## Claude 2.1.290 repair evidence, 2026-10-05
 
 The clean `92b98186014a272294b520fa161550394acea092` candidate retained nine

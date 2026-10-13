@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.33.8-claude-recovery.1 — Local Claude recovery candidate
+
+- Handle bounded oversized unrelated human history and the exact observed Claude 2.1.296 background-call and completion-origin framing, retaining raw proof and strict identity checks.
+- Capture ordinary Claude human approvals automatically from the pinned owning-root transcript with actual message IDs, timestamps and the original checkpoint presentation. Preserve negative decisions despite artifact drift; reject stale, quoted, ambiguous and foreign responses. Recognize `Approve: <checkpoint>` consistently on both hosts.
+- Add journaled `reconcile-startup` for the exact pre-claim history-limit/no-report failure. Preserve phase history, approvals, frozen inputs and historical runtime; permit only a fresh normal attempt after recovery.
+- Guard another active root's sealed manifest paths against ordinary native write admission. Report collisions explicitly; do not claim a durable pause from `flow wait`.
+- This is an unpublished, uninstalled candidate. Focused fixtures and isolated read-only original-log replay do not establish live native acceptance.
+
 ## v2.33.7 — Claude guarded handback correlation
 
 - Join the observed Claude Code 2.1.296 `settings-json` delivery notice only when its unchanged report remainder matches the original automatic handback admission exactly. Retain original and delivered hashes and every child, attempt, acknowledgment, runtime, stop, chronology and pinned-span check.

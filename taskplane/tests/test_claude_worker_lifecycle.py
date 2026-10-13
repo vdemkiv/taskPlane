@@ -293,7 +293,8 @@ def test_record_limit_resumes_and_oversized_record_refuses(tmp_path, monkeypatch
     assert first["status"] == "not_yet_available" and first["budget"]["records"] == observations.MAX_RECORDS
     assert observe(attempt, source, first["cursor"])["status"] == "matched"
     with parent.open("ab") as stream: stream.write(b"x" * (observations.MAX_LINE_BYTES + 1))
-    assert observe(attempt, source, first["cursor"])["status"] == "conflict"
+    bounded = observe(attempt, source, first["cursor"])
+    assert bounded["status"] == "unsupported" and bounded['cursor']['conflict'] is None
 
 
 @pytest.mark.parametrize('replay', [False, True])
@@ -582,7 +583,8 @@ def test_transcript_only_notification_requires_exact_native_provenance(tmp_path,
         assert answer['status'] == 'matched' and 'completion' not in answer
 
 
-def test_transcript_notification_cursor_upgrade_rescans_once_and_revalidates(tmp_path, monkeypatch):
+@pytest.mark.parametrize('old_version', [None, 2])
+def test_transcript_notification_cursor_upgrade_rescans_once_and_revalidates(tmp_path, monkeypatch, old_version):
     parent, _, attempt, _, result, _, event = setup_native(tmp_path, monkeypatch)
     source = select(event)
     note = transcript_notification_record(notification_record(attempt, result))
@@ -590,18 +592,19 @@ def test_transcript_notification_cursor_upgrade_rescans_once_and_revalidates(tmp
     observed = observe(attempt, source)
     cursor = deepcopy(observed['cursor'])
     cursor.pop('notification_version', None)
+    if old_version is not None: cursor['notification_version'] = old_version
     for entry in cursor['entries'].values(): entry['notification'] = []
     old = observations._sealed(cursor)
     assert old['offset'] == parent.stat().st_size
     migrated = observe(attempt, source, old)
     assert migrated['status'] == 'matched' and migrated['completion']['record_sha256'] == digest(note)
     assert migrated['evidence_sha256'] == observed['evidence_sha256']
-    assert migrated['cursor']['notification_version'] == 2
+    assert migrated['cursor']['notification_version'] == observations.NOTIFICATION_VERSION
     scans = []
     original = observations._scan
-    def scan(fd, path, start, end, budget, retain):
+    def scan(fd, path, start, end, budget, retain, **kwargs):
         scans.append((start, end))
-        return original(fd, path, start, end, budget, retain)
+        return original(fd, path, start, end, budget, retain, **kwargs)
     monkeypatch.setattr(observations, '_scan', scan)
     replay = observe(attempt, source, migrated['cursor'])
     assert replay['completion'] == migrated['completion']

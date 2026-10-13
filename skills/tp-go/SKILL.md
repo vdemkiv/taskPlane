@@ -38,8 +38,12 @@ Evaluate and Engineering do not silently fix source: propose a scoped repair vis
 for acceptance. Finish only after every required visit has valid human or authorized policy acceptance.
 
 Use native_workflow inside Codex/Claude: start with an exact scope JSON and the actual
-user-request reference; submit evidence and record the explicit response using the
-observed-decision envelope documented in the CLI reference. Every transition still
+user-request reference; submit evidence and present the current checkpoint.
+Claude's automatic root hook captures the actual human reply and original
+presentation; do not request manual message-ID extraction or transcript reads.
+Codex and explicit observed responses use the complete envelope documented in the
+CLI reference. Missing native evidence remains a precise recoverable status.
+Every transition still
 requires a validated checkpoint and the applicable human or policy decision. The local store and provenance are cooperative workflow
 controls, not host-authenticated approval or containment. Show workflow availability
 separately from the four unavailable host protections. An explicitly requested

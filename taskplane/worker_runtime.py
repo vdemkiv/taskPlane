@@ -39,7 +39,7 @@ STATES = LIVE | {"result_pending", "accepted", "failed", "interrupted"}
 MARKER = re.compile(r"(?m)^Taskplane grant: ([0-9a-f]{32})$")
 NAME_GRANT = re.compile(r"[a-z0-9_]{1,46}__([0-9a-f]{32})")
 RECOVERY_HOSTS = {'recover-unbound': 'codex', 'recover-unavailable': 'codex',
-                  'recover-launch-denied': 'claude', 'reconcile-handback': 'claude'}
+                  'recover-launch-denied': 'claude', 'reconcile-handback': 'claude', 'reconcile-startup': 'claude'}
 
 
 def recovery_capabilities(host: str) -> dict[str, Any]:
@@ -53,6 +53,7 @@ def recovery_capabilities(host: str) -> dict[str, Any]:
         'next_action': (
             'Claude recover-launch-denied only reconciles an exact proven legacy launch denial with no child/work. '
             'reconcile-handback revalidates an owned attempt\'s recorded handback and completion; it never accepts a result. '
+            'reconcile-startup handles only a proven legacy history-limit, unclaimed no-report failure with unchanged inputs. '
             'For a launched owned worker, use exposed TaskStop and observed native completion under its current grant. '
             'An unbound identity conflict has no general recovery adapter: preserve the attempt and evidence, '
             'use flow wait for the capability repair, and do not promise a retry or substitute root work.'
@@ -1197,7 +1198,7 @@ def _observe_claude(state: dict[str, Any], event: dict[str, Any]) -> bool:
     if (event.get("taskplane_automatic_hook") is True and observed.get("principal") == state["root"]
             and observed.get("root") == state["root"] and event.get("session_id") == state["root"]
             and not event.get("agent_id") and not event.get("parent_session_id")
-            and event.get("transcript_path") and name in {"SessionStart", "PreToolUse", "PostToolUse"}):
+            and event.get("transcript_path") and name in {"SessionStart", "PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"}):
         selection = claude.select_source(state["root"], event, automatic=True,
                     previous=state.get("claude_transcript_source"), budget=budget)
         state["claude_transcript_selection"] = {k: v for k, v in selection.items() if k != "source"}

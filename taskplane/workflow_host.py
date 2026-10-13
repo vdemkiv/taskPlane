@@ -934,6 +934,18 @@ class Controller:
                 result = workers.summary(state, self.workspace)
             elif operation == "accept-result":
                 result = workers.accept_result(self.workspace, state, task, {**request, **({"grant": grant} if grant else {})})
+            elif operation == 'reconcile-startup':
+                from . import claude_startup_recovery
+                row = workers.records(state).get(grant)
+                w.require(row and (not task or task == row.get('task_id')), 'invalid_evidence', 'Recovery task differs from its grant.')
+                replay = bool(row and row.get('startup_recovery'))
+                try:
+                    updated, result = claude_startup_recovery.reconcile(self.workspace, state, db.get('admissions', {}), grant, request)
+                except (KeyError, TypeError, ValueError, IndexError, OSError) as exc:
+                    raise w.Refusal('invalid_evidence', 'Retained native startup recovery evidence is malformed or unavailable.') from exc
+                state = db['runs'][run] = updated
+                if replay:
+                    return result
             elif operation == 'reconcile-handback':
                 row = workers.records(state).get(grant)
                 w.require(row and row.get('host') == 'claude' and row.get('worker_id')
@@ -1330,6 +1342,35 @@ class Controller:
             if self.adapter.profile == "native_workflow":
                 workers.observe(state, event)
             self.adapter.observe_state(event, state)
+            if (self.adapter.profile == 'native_workflow' and self.adapter.name == 'claude'
+                    and self.principal == self.root and event.get('taskplane_automatic_hook') is True
+                    and event.get('hook_event_name') in {'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop'}
+                    and w.current(state)['decision'] == 'awaiting_human_approval'
+                    and not event.get('taskplane_decision') and not event.get('taskplane_policy')):
+                from . import native_approval
+                harness = workflow_local.Harness(self.workspace, self.root)
+                if harness.presentation_valid(state):
+                    captured = native_approval.capture(state, host=self.adapter.name,
+                        presentation=harness.read().get('presentation') or {}, event=event)
+                    state['native_approval_capture'] = {key: value for key, value in captured.items() if key != 'decision'}
+                    if captured['status'] == 'observed':
+                        # The verifier independently reloads the pinned source.
+                        # Commit only observation metadata before that reread;
+                        # no approval is stored until all checks below pass.
+                        db['runs'][run] = deepcopy(state)
+                        self._write(target, db)
+                        packet = w.current(state)['packet']
+                        verified = self.adapter.verify_decision_context(json.dumps(captured['decision']),
+                            w.binding(state, packet), state['decisions'])
+                        if verified.get('choice') not in {'changes_requested', 'rejected', 'cancelled'}:
+                            w.require(evidence.changed(self.workspace, state) is None, 'stale_checkpoint',
+                                      'Native approval cannot accept changed checkpoint evidence.')
+                            self.adapter.before_action(state, 'decide')
+                        state = w.decide(state, verified)
+                        self.adapter.after_action(state, 'decide')
+                else:
+                    state['native_approval_capture'] = {'status': 'not_yet_available',
+                        'reason': 'The current checkpoint needs its original native presentation handoff.'}
             if state != db["runs"][run]:
                 db["runs"][run] = state
                 self._write(target, db)
@@ -1617,6 +1658,17 @@ class Controller:
         w.require(stage["decision"] in ("not_requested", "changes_requested", "rejected", "stale"),
                   "approval_required", "Current output is sealed; resolve the human checkpoint before writing.")
         allowed = worker["paths"] if worker else state["scope"]["paths"][stage["phase"]]
+        if self.adapter.profile == 'native_workflow':
+            from .workflow_collision import sealed_paths
+            protected = sealed_paths(self.workspace, state)
+            if tool in {'Write', 'Edit', 'write_file', 'edit_file'}:
+                target = args.get('file_path') or args.get('path')
+                if isinstance(target, str):
+                    relative = workspace_binding.relative_path(self.workspace, target)
+                    owner = protected.get(relative)
+                    w.require(not owner, 'scope_violation',
+                              f'Another active run has sealed this path: {relative}; preserve its approval and use a distinct run path or coordinated recovery. Owner: {owner}')
+            allowed = [path for path in allowed if path not in protected]
         if worker is None:
             busy = {p for row in state.get('workers', {}).values() if row['state'] in workers.LIVE
                     for p in [*row['paths'], *row.get('input_manifest', {}), *row.get('dependency_manifest', {})]}

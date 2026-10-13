@@ -334,9 +334,12 @@ where readable; missing counters never remove graph, decomposition or dashboard.
 
 Native discovery and pending-call parsing remain observations. The protected adapter
 admits no owner from environment, workspace data or CLI flags. Native-workflow
-prompts need a complete observed-decision envelope; plain hook text does not establish
-what checkpoint was presented. The root may record the actual conversation response
-through the explicit decision command. Keep only the minimal response excerpt and
+prompts need complete observed decision provenance. Claude's automatic owning-root
+hook derives it from the pinned native human record and original checkpoint
+presentation, retaining their actual IDs/times and current binding. If flush is
+delayed, the next root hook rechecks; do not ask for manual transcript reads or
+invent metadata. Codex retains the explicit observed-envelope path. The root may
+record a complete actual response through the explicit decision command. Keep only the minimal response excerpt and
 source references, never a whole transcript.
 
 Known running command handles block sealing and old/terminal handles reject observed

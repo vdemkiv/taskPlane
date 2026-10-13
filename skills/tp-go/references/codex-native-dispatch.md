@@ -215,7 +215,11 @@ the attempt and other results, and only advances a matched report to
 preserve its precise blocker; do not relaunch or ask for a duplicate handback.
 `recover-launch-denied` is only for the exact retained legacy denial with no child
 or work evidence described in the CLI reference. It cannot resolve an admitted
-launch with a child identity conflict. Use native TaskStop only for an owned bound
+launch with a child identity conflict. The distinct `reconcile-startup` operation handles only the documented
+legacy history-limit conflict before claim/context, with exact original admission,
+pinned native launch/stop/no-report evidence and unchanged accepted inputs. It
+journals the old failure and enables a fresh attempt; it cannot accept work or
+clear arbitrary identity conflicts. Use native TaskStop only for an owned bound
 worker and retain observed completion evidence; a stop request alone cannot release
 the attempt. If identity or termination remains unknown, preserve the blocked
 attempt, record `flow wait` with the precise missing capability, and request a

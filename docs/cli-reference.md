@@ -8,7 +8,7 @@ editing a checkout or matching version strings does not update the installed plu
 
 ## Scoped native workers and task publication
 
-`flow worker --operation prepare|claim|accept-result|status|capacity|abandon|recover-unavailable|recover-unbound|recover-launch-denied|reconcile-handback` operates
+`flow worker --operation prepare|claim|accept-result|status|capacity|abandon|recover-unavailable|recover-unbound|recover-launch-denied|reconcile-handback|reconcile-startup` operates
 on the existing run. Supply `--workspace` and `--run`; root mutations also require
 `--expected-revision`. Prepare/result commands use `--task`; claim/result/abandon
 and recovery/reconciliation operations use `--grant` for a native attempt. `--worker-json` is a bounded JSON object.
@@ -383,7 +383,8 @@ map separates `unsupported_host` from `requires_evidence`; neither grants eligib
 `recover-unbound` and `recover-unavailable` require Codex. Claude
 `recover-launch-denied` only handles the exact proven legacy denial with no child
 or work evidence; it is not an equivalent for an admitted unbound launch. For that
-Claude case, preserve the unresolved attempt and approval history, use `flow wait`
+Claude case, `reconcile-startup` supports only the exact history-limit startup
+failure described below. Otherwise preserve the unresolved attempt and approval history, use `flow wait`
 to report the missing identity/recovery capability, and obtain a scoped adapter
 repair. An owned bound worker can use permitted TaskStop and observed completion;
 no cancellation request alone proves exit. Required native work remains incomplete.
@@ -397,6 +398,28 @@ attempt, other results, and approval evidence; it does not relaunch the worker.
 Success leaves a verified report `result_pending` for ordinary `accept-result`
 with independent checks. Missing or conflicting proof refuses without changing
 the attempt. See [the bounded native guard handling](claude-interactive-recovery.md#guarded-report-reconciliation).
+
+`flow worker --operation reconcile-startup --workspace PATH --run RUN --grant GRANT
+--expected-revision N` is a Claude root-only recovery for a retained generic
+history-limit conflict at cursor offset zero, before any claim, context or result.
+It reproduces that limit on the pinned original source, checks the exact automatic
+launch admission and frozen inputs, and reobserves launch, child, stop and native
+no-report completion. The bounded scan allows eight passes of at most 4 MiB each.
+It journals the original worker/cursor/admission and proof in immutable context
+objects, then marks only this attempt failed. It never accepts a result, changes
+an approval, or clears unrelated conflicts. No caller-supplied proof, path or
+identity override is accepted. Retry still requires a fresh grant, current
+runtime readiness and ordinary claim/context checks. A changed accepted artifact
+must be restored through separately authorized, byte-verified recovery first.
+
+Before native write admission, another active root's approved or pending manifest
+paths are protected against overwrite. The diagnostic identifies the owner; use
+distinct paths or coordinated recovery. This is a cooperative tool guard, not an
+OS lock over concurrent native writes. Taskplane has no durable pause/resume
+operation: `flow wait` records missing input and a later prompt clears it.
+Stopping and closing a competing native session, checking its children/processes,
+and not resuming it is required for a reversible operational pause. `retire`
+revokes the run permanently and must not be substituted for pause.
 
 If hooks missed an actual launch and the reservation is still `prepared` with no
 admitted call, worker identity, claim, context or result, use the explicit
@@ -491,8 +514,20 @@ Bare, plugin-tagged and direct `Use/Run Taskplane` requests use the leading acti
 to select the route. For example, `build export with design and engineering review`
 selects full delivery in each form. Help and status requests remain non-executing.
 
-In manual mode, after submission `flow report` exposes `workflow.pending_checkpoint`. Present the
-output to the user, wait for their actual response and supply this envelope through
+In manual mode, after submission `flow report` exposes `workflow.pending_checkpoint`.
+Present the output and record its actual dashboard handoff. Claude's automatic
+owning-root hooks then capture an ordinary human reply from the already pinned
+native source, retaining the actual human ID/time and the preceding checkpoint
+presentation. Typed human prompts are supported; quoted, third-party, stale,
+wrong-checkpoint and ambiguous responses do not approve. `Approve: CHECKPOINT`
+has the same exact-binding semantics as an ordinary clear approval. A prompt
+that has not flushed is rechecked on the next automatic root hook. Do not ask
+users to extract message IDs, issue arbitrary transcript reads, manufacture
+provenance, or demand an exact phrase. If the original presentation is missing,
+present the current checkpoint and obtain a fresh response.
+
+Codex retains its observed-envelope adapter. Where actual provenance is already
+available, either native host can supply the complete envelope through
 `--decision-json` (properly shell-quoted, or passed as one subprocess argument):
 
 ```json
