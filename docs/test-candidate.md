@@ -1,4 +1,18 @@
-# Validate the 2.33.9 local packages
+# Validate the 2.33.10-compat.1 local packages
+
+This unpublished candidate targets Claude's stop-before-handback completion join
+and explicit native read/heartbeat guards. See [reconciliation](claude-interactive-recovery.md)
+and [tool scope](host-compatibility-watch.md). Scope declarations are normal frozen
+start inputs, not a new approval mechanism. The captured incident fixture removes
+private report text and paths; its timestamps and report/native record hashes
+remain exact. Local synthetic tests and guarded replay of captured original
+evidence are separate from live installation and fresh native smoke tests.
+
+No installation, running session, controller, permission or schedule is changed
+by preparing these packages. Activation and any production recovery require their
+own explicit authorization. Retain the existing installations and original proof.
+
+## Prior 2.33.9 validation context
 
 This release adds bounded backward approval reading that stops before unrelated old history,
 explicit capacity outcomes, and a [weekly official-source host watch](host-compatibility-watch.md).

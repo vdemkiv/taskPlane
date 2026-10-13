@@ -209,7 +209,7 @@ def runtime_identity() -> dict[str, Any]:
     for name in ('taskplane/tp.py', 'taskplane/flow.py', 'taskplane/workflow_host.py',
                  'taskplane/workflow_local.py', 'taskplane/worker_runtime.py', 'taskplane/native_approval.py',
                  'taskplane/claude_startup_recovery.py', 'taskplane/workflow_collision.py',
-                 'taskplane/host_capabilities.py', 'taskplane/host_native.py',
+                 'taskplane/host_capabilities.py', 'taskplane/host_native.py', 'taskplane/native_tool_guard.py',
                  'taskplane/claude_worker_observations.py', 'taskplane/claude_worker_invocation.py',
                  'taskplane/context_handoff.py', 'taskplane/workspace_binding.py', 'hooks/hooks.json'):
         target = root/name

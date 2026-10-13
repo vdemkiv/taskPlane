@@ -1,0 +1,185 @@
+{
+  "redactions": [
+    "No report bodies, human text, source files or original scope retained.",
+    "Private workspace, transcript and plugin paths mapped to fixture paths.",
+    "Only scope binding and dependent acknowledgment digest recomputed for the redacted fixture.",
+    "Timestamps, event IDs, report/input hashes and native record hashes captured unchanged."
+  ],
+  "state": {
+    "workspace": "/fixture/project",
+    "root": "bc3d20f3-8f56-4a08-81f6-2eda248cf0b0",
+    "run": "ecaecbe067a54853b420f92b8b1390be",
+    "revision": 12,
+    "task_generation": 3,
+    "index": 0,
+    "scope": {
+      "fixture": "private scope omitted"
+    },
+    "visits": [
+      {
+        "id": "2c88efc94efe42b494c3141d4736fe28"
+      }
+    ]
+  },
+  "row": {
+    "worker_id": "a499a69870fdf32c1",
+    "grant_id": "4dba60947755486c9f62230470b15d36",
+    "attempt": 2,
+    "task_id": "B5-WWW",
+    "call_id": "toolu_016c64hvEMGXacHJmebpTU6V",
+    "started_at": "2026-10-13T13:44:33.711723+00:00",
+    "expected_runtime": {
+      "basis": "executing Python module path and file bytes; observation, not host attestation",
+      "member_sha256": {
+        "hooks/hooks.json": "9182fbd38807a8ffda6be30906576ed580873eef618fec9f3c041e7c329eaca6",
+        "taskplane/claude_startup_recovery.py": "b67f749459ca7ae8516e2d1c4db3fe7d1f03ad439066ea199691a7df34f7b634",
+        "taskplane/claude_worker_invocation.py": "449bded300576e993d9e4f32bed5e34b19a339ef3e8be653045021ff014991b0",
+        "taskplane/claude_worker_observations.py": "f5a17638ab0e73250be82e54e5f9ce6e114e47ca8753489f9d8f75dd66035e12",
+        "taskplane/context_handoff.py": "19760ee0d1ebe8e70b015936d06f627642c3d1f653fb8a0519e96d83af74bac5",
+        "taskplane/flow.py": "a62de43dfaa92bd06ab2b0dc87777f1d23442bbbdefbccdb625b59656754129f",
+        "taskplane/host_capabilities.py": "6cdd7af1505dd0466bb6f05906e54399eeba2478ff978f68770f4cb4a129462e",
+        "taskplane/host_native.py": "f409a0fcf655bb1f1cb982f1fbd2173e570e6f9dac5e237ce46450589726baed",
+        "taskplane/native_approval.py": "b87322624ef7b8539a7f6f175689114dffd3b1963e09ce6243118d7928649375",
+        "taskplane/tp.py": "e9b87dbfd2618463a280d8347ca6bdf1be2c39515dfb343a4274d437a10c77b6",
+        "taskplane/worker_runtime.py": "a2ca1424223f25f2062c36df9fb1ddc359a33c8a8fa5cd759359f1498e16e797",
+        "taskplane/workflow_collision.py": "248a0caafaa8a9eec9875e6a73007fdec1f664f63413b7dcfd015ca4fd66289e",
+        "taskplane/workflow_host.py": "7d89a512a84b25a5925f2520340554ff051b1a6c402bad16e5e82ad0249ffc21",
+        "taskplane/workflow_local.py": "58541cd0e3d47837e0c62975810572906d357a888161fc4eff70d9f55d584d33",
+        "taskplane/workspace_binding.py": "dba0fdc467fbb3141e75a8f0a3d368ca6ba5f11d168205bba2ef557691f884f6"
+      },
+      "root": "/fixture/plugin"
+    },
+    "transcript_source": {
+      "path": "/fixture/native-project/bc3d20f3-8f56-4a08-81f6-2eda248cf0b0.jsonl"
+    },
+    "handback_call": {
+      "acknowledgment": {
+        "envelope_digest": "c947f2a36374b523ec9ef12029c46baac70e33a3f5bea47a98c97eb0b8dc8408",
+        "observed_at": "2026-10-13T14:04:49.954010+00:00",
+        "response_digest": "c8435ea1fc125350faafa82167fc0c510886a16f75d13f5b61cbaf1eaa760f72",
+        "runtime": {
+          "basis": "executing Python module path and file bytes; observation, not host attestation",
+          "member_sha256": {
+            "hooks/hooks.json": "9182fbd38807a8ffda6be30906576ed580873eef618fec9f3c041e7c329eaca6",
+            "taskplane/claude_startup_recovery.py": "b67f749459ca7ae8516e2d1c4db3fe7d1f03ad439066ea199691a7df34f7b634",
+            "taskplane/claude_worker_invocation.py": "449bded300576e993d9e4f32bed5e34b19a339ef3e8be653045021ff014991b0",
+            "taskplane/claude_worker_observations.py": "f5a17638ab0e73250be82e54e5f9ce6e114e47ca8753489f9d8f75dd66035e12",
+            "taskplane/context_handoff.py": "19760ee0d1ebe8e70b015936d06f627642c3d1f653fb8a0519e96d83af74bac5",
+            "taskplane/flow.py": "a62de43dfaa92bd06ab2b0dc87777f1d23442bbbdefbccdb625b59656754129f",
+            "taskplane/host_capabilities.py": "6cdd7af1505dd0466bb6f05906e54399eeba2478ff978f68770f4cb4a129462e",
+            "taskplane/host_native.py": "f409a0fcf655bb1f1cb982f1fbd2173e570e6f9dac5e237ce46450589726baed",
+            "taskplane/native_approval.py": "b87322624ef7b8539a7f6f175689114dffd3b1963e09ce6243118d7928649375",
+            "taskplane/tp.py": "e9b87dbfd2618463a280d8347ca6bdf1be2c39515dfb343a4274d437a10c77b6",
+            "taskplane/worker_runtime.py": "a2ca1424223f25f2062c36df9fb1ddc359a33c8a8fa5cd759359f1498e16e797",
+            "taskplane/workflow_collision.py": "248a0caafaa8a9eec9875e6a73007fdec1f664f63413b7dcfd015ca4fd66289e",
+            "taskplane/workflow_host.py": "7d89a512a84b25a5925f2520340554ff051b1a6c402bad16e5e82ad0249ffc21",
+            "taskplane/workflow_local.py": "58541cd0e3d47837e0c62975810572906d357a888161fc4eff70d9f55d584d33",
+            "taskplane/workspace_binding.py": "dba0fdc467fbb3141e75a8f0a3d368ca6ba5f11d168205bba2ef557691f884f6"
+          },
+          "root": "/fixture/plugin"
+        },
+        "schema": "claude.SubagentHandback.ack/v1"
+      },
+      "admitted_at": "2026-10-13T14:04:48.992962+00:00",
+      "envelope": {
+        "attempt": 2,
+        "binding": {
+          "workspace": "/fixture/project",
+          "root": "bc3d20f3-8f56-4a08-81f6-2eda248cf0b0",
+          "run": "ecaecbe067a54853b420f92b8b1390be",
+          "revision": 12,
+          "visit": "2c88efc94efe42b494c3141d4736fe28",
+          "scope_digest": "97c22571812d1a45e18f5ec27b51cca952e9b5a1353ab9a2392e5c6b1f837526",
+          "task_generation": 3
+        },
+        "body_digest": "fa6899f275a40336a34f958bc5a73275fb3596c2d0fab6b37e334f12421ba318",
+        "call_id": "toolu_01EUZFSrah1gF2YqBquKoTSt",
+        "grant": "4dba60947755486c9f62230470b15d36",
+        "input_digest": "6a1ee3db9fce3bcc94b374be183fc4bc36c8ee60261529a936f83c700ad2360c",
+        "parent": "bc3d20f3-8f56-4a08-81f6-2eda248cf0b0",
+        "task": "B5-WWW",
+        "worker": "a499a69870fdf32c1"
+      },
+      "observed_at": "2026-10-13T14:04:49.954010+00:00",
+      "response_digest": "c8435ea1fc125350faafa82167fc0c510886a16f75d13f5b61cbaf1eaa760f72",
+      "runtime": {
+        "basis": "executing Python module path and file bytes; observation, not host attestation",
+        "member_sha256": {
+          "hooks/hooks.json": "9182fbd38807a8ffda6be30906576ed580873eef618fec9f3c041e7c329eaca6",
+          "taskplane/claude_startup_recovery.py": "b67f749459ca7ae8516e2d1c4db3fe7d1f03ad439066ea199691a7df34f7b634",
+          "taskplane/claude_worker_invocation.py": "449bded300576e993d9e4f32bed5e34b19a339ef3e8be653045021ff014991b0",
+          "taskplane/claude_worker_observations.py": "f5a17638ab0e73250be82e54e5f9ce6e114e47ca8753489f9d8f75dd66035e12",
+          "taskplane/context_handoff.py": "19760ee0d1ebe8e70b015936d06f627642c3d1f653fb8a0519e96d83af74bac5",
+          "taskplane/flow.py": "a62de43dfaa92bd06ab2b0dc87777f1d23442bbbdefbccdb625b59656754129f",
+          "taskplane/host_capabilities.py": "6cdd7af1505dd0466bb6f05906e54399eeba2478ff978f68770f4cb4a129462e",
+          "taskplane/host_native.py": "f409a0fcf655bb1f1cb982f1fbd2173e570e6f9dac5e237ce46450589726baed",
+          "taskplane/native_approval.py": "b87322624ef7b8539a7f6f175689114dffd3b1963e09ce6243118d7928649375",
+          "taskplane/tp.py": "e9b87dbfd2618463a280d8347ca6bdf1be2c39515dfb343a4274d437a10c77b6",
+          "taskplane/worker_runtime.py": "a2ca1424223f25f2062c36df9fb1ddc359a33c8a8fa5cd759359f1498e16e797",
+          "taskplane/workflow_collision.py": "248a0caafaa8a9eec9875e6a73007fdec1f664f63413b7dcfd015ca4fd66289e",
+          "taskplane/workflow_host.py": "7d89a512a84b25a5925f2520340554ff051b1a6c402bad16e5e82ad0249ffc21",
+          "taskplane/workflow_local.py": "58541cd0e3d47837e0c62975810572906d357a888161fc4eff70d9f55d584d33",
+          "taskplane/workspace_binding.py": "dba0fdc467fbb3141e75a8f0a3d368ca6ba5f11d168205bba2ef557691f884f6"
+        },
+        "root": "/fixture/plugin"
+      },
+      "schema": "claude.SubagentHandback.message/v1",
+      "status": "acknowledged"
+    }
+  },
+  "stop": {
+    "agent_transcript_path": "/fixture/native-project/bc3d20f3-8f56-4a08-81f6-2eda248cf0b0/subagents/agent-a499a69870fdf32c1.jsonl",
+    "body_digest": "d3389a28799a9e56ec913c85123e9e39f0f44c160c896e5c96c07202d8bdaac9",
+    "call_id": null,
+    "event": "SubagentStop",
+    "event_id": "90ec58ad51e1bae30d696deb814e16e1c623f2d1bb0ffafe16b03c57ebc4f648",
+    "notification_body_digest": "9a8bc4b51e7b3460a94b5c9d7794537c61e43e8e6343cf22dba748818735f9ab",
+    "observed_at": "2026-10-13T14:04:23.338654+00:00",
+    "parent": "bc3d20f3-8f56-4a08-81f6-2eda248cf0b0",
+    "status": "stopped",
+    "transcript_path": "/fixture/native-project/bc3d20f3-8f56-4a08-81f6-2eda248cf0b0.jsonl",
+    "worker_id": "a499a69870fdf32c1"
+  },
+  "peer_handback": {
+    "sessionId": "bc3d20f3-8f56-4a08-81f6-2eda248cf0b0",
+    "cwd": "/fixture/project",
+    "isSidechain": false,
+    "timestamp": "2026-10-13T14:04:49.356Z",
+    "worker_id": "a499a69870fdf32c1",
+    "agent_type": "taskplane:tp-executor",
+    "body_digest": "fa6899f275a40336a34f958bc5a73275fb3596c2d0fab6b37e334f12421ba318",
+    "input_digest": "6a1ee3db9fce3bcc94b374be183fc4bc36c8ee60261529a936f83c700ad2360c",
+    "record_sha256": "e6cb6ca5bac0a4bb3b6140d3465447f4d173a2d9c20d6ae0bedf59f6c1690de1",
+    "host_version": "2.1.296",
+    "reference": {
+      "bytes": 18824,
+      "device": 16777229,
+      "inode": 431699411,
+      "offset": 17003114,
+      "sha256": "cf1c8440ffc8864984e0809125fb73649adfbdc59a9f0a65b2bbe55eb797983f",
+      "source": "/fixture/native-project/bc3d20f3-8f56-4a08-81f6-2eda248cf0b0.jsonl"
+    }
+  },
+  "notification": {
+    "sessionId": "bc3d20f3-8f56-4a08-81f6-2eda248cf0b0",
+    "cwd": "/fixture/project",
+    "isSidechain": false,
+    "timestamp": "2026-10-13T14:04:51.329Z",
+    "worker_id": "a499a69870fdf32c1",
+    "call_id": "toolu_016c64hvEMGXacHJmebpTU6V",
+    "output_file_sha256": "57e7ad0402b4444fe80eb0ddc49e9ed155a8a9888b9a8d335af7e2274022fa7b",
+    "status": "completed",
+    "body_digest": "1d1c76e7c5f72a3eddbd8d320f4df592adb2f6fce4fbe3664234494bb79b0ce5",
+    "record_sha256": "8a19c9a0a1e0797fd753a1a05fb01bb0638b09b8e4c4d2b0638410a92cbf21bc",
+    "host_version": "2.1.296",
+    "handback_redirect": true,
+    "reference": {
+      "bytes": 4808,
+      "device": 16777229,
+      "inode": 431699411,
+      "offset": 17035687,
+      "sha256": "1656eff8579781b4b1488500fe1667a2b5eb6e4e0da5cd3f28833426eeb7e72d",
+      "source": "/fixture/native-project/bc3d20f3-8f56-4a08-81f6-2eda248cf0b0.jsonl"
+    }
+  }
+}

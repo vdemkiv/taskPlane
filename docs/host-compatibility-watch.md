@@ -1,5 +1,58 @@
 # Weekly host compatibility review
 
+## Native review tool scope (local candidate)
+
+The 2.33.10-compat.1 candidate recognizes the captured Codex hook names
+`webrun`, `mcp__codex_apps__github__fetch_issue`, and
+`mcp__codex_app__automation_update`. A tool name alone does not grant access.
+Declare reads separately from a mutation in the initial run scope. These fields
+are bound by the existing scope digest and request provenance; they cannot be
+added by changing a sealed controller. The `request_reference` in each declaration
+must equal the run's original user request reference.
+
+```json
+{
+  "external_reads": {
+    "host": "codex", "operations": ["web", "github_issue"],
+    "request_reference": "conversation/actual-user-request"
+  },
+  "native_automation": {
+    "host": "codex", "phase": "engineering",
+    "request_reference": "conversation/actual-user-request",
+    "request": {
+      "mode": "create", "kind": "heartbeat", "name": "Review host updates",
+      "prompt": "Read the authorized official sources and report verified compatibility changes.",
+      "rrule": "FREQ=DAILY;INTERVAL=2", "status": "ACTIVE", "destination": "thread"
+    }
+  }
+}
+```
+
+These are additions to a complete normal phase/path scope. Root-only readers
+support HTTPS URL opens and bounded web search requests. The verified GitHub
+schema uses `repository_full_name` and a positive integer `issue_number`.
+Unknown web operations, connector mutations and additional arguments remain
+unsupported. Claude uses `WebFetch`/`WebSearch` with `host: "claude"` and
+`operations: ["web"]`; the Codex connector is not a verified Claude equivalent
+for a private issue. Missing scope is a configuration refusal; unavailable or
+disconnected host tools still require native installation/access resolution.
+
+Heartbeat creation requires the exact declared arguments, an automatic observed
+root call and the named open phase. The destination is the current local Codex
+thread; an explicit `targetThreadId` must equal that root. Only hourly, daily or
+weekly recurrence with a positive integer interval is implemented. Cron jobs,
+other targets, updates, deletion and unknown modes have no guard in this candidate.
+Admission is durably recorded as `admitted_outcome_unverified`, never success.
+After any uncertain response inspect native inventory before proposing recovery;
+a second create call in the same run is refused. A new run is not proof that a
+previous creation failed. Confirm the actual returned ID, target and next run
+before changing an existing schedule. Host permissions and app connection remain
+independent; this scope never overrides their denials. Claude has no implemented
+native Codex scheduler equivalent: retain a proposal for a separately authorized
+scheduler. No scheduling happens through this documentation or package build.
+
+## Existing GitHub schedule
+
 GitHub Actions runs **Host compatibility watch** every Monday at **14:17 UTC**
 (09:17 Florida standard time / 10:17 daylight time). GitHub may delay scheduled
 runs. It runs only on the default branch and can also be dispatched manually.

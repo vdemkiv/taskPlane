@@ -119,6 +119,8 @@ def validate_scope(scope: dict[str, Any]) -> None:
     require(isinstance(scope.get("verification_inputs", []), list)
             and all(isinstance(p, str) and p for p in scope.get("verification_inputs", [])),
             "invalid_evidence", "Verification inputs must be a path list.")
+    from . import native_tool_guard
+    native_tool_guard.validate_scope(scope)
     scope_preflight(scope)
 
 

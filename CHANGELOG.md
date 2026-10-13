@@ -1,5 +1,11 @@
 # taskplane changelog
 
+## v2.33.10-compat.1 — Local compatibility candidate (unpublished)
+
+- Join the captured Claude 2.1.296 ordinary-stop-before-handback sequence only with exact original admission, runtime, acknowledgment, peer delivery and native completion proof. Preserve every original record and journal the join; result acceptance remains separate.
+- Add explicit scoped native web readers for Codex and Claude, the captured Codex GitHub issue-reader schema, and a separately scoped root-only Codex heartbeat create. Unknown tools, schema extensions, other targets, workers and duplicate creation attempts remain denied.
+- Keep scope declarations at initialization, existing phase approval boundaries and host permissions. This candidate neither installs hooks nor widens an active run's scope. Fixture tests and captured-evidence replay are not fresh installed-host acceptance.
+
 ## v2.33.9 — Bounded approval history and weekly host checks
 
 - Read Claude approvals backward in bounded chunks, stopping at the latest human reply and its preceding checkpoint presentation. Large earlier history no longer blocks a complete recent decision; preserve both original records, hashes, IDs and chronology.

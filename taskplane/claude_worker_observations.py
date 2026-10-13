@@ -80,8 +80,8 @@ _PROJECTION_ADDITIONS = {
     "call": _DENIAL_PROVENANCE | {"agent_type", "input_transform"},
     "result": _DENIAL_PROVENANCE | {"output_file_sha256", "denial_kind", "content_sha256",
                                       "content_bytes", "error_wrapper_exact"},
-    "notification": {"no_report", "handback_redirect"},
-    "peer_handback": {"delivery_transform"},
+    "notification": {"no_report", "handback_redirect", "host_version"},
+    "peer_handback": {"delivery_transform", "host_version"},
 }
 _ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 _UUID = re.compile(r"[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\Z")
@@ -819,6 +819,7 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
     return {**{key: _scalar(row.get(key)) for key in ('sessionId', 'cwd', 'isSidechain', 'timestamp')},
             'worker_id': child, 'call_id': call, 'output_file_sha256': digest(output), 'status': status,
             'body_digest': digest(body), 'record_sha256': digest(row),
+            'host_version': _scalar(row.get('version')),
             **({'no_report': True} if body == NO_REPORT_RESULT else {}),
             **({'handback_redirect': True} if body == handback_redirect(child) else {})}
 
@@ -899,7 +900,8 @@ def _peer_handback(row: Mapping[str, Any]) -> dict[str, Any] | None:
                 'original_body_digest': digest(original), 'original_input_digest': digest({'message': original})}}
     return {**{key: _scalar(row.get(key)) for key in ('sessionId', 'cwd', 'isSidechain', 'timestamp')},
             'worker_id': child, 'agent_type': name, 'body_digest': digest(body),
-            'input_digest': digest({'message': body}), 'record_sha256': digest(row), **transform}
+            'input_digest': digest({'message': body}), 'record_sha256': digest(row),
+            'host_version': _scalar(row.get('version')), **transform}
 
 
 def _items(row: Mapping[str, Any], call: str) -> list[tuple[str, Mapping[str, Any]]]:
