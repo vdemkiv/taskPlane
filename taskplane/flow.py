@@ -1157,7 +1157,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=32768)
     parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
-    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound", "recover-launch-denied"])
+    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound", "recover-launch-denied", "reconcile-handback"])
     parser.add_argument("--invocation-ref", help=argparse.SUPPRESS)
     parser.add_argument("--grant", default="")
     parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")

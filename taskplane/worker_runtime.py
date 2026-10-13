@@ -39,7 +39,7 @@ STATES = LIVE | {"result_pending", "accepted", "failed", "interrupted"}
 MARKER = re.compile(r"(?m)^Taskplane grant: ([0-9a-f]{32})$")
 NAME_GRANT = re.compile(r"[a-z0-9_]{1,46}__([0-9a-f]{32})")
 RECOVERY_HOSTS = {'recover-unbound': 'codex', 'recover-unavailable': 'codex',
-                  'recover-launch-denied': 'claude'}
+                  'recover-launch-denied': 'claude', 'reconcile-handback': 'claude'}
 
 
 def recovery_capabilities(host: str) -> dict[str, Any]:
@@ -52,6 +52,7 @@ def recovery_capabilities(host: str) -> dict[str, Any]:
         'abandon': 'Only a prepared reservation with no admitted launch; never erase an actual escaped launch.',
         'next_action': (
             'Claude recover-launch-denied only reconciles an exact proven legacy launch denial with no child/work. '
+            'reconcile-handback revalidates an owned attempt\'s recorded handback and completion; it never accepts a result. '
             'For a launched owned worker, use exposed TaskStop and observed native completion under its current grant. '
             'An unbound identity conflict has no general recovery adapter: preserve the attempt and evidence, '
             'use flow wait for the capability repair, and do not promise a retry or substitute root work.'
@@ -940,9 +941,23 @@ def _redirect_delivery(state: dict[str, Any], row: dict[str, Any], completed: di
     reports = []
     for report in _handback_reports(row):
         envelope, ack = report.get('envelope', {}), report.get('acknowledgment', {})
+        transform = None
+        body_digest, input_digest = peer['body_digest'], peer['input_digest']
+        if (envelope.get('body_digest'), envelope.get('input_digest')) != (body_digest, input_digest):
+            from .claude_worker_observations import SETTINGS_NOTICE
+            candidate = peer.get('delivery_transform', {})
+            if (isinstance(candidate, dict) and set(candidate) == {
+                    'schema', 'host_version', 'notice_digest', 'delivered_body_digest',
+                    'original_body_digest', 'original_input_digest'}
+                    and candidate['schema'] == 'claude.handback-settings-notice/v1'
+                    and candidate['host_version'] == '2.1.296'
+                    and candidate['notice_digest'] == digest(SETTINGS_NOTICE)
+                    and candidate['delivered_body_digest'] == body_digest):
+                body_digest, input_digest = candidate['original_body_digest'], candidate['original_input_digest']
+                transform = candidate
         expected = {'parent': state['root'], 'worker': row['worker_id'], 'grant': row['grant_id'],
                     'attempt': row['attempt'], 'task': row['task_id'], 'call_id': envelope.get('call_id'),
-                    'binding': binding(state), 'input_digest': peer['input_digest'], 'body_digest': peer['body_digest']}
+                    'binding': binding(state), 'input_digest': input_digest, 'body_digest': body_digest}
         if (envelope != expected or not isinstance(envelope.get('call_id'), str)
                 or report.get('status') != 'acknowledged'
                 or report.get('runtime') != row.get('expected_runtime')
@@ -966,7 +981,7 @@ def _redirect_delivery(state: dict[str, Any], row: dict[str, Any], completed: di
                 continue
         except (ValueError, TypeError, KeyError, OverflowError):
             continue
-        reports.append(report)
+        reports.append({**report, 'delivery_transform': deepcopy(transform)} if transform else report)
     return reports[0] if len(reports) == 1 else None
 
 
@@ -1021,6 +1036,9 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                 # different hooks. Missing proof cannot establish completion.
                 if observation.get('peer_handback') and stopped and any(
                         item.get('status') == 'acknowledged' for item in _handback_reports(row)):
+                    row['handback_reconciliation'] = {'status': 'blocked',
+                        'reason': 'Recorded delivery differs from the admitted report or its exact native acknowledgment/stop proof.',
+                        'next_action': 'Preserve the original attempt; reconcile-handback requires matching supported evidence, not another handback.'}
                     _audit(row, 'redirect_join_rejected', {
                         'notification': completed['record_sha256'],
                         'peer': observation['peer_handback']['record_sha256'],
@@ -1063,6 +1081,8 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                     'body_digest': report['envelope']['body_digest'] if report else completed['body_digest'],
                     'notification': completed, **delivery,
                     'stop_event': stopped['event_id'], 'observed_at': now()}
+                row['handback_reconciliation'] = {'status': 'joined',
+                    'delivery_transform': report.get('delivery_transform', {}).get('schema') if report else None}
                 row['stop_observation'] = stopped
                 if unsuccessful:
                     _audit(row, 'unsuccessful_completion', {'notification': completed['record_sha256'],
@@ -1506,6 +1526,7 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
                 "prepared_at", "started_at", "ended_at", "purpose", "retry_reason", "context_preflight", "context_delivery")},
                 "readiness": readiness(r),
                 **({'launch_preflight': deepcopy(r['launch_preflight'])} if r.get('launch_preflight') else {}),
+                **({'handback_reconciliation': deepcopy(r['handback_reconciliation'])} if r.get('handback_reconciliation') else {}),
                 **({'launch_blocker': deepcopy(r['preflight_blocker'])} if r.get('preflight_blocker') else {}),
                 **({'identity_freshness': deepcopy(r['identity_freshness'])} if r.get('identity_freshness') else {})}
                 for r in rows]}

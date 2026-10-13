@@ -1,5 +1,12 @@
 # taskplane changelog
 
+## v2.33.7 — Claude guarded handback correlation
+
+- Join the observed Claude Code 2.1.296 `settings-json` delivery notice only when its unchanged report remainder matches the original automatic handback admission exactly. Retain original and delivered hashes and every child, attempt, acknowledgment, runtime, stop, chronology and pinned-span check.
+- Add root-only `reconcile-handback` to revalidate an existing recorded Claude completion without relaunching, replacing an attempt or supplying proof. A successful join still needs normal result checks and approval; accepted peers remain untouched.
+- Expose a precise blocked reconciliation status. Refuse unknown notices/versions, changed report bodies, wrong children, forged cached projections, missing evidence and foreign-host recovery requests.
+- Cover the native-shaped notice and legacy cursor with focused fixtures, including 15 accepted peers. Read-only captured-evidence replay is separate from fresh native acceptance. This release does not install hooks, change permissions or modify active run evidence.
+
 ## v2.33.6 — Claude launch transcript ordering
 
 - Permit an exact current automatic root-hook launch reservation when the pinned, fully read transcript has not flushed that call yet. Report `launch_pending` and `awaiting_transcript` without asserting child identity or successful work.
