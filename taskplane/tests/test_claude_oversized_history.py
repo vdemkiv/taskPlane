@@ -30,10 +30,13 @@ def history(*, companion=False, size=295340):
     return row
 
 
-def fixture(tmp_path, monkeypatch, *, tail=False):
+def fixture(tmp_path, monkeypatch, *, tail=False, prompt_source=None):
     parent, children, attempt, call, result, header, event = setup_native(tmp_path, monkeypatch)
     prefix = encoded({'sessionId': 'parent', 'cwd': attempt['workspace'], 'isSidechain': False})
-    large = encoded(history()) + encoded(history(companion=True, size=304960))
+    plain, companion = history(), history(companion=True, size=304960)
+    if prompt_source:
+        plain['promptSource'] = companion['promptSource'] = prompt_source
+    large = encoded(plain) + encoded(companion)
     parent.write_bytes(prefix if tail else prefix + large)
     source = select(event)
     attempt['transcript_admission_offset'] = parent.stat().st_size
@@ -43,8 +46,10 @@ def fixture(tmp_path, monkeypatch, *, tail=False):
 
 
 @pytest.mark.parametrize('tail', [False, True])
-def test_real_sized_plain_and_companion_history_preserve_exact_launch_proof(tmp_path, monkeypatch, tail):
-    parent, _, attempt, call, result, header, _, source = fixture(tmp_path, monkeypatch, tail=tail)
+@pytest.mark.parametrize('prompt_source', [None, 'typed'])
+def test_real_sized_plain_and_companion_history_preserve_exact_launch_proof(tmp_path, monkeypatch, tail, prompt_source):
+    parent, _, attempt, call, result, header, _, source = fixture(
+        tmp_path, monkeypatch, tail=tail, prompt_source=prompt_source)
     original = parent.read_bytes()
     answer = observe(attempt, source)
     assert answer['status'] == 'matched'

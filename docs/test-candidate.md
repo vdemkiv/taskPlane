@@ -1,6 +1,8 @@
-# Validate the 2.33.8 local packages
+# Validate the 2.33.9 local packages
 
-This unpublished candidate adds bounded Claude history handling, exact observed
+This release adds bounded backward approval reading that stops before unrelated old history,
+explicit capacity outcomes, and a [weekly official-source host watch](host-compatibility-watch.md).
+It includes bounded Claude history handling, exact observed
 2.1.296 fork/completion framing, automatic native human approval capture,
 journaled startup reconciliation, and cross-run sealed-path write protection.
 Codex retains its own observed approval and native-worker adapters. Required
@@ -80,8 +82,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.8.plugin` (Claude) and
-`dist/taskplane-2.33.8-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.9.plugin` (Claude) and
+`dist/taskplane-2.33.9-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -92,13 +94,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.8.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.8-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.9.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.9-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.8` and `ok: true`.
+Both commands should report `2.33.9` and `ok: true`.
 
 ## Local regression and exact archive checks
 

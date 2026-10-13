@@ -1,5 +1,13 @@
 # taskplane changelog
 
+## v2.33.9 — Bounded approval history and weekly host checks
+
+- Read Claude approvals backward in bounded chunks, stopping at the latest human reply and its preceding checkpoint presentation. Large earlier history no longer blocks a complete recent decision; preserve both original records, hashes, IDs and chronology.
+- Distinguish incomplete writes, reader capacity and malformed evidence. Never skip an oversized recent decision/presentation, substitute an older human response, or accept duplicate JSON keys. Recognize observed typed human history in the worker reader.
+- Include the previously prepared 2.33.8 approval, worker, startup reconciliation and sealed-path protections. Preserve DoR/DoD, required native evidence and every human approval boundary.
+- Add a weekly default-branch GitHub Actions check of official Codex and Claude release notes/docs. Deduplicate source changes in one repository issue and retained reports; label keyword relevance as unverified. No paid API, automatic update, host installation or live-session access.
+- Focused fixtures and package/CI gates are distinct from fresh native acceptance. The running user workflow and installed hooks/settings are not changed by this release.
+
 ## v2.33.8 — Claude approval and native worker compatibility
 
 - Package the prepared approval capture and shared approval wording fixes, bounded large-history reader, exact Claude 2.1.296 dispatch/completion correlation, journaled startup reconciliation, and protection for other active runs' sealed artifacts.

@@ -202,3 +202,14 @@ task-notification framing is refused. Focused Ruff and `git diff --check` passed
 These are parser and integration-fixture checks. A fresh exact-candidate live run
 must separately establish ten accepted useful workers and all required scenarios;
 the failed original run was not repaired or accepted by this replay.
+
+## Ordinary approval history
+
+The approval reader scans backward in 16 KiB chunks and stops after the latest
+human reply and its preceding checkpoint presentation. Older transcript size does
+not limit a complete recent pair. Each required raw record remains bounded to
+256 KiB and retains its original offset/hash; the aggregate read/record budgets
+remain enforced. An oversized record in the inspected suffix is not silently
+skipped: it could contain a newer human decision or intervening presentation.
+Capacity is `unsupported`, incomplete appends remain pending, and malformed or
+changed evidence is a conflict. None rewrites approval or worker history.

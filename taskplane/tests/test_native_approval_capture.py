@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
+import hashlib
 from pathlib import Path
 import uuid
 
@@ -132,3 +133,82 @@ def test_native_negative_decision_preserves_human_authority_despite_artifact_dri
     after = json.loads(c._path().read_text())['runs'][state['run']]
     assert after['decisions'][human['uuid']]['choice'] == choice
     assert after['revision'] == state['revision'] + 1
+
+
+@pytest.mark.parametrize('size', [295340, 5 * 1024 * 1024])
+def test_large_old_history_does_not_block_recent_approval_or_enter_proof(tmp_path, monkeypatch, size):
+    c, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch)
+    old = deepcopy(human)
+    old.update(uuid=str(uuid.uuid4()), timestamp='2000-01-01T00:00:00Z')
+    old['message']['content'] = 'x' * size
+    write([old, shown, human])
+    original = path.read_bytes()
+    flow.hook(event, governor=c)
+    after = c.report(diagnostics=False)
+    assert after['status'] == 'approved' and after['revision'] == state['revision'] + 1
+    proof = after['decisions'][human['uuid']]['provenance']['native_proof']
+    for name, row in [('human', human), ('presentation', shown)]:
+        ref = proof[name]
+        raw = original[ref['offset']:ref['offset'] + ref['bytes']]
+        assert json.loads(raw) == row and hashlib.sha256(raw).hexdigest() == ref['sha256']
+    assert path.read_bytes() == original
+    assert 'x' * 100 not in json.dumps(proof)
+
+
+@pytest.mark.parametrize('defect', ['newer_large_human', 'large_presentation', 'large_between', 'malformed',
+                                  'partial', 'duplicate_key', 'newer_unsupported_source'])
+def test_recent_unreadable_evidence_never_falls_back_to_an_older_approval(tmp_path, monkeypatch, defect):
+    c, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch)
+    large = deepcopy(human)
+    large.update(uuid=str(uuid.uuid4()), timestamp=datetime.now(timezone.utc).isoformat())
+    large['message']['content'] = 'x' * (native.MAX_LINE_BYTES + 1)
+    rows = [shown, human]
+    if defect == 'newer_large_human': rows.append(large)
+    if defect == 'large_presentation': shown['message']['content'] += large['message']['content']
+    if defect == 'large_between': rows = [shown, large, human]
+    if defect == 'newer_unsupported_source':
+        large['message']['content'] = 'approve'; large['promptSource'] = 'unknown-source'; rows.append(large)
+    write(rows)
+    if defect == 'duplicate_key':
+        path.write_bytes(path.read_bytes().replace(b'"content": "approve"', b'"content": "reject", "content": "approve"'))
+    if defect == 'malformed':
+        with path.open('ab') as stream: stream.write(b'{bad json}\n')
+    if defect == 'partial':
+        with path.open('ab') as stream: stream.write(b'{"type":"user"')
+    # A later root hook must also refuse; it has no prompt comparison to rescue it.
+    flow.hook({**event, 'hook_event_name': 'Stop'}, governor=c)
+    after = json.loads(c._path().read_text())['runs'][state['run']]
+    assert after['revision'] == state['revision'] and not after['decisions']
+    expected = {'malformed': 'conflict', 'duplicate_key': 'conflict', 'partial': 'not_yet_available'}.get(defect, 'unsupported')
+    assert after['native_approval_capture']['status'] == expected
+
+
+def test_reverse_reader_preserves_cross_chunk_records_and_stops_before_old_history(tmp_path, monkeypatch):
+    _, _, path, _, shown, human, write = fixture(tmp_path, monkeypatch)
+    old = deepcopy(human); old['message']['content'] = 'x' * (5 * 1024 * 1024)
+    shown['message']['content'] += 'y' * 20000
+    write([old, shown, human])
+    budget = native.ReadBudget()
+    with path.open('rb') as stream:
+        info = native._regular(stream.fileno())
+        reader = approval._reverse_records(stream.fileno(), path, info, budget)
+        assert next(reader)[0] == human
+        assert next(reader)[0] == shown
+    assert budget.bytes_read <= 32768 and budget.records_read == 2
+
+
+@pytest.mark.parametrize('kind', ['bytes', 'records'])
+def test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source(tmp_path, monkeypatch, kind):
+    _, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch)
+    filler = {'type': 'progress', 'message': 'x' * 1024}
+    write([shown, *[filler for _ in range(30)], human])
+    state['claude_transcript_source'] = native.select_source('root', event, automatic=True)['source']
+    original = deepcopy(state)
+    budget = native.ReadBudget(max_bytes=17000 if kind == 'bytes' else native.MAX_BYTES,
+                               max_records=3 if kind == 'records' else native.MAX_RECORDS)
+    real = native.ReadBudget
+    monkeypatch.setattr(native, 'ReadBudget', lambda: budget)
+    assert approval.capture(state, host='claude', presentation={})['status'] == 'unsupported'
+    assert state == original
+    monkeypatch.setattr(native, 'ReadBudget', real)
+    assert approval.capture(state, host='claude', presentation={})['status'] == 'observed'

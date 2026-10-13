@@ -314,7 +314,12 @@ def _regular(fd: int) -> os.stat_result:
 
 
 def _decode(raw: bytes) -> dict[str, Any]:
-    value = json.loads(raw)
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value = dict(pairs)
+        if len(value) != len(pairs):
+            raise ValueError('Ambiguous duplicate native record key')
+        return value
+    value = json.loads(raw, object_pairs_hook=unique)
     if not isinstance(value, dict):
         raise ValueError("Malformed native record")
     return value
@@ -397,7 +402,7 @@ def _historical_text(raw: bytes, parent: str) -> bool:
                 or row.get('sessionId') != parent or row.get('isSidechain') is not False
                 or row.get('origin') not in (None, {'kind': 'human'})
                 or row.get('turnOrigin') not in (None, 'human')
-                or row.get('promptSource') not in (None, 'user')):
+                or row.get('promptSource') not in (None, 'user', 'typed')):
             return False
         message = row.get('message')
         if not isinstance(message, dict) or set(message) != {'role', 'content'} or message['role'] != 'user':

@@ -9,13 +9,60 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Iterator
 
 from . import claude_worker_observations as native, workflow as w, host_capabilities
 from .context import digest
 from .workflow_approval import conversational_choice
 
 SCHEMA = 'taskplane.native-decision/v1'
+
+
+class _IncompleteTail(ValueError):
+    """A concurrent append is not yet a complete native record."""
+
+
+def _reverse_records(fd: int, path: Path, info: os.stat_result,
+                     budget: native.ReadBudget) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
+    """Read the required recent suffix, without loading unrelated old history.
+
+    Keep complete raw records for proof. Never truncate or skip an oversized
+    record in the suffix being examined; it may be a newer human decision.
+    The caller stops only after finding the latest human and its presentation.
+    """
+    end = info.st_size
+    pending = b''
+    while end:
+        if not budget.remaining:
+            raise native._RecordLimit('Native approval evidence exceeds the aggregate read budget.')
+        size = min(16384, end, budget.remaining)
+        start = end - size
+        block = budget.read(fd, start, size)
+        if len(block) != size:
+            raise ValueError('Native approval source changed during reading')
+        if end == info.st_size and not block.endswith(b'\n'):
+            raise _IncompleteTail('Native prompt or presentation is not completely flushed.')
+        parts = (block + pending).splitlines(keepends=True)
+        offset = end + len(pending)
+        complete = parts if start == 0 else parts[1:]
+        for line in reversed(complete):
+            offset -= len(line)
+            if len(line) > native.MAX_LINE_BYTES:
+                raise native._RecordLimit(f'Native approval record at byte {offset} exceeds the '
+                                          f'{native.MAX_LINE_BYTES}-byte evidence limit; no decision was inferred.')
+            if not budget.record():
+                raise native._RecordLimit('Native approval evidence exceeds the record-count budget.')
+            yield native._decode(line), native._reference(path, info, offset, line)
+        pending = parts[0] if start else b''
+        if len(pending) > native.MAX_LINE_BYTES:
+            raise native._RecordLimit('Native approval record exceeds the evidence limit; no decision was inferred.')
+        end = start
+
+
+def _human(row: dict[str, Any]) -> bool:
+    return (row.get('type') == 'user' and row.get('origin') == {'kind': 'human'}
+            and row.get('turnOrigin') == 'human'
+            and not row.get('isMeta') and not row.get('turnCompanion'))
 
 
 def _text(row: dict[str, Any]) -> str | None:
@@ -51,8 +98,8 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
             event: dict[str, Any] | None = None) -> dict[str, Any]:
     """Observe the latest real human reply, never scan arbitrary native files.
 
-    Missing flush/oversized tail is recoverable; a subsequent automatic root
-    hook rechecks it. The source, record references and true native IDs/times
+    Missing flush is pending; capacity and integrity failures are distinct.
+    The source, complete record references and true native IDs/times
     are preserved. No decision or phase state is changed here.
     """
     def status(value: str, reason: str) -> dict[str, Any]:
@@ -85,7 +132,7 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
         path = native._source_path(state['root'], source['path'])
         fd, project = native._open_source(path)
         budget = native.ReadBudget()
-        records: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        human_pair = shown_pair = None
         with os.fdopen(fd, 'rb', buffering=0) as stream:
             info = native._regular(stream.fileno())
             if (native._identity(info) != source['identity'] or project != source['project_identity']
@@ -94,33 +141,25 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
             session = native._verify(stream.fileno(), source['session_reference'], budget)
             if not session or session.get('sessionId') != state['root'] or session.get('isSidechain') is True:
                 raise ValueError('Native root session reference changed')
-            start = max(0, info.st_size - budget.remaining)
-            raw = budget.read(stream.fileno(), start, info.st_size - start)
-            if start:
-                split = raw.find(b'\n')
-                if split < 0:
-                    return status('not_yet_available', 'Native approval tail exceeds the bounded reader.')
-                start += split + 1
-                raw = raw[split + 1:]
-            if raw and not raw.endswith(b'\n'):
-                return status('not_yet_available', 'Native prompt or presentation is not completely flushed.')
-            for line in raw.splitlines(keepends=True):
-                if not budget.record() or len(line) > native.MAX_LINE_BYTES:
-                    return status('not_yet_available', 'Native approval tail exceeds the bounded reader.')
-                row = native._decode(line)
-                if row.get('sessionId') == state['root'] and row.get('isSidechain') is False:
-                    records.append((row, native._reference(path, info, start, line)))
-                start += len(line)
+            for row, ref in _reverse_records(stream.fileno(), path, info, budget):
+                if row.get('sessionId') != state['root'] or row.get('isSidechain') is not False:
+                    continue
+                if _human(row):
+                    if human_pair is not None:
+                        break  # A previous human separates this reply from older presentations.
+                    human_pair = row, ref
+                elif (human_pair is not None and row.get('type') == 'assistant'
+                      and isinstance(row.get('message'), dict) and row['message'].get('role') == 'assistant'
+                      and _text(row)):
+                    shown_pair = row, ref
+                    break
             if native._regular(stream.fileno()).st_size < info.st_size:
                 raise ValueError('Native root transcript was truncated during observation')
-        humans = [(index, row, ref) for index, (row, ref) in enumerate(records)
-                  if row.get('type') == 'user'
-                  and row.get('origin') == {'kind': 'human'} and row.get('turnOrigin') == 'human'
-                  and row.get('promptSource') in {None, 'user', 'typed'} and not row.get('isMeta')
-                  and not row.get('turnCompanion')]
-        if not humans:
+        if human_pair is None:
             return status('not_yet_available', 'The actual human prompt has not been observed.')
-        index, human, human_ref = humans[-1]
+        human, human_ref = human_pair
+        if human.get('promptSource') not in {None, 'user', 'typed'}:
+            return status('unsupported', 'The latest human prompt has an unsupported native source; no older reply was substituted.')
         if not isinstance(human.get('message'), dict) or human['message'].get('role') != 'user':
             return status('conflict', 'The latest native human message is malformed.')
         excerpt = _text(human)
@@ -137,14 +176,9 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
         named = re.findall(r'\b[0-9a-f]{32}\b', excerpt.casefold())
         if any(identifier != expected['checkpoint'] for identifier in named):
             return status('conflict', 'The response names a different checkpoint.')
-        prior_human = humans[-2][0] if len(humans) > 1 else -1
-        shown = [(row, ref) for row, ref in records[prior_human + 1:index]
-                 if row.get('type') == 'assistant' and isinstance(row.get('message'), dict)
-                 and row['message'].get('role') == 'assistant'
-                 and _text(row)]
-        if not shown:
+        if shown_pair is None:
             return status('not_yet_available', 'The original checkpoint presentation has not been observed.')
-        assistant, shown_ref = shown[-1]
+        assistant, shown_ref = shown_pair
         text = _text(assistant)
         assert text is not None
         if (len(text) > 16384 or not _shown(text, state, presentation.get('artifact', ''))
@@ -163,6 +197,10 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
                              'at': assistant['timestamp']},
             'native_proof': {'source_sha256': source['sha256'], 'human': human_ref, 'presentation': shown_ref}}
         return {'status': 'observed', 'decision': envelope}
+    except _IncompleteTail as exc:
+        return status('not_yet_available', str(exc))
+    except native._RecordLimit as exc:
+        return status('unsupported', str(exc))
     except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError):
         return status('conflict', 'Selected native approval evidence is unavailable, malformed or changed.')
 
