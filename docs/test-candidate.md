@@ -1,16 +1,37 @@
-# Validate the 2.33.7 release
+# Validate the 2.33.9 local packages
 
-The 2.33.5 baseline added cross-host tool/recovery preflight, exact Claude message metadata handling and a launch-input check before dispatch. The 2.33.7 release corrects that check's assumption that Claude flushes the current call before PreToolUse. It retains the earlier initialization and approval repairs. Both host packages carry this same correction. No installation, hook activation or new native test is included in this release.
+This release adds bounded backward approval reading that stops before unrelated old history,
+explicit capacity outcomes, and a [weekly official-source host watch](host-compatibility-watch.md).
+It includes bounded Claude history handling, exact observed
+2.1.296 fork/completion framing, automatic native human approval capture,
+journaled startup reconciliation, and cross-run sealed-path write protection.
+Codex retains its own observed approval and native-worker adapters. Required
+context, runtime readiness, DoR/DoD, result verification and approvals remain in
+force. The staged browser-scope repair is not included.
 
-Bounded testing of the preceding candidate with Claude Code 2.1.294 verified startup, session-only plugin loading and automatic parent hook activity. Native worker dispatch, full worker context, completion/result acceptance, messaging and a review checkpoint were not completed. The smoke stopped after bootstrap refusals; a later attempt stopped at a trust-dialog/controller mismatch before model work. Those failures are retained in private audit evidence. They are not native lifecycle passes. The 2.33.5 release included no further native run, installed-plugin activation or human checkpoint acceptance. Relative to that preceding candidate, the release changed only version/documentation and two fixtures: resume guidance assertions use stable phase/visit identities, and approval fixtures retain only synthetic project text with the required consent structure.
+Focused local regression tests and an isolated production-command replay against
+captured original Claude logs verify the targeted correction. The replay writes
+only a copied controller and new proof objects in the audit area; the native logs
+remain read-only. A virtual substitution of the exact approved Product bytes is
+explicitly separate from live artifact restoration. The new recovery command
+changes only the identified attempt to failed/no-report and preserves phase and
+approval history. Real approval chronology replay retains actual native human
+and presentation IDs/times. These checks are not fresh native lifecycle acceptance.
 
-The launch preflight compares any readable native call with the automatic hook input without coercion. A complete validated snapshot without the current call permits only a `launch_pending` reservation from the current automatic root hook and prepared runtime, recording `awaiting_transcript`. Exact native call/result/child proof is still required before binding a child or granting claim, context or execution. Missing later evidence stays pending; later conflicts become unknown. Neither may be abandoned as unlaunched. An unreadable/incomplete source or mismatched call still refuses before admission. A native result already present before admission preserves an unknown-attempt barrier; it cannot be abandoned or reported as completed. Existing admitted identity conflicts are not rewritten or automatically recovered.
+No candidate installation, hook activation, permissions or live run changes are
+included. Review the diff and package hashes first. Any activation needs specific
+action-time authorization. For an explicitly authorized existing-run recovery,
+stop competing sessions, preserve all artifacts and state, recheck the exact
+owner/run/revision and original proof, then use only the bounded recovery command.
+Do not restart completed phases or overwrite sealed approvals. Otherwise use a
+fresh disposable project/session for native acceptance.
 
-Claude 2.1.293 exposed Agent fields `description`, `prompt`, `subagent_type`, `model`, `effort` and `isolation`. Use the smaller implemented subset: prompt/description, optional subagent_type/model. Omit legacy `run_in_background` and `resume`, and Codex-only task_name/fork_turns. Effort, isolation and resumed-attempt dispatch are not newly supported by this candidate. Use owned-current-worker SendMessage for supported in-flight messages; do not infer new-attempt authority from native continuation.
-
-Claude custom configuration roots must be absolute normalized paths. The worker reader follows the explicitly configured root and still rejects symlinks and foreign/replaced evidence. Automatic parent hook delivery was observed on the preceding candidate. A real Claude 2.1.296 run of 2.33.5 subsequently refused two valid Agent calls because the current call was not readable during PreToolUse, although the later transcript and hook journal input fingerprints agree. Local file-ordering regressions exercise both flush orders and preserved denial/identity barriers. First worker claim/context and actual message/completion behavior still require live observations; source tests do not certify them. In particular, real post-dispatch child-hook timing relative to transcript result/header availability remains unverified; the child gate still refuses until that exact evidence is available.
-
-No activation is included. Review the candidate diff and member hashes, retain the current versioned installations, then obtain action-time approval before changing either host's installed plugin/hook runtime. Use a fresh disposable project/session for acceptance. Do not upgrade active workflows or rewrite their state. Rollback selects the retained prior version and restarts the disposable session; it does not replay candidate state under older code.
+A session-only `--plugin-dir` load can select the candidate while retaining the
+installed version. Verify the actually executing hook root and file hashes before
+dispatch; manifest labels and fixture tests are insufficient. Managed settings
+can prevent the session override. Do not bypass such a refusal. Rollback closes
+the candidate session and selects the retained installation; keep any new
+journaled evidence rather than copying an old controller over later observations.
 
 ## Earlier candidate evidence (historical)
 
@@ -61,8 +82,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.7.plugin` (Claude) and
-`dist/taskplane-2.33.7-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.9.plugin` (Claude) and
+`dist/taskplane-2.33.9-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -73,13 +94,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.7.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.7-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.9.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.9-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.7` and `ok: true`.
+Both commands should report `2.33.9` and `ok: true`.
 
 ## Local regression and exact archive checks
 
@@ -97,6 +118,16 @@ checks member hashes, and exercises both extracted runtimes in isolated fixtures
 It covers Workflow Builder compilation and existing workflow behavior. It does
 not establish native host execution. For dashboard browser testing, configure a
 real Chrome/Chromium executable and run `python3 scripts/ci_local.py --check browser`.
+
+## Start a fresh project
+
+For a fresh start, use a new project folder or checkout and a new host session.
+Keep previous project state, proofPlane records and backups in their original
+location; do not copy the previous `.taskplane` store into the new project.
+The normal new-workflow path does not need a recovery command.
+
+After loading this version, ask: `Use taskplane to start a new workflow for
+[my goal].` Existing human approvals do not transfer to the new run.
 
 ## Load the candidate
 

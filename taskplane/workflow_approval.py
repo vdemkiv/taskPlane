@@ -147,6 +147,11 @@ def _complete_approval_response(excerpt: str) -> bool:
     # within words are retained, so unsupported contractions cannot be erased.
     def clauses(text: str) -> list[str]:
         text = text.casefold().replace("’", "'")
+        # A colon can separate an explicit decision verb from its checkpoint
+        # target. Keep that target in the same clause; binding still verifies
+        # the complete ID and rejects foreign/stale checkpoints.
+        text = re.sub(r'\b(' + grant_verb + r')\s*:\s*((?:checkpoint\s+)?[0-9a-f]{32})\b',
+                      r'\1 \2', text)
         text = re.sub(r'["“”`]|(?<!\w)\'|\'(?!\w)|(?m:^\s*>\s?)', ' ', text)
         text = re.sub(r'(?<=\w)[-\u2010\u2011](?=\w)', ' ', text)
         return [words for part in re.split(r'[.!;\n:—–]+', text)

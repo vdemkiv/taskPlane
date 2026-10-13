@@ -5,6 +5,7 @@ child. A missing record is unknown, including a result not yet flushed to disk.
 """
 from __future__ import annotations
 
+import codecs
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -67,7 +68,7 @@ MAX_LINE_BYTES = 256 * 1024
 MAX_RECORDS = 16384
 MAX_CANDIDATES = 64
 MAX_STATE_BYTES = 512 * 1024
-NOTIFICATION_VERSION = 2
+NOTIFICATION_VERSION = 3
 LEGACY_LAUNCH_CONFLICT = "Native launch disagrees with admitted parent, workspace or arguments"
 _DENIAL_BODY_BYTES = 1856
 _DENIAL_BODY_SHA256 = "e293470ef2aa8a4727c32ce61e79fc464558df203254586b47c215bd0d63a07d"
@@ -76,7 +77,7 @@ _DENIAL_BODY_SHA256 = "e293470ef2aa8a4727c32ce61e79fc464558df203254586b47c215bd0
 _DENIAL_PROVENANCE = {"type", "message_role", "session_id", "session_alias_consistent",
                       "uuid", "parentUuid", "sourceToolAssistantUUID", "item_sha256"}
 _PROJECTION_ADDITIONS = {
-    "call": _DENIAL_PROVENANCE | {"agent_type"},
+    "call": _DENIAL_PROVENANCE | {"agent_type", "input_transform"},
     "result": _DENIAL_PROVENANCE | {"output_file_sha256", "denial_kind", "content_sha256",
                                       "content_bytes", "error_wrapper_exact"},
     "notification": {"no_report", "handback_redirect"},
@@ -145,7 +146,7 @@ def correlate_records(parent: str, attempt: Mapping[str, Any],
     structured = returned.get("toolUseResult")
     if (use["item"].get("name") not in {"Agent", "Task"}
             or not isinstance(use["item"].get("input"), Mapping)
-            or digest(use["item"]["input"]) != attempt["dispatch_digest"]
+            or not _call_input_matches(_projection(call, 'call', use['item']), attempt['dispatch_digest'])
             or any(row.get("sessionId") != parent or row.get("cwd") != workspace
                    or row.get("isSidechain") is True for row in (call, returned))):
         return _answer("conflict", "Native launch disagrees with admitted parent, workspace or arguments")
@@ -313,7 +314,12 @@ def _regular(fd: int) -> os.stat_result:
 
 
 def _decode(raw: bytes) -> dict[str, Any]:
-    value = json.loads(raw)
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value = dict(pairs)
+        if len(value) != len(pairs):
+            raise ValueError('Ambiguous duplicate native record key')
+        return value
+    value = json.loads(raw, object_pairs_hook=unique)
     if not isinstance(value, dict):
         raise ValueError("Malformed native record")
     return value
@@ -324,8 +330,93 @@ def _reference(path: Path, info: os.stat_result, offset: int, raw: bytes) -> dic
             "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
+class _RecordLimit(ValueError):
+    """Reader capacity is unavailable evidence, not proof of transcript tampering."""
+
+
+def _historical_text(raw: bytes, parent: str) -> bool:
+    """Classify complete text-only history without decoding its large text values.
+
+    Only the existing aggregate read allowance may enter here. The JSON skeleton
+    retains every key and type, stays within the ordinary record parsing bound,
+    and is never passed to the identity/evidence projectors. Unknown framing,
+    duplicate keys and any possible tool/system evidence fail closed.
+    """
+    if not raw.endswith(b'\n') or len(raw) > MAX_BYTES:
+        return False
+    try:
+        decoder = codecs.getincrementaldecoder('utf-8')()
+        for start in range(0, len(raw), 8192):
+            decoder.decode(raw[start:start + 8192], final=start + 8192 >= len(raw))
+        parts: list[bytes] = []
+        offset = size = 0
+        while offset < len(raw):
+            start = raw.find(b'"', offset)
+            if start < 0:
+                parts.append(raw[offset:])
+                size += len(raw) - offset
+                break
+            end = start + 1
+            while end < len(raw):
+                byte = raw[end]
+                if byte == 34:
+                    break
+                if byte < 32:
+                    return False
+                if byte == 92:
+                    end += 1
+                    if end >= len(raw):
+                        return False
+                    if raw[end] == 117:
+                        if len(raw[end + 1:end + 5]) != 4 or any(
+                                value not in b'0123456789abcdefABCDEF' for value in raw[end + 1:end + 5]):
+                            return False
+                        end += 4
+                    elif raw[end] not in b'"\\/bfnrt':
+                        return False
+                end += 1
+            if end >= len(raw):
+                return False
+            # A bounded scalar may be kept; long strings become empty strings.
+            # Their location/type is still checked below, never treated as proof.
+            token = raw[start:end + 1] if end - start <= 4096 else b'""'
+            parts.extend((raw[offset:start], token))
+            size += start - offset + len(token)
+            if size > MAX_LINE_BYTES:
+                return False
+            offset = end + 1
+        if size > MAX_LINE_BYTES:
+            return False
+
+        def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result = dict(pairs)
+            if len(result) != len(pairs):
+                raise ValueError('Duplicate historical metadata')
+            return result
+
+        row = json.loads(b''.join(parts), object_pairs_hook=unique)
+        allowed = {'parentUuid', 'isSidechain', 'promptId', 'type', 'message', 'uuid', 'timestamp',
+                   'origin', 'turnOrigin', 'turnPosition', 'userType', 'entrypoint', 'cwd', 'sessionId',
+                   'version', 'gitBranch', 'isMeta', 'turnCompanion', 'promptSource'}
+        if (not isinstance(row, dict) or set(row) - allowed or row.get('type') != 'user'
+                or row.get('sessionId') != parent or row.get('isSidechain') is not False
+                or row.get('origin') not in (None, {'kind': 'human'})
+                or row.get('turnOrigin') not in (None, 'human')
+                or row.get('promptSource') not in (None, 'user', 'typed')):
+            return False
+        message = row.get('message')
+        if not isinstance(message, dict) or set(message) != {'role', 'content'} or message['role'] != 'user':
+            return False
+        content = message['content']
+        return isinstance(content, str) or (isinstance(content, list) and 0 < len(content) <= 64
+            and all(isinstance(item, dict) and set(item) == {'type', 'text'}
+                    and item['type'] == 'text' and isinstance(item['text'], str) for item in content))
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return False
+
+
 def _scan(fd: int, path: Path, start: int, watermark: int, budget: ReadBudget,
-          accept: Any) -> int:
+          accept: Any, *, history_parent: str | None = None) -> int:
     """Visit complete records; never advance past an incomplete trailing line."""
     if budget.records_read >= budget.max_records:
         return start
@@ -336,7 +427,12 @@ def _scan(fd: int, path: Path, start: int, watermark: int, budget: ReadBudget,
         if budget.records_read >= budget.max_records:
             break
         if len(line) > MAX_LINE_BYTES:
-            raise ValueError("Native record exceeds byte bound")
+            if history_parent is not None and _historical_text(line, history_parent):
+                budget.record()
+                offset += len(line)
+                continue
+            raise _RecordLimit(f'Native record at byte {offset} exceeds the {MAX_LINE_BYTES}-byte evidence limit; '
+                               'it cannot be verified as complete unrelated text-only history within this read budget.')
         if not line.endswith(b"\n"):
             break
         if not budget.record():
@@ -364,7 +460,7 @@ def select_source(parent: str, event: Mapping[str, Any], *, automatic: bool = Fa
         return _answer("unsupported", "Native no-follow transcript reads are unavailable")
     if (automatic is not True or event.get("session_id") != parent
             or event.get("agent_id") not in (None, "", parent)
-            or event.get("hook_event_name") not in {"SessionStart", "PreToolUse", "PostToolUse"}):
+            or event.get("hook_event_name") not in {"SessionStart", "PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"}):
         return _answer("conflict", "Transcript source requires an automatic root hook")
     try:
         path = _source_path(parent, event.get("transcript_path"))
@@ -405,6 +501,8 @@ def select_source(parent: str, event: Mapping[str, Any], *, automatic: bool = Fa
                            watermark=info.st_size, budget=budget.report())
     except FileNotFoundError:
         return _answer("not_yet_available", "Selected root transcript is not readable yet", budget=budget.report())
+    except _RecordLimit as exc:
+        return _answer('unsupported', str(exc), budget=budget.report())
     except (OSError, ValueError, TypeError, UnicodeError, KeyError):
         return _answer("conflict", "Root transcript source is unsafe, foreign or changed", budget=budget.report())
 
@@ -479,7 +577,7 @@ def preflight_launch(parent: str, attempt: Mapping[str, Any], event: Mapping[str
                         continue
                     if (item.get('name') != (event.get('tool_name') or event.get('tool'))
                             or not isinstance(item.get('input'), Mapping)
-                            or digest(item['input']) != digest(event['tool_input'])
+                            or not _call_input_matches(_projection(row, 'call', item), digest(event['tool_input']))
                             or row.get('sessionId') != parent or row.get('cwd') != attempt.get('workspace')
                             or row.get('isSidechain') is True
                             or not _stamp(attempt.get('prepared_at')) <= _stamp(row.get('timestamp'))
@@ -487,7 +585,7 @@ def preflight_launch(parent: str, attempt: Mapping[str, Any], event: Mapping[str
                         problems.append('Native call differs from prepared hook input or lineage')
                     calls[digest(row)] = ref
 
-            end = _scan(stream.fileno(), path, offset, info.st_size, budget, accept)
+            end = _scan(stream.fileno(), path, offset, info.st_size, budget, accept, history_parent=parent)
             if result_reference:
                 raise ValueError('The unadmitted launch already has a native result')
             if end != info.st_size:
@@ -505,6 +603,8 @@ def preflight_launch(parent: str, attempt: Mapping[str, Any], event: Mapping[str
                            reference=next(iter(calls.values())))
     except FileNotFoundError:
         return _answer('not_yet_available', 'Prepared native transcript is not readable')
+    except _RecordLimit as exc:
+        return _answer('unsupported', str(exc))
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, OverflowError) as exc:
         return _answer('conflict', str(exc) if isinstance(exc, ValueError) else
                        'Prepared native transcript cannot be verified',
@@ -515,6 +615,42 @@ def preflight_launch(parent: str, attempt: Mapping[str, Any], event: Mapping[str
 def _scalar(value: Any, limit: int = 4096) -> Any:
     # Malformed fields must not turn cached projections into prompt storage.
     return value if value is None or type(value) is bool or isinstance(value, str) and len(value) <= limit else None
+
+
+def _fork_input_transform(row: Mapping[str, Any], item: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Keep the exact observed 2.1.296 fork-schema conversion as separate proof.
+
+    This host can retain the obsolete string flag in its native model call but
+    omit it from the automatic hook input. Only removing that exact field may
+    reproduce the already admitted digest; prompt and all other arguments stay
+    byte-equivalent under the existing canonical hash. No arbitrary coercion.
+    """
+    args, message = item.get('input'), row.get('message')
+    if (row.get('version') != '2.1.296' or row.get('type') != 'assistant'
+            or row.get('isSidechain') is not False or not isinstance(message, Mapping)
+            or message.get('role') != 'assistant' or item.get('name') != 'Agent'
+            or not isinstance(args, Mapping) or args.get('run_in_background') != 'true'
+            or set(args) - {'description', 'subagent_type', 'prompt', 'model', 'run_in_background'}
+            or not all(isinstance(args.get(key), str) and args[key]
+                       for key in ('description', 'subagent_type', 'prompt'))):
+        return None
+    return {'schema': 'taskplane.claude-fork-input-transform/v1', 'host_version': '2.1.296',
+            'omitted_field': 'run_in_background', 'native_input_digest': digest(args),
+            'hook_input_digest': digest({key: value for key, value in args.items() if key != 'run_in_background'})}
+
+
+def _call_input_matches(call: Mapping[str, Any], expected: Any) -> bool:
+    if not isinstance(expected, str) or not _SHA.fullmatch(expected):
+        return False
+    if call.get('input_digest') == expected:
+        return True
+    transform = call.get('input_transform')
+    return (isinstance(transform, Mapping)
+            and transform.get('schema') == 'taskplane.claude-fork-input-transform/v1'
+            and transform.get('host_version') == '2.1.296'
+            and transform.get('omitted_field') == 'run_in_background'
+            and transform.get('native_input_digest') == call.get('input_digest')
+            and transform.get('hook_input_digest') == expected)
 
 
 def _projection(row: Mapping[str, Any], role: str, item: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -532,7 +668,8 @@ def _projection(row: Mapping[str, Any], role: str, item: Mapping[str, Any] | Non
         result.update(name=_scalar(item.get("name"), 200),
                       agent_type=_scalar(item.get('input', {}).get('subagent_type'), 200)
                       if isinstance(item.get('input'), Mapping) else None,
-                      input_digest=digest(item["input"]) if isinstance(item.get("input"), Mapping) else None)
+                      input_digest=digest(item["input"]) if isinstance(item.get("input"), Mapping) else None,
+                      input_transform=_fork_input_transform(row, item))
     elif role == "result":
         assert item is not None
         structured = row.get("toolUseResult")
@@ -628,6 +765,14 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
     collapse distinct literal entity text. Never retain the answer body.
     """
     origin = {'kind': 'task-notification', 'producer': 'session-task'}
+    supplied_origin = row.get('origin')
+    # 2.1.296 adds an opaque delivery-run ID to this native system envelope.
+    # Keep its bytes in the record hash; it neither grants authority nor names
+    # the Taskplane run. All existing source/actor/call/child checks still apply.
+    current_origin = (row.get('version') == '2.1.296' and isinstance(supplied_origin, Mapping)
+        and set(supplied_origin) == {'kind', 'producer', 'runId'}
+        and all(supplied_origin.get(key) == value for key, value in origin.items())
+        and isinstance(supplied_origin.get('runId'), str) and bool(_ID.fullmatch(supplied_origin['runId'])))
     if row.get('type') == 'user':
         # Claude 2.1.290 can persist the delivered system event as a
         # transcript-only user row without turnOrigin. Require its complete
@@ -636,7 +781,7 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
             and row.get('queueSkipAttachments') is True and row.get('queueTranscriptOnly') is True
             and all(isinstance(row.get(key), str) and _UUID.fullmatch(row[key])
                     for key in ('uuid', 'promptId')))
-        if (row.get('origin') != origin or row.get('promptSource') != 'system'
+        if (not (supplied_origin == origin or current_origin) or row.get('promptSource') != 'system'
                 or not (row.get('turnOrigin') == 'task_notification' or transcript_only)):
             return None
         message = row.get('message')
@@ -822,7 +967,7 @@ def _correlate(parent: str, attempt: Mapping[str, Any], entry: Mapping[str, Any]
         return _answer("not_yet_available", "Exact native launch call/result is not readable")
     call, result = (entry[role][0]["projection"] for role in ("call", "result"))
     workspace = attempt.get("workspace")
-    if (call["name"] not in {"Agent", "Task"} or call["input_digest"] != attempt.get("dispatch_digest")
+    if (call["name"] not in {"Agent", "Task"} or not _call_input_matches(call, attempt.get("dispatch_digest"))
             or any(row["sessionId"] != parent or row["cwd"] != workspace
             or row["isSidechain"] is True for row in (call, result))):
         return _answer("conflict", "Native launch disagrees with admitted parent, workspace or arguments")
@@ -1005,7 +1150,7 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                 raise ValueError('Private legacy reobservation requires its dedicated API')
             # Older parsers may have scanned past a supported transcript-only
             # event. Re-scan once, preserving and revalidating pinned evidence.
-            if 'notification_version' not in state:
+            if 'notification_version' not in state or type(state['notification_version']) is int and state['notification_version'] == 2:
                 state['notification_version'] = NOTIFICATION_VERSION
                 state['offset'] = 0
             elif (type(state['notification_version']) is not int
@@ -1104,7 +1249,8 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                             if type(admission) is not int or admission < 0 or ref["offset"] < admission:
                                 entry["conflict"] = entry.get("conflict") or "Native launch predates its admission watermark"
                             _retain(entry, role, _projection(row, role, item), ref)
-            state["offset"] = _scan(stream.fileno(), path, state["offset"], state["watermark"], budget, retain)
+            state["offset"] = _scan(stream.fileno(), path, state["offset"], state["watermark"], budget, retain,
+                                    history_parent=parent)
             complete = state["offset"] == state["watermark"] and state["watermark"] == info.st_size
             for key, attempt in rotated:
                 entry = state["entries"][key]
@@ -1126,6 +1272,9 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                                 _scan(child.fileno(), child_path, 0, min(child_info.st_size, MAX_LINE_BYTES + 1), budget, header)
                         except FileNotFoundError:
                             pass
+                        except _RecordLimit as exc:
+                            answers[key] = _answer('unsupported', str(exc))
+                            continue
                         except (OSError, ValueError, TypeError, UnicodeError):
                             entry["conflict"] = "Native child header is unsafe or malformed"
                 answer = _correlate(parent, attempt, entry)
@@ -1174,6 +1323,8 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
         return finish()
     except FileNotFoundError:
         return finish("not_yet_available", "Selected native transcript is unavailable")
+    except _RecordLimit as exc:
+        return finish('unsupported', str(exc))
     except (OSError, ValueError, TypeError, UnicodeError, KeyError, IndexError):
         return finish("conflict", "Native transcript source or cursor is unsafe, malformed or changed")
 

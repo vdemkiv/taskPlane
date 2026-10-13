@@ -1,5 +1,28 @@
 # taskplane changelog
 
+## v2.33.9 — Bounded approval history and weekly host checks
+
+- Read Claude approvals backward in bounded chunks, stopping at the latest human reply and its preceding checkpoint presentation. Large earlier history no longer blocks a complete recent decision; preserve both original records, hashes, IDs and chronology.
+- Distinguish incomplete writes, reader capacity and malformed evidence. Never skip an oversized recent decision/presentation, substitute an older human response, or accept duplicate JSON keys. Recognize observed typed human history in the worker reader.
+- Include the previously prepared 2.33.8 approval, worker, startup reconciliation and sealed-path protections. Preserve DoR/DoD, required native evidence and every human approval boundary.
+- Add a weekly default-branch GitHub Actions check of official Codex and Claude release notes/docs. Deduplicate source changes in one repository issue and retained reports; label keyword relevance as unverified. No paid API, automatic update, host installation or live-session access.
+- Focused fixtures and package/CI gates are distinct from fresh native acceptance. The running user workflow and installed hooks/settings are not changed by this release.
+
+## v2.33.8 — Claude approval and native worker compatibility
+
+- Package the prepared approval capture and shared approval wording fixes, bounded large-history reader, exact Claude 2.1.296 dispatch/completion correlation, journaled startup reconciliation, and protection for other active runs' sealed artifacts.
+- Preserve required context, native identity, readiness, DoR/DoD, verification and human approval evidence. A new workflow starts normally; reconciliation remains an explicit option for its narrowly supported historical failure.
+- Align Claude and Codex manifests, README and package instructions on 2.33.8. Runtime behavior is byte-identical to the previously checked 2.33.8-claude-recovery.1 candidate.
+- Local packages are unpublished and not installed by this build. Prior focused regressions and isolated native-log replays are retained as evidence; fresh live Claude and Codex acceptance remains unverified.
+
+## v2.33.8-claude-recovery.1 — Local Claude recovery candidate
+
+- Handle bounded oversized unrelated human history and the exact observed Claude 2.1.296 background-call and completion-origin framing, retaining raw proof and strict identity checks.
+- Capture ordinary Claude human approvals automatically from the pinned owning-root transcript with actual message IDs, timestamps and the original checkpoint presentation. Preserve negative decisions despite artifact drift; reject stale, quoted, ambiguous and foreign responses. Recognize `Approve: <checkpoint>` consistently on both hosts.
+- Add journaled `reconcile-startup` for the exact pre-claim history-limit/no-report failure. Preserve phase history, approvals, frozen inputs and historical runtime; permit only a fresh normal attempt after recovery.
+- Guard another active root's sealed manifest paths against ordinary native write admission. Report collisions explicitly; do not claim a durable pause from `flow wait`.
+- This is an unpublished, uninstalled candidate. Focused fixtures and isolated read-only original-log replay do not establish live native acceptance.
+
 ## v2.33.7 — Claude guarded handback correlation
 
 - Join the observed Claude Code 2.1.296 `settings-json` delivery notice only when its unchanged report remainder matches the original automatic handback admission exactly. Retain original and delivered hashes and every child, attempt, acknowledgment, runtime, stop, chronology and pinned-span check.

@@ -982,7 +982,11 @@ def _hook(event: dict[str, Any], *,
                 guarded = controller.report(str(run), diagnostics=False)
             else:
                 return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
-                        "Taskplane: record the actual human response with its presented checkpoint and conversation provenance. This prompt alone has not advanced the workflow."}}
+                        ('Taskplane native approval capture: ' + guarded.get('native_approval_capture', {}).get('reason',
+                         'Waiting for the actual human event and original checkpoint presentation.')
+                         + ' The next automatic root hook will recheck native delivery. Do not ask the user to extract message IDs or repeat an exact phrase.'
+                         if controller.adapter.name == 'claude' else
+                         "Taskplane: record the actual human response with its presented checkpoint and conversation provenance. This prompt alone has not advanced the workflow.")}}
     result: dict[str, Any] = {}
     if name == "PreToolUse" and event.get("taskplane_updated_input") is not None:
         result["hookSpecificOutput"] = {"hookEventName": name, "updatedInput": event["taskplane_updated_input"]}
@@ -1157,7 +1161,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=32768)
     parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
-    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound", "recover-launch-denied", "reconcile-handback"])
+    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound", "recover-launch-denied", "reconcile-handback", "reconcile-startup"])
     parser.add_argument("--invocation-ref", help=argparse.SUPPRESS)
     parser.add_argument("--grant", default="")
     parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")
