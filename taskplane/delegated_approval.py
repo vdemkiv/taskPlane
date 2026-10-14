@@ -18,6 +18,10 @@ POLICY_SCHEMA = "taskplane.approval-policy/v2"
 SCHEMA = "taskplane.delegated-user-observation/v1"
 DECISION_SCHEMA = "taskplane.observed-decision/v3"
 CHECKPOINT_SCHEMA = "taskplane.delegated-checkpoint-observation/v1"
+# Use the same request language for phase targeting and ambiguity detection.
+# An imperative question is still a question, not an already granted approval.
+_QUESTION_REQUEST = (r"(?:^|[.?!]\s+|\n)(?:(?:do|will)\s+you\s+)?"
+                     r"(?:please\s+)?(?:accept|approve)")
 
 
 def _receipt(state: dict[str, Any], relay: Any, schema: str, fields: set[str]) -> None:
@@ -119,7 +123,7 @@ def _adjacent_question(raw: dict[str, Any], question: dict[str, Any],
               and shown["content"].get("text") == question["text"],
               "invalid_evidence", "Ordinary consent must follow the exact original assistant question.")
     # A short answer cannot choose between multiple approval requests or targets.
-    prompts = re.findall(r"\b(?:do you|will you)\s+(?:accept|approve)\b", question["text"], re.IGNORECASE)
+    prompts = re.findall(_QUESTION_REQUEST + r"\b", question["text"], re.IGNORECASE)
     identifiers = re.findall(r"\b[0-9a-f]{32}\b", question["text"].casefold())
     phases = decision_phases(question["text"])
     phase_options = r"\b(?:or|and)\s+(?:(?:this|the)\s+)?(?:" + "|".join(w.PHASES) + r")\b"
@@ -169,10 +173,11 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
     target = {"evaluate": "(?:evaluate|evaluation)", "retro": "(?:retro|retrospective)"}.get(stage["phase"], stage["phase"])
     # Reaction semantics require a direct phase-acceptance question, not approval
     # words somewhere in a generic message, a quoted example or a negative request.
-    clause = r"(?:^|[.?!]\s+|\n)(?:do you|will you) (?:accept|approve) (?:this|the) " + target + r"\b[^?\n]*\?"
+    clause = (_QUESTION_REQUEST + r"\s+(?:this|the)\s+"
+              + target + r"\b[^?\n]*\?")
     match = re.search(clause, question["text"], re.IGNORECASE)
     w.require(match is not None and not re.search(r"\b(?:not|never|if|unless|hypothetical|example|withdraw|cancel)\b", match.group(0), re.IGNORECASE),
-              "invalid_evidence", "The reaction must answer a direct unambiguous acceptance question for this phase.")
+              "invalid_evidence", "The observation must answer a direct unambiguous acceptance question for this phase.")
     w.require(isinstance(owner, dict) and set(owner) == {"user_id", "verified", "reference", "source_thread"}
               and owner["verified"] is True and owner["source_thread"] == relay["source_thread"]
               and isinstance(owner["user_id"], str) and 0 < len(owner["user_id"]) <= 512

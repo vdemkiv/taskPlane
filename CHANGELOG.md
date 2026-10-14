@@ -1,5 +1,11 @@
 # taskplane changelog
 
+## v2.33.10-consent.1 — Local approval recovery candidate (unpublished)
+
+- Recognize imperative and polite scoped acceptance questions in the delegated checkpoint adapter, using the same request grammar for phase targeting and ambiguity detection. Preserve the complete original question, owner reply, source observation, checkpoint binding and replay protection; Product acceptance does not accept Design or enable automatic approval.
+- Retain ordinary reaction instructions without counting them as a second approval request. Add focused Codex/Claude adapter regressions for the reported Product question, original evidence preservation, next-phase gating and ambiguous, conditional, unrelated or foreign consent.
+- This source candidate includes the prior compatibility candidate. Fixture tests and read-only validation of relayed evidence do not claim live-host activation. Installed components and sealed workflows are unchanged.
+
 ## v2.33.10-compat.1 — Local compatibility candidate (unpublished)
 
 - Join the captured Claude 2.1.296 ordinary-stop-before-handback sequence only with exact original admission, runtime, acknowledgment, peer delivery and native completion proof. Preserve every original record and journal the join; result acceptance remains separate.
