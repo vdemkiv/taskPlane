@@ -97,7 +97,7 @@ that the handback tool is exposed. No feature flag is forced by this harness.
 
 ## Guarded report reconciliation
 
-The local 2.33.10-compat.1 candidate also handles the observed Claude 2.1.296
+The 2.33.10 release also handles the observed Claude 2.1.296
 sequence: ordinary final text, automatic `SubagentStop`, admitted handback,
 native peer report, exact automatic acknowledgment, then native completion
 redirect. This host sequence has no second textless stop. Its interim text is

@@ -1,7 +1,11 @@
-# Validate the 2.33.10-compat.1 local packages
+# Validate the 2.33.10 release artifacts
 
-This unpublished candidate targets Claude's stop-before-handback completion join
-and explicit native read/heartbeat guards. See [reconciliation](claude-interactive-recovery.md)
+Version 2.33.10 consolidates scoped consent, lost-state import, Claude's
+stop-before-handback completion join and explicit native read/heartbeat guards.
+Use artifacts from the normal PR/release CI pipeline and follow the
+[complete backup and restart procedure](state-import-and-release.md). Local
+packages do not replace release CI or authorize installation.
+See [reconciliation](claude-interactive-recovery.md)
 and [tool scope](host-compatibility-watch.md). Scope declarations are normal frozen
 start inputs, not a new approval mechanism. The captured incident fixture removes
 private report text and paths; its timestamps and report/native record hashes

@@ -746,6 +746,11 @@ class Controller:
                 s["evidence_drift"] = {"visit": changed[0], "reason": changed[1]}
             details = {**self.adapter.decorate(s),
                        "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace)} if diagnostics else {}
+            if diagnostics and self.adapter.profile == "native_workflow":
+                from . import state_import
+                recovered = state_import.record(self.workspace, self.root)
+                if recovered:
+                    details["state_import"] = recovered
             return {**s, **self.availability(), **details, "phase": w.current(s)["phase"], "archived": archived,
                     "pending_checkpoint": w.binding(s, w.current(s)["packet"])
                         if not s.get("superseded_by") and not s.get("retired") and w.current(s)["decision"] == "awaiting_human_approval" else None,

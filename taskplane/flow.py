@@ -797,7 +797,9 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
     options = [value for value in options if value != '--full']
     required = {'--workspace'}
     if words[3] == 'recover':
-        required |= {'--recover-from', '--expected-sha256', '--run', '--expected-revision', '--request-reference'}
+        required |= ({'--recovery-request', '--expected-sha256', '--recovery-mode'}
+                     if '--recovery-request' in options else
+                     {'--recover-from', '--expected-sha256', '--run', '--expected-revision', '--request-reference'})
     if len(options) != len(required) * 2 or set(options[::2]) != required:
         return False
     values = dict(zip(options[::2], options[1::2]))
@@ -1197,7 +1199,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--expected-revision", type=int)
     parser.add_argument("--replace-run", help="Explicitly replace this active native run, preserving its evidence; start only")
     parser.add_argument("--recover-from", help="Exact adjacent numbered workflow copy; recover only")
-    parser.add_argument("--expected-sha256", help="Expected recovery copy SHA-256; recover only")
+    parser.add_argument("--expected-sha256", help="Expected recovery copy or import request SHA-256")
+    parser.add_argument("--recovery-request", help="Absolute hash-pinned state import request file")
+    parser.add_argument("--recovery-mode", choices=["inspect", "apply"], help="Preview or apply a same-root state import")
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -1208,8 +1212,14 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     args = parser.parse_args(arguments)
     if args.action != 'resume' and (args.resume_mode is not None or args.resume_json is not None):
         parser.error('resume options apply only to flow resume')
-    if args.action != 'recover' and (args.recover_from is not None or args.expected_sha256 is not None):
+    if args.action != 'recover' and args.recover_from is not None:
+        parser.error('--recover-from applies only to flow recover')
+    if args.action != 'recover' and (args.expected_sha256 is not None or args.recovery_request is not None or args.recovery_mode is not None):
         parser.error('recovery options apply only to flow recover')
+    if args.recovery_request is not None and (args.recover_from is not None or args.run is not None or args.expected_revision is not None):
+        parser.error('select a pinned import request or an adjacent numbered copy, not both')
+    if args.recovery_mode is not None and args.recovery_request is None:
+        parser.error('--recovery-mode requires --recovery-request')
     if args.task is not None and args.action not in {"context", "worker"}:
         parser.error("--task applies to context or worker")
     if any(value is not None for value in (args.consume, args.read, args.read_required, args.drain, args.section, args.page)) and args.action != "context":
@@ -1277,9 +1287,15 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             workflow.require(not observed_parent({}, session) or independent_fork({}, session),
                              'scope_violation', 'Native children cannot restore workflow state.')
             controller = governor or _controller(workspace, session, args.profile)
-            recovery_result = controller.recover_initialization(args.recover_from or '', args.expected_sha256 or '',
-                        args.run or '', args.expected_revision, args.request_reference)
-            show(recovery_result)
+            if args.recovery_request is not None:
+                from . import state_import
+                imported = state_import.recover(controller, args.recovery_request, args.expected_sha256 or '',
+                                                mode=args.recovery_mode or 'inspect')
+                print(json.dumps(imported))  # Preview creates no derived state or historical events.
+            else:
+                recovery_result = controller.recover_initialization(args.recover_from or '', args.expected_sha256 or '',
+                            args.run or '', args.expected_revision, args.request_reference)
+                show(recovery_result)
             return 0
         if args.action == "diagnose":
             diagnostics = workflow_local.diagnose(workspace)

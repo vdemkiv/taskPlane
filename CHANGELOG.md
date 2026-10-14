@@ -1,16 +1,13 @@
 # taskplane changelog
 
-## v2.33.10-consent.1 — Local approval recovery candidate (unpublished)
+## v2.33.10 — Scoped consent and state recovery
 
-- Recognize imperative and polite scoped acceptance questions in the delegated checkpoint adapter, using the same request grammar for phase targeting and ambiguity detection. Preserve the complete original question, owner reply, source observation, checkpoint binding and replay protection; Product acceptance does not accept Design or enable automatic approval.
-- Retain ordinary reaction instructions without counting them as a second approval request. Add focused Codex/Claude adapter regressions for the reported Product question, original evidence preservation, next-phase gating and ambiguous, conditional, unrelated or foreign consent.
-- This source candidate includes the prior compatibility candidate. Fixture tests and read-only validation of relayed evidence do not claim live-host activation. Installed components and sealed workflows are unchanged.
-
-## v2.33.10-compat.1 — Local compatibility candidate (unpublished)
-
-- Join the captured Claude 2.1.296 ordinary-stop-before-handback sequence only with exact original admission, runtime, acknowledgment, peer delivery and native completion proof. Preserve every original record and journal the join; result acceptance remains separate.
-- Add explicit scoped native web readers for Codex and Claude, the captured Codex GitHub issue-reader schema, and a separately scoped root-only Codex heartbeat create. Unknown tools, schema extensions, other targets, workers and duplicate creation attempts remain denied.
-- Keep scope declarations at initialization, existing phase approval boundaries and host permissions. This candidate neither installs hooks nor widens an active run's scope. Fixture tests and captured-evidence replay are not fresh installed-host acceptance.
+- Recognize natural imperative/polite Product approval questions without rewriting original evidence or approving later phases. Preserve owner, chronology, ambiguity and replay checks.
+- Import a quiescent pending Product checkpoint after loss of ignored local state, using a pinned original controller, all sealed artifacts and the existing scoped approval observation. Preview writes no state; application preserves original bytes, records new recovery provenance, and never invents an old initialization marker, context delivery, hook event or decision. Interrupted imports block fresh initialization and resume only the same verified request.
+- Invalidate old hook readiness and presentation after import. Missing historical context remains explicitly unverified; regenerate derived views and consume fresh context before further work. Include consent and recovery modules in executing-runtime fingerprints.
+- Join the observed Claude ordinary-stop-before-handback ordering only with exact native admission/completion evidence. Recognize explicitly scoped native web readers, the captured Codex GitHub issue reader, and separately scoped root-only heartbeat creation; retain unsupported-host and permission boundaries.
+- Consolidate the prior local compatibility and consent fixes through the regular PR/CI pipeline. Require complete ignored-state backup before approved lifecycle changes, standard CI artifacts, and loaded hook verification after supported restart. This release does not itself install, restart or migrate any active session.
+- Local adapter and package fixtures are distinct from live installed-host validation. The broader criterion-level residual recovery implementation remains separate governed work.
 
 ## v2.33.9 — Bounded approval history and weekly host checks
 

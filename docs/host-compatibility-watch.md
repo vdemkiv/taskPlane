@@ -1,8 +1,8 @@
 # Weekly host compatibility review
 
-## Native review tool scope (local candidate)
+## Native review tool scope
 
-The 2.33.10-compat.1 candidate recognizes the captured Codex hook names
+The 2.33.10 release recognizes the captured Codex hook names
 `webrun`, `mcp__codex_apps__github__fetch_issue`, and
 `mcp__codex_app__automation_update`. A tool name alone does not grant access.
 Declare reads separately from a mutation in the initial run scope. These fields
@@ -53,9 +53,12 @@ scheduler. No scheduling happens through this documentation or package build.
 
 ## Existing GitHub schedule
 
-GitHub Actions runs **Host compatibility watch** every Monday at **14:17 UTC**
-(09:17 Florida standard time / 10:17 daylight time). GitHub may delay scheduled
-runs. It runs only on the default branch and can also be dispatched manually.
+The repository defines **Host compatibility watch** for Mondays at **14:17 UTC**
+(09:17 Florida standard time / 10:17 daylight time). Scheduling requires that
+workflow to be enabled; inspect its actual Actions state before claiming it is
+running. GitHub may delay scheduled runs. When enabled it uses the default branch
+and can also be dispatched manually. A separately configured native watch does
+not prove this GitHub workflow is enabled.
 
 The task reads the official `openai/codex` and `anthropics/claude-code` release
 feeds, the official ChatGPT/Codex changelog, and both hosts' security/permissions,
