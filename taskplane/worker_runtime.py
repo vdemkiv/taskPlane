@@ -936,8 +936,26 @@ def _handback_reports(row: dict[str, Any]) -> list[dict[str, Any]]:
 def _redirect_delivery(state: dict[str, Any], row: dict[str, Any], completed: dict[str, Any],
                        peer: dict[str, Any] | None, stopped: dict[str, Any]) -> dict[str, Any] | None:
     """A redirect is not a report. Join the separate native peer and admitted ack."""
-    if (peer is None or not stopped.get('textless') or stopped.get('agent_type') != peer.get('agent_type')
-            or stopped.get('runtime') != row.get('expected_runtime')):
+    if peer is None:
+        return None
+    textless = (stopped.get('textless') is True
+        and stopped.get('agent_type') == peer.get('agent_type')
+        and stopped.get('runtime') == row.get('expected_runtime'))
+    # Claude 2.1.296 can stop ordinary final text before forcing handback. The
+    # later native redirect, exact admission and acknowledgment prove delivery;
+    # the interim text is never substituted for the report or a textless stop.
+    source = row.get('transcript_source', {})
+    pre_handback = (peer.get('host_version') == completed.get('host_version') == '2.1.296'
+        and 'textless' not in stopped and 'runtime' not in stopped and 'agent_type' not in stopped
+        and stopped.get('event') == 'SubagentStop' and stopped.get('status') == 'stopped'
+        and stopped.get('parent') == state['root'] and stopped.get('worker_id') == row['worker_id']
+        and stopped.get('call_id') in (None, row['call_id'])
+        and stopped.get('transcript_path') == source.get('path')
+        and stopped.get('agent_transcript_path') == str(Path(source.get('path', '')).with_suffix('')
+            / 'subagents' / ('agent-' + row['worker_id'] + '.jsonl'))
+        and all(isinstance(stopped.get(key), str) and re.fullmatch(r'[a-f0-9]{64}', stopped[key])
+                for key in ('body_digest', 'notification_body_digest', 'event_id')))
+    if not (textless or pre_handback):
         return None
     reports = []
     for report in _handback_reports(row):
@@ -975,14 +993,20 @@ def _redirect_delivery(state: dict[str, Any], row: dict[str, Any], completed: di
             # timelines. A completion retains its enqueue time while the peer
             # can flush later; their validated transcript spans order delivery.
             observed_now = datetime.now(timezone.utc)
-            if not (stamp(report['admitted_at']) <= stamp(peer['timestamp']) <= observed_now
+            sequence = (stamp(report['admitted_at']) <= stamp(ack['observed_at']) <= stamp(stopped['observed_at'])
+                        if textless else
+                        stamp(row['started_at']) <= stamp(stopped['observed_at']) < stamp(report['admitted_at'])
+                        <= stamp(ack['observed_at']) <= stamp(completed['timestamp']))
+            if not (sequence and stamp(report['admitted_at']) <= stamp(peer['timestamp']) <= observed_now
                     and stamp(stopped['observed_at']) <= stamp(completed['timestamp']) <= observed_now
-                    and stamp(report['admitted_at']) <= stamp(ack['observed_at']) <= stamp(stopped['observed_at'])
                     and peer['reference']['offset'] < completed['reference']['offset']):
                 continue
         except (ValueError, TypeError, KeyError, OverflowError):
             continue
-        reports.append({**report, 'delivery_transform': deepcopy(transform)} if transform else report)
+        joined = {**report, 'delivery_transform': deepcopy(transform)} if transform else report
+        if pre_handback:
+            joined = {**joined, 'completion_sequence': 'claude.stop-before-handback/v1'}
+        reports.append(joined)
     return reports[0] if len(reports) == 1 else None
 
 
@@ -1083,8 +1107,15 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                     'notification': completed, **delivery,
                     'stop_event': stopped['event_id'], 'observed_at': now()}
                 row['handback_reconciliation'] = {'status': 'joined',
-                    'delivery_transform': report.get('delivery_transform', {}).get('schema') if report else None}
+                    'delivery_transform': report.get('delivery_transform', {}).get('schema') if report else None,
+                    **({'completion_sequence': report['completion_sequence']} if report and report.get('completion_sequence') else {})}
                 row['stop_observation'] = stopped
+                if report and report.get('completion_sequence'):
+                    _audit(row, 'stop_before_handback_joined', {
+                        'sequence': report['completion_sequence'], 'stop_event': stopped['event_id'],
+                        'notification': completed['record_sha256'],
+                        'peer': observation['peer_handback']['record_sha256'],
+                        'admission': digest(row['handback_call'])})
                 if unsuccessful:
                     _audit(row, 'unsuccessful_completion', {'notification': completed['record_sha256'],
                         'stop_event': stopped['event_id'], 'status': row['handback']['status']})

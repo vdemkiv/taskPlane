@@ -89,7 +89,7 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
     files.update(ROOT / "docs" / name for name in
                  ("cli-reference.md", "lens-catalog.md", "onboarding.md", "workflow-builder.md",
                   "claude-worker-recovery.md", "claude-interactive-recovery.md", "test-candidate.md",
-                  "host-compatibility-watch.md"))
+                  "host-compatibility-watch.md", "state-import-and-release.md"))
     files.add(ROOT / "scripts" / "verify_claude_workers.py")
     files.add(ROOT / "scripts" / "verify_claude_interactive.py")
     files.update(ROOT / "workflows" / name for name in

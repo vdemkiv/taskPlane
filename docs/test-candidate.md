@@ -1,4 +1,22 @@
-# Validate the 2.33.9 local packages
+# Validate the 2.33.10 release artifacts
+
+Version 2.33.10 consolidates scoped consent, lost-state import, Claude's
+stop-before-handback completion join and explicit native read/heartbeat guards.
+Use artifacts from the normal PR/release CI pipeline and follow the
+[complete backup and restart procedure](state-import-and-release.md). Local
+packages do not replace release CI or authorize installation.
+See [reconciliation](claude-interactive-recovery.md)
+and [tool scope](host-compatibility-watch.md). Scope declarations are normal frozen
+start inputs, not a new approval mechanism. The captured incident fixture removes
+private report text and paths; its timestamps and report/native record hashes
+remain exact. Local synthetic tests and guarded replay of captured original
+evidence are separate from live installation and fresh native smoke tests.
+
+No installation, running session, controller, permission or schedule is changed
+by preparing these packages. Activation and any production recovery require their
+own explicit authorization. Retain the existing installations and original proof.
+
+## Prior 2.33.9 validation context
 
 This release adds bounded backward approval reading that stops before unrelated old history,
 explicit capacity outcomes, and a [weekly official-source host watch](host-compatibility-watch.md).
@@ -75,15 +93,16 @@ they are not fixtures to rewrite or reset.
 
 ## Packages and source identity
 
-Build from the checkout selected for validation:
+Use the standard CI artifact for the reviewed release commit. The commands below
+are optional local reproducibility checks from that same source checkout:
 
 ```sh
 python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.9.plugin` (Claude) and
-`dist/taskplane-2.33.9-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.10.plugin` (Claude) and
+`dist/taskplane-2.33.10-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -94,13 +113,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.9.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.9-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.10.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.10-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.9` and `ok: true`.
+Both commands should report `2.33.10` and `ok: true`.
 
 ## Local regression and exact archive checks
 

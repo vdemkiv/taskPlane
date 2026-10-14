@@ -1,5 +1,15 @@
 # taskplane changelog
 
+## v2.33.10 — Scoped consent and state recovery
+
+- Recognize natural imperative/polite Product approval questions without rewriting original evidence or approving later phases. Preserve owner, chronology, ambiguity and replay checks.
+- Import a quiescent pending Product checkpoint after loss of ignored local state, using a pinned original controller, all sealed artifacts and the existing scoped approval observation. Preview writes no state; application preserves original bytes, records new recovery provenance, and never invents an old initialization marker, context delivery, hook event or decision. Interrupted imports block fresh initialization and resume only the same verified request.
+- Recheck retained request, controller and approval hashes on normal access. Refuse malformed bindings, oversized receipts and unsupported normalized task manifests before they can become an unreadable recovery store.
+- Invalidate old hook readiness and presentation after import. Missing historical context remains explicitly unverified; regenerate derived views and consume fresh context before further work. Include consent and recovery modules in executing-runtime fingerprints.
+- Join the observed Claude ordinary-stop-before-handback ordering only with exact native admission/completion evidence. Recognize explicitly scoped native web readers, the captured Codex GitHub issue reader, and separately scoped root-only heartbeat creation; retain unsupported-host and permission boundaries.
+- Consolidate the prior local compatibility and consent fixes through the regular PR/CI pipeline. Require complete ignored-state backup before approved lifecycle changes, standard CI artifacts, and loaded hook verification after supported restart. This release does not itself install, restart or migrate any active session.
+- Local adapter and package fixtures are distinct from live installed-host validation. The broader criterion-level residual recovery implementation remains separate governed work.
+
 ## v2.33.9 — Bounded approval history and weekly host checks
 
 - Read Claude approvals backward in bounded chunks, stopping at the latest human reply and its preceding checkpoint presentation. Large earlier history no longer blocks a complete recent decision; preserve both original records, hashes, IDs and chronology.

@@ -17,10 +17,10 @@ python -m pytest taskplane/tests -q                    # run from the repo ROOT 
 python -m unittest taskplane.tests.test_runner_isolation.TestUnittestRunnerIsolation -v
 ```
 
-CI (`.github/workflows/ci.yml`) runs the authoritative suite on Python 3.12,
-focused compatibility boundaries on Python 3.10/3.11, and one `unittest`
-store-isolation canary. Pytest owns the test suite; CI does not execute it a
-second time through partial `unittest discover` collection.
+CI (`.github/workflows/ci.yml`) runs the authoritative suite on Python 3.12
+and compile/help checks on Python 3.10/3.11/3.13. The `unittest` store-isolation
+canary above is a separate local check. Pytest owns the CI test suite; CI does not
+execute it a second time through partial `unittest discover` collection.
 
 ## Ground rules
 

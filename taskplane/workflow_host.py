@@ -746,6 +746,11 @@ class Controller:
                 s["evidence_drift"] = {"visit": changed[0], "reason": changed[1]}
             details = {**self.adapter.decorate(s),
                        "storage": workflow_retention.capacity(db, workflow_local.MAX_BYTES, self.workspace)} if diagnostics else {}
+            if diagnostics and self.adapter.profile == "native_workflow":
+                from . import state_import
+                recovered = state_import.record(self.workspace, self.root)
+                if recovered:
+                    details["state_import"] = recovered
             return {**s, **self.availability(), **details, "phase": w.current(s)["phase"], "archived": archived,
                     "pending_checkpoint": w.binding(s, w.current(s)["packet"])
                         if not s.get("superseded_by") and not s.get("retired") and w.current(s)["decision"] == "awaiting_human_approval" else None,
@@ -1406,7 +1411,7 @@ class Controller:
                     self._write(target, db)
                 raise
             # Commit mandatory admission before returning permission to the host.
-            for key in ("workers", "worker_sequence", "worker_polls", "worker_controls"):
+            for key in ("workers", "worker_sequence", "worker_polls", "worker_controls", "native_automation_dispatch"):
                 if key in state:
                     candidate[key] = state[key]
             admission = self._admission(db, event, candidate, "phase_grant")
@@ -1635,6 +1640,10 @@ class Controller:
                             str(Path(value).relative_to(self.workspace)) if Path(value).is_absolute() and Path(value).is_relative_to(self.workspace) else value)
                 evidence.path(self.workspace, relative)
             return
+        from . import native_tool_guard
+        if self.adapter.profile == 'native_workflow' and native_tool_guard.read(
+                str(tool), args, self.adapter.name, state, root=worker is None):
+            return
         if worker is None and tool in ("Bash", "exec_command") and self.adapter.control_action(event, state):
             return
         if worker is None and self.adapter.profile == "native_workflow":
@@ -1657,6 +1666,10 @@ class Controller:
                   "Evidence drift must revoke the prior phase grant before further writes.")
         w.require(stage["decision"] in ("not_requested", "changes_requested", "rejected", "stale"),
                   "approval_required", "Current output is sealed; resolve the human checkpoint before writing.")
+        if self.adapter.profile == 'native_workflow' and tool == native_tool_guard.AUTOMATION:
+            self.adapter.before_action(state, 'native-automation')
+            if native_tool_guard.automation(event, self.adapter.name, state, root=worker is None):
+                return
         allowed = worker["paths"] if worker else state["scope"]["paths"][stage["phase"]]
         if self.adapter.profile == 'native_workflow':
             from .workflow_collision import sealed_paths

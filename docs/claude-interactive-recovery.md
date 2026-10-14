@@ -97,6 +97,23 @@ that the handback tool is exposed. No feature flag is forced by this harness.
 
 ## Guarded report reconciliation
 
+The 2.33.10 release also handles the observed Claude 2.1.296
+sequence: ordinary final text, automatic `SubagentStop`, admitted handback,
+native peer report, exact automatic acknowledgment, then native completion
+redirect. This host sequence has no second textless stop. Its interim text is
+never accepted as the report. Both delivered records must identify 2.1.296;
+the original stop identity/paths, launch, current binding, report/input digests,
+admission and acknowledgment runtime, and both timelines must agree. Unknown
+versions or contradictory proof remain blocked. A later resumed call's no-report
+notification cannot replace the original launch's verified completion.
+
+Use the same `reconcile-handback` operation below. A successful join records
+`stop_before_handback_joined` with the original stop, peer, completion and
+admission digests, and leaves `result_pending`. Do not resend a completed
+handback, rewrite its timestamps, invent a textless stop or accept its output
+without the existing independent checks. Runtime upgrades do not rewrite the
+historical worker runtime identity or approval records.
+
 Claude Code 2.1.296 can prepend its exact `settings-json` harness notice to a
 delivered peer report. An observed native completion had an intact admitted
 report after that notice; exact equality with the delivered text previously

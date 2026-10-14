@@ -334,6 +334,11 @@ does not accept any future phase.
 
 ### Recover a displaced workflow database
 
+If archival removed the original initialization metadata as well, the bounded
+[`flow recover --recovery-request` procedure](state-import-and-release.md) can import an original
+unapproved Product checkpoint from verified backups with explicit new provenance.
+It does not fabricate a marker, historical context delivery or phase approval.
+
 `flow diagnose --workspace PATH` returns bounded diagnostic details even in compact
 mode, including the expected database and initialization-marker filenames and
 whether each exists. An exact installed diagnosis command remains admitted when
@@ -1324,6 +1329,10 @@ source observations, not independently authenticated identities.
 
 The original question retains message_id, channel, full text, sent_at, phase and
 binding. It must directly ask whether the user accepts or approves that phase.
+Imperative questions such as “Approve this Product scope to proceed to Design?”
+and polite forms such as “Please approve this Product scope?” have the same
+current-checkpoint meaning as “Do you approve this Product scope?”. Preserve the
+original question unchanged; mentioning the next phase does not approve it.
 Owner verification retains user_id, verified=true, reference and source_thread.
 The observation retains kind (`owner_reaction` or `owner_text`), method, observed_at,
 precision (`second` or `minute`), current=true, complete_message=true and the entire

@@ -1,5 +1,10 @@
 # Taskplane onboarding
 
+For upgrades or lost ignored state, follow the [release and recovery procedure](state-import-and-release.md).
+Back up the complete workspace, including `.taskplane/`, before approved lifecycle
+changes. Archiving a managed task/worktree can omit ignored state and must not be
+used as a plugin reload mechanism. Verify actual loaded hooks after supported restart.
+
 Follow [installation and hook trust](../README.md#install-and-run-your-first-task) first. This guide
 matches the current `taskplane/tp.py` CLI. Older references to `tp onboard`, `tp init`,
 inline setup forms, workspace hook launchers, storage-plan migration or consolidated

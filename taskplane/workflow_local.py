@@ -565,6 +565,12 @@ class LocalWorkflow:
         target = self.control_path(self.workspace, self.root)
         marker = storage.runtime_file(str(self.workspace), self.markername)
         transaction = storage.runtime_file(str(self.workspace), "initialization-" + target.stem.removeprefix("workflow-") + ".json")
+        from . import state_import
+        imported = state_import.initialization(self.workspace, self.root)
+        if imported is not None:
+            w.require(target.exists() and not marker.exists() and not transaction.exists(), "state_unavailable",
+                      "Imported store must retain its recovery receipt without fabricated initialization metadata.")
+            return target, marker, transaction, None
         data = None
         if transaction.exists():
             w.require(transaction.stat().st_size <= 4096, "state_unavailable", "Initialization transaction is oversized.")
@@ -1530,7 +1536,7 @@ class Harness:
                 return False
         except (w.Refusal, OSError, ValueError):
             return False
-        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'resume', 'wait'})
+        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'recover', 'resume', 'wait'})
                 or words[2] == 'graph' and 'scan' in words[3:]
                 or words[2:4] == ['review', 'start'])
 
