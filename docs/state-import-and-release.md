@@ -59,7 +59,10 @@ Before any approved lifecycle change:
 unapproved first Product checkpoint, no workers or unresolved admissions, unchanged
 verified source, and no protected-host or explicit relocated-workspace contract.
 It does not silently discard other runs, policies or archives. More complex loss
-needs its own recovery design.
+needs its own recovery design. This bounded import accepts byte-hash artifact
+manifests only; a normalized task-definition artifact requires restoration of the
+complete original store or a separate supported recovery. Receipts over 64 KiB
+are refused during inspection and before publication, preserving retryability.
 
 Prepare a `taskplane.state-import-request/v1` JSON object containing exactly:
 
@@ -87,7 +90,7 @@ same command with `--recovery-mode apply` publishes verified artifacts and a new
 recovery receipt. Conflicting files, symlinks and foreign roots are refused. A
 partial transaction blocks fresh initialization; repeat only the identical request.
 
-The original controller and approval observation are retained verbatim under
+The original request, controller and approval observation are retained verbatim under
 `.taskplane/recovery-v1/<request hash>/`. The active controller preserves its run,
 revision, visits, admissions and decisions; only old parent-hook readiness is
 removed. `state-import-<root key>.json` records new recovery provenance, **not** a
@@ -95,9 +98,14 @@ fabricated historical initialization marker. Original initialization metadata,
 presentation, context deliveries, unretained objects and journal remain labelled
 missing. Root-supplied observations and checksums are cooperative evidence, not
 independent account authentication or host attestation.
+Normal access rechecks the retained evidence hashes without depending on the
+external backup paths. Missing or changed retained provenance blocks continuation.
 
 After import, observe fresh automatic hooks, regenerate and actually present the
 same Product checkpoint, and record the existing approval with `flow decide`.
+Fresh hook verification is an external activation prerequisite; import and direct
+local approval/advance calls do not enforce it. Existing worker dispatch still
+requires current parent readiness. A local adapter test cannot satisfy this gate.
 Import itself does not accept Product. Advance to Design using the resulting
 revision, generate and fully consume fresh required context, and preserve the new
 Design approval boundary. Missing historical receipts are never synthesized or
@@ -114,6 +122,7 @@ treated as fresh context reads. No new Product wording or approval is needed.
 | Unsafe input | Wrong host/root/revision/hash, changed source, missing/conflicting artifacts, symlinks, child callers and unresolved work refuse without changing evidence. |
 | Restart/cache behavior | Installed hashes and a fresh actual automatic hook pair match the same runtime and original task/run; fresh Claude and Codex observations reported separately. |
 
-`test_state_import.py` exercises loss/import and negative boundaries through both
-local adapters, including continuation to fresh Design context. These tests do not
+`test_state_import.py` and `test_state_import_boundaries.py` exercise loss/import,
+complete ignored-store restoration and negative boundaries through both local
+adapters, including continuation to fresh Design context. These tests do not
 certify a real host archive, restart, cache refresh or full live workflow.

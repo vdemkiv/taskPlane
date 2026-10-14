@@ -93,15 +93,16 @@ they are not fixtures to rewrite or reset.
 
 ## Packages and source identity
 
-Build from the checkout selected for validation:
+Use the standard CI artifact for the reviewed release commit. The commands below
+are optional local reproducibility checks from that same source checkout:
 
 ```sh
 python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-The outputs are `dist/taskplane-2.33.9.plugin` (Claude) and
-`dist/taskplane-2.33.9-openai.zip` (Codex). Each has a `.json` sidecar with the
+The outputs are `dist/taskplane-2.33.10.plugin` (Claude) and
+`dist/taskplane-2.33.10-openai.zip` (Codex). Each has a `.json` sidecar with the
 archive SHA-256, source commit, working-tree status and per-member hashes.
 Both sidecars must name the same source commit. A build containing uncommitted
 changes reports `matches_source_commit: false`; its member hashes identify the
@@ -112,13 +113,13 @@ An archive receipt does not establish that a host installed or invoked those byt
 Both archives use ZIP format. Extract into separate new directories:
 
 ```sh
-python3 -m zipfile -e dist/taskplane-2.33.9.plugin /absolute/test/claude
-python3 -m zipfile -e dist/taskplane-2.33.9-openai.zip /absolute/test/codex
+python3 -m zipfile -e dist/taskplane-2.33.10.plugin /absolute/test/claude
+python3 -m zipfile -e dist/taskplane-2.33.10-openai.zip /absolute/test/codex
 python3 /absolute/test/claude/taskplane/tp.py version --verify
 python3 /absolute/test/codex/taskplane/tp.py version --verify
 ```
 
-Both commands should report `2.33.9` and `ok: true`.
+Both commands should report `2.33.10` and `ok: true`.
 
 ## Local regression and exact archive checks
 

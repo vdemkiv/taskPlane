@@ -306,7 +306,7 @@ def test_generated_archives_match_verified_source(tmp_path, request, host):
                 'taskplane/claude_worker_observations.py', 'scripts/verify_claude_workers.py',
                 'scripts/verify_claude_interactive.py',
                 'docs/claude-worker-recovery.md', 'docs/claude-interactive-recovery.md',
-                'docs/test-candidate.md'} <= set(archive.namelist())
+                'docs/test-candidate.md', 'docs/state-import-and-release.md'} <= set(archive.namelist())
         dispatch = archive.read('skills/tp-go/references/codex-native-dispatch.md').decode()
         assert 'operation prepare' in dispatch and 'minimum live acceptance test' in dispatch
         assert 'hooks/hooks.json' in archive.namelist()

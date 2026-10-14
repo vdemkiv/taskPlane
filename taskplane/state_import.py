@@ -23,6 +23,7 @@ from . import delegated_approval, primitives, storage, workflow as w, workflow_e
 SCHEMA = "taskplane.state-import/v1"
 REQUEST = "taskplane.state-import-request/v1"
 LIMIT = 16 * 1024 * 1024
+RECEIPT_LIMIT = 65536
 MISSING = ["original initialization marker and transaction", "original harness and presentation",
            "historical context delivery ledgers and unretained objects", "historical flow journal and dashboards"]
 
@@ -56,11 +57,19 @@ def record(workspace: Path, root: str) -> dict[str, Any] | None:
     path = record_path(workspace, root)
     if not path.exists():
         return None
-    value = json.loads(read_regular(path, 65536))
+    try:
+        value = json.loads(read_regular(path, RECEIPT_LIMIT))
+    except (OSError, ValueError) as exc:
+        raise w.Refusal("state_unavailable", "Recovery receipt cannot be read; preserve it for repair.") from exc
     w.require(isinstance(value, dict) and value.get("schema") == SCHEMA
               and value.get("workspace") == str(workspace) and value.get("root") == root
               and value.get("profile") == "native_workflow" and value.get("status") in {"prepared", "committed"}
-              and isinstance(value.get("binding"), dict) and isinstance(value.get("request_sha256"), str)
+              and isinstance(value.get("binding"), dict)
+              and set(value["binding"]) == {"workspace", "root", "run", "revision", "visit", "checkpoint", "manifest_digest", "scope_digest"}
+              and all(isinstance(value["binding"].get(k), str) and value["binding"][k]
+                      for k in ("workspace", "root", "run", "visit", "checkpoint", "manifest_digest", "scope_digest"))
+              and type(value["binding"].get("revision")) is int and value["binding"]["revision"] >= 1
+              and isinstance(value.get("request_sha256"), str)
               and re.fullmatch(r"[a-f0-9]{64}", value["request_sha256"])
               and isinstance(value.get("original_controller"), dict)
               and value["original_controller"].get("path") == str(workspace / ".taskplane" / "recovery-v1" / value["request_sha256"] / "original-controller.json")
@@ -76,11 +85,25 @@ def initialization(workspace: Path, root: str) -> dict[str, Any] | None:
         return None
     w.require(receipt["status"] == "committed", "state_unavailable",
               "State import is incomplete. Retry the exact flow recover --recovery-request request; do not initialize a new run.")
-    raw = pinned(receipt["original_controller"])
-    original = json.loads(raw)
-    w.require(original.get("root") == root and original.get("workspace") == str(workspace)
-              and original.get("active") == receipt["binding"]["run"],
-              "state_unavailable", "Retained import source differs from the recovered binding.")
+    try:
+        raw = pinned(receipt["original_controller"])
+        original = json.loads(raw)
+        retained = Path(receipt["original_controller"]["path"]).parent
+        request = json.loads(pinned({"path": str(retained / "request.json"), "sha256": receipt["request_sha256"]}, 262144))
+        w.require(isinstance(request, dict) and request.get("schema") == REQUEST
+                  and request.get("host") == receipt.get("host")
+                  and primitives.content_fingerprint(request.get("binding")) == primitives.content_fingerprint(receipt["binding"])
+                  and request.get("controller", {}).get("sha256") == receipt["original_controller"]["sha256"],
+                  "state_unavailable", "Retained recovery request differs from its receipt.")
+        pinned({"path": str(retained / "approval-observation.json"), "sha256": request["approval"]["sha256"]}, 16384)
+        state = original["runs"][receipt["binding"]["run"]]
+        w.require(original.get("root") == root and original.get("workspace") == str(workspace)
+                  and original.get("active") == receipt["binding"]["run"]
+                  and primitives.content_fingerprint(w.binding(state, w.current(state)["packet"]))
+                      == primitives.content_fingerprint(receipt["binding"]),
+                  "state_unavailable", "Retained import source differs from the recovered binding.")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise w.Refusal("state_unavailable", "Retained recovery provenance is unavailable; restore its exact preserved files.") from exc
     return receipt
 
 
@@ -103,9 +126,17 @@ def _publish(path: Path, raw: bytes) -> None:
         os.unlink(name)
 
 
-def _save_receipt(path: Path, value: dict[str, Any]) -> dict[str, Any]:
+def _receipt(value: dict[str, Any]) -> dict[str, Any]:
     value = {k: v for k, v in value.items() if k != "digest"}
     result = {**value, "digest": primitives.content_fingerprint(value)}
+    raw = (json.dumps(result, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False) + "\n").encode()
+    w.require(len(raw) <= RECEIPT_LIMIT, "state_unavailable",
+              "Recovery receipt exceeds its size bound; preserve the complete backup for a supported recovery.")
+    return result
+
+
+def _save_receipt(path: Path, value: dict[str, Any]) -> dict[str, Any]:
+    result = _receipt(value)
     primitives.atomic_json(path, result, strict_directory_sync=True)
     return result
 
@@ -142,6 +173,9 @@ def recover(controller: Any, request_path: str, expected_sha256: str, *, mode: s
               and primitives.content_fingerprint(request["binding"]) == primitives.content_fingerprint(binding),
               "stale_checkpoint", "Recovery request differs from the preserved checkpoint.")
     manifest = stage["packet"]["manifest"]
+    w.require(all(isinstance(value, str) for value in manifest.values()), "state_unavailable",
+              "This bounded import does not support a normalized task manifest; restore the complete original store "
+              "or preserve this checkpoint for a recovery that validates task definitions.")
     current_source = local.inventory(controller.workspace)
     before_source = state["source_baseline"]
     w.require(all(before_source.get(p) == current_source.get(p) for p in set(before_source) | set(current_source)
@@ -218,6 +252,8 @@ def recover(controller: Any, request_path: str, expected_sha256: str, *, mode: s
             "reconstructed": ["local store binding from verified same-root controller", "fresh harness engagement"],
             "invalidated": ["old automatic parent hook readiness", "old presentation"],
             "next_action": "Observe a fresh automatic hook pair; regenerate and present the same Product checkpoint, record its existing approval separately, then read fresh Design context."}
+        _receipt(summary)
+        _receipt({**summary, "status": "committed"})
         if mode == "inspect":
             return {**summary, "status": "ready_to_import", "authority": "none",
                     "writes": [str(p) for p in files] + [str(receipt_path), str(local.Harness(controller.workspace, controller.root).path)]}
