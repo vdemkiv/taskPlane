@@ -681,7 +681,7 @@ def test_optional_graph_failure_preserves_committed_decision(tmp_path, monkeypat
 
 
 def exercise_counter_freshness(workspace, host, root=ROOT):
-    """EV-F01: real CLI readers retain saved data time after a transcript disappears."""
+    """EV-F01: retain saved data time, or report unsupported native inventory."""
     from unittest.mock import patch
     from taskplane.tests.test_native_session_meter import _write_segment
     from taskplane.tests.test_claude_flow import message, write
@@ -698,9 +698,30 @@ def exercise_counter_freshness(workspace, host, root=ROOT):
         else:write(path,[message(),message('m2')])
         measured=cli(workspace,host,'progress','--phase','product','--note','Observed fixture interval',root=root,environment=environment)
         measured_at=measured['sessions'][0]['measured_at']
-        assert measured['tokens']['total_tokens']==(30 if host=='codex' else 142)
+        unsupported_inventory = host == 'codex' and sys.platform not in ('darwin', 'linux')
+        if not unsupported_inventory:
+            assert measured['tokens']['total_tokens']==(30 if host=='codex' else 142)
         path.unlink()
         saved=cli(workspace,host,'report','--run',initial['run'],root=root,environment=environment)
+        if unsupported_inventory:
+            # The real CLI cannot discover Codex counters on this host. Neither
+            # progress nor saved reports may invent a measurement or its time.
+            for result in (initial, measured, saved):
+                assert result['tokens'] is None and result['native_tokens'] is None
+                session = result['sessions'][0]
+                assert session['usage'] is None and session['native_usage'] is None
+                assert session['status'] == 'partial' and session['attribution_unknown']
+                assert session['measured_at'] is None
+                refresh = result['usage_refresh']
+                assert not refresh['complete'] and not refresh['fully_discovered']
+                assert 'native_directory_accounting_unavailable' in refresh['discovery_errors']
+                assert refresh['directory_bytes'] == refresh['discovery_entries'] == 0
+                clock = result['usage_measurement']
+                assert clock['status'] == 'unavailable'
+                assert clock['measured_at'] is clock['oldest_at'] is clock['newest_at'] is None
+                assert result['snapshot']['measurement_at'] is None
+                assert result['phase_usage']['measurement_at'] is None
+            return saved
         assert saved['sessions'][0]['status'].startswith('recorded')
         assert saved['sessions'][0]['measured_at']==measured_at
         expected_time=None if saved['token_coverage']['discovery_errors'] else measured_at
