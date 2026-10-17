@@ -1,12 +1,13 @@
 """Advisory runs share evidence, graph and actual native lens usage."""
 import json
+import sys
 import pytest
 from datetime import datetime
 from pathlib import Path
 
 from taskplane import flow, flow_usage, native_session_meter as meter
 from taskplane import dashboard, depgraph
-from taskplane.tests.test_native_session_meter import _write_segment
+from taskplane.tests.test_native_session_meter import _write_segment, _use_codex_fixture_files
 
 
 def native(path, sid, total, *, parent=None, at='2026-09-01T00:00:00Z', guardian=False):
@@ -51,23 +52,37 @@ def test_discovers_unhooked_lenses_and_retains_final_usage(tmp_path,monkeypatch,
         stream.write(json.dumps(latest) + '\n')
     before=(ws/flow.JOURNAL).read_bytes()
     r=flow.report(ws)
-    assert r['tokens']['total_tokens']==430
-    assert r['native_tokens']['total_tokens']==530
-    assert r['host_approval_tokens']['total_tokens']==20
-    assert r['token_coverage']['measured_sessions']==2
-    assert r['token_coverage']['unmeasured_sessions']==0
+    supported_inventory = sys.platform in ('darwin', 'linux')
+    if supported_inventory:
+        assert r['tokens']['total_tokens']==430
+        assert r['native_tokens']['total_tokens']==530
+        assert r['host_approval_tokens']['total_tokens']==20
+        assert r['token_coverage']['measured_sessions']==2
+        assert r['token_coverage']['unmeasured_sessions']==0
+    else:
+        assert r['tokens'] is r['native_tokens'] is r['host_approval_tokens'] is None
+        assert r['token_coverage']['measured_sessions']==0
+        assert not r['usage_refresh']['complete'] and not r['usage_refresh']['fully_discovered']
+        assert 'native_directory_accounting_unavailable' in r['usage_refresh']['discovery_errors']
     assert (ws/flow.JOURNAL).read_bytes()==before # reports never mutate evidence
     flow.main(['attach','--workspace',str(ws),'--run','shared','--reviews','reviews.json'])
     capsys.readouterr()
     (sessions/'lens.jsonl').unlink()
     recovered=flow.report(ws)
-    assert recovered['tokens']['total_tokens']==430
-    assert 'recorded' in next(s for s in recovered['sessions'] if s['agent']=='/root/lens')['status']
+    lens = next(s for s in recovered['sessions'] if s['agent']=='/root/lens')
+    if supported_inventory:
+        assert recovered['tokens']['total_tokens']==430
+        assert 'recorded' in lens['status']
+    else:
+        assert recovered['tokens'] is None and lens['usage'] is None
+        assert lens['status']=='unavailable'
+        assert 'native_directory_accounting_unavailable' in recovered['usage_refresh']['discovery_errors']
     assert 'private conversation' not in (ws/flow.JOURNAL).read_text()
 
 
 def test_missing_reviewer_is_unknown_not_zero_and_artifacts_are_run_scoped(tmp_path,monkeypatch,capsys):
     ws,sessions,run=setup_run(tmp_path,monkeypatch)
+    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl')
     (ws/'reviews.json').write_text(json.dumps([{'lens':'qa','agent':'/root/missing'}]))
     flow.main(['attach','--workspace',str(ws),'--run','shared','--reviews','reviews.json'])
     capsys.readouterr()
@@ -131,6 +146,7 @@ def test_dashboard_displays_shared_tasks_lenses_stages_graph_and_escaped_evidenc
     (ws/'review.md').write_text('<script>alert("unsafe")</script> Real finding fixed')
     (ws/'reviews.json').write_text(json.dumps({'engineering':[{'lens':'quality','agent':'/root/lens','evidence':'review.md'}]}))
     native(sessions/'lens.jsonl','lens',50,parent='root',at='2026-09-01T00:00:02Z')
+    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl', sessions/'lens.jsonl')
     for phase in ('product','design','plan','build','evaluate','engineering','retro'):
         flow.append(ws,{'kind':'progress','run':'shared','session':'root','phase':phase,'note':phase+' evidence'})
     flow.append(ws,{'kind':'finish','run':'shared','session':'root','note':'Product passed; original dashboard failed'})
@@ -183,6 +199,7 @@ def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,mon
     for key in ('CLAUDECODE','TASKPLANE_CLAUDE_SESSION_ID','CLAUDE_SESSION_ID'):
         monkeypatch.delenv(key,raising=False)
     native(sessions/'root.jsonl','root',140)
+    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl')
     event={'hook_event_name':'PostToolUse','session_id':'root','cwd':str(ws),
            'transcript_path':str(sessions/'root.jsonl'),'tool_name':'Bash',
            'tool_input':{'command':'cat app.py'}}
@@ -209,6 +226,7 @@ def test_archived_sessions_and_unrelated_metadata_errors_are_scoped(tmp_path, mo
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     rows[0]['payload']['history_base'] = {'thread_id': 'wrong', 'end_ordinal_exclusive': 1, 'end_byte_offset': 1}
     path.write_text('\n'.join(json.dumps(row) for row in rows)+'\n')
+    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl', archive/'lens.jsonl', path)
     result = flow_usage.reconcile(run, [])
     assert next(s for s in result['sessions'] if s['session'] == 'lens')['usage']['total_tokens'] == 90
     assert result['token_coverage']['discovery_errors'] == 0
@@ -219,6 +237,7 @@ def test_archived_sessions_and_unrelated_metadata_errors_are_scoped(tmp_path, mo
 def test_counter_reset_is_unknown_not_zero(tmp_path, monkeypatch):
     _, sessions, run = setup_run(tmp_path, monkeypatch)
     native(sessions/'root.jsonl', 'root', 40)
+    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl')
     result = flow_usage.reconcile(run, [])
     root = next(s for s in result['sessions'] if s['session'] == 'root')
     assert root['usage'] is None and root['status'] == 'partial'

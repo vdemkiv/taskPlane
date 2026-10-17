@@ -303,10 +303,14 @@ def _durable_makedirs(path: str, *, mode: int = 0o777, sync_existing: bool = Fal
         # complete ancestry on exact retry, including each owning parent.
         chain = list(reversed((Path(target), *Path(target).parents)))
         for entry in chain:
-            try:
-                os.mkdir(entry, mode=mode)
-            except FileExistsError:
-                pass
+            # A filesystem anchor already exists independently of this chain.
+            # Creating a Windows drive root or UNC share reports access denied,
+            # not FileExistsError. Still validate and flush the anchor below.
+            if entry != entry.parent:
+                try:
+                    os.mkdir(entry, mode=mode)
+                except FileExistsError:
+                    pass
             identity = _durable_directory_identity(str(entry))
             _fsync_directory(str(entry))
             _fsync_directory(str(entry.parent))

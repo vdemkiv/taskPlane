@@ -1,6 +1,7 @@
 """Approved checkpoints acknowledge unrelated additions without reopening grants."""
 from copy import deepcopy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -82,7 +83,7 @@ def test_approved_maintenance_refuses_unreviewed_effects_without_mutation(tmp_pa
     elif defect == "missing_change":
         (tmp_path / "dist/unlisted.txt").write_text("Unlisted addition\n")
     elif defect == "hash":
-        request["changes"]["dist/release-report.txt"]["after"] = "0" * 64
+        request["changes"][str(Path("dist/release-report.txt"))]["after"] = "0" * 64
     elif defect == "reference":
         request["request_reference"] = " "
     elif defect == "live_command":

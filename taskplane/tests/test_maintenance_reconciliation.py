@@ -57,7 +57,7 @@ def test_installation_manifest_above_legacy_limit_remains_exact_and_atomic(tmp_p
         target = tmp_path / name
         target.parent.mkdir(exist_ok=True)
         target.write_text(f'package_member = {index}\n')
-        request['changes'][name] = {'before': None, 'after': primitives.content_fingerprint(target.read_bytes())}
+        request['changes'][str(target.relative_to(tmp_path))] = {'before': None, 'after': primitives.content_fingerprint(target.read_bytes())}
     path.write_text(json.dumps(request))
     scope, decisions = deepcopy(s['scope']), deepcopy(s['decisions'])
     receipt = c.reconcile_maintenance(s['run'], s['revision'], str(path.relative_to(tmp_path)))

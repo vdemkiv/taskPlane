@@ -7,6 +7,11 @@ from taskplane import workflow as w, workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_evidence import prepare
 
 
+def binding_runtime_available():
+    return (os.open in os.supports_dir_fd and hasattr(os, 'O_DIRECTORY')
+            and hasattr(os, 'O_NOFOLLOW'))
+
+
 def setup(workspace, *, entry="product", standalone=False):
     workspace=workspace.resolve()
     state, _, _=prepare(workspace)
@@ -37,6 +42,11 @@ def test_numbered_database_recovery_preserves_exact_history_and_is_idempotent(tm
     before = marker.read_bytes()
     with pytest.raises(w.Refusal, match='incomplete'):
         c.report()
+    if not binding_runtime_available():
+        with pytest.raises(w.Refusal, match='no-follow directory operations'):
+            c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
+        assert not target.exists() and candidate.read_bytes() == raw and marker.read_bytes() == before
+        return
     result = c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
     assert result['status'] == 'restored' and result['approvals_changed'] is False
     assert target.read_bytes() == candidate.read_bytes() == raw and marker.read_bytes() == before
@@ -131,6 +141,13 @@ def test_recovery_cli_restores_only_expected_native_root(tmp_path, capsys, monke
     args=['recover','--workspace',str(tmp_path),'--recover-from',candidate.name,
           '--expected-sha256',checksum,'--run',state['run'],'--expected-revision',str(state['revision']),
           '--request-reference','conversation/recovery']
+    if not binding_runtime_available():
+        assert flow.main(args,compact=True,governor=c) == 2
+        refusal = json.loads(capsys.readouterr().out)
+        assert refusal['reason'] == 'workspace_binding'
+        assert 'no-follow directory operations' in refusal['detail']
+        assert not target.exists() and candidate.read_bytes() == raw
+        return
     assert flow.main(args,compact=True,governor=c) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'restored'
     assert target.read_bytes() == raw

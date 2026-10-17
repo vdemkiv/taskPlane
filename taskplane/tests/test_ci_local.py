@@ -93,7 +93,7 @@ def test_package_host_selection_is_exact(tmp_path, suite, host):
     assert all(row['suite'] == suite and row['host'] == host for row in selected)
 
 
-@pytest.mark.parametrize('suite,count', [('core', 4), ('native', 6)])
+@pytest.mark.parametrize('suite,count', [('core', 4), ('core', 8), ('native', 6)])
 def test_shards_cover_actual_collection_once(tmp_path, suite, count):
     baseline = {row['nodeid'] for row in collect(tmp_path, suite) if row['selected']}
     partitions = []
@@ -522,7 +522,8 @@ def test_composite_preflight_refuses_candidate_execution(tmp_path, monkeypatch, 
 def test_timeout_keeps_actual_partial_raw_streams(tmp_path):
     log = ci_local.ExecutionLog(tmp_path / 'output', ROOT)
     record = log.run([sys.executable, '-c',
-                      'import sys,time; print("before-timeout", flush=True); print("error-before-timeout", file=sys.stderr, flush=True); time.sleep(5)'],
+                      'import sys,time; sys.stdout.buffer.write(b"before-timeout\\n"); sys.stdout.buffer.flush(); '
+                      'sys.stderr.buffer.write(b"error-before-timeout\\n"); sys.stderr.buffer.flush(); time.sleep(5)'],
                      label='timeout-probe', timeout=0.1)
     assert record['status'] == 'unknown' and record['reason'] == 'timeout'
     assert 'before-timeout' in record['stdout'] and 'error-before-timeout' in record['stderr']

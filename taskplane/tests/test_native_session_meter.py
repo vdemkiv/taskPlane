@@ -865,12 +865,15 @@ def test_incremental_metadata_replacement_before_replay_is_unknown(tmp_path, mon
     child=directory/'owned-1.jsonl';replacement=tmp_path/'replacement'
     replacement.write_bytes(child.read_bytes().replace(b'owned-1',b'foreign'))
     reader=_fixture_reader('Codex','root',directory)
-    original=reader._metadata
-    def replace_after_metadata(file, stream, budget):
-        result=original(file,stream,budget)
-        if result and file['path']==str(child) and replacement.exists(): replacement.replace(child)
-        return result
-    monkeypatch.setattr(reader,'_metadata',replace_after_metadata)
+    original=reader._file
+    def replace_before_replay(file, budget):
+        if file['path']==str(child) and replacement.exists():
+            assert file['metadata']['session_id']=='owned-1'
+            # Metadata's handle has closed. Windows correctly refuses replacing
+            # an open file; exercise the actual gap before replay opens it.
+            replacement.replace(child)
+        return original(file,budget)
+    monkeypatch.setattr(reader,'_file',replace_before_replay)
     result=reader.refresh()
     assert not result['complete']
     lost=next(row for row in result['sessions'] if row['session']=='owned-1')

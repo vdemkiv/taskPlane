@@ -114,10 +114,17 @@ def test_claude_typed_probe_dispatch_keeps_incomplete_timing(tmp_path, monkeypat
 
 def test_startup_invocation_schema_replay_failure_and_expiry_are_distinct_from_claim(monkeypatch):
     import base64
+    import os
     import shlex
+    import sys
     from taskplane import claude_worker_invocation as old, primitives
     from taskplane.workflow_write_guard import StartupInvocationTransport as transport
     from taskplane.tests.test_claude_worker_invocation import binding, RUNTIME
+    if os.name != 'posix' or sys.platform not in ('darwin', 'linux'):
+        with pytest.raises(w.Refusal, match='transport is unavailable') as refusal:
+            old._runtime(None, None)
+        assert refusal.value.reason == 'unsupported_authority'
+        return
     clock = {'utc_ns': 1_800_000_000_000_000_000, 'monotonic_ns': 10_000_000_000, 'boot_id': 'fixture-boot'}
     monkeypatch.setattr(old, '_clock', lambda: dict(clock))
     monkeypatch.setattr(old, 'runtime_digest', lambda: RUNTIME)

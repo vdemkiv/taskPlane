@@ -57,11 +57,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
         suite: [core]
         shard: [1, 2, 3, 4]
         shards: [4]
         include:
+          - {os: windows-latest, suite: core, shard: 1, shards: 8}
+          - {os: windows-latest, suite: core, shard: 2, shards: 8}
+          - {os: windows-latest, suite: core, shard: 3, shards: 8}
+          - {os: windows-latest, suite: core, shard: 4, shards: 8}
+          - {os: windows-latest, suite: core, shard: 5, shards: 8}
+          - {os: windows-latest, suite: core, shard: 6, shards: 8}
+          - {os: windows-latest, suite: core, shard: 7, shards: 8}
+          - {os: windows-latest, suite: core, shard: 8, shards: 8}
           - {os: ubuntu-latest, suite: native, shard: 1, shards: 6}
           - {os: ubuntu-latest, suite: native, shard: 2, shards: 6}
           - {os: ubuntu-latest, suite: native, shard: 3, shards: 6}

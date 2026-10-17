@@ -529,12 +529,28 @@ def test_sec01_snapshot_metadata_never_erases_extra_original_text(tmp_path, meta
     """Grammar boundary only; transport proof is exercised by the matrix above."""
     from taskplane.workflow_approval import validate_checkpoint_consent
     binding = {"workspace": str(tmp_path), "checkpoint": "a" * 32}
-    question = "Approve this checkpoint?\n" + metadata.format(**binding)
+    question = "Approve this checkpoint?\n" + metadata.format(**{**binding, "workspace": tmp_path.as_posix()})
     if metadata == "[Snapshot]({workspace}/.taskplane/snapshot-a1b2.html)":
         assert validate_checkpoint_consent(question, "Approved", phase="product", binding=binding) == "approved"
     else:
         with pytest.raises(w.Refusal, match="Unsupported or conditional checkpoint question"):
             validate_checkpoint_consent(question, "Approved", phase="product", binding=binding)
+
+
+@pytest.mark.parametrize("style", ["native", "posix"])
+def test_snapshot_grammar_accepts_only_exact_bound_path_spellings(tmp_path, style):
+    from taskplane.workflow_approval import validate_checkpoint_consent
+    binding = {"workspace": str(tmp_path), "checkpoint": "a" * 32}
+    snapshot = tmp_path / '.taskplane' / 'snapshot-a1b2.html'
+    link = str(snapshot) if style == 'native' else snapshot.as_posix()
+    question = 'Approve this checkpoint?\n[Snapshot](' + link + ')'
+    assert validate_checkpoint_consent(question, 'Approved', phase='product', binding=binding) == 'approved'
+    for invalid in (link.replace('.taskplane', '.TASKPLANE'),
+                    link.replace('snapshot-a1b2.html', '../snapshot-a1b2.html'),
+                    link.replace('snapshot-a1b2.html', 'dashboard.html')):
+        with pytest.raises(w.Refusal, match='Unsupported or conditional checkpoint question'):
+            validate_checkpoint_consent('Approve this checkpoint?\n[Snapshot](' + invalid + ')',
+                                        'Approved', phase='product', binding=binding)
 
 
 @pytest.mark.parametrize("extra", [

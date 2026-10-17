@@ -55,18 +55,32 @@ def test_oversized_publication_refuses_without_changing_authority(tmp_path):
 
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize("boundary", ["success", "before_replace", "after_replace"])
-def test_controller_is_private_before_and_after_publication(tmp_path, monkeypatch, existing, boundary):
+def test_controller_publication_preserves_bytes_and_requests_private_creation(tmp_path, monkeypatch, existing, boundary):
     target = tmp_path / "controller.json"
     original = b'{"storage_generation":0,"accepted":true}\n'
     if existing:
         target.write_bytes(original)
         target.chmod(0o644)
     replace = os.replace
+    open_file = os.open
+    created = []
     proposal = {"storage_generation": 0, "accepted": True, "observation": "new"}
     expected = storage.encode_controller({**proposal, "storage_generation": 1})
 
+    def observed_open(path, flags, mode=0o777, **kwargs):
+        if Path(path).name.startswith(".controller.json.tmp."):
+            assert flags & os.O_CREAT and flags & os.O_EXCL
+            assert mode == 0o600
+            created.append(path)
+        return open_file(path, flags, mode, **kwargs)
+
     def observed_replace(source, destination):
-        assert stat.S_IMODE(Path(source).stat().st_mode) == 0o600
+        assert source in created
+        # Windows reports synthesized mode bits, not its ACL. Only POSIX
+        # mode bits establish owner-only access here; the requested creation
+        # mode and publication/failure boundaries are checked on every OS.
+        if os.name == "posix":
+            assert stat.S_IMODE(Path(source).stat().st_mode) == 0o600
         assert Path(source).read_bytes() == expected
         if boundary == "before_replace":
             raise OSError("fixture before publication")
@@ -75,6 +89,7 @@ def test_controller_is_private_before_and_after_publication(tmp_path, monkeypatc
             raise OSError("fixture after publication")
 
     monkeypatch.setattr(os, "replace", observed_replace)
+    monkeypatch.setattr(os, "open", observed_open)
     previous_umask = os.umask(0o022)
     try:
         if boundary == "success":
@@ -87,9 +102,14 @@ def test_controller_is_private_before_and_after_publication(tmp_path, monkeypatc
     if boundary == "before_replace":
         assert target.exists() == existing
         if existing:
-            assert target.read_bytes() == original and stat.S_IMODE(target.stat().st_mode) == 0o644
+            assert target.read_bytes() == original
+            if os.name == "posix":
+                assert stat.S_IMODE(target.stat().st_mode) == 0o644
     else:
-        assert target.read_bytes() == expected and stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert target.read_bytes() == expected
+        if os.name == "posix":
+            assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert len(created) == 1
     assert proposal["storage_generation"] == 0
     assert not list(tmp_path.glob(".controller.json.tmp.*"))
 

@@ -906,7 +906,8 @@ def runtime_artifacts(workspace: Path, request: dict[str, Any], runtime: dict[st
     archive_path = evidence.path(workspace, package['path'])
     w.require(archive_path.is_file() and archive_path.stat().st_size <= 134217728,
               'invalid_evidence', 'Upgrade package is missing or exceeds 128 MiB.')
-    descriptor = os.open(archive_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    descriptor = os.open(archive_path, flags)
     with os.fdopen(descriptor, 'rb') as stream:
         import stat
         before = os.fstat(stream.fileno())
@@ -929,7 +930,16 @@ def runtime_artifacts(workspace: Path, request: dict[str, Any], runtime: dict[st
         after = os.fstat(stream.fileno())
         def stamp(s: os.stat_result) -> tuple[int, int, int, int, int]:
             return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-        w.require(stamp(before) == stamp(after) == stamp(archive_path.stat()),
+        # Windows Python 3.12+ reports creation time from stat(path), but change
+        # time from fstat(fd). Reopen the current path while the validated handle
+        # is live so all fields retain the same meaning, including ctime; the
+        # device/inode comparison still detects a replaced directory entry.
+        current_descriptor = os.open(archive_path, flags)
+        try:
+            current = os.fstat(current_descriptor)
+        finally:
+            os.close(current_descriptor)
+        w.require(stamp(before) == stamp(after) == stamp(current),
                   'stale_checkpoint', 'Upgrade package changed while it was being validated.')
     verification = request['verification']
     w.require(isinstance(verification, dict) and set(verification) == {'path', 'sha256'},

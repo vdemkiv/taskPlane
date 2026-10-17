@@ -360,17 +360,21 @@ def checkpoint_question_choice(question: str, *, phase: str, binding: dict[str, 
     # or surrounding prose before classifying the original question.
     snapshot = None
     if not reopening and isinstance(binding.get('workspace'), str):
-        directory = str(Path(binding['workspace']) / '.taskplane').casefold()
-        snapshot = r'\[snapshot\]\(' + re.escape(directory) + r'/snapshot-[a-f0-9-]+\.html\)'
+        prefix = Path(binding['workspace']) / '.taskplane' / 'snapshot-'
+        # Native Windows paths and slash-form Markdown paths name the same
+        # bound directory. Match those exact spellings without normalizing any
+        # supplied link, so traversal, case changes and foreign paths still fail.
+        prefixes = sorted({str(prefix), prefix.as_posix()})
+        snapshot = (r'\[snapshot\]\((?:' + '|'.join(re.escape(p.casefold()) for p in prefixes)
+                    + r')[a-f0-9-]+\.html\)')
         support = (*support, snapshot)
     remainder = text if match is None else text[:match.start()] + '\n' + text[match.end():]
     context = [part.strip().rstrip('.!') for part in re.split(r'[.!]\s+|\n+|,\s+but\s+', remainder) if part.strip()]
     valid = valid and all(re.fullmatch('(?:' + '|'.join(support) + ')', part) for part in context)
     if snapshot is not None:
         count = sum(bool(re.fullmatch(snapshot, part)) for part in context)
-        exact_snapshot = (r'\[(?i:snapshot)\]\('
-                          + re.escape(str(Path(binding['workspace']) / '.taskplane'))
-                          + r'/snapshot-[a-f0-9-]+\.html\)')
+        exact_snapshot = (r'\[(?i:snapshot)\]\((?:' + '|'.join(re.escape(p) for p in prefixes)
+                          + r')[a-f0-9-]+\.html\)')
         valid = valid and count <= 1 and len(re.findall(exact_snapshot, question)) == count
     w.require(valid, 'invalid_evidence',
               'Unsupported or conditional checkpoint question; preserve the full original question and ask for unqualified consent.')

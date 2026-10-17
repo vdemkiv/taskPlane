@@ -11,6 +11,7 @@ import pytest
 from taskplane import flow, flow_usage, workflow as w, workflow_local as local
 from taskplane.tests.test_workflow_local import setup, submit, decide, decision, present
 from taskplane.tests.test_workflow_autonomy import authorization, set_policy
+from taskplane.tests.test_native_session_meter import _use_codex_fixture_files
 
 
 def refused(action, reason=None):
@@ -196,6 +197,7 @@ def test_reused_guardian_150_170_becomes_50_20(tmp_path,monkeypatch):
     monkeypatch.setenv('CODEX_HOME',str(home))
     native(sessions/'root.jsonl','root',[(5,100),(15,200),(25,300)])
     native(sessions/'guardian.jsonl','guardian',[(5,100),(15,150),(25,170)],'root',True)
+    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl', sessions/'guardian.jsonl')
     starts=[dict(kind='start',run='r'+str(i),session='root',at=f'2026-09-01T00:00:{second:02d}Z',
                  usage={'input_tokens':total,'output_tokens':0,'total_tokens':total},usage_status='observed')
             for i,(second,total) in enumerate([(10,100),(20,200)])]
@@ -211,6 +213,7 @@ def test_new_child_boundary_response_is_owned_once(tmp_path,monkeypatch):
     rows=native(sessions/'child.jsonl','child',[(15,50),(20,70)],'root',owned=True)
     rows[0]['payload']['timestamp']='2026-09-01T00:00:12Z'
     (sessions/'child.jsonl').write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+    _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl', sessions/'child.jsonl')
     starts=[dict(kind='start',run='r'+str(i),session='root',worker_sessions=['child'],at=f'2026-09-01T00:00:{second:02d}Z',
                  usage={'input_tokens':total,'output_tokens':0,'total_tokens':total},usage_status='observed')
             for i,(second,total) in enumerate([(10,100),(20,200)])]
@@ -244,7 +247,6 @@ def test_saved_partial_child_interval_remains_partial_after_native_file_loss(tmp
         rows = native(child, 'child', [(5,100),(10,150),(15,170)], 'root', owned=True)
         del rows[2]['payload']['usage']
         child.write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
-        from taskplane.tests.test_native_session_meter import _use_codex_fixture_files
         _use_codex_fixture_files(monkeypatch, child)
     else:
         from taskplane.tests.test_claude_flow import message, write

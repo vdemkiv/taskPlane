@@ -275,7 +275,7 @@ def test_compact_read_manifest_keeps_required_internal_source_even_when_body_is_
     state, definition, path = compact_fixture(tmp_path)
     session = Session(tmp_path, state, 'T1')
     manifest = read_input_manifest(tmp_path, session, definition['paths'])
-    assert str(path.relative_to(tmp_path)) in manifest
+    assert path.relative_to(tmp_path).as_posix() in manifest
     path.unlink()
     with pytest.raises(w.Refusal):
         read_input_manifest(tmp_path, session, definition['paths'])

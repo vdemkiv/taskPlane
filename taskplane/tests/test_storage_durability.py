@@ -3,6 +3,7 @@ import ctypes
 import errno
 import json
 import os
+from pathlib import PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -128,4 +129,68 @@ def test_native_directory_durability_for_nested_creation_and_replacement(tmp_pat
     assert json.loads(target.read_bytes()) == {"revision": 2}
     primitives.atomic_json(target, {"revision": 3}, strict_directory_sync=True)
     assert json.loads(target.read_bytes()) == {"revision": 3}
+    primitives._durable_makedirs(str(target.parent.resolve()), sync_existing=True)
     assert [entry.name for entry in target.parent.iterdir()] == ["state.json"]
+
+
+@pytest.mark.parametrize("path_type,target", [
+    (PureWindowsPath, "D:\\state\\nested"),
+    (PureWindowsPath, "\\\\server\\share\\state\\nested"),
+    (PureWindowsPath, "\\\\?\\D:\\state\\nested"),
+    (PureWindowsPath, "\\\\?\\UNC\\server\\share\\state\\nested"),
+    (PurePosixPath, "/state/nested"),
+])
+def test_retry_directory_ancestry_validates_and_flushes_anchors_without_creating_them(
+        monkeypatch, path_type, target):
+    target = path_type(target)
+    anchor = path_type(target.anchor)
+    present = {anchor, target.parent}
+    events = []
+
+    def mkdir(path, *, mode):
+        events.append(("mkdir", str(path)))
+        if path == anchor:
+            raise PermissionError(errno.EACCES, "cannot create filesystem anchor")
+        if path in present:
+            raise FileExistsError(errno.EEXIST, "already exists")
+        assert path.parent in present and mode == 0o700
+        present.add(path)
+
+    def identity(path):
+        events.append(("identity", str(path)))
+        assert path_type(path) in present
+        return (1, 1)
+
+    monkeypatch.setattr(primitives, "Path", path_type)
+    monkeypatch.setattr(primitives, "os", SimpleNamespace(
+        path=SimpleNamespace(abspath=lambda path: path), mkdir=mkdir))
+    monkeypatch.setattr(primitives, "_durable_directory_identity", identity)
+    monkeypatch.setattr(primitives, "_fsync_directory", lambda path: events.append(("sync", path)))
+    primitives._durable_makedirs(str(target), mode=0o700, sync_existing=True)
+    assert ("mkdir", str(anchor)) not in events
+    assert events[:4] == [("identity", str(anchor)), ("sync", str(anchor)),
+                          ("sync", str(anchor)), ("identity", str(anchor))]
+    assert events[-5:] == [("mkdir", str(target)), ("identity", str(target)),
+                           ("sync", str(target)), ("sync", str(target.parent)),
+                           ("identity", str(target))]
+
+
+@pytest.mark.parametrize("boundary", ["child_creation", "anchor_flush"])
+def test_retry_directory_ancestry_preserves_access_and_durability_errors(monkeypatch, boundary):
+    target = PureWindowsPath("D:\\state")
+    failure = PermissionError(errno.EACCES, "fixture access denied")
+    mkdir = Mock(side_effect=failure if boundary == "child_creation" else None)
+    flush = Mock(side_effect=failure if boundary == "anchor_flush" else None)
+    monkeypatch.setattr(primitives, "Path", PureWindowsPath)
+    monkeypatch.setattr(primitives, "os", SimpleNamespace(
+        path=SimpleNamespace(abspath=lambda path: path), mkdir=mkdir))
+    monkeypatch.setattr(primitives, "_durable_directory_identity", lambda path: (1, 1))
+    monkeypatch.setattr(primitives, "_fsync_directory", flush)
+    with pytest.raises(PermissionError) as caught:
+        primitives._durable_makedirs(str(target), sync_existing=True)
+    assert caught.value is failure
+    if boundary == "child_creation":
+        mkdir.assert_called_once_with(target, mode=0o777)
+    else:
+        mkdir.assert_not_called()
+        flush.assert_called_once_with(str(target.parent))

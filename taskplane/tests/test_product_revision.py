@@ -2,8 +2,10 @@
 from copy import deepcopy
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -384,6 +386,99 @@ def test_upgrade_preview_read_only_commit_once_preserves_approvals(tmp_path):
     with pytest.raises(w.Refusal, match='Conflicting'):
         c.context_upgrade(state['run'], 'commit', {**request, 'request_reference': 'different'}, preview['preview_digest'])
     assert c._path().read_bytes() == committed
+
+
+@pytest.fixture
+def runtime_package(tmp_path):
+    from taskplane.workflow_write_guard import runtime_artifacts
+    member = b'approved runtime bytes\n'
+    runtime = {'member_sha256': {'taskplane/tp.py': hashlib.sha256(member).hexdigest()}}
+    archive = tmp_path / 'candidate.zip'
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        bundle.writestr('taskplane/tp.py', member)
+    result = tmp_path / 'check.txt'
+    result.write_text('passing compatibility evidence\n')
+    pin = lambda path: {'path': path.name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    verification = tmp_path / 'verification.json'
+    schema = 'taskplane.context-upgrade-verification/v1'
+    verification.write_text(json.dumps({'schema': schema, 'runtime_digest': digest(runtime),
+        'checks': {'compatibility': {'exit': 0, 'command': ['fixture'], 'evidence': pin(result)}}}))
+    request = {'runtime_digest': digest(runtime), 'package': pin(archive), 'verification': pin(verification)}
+    def validate():
+        runtime_artifacts(tmp_path, request, runtime, verification_schema=schema, checks={'compatibility'})
+    return archive, validate
+
+
+def changed_stat(info, **changes):
+    return SimpleNamespace(**{**{name: getattr(info, name) for name in dir(info) if name.startswith('st_')},
+                              **changes})
+
+
+def test_runtime_package_uses_consistent_handle_timestamps(runtime_package, monkeypatch):
+    archive, validate = runtime_package
+    original = Path.stat
+    def windows_path_stat(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        # CPython 3.12 Windows stat(path) reports birth time in ctime; fstat
+        # reports change time. Model the different clocks on every test host.
+        return changed_stat(info, st_ctime_ns=info.st_ctime_ns - 1000000000) if path == archive else info
+    monkeypatch.setattr(Path, 'stat', windows_path_stat)
+    validate()
+
+
+@pytest.mark.parametrize('snapshot', [2, 3], ids=['validated-handle-after', 'reopened-path'])
+@pytest.mark.parametrize('field', ['st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns'])
+def test_runtime_package_retains_every_identity_and_mutation_check(runtime_package, monkeypatch, snapshot, field):
+    _, validate = runtime_package
+    original = os.fstat
+    calls = []
+    def mutated_fstat(fd):
+        info = original(fd)
+        calls.append(fd)
+        return changed_stat(info, **{field: getattr(info, field) + 1}) if len(calls) == snapshot else info
+    monkeypatch.setattr(os, 'fstat', mutated_fstat)
+    with pytest.raises(w.Refusal, match='changed while it was being validated'):
+        validate()
+    assert len(calls) == 3
+    # Both descriptors close even when a race is rejected.
+    for fd in set(calls):
+        with pytest.raises(OSError):
+            original(fd)
+
+
+def test_runtime_package_detects_reopened_path_replacement(runtime_package, monkeypatch):
+    archive, validate = runtime_package
+    replacement = archive.with_name('replacement.zip')
+    replacement.write_bytes(archive.read_bytes())
+    before = archive.stat()
+    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+    original = os.open
+    opened = []
+    def replaced_path(path, flags, *args, **kwargs):
+        if Path(path) == archive:
+            opened.append(path)
+            if len(opened) == 2:
+                path = replacement
+        return original(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, 'open', replaced_path)
+    # The second open observes a replaced directory entry with identical bytes,
+    # size and mtime. Keeping the first handle live preserves its distinct ID.
+    with pytest.raises(w.Refusal, match='changed while it was being validated'):
+        validate()
+    assert len(opened) == 2
+
+
+def test_runtime_package_detects_write_after_member_validation(runtime_package, monkeypatch):
+    archive, validate = runtime_package
+    original = zipfile.ZipFile.read
+    def changed_member(bundle, *args, **kwargs):
+        data = original(bundle, *args, **kwargs)
+        with archive.open('ab') as writer:
+            writer.write(b'changed after hash and member validation')
+        return data
+    monkeypatch.setattr(zipfile.ZipFile, 'read', changed_member)
+    with pytest.raises(w.Refusal, match='changed while it was being validated'):
+        validate()
 
 
 @pytest.mark.parametrize('defect', ['child', 'revision', 'generation', 'scope', 'runtime', 'package',
