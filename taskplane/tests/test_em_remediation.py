@@ -162,7 +162,7 @@ def test_resumed_task_start_captures_one_logical_baseline(tmp_path, monkeypatch)
     assert baseline['usage_status'] == 'observed'
     assert baseline['usage']['total_tokens'] == 160
     native(sessions / 'part2-root.jsonl', 220, resumed=True, timestamp="2026-09-01T00:00:07Z")
-    report = cli(c.workspace, 'flow', 'report', '--workspace', str(c.workspace))
+    report = cli(c.workspace, 'flow', 'report', '--workspace', str(c.workspace), '--full')
     if sys.platform not in ('darwin', 'linux'):
         # Capturing the logical baseline does not prove that the
         # separate advisory inventory can discover every native segment.

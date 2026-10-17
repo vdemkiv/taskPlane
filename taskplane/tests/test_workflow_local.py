@@ -88,8 +88,12 @@ def test_numbered_database_recovery_refuses_without_changing_control_files(tmp_p
 
 def test_numbered_database_recovery_never_overwrites_a_racing_writer(tmp_path, monkeypatch):
     c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
+    marker = target.with_name(target.stem + '.initialized.json')
+    before = marker.read_bytes()
+    publications = []
     link = os.link
     def collision(source, destination, **kwargs):
+        publications.append(destination)
         if destination == target.name:
             target.write_bytes(b'concurrent state')
             raise FileExistsError('fixture concurrent writer')
@@ -97,6 +101,12 @@ def test_numbered_database_recovery_never_overwrites_a_racing_writer(tmp_path, m
     monkeypatch.setattr(h.os, 'link', collision)
     with pytest.raises(w.Refusal) as caught:
         c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
+    if not binding_runtime_available():
+        assert caught.value.reason == 'workspace_binding'
+        assert 'no-follow directory operations' in str(caught.value)
+        assert not publications and not target.exists()
+        assert candidate.read_bytes() == raw and marker.read_bytes() == before
+        return
     assert isinstance(caught.value.__cause__, FileExistsError)
     assert target.read_bytes() == b'concurrent state' and candidate.read_bytes() == raw
 
