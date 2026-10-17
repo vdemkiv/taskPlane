@@ -37,7 +37,13 @@ jobs:
       - name: Archive diagnostic files with their original names
         if: always()
         shell: bash
-        run: tar -czf "$RUNNER_TEMP/reports.tar.gz" -C "$RUNNER_TEMP" reports
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -82,7 +88,13 @@ jobs:
       - name: Archive diagnostic files with their original names
         if: always()
         shell: bash
-        run: tar -czf "$RUNNER_TEMP/reports.tar.gz" -C "$RUNNER_TEMP" reports
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -112,7 +124,13 @@ jobs:
       - name: Archive diagnostic files with their original names
         if: always()
         shell: bash
-        run: tar -czf "$RUNNER_TEMP/reports.tar.gz" -C "$RUNNER_TEMP" reports
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -143,7 +161,13 @@ jobs:
       - name: Archive diagnostic files with their original names
         if: always()
         shell: bash
-        run: tar -czf "$RUNNER_TEMP/reports.tar.gz" -C "$RUNNER_TEMP" reports
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -166,7 +190,13 @@ jobs:
       - name: Archive diagnostic files with their original names
         if: always()
         shell: bash
-        run: tar -czf "$RUNNER_TEMP/reports.tar.gz" -C "$RUNNER_TEMP" reports
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
