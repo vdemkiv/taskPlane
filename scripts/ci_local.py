@@ -446,6 +446,11 @@ OPTIONAL_SKIP_RULES = [
         'test_malformed_startup_evidence_has_bounded_specific_refusal',
         'test_legacy_inspection_does_not_publish_before_validation',
         'test_selected_recovery_refusal_preserves_unrelated_denial_and_all_bytes',
+        'test_startup_control_reports_without_receipt_or_execution_authority',
+        'test_startup_control_refuses_foreign_unknown_or_broadened_requests',
+        'test_startup_control_after_fence_never_revives_or_releases_attempt',
+        'test_startup_control_enforces_encoded_byte_boundary_without_truncation',
+        'test_preclaim_recovery_refuses_output_that_was_absent_at_preparation',
     )),
     ('test_claude_stop_before_handback.py', 'Requires native no-follow reads', 'no_binding', {}, (
         'test_captured_b5_projection_requires_original_chronology_and_report',
@@ -453,6 +458,7 @@ OPTIONAL_SKIP_RULES = [
         'test_pre_handback_sequence_does_not_relax_identity_or_delivery',
         'test_same_launch_competing_no_report_remains_conflict',
         'test_selected_startup_report_audit_handles_claimed_and_preclaim_failure',
+        'test_failed_startup_handback_replay_revalidates_original_native_evidence',
     )),
     ('test_claude_worker_lifecycle.py', 'Requires native no-follow reads', 'no_binding', {}, (
         'test_root_source_uses_original_project_with_worktree_cwd',
@@ -525,8 +531,71 @@ OPTIONAL_SKIP_RULES = [
     ('test_host_native.py', 'This platform has no implemented native process-start reader', 'no_boot', {}, (
         'test_real_process_start_identity_is_stable_and_not_ownership',
     )),
+    ('test_host_capabilities.py', 'Requires no-follow nonblocking reader', 'no_recovery', {}, (
+        'test_complete_parent_and_child_over_64mib_use_bounded_continuations',
+        'test_recovery_continuation_refuses_changed_snapshot',
+        'test_recovery_retry_has_deterministic_progress_and_detects_late_conflict',
+    )),
+    ('test_native_worker_dispatch.py', 'Requires no-follow nonblocking reader', 'no_recovery', {}, (
+        'test_partial_recovery_persists_cursor_without_releasing_reservation',
+    )),
+    ('test_native_worker_dispatch.py', 'Native transcript identity requires no-follow reads', 'no_binding', {}, (
+        'test_claude_start_stop_contract_and_child_control_refusal',
+        'test_claude_launch_requires_source_pinned_before_preparation',
+    )),
+    ('test_context_startup_budget.py', 'Native transcript identity requires no-follow reads', 'no_binding', {}, (
+        'test_claude_typed_controls_before_claim_keep_identity_and_reservation',
+        'test_claude_typed_control_cannot_target_another_worker',
+        'test_claude_typed_probe_dispatch_keeps_incomplete_timing',
+        'test_claude_typed_transport_cannot_expand_an_issued_authority',
+        'test_claude_typed_control_concurrent_replay_dispatches_once',
+    )),
+    # Interactive.__init__ checks the actual reader before constructing these
+    # fixtures. These exact callers do not inherit its module-level pytestmark.
+    ('test_claude_dispatch_order.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
+        'test_launch_reservation_survives_either_flush_order_without_granting_child_access',
+        'test_deferred_native_conflict_never_binds_or_clears_pending_attempt',
+        'test_missing_transcript_call_requires_current_automatic_root_provenance',
+        'test_caller_source_hint_cannot_survive_failed_automatic_selection',
+    )),
+    ('test_claude_startup_diagnostics.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
+        'test_selected_startup_error_preserves_exact_refusal_and_database',
+    )),
+    ('test_cross_host_compatibility.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
+        'test_claude_backfilled_message_retains_owned_attempt_and_does_not_join',
+        'test_claude_unjoinable_launch_refuses_before_admission_and_can_abandon',
+        'test_claude_preflight_rejected_call_can_be_corrected_without_new_grant',
+        'test_claude_child_message_reports_supported_handback_without_delivery',
+    )),
+    ('test_worker_runtime.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
+        'test_denial_runtime_regression',
+        'test_denial_lifecycle_ingestion_survives_cache_capacity',
+        'test_denial_saturated_ingestion_requires_exact_automatic_lifecycle',
+        'test_exact_automatic_lifecycle_preserves_successful_claude_launch',
+        'test_denial_is_idempotent_unsatisfied_and_requires_fresh_grant_reason',
+        'test_revoked_denial_refresh_never_uses_stale_quiescence',
+        'test_new_denial_refuses_existing_child_or_work',
+        'test_denial_transition_requires_observation_to_match_sealed_proof',
+    )),
+    ('test_workflow_host.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
+        'test_denial_controller_recovery_regression',
+        'test_denial_lifecycle_ingestion_blocks_saturated_legacy_recovery',
+        'test_denial_recovery_refusals_preserve_original_attempt',
+        'test_denial_recovery_cli_preserves_before_history_and_revalidates_replay',
+        'test_denial_recovery_partial_scan_stays_private_and_resumes',
+        'test_denial_mutable_boundaries_refresh_and_persist_before_refusal',
+        'test_denial_direct_resume_and_adapter_checks_are_read_only',
+        'test_denial_does_not_veto_bound_negative_human_decision',
+    )),
+    ('test_worker_runtime.py', 'Strict workspace binding requires descriptor-relative no-follow directory operations', 'no_binding', {}, (
+        'test_bound_workers_require_independent_current_location_and_matching_contract',
+        'test_bound_host_alias_write_preserves_exact_scope_and_symlink_checks',
+    )),
     ('test_initialization_readiness.py', 'Restoration requires no-follow directory descriptors.', 'no_binding', {}, (
         'test_receipt_completion_does_not_manufacture_native_readiness',
+    )),
+    ('test_controller_storage.py', 'Restoration requires no-follow directory descriptors.', 'no_binding', {}, (
+        'test_public_recovery_requires_receipt_and_preserves_original_provenance',
     )),
     ('test_initialization_recovery_receipt.py', 'Restoration requires no-follow directory descriptors; unsupported platforms fail closed.', 'no_binding', {}, (
         'test_exact_restoration_and_completed_retry_preserve_original_bytes',
@@ -548,6 +617,7 @@ OPTIONAL_SKIP_RULES = [
         'test_recent_unreadable_evidence_never_falls_back_to_an_older_approval',
         'test_reverse_reader_preserves_cross_chunk_records_and_stops_before_old_history',
         'test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source',
+        'test_native_hook_validates_complete_original_question_before_approval',
     )),
     ('test_native_workflow_cli.py', 'Exercises a host without Claude invocation transport', 'claude_transport', {}, (
         'test_unsupported_claude_context_refuses_through_declared_hooks',
@@ -629,6 +699,9 @@ OPTIONAL_SKIP_RULES = [
     ('test_workspace_binding.py', 'POSIX backslashes remain literal and refused', 'windows', {}, (
         'test_posix_targets_keep_backslash_refusal',
     )),
+    ('test_workspace_binding.py', 'Strict workspace binding requires descriptor-relative no-follow directory operations', 'no_binding', {'bound': True}, (
+        'test_native_targets_refuse_symlink_components',
+    )),
     ('test_claude_worker_invocation.py', 'Successful Claude invocation transport requires macOS or Linux', 'no_claude_transport', {}, (
         'test_bad_quoting_and_oversize_refuse',
         'test_claim_reorders_and_quotes_only_literals',
@@ -680,6 +753,9 @@ OPTIONAL_SKIP_RULES = [
     ('test_workflow_packages.py', 'Successful Claude context transport requires macOS or Linux; refusal is tested separately', 'no_claude_transport', {'host': 'claude'}, (
         'test_generated_archives_match_verified_source',
     )),
+    ('test_workflow_autonomy.py', 'Successful Claude context transport requires macOS or Linux; refusal is tested separately', 'no_claude_transport', {'host': 'claude'}, (
+        'test_seven_phase_autonomous_native_journey',
+    )),
     ('test_workflow_delivery.py', 'FIFO snapshots require POSIX named pipes', 'no_fifo', {'bad': 'fifo'}, (
         'test_original_source_relay_malformed_snapshot_has_named_refusal',
     )),
@@ -693,6 +769,37 @@ OPTIONAL_SKIP_RULES = [
         'test_incremental_long_directory_entries_resume_without_false_eof',
     )),
 ]
+
+# These transports alone enter consent_transport_case's capability-gated
+# branches. Other transports of the same parametrized test remain required.
+for _transport, _reason in (
+    ('observed-v2', 'Accepting original-source relay evidence requires secure descriptor-relative reads'),
+    ('native-capture', 'Native no-follow reads unavailable'),
+):
+    for _parameter, _names in (
+        ('consent_transport', (
+            'test_sec01_transport_question_target_matrix',
+            'test_sec01_transport_stale_or_foreign_binding_is_atomic',
+            'test_sec01_transport_proof_precedes_question_validation',
+            'test_sec02_transport_validates_complete_original_question',
+            'test_sec01_exact_original_request_replay_is_idempotent',
+            'test_sec01_consumed_event_cannot_approve_a_later_checkpoint',
+            'test_sec01_conflicting_replay_is_refused_without_authority_mutation',
+        )),
+        ('consent_text_transport', (
+            'test_sec01_transport_answer_target_matrix',
+            'test_sec02_transport_keeps_complete_answer_qualification',
+            'test_sec01_current_phase_approval_can_continue_to_next_phase',
+            'test_sec01_continuation_keeps_phase_and_condition_boundaries',
+        )),
+        ('transport', ('test_sec02_caller_text_cannot_replace_pinned_original_question',)),
+    ):
+        OPTIONAL_SKIP_RULES.append(('test_delegated_checkpoint.py', _reason, 'no_binding', {_parameter: _transport}, _names))
+    OPTIONAL_SKIP_RULES.append(('test_reopen_checkpoint_consent.py', _reason, 'no_binding',
+        {'consent_transport': _transport}, ('test_sec01_reopen_transport_cannot_record_approval_or_continue',)))
+OPTIONAL_SKIP_RULES.append((
+    'test_delegated_checkpoint.py', 'Accepting original-source relay evidence requires secure descriptor-relative reads',
+    'no_binding', {}, ('test_sec01_v2_original_snapshot_metadata_cannot_disappear',)))
 
 OPTIONAL_SKIP_NODES = {}
 for _module, _reason, _predicate, _params, _names in OPTIONAL_SKIP_RULES:
@@ -943,7 +1050,8 @@ def optional_skip_evidence(profile: dict, report: dict) -> dict | None:
     reason, error = evidence.get('reason'), evidence.get('os_error', {})
     for rule in rules:
         predicate = rule['predicate']
-        if any(parameters.get(key) != value for key, value in rule['parameters'].items()):
+        if any(type(parameters.get(key)) is not type(value) or parameters.get(key) != value
+               for key, value in rule['parameters'].items()):
             continue
         expected_reason = rule['reason']
         if predicate == 'symlink_error_text':

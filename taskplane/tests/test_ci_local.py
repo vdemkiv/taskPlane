@@ -240,6 +240,102 @@ def test_exact_optional_capability_rules(node, reason, platform, params):
             assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
+WINDOWS_CAPABILITY_CASES = [
+    ('test_native_worker_dispatch.py::test_claude_start_stop_contract_and_child_control_refusal[None-user-True]',
+     'Native transcript identity requires no-follow reads', {'background': True, 'delivery': 'user', 'completion_defect': None}),
+    ('test_context_startup_budget.py::test_claude_typed_probe_dispatch_keeps_incomplete_timing',
+     'Native transcript identity requires no-follow reads', {}),
+    ('test_workspace_binding.py::test_native_targets_refuse_symlink_components[False-True]',
+     'Strict workspace binding requires descriptor-relative no-follow directory operations', {'bound': True, 'directory': False}),
+    ('test_delegated_checkpoint.py::test_sec01_transport_question_target_matrix[observed-v2-correct-correct]',
+     'Accepting original-source relay evidence requires secure descriptor-relative reads', {'consent_transport': 'observed-v2'}),
+    ('test_delegated_checkpoint.py::test_sec01_transport_answer_target_matrix[native-capture-correct-correct]',
+     'Native no-follow reads unavailable', {'consent_text_transport': 'native-capture'}),
+    ('test_reopen_checkpoint_consent.py::test_sec01_reopen_transport_cannot_record_approval_or_continue[observed-v2]',
+     'Accepting original-source relay evidence requires secure descriptor-relative reads', {'consent_transport': 'observed-v2'}),
+    ('test_claude_dispatch_order.py::test_missing_transcript_call_requires_current_automatic_root_provenance[profile]',
+     'Interactive Claude fixtures require native no-follow transcript reads', {'defect': 'profile'}),
+    ('test_claude_startup_diagnostics.py::test_selected_startup_error_preserves_exact_refusal_and_database[failure0]',
+     'Interactive Claude fixtures require native no-follow transcript reads', {}),
+    ('test_claude_startup_reconciliation.py::test_startup_control_refuses_foreign_unknown_or_broadened_requests[binding]',
+     'Native no-follow reads unavailable', {'defect': 'binding'}),
+    ('test_cross_host_compatibility.py::test_claude_child_message_reports_supported_handback_without_delivery',
+     'Interactive Claude fixtures require native no-follow transcript reads', {}),
+    ('test_worker_runtime.py::test_denial_lifecycle_ingestion_survives_cache_capacity[after_denial-explicit-1024]',
+     'Interactive Claude fixtures require native no-follow transcript reads', {'prior_events': 1024, 'variant': 'explicit', 'timing': 'after_denial'}),
+    ('test_workflow_host.py::test_denial_direct_resume_and_adapter_checks_are_read_only[budget]',
+     'Interactive Claude fixtures require native no-follow transcript reads', {'defect': 'budget'}),
+    ('test_host_capabilities.py::test_recovery_continuation_refuses_changed_snapshot[duplicate]',
+     'Requires no-follow nonblocking reader', {'change': 'duplicate'}),
+    ('test_native_approval_capture.py::test_native_hook_validates_complete_original_question_before_approval[question0]',
+     'Native no-follow reads unavailable', {}),
+    ('test_claude_stop_before_handback.py::test_failed_startup_handback_replay_revalidates_original_native_evidence[body]',
+     'Requires native no-follow reads', {'defect': 'body'}),
+    ('test_controller_storage.py::test_public_recovery_requires_receipt_and_preserves_original_provenance',
+     'Restoration requires no-follow directory descriptors.', {}),
+    ('test_workflow_autonomy.py::test_seven_phase_autonomous_native_journey[claude]',
+     'Successful Claude context transport requires macOS or Linux; refusal is tested separately', {'host': 'claude'}),
+]
+
+
+@pytest.mark.parametrize('node,reason,parameters', WINDOWS_CAPABILITY_CASES,
+                         ids=[case[0].split('::')[0] for case in WINDOWS_CAPABILITY_CASES])
+def test_reviewed_windows_capability_skips_remain_explicit(node, reason, parameters):
+    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters=parameters)
+    verdict = ci_local.test_verdict(record)
+    assert verdict['status'] == 'pass' and len(verdict['optional_platform_skips']) == 1
+    # Setup skips legitimately have no call report, but cannot prove an assertion.
+    assert not any(r['when'] == 'call' for r in record['profile']['reports'])
+    selected = record['profile']['selected_nodeids'][0]
+    assert ci_local.required_coverage({'id': 'LOCAL-X', 'assertions': ['required']}, [record], {},
+                                     {'LOCAL-X:1': [selected]})['status'] == 'fail'
+    record['profile']['platform_capabilities'].update(os_name='posix', sys_platform='darwin',
+        open_dir_fd=True, O_DIRECTORY=True, O_NOFOLLOW=True, O_NONBLOCK=True)
+    assert ci_local.test_verdict(record)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('case', [0, 2, 3, 12], ids=['native-reader', 'bound-only', 'transport-only', 'recovery-reader'])
+@pytest.mark.parametrize('change', ['unknown-node', 'reason', 'malformed-capability', 'missing-capability',
+                                   'missing-call', 'duplicate-call', 'missing-selected', 'xfail'])
+def test_windows_skip_rules_do_not_hide_missing_or_forged_execution(case, change):
+    node, reason, parameters = WINDOWS_CAPABILITY_CASES[case]
+    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters=parameters)
+    profile = record['profile']; report = profile['reports'][0]
+    if change == 'unknown-node':
+        report['nodeid'] = profile['selected_nodeids'][0] = record['collection'][0]['nodeid'] = 'taskplane/tests/test_new.py::test_new'
+    elif change == 'reason': report['skip_evidence']['reason'] += ' (unreviewed)'
+    elif change == 'malformed-capability': profile['platform_capabilities']['O_NOFOLLOW'] = 0
+    elif change == 'missing-capability': del profile['platform_capabilities']['O_NOFOLLOW']
+    elif change == 'missing-call': report['outcome'] = 'passed'
+    elif change == 'duplicate-call':
+        profile['reports'].extend([{'nodeid': nodeid, 'when': 'call', 'outcome': 'passed', 'wasxfail': None}
+                                   for nodeid in profile['selected_nodeids'] * 2])
+    elif change == 'missing-selected': profile['selected_nodeids'] = []
+    else: report['wasxfail'] = 'expected'
+    assert ci_local.test_verdict(record)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('bound', [False, None, 1, 'True'])
+def test_unbound_or_untyped_symlink_case_is_never_optional(bound):
+    node, reason, _ = WINDOWS_CAPABILITY_CASES[2]
+    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters={'bound': bound})
+    assert ci_local.test_verdict(record)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('transport', ['observed-v1', 'observed-v3-direct', 'observed-v3-reaction', 'native-capture', None])
+def test_consent_transport_skip_cannot_exempt_other_transport(transport):
+    node, reason, _ = WINDOWS_CAPABILITY_CASES[3]
+    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters={'consent_transport': transport})
+    assert ci_local.test_verdict(record)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('host', ['codex', 'openai', 'unknown', None])
+def test_claude_journey_skip_does_not_exempt_other_hosts(host):
+    node, reason, _ = WINDOWS_CAPABILITY_CASES[-1]
+    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters={'host': host})
+    assert ci_local.test_verdict(record)['status'] == 'fail'
+
+
 @pytest.mark.parametrize('change', ['skip', 'missing-call', 'missing-node', 'xfail', 'error', 'duplicate-call'])
 def test_required_binding_never_accepts_incomplete_execution(change):
     record = optional_record(); node = record['profile']['selected_nodeids'][0]
