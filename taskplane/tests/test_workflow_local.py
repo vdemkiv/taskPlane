@@ -7,6 +7,11 @@ from taskplane import workflow as w, workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_evidence import prepare
 
 
+def binding_runtime_available():
+    return (os.open in os.supports_dir_fd and hasattr(os, 'O_DIRECTORY')
+            and hasattr(os, 'O_NOFOLLOW'))
+
+
 def setup(workspace, *, entry="product", standalone=False):
     workspace=workspace.resolve()
     state, _, _=prepare(workspace)
@@ -37,6 +42,11 @@ def test_numbered_database_recovery_preserves_exact_history_and_is_idempotent(tm
     before = marker.read_bytes()
     with pytest.raises(w.Refusal, match='incomplete'):
         c.report()
+    if not binding_runtime_available():
+        with pytest.raises(w.Refusal, match='no-follow directory operations'):
+            c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
+        assert not target.exists() and candidate.read_bytes() == raw and marker.read_bytes() == before
+        return
     result = c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
     assert result['status'] == 'restored' and result['approvals_changed'] is False
     assert target.read_bytes() == candidate.read_bytes() == raw and marker.read_bytes() == before
@@ -78,12 +88,26 @@ def test_numbered_database_recovery_refuses_without_changing_control_files(tmp_p
 
 def test_numbered_database_recovery_never_overwrites_a_racing_writer(tmp_path, monkeypatch):
     c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
-    def collision(source, destination):
-        destination.write_bytes(b'concurrent state')
-        raise FileExistsError('fixture concurrent writer')
+    marker = target.with_name(target.stem + '.initialized.json')
+    before = marker.read_bytes()
+    publications = []
+    link = os.link
+    def collision(source, destination, **kwargs):
+        publications.append(destination)
+        if destination == target.name:
+            target.write_bytes(b'concurrent state')
+            raise FileExistsError('fixture concurrent writer')
+        return link(source, destination, **kwargs)
     monkeypatch.setattr(h.os, 'link', collision)
-    with pytest.raises(FileExistsError):
+    with pytest.raises(w.Refusal) as caught:
         c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
+    if not binding_runtime_available():
+        assert caught.value.reason == 'workspace_binding'
+        assert 'no-follow directory operations' in str(caught.value)
+        assert not publications and not target.exists()
+        assert candidate.read_bytes() == raw and marker.read_bytes() == before
+        return
+    assert isinstance(caught.value.__cause__, FileExistsError)
     assert target.read_bytes() == b'concurrent state' and candidate.read_bytes() == raw
 
 
@@ -127,6 +151,13 @@ def test_recovery_cli_restores_only_expected_native_root(tmp_path, capsys, monke
     args=['recover','--workspace',str(tmp_path),'--recover-from',candidate.name,
           '--expected-sha256',checksum,'--run',state['run'],'--expected-revision',str(state['revision']),
           '--request-reference','conversation/recovery']
+    if not binding_runtime_available():
+        assert flow.main(args,compact=True,governor=c) == 2
+        refusal = json.loads(capsys.readouterr().out)
+        assert refusal['reason'] == 'workspace_binding'
+        assert 'no-follow directory operations' in refusal['detail']
+        assert not target.exists() and candidate.read_bytes() == raw
+        return
     assert flow.main(args,compact=True,governor=c) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'restored'
     assert target.read_bytes() == raw
@@ -163,6 +194,8 @@ candidate = target.with_name(target.stem+' 2.json')
 candidate.write_bytes(raw)
 target.unlink()  # Deliberate interruption in an isolated temporary test workspace.
 hooks = json.loads((root/'hooks/hooks.json').read_text())['hooks']
+binding_supported = (os.open in os.supports_dir_fd and hasattr(os, 'O_DIRECTORY')
+                     and hasattr(os, 'O_NOFOLLOW'))
 def guarded(args):
     # Match the declared hook's interpreter identity. Windows py -3 can select
     # a different interpreter from the Python process that runs pytest.
@@ -178,11 +211,24 @@ def guarded(args):
     assert observed.returncode == 0, (observed.stdout, observed.stderr)
     assert json.loads(observed.stdout).get('hookSpecificOutput',{}).get('permissionDecision') != 'deny', observed.stdout
     result = subprocess.run(argv, cwd=workspace, text=True, capture_output=True)
+    if args[0] == 'recover' and not binding_supported:
+        refusal = json.loads(result.stdout)
+        assert result.returncode != 0 and refusal['reason'] == 'workspace_binding', (result.stdout, result.stderr)
+        assert refusal['detail'] == 'This runtime lacks no-follow directory operations required for workspace binding.'
+        assert not target.exists() and candidate.read_bytes() == raw
+        return refusal
     assert result.returncode == 0, (result.stdout, result.stderr)
     return json.loads(result.stdout)
 diagnosis = guarded(['diagnose'])
 assert diagnosis['status'] == 'blocked' and diagnosis['initialization']['marker_exists']
 assert diagnosis['initialization']['database_exists'] is False
+if not binding_supported:
+    # The installed CLI must report its actual platform limitation. Recovery
+    # cannot claim success or write state through an unsupported binding API.
+    guarded(['recover','--recover-from',candidate.name,'--expected-sha256',hashlib.sha256(raw).hexdigest(),
+             '--run',state['run'],'--expected-revision',str(state['revision']),
+             '--request-reference','isolated-package-fixture/recovery'])
+    raise SystemExit(0)
 result = guarded(['recover','--recover-from',candidate.name,'--expected-sha256',hashlib.sha256(raw).hexdigest(),
                   '--run',state['run'],'--expected-revision',str(state['revision']),
                   '--request-reference','isolated-package-fixture/recovery'])
@@ -195,7 +241,7 @@ assert c.report()['decisions'] == state['decisions']
     env.update(PLUGIN_ROOT=str(extracted), CLAUDE_PLUGIN_ROOT=str(extracted),
                PATH=str(Path(sys.executable).parent)+os.pathsep+env['PATH'])
     env['CODEX_THREAD_ID' if adapter == 'codex' else 'TASKPLANE_CLAUDE_SESSION_ID'] = 'package-root'
-    checked = subprocess.run([sys.executable,'-I','-c',probe,str(extracted),str(tmp_path/'workspace'),adapter],
+    checked = subprocess.run([sys.executable,'-I','-B','-c',probe,str(extracted),str(tmp_path/'workspace'),adapter],
                              cwd=tmp_path,env=env,text=True,capture_output=True)
     assert checked.returncode == 0, (checked.stdout, checked.stderr)
 
@@ -302,7 +348,7 @@ def decision(s, *, text="Approved", event="message-1"):
             "source":{"kind":"conversation","reference":event,"conversation":s["root"],"actor":"user",
                       "automatic":False,"observed_at":observed},
             "presentation":{"checkpoint":binding["checkpoint"],"reference":"assistant/presentation",
-                            "at":presented}}
+                            "at":presented,"text":f"Approve this {w.current(s)['phase']} checkpoint?"}}
 
 
 def decide(c,s,value=None):
@@ -520,25 +566,30 @@ def test_native_prompt_needs_envelope_and_journal_failure_keeps_decision(tmp_pat
 
 
 def check_store_byte_boundary(c, monkeypatch, payload, margin):
-    """Use actual persisted bytes, including escaping/indentation/newline, as the boundary."""
+    """Bound the exact next-generation commit without writing a sizing probe."""
+    from taskplane import primitives, storage
     target = c.adapter.control_path(c.workspace, c.root)
     before = target.read_bytes()
     original = json.loads(before)
+    generation = storage.storage_generation(original)
     candidate = deepcopy(original)
     candidate['size_probe'] = payload
-    c._write(target, candidate)
-    measured = target.read_bytes()
-    c._write(target, original)
+    committed = deepcopy(candidate)
+    committed['storage_generation'] = generation + 1
+    measured = storage.encode_controller(committed)
     assert target.read_bytes() == before
     monkeypatch.setattr(local, 'MAX_BYTES', len(measured) + margin)
-    if margin < 0:
-        with pytest.raises(w.Refusal, match='size limit'):
+    with primitives.file_lock(str(target)):
+        if margin < 0:
+            with pytest.raises(w.Refusal, match='size limit|byte limit'):
+                c._write(target, candidate)
+            assert target.read_bytes() == before
+            assert storage.storage_generation(candidate) == generation
+        else:
             c._write(target, candidate)
-        assert target.read_bytes() == before
-    else:
-        c._write(target, candidate)
-        assert target.read_bytes() == measured
-        assert len(measured) <= local.MAX_BYTES
+            assert target.read_bytes() == measured
+            assert storage.storage_generation(candidate) == generation + 1
+            assert len(measured) <= local.MAX_BYTES
     resumed = h.Controller(c.workspace, c.root, c.adapter).report()
     active = original['runs'][original['active']]
     assert resumed['run'] == active['run'] and resumed['revision'] == active['revision']
@@ -584,12 +635,16 @@ def test_compact_write_reads_legacy_state_and_preserves_prior_acceptance(tmp_pat
 
 @pytest.mark.parametrize('failure_call', [1, 2])
 def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_path, monkeypatch, failure_call):
-    from taskplane import primitives
+    from taskplane import primitives, storage
     c, s = setup(tmp_path)
     target = c.adapter.control_path(c.workspace, c.root)
     before = target.read_bytes()
     candidate = json.loads(before)
     candidate['sync_probe'] = 'updated'
+    proposed = deepcopy(candidate)
+    generation = storage.storage_generation(candidate)
+    published = {**deepcopy(candidate), 'storage_generation': generation + 1}
+    published_bytes = storage.encode_controller(published)
     original = primitives.os.fsync
     calls = []
     def fail_sync(fd):
@@ -605,15 +660,21 @@ def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_pa
                 calls.append(path)
                 raise OSError('simulated directory flush failure')
             patch.setattr(primitives, '_flush_windows_directory', fail_directory)
-        with pytest.raises(w.Refusal, match='not acknowledged'):
+        with primitives.file_lock(str(target)), pytest.raises(w.Refusal, match='not acknowledged'):
             c._write(target, candidate)
     assert len(calls) == failure_call
+    assert candidate == proposed  # A failed acknowledgment never advances the caller.
     if failure_call == 1:
         assert target.read_bytes() == before
     else:
-        assert json.loads(target.read_bytes()) == candidate
+        assert target.read_bytes() == published_bytes
+        with primitives.file_lock(str(target)), pytest.raises(w.Refusal, match='generation changed'):
+            c._write(target, candidate)
+        assert target.read_bytes() == published_bytes
     assert not list(target.parent.glob('.'+target.name+'.*.tmp'))
-    assert h.Controller(c.workspace, c.root, c.adapter).report()['revision'] == s['revision']
+    resumed = h.Controller(c.workspace, c.root, c.adapter)
+    assert resumed._read(target) == (json.loads(before) if failure_call == 1 else published)
+    assert resumed.report()['revision'] == s['revision']
 
 
 @pytest.mark.parametrize('profile', ['local', 'protected'])

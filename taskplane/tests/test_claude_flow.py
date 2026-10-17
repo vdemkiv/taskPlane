@@ -368,15 +368,22 @@ def test_streamed_worker_boundary_increments_conserve_lifetime(tmp_path):
     boundary = claude.timestamp('2026-09-15T00:00:10Z')
     run = {'run': 'first', 'session': 'root', 'host': 'claude', 'transcript_path': str(path),
            'at': '2026-09-15T00:00:00Z', 'usage': claude.read_snapshot(path, 'root')['usage']}
-    earlier, _ = claude.sessions(run, [], boundary)
-    later, _ = claude.sessions({**run, 'run': 'next', 'at': '2026-09-15T00:00:10Z'}, [], None)
+    child_event = {'child': 'reused', 'agent_transcript_path': str(child)}
+    earlier, _ = claude.sessions(run, [{**child_event, 'run': 'first'}], boundary)
+    later, _ = claude.sessions({**run, 'run': 'next', 'at': '2026-09-15T00:00:10Z'},
+                              [{**child_event, 'run': 'next'}], None)
     a = next(s for s in earlier if s['session'] == 'reused')
     b = next(s for s in later if s['session'] == 'reused')
     lifetime = claude.read_snapshot(child, 'root', agent='reused')['usage']
     assert a['usage']['total_tokens'] == 133
     assert b['usage']['total_tokens'] == b['usage']['output_tokens'] == 9
     assert b['usage']['input_tokens'] == b['usage']['cached_input_tokens'] == 0
-    assert a['status'] == b['status'] == 'measured'
+    if sys.platform in ('darwin', 'linux'):
+        assert a['status'] == b['status'] == 'measured'
+    else:
+        assert a['status'] == b['status'] == 'partial'
+        assert a['attribution_unknown'] and b['attribution_unknown']
+        assert 'native_directory_accounting_unavailable' in claude.last_refresh()['discovery_errors']
     assert {key: a['usage'][key] + b['usage'][key] for key in lifetime} == lifetime
 
 
@@ -407,9 +414,15 @@ def test_inactive_claude_worker_is_zero_only_when_observed(tmp_path):
            'transcript_path': str(path), 'usage': claude.read_snapshot(path, 'root')['usage']}
     sessions, _ = claude.sessions(run, [], None)
     assert [s['session'] for s in sessions] == ['root']
-    sessions, _ = claude.sessions({**run, 'worker_sessions': ['old']}, [], None)
+    events = [{'run': 'run', 'child': 'old', 'agent_transcript_path': str(child)}]
+    sessions, _ = claude.sessions({**run, 'worker_sessions': ['old']}, events, None)
     old = next(s for s in sessions if s['session'] == 'old')
-    assert old['status'] == 'measured' and old['usage']['total_tokens'] == 0
+    assert old['usage']['total_tokens'] == 0
+    if sys.platform in ('darwin', 'linux'):
+        assert old['status'] == 'measured'
+    else:
+        assert old['status'] == 'partial' and old['attribution_unknown']
+        assert 'native_directory_accounting_unavailable' in claude.last_refresh()['discovery_errors']
 
 
 def test_discovers_lens_counters_and_excludes_other_runs(tmp_path, monkeypatch):
@@ -423,6 +436,18 @@ def test_discovers_lens_counters_and_excludes_other_runs(tmp_path, monkeypatch):
     row['sessionId'] = 'unrelated'
     write(child.with_name('agent-other.jsonl'), [row])
     report = flow.report(ws)
+    if sys.platform not in ('darwin', 'linux'):
+        # The explicit root transcript remains readable; undiscovered workers
+        # cannot be treated as absent or included in a complete total.
+        assert report['tokens']['total_tokens'] == 142
+        assert report['native_tokens']['total_tokens'] == 284
+        assert {row['session'] for row in report['sessions']} == {'root'}
+        assert report['sessions'][0]['status'] == 'partial'
+        assert report['sessions'][0]['attribution_unknown']
+        refresh = report['usage_refresh']
+        assert not refresh['complete'] and not refresh['fully_discovered']
+        assert 'native_directory_accounting_unavailable' in refresh['discovery_errors']
+        return
     assert report['tokens']['total_tokens'] == 284
     assert report['native_tokens']['total_tokens'] == 426
     assert report['token_coverage']['measured_sessions'] == 2

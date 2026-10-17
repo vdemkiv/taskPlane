@@ -269,7 +269,7 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     out['supporting_notes'] = '\u03bb' * (8 * 1024 * 1024 // 6 + 1)
     (workspace/target).write_text(json.dumps(out))
     # Resolve the actual selected runtime's store path without a source fallback.
-    path_probe = subprocess.run([sys.executable,'-I','-c',
+    path_probe = subprocess.run([sys.executable,'-I','-B','-c',
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
         "from taskplane import workflow_host as h; "
         "assert Path(h.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "
@@ -284,11 +284,17 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     assert result['reason'] == 'state_unavailable' and 'size limit' in result['detail']
     def authority(raw):
         value = json.loads(raw)
+        # Hook admissions/readiness are observational commits. Their storage
+        # generation advances even when the submitted controller mutation is
+        # refused; decisions, revision and pinned proof must remain identical.
+        value.pop('storage_generation', None)
         value.pop('admissions', None)
         for state in value.get('runs', {}).values():
             state.pop('parent_hook_readiness', None)
         return value
-    assert authority(store.read_bytes()) == authority(before)
+    after = store.read_bytes()
+    assert json.loads(after)['storage_generation'] > json.loads(before)['storage_generation']
+    assert authority(after) == authority(before)
     resumed = cli(workspace,host,'report',root=root)['workflow']
     assert resumed['run'] == state['run'] and resumed['revision'] == state['revision']
     (workspace/target).write_bytes(small)
@@ -325,7 +331,7 @@ finished = next(s for s in db['runs'].values() if s['finished'])
 check_historical_finish_preserves_active(c, finished, active)
 print('NGEM-F01 NGEM-F02 repaired state checks passed')
 '''
-    child = subprocess.run([sys.executable,'-I','-c',script,str(root),str(replay_ws),host],
+    child = subprocess.run([sys.executable,'-I','-B','-c',script,str(root),str(replay_ws),host],
                            cwd=workspace.parent,capture_output=True,text=True)
     assert child.returncode == 0, child.stdout + child.stderr
     assert 'NGEM-F01 NGEM-F02 repaired state checks passed' in child.stdout
@@ -343,7 +349,7 @@ def exercise_repeated_repair_capacity(workspace, host, root=ROOT, *, stress=True
     state = cli(workspace, host, 'start', '--scope', '.taskplane/scope.json',
                 '--request-reference', 'fixture/repeated-repair-capacity', root=root)['workflow']
     # Resolve the store with the selected archive runtime, never a source adapter.
-    probe = subprocess.run([sys.executable, '-I', '-c',
+    probe = subprocess.run([sys.executable, '-I', '-B', '-c',
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
         "from taskplane import workflow_host as h; "
         "assert Path(h.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "
@@ -675,7 +681,7 @@ def test_optional_graph_failure_preserves_committed_decision(tmp_path, monkeypat
 
 
 def exercise_counter_freshness(workspace, host, root=ROOT):
-    """EV-F01: real CLI readers retain saved data time after a transcript disappears."""
+    """EV-F01: retain saved data time, or report unsupported native inventory."""
     from unittest.mock import patch
     from taskplane.tests.test_native_session_meter import _write_segment
     from taskplane.tests.test_claude_flow import message, write
@@ -692,9 +698,30 @@ def exercise_counter_freshness(workspace, host, root=ROOT):
         else:write(path,[message(),message('m2')])
         measured=cli(workspace,host,'progress','--phase','product','--note','Observed fixture interval',root=root,environment=environment)
         measured_at=measured['sessions'][0]['measured_at']
-        assert measured['tokens']['total_tokens']==(30 if host=='codex' else 142)
+        unsupported_inventory = host == 'codex' and sys.platform not in ('darwin', 'linux')
+        if not unsupported_inventory:
+            assert measured['tokens']['total_tokens']==(30 if host=='codex' else 142)
         path.unlink()
         saved=cli(workspace,host,'report','--run',initial['run'],root=root,environment=environment)
+        if unsupported_inventory:
+            # The real CLI cannot discover Codex counters on this host. Neither
+            # progress nor saved reports may invent a measurement or its time.
+            for result in (initial, measured, saved):
+                assert result['tokens'] is None and result['native_tokens'] is None
+                session = result['sessions'][0]
+                assert session['usage'] is None and session['native_usage'] is None
+                assert session['status'] == 'partial' and session['attribution_unknown']
+                assert session['measured_at'] is None
+                refresh = result['usage_refresh']
+                assert not refresh['complete'] and not refresh['fully_discovered']
+                assert 'native_directory_accounting_unavailable' in refresh['discovery_errors']
+                assert refresh['directory_bytes'] == refresh['discovery_entries'] == 0
+                clock = result['usage_measurement']
+                assert clock['status'] == 'unavailable'
+                assert clock['measured_at'] is clock['oldest_at'] is clock['newest_at'] is None
+                assert result['snapshot']['measurement_at'] is None
+                assert result['phase_usage']['measurement_at'] is None
+            return saved
         assert saved['sessions'][0]['status'].startswith('recorded')
         assert saved['sessions'][0]['measured_at']==measured_at
         expected_time=None if saved['token_coverage']['discovery_errors'] else measured_at

@@ -154,9 +154,31 @@ def headline(m: dict[str, Any]) -> str:
     return f"taskplane: {m['status']} · {m['phase']} · {len(m['tasks'])} tasks · {len(m['reviews'])} lens reviews · {_number((m.get('tokens') or {}).get('total_tokens'))} flow tokens"
 
 
+def revision_details(authority: dict[str, Any]) -> str:
+    events = authority.get('requirements_revisions', {})
+    if not events:
+        return ''
+    html = '<div class="note" id="requirements-revisions"><h3>Requirements revisions</h3>'
+    for key, event in events.items():
+        proposal = event['preview']
+        status = event['status']
+        remaining = [grant for grant in proposal.get('affected_grants', [])
+                     if authority.get('workers', {}).get(grant, {}).get('state') in
+                         {'prepared', 'launch_pending', 'bootstrapping', 'running', 'unknown', 'cancel_requested'}]
+        html += '<p><strong>'+_e(key)+' · '+_e(status)+'</strong></p>'
+        html += '<p>'+_e(event['request']['reason'])+'</p>'
+        html += '<p>Changed criteria: '+_e(', '.join(proposal['criteria']))+' · Affected tasks: '+_e(', '.join(proposal['tasks']))+'</p>'
+        html += '<p>Pending affected workers: '+_e(len(remaining))+'. '
+        html += ('New work is paused.' if authority.get('active_requirements_revision') == key
+                 else 'Review completed; retained results still require current evidence.')+'</p>'
+        html += '<p class="muted">Earlier decisions remain historical. Returning to Product creates no approval.</p>'
+        html += '<p>'+_e(event['result']['next_action'])+'</p>'
+    return html+'</div>'
+
+
 def _workflow(m: dict[str, Any]) -> str:
     authority = m.get('workflow') or {}
-    header = ''
+    header = revision_details(authority)
     provenance = authority.get('workflow_provenance')
     if provenance:
         binding = provenance.get('binding') or {}
@@ -321,9 +343,23 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         counts, cost = workers.get('counts', {}), workers.get('context_cost', {})
         plan += '<p>Reserved '+_e(counts.get('reserved', 'Unknown'))+' · Started '+_e(counts.get('launched', 'Unknown'))+' · Retries '+_e(counts.get('retries', 'Unknown'))+' · Failed '+_e(counts.get('failed', 'Unknown'))+'.</p>'
         plan += '<p>Context delivered: '+_e(cost.get('returned_bytes', 'Unknown'))+' bytes in '+_e(cost.get('responses', 'Unknown'))+' responses. '+_e(cost.get('unknown_attempts', 'Unknown'))+' attempts have no delivery measurement. These are context bytes, not tokens or Codex allowance.</p>'
-        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Native identity</th><th>Attempt</th><th>State</th><th>Purpose</th><th>Retry reason</th><th>Startup</th></tr></thead><tbody>'
+        plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Native identity</th><th>Attempt</th><th>State</th><th>Purpose</th><th>Retry reason</th><th>Startup execution</th></tr></thead><tbody>'
         for worker in workers.get('attempts',[]):
-            plan += '<tr>'+''.join('<td>'+_e(worker.get(k) or 'Unknown')+'</td>' for k in ('task_id','worker_id','attempt','state','purpose','retry_reason'))+'<td>'+_e((worker.get('readiness') or {}).get('status', 'Unknown'))+'</td></tr>'
+            startup = worker.get('startup') or {}
+            full = startup.get('full_processing_ns')
+            plan += '<tr>'+''.join('<td>'+_e(worker.get(k) or 'Unknown')+'</td>' for k in ('task_id','worker_id','attempt','state','purpose','retry_reason'))+'<td>'+_e((worker.get('readiness') or {}).get('status', 'Unknown'))
+            plan += '<br>Execution: '+_e(startup.get('execution', 'unknown'))
+            if startup.get('contract') == 'execution_only':
+                plan += '<br>Stage: '+_e(startup.get('stage', 'unknown'))
+                plan += '<br>Pending operations: '+_e(', '.join(startup.get('pending_operations', [])) or 'None')
+                plan += '<br>Stop requested: '+_e(startup.get('stop_requested', False))
+            elif 'timing_mode' in startup:
+                plan += '<br>Historical timing contract: '+_e(startup['timing_mode'])
+                plan += '<br>Full duration: '+_e(str(full)+' ns' if full is not None else 'Unknown / deferred')
+                plan += '<br>'+_e(startup.get('timing_reason', 'Coverage unavailable'))
+            elif startup.get('reason'):
+                plan += '<br>'+_e(startup['reason'])
+            plan += '</td></tr>'
         plan += '</tbody></table></div>'
         plan += '<details><summary>Ready tasks and waiting reasons</summary><pre>'+_e(json.dumps(workers.get('scheduling',[]),indent=2))+'</pre></details>'
     outcomes = m.get('hook_outcomes')

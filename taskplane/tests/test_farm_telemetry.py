@@ -634,3 +634,26 @@ def test_frozen_snapshot_cutoff_is_html_escaped(tmp_path):
     current["final_snapshots"][0]["artifact"] = str(escaped)
     html = dashboard.telemetry_sections(current)
     assert "<script>" not in html and "&lt;script&gt;bad&lt;/script&gt; &amp;" in html
+
+
+def test_telemetry_dimensions_preserve_unknown_and_separate_units():
+    value=telemetry.measurement_dimensions(
+        required_bodies=[{'sha256':'a','bytes':100},{'sha256':'a','bytes':100},{'sha256':'b','bytes':40}],
+        deliveries=[{'returned_bytes':180},{'returned_bytes':180}],
+        supporting_reads=[{'bytes':30},{'bytes':None}], direct_reads=None,
+        native_usage={'tokens':{'input_tokens':100,'cached_input_tokens':80,'output_tokens':20,'total_tokens':120},
+                      'coverage':'partial'},
+        phase_usage={'visits':{'v1':{'tokens':50}},'unresolved':70},
+        cost={'amount':0.25,'currency':'USD','source':'fixture-provider-billing-observation'})
+    assert value['unique_required_body_bytes']==140
+    assert value['actual_transport_bytes']==360
+    assert value['known_supporting_read_bytes']==30 and value['supporting_reads_unknown']==1
+    assert value['direct_read_bytes'] is None
+    assert value['native_usage']['tokens']['total_tokens']==120
+    assert value['native_usage']['coverage']=='partial'
+    assert value['phase_attribution']['unresolved']==70
+    assert value['cost']['amount']==0.25
+    assert all(v is None for v in value['inferences'].values())
+    assert 'no proof of model attention' in value['receipt_semantics']
+    unknown=telemetry.measurement_dimensions(required_bodies=[],deliveries=[],direct_reads=[])
+    assert unknown['direct_read_bytes']==0 and unknown['native_usage'] is None and unknown['cost'] is None

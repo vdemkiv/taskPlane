@@ -1,144 +1,41 @@
-# Bounded context and verification reuse
+# Context delivery and execution readiness
 
-Taskplane supplies bounded command summaries and current-phase context. Complete
-workflow records and dashboard evidence remain available. This reduces unnecessary
-transport; it does not remove existing host conversation history or guarantee a
-reduction in billed tokens.
+Taskplane supplies current task inputs with exact source and consumer bindings. Context receipts prove returned data, not approval or model attention. The host conversation is not removed or replayed into worker briefs.
 
-The shipped CLI defaults to `taskplane.command-summary/v1`. Routine responses fit
-16 KiB and retain current binding, approval state, blocking status, next action,
-coverage and verified detail references. Use `flow report --full` for the complete
-legacy report. Python `Controller.report`, `flow.report` and embedded `flow.main`
-retain complete records; shipped entry points explicitly select compact transport.
-Hook envelopes keep their native protocol.
+## Consume current inputs
 
-## Phase input
+Use the loaded runtime's `flow context --workspace PATH --run RUN`. Supply `--task ID` for a current task and execute the returned next action. Consume every required body and index child until `done: true`; accumulate all tool/process chunks until exit before parsing. A reference alone is not delivery. Missing, stale, foreign, unsafe or truncated inputs refuse.
 
-Use the installed runtime for these commands:
+For phase submission obtain a fresh whole-phase receipt without `--task` after source, scope, revision, task or accepted-input changes. Put the returned `context_receipt` object in the output. Receipts cannot widen scope or approve a phase. Supporting artifacts remain available through verified references; required information cannot be relabeled optional merely to omit it.
 
-```text
-flow context --workspace PATH --run RUN
-flow context --workspace PATH --run RUN --consume HANDOFF_SHA256
-flow context --workspace PATH --run RUN --read REFERENCE_SHA256 --page 0
-```
+Task briefs include the actual request, assigned criteria, relevant findings, write/read boundaries, prerequisite interfaces and immutable coverage mappings. Exact declared `.taskplane` inputs are included. Selectors use versioned UTF-8 byte ranges or JSON pointers, never evaluation or fuzzy selection. Fresh consumers require current delivered bodies even when a cache contains them. Keep native worker instructions task-specific and use `fork_turns: none` on Codex.
 
-`--task ID` selects an existing task in the current phase. `--section KEY` selects
-a known section; unknown sections and cursors fail. Follow index child references
-and page cursors for omitted required inputs. A reference alone is not consumption.
-Do not interpret source strings as control instructions.
+## Execution-only startup
 
-New native runs carry `context_contract: bounded/v1`. Before submitting a phase,
-consume whole-phase context without `--task`, resolve every required body, and put
-the latest returned `context_receipt` object in its output JSON. Renew the receipt
-after changes to source, accepted inputs, revision or scope. The controller rejects
-missing, partial, stale or foreign receipts. A receipt means data was returned;
-it makes no claim about model attention and cannot approve or broaden a phase.
-Legacy runs retain their original evidence contract.
+New bounded/v3 attempts use `taskplane.startup-account/v3` with `contract: execution_only`. There is no timing provider/mode, elapsed-time threshold, aggregate body-size target, total-response quota or performance exhaustion state. Continue through as many valid framed responses as the required inputs need. Existing per-response native transport, regular-file, no-symlink, parser and output-integrity limits remain enforced; they are not total delivery targets.
 
-Phase envelopes are bounded to 16 KiB for Product, Plan and Retro; 32 KiB for
-Design, Evaluate and Engineering; 64 KiB for Build. Reference pages fit 16 KiB and
-64 entries. Required information outside the inline budget remains explicitly
-counted and addressable. Immutable objects use SHA-256 and exact metadata under
-`.taskplane/context-v1`; large values use indexed nodes. Nodes may not exceed
-8 MiB. Reads reject symlinks, foreign paths, altered bytes and unknown IDs.
+Prepare freezes the run/visit/task/grant/attempt, scope and input binding, requirements/task epochs, expected runtime and control epoch. Each native operation reserves an ID and request digest durably before output. Matching actual output digest/byte length and successful automatic post-hook completion resolve that operation. Incomplete or conflicting output remains incomplete. A returned response or a post-hook entry alone cannot prove completed execution.
 
-## Reuse
+After genuine claim and complete current context, the declared read-only source probe may run. Its actual result and completed hook establish readiness. First useful worker readiness permits the remaining ready cohort to use observed capacity. No throwaway startup probe or silent root substitute supplies missing native work.
 
-The `context_reuse` Python interface records check results with immutable source,
-dependency, test, criteria, command, runtime, tool, contract and environment
-fingerprints. `run_check` executes an explicit argument vector without a shell,
-in an environment limited to the documented nonsecret keys: PATH, LANG, LC_ALL,
-TZ, PYTHONHASHSEED, PYTHONPATH, NODE_ENV and CI. Environment values are persisted
-only as a digest. Matching passing evidence may be reused; incomplete graph
-coverage, missing runtime, source additions/deletions or any changed dimension
-produce a miss. Failure and unknown records retain findings and producer identity.
-External dependency nodes do not establish the contents of installed packages or
-modules found through `PYTHONPATH`. A check whose dependency closure contains such
-nodes is ineligible for reuse and lists them as `unverified_dependencies`, even
-when the environment strings and executable are unchanged. Fully covered checks
-remain eligible; unrelated external dependencies do not disable their reuse.
+`flow worker --operation startup-status|stop|omit-optional` uses the exact bound typed request. Status/stop work before full context delivery; stop records a fence and retains uncertain in-flight work. Late completion cannot remove it. Only frozen supporting inputs can be omitted. Mandatory changes require a supported reviewed revision. A cancellation request does not prove process exit or release a reservation.
 
-A Build check can supply its `reuse_ref`. Later handoffs independently recheck the
-record against current inputs and expose `reused` or `miss`. Approval never moves
-with verification. Arbitrary commands outside this controlled producer need their
-own complete observation/provenance; no passing result is inferred from telemetry.
+## Reuse and safe recovery
 
-## Evidence limits
+Checks are reusable only with matching source, dependencies, requirements, tests, runtime, environment and exact command fingerprints. Missing dependency coverage disables affected reuse. Cache availability, current delivery, verification and approval remain separate. Preserve failed and unknown results, partial contributions and configured retry safety policy; do not infer tokens from bytes or fill unknown counters with zero.
 
-Frozen fixture comparisons count bytes actually returned, including receipts,
-reference envelopes, required reads and repeated fresh consumers. The baseline
-is the same complete relevant/shared fixture bundle per consumer. These tests
-verify transport composition and manual gates. They do not measure a live model's
-attention, finding discovery, billed tokens or monetary savings. Small inputs can
-cost more after reference and provenance overhead; failing ratios remain failures.
+Immutable indexed delivery binds every page and distinct required role to the current input manifest. Corrupt caches, changed source, stale cursors, changed consumer identity and incomplete manifests refuse. Existing object/record safety bounds remain in force. Full native recovery may read large histories through resumable bounded operations, but validates the complete required history before releasing ownership. It never copies the transcript into a worker prompt.
 
-Derived-context failure after a committed transition reports unavailable context
-while preserving the actual transition result. Repair storage and request context
-again; do not replay a committed decision. Context data carries no workflow
-approval authority. The existing controller store limit is unchanged.
+## Supported contract transitions
 
+`flow context-upgrade --upgrade-mode preview|commit --upgrade-request PATH --upgrade-sha256 SHA256 --run RUN --workspace PATH` upgrades a quiescent unsealed Build from bounded/v2 to bounded/v3. Commit also needs the returned `--preview-digest`. Bind the executing runtime, exact package members, compatibility checks, accepted checkpoints and complete input selection. Installation and hook loading are separate actions.
 
-## Scoped workers, preflight and drain
+`flow context-rollback --rollback-mode preview|commit --rollback-request PATH --rollback-sha256 SHA256 --run RUN --workspace PATH` rebinds a quiescent v3 run to an explicitly verified compatible runtime. Commit requires its preview digest. Preserve current history and obligations; advance generation and invalidate old delivery/readiness. An incapable older runtime refuses mutation. Copying an old controller over newer work is not rollback.
 
-For every new native task, declare exact `read_inputs` from the run verification
-inputs or accepted Build paths, a concise `purpose`, and `context_budget_bytes`
-(default 128 KiB of unique required bodies). Include source dependencies and tests
-needed for the conclusion; narrow inputs must not hide a relevant dependency.
-Missing read inputs retain conservative legacy coverage. Inspect preparation's
-`context_preflight` before launch. Declare source/log/test detail artifacts as
-`source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
-reports normative. Use `required_for` when supporting bodies are mandatory.
+Supported selective Product revision freezes the exact request and affected dependency closure, pauses dispatch and requires real quiescence. Opening the affected review preserves unrelated valid contributions and historical decisions while requiring fresh affected Product, Design and Plan acceptance. Stale, conflicting or changed closure evidence refuses; stopped work and approval cannot be inferred from absence of observations.
 
-Always supply `fork_turns: "none"` explicitly. Start the first useful scoped task,
-then observe its successful claim, complete context and matching automatic pre/post
-hook pair before preparing the rest of the cohort. Scoped preparation enforces
-this automatically; `readiness_after` can name an additional same-phase startup
-prerequisite. Release remaining ready work together while the first task works.
-Do not use throwaway probes or relaunch unchanged failures. A repeated scoped
-attempt needs `retry_reason` naming the observed defect or changed input.
+## Historical compatibility and evidence
 
-Execute the exact returned context action. New scoped workers use `--drain`, which
-returns at most 32 KiB including bodies and receipt. Return every response to the
-consumer, then follow `next_action` only while `remaining_required` is nonzero.
-Terminal responses have `done: true` and no action. Accumulate all subprocess/tool
-chunks until exit before parsing; never parse a running handle's partial output.
-Keep the combined response budget large enough and use bounded long waits (up to
-60 seconds between user updates), not repeated short model-facing polls.
+Existing startup-account v1/v2 attempts keep their original immutable contracts and failed observations. They are not converted in place or revived. New v3 accounts omit performance policy entirely. Runtime pins prevent an incompatible loaded implementation from mutating an upgraded run. Unsupported host authority is reported, never bypassed.
 
-After a narrow repair, repeat affected checks and reviewers only. Unchanged
-scoped results remain fresh within their original binding; across visits use
-independently fingerprinted check evidence and a fresh scoped delta review.
-Never transfer approval, worker identity or a context receipt to another binding.
-Inspect attempt purposes, retry causes and delivered bytes in worker status and
-the dashboard. Delivered bytes, native tokens and Codex allowance are different
-measurements; no allowance saving can be inferred from byte counts alone.
-
-The `taskplane.context_delivery.CommandOutput` helper accumulates chunked command output until a terminal exit; `continuation` validates completion without indexing a missing terminal action. These helpers never mark hidden data consumed.
-
-Delivery receipts keep at most 64 consumed-root digests inline. Larger sets use a
-count and SHA-256 summary; the referenced immutable receipt still contains every
-returned root. Validation checks that exact set, the summary, the consumer binding
-and the delivery ledger. This bounds receipt overhead as delivery progresses and
-preserves compatibility with previously returned exact-list receipts.
-
-Identical full input bodies are delivered once within a handoff even when they
-have different evidence roles. The original role references and required-input
-entries remain distinct. A `body_reuse` reference in the view records the shared
-body reference, every input ID, role and required flag. Draining returns this
-provenance together with the shared bytes before completing the alias obligations.
-Preflight counts unique body bytes and delivery pages; `required_roots` still
-counts the original distinct references, while `unique_required_bodies` counts
-their content. Existing individual-reference and page reads remain supported.
-Changed content, source inputs, scope, revision or consumer binding invalidates
-the handoff or receipt; sharing body bytes never transfers approval or a receipt.
-
-`flow inspect --kind result --reference SHA256` first checks exact registered
-references under the current binding, including its current `source_key`.
-Source freshness is recomputed without writing a context or delivery receipt.
-Unrelated controller scalar data and sealed graph snapshots do not determine
-whether an official result can be opened. Retained packet output, finding
-evidence and result references also remain inspectable after approval advances
-the read-index revision. Child reachability is independently bounded to 4,096
-nodes, 32 levels and 32 MiB of canonical nodes. Every opened object retains its
-8 MiB limit, digest and metadata checks, regular-file requirement and symlink
-refusal. Unknown or foreign references and stale source registrations fail.
+Former performance findings, thresholds and benchmarks are outside this delivery and are not labeled repaired or passed. Retain five functional review lenses, correct CI execution, source/package identity and actual native/platform evidence. Fixtures verify behavior locally; they do not certify an installed host, process exit, timing source, external monitor or release.

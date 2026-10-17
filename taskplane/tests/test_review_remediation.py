@@ -144,18 +144,20 @@ def request():
 @pytest.mark.parametrize('after', [False, True])
 def test_first_creation_recovers_each_write_interruption_without_read_repair(root, monkeypatch, write_number, after):
     controller = h.Controller(root, 'root', h.installed_adapter('codex'))
-    original = primitives.atomic_json
-    count = 0
-    def interrupted(path, value, **kwargs):
-        nonlocal count
-        count += 1
-        if count == write_number and not after:
-            raise OSError('injected before publication')
-        result = original(path, value, **kwargs)
-        if count == write_number and after:
-            raise OSError('injected after publication/directory sync')
-        return result
-    monkeypatch.setattr(primitives, 'atomic_json', interrupted)
+    originals = {name: getattr(primitives, name) for name in ('atomic_json', 'atomic_write_bytes')}
+    publications = []
+    def interrupt(name):
+        def interrupted(path, value, **kwargs):
+            publications.append((Path(path).name, name, json.loads(value) if isinstance(value, bytes) else deepcopy(value)))
+            if len(publications) == write_number and not after:
+                raise OSError('injected before publication')
+            result = originals[name](path, value, **kwargs)
+            if len(publications) == write_number and after:
+                raise OSError('injected after publication/directory sync')
+            return result
+        return interrupted
+    for name in originals:
+        monkeypatch.setattr(primitives, name, interrupt(name))
     if write_number == 6:  # The run is durable before the advisory harness binding.
         committed = controller.start(request())
         assert committed['start_observation_errors']
@@ -163,7 +165,19 @@ def test_first_creation_recovers_each_write_interruption_without_read_repair(roo
     else:
         with pytest.raises((OSError, w.Refusal), match='injected'):
             controller.start(request())
-    monkeypatch.setattr(primitives, 'atomic_json', original)
+    # Keep all six durable publications covered, including the compact CAS
+    # bytes between the initialization receipt and advisory harness binding.
+    transaction = 'initialization-' + controller._path().stem.removeprefix('workflow-') + '.json'
+    expected = [(transaction, 'atomic_json'), (controller.adapter.markername, 'atomic_json'),
+                (controller.adapter.filename, 'atomic_json'), (transaction, 'atomic_json'),
+                (controller.adapter.filename, 'atomic_write_bytes'), (local.Harness(root, 'root').path.name, 'atomic_json')]
+    assert [(path, writer) for path, writer, _ in publications] == expected[:write_number]
+    if write_number >= 3:
+        assert publications[2][2] == controller.adapter.empty_database()
+    if write_number >= 5:
+        assert len(publications[4][2]['runs']) == 1 and publications[4][2]['storage_generation'] == 1
+    for name, original in originals.items():
+        monkeypatch.setattr(primitives, name, original)
     before = {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')}
     try:
         controller.report()
@@ -194,6 +208,20 @@ def test_pending_initialization_resumes_through_hook_and_flow_cli(root, monkeypa
     local.Harness(root, 'root').select('tp-go', 'user/first-start', {})
     (root / 'scope.json').write_text(json.dumps(request()['scope']))
     args = ['start', '--workspace', str(root), '--scope', 'scope.json', '--request-reference', 'user/first-start']
+    before = {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')
+              if p != local.Harness(root, 'root').path}
+    # Reconciliation must be a read-only no-op until the exact start resumes;
+    # unsupported commands, foreign ownership and unknown handles still refuse.
+    for rejected in [runtime(root, 'flow', 'unknown', '--workspace', str(root)),
+                     runtime(root, 'flow', 'report', '--workspace', str(root)),
+                     command(root, sys.executable, '-c', 'print(1)'), stdin(root, 6000)]:
+        with pytest.raises(w.Refusal):
+            flow.hook(rejected, governor=controller)
+    worker = h.Controller(root, 'root', h.installed_adapter('codex'), principal='foreign-worker')
+    with pytest.raises(w.Refusal):
+        flow.hook(runtime(root, 'flow', *args, call_id=call_id), governor=worker)
+    assert {p.name: p.read_bytes() for p in (root / '.taskplane').glob('*.json')
+            if p != local.Harness(root, 'root').path} == before
     flow.hook(runtime(root, 'flow', *args, call_id=call_id), governor=controller)
     flow.hook(runtime(root, 'flow', *args, call_id=call_id, name='PostToolUse', tool_response={'session_id': 6000}),
               governor=controller)
@@ -202,10 +230,12 @@ def test_pending_initialization_resumes_through_hook_and_flow_cli(root, monkeypa
     for handle, chars in [(6001, ''), (6000, 'print(1)\n')]:
         with pytest.raises(w.Refusal):
             flow.hook(stdin(root, handle, chars), governor=controller)
+    assert not controller._path().exists() and controller.adapter.pending_initialization()
     assert flow.main(args, governor=controller) == 0
     capsys.readouterr()
     assert controller.report()['run']
     assert controller.report()['observed_handles']['6000']['state'] == 'running'
+    assert not controller.report().get('parent_hook_readiness')
 
 
 @pytest.mark.parametrize('kind', ['legacy_marker', 'established_missing', 'corrupt_database', 'foreign_proof', 'nonempty_pending'])

@@ -150,6 +150,8 @@ def accepted_plan(state: dict[str, Any]) -> dict[str, Any]:
 def validate_state(state: dict[str, Any]) -> None:
     """Reject structurally corrupt protected records without inventing repairs."""
     from . import workflow_approval as approval
+    from .workflow_write_guard import validate_control_history
+    validate_control_history(state)
     validate_scope(state["scope"])
     approval.validate_history(state)
     require(type(state["revision"]) is int and state["revision"] >= 0
@@ -324,6 +326,17 @@ def advance(state: dict[str, Any], phase: str) -> dict[str, Any]:
     s = deepcopy(state)
     s["index"] = next_index
     s["revision"] += 1
+    revision_id = s.get('active_requirements_revision')
+    if revision_id and phase == 'build':
+        event = s['requirements_revisions'][revision_id]
+        require(event['status'] == 'review' and stage.get('requirements_revision') == revision_id,
+                'approval_required', 'Implementation needs the accepted revised Plan.')
+        event['status'] = 'completed'
+        event['result'] = {**event['result'], 'status': 'completed', 'phase': phase,
+                           'revision': s['revision'], 'dispatch_paused': False,
+                           'next_action': 'Revalidate retained results and prepare fresh affected grants.'}
+        s['dispatch_paused'] = False
+        s.pop('active_requirements_revision', None)
     return s
 
 

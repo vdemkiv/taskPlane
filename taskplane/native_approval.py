@@ -5,6 +5,7 @@ caller-supplied message ID, copied transcript, or child event selects evidence.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -194,7 +195,7 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
             'source': {'kind': 'native_prompt', 'reference': human['uuid'], 'conversation': state['root'],
                        'actor': 'user', 'automatic': False, 'observed_at': human['timestamp']},
             'presentation': {'checkpoint': expected['checkpoint'], 'reference': assistant['uuid'],
-                             'at': assistant['timestamp']},
+                             'at': assistant['timestamp'], 'text': text},
             'native_proof': {'source_sha256': source['sha256'], 'human': human_ref, 'presentation': shown_ref}}
         return {'status': 'observed', 'decision': envelope}
     except _IncompleteTail as exc:
@@ -207,7 +208,25 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
 
 def verify(value: dict[str, Any], state: dict[str, Any], host: str,
            presentation: dict[str, Any]) -> dict[str, Any]:
+    w.require(isinstance(value.get('event_id'), str), 'invalid_evidence', 'Native event identity is missing.')
+    previous = state.get('decisions', {}).get(value.get('event_id'))
+    if previous is not None:
+        stage = w.current(state)
+        w.require(value.get('binding') == previous.get('binding')
+                  and stage.get('id') == previous['binding']['visit']
+                  and stage.get('packet', {}).get('checkpoint') == previous['binding']['checkpoint'],
+                  'stale_checkpoint', 'Native replay must retain its original checkpoint.')
+        # Re-read the pinned native source at its original checkpoint binding.
+        # This temporary copy cannot change workflow authority or accept a newer
+        # response: the complete freshly captured envelope must still match.
+        state = deepcopy(state)
+        state['revision'] = previous['binding']['revision']
+        state['visits'][state['index']]['decision'] = 'awaiting_human_approval'
     fresh = capture(state, host=host, presentation=presentation)
+    if previous is not None and fresh.get('status') == 'observed':
+        # Accepting Plan may narrow the scope. Replaying its exact observation
+        # retains the original scope authorization, never the newly narrowed one.
+        fresh['decision']['binding']['scope_digest'] = previous['binding']['scope_digest']
     w.require(fresh.get('status') == 'observed' and digest(fresh['decision']) == digest(value),
               'invalid_evidence', 'Native approval is stale or its original human/presentation proof changed.')
     return {**value, 'schema': 'taskplane.observed-decision/v1'}

@@ -22,6 +22,15 @@ def ordinary(state):
     raw = json.loads((Path(__file__).parent / "fixtures/approval/ordinary-owner-reply.json").read_text())
     raw["message"]["sent_at"] = source["sent_at"]
     raw["before"][0]["sent_at"] = relay["question"]["sent_at"]
+    # Keep the source shape and null linkage, but use a supported complete
+    # presentation. The immutable seed's older free-form scope description is
+    # retained as an explicit refusal regression below, never silently stripped
+    # by the production validator.
+    raw["before"][0]["content"]["text"] = (
+        "The Product checkpoint is ready. No implementation has started.\n\n"
+        "Do you accept this Product checkpoint so Design can proceed? "
+        "You can approve by reacting 👍 to this message."
+    )
     relay["question"]["text"] = raw["before"][0]["content"]["text"]
     relay["observation"]["raw"] = raw
     digest(request)
@@ -135,3 +144,22 @@ def test_ordinary_refusal_ambiguity_or_different_target_cannot_approve(tmp_path,
     with pytest.raises(w.Refusal):
         decide(c, state, request)
     assert c._path().read_bytes() == before
+
+
+
+def test_immutable_original_scope_description_is_an_explicit_compatibility_refusal(tmp_path):
+    """Retain old complete bytes: free-form summary requires a fresh question."""
+    c, state = setup(tmp_path)
+    state = submit(c, state)
+    request = ordinary(state)
+    original_raw = json.loads((Path(__file__).parent / "fixtures/approval/ordinary-owner-reply.json").read_text())
+    text = original_raw["before"][0]["content"]["text"]
+    request["relay"]["question"]["text"] = text
+    request["relay"]["observation"]["raw"]["before"][0]["content"]["text"] = text
+    digest(request)
+    original = deepcopy(request)
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match="Unsupported or conditional checkpoint question"):
+        decide(c, state, request)
+    assert c._path().read_bytes() == before
+    assert request == original

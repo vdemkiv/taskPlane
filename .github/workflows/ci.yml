@@ -11,6 +11,9 @@ concurrency:
   cancel-in-progress: true
 env:
   PYTHONUTF8: "1"
+# Required jobs execute functional tests. Legacy performance nodes remain in the
+# collection report with explicit exclusions; capacity.yml is disabled history.
+# Operational timeout caps below are unchanged and are not acceptance targets.
 jobs:
   portability:
     name: portability (${{ matrix.os }})
@@ -30,12 +33,22 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite portability --junitxml reports/portability.xml
+      - run: python scripts/ci_local.py --check tests --suite portability --junitxml "${{ runner.temp }}/reports/portability.xml" --report-json "${{ runner.temp }}/reports/execution.json"
+      - name: Archive diagnostic files with their original names
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: portability-${{ matrix.os }}
-          path: reports/portability.xml
+          path: ${{ runner.temp }}/reports.tar.gz
           if-no-files-found: error
   suites:
     name: ${{ matrix.suite }} ${{ matrix.shard }}/${{ matrix.shards }} (${{ matrix.os }})
@@ -44,18 +57,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
         suite: [core]
         shard: [1, 2, 3, 4]
         shards: [4]
         include:
-          - {os: ubuntu-latest, suite: native, shard: 1, shards: 2}
-          - {os: ubuntu-latest, suite: native, shard: 2, shards: 2}
-          - {os: windows-latest, suite: native, shard: 1, shards: 2}
-          - {os: windows-latest, suite: native, shard: 2, shards: 2}
+          - {os: windows-latest, suite: core, shard: 1, shards: 8}
+          - {os: windows-latest, suite: core, shard: 2, shards: 8}
+          - {os: windows-latest, suite: core, shard: 3, shards: 8}
+          - {os: windows-latest, suite: core, shard: 4, shards: 8}
+          - {os: windows-latest, suite: core, shard: 5, shards: 8}
+          - {os: windows-latest, suite: core, shard: 6, shards: 8}
+          - {os: windows-latest, suite: core, shard: 7, shards: 8}
+          - {os: windows-latest, suite: core, shard: 8, shards: 8}
+          - {os: ubuntu-latest, suite: native, shard: 1, shards: 6}
+          - {os: ubuntu-latest, suite: native, shard: 2, shards: 6}
+          - {os: ubuntu-latest, suite: native, shard: 3, shards: 6}
+          - {os: ubuntu-latest, suite: native, shard: 4, shards: 6}
+          - {os: ubuntu-latest, suite: native, shard: 5, shards: 6}
+          - {os: ubuntu-latest, suite: native, shard: 6, shards: 6}
+          - {os: windows-latest, suite: native, shard: 1, shards: 6}
+          - {os: windows-latest, suite: native, shard: 2, shards: 6}
+          - {os: windows-latest, suite: native, shard: 3, shards: 6}
+          - {os: windows-latest, suite: native, shard: 4, shards: 6}
+          - {os: windows-latest, suite: native, shard: 5, shards: 6}
+          - {os: windows-latest, suite: native, shard: 6, shards: 6}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {persist-credentials: false}
+        with: {persist-credentials: false, fetch-depth: 0}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.12", cache: pip}
       - name: Install test dependencies
@@ -63,12 +92,22 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --shard-index ${{ matrix.shard }} --shard-count ${{ matrix.shards }} --junitxml reports/${{ matrix.suite }}-${{ matrix.shard }}.xml
+      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --shard-index ${{ matrix.shard }} --shard-count ${{ matrix.shards }} --junitxml "${{ runner.temp }}/reports/${{ matrix.suite }}-${{ matrix.shard }}.xml" --report-json "${{ runner.temp }}/reports/execution.json"
+      - name: Archive diagnostic files with their original names
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: ${{ matrix.suite }}-${{ matrix.shard }}-${{ matrix.os }}
-          path: reports/*.xml
+          path: ${{ runner.temp }}/reports.tar.gz
           if-no-files-found: error
   archive-journeys:
     name: archive ${{ matrix.host }} (${{ matrix.os }})
@@ -78,7 +117,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        host: [codex, claude]
+        host: [codex, claude, hostless]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
@@ -89,12 +128,22 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite packages --host ${{ matrix.host }} --junitxml reports/archive.xml
+      - run: python scripts/ci_local.py --check tests --suite packages --host ${{ matrix.host }} --junitxml "${{ runner.temp }}/reports/archive.xml" --report-json "${{ runner.temp }}/reports/execution.json"
+      - name: Archive diagnostic files with their original names
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: archive-${{ matrix.host }}-${{ matrix.os }}
-          path: reports/archive.xml
+          path: ${{ runner.temp }}/reports.tar.gz
           if-no-files-found: error
   quality-package:
     name: quality + package + release provenance
@@ -105,13 +154,33 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "3.12", cache: pip}
       - run: python -m pip install --require-hashes --no-deps -r requirements-dev.lock
+      - name: Install isolation canary dependencies
+        run: |
+          awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
+          python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
       - run: python scripts/security_checks.py
-      - run: python scripts/ci_local.py --check quality
-      - run: python scripts/ci_local.py --check package
+      - run: python scripts/ci_local.py --check quality --report-json "${{ runner.temp }}/reports/quality.json"
+      - run: python scripts/ci_local.py --check package --package-output "${{ runner.temp }}/packages" --report-json "${{ runner.temp }}/reports/package.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: plugins-${{ github.sha }}
-          path: dist/
+          path: ${{ runner.temp }}/packages/
+          if-no-files-found: error
+      - name: Archive diagnostic files with their original names
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: quality-package-profiles
+          path: ${{ runner.temp }}/reports.tar.gz
           if-no-files-found: error
   dashboard-browser:
     name: dashboard browser conformance
@@ -125,12 +194,22 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check browser --junitxml reports/browser.xml
+      - run: python scripts/ci_local.py --check browser --junitxml "${{ runner.temp }}/reports/browser.xml" --report-json "${{ runner.temp }}/reports/execution.json"
+      - name: Archive diagnostic files with their original names
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY_ARCHIVE'
+          import os, pathlib, tarfile
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          with tarfile.open(root / "reports.tar.gz", "w:gz", dereference=False) as archive:
+              archive.add(root / "reports", arcname="reports")
+          PY_ARCHIVE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: dashboard-browser
-          path: reports/browser.xml
+          path: ${{ runner.temp }}/reports.tar.gz
           if-no-files-found: error
   security:
     name: security scanners and dependency audit

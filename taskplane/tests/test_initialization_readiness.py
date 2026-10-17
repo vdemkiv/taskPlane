@@ -1,6 +1,7 @@
 """Disposable hook fixtures verify contracts, never live host initialization."""
 from copy import deepcopy
 from datetime import datetime
+import os
 from pathlib import Path
 import shlex
 import sys
@@ -13,6 +14,32 @@ from taskplane.context_views import summary
 from taskplane.tests.test_context_cli import command, create
 from taskplane.tests.test_workflow_local import setup
 from taskplane.tests.test_worker_runtime import parent_pair
+
+
+@pytest.mark.skipif(os.open not in os.supports_dir_fd or not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"),
+                    reason="Restoration requires no-follow directory descriptors.")
+def test_receipt_completion_does_not_manufacture_native_readiness(tmp_path, monkeypatch):
+    from taskplane import workspace_binding as binding
+    from taskplane.tests.test_workflow_local import displaced_database
+    c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
+    write = binding._write
+    def interrupt(path, value, **kwargs):
+        if value.get("schema") == "taskplane.initialization-recovery/v1" and value["status"] == "restored":
+            raise OSError("fixture receipt completion stopped")
+        return write(path, value, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(binding, "_write", interrupt)
+        with pytest.raises(OSError, match="completion stopped"):
+            c.recover_initialization(candidate.name, checksum, state["run"], state["revision"], "fixture/exact-retry")
+    assert target.read_bytes() == raw
+    assert c.recover_initialization(candidate.name, checksum, state["run"], state["revision"], "fixture/exact-retry")["status"] == "restored"
+    restored = c.report()
+    before = target.read_bytes()
+    readiness = local.Harness(c.workspace, c.root).readiness(restored)
+    assert readiness["status"] == "initialization_pending"
+    assert readiness["parent_hook"]["status"] == "missing"
+    assert restored["revision"] == state["revision"] and restored["decisions"] == state["decisions"]
+    assert target.read_bytes() == before == candidate.read_bytes() == raw
 
 
 def test_saved_run_and_single_hook_do_not_prove_initialization(tmp_path):

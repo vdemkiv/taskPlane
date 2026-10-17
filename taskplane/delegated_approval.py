@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-import re
 from typing import Any
 
 from . import workflow as w
@@ -18,10 +17,6 @@ POLICY_SCHEMA = "taskplane.approval-policy/v2"
 SCHEMA = "taskplane.delegated-user-observation/v1"
 DECISION_SCHEMA = "taskplane.observed-decision/v3"
 CHECKPOINT_SCHEMA = "taskplane.delegated-checkpoint-observation/v1"
-# Use the same request language for phase targeting and ambiguity detection.
-# An imperative question is still a question, not an already granted approval.
-_QUESTION_REQUEST = (r"(?:^|[.?!]\s+|\n)(?:(?:do|will)\s+you\s+)?"
-                     r"(?:please\s+)?(?:accept|approve)")
 
 
 def _receipt(state: dict[str, Any], relay: Any, schema: str, fields: set[str]) -> None:
@@ -93,7 +88,7 @@ def verify(state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _adjacent_question(raw: dict[str, Any], question: dict[str, Any],
-                       owner: dict[str, Any], message: dict[str, Any]) -> None:
+                       owner: dict[str, Any], message: dict[str, Any], *, linked: bool = False) -> None:
     """Verify the connector's complete immediate context, never infer a reply ID.
 
     This deliberately accepts only one preceding question and no later messages.
@@ -101,15 +96,15 @@ def _adjacent_question(raw: dict[str, Any], question: dict[str, Any],
     observation; the recorder cannot discard conflicting context to make it fit.
     Existing cooperative owner, source, binding and chronology checks still apply.
     """
-    from .workflow_approval import decision_phases
-
     before = raw.get("before")
     w.require(raw.get("partial") is False and isinstance(before, list)
               and len(before) == 1 and raw.get("after") == []
-              and "reply_to_id" in message and message["reply_to_id"] is None
-              and "reply_root_message_id" in message and message["reply_root_message_id"] is None
+              and "reply_to_id" in message
+              and message["reply_to_id"] == (question["message_id"] if linked else None)
+              and "reply_root_message_id" in message
+              and message["reply_root_message_id"] in ((None, question["message_id"]) if linked else (None,))
               and message.get("author") == "user",
-              "invalid_evidence", "Ordinary consent needs complete immediate context with absent reply linkage.")
+              "invalid_evidence", "Ordinary consent needs complete immediate context and original reply linkage.")
     assert isinstance(before, list)
     shown = before[0]
     w.require(isinstance(shown, dict) and shown.get("author") in {"assistant", "aeon"}
@@ -122,18 +117,6 @@ def _adjacent_question(raw: dict[str, Any], question: dict[str, Any],
               and shown.get("sent_at") == question["sent_at"]
               and shown["content"].get("text") == question["text"],
               "invalid_evidence", "Ordinary consent must follow the exact original assistant question.")
-    # A short answer cannot choose between multiple approval requests or targets.
-    prompts = re.findall(_QUESTION_REQUEST + r"\b", question["text"], re.IGNORECASE)
-    identifiers = re.findall(r"\b[0-9a-f]{32}\b", question["text"].casefold())
-    phases = decision_phases(question["text"])
-    phase_options = r"\b(?:or|and)\s+(?:(?:this|the)\s+)?(?:" + "|".join(w.PHASES) + r")\b"
-    bound = question["binding"]
-    w.require(len(prompts) == 1 and question["text"].count("?") == 1
-              and (not phases or phases == {question["phase"]})
-              and not re.search(phase_options, question["text"], re.IGNORECASE)
-              and all(identifier in {bound["run"], bound["visit"], bound["checkpoint"]}
-                                      for identifier in identifiers),
-              "invalid_evidence", "Ordinary consent needs one unambiguous pending approval question.")
 
 
 def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: dict[str, Any],
@@ -146,7 +129,7 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
     distinct and its precision is retained. A consumed source event cannot be reused.
     """
     from .workflow_local import timestamp
-    from .workflow_approval import conversational_choice, decision_phases
+    from .workflow_approval import checkpoint_question_choice, validate_checkpoint_consent
 
     w.require(set(request) == {"schema", "event_id", "recorder", "choice", "binding", "relay"}
               and request.get("schema") == DECISION_SCHEMA and request.get("recorder") == "root_orchestrator",
@@ -158,6 +141,25 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
     _receipt(state, relay, CHECKPOINT_SCHEMA, fields)
     assert isinstance(relay, dict)
     stage = w.current(state)
+    event_id = request.get("event_id")
+    if isinstance(event_id, str) and event_id in prior:
+        recorded = prior[event_id]
+        provenance = recorded.get("provenance", {})
+        # A lost result can be retried after the checkpoint is resolved. This
+        # returns only the exact stored observation; it grants no new decision.
+        # The controller separately checks the caller's original revision.
+        w.require(state.get("profile") == "native_workflow"
+                  and stage.get("decision") != "awaiting_human_approval"
+                  and stage.get("packet")
+                  and expected == w.binding(state, stage["packet"])
+                  and all(recorded.get("binding", {}).get(key) == expected.get(key)
+                          for key in ("workspace", "root", "run", "visit", "checkpoint", "manifest_digest"))
+                  and request.get("binding") == relay["binding"] == recorded.get("binding")
+                  and request.get("choice") == recorded.get("choice")
+                  and provenance.get("schema") == DECISION_SCHEMA
+                  and provenance.get("relay") == relay,
+                  "stale_checkpoint", "Conflicting or stale delegated event replay.")
+        return deepcopy(recorded)
     w.require(state.get("profile") == "native_workflow" and stage.get("decision") == "awaiting_human_approval"
               and stage.get("packet"), "approval_required", "A delegated decision needs a pending native checkpoint.")
     w.require(request.get("binding") == relay["binding"] == expected == w.binding(state, stage["packet"]),
@@ -170,14 +172,6 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
               and 0 < len(question["text"]) <= 16384,
               "invalid_evidence", "Preserve the exact original question and its phase/checkpoint mapping.")
     assert isinstance(question, dict)
-    target = {"evaluate": "(?:evaluate|evaluation)", "retro": "(?:retro|retrospective)"}.get(stage["phase"], stage["phase"])
-    # Reaction semantics require a direct phase-acceptance question, not approval
-    # words somewhere in a generic message, a quoted example or a negative request.
-    clause = (_QUESTION_REQUEST + r"\s+(?:this|the)\s+"
-              + target + r"\b[^?\n]*\?")
-    match = re.search(clause, question["text"], re.IGNORECASE)
-    w.require(match is not None and not re.search(r"\b(?:not|never|if|unless|hypothetical|example|withdraw|cancel)\b", match.group(0), re.IGNORECASE),
-              "invalid_evidence", "The observation must answer a direct unambiguous acceptance question for this phase.")
     w.require(isinstance(owner, dict) and set(owner) == {"user_id", "verified", "reference", "source_thread"}
               and owner["verified"] is True and owner["source_thread"] == relay["source_thread"]
               and isinstance(owner["user_id"], str) and 0 < len(owner["user_id"]) <= 512
@@ -209,7 +203,8 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
                   and isinstance(message.get("reactions"), dict)
                   and message["reactions"].get(owner["user_id"]) == "👍",
                   "invalid_evidence", "Only the verified owner's current thumbs-up on the exact question can approve it.")
-        choice: str | None = "approved"
+        choice = validate_checkpoint_consent(question["text"], None, phase=stage["phase"],
+                                             binding=expected, reaction=True)
         excerpt: str | None = None
         event_source = {"kind": "owner_reaction", "channel": question["channel"], "message_id": question["message_id"],
                         "owner": owner["user_id"], "reaction": "👍"}
@@ -224,19 +219,24 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
         adjacent = message.get("reply_to_id") != question["message_id"]
         if adjacent:
             _adjacent_question(raw, question, owner, message)
+        else:
+            w.require(message.get("reply_root_message_id") in {None, question["message_id"]},
+                      "invalid_evidence", "Direct reply has conflicting original root linkage.")
         excerpt = message["content"].get("text")
         w.require(isinstance(excerpt, str) and 0 < len(excerpt) <= 4096,
                   "invalid_evidence", "Preserve the original bounded owner response.")
-        choice = conversational_choice(excerpt)
-        w.require(choice is not None, "invalid_evidence", "Owner response does not express an unambiguous decision.")
+        choice = validate_checkpoint_consent(question["text"], excerpt, phase=stage["phase"], binding=expected)
+        proposed = checkpoint_question_choice(question["text"], phase=stage["phase"], binding=expected)
+        if proposed == "changes_requested" and not adjacent:
+            _adjacent_question(raw, question, owner, message, linked=True)
         if adjacent:
-            phases = decision_phases(excerpt)
-            checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
-            w.require(choice == "approved" and (not phases or phases == {stage["phase"]})
-                      and all(key == expected["checkpoint"] for key in checkpoints),
-                      "invalid_evidence", "Ordinary consent must approve only the current phase and checkpoint.")
+            w.require(choice == proposed, "invalid_evidence",
+                      "Ordinary consent must answer only the proposed current phase/checkpoint decision.")
         event_source = {"kind": "owner_text", "channel": message["channel"], "message_id": message["message_id"], "owner": owner["user_id"]}
         normalization = {"schema": "taskplane.owner-text-normalization/v1", "derived_choice": choice, "typed_text": excerpt}
+        if proposed == "changes_requested":
+            normalization["question_choice"] = proposed
+            normalization["basis"] = "owner assent to the exact scoped checkpoint correction question"
         if adjacent:
             normalization["contextual_reply"] = {
                 "schema": "taskplane.adjacent-question/v1", "question_message_id": question["message_id"],

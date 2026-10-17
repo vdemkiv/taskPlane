@@ -539,8 +539,10 @@ def verify_context_delivery(reader, workspace, transcript, binding, receipt, tas
                 "Required context body pages were omitted from native tool results")
         if value.get("schema") == "taskplane.context-drain/v1":
             require(value.get("done") is (value["remaining_required"] == 0), "Conflicting context terminal state")
-        if value.get("context_receipt") == receipt:
-            require(operation == "--drain" and value.get("done") is True and value.get("next_action") is None,
+        # A completed read batch can return the same immutable receipt as the
+        # later terminal drain. Keep scanning until that drain is observed.
+        if value.get("context_receipt") == receipt and operation == "--drain":
+            require(value.get("done") is True and value.get("next_action") is None,
                     "Final context receipt lacks terminal drain")
             reached_terminal = True
             break

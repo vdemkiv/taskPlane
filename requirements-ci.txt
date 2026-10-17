@@ -32,7 +32,12 @@ jsonschema==4.25.1 --hash=sha256:3fba0169e345c7175110351d456342c364814cfcf3b964b
 jsonschema-specifications==2025.9.1 --hash=sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe
 license-expression==30.4.4 --hash=sha256:421788fdcadb41f049d2dc934ce666626265aeccefddd25e162a26f23bcbf8a4
 markdown-it-py==4.2.0 --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a
-mcp==1.29.0 --hash=sha256:f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7
+# Security override: Semgrep 1.178.0 metadata pins mcp==1.29.0, which is affected
+# by CVE-2026-59951. Keep --no-deps and verify Semgrep scan/MCP import compatibility
+# with the patched 1.x SDK until Semgrep updates its pin; pip check reports this
+# intentional metadata conflict. Hash: PyPI 1.30.0 universal wheel.
+# https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv
+mcp==1.30.0 --hash=sha256:666edb5009503e1047c9d60346a756f94b261f05cc2625f23d41c728ffc484d0
 mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8
 msgpack==1.2.2 --hash=sha256:d24b38a825bcca41bb956de50eb98451ef291304a8607fad99e619043d3e79b9
 opentelemetry-api==1.37.0 --hash=sha256:accf2024d3e89faec14302213bc39550ec0f4095d1cf5ca688e1bfb1c8612f47

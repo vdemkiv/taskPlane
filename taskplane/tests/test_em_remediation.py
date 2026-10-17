@@ -158,9 +158,23 @@ def test_resumed_task_start_captures_one_logical_baseline(tmp_path, monkeypatch)
     native(sessions / 'foreign-root.jsonl', 999, sid='unrelated')
     c, _, _ = controller(tmp_path)
     started = json.loads(run_cli(c.workspace, 'flow', 'start', '--workspace', str(c.workspace), '--goal', 'Resume', governor=c))
-    assert started['tokens']['total_tokens'] == 0
+    baseline = next(row for row in flow.read_events(c.workspace) if row['kind'] == 'start')
+    assert baseline['usage_status'] == 'observed'
+    assert baseline['usage']['total_tokens'] == 160
     native(sessions / 'part2-root.jsonl', 220, resumed=True, timestamp="2026-09-01T00:00:07Z")
-    report = cli(c.workspace, 'flow', 'report', '--workspace', str(c.workspace))
+    report = cli(c.workspace, 'flow', 'report', '--workspace', str(c.workspace), '--full')
+    if sys.platform not in ('darwin', 'linux'):
+        # Capturing the logical baseline does not prove that the
+        # separate advisory inventory can discover every native segment.
+        for result in (started, report):
+            assert result['tokens'] is None and result['native_tokens'] is None
+            assert result['sessions'][0]['status'] == 'partial'
+            assert result['sessions'][0]['attribution_unknown']
+            refresh = result['usage_refresh']
+            assert not refresh['complete'] and not refresh['fully_discovered']
+            assert 'native_directory_accounting_unavailable' in refresh['discovery_errors']
+        return
+    assert started['tokens']['total_tokens'] == 0
     assert report['tokens']['total_tokens'] == 60
     assert report['native_tokens']['total_tokens'] == 220
     assert report['token_coverage']['measured_sessions'] == 1

@@ -100,3 +100,133 @@ def test_explicit_candidate_runtime_is_valid_without_changing_family_selection(t
 def test_explicit_runtime_rejects_malformed_versions(tmp_path, host, version):
     plugin(tmp_path, version, host)
     assert h.valid_plugin_root(str(tmp_path), str(tmp_path), host) is None
+
+
+def _large_recovery_fixture(tmp_path, monkeypatch, *, records=6, padding=500000):
+    from taskplane.tests.test_unbound_worker_recovery import transcript_fixture
+    worker, root, child, paths = transcript_fixture(tmp_path, monkeypatch)
+    filler = {'type': 'event_msg', 'timestamp': child[1]['timestamp'],
+              'payload': {'type': 'fixture', 'padding': 'x' * padding}}
+    for rows, path in zip((root, child), paths):
+        with path.open('w') as stream:
+            stream.write(json.dumps(rows[0]) + '\n')
+            for _ in range(records):
+                stream.write(json.dumps(filler) + '\n')
+            for row in rows[1:]:
+                stream.write(json.dumps(row) + '\n')
+    return worker, paths
+
+
+@pytest.mark.skipif(not h.supported_recovery_reader(), reason='Requires no-follow nonblocking reader')
+def test_complete_parent_and_child_over_64mib_use_bounded_continuations(tmp_path, monkeypatch):
+    from taskplane.tests.test_unbound_worker_recovery import transcript_fixture, write_fixture
+    worker, root, child, paths = transcript_fixture(tmp_path, monkeypatch)
+    write_fixture(root, child, paths)
+    oracle = h.unbound_worker_observation('root', worker, 'launch', 'terminal')
+    filler = {'type': 'event_msg', 'timestamp': child[1]['timestamp'],
+              'payload': {'type': 'fixture', 'padding': 'x' * 900000}}
+    for rows, path in zip((root, child), paths):
+        with path.open('w') as stream:
+            stream.write(json.dumps(rows[0]) + '\n')
+            for _ in range(76):
+                stream.write(json.dumps(filler) + '\n')
+            for row in rows[1:]:
+                stream.write(json.dumps(row) + '\n')
+        assert path.stat().st_size > 64 * 1024 * 1024
+    cursor = None
+    operations = []
+    for _ in range(12):
+        result = h.unbound_worker_observation('root', worker, 'launch', 'terminal', cursor=cursor)
+        operation = result.get('operation', result.get('scan', {}).get('operation'))
+        operations.append(operation)
+        assert operation['bytes'] <= 64 * 1024 * 1024
+        assert operation['records'] <= h.MAX_RECOVERY_RECORDS
+        if result.get('status') != 'incomplete':
+            break
+        assert not result['reservation_released'] and not result['result_accepted']
+        cursor = json.loads(json.dumps(result['cursor']))  # Fresh process serialization.
+        assert len(json.dumps(cursor).encode()) <= h.MAX_RECOVERY_CURSOR_BYTES
+    else:
+        pytest.fail('Bounded recovery did not complete')
+    assert len(operations) >= 3
+    for key in ('worker_id', 'canonical_name', 'native_status', 'sha256', 'assurance', 'process_exit'):
+        assert result[key] == oracle[key]
+    assert all(s['records'] >= 78 for s in result['scan']['snapshots'])
+
+
+@pytest.mark.parametrize('change', ['append', 'truncate', 'replace', 'prefix', 'duplicate', 'foreign_cursor'])
+def test_recovery_continuation_refuses_changed_snapshot(tmp_path, monkeypatch, change):
+    from taskplane import workflow as w
+    if not h.supported_recovery_reader():
+        pytest.skip('Requires no-follow nonblocking reader')
+    worker, paths = _large_recovery_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(h, 'MAX_RECOVERY_BYTES', 2 * 1024 * 1024)
+    first = h.unbound_worker_observation('root', worker, 'launch', 'terminal')
+    assert first['status'] == 'incomplete'
+    cursor = first['cursor']; path = paths[0]
+    if change == 'append':
+        with path.open('a') as stream: stream.write('{}\n')
+    elif change == 'truncate':
+        path.write_bytes(path.read_bytes()[:100])
+    elif change == 'replace':
+        raw = path.read_bytes(); path.unlink(); path.write_bytes(raw)
+    elif change == 'prefix':
+        with path.open('r+b') as stream: stream.write(b'X')
+    elif change == 'duplicate':
+        path.with_name('duplicate-root.jsonl').write_bytes(path.read_bytes())
+    else:
+        cursor['key'] = '0' * 64
+    before = json.loads(json.dumps(cursor))
+    with pytest.raises(w.Refusal):
+        h.unbound_worker_observation('root', worker, 'launch', 'terminal', cursor=cursor)
+    assert cursor == before
+
+
+def test_recovery_retry_has_deterministic_progress_and_detects_late_conflict(tmp_path, monkeypatch):
+    from taskplane import workflow as w
+    if not h.supported_recovery_reader():
+        pytest.skip('Requires no-follow nonblocking reader')
+    worker, paths = _large_recovery_fixture(tmp_path, monkeypatch)
+    with paths[0].open('a') as stream:
+        stream.write(json.dumps({'type': 'response_item', 'timestamp': worker['prepared_at'],
+            'metadata': {'client_authored': False}, 'payload': {'type': 'function_call',
+            'namespace': 'collaboration', 'name': 'send_message', 'call_id': 'late',
+            'arguments': json.dumps({'target': '/root/' + worker['task_name']})}}) + '\n')
+    monkeypatch.setattr(h, 'MAX_RECOVERY_BYTES', 2 * 1024 * 1024)
+    one = h.unbound_worker_observation('root', worker, 'launch', 'terminal')
+    replay = h.unbound_worker_observation('root', worker, 'launch', 'terminal')
+    assert one['cursor'] == replay['cursor']
+    cursor = one['cursor']
+    for _ in range(12):
+        try:
+            result = h.unbound_worker_observation('root', worker, 'launch', 'terminal', cursor=cursor)
+        except w.Refusal as exc:
+            assert 'Later native input' in exc.detail
+            break
+        assert result['status'] == 'incomplete'
+        cursor = result['cursor']
+    else:
+        pytest.fail('Later activity was not detected')
+
+
+def test_full_startup_timing_is_unavailable_without_supported_native_provider(monkeypatch):
+    from taskplane import host_capabilities as caps
+    monkeypatch.setenv('TASKPLANE_FULL_NATIVE_TIMING', 'true')
+    runtime = {'root': 'fixture', 'member_sha256': {'tp.py': 'abc'}}
+    for host in ('codex', 'claude', 'unknown'):
+        observed = caps.startup_timing_capability(host, runtime)
+        assert observed['status'] == 'unavailable' and observed['clock'] is None
+        assert not caps.qualified_startup_timing(observed, host, runtime)
+        assert not caps.qualified_startup_timing({**observed, 'status': 'qualified'}, host, runtime)
+
+
+def test_timing_qualification_rejects_partial_boundary_foreign_runtime_and_flags():
+    from taskplane import host_capabilities as caps
+    from taskplane.tests.test_context_startup_budget import qualified_capability
+    runtime = {'root': 'fixture-runtime'}
+    capability = qualified_capability('codex', runtime)
+    assert caps.qualified_startup_timing(capability, 'codex', runtime)
+    for change in ({'boundary': ['process_start']}, {'runtime_sha256': 'foreign'},
+                   {'gaps': ['teardown']}, {'clock': None}, {'boundary_test_reference': ''},
+                   {'host': 'claude'}, {'coverage': 'partial'}):
+        assert not caps.qualified_startup_timing({**capability, **change}, 'codex', runtime)

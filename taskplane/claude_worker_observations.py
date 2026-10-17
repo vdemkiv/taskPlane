@@ -1424,3 +1424,193 @@ def reobserve_legacy_denial(parent: str, attempt: Mapping[str, Any], *,
         return refusal('not_yet_available', 'Original legacy transcript is unavailable')
     except (OSError, ValueError, TypeError, UnicodeError, KeyError, IndexError):
         return refusal('conflict', 'Legacy denial source, binding, spans or projections disagree')
+
+
+DELIVERY_SCHEMA = 'taskplane.delivery-cycle/v1'
+MAX_DELIVERY_CYCLES = 32
+_DELIVERY_EVENTS = frozenset({'admitted', 'acknowledged', 'handback_observed',
+                             'stop_observed', 'completion_observed'})
+
+
+def delivery_cycle_id(attempt: Mapping[str, Any], delivery_call_id: str) -> str:
+    """Stable identity; neither a timestamp nor the child session selects a cycle."""
+    return digest({'binding': attempt['binding'], 'attempt_id': attempt['attempt'],
+                   'native_child_id': attempt['worker_id'],
+                   'original_launch_call_id': attempt['call_id'],
+                   'delivery_call_id': delivery_call_id})
+
+
+def _delivery_span(ref: Any) -> bool:
+    return (isinstance(ref, Mapping) and isinstance(ref.get('source'), str)
+            and bool(ref['source']) and type(ref.get('offset')) is int and ref['offset'] >= 0
+            and type(ref.get('bytes')) is int and 0 < ref['bytes'] <= MAX_LINE_BYTES
+            and all(type(ref.get(k)) is int for k in ('device', 'inode'))
+            and isinstance(ref.get('sha256'), str) and bool(_SHA.fullmatch(ref['sha256'])))
+
+
+def correlate_delivery_cycles(parent: str, attempt: Mapping[str, Any],
+                              cycles: Sequence[Mapping[str, Any]],
+                              events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Correlate *already admitted* native projections without changing inputs.
+
+    The adapter supplies exact call/result and automatic-hook projections, with
+    native spans verified by ``verify_delivery_spans``. This pure function does
+    not authenticate caller-supplied JSON and grants no authority. Each event
+    carries the explicit cycle ID established by a native control/child-call
+    link. An adapter unable to prove that link must leave the event unresolved;
+    timestamp adjacency, session membership and array position are insufficient.
+    The caller must retain the returned observations, not treat a match as result
+    acceptance or permission to retry. Original launch observation remains the
+    responsibility of ``observe``; this API never relaxes its source checks.
+    """
+    from copy import deepcopy
+    try:
+        if not 0 < len(cycles) <= MAX_DELIVERY_CYCLES or len(events) > 8 * MAX_DELIVERY_CYCLES:
+            raise ValueError('Delivery cycle evidence exceeds its bounded shape')
+        if not attempt.get('worker_id') or not isinstance(attempt.get('binding'), Mapping):
+            raise ValueError('Delivery attempt has no exact native child/binding')
+        by_id: dict[str, dict[str, Any]] = {}
+        for value in cycles:
+            cycle = deepcopy(dict(value))
+            ordinal = cycle.get('ordinal')
+            expected = {'schema': DELIVERY_SCHEMA, 'binding': attempt['binding'],
+                'attempt_id': attempt['attempt'], 'native_child_id': attempt['worker_id'],
+                'original_launch_call_id': attempt['call_id'], 'host_adapter_version': '2.1.296'}
+            if (any(cycle.get(k) != v for k, v in expected.items())
+                    or type(ordinal) is not int or not 0 <= ordinal < MAX_DELIVERY_CYCLES
+                    or not isinstance(cycle.get('delivery_call_id'), str)
+                    or not cycle['delivery_call_id']
+                    or cycle.get('cycle_id') != delivery_cycle_id(attempt, cycle['delivery_call_id'])
+                    or not isinstance(cycle.get('source_spans'), list) or not cycle['source_spans']
+                    or not all(_delivery_span(ref) for ref in cycle['source_spans'])):
+                raise ValueError('Delivery cycle has foreign or incomplete identity/provenance')
+            key = cycle['cycle_id']
+            if key in by_id and by_id[key] != cycle:
+                raise ValueError('Conflicting native cycle declarations')
+            by_id[key] = cycle
+        ordered = sorted(by_id.values(), key=lambda c: c['ordinal'])
+        if [c['ordinal'] for c in ordered] != list(range(len(ordered))):
+            raise ValueError('Delivery cycles have an ordinal gap or fork')
+        grouped: dict[str, dict[str, dict[str, Any]]] = {c['cycle_id']: {} for c in ordered}
+        for supplied_event in events:
+            event = deepcopy(dict(supplied_event))
+            key, kind = event.get('cycle_id'), event.get('kind')
+            if key not in grouped or kind not in _DELIVERY_EVENTS:
+                raise ValueError('Native delivery event has no admitted cycle')
+            cycle = by_id[key]
+            expected = {'binding': attempt['binding'], 'attempt_id': attempt['attempt'],
+                'native_child_id': attempt['worker_id'], 'parent': parent,
+                'delivery_call_id': cycle['delivery_call_id'], 'host_adapter_version': '2.1.296'}
+            if (any(event.get(k) != v for k, v in expected.items())
+                    or not isinstance(event.get('source_spans'), list) or not event['source_spans']
+                    or not all(_delivery_span(ref) for ref in event['source_spans'])):
+                raise ValueError('Native delivery event has foreign cycle/child/source linkage')
+            old = grouped[key].get(kind)
+            if old is not None and old != event:
+                raise ValueError('Conflicting native ' + kind + ' in one cycle')
+            grouped[key][kind] = event
+        output: list[dict[str, Any]] = []
+        report_calls: set[str] = set()
+        for index, cycle in enumerate(ordered):
+            expected_parent = ordered[index - 1]['cycle_id'] if index else None
+            if (cycle.get('parent_cycle_id') != expected_parent
+                    or index == 0 and cycle['delivery_call_id'] != attempt['call_id']
+                    or index > 0 and cycle['delivery_call_id'] == attempt['call_id']):
+                raise ValueError('Delivery lineage is incomplete or forked')
+            group = grouped[cycle['cycle_id']]
+            if set(group) != _DELIVERY_EVENTS:
+                return _answer('not_yet_available', 'Exact cycle acknowledgment/report/stop/completion is missing',
+                               cycles=output, retry_authorized=False, result_accepted=False)
+            admitted, ack, report, stop, complete = (group[k] for k in
+                ('admitted', 'acknowledged', 'handback_observed', 'stop_observed', 'completion_observed'))
+            if (admitted.get('tool') != ('Agent' if index == 0 else 'SendMessage')
+                    or admitted.get('call_id') != cycle['delivery_call_id']
+                    or admitted.get('result_call_id') != admitted['call_id']
+                    or admitted.get('result_child_id') != attempt['worker_id']
+                    or admitted.get('result_status') != ('async_launched' if index == 0 else 'resumed')
+                    or admitted.get('parent_completion_sha256') !=
+                       (digest(grouped[ordered[index - 1]['cycle_id']]['completion_observed']) if index else None)):
+                raise ValueError('Native control call/result or predecessor completion is unproved')
+            call = report.get('report_call_id')
+            if not isinstance(call, str) or call in report_calls:
+                raise ValueError('Native report call is missing or reused across delivery cycles')
+            report_calls.add(call)
+            envelope = report.get('report', {}).get('envelope', {})
+            response = {'success': True, 'message': 'Report delivered to your caller.'}
+            if (not isinstance(call, str) or not call or envelope.get('call_id') != call
+                    or envelope.get('worker') != attempt['worker_id'] or envelope.get('parent') != parent
+                    or envelope.get('grant') != attempt['grant_id'] or envelope.get('attempt') != attempt['attempt']
+                    or envelope.get('binding') != attempt['binding']
+                    or any(not isinstance(envelope.get(k), str) or not _SHA.fullmatch(envelope[k])
+                           for k in ('body_digest', 'input_digest'))
+                    or report['report'].get('status') != 'acknowledged'
+                    or ack.get('report_call_id') != call or ack.get('envelope_digest') != digest(envelope)
+                    or ack.get('response_digest') != digest(response)
+                    or report['report'].get('acknowledgment', {}).get('envelope_digest') != digest(envelope)
+                    or report['report']['acknowledgment'].get('response_digest') != digest(response)
+                    or report.get('body_digest') != envelope.get('body_digest')
+                    or stop.get('report_call_id') != call or stop.get('status') != 'stopped'
+                    or not isinstance(stop.get('event_id'), str) or not stop['event_id']
+                    or complete.get('call_id') != cycle['delivery_call_id']
+                    or complete.get('report_call_id') != call or complete.get('stop_event_id') != stop['event_id']
+                    or complete.get('status') != 'completed'):
+                raise ValueError('Cycle report admission/acknowledgment/stop/completion disagrees')
+            # Time validates an explicit join; it never chooses its ownership.
+            called, acknowledged, stopped, completed = (_stamp(v['observed_at']) for v in
+                                                        (admitted, ack, stop, complete))
+            reported = _stamp(report['observed_at'])
+            if not called <= min(acknowledged, stopped, reported) <= completed <= datetime.now(timezone.utc):
+                raise ValueError('Native cycle timestamps regress or are in the future')
+            if not max(acknowledged, stopped, reported) <= completed:
+                raise ValueError('Native cycle completion precedes a required event')
+            if index and _stamp(grouped[ordered[index - 1]['cycle_id']]['completion_observed']['observed_at']) > called:
+                raise ValueError('Native continuation overlaps its predecessor')
+            output.append({**cycle, 'events': group, 'selected_report': deepcopy(report['report']),
+                           'observation_sha256': digest({'cycle': cycle, 'events': group})})
+        return _answer('matched', 'Exact sequential native delivery cycles', cycles=output,
+                       retry_authorized=False, result_accepted=False)
+    except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+        return _answer('conflict', 'Native delivery cycle evidence is malformed, ambiguous or incompatible',
+                       cycles=[], retry_authorized=False, result_accepted=False)
+
+
+def verify_delivery_spans(parent: str, attempt: Mapping[str, Any], source: Mapping[str, Any],
+                          cycles: Sequence[Mapping[str, Any]], events: Sequence[Mapping[str, Any]],
+                          *, budget: ReadBudget | None = None) -> dict[str, Any]:
+    """Re-read every supplied native span under the pinned parent/project identity.
+
+    This authenticates retained bytes, not a projection's semantic derivation.
+    Only adapter-created projections belong here; workflow_host must revalidate
+    them against current automatic admissions before committing under its lock.
+    """
+    budget = budget or ReadBudget()
+    refs = {digest(ref): ref for value in [*cycles, *events] for ref in value.get('source_spans', [])}
+    if (not _valid_seal(source, 'taskplane.claude-transcript-source/v1')
+            or source.get('parent') != parent or not refs or len(refs) > 8 * MAX_DELIVERY_CYCLES
+            or not all(_delivery_span(ref) for ref in refs.values())):
+        raise ValueError('Invalid delivery source/spans')
+    path = _source_path(parent, source['path'])
+    fd, project = _open_source(path)
+    stamps = {}
+    with os.fdopen(fd, 'rb', buffering=0) as stream:
+        info = _regular(stream.fileno())
+        if _identity(info) != source['identity'] or project != source['project_identity']:
+            raise ValueError('Delivery source identity changed')
+        child_path = _child_path(path, parent, attempt['worker_id'])
+        with os.fdopen(_open_child(child_path, project), 'rb', buffering=0) as child:
+            def stamp(value: os.stat_result) -> dict[str, int]:
+                return {**_identity(value), 'size': value.st_size,
+                        'mtime_ns': value.st_mtime_ns, 'ctime_ns': value.st_ctime_ns}
+
+            for selected, handle in ((path, stream), (child_path, child)):
+                before = os.fstat(handle.fileno())
+                for ref in refs.values():
+                    if ref['source'] == str(selected) and _verify(handle.fileno(), ref, budget) is None:
+                        raise ValueError('Delivery native span changed or exhausted read budget')
+                if stamp(before) != stamp(os.fstat(handle.fileno())):
+                    raise ValueError('Delivery source changed during validation')
+                stamps[str(selected)] = stamp(before)
+            if any(ref['source'] not in stamps for ref in refs.values()):
+                raise ValueError('Foreign native delivery source')
+    return {'source_stamps': stamps, 'source_spans_sha256': digest(list(refs.values())),
+            'read_budget': budget.report()}

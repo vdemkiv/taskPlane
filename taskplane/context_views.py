@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .context import Store, digest, encode, signed
+from .context import Store, digest, encode, signed, count
 from . import workflow as w
 
 PHASE_BYTES = dict(zip(w.PHASES, (16384, 32768, 16384, 65536, 32768, 32768, 16384)))
@@ -18,7 +18,9 @@ def collection(store: Store, values: list[Any], kind: str, limit: int = 4) -> di
 def shared_bodies(inputs: list[dict[str, Any]], refs: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Share exact bodies while retaining every role and required obligation."""
     groups: dict[str, list[dict[str, Any]]] = {}
+    count("sort", len(inputs))
     for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
+        count("selection")
         groups.setdefault(digest(item["body"]), []).append(item)
     return [{"body_ref": refs[items[0]["id"]], "inputs": [
                 {"id": item["id"], "kind": item.get("kind", "input"),
@@ -38,10 +40,12 @@ def view_source_key(binding: dict[str, Any], refs: dict[str, dict[str, Any]],
 def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
          criteria: list[str], authority: dict[str, Any], inputs: list[dict[str, Any]],
          coverage: dict[str, Any], *,
-         _prepared_refs: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+         _prepared_refs: dict[str, dict[str, Any]] | None = None,
+         _streamed: bool = False) -> dict[str, Any]:
     w.require(phase in PHASE_BYTES, "invalid_context", "Unknown context phase.")
     refs: dict[str, dict[str, Any]] = {}
     bodies: dict[str, Any] = {}
+    count("sort", len(inputs))
     for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
         ref = (_prepared_refs[item["id"]] if _prepared_refs is not None
                else store.put(item.get("kind", "input"), item["body"]))
@@ -49,6 +53,7 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
         bodies[item["id"]] = item["body"]
     required = [{"id": item["id"], "ref": refs[item["id"]]}
                 for item in inputs if item.get("required", True)]
+    count("sort", len(required))
     required.sort(key=lambda x: x["id"])
     source_key = view_source_key(binding, refs, authority, inputs)
     result: dict[str, Any] = {"schema": "taskplane.context-view/v1", "binding": binding,
@@ -63,23 +68,36 @@ def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
     reuse = shared_bodies(inputs, refs)
     if reuse:
         result["body_reuse"] = collection(store, reuse, "body-reuse", 0)
+    if _streamed:
+        # Typed tasks already advertise indexed drain. Keep their preparation
+        # metadata small; every required body still travels through that index.
+        result['omissions'] = [{'reason': 'Read every required body through the bound page index.',
+                                'count': len(refs)}]
+        result['budget']['overflow'] = bool(refs)
+        w.require(len(encode(signed(result))) <= PHASE_BYTES[phase], 'context_overflow',
+                  'Required context metadata cannot fit the phase budget.')
+        return signed(result)
     inline: dict[str, Any] = {}
     inline_bodies: set[str] = set()
+    required_ids = {row["id"] for row in inputs if row.get("required", True)}
+    returned: set[str] = set()
+    count("sort", len(inputs))
     for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
+        count("selection")
         key = item["id"]
         # Repeated bodies are referenced once, not repeatedly supplied inline.
         body_key = digest(bodies[key])
         if body_key in inline_bodies:
             continue
         candidate = {**result, "inline": {**inline, key: bodies[key]}}
-        returned = {refs[row['id']]['sha256'] for row in inputs
-                    if row.get('required', True) and row['id'] in candidate['inline']}
+        candidate_returned = returned | ({refs[key]["sha256"]} if key in required_ids else set())
         # Leave room both for this consume receipt and for a later maximum-size
         # page. Hundreds of tiny inline roots otherwise strand omitted bodies.
-        reserve = max(4096, 1024 + 67 * len(returned))
-        if len(returned) <= 100 and len(encode(signed(candidate))) <= PHASE_BYTES[phase] - reserve:
+        reserve = max(4096, 1024 + 67 * len(candidate_returned))
+        if len(candidate_returned) <= 100 and len(encode(signed(candidate))) <= PHASE_BYTES[phase] - reserve:
             inline[key] = bodies[key]
             inline_bodies.add(body_key)
+            returned = candidate_returned
     result["inline"] = inline
     result["omissions"] = [{"reason": "Read verified input references for bodies outside the inline budget.",
                             "count": len(refs) - len(inline)}] if len(inline) != len(refs) else []

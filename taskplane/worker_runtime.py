@@ -13,7 +13,7 @@ from pathlib import Path
 import re
 import shlex
 import sys
-from typing import Any
+from typing import Any, cast
 import uuid
 
 from . import workflow as w, workflow_evidence as e
@@ -98,12 +98,105 @@ def task(state: dict[str, Any], task_id: str) -> dict[str, Any]:
 
 def read_input_manifest(workspace: Path, session: Session, owned_paths: list[str]) -> dict[str, Any]:
     """Fingerprint declared dependencies independently of context transport."""
-    paths = {item["body"]["path"] for item in session.items if item["kind"] == "source"}
+    paths = {item["body"]["path"] for item in session.items
+             if item["kind"] == "source" and "path" in item["body"]}
     for item in session.items:
         if item["kind"] == "requirements":
             paths.update(p for row in item["body"].get("tasks", []) for p in e.read_inputs(session.state, row))
+        elif item['kind'] == 'task-brief':
+            paths.update(reference['path'] for reference in item['body']['read_interfaces'])
+            paths.update(reference['path'] for reference in item['body']['coverage'])
     # Missing explicit or fallback inputs must refuse, even if not transported.
     return e.manifest(workspace, sorted(paths - set(owned_paths)))
+
+
+def verification_plan(state: dict[str, Any], task_id: str) -> str | None:
+    try:
+        strategy = w.accepted_plan(state)['packet']['output'].get('verification_strategy', {})
+    except w.Refusal:
+        return None
+    if not isinstance(strategy, dict) or strategy.get('schema') != e.VERIFICATION_STRATEGY:
+        return None
+    checks = [check for check in strategy.get('checks', []) if check.get('task') == task_id]
+    return digest(checks) if checks else None
+
+
+def retained_authority(workspace: Path, state: dict[str, Any], task_id: str,
+                       result: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate historical execution evidence, never revive an execution grant.
+
+    Ordinary current results keep their existing contract. Crossing an explicit
+    Product revision additionally needs unchanged epochs, check definitions and
+    complete current verification keys. Unknown coverage is a reuse miss.
+    """
+    definition = task(state, task_id)
+    criteria = e.task_criteria(definition)
+    if (result.get('task_epoch', 0) != state.get('task_epochs', {}).get(task_id, 0)
+            or result.get('requirements_epochs', {c: 0 for c in criteria}) !=
+                {c: state.get('criterion_epochs', {}).get(c, 0) for c in criteria}):
+        return None
+    events = [event for event in state.get('requirements_revisions', {}).values()
+              if event.get('opened') and event['preview']['binding']['revision'] >= result.get('accepted_revision', 0)]
+    transitions = [event for field in ('context_upgrades', 'context_rollbacks')
+                   for event in state.get(field, {}).values()
+                   if event['prior_revision'] >= result.get('accepted_revision', 0)]
+    if not events and not transitions:
+        return state
+    if e.changed(workspace, state) is not None:
+        return None
+    if (any(event['status'] != 'completed' or task_id in event['preview']['tasks'] for event in events)
+            or not result.get('verification_plan')
+            or result['verification_plan'] != verification_plan(state, task_id)):
+        return None
+    from . import context_reuse, host_capabilities
+    if result.get('runtime_digest') != digest(host_capabilities.runtime_identity()):
+        return None
+    store = Store(workspace)
+    try:
+        expected = [check for check in w.accepted_plan(state)['packet']['output']['verification_strategy']['checks']
+                    if check['task'] == task_id]
+        covered = set()
+        for check in result.get('checks', []):
+            reference = check.get('reuse_ref')
+            if not isinstance(reference, dict):
+                return None
+            prior = store.resolve(reference)
+            key = prior['key']
+            matches = [item for item in expected
+                if key.get('paths') == sorted(item['source_inputs'])
+                and key.get('tests') == sorted(item['test_inputs'])
+                and key.get('criteria') == sorted(item['criteria'])
+                and key.get('command') == item['command']]
+            if len(matches) != 1:
+                return None
+            covered.add(matches[0]['id'])
+            current_key = context_reuse.key(workspace, **{name: key[name] for name in
+                ('paths', 'tests', 'criteria', 'command', 'tool', 'contract')})
+            if context_reuse.lookup(store, reference, current_key)['status'] != 'reused':
+                return None
+        if not result.get('checks') or not {item['id'] for item in expected if item.get('required')} <= covered:
+            return None
+        if not result.get('grant'):
+            return state
+        row = state.get('workers', {}).get(result['grant'])
+        if not row:
+            return None
+        for event in sorted(events, key=lambda value: value['preview']['binding']['revision']):
+            reference = event.get('completion_basis')
+            if not reference:
+                continue
+            basis = store.resolve(reference)
+            if not isinstance(basis, dict):
+                return None
+            old = basis.get('workers', {}).get(result['grant'])
+            if (basis.get('run') == state['run'] and basis.get('root') == state['root']
+                    and old and old.get('binding') == row.get('binding')
+                    and basis.get('task_results', {}).get(task_id) == result
+                    and digest(task(basis, task_id)) == digest(definition)):
+                return basis
+    except (w.Refusal, ValueError, KeyError, TypeError, OSError):
+        return None
+    return None
 
 
 def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
@@ -111,6 +204,10 @@ def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
     """Validate actual joined native identity, never an asserted reviewer label."""
     row = state.get("workers", {}).get(result.get("grant"))
     if not row or row.get("task_id") != task_id or row.get("state") != "accepted":
+        return False
+    if row.get('acceptance_invalidation'):
+        return False
+    if row.get('binding', {}).get('context_contract') == 'bounded/v3' and readiness(row)['status'] != 'ready':
         return False
     if (not row.get("worker_id") or row["worker_id"] == state["root"]
             or not row.get('claimed_at') or row.get('revoked_at') or row.get('identity_conflict')
@@ -121,7 +218,10 @@ def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
             or row.get("dependency_results") != result.get("dependency_results")):
         return False
     try:
-        worker_session(workspace, state, row).validate(row.get("context_receipt"))
+        basis = retained_authority(workspace, state, task_id, result)
+        if basis is None:
+            return False
+        worker_session(workspace, basis, row).validate(row.get("context_receipt"))
         return True
     except w.Refusal:
         return False
@@ -142,10 +242,12 @@ def result_valid(workspace: Path, state: dict[str, Any], task_id: str, seen: set
     result = state.get("task_results", {}).get(task_id)
     if not result or result.get("task_digest") != digest(definition):
         return False
+    if retained_authority(workspace, state, task_id, result) is None:
+        return False
     required_reads = set(e.read_inputs(state, definition)) - set(definition['paths'])
     if not required_reads <= set(result.get('input_manifest', {})):
         return False  # Older incomplete manifests need fresh verification too.
-    if definition.get("execution") == "native_required" and not native_result_valid(workspace, state, task_id, result):
+    if (result.get('grant') or definition.get("execution") == "native_required") and not native_result_valid(workspace, state, task_id, result):
         return False
     if not result.get("grant") and result.get("input_contract") != "declared-source/v1":
         return False
@@ -187,10 +289,16 @@ def dependency_manifest(state: dict[str, Any], dependencies: list[str], seen: se
 
 def current(state: dict[str, Any], row: dict[str, Any]) -> None:
     from . import workspace_binding
+    from .workflow_write_guard import require_runtime
+    require_runtime(state)
     w.require(not state.get('cancellation'), 'scope_violation', 'The cancelled run has no worker execution grants.')
     workspace_binding.ensure(Path(state["workspace"]), worker=True,
                              expected=state.get("workspace_contract"))
     w.require(not row.get('revoked_at'), 'scope_violation', 'Worker grant is permanently revoked.')
+    w.require(row.get('task_epoch', 0) == state.get('task_epochs', {}).get(row['task_id'], 0)
+              and row.get('requirements_epochs', {c: 0 for c in row['criteria']}) ==
+                  {c: state.get('criterion_epochs', {}).get(c, 0) for c in row['criteria']},
+              'stale_checkpoint', 'Worker requirements or affected task epoch changed.')
     w.require(row.get("workspace_contract") == state.get("workspace_contract"),
               "stale_checkpoint", "Worker workspace contract differs from its run.")
     w.require(row["binding"] == binding(state) and row["task_digest"] == digest(task(state, row["task_id"])),
@@ -245,6 +353,16 @@ def readiness(row: dict[str, Any]) -> dict[str, Any]:
         ("matching automatic hook pair", bool(proof.get("matched_call"))
          and proof.get("root") == row.get("expected_runtime", {}).get("root")
          and proof.get("member_sha256") == row.get("expected_runtime", {}).get("member_sha256"))) if not passed]
+    if row.get('binding', {}).get('context_contract') == 'bounded/v3':
+        from . import workflow_write_guard as guard
+        try:
+            account = guard.account(row)
+            if (account.get('stage') != 'ready'
+                    or guard.timing_required(account) and account.get('measurement') != 'complete'
+                    or account['schema'] != 'taskplane.startup-account/v1' and account.get('execution') != 'complete'):
+                missing.append('verified startup execution and first source probe')
+        except w.Refusal:
+            missing.append('valid bound startup account')
     return {"status": "ready" if not missing else "pending", "missing": missing,
             "runtime_root": proof.get("root"), "basis": "Observed child claim, delivered context and automatic pre/post hook pair."}
 
@@ -305,8 +423,247 @@ def startup_blockers(state: dict[str, Any], definition: dict[str, Any]) -> list[
     return blocked
 
 
+class BudgetRefusal(w.Refusal):
+    """Validated budget observations must survive an admission refusal."""
+
+
+def _result_runtime() -> dict[str, Any]:
+    from . import worker_results as results, host_capabilities
+    import hashlib
+    return {'sha256': digest({'runtime': host_capabilities.runtime_identity(),
+                             'members': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                         for path in sorted(Path(__file__).parent.glob('*.py'))}}),
+            'schemas': [results.SCHEMA, results.RESULT_CONTRACT, results.LEDGER, results.BUDGET],
+            'capabilities': sorted(results.CAPABILITIES)}
+
+
+def _result_binding(state: dict[str, Any], definition: dict[str, Any]) -> dict[str, Any]:
+    return {'run': state['run'], 'task': definition['id'],
+            'task_epoch': state.get('task_epochs', {}).get(definition['id'], 0),
+            'requirements_epochs': {cid: state.get('criterion_epochs', {}).get(cid, 0)
+                                    for cid in e.task_criteria(definition)}}
+
+
+def _result_fingerprints(workspace: Path, state: dict[str, Any], definition: dict[str, Any]) -> dict[str, Any]:
+    from . import worker_results as results, context_reuse
+    declared = results.contract(definition)
+    assert declared is not None
+    try:
+        strategy = w.accepted_plan(state)['packet']['output'].get('verification_strategy', {})
+    except w.Refusal:
+        strategy = definition.get('verification', {})
+    checks = strategy.get('checks', []) if isinstance(strategy, dict) and strategy.get('schema') == e.VERIFICATION_STRATEGY else []
+    allowed = set(e.read_inputs(state, definition)) | set(definition['paths'])
+    keys = {}
+    for cid, obligation in results._obligations(declared).items():
+        matched = [check for check in checks if check.get('task', definition['id']) == definition['id']
+                   and cid in check.get('criteria', [])]
+        # An ambiguous or untyped verification plan cannot manufacture reusable
+        # evidence. It still gets an immutable, explicitly unknown contribution.
+        if len(matched) == 1:
+            check = matched[0]
+            source, tests, command = check.get('source_inputs'), check.get('test_inputs'), check.get('command')
+            if (all(isinstance(items, list) and items and all(isinstance(p, str) for p in items)
+                    for items in (source, tests, command)) and set(source + tests) <= allowed):
+                keys[cid] = context_reuse.contribution_key(workspace, paths=source, tests=tests,
+                    outputs=sorted(set(obligation['outputs'] + obligation['evidence'])),
+                    criteria={cid: obligation}, command=command, tool='taskplane-root-verification',
+                    contract=declared['schema'])
+                continue
+        body = {'schema': 'taskplane.contribution-key/v1', 'coverage': 'unknown', 'eligible': False,
+                'criteria': {cid: obligation}, 'reason': 'Complete current verification plan/fingerprints unavailable.'}
+        keys[cid] = {**body, 'digest': digest(body)}
+    return keys
+
+
+def _result_policy(state: dict[str, Any], definition: dict[str, Any], *, initialize: bool) -> str | None:
+    from . import worker_results as results
+    declared = results.contract(definition, required=False)
+    if declared is None:
+        w.require(definition['id'] not in state.get('result_ledgers', {})
+                  and 'task/' + definition['id'] not in state.get('retry_budgets', {}),
+                  'completion_contract_required', 'An admitted completion/retry contract cannot be removed or made opaque.')
+        return None
+    ledger_id = str(definition['id'])
+    ledgers = state.setdefault('result_ledgers', {})
+    identity = _result_binding(state, definition)
+    if ledger_id not in ledgers:
+        w.require(initialize, 'completion_contract_required', 'Result contract was not admitted before this native attempt.')
+        ledgers[ledger_id] = results.new_ledger(identity, definition, _result_runtime())
+    ledger = ledgers[ledger_id]
+    w.require(ledger['binding'] == identity and ledger['contract_digest'] == digest(declared),
+              'stale_checkpoint', 'Result contract or requirements changed; explicit compatible migration is required.')
+    results.enforce_runtime(ledger['runtime_pin'], _result_runtime())
+    scopes = {'task/' + definition['id']: ({'run': state['run'], 'task': definition['id']},
+                                         results.policy_for_definition(definition))}
+    if state['scope'].get('retry_policy') is not None:
+        scopes['run'] = ({'run': state['run']}, state['scope']['retry_policy'])
+    stage = w.current(state)
+    if stage.get('retry_policy') is not None:
+        scopes['visit/' + stage['id']] = ({'run': state['run'], 'visit': stage['id']}, stage['retry_policy'])
+    budgets = state.setdefault('retry_budgets', {})
+    # Removing mutable policy metadata cannot remove an already frozen scope.
+    for name, scope_binding in [('run', {'run': state['run']}),
+            ('visit/' + stage['id'], {'run': state['run'], 'visit': stage['id']})]:
+        if name in budgets and name not in scopes:
+            scopes[name] = (scope_binding, None)
+    for name, (scope_binding, policy) in scopes.items():
+        if name not in budgets:
+            w.require(initialize, 'completion_contract_required', 'Retry scope was not admitted before this attempt.')
+            assert isinstance(policy, dict)
+            budgets[name] = results.new_budget(scope_binding, policy, runtime=_result_runtime())
+        else:
+            w.require(budgets[name]['binding'] == scope_binding, 'stale_checkpoint', 'Retry scope changed.')
+            results.enforce_runtime(budgets[name]['runtime_pin'], _result_runtime())
+    ledger['budget_scopes'] = sorted(scopes)
+    return ledger_id
+
+
+def _retry_usage(workspace: Path, state: dict[str, Any], budget: dict[str, Any]) -> dict[str, Any]:
+    """Only the native owned-interval reader supplies usage; request counters are ignored."""
+    unknown = {'coverage': 'unknown', 'source': 'native owned intervals unavailable'}
+    scope = budget['binding']
+    owned = [row for row in records(state).values()
+             if ('task' not in scope or row['task_id'] == scope['task'])
+             and ('visit' not in scope or row['binding']['visit'] == scope['visit'])]
+    if 'task' in scope and not any(row.get('call_id') for row in owned):
+        return {'input': 0, 'output': 0, 'cached_input': 0, 'coverage': 'complete',
+                'source': 'controller proves no native task delivery has issued'}
+    if any(row.get('call_id') and not row.get('worker_id') for row in owned):
+        return unknown
+    try:
+        from . import flow
+        events = flow.read_events(workspace)
+        start = next((event for event in reversed(events) if event.get('kind') == 'start'
+                      and event.get('run') == state['run'] and event.get('session') == state['root']), None)
+        if start is None:
+            return unknown
+        measured = flow.reconcile_usage(start, events, state)
+        coverage = measured['token_coverage']
+        if any(coverage.get(key, 1) for key in ('unmeasured_sessions', 'partial_sessions', 'discovery_errors', 'inventory_errors')):
+            return unknown
+        identities = {row['worker_id'] for row in owned if row.get('worker_id')}
+        sessions = [session for session in measured['sessions']
+                    if session.get('role') != 'host_approval_review' and
+                    ('task' not in scope and 'visit' not in scope or
+                     session.get('session') in identities or session.get('agent') in identities)]
+        if any(not session.get('usage') for session in sessions):
+            return unknown
+        usage = {field: sum(session['usage'].get(source, 0) for session in sessions)
+                 for field, source in [('input', 'input_tokens'), ('output', 'output_tokens'),
+                                       ('cached_input', 'cached_input_tokens')]}
+        return {**usage, 'coverage': 'complete', 'source': 'native owned intervals/' + digest(measured)}
+    except (OSError, ValueError, KeyError, TypeError):
+        return unknown
+
+
+def refresh_result_budgets(workspace: Path, state: dict[str, Any]) -> None:
+    from . import worker_results as results
+    stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+    for name, budget in list(state.get('retry_budgets', {}).items()):
+        results.enforce_runtime(budget['runtime_pin'], _result_runtime())
+        policy = None
+        if name.startswith('task/'):
+            policy = results.policy_for_definition(task(state, budget['binding']['task']))
+        elif name == 'run':
+            policy = state['scope'].get('retry_policy')
+        elif budget['binding'].get('visit') == w.current(state)['id']:
+            policy = w.current(state).get('retry_policy')
+        current_budget = results.observe_budget(budget, now_ms=stamp,
+            usage=_retry_usage(workspace, state, budget), policy=policy)
+        for key, reservation in list(current_budget['reservations'].items()):
+            row = records(state).get(reservation['attempt_id'])
+            if not row or reservation['state'] in {'terminal', 'no_launch'}:
+                continue
+            proof = {'source': 'controller worker/' + row['grant_id'],
+                     'terminal': bool(row.get('terminal_status')) and row['state'] not in LIVE,
+                     'usage_complete': current_budget['coverage_known']}
+            if row.get('terminal_status') == 'not_launched' and not row.get('call_id'):
+                current_budget = results.reservation_transition(current_budget, key, state='no_launch',
+                    proof={**proof, 'authoritative_no_launch': True})
+            elif (proof['terminal'] and reservation['state'] in {'issued', 'uncertain'}
+                  and ('token_cap' not in current_budget['frozen_effective_limits'] or proof['usage_complete'])):
+                current_budget = results.reservation_transition(current_budget, key, state='terminal', proof=proof)
+        state['retry_budgets'][name] = current_budget
+
+
+def _reserve_result_dispatch(workspace: Path, state: dict[str, Any], row: dict[str, Any],
+                             request: dict[str, Any]) -> None:
+    from . import worker_results as results
+    definition = task(state, row['task_id'])
+    prior = [r for r in records(state).values() if r['task_id'] == row['task_id']]
+    ledger_id = _result_policy(state, definition, initialize=not prior)
+    if ledger_id is None:
+        return
+    ledger = state['result_ledgers'][ledger_id]
+    refreshed = results.refresh_residuals(ledger, Store(workspace), _result_fingerprints(workspace, state, definition))
+    ledger.clear(); ledger.update(refreshed)
+    refresh_result_budgets(workspace, state)
+    proposed = request.get('tokens_proposed', 0)
+    budgets = [state['retry_budgets'][key] for key in ledger['budget_scopes']]
+    decisions = [results.budget_admission(budget, tokens_proposed=proposed) for budget in budgets]
+    if not all(decision['dispatch_admitted'] for decision in decisions):
+        raise BudgetRefusal('retry_budget_exhausted', 'Frozen retry limits or unknown native usage prevent dispatch.')
+    previous = max(prior, key=lambda item: item['attempt']) if prior else None
+    predecessor = None
+    if previous:
+        disposition = previous.get('result_disposition', {})
+        predecessor = {'attempt_id': previous['grant_id'], 'binding': ledger['binding'],
+            'terminal': bool(previous.get('terminal_status')) and previous['state'] not in LIVE,
+            'disposition': ('incomplete' if disposition.get('status') == 'verified'
+                            and any(item['state'] == 'invalidated' for item in ledger['criteria'].values()) else
+                            disposition.get('status', 'failed' if previous['state'] in {'failed', 'interrupted'} else 'pending')),
+            'outcome_digest': digest(disposition or {'state': previous['state'], 'terminal_status': previous.get('terminal_status'),
+                                                     'events': previous.get('events')})}
+    candidates = results.schedule_residuals(ledger, predecessor=predecessor, retry_plan=request.get('retry_plan'),
+        authorization={'authorized': True, 'quiescent': not any(r['state'] in LIVE for r in prior),
+                       'denied': bool(previous and is_launch_denial(previous) and previous.get('identity_conflict')),
+                       'cancelled': bool(state.get('cancellation')), 'paused': bool(state.get('dispatch_paused')),
+                       'conflicting': any(r.get('identity_conflict') for r in prior)},
+        budget={'dispatch_admitted': True}, fresh_identity=request.get('worker_id') is None)
+    w.require(candidates, 'worker_result_incomplete', 'No authorized residual work: reconcile the exact predecessor and retry plan.')
+    stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+    for budget in budgets:
+        if not budget['authorization_started']:
+            budget.update(authorization_started=True, first_authorized_ms=stamp)
+        budget['reservations'][row['grant_id']] = {'attempt_id': row['grant_id'], 'tokens': proposed,
+            'state': 'reserved', 'issued_call': None, 'history': [{'state': 'reserved', 'now_ms': stamp}]}
+    row.update(result_ledger=ledger_id, result_binding=deepcopy(ledger['binding']),
+               budget_scopes=list(ledger['budget_scopes']), tokens_proposed=proposed,
+               residual_criteria=candidates, retry_plan=deepcopy(request.get('retry_plan')))
+
+
+def _issue_result_dispatch(state: dict[str, Any], row: dict[str, Any], call: str, *, continuation: bool = False) -> None:
+    from . import worker_results as results
+    if not row.get('result_ledger'):
+        w.require(results.contract(task(state, row['task_id']), required=False) is None,
+                  'completion_contract_required', 'Native attempt lacks its admitted result contract.')
+        return
+    refresh_result_budgets(Path(state['workspace']), state)
+    scopes = row['budget_scopes']
+    key = row['grant_id'] + '/' + call if continuation else row['grant_id']
+    prepared = {}
+    for scope in scopes:
+        budget = deepcopy(state['retry_budgets'][scope])
+        if continuation:
+            decision = results.budget_admission(budget, tokens_proposed=row['tokens_proposed'])
+            if not decision['dispatch_admitted']:
+                raise BudgetRefusal('retry_budget_exhausted', 'Continuation exceeds the same frozen retry limits.')
+            budget['reservations'][key] = {'attempt_id': row['grant_id'], 'tokens': row['tokens_proposed'],
+                'state': 'reserved', 'issued_call': None, 'history': [{'state': 'reserved', 'call_id': call}]}
+        if not results._issue_ready(budget, key):
+            raise BudgetRefusal('retry_budget_exhausted', 'Retry budget changed before native issue.')
+        prepared[scope] = results.reservation_transition(budget, key, state='issued',
+            proof={'source': 'native pre-call/' + call, 'call_id': call})
+    state['retry_budgets'].update(prepared)
+
+
 def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[str, Any], *,
             host: str | None = None) -> dict[str, Any]:
+    from .workflow_write_guard import require_runtime
+    require_runtime(state)
+    w.require(not state.get('dispatch_paused'), 'approval_required',
+              'New worker dispatch is paused for requirements review.')
     parent_proof = require_parent_readiness(state)
     from . import workspace_binding
     workspace_binding.ensure(workspace, worker=True, expected=state.get("workspace_contract"))
@@ -348,9 +705,18 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     w.require(not any(r["task_name"] == name for r in live), "scope_violation", "Active native task names must be distinct.")
     session = Session(workspace, state, task_id)
     preflight = session.preflight()
-    budget = definition.get("context_budget_bytes", 131072 if "read_inputs" in definition else None)
-    w.require(budget is None or preflight["required_body_bytes"] <= budget, "context_overflow",
-              "Required context exceeds the task budget before launch; inspect normative/supporting declarations.")
+    if state.get('context_contract') == 'bounded/v3':
+        # Native identity is not known before dispatch. Budget the maximum JSON
+        # encoding of its 200-character bound; this is a preview, never a claim.
+        maximum_consumer = {'worker_id': '\x00' * 200, 'grant_id': key, 'attempt': 1024,
+                            'task_id': task_id, 'task_generation': state.get('task_generation', 0)}
+        preflight = Session(workspace, state, task_id, consumer=maximum_consumer,
+                            snapshot=session.frozen, persist=False).preflight()
+        preflight['consumer_basis'] = 'Worst-case escaped identity bound; actual consumer must receive a fresh brief.'
+    if state.get('context_contract') != 'bounded/v3':
+        budget = definition.get("context_budget_bytes", 131072 if "read_inputs" in definition else None)
+        w.require(budget is None or preflight["required_body_bytes"] <= budget, "context_overflow",
+                  "Required context exceeds the legacy task budget before launch.")
     from .host_capabilities import runtime_identity
     # Preserve immutable content in the bounded object store, never the control DB.
     frozen = session.store.put("worker-input-snapshot", session.frozen)
@@ -367,7 +733,17 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
            "purpose": definition.get("purpose") or definition.get("review_lens") or task_id,
            "retry_reason": retry_reason, "context_preflight": preflight,
            "expected_runtime": runtime_identity(),
+           "requirements_epochs": {c: state.get('criterion_epochs', {}).get(c, 0)
+                                   for c in e.task_criteria(definition)},
+           "task_epoch": state.get('task_epochs', {}).get(task_id, 0),
            "workspace_contract": deepcopy(state.get("workspace_contract"))}
+    if state.get('context_contract') == 'bounded/v3':
+        row['host'] = host or 'unknown'
+        row['startup_account_schema'] = 'taskplane.startup-account/v3'
+        row['startup_supporting'] = [item['id'] for item in session.items if not item.get('required', True)]
+        row['control_epoch'] = 0
+        from .workflow_write_guard import new_account
+        row['startup_account'] = new_account(row, preflight)
     if host == "claude" and state.get("claude_transcript_selection", {}).get("status") == "selected":
         # Claude writes tool_use before PreToolUse. Freeze the root hook's
         # verified boundary at preparation, before the grant can be dispatched.
@@ -380,6 +756,7 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
         w.require(prior and all(r["state"] not in LIVE for r in prior),
                   "scope_violation", "Follow-up needs a known joined native worker.")
         row['canonical_name'] = max(prior, key=lambda r: r['prepared_at']).get('canonical_name')
+    _reserve_result_dispatch(workspace, state, row, request)
     rows[key] = row
     state["worker_capacity"] = {**request["capacity"], "effective_limit": limit, "observed_at": now(),
                                 "binding": {"run": state["run"], "visit": w.current(state)["id"]}}
@@ -507,6 +884,8 @@ def admit_claude_control(state: dict[str, Any], event: dict[str, Any]) -> None:
               'Claude control call belongs to another attempt or input.')
     w.require(call in controls or len(controls) < 4096, 'state_unavailable',
               'Claude worker control observation limit reached.')
+    if tool == 'SendMessage' and call not in controls:
+        _issue_result_dispatch(state, row, cast(str, call), continuation=True)
     controls[call] = proof
     if tool == 'TaskStop':
         row['state'] = 'cancel_requested'  # A stop request or its tool response never joins work.
@@ -555,6 +934,8 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
         admit_claude_control(state, {**event, 'tool_name': tool, 'tool_input': args})
         return True
     if tool in SPAWN | FOLLOW:
+        w.require(not state.get('dispatch_paused'), 'approval_required',
+                  'New native dispatch is paused for requirements review.')
         claude = tool in {"Agent", "Task"}
         fields = ({"prompt", "description", "subagent_type", "model", "run_in_background", "resume"} if claude else
                   {"target", "message"} if tool in FOLLOW else
@@ -571,6 +952,15 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
         w.require(len(matches) == 1 and matches[0] in records(state), "scope_violation", "Dispatch requires one prepared grant.")
         row = records(state)[matches[0]]
         current(state, row)
+        if state.get('context_contract') == 'bounded/v3':
+            from .workflow_write_guard import account, allow_work, timing_required
+            allow_work(row)
+            startup = account(row)
+            w.require((not timing_required(startup) or startup.get('measurement') == 'complete')
+                      and (startup['schema'] == 'taskplane.startup-account/v1'
+                           or startup.get('execution') == 'complete') and startup['operations']
+                      and all(op['status'] == 'completed' for op in startup['operations'].values()),
+                      'worker_readiness', 'Native launch requires completed preparation and its genuine post hook.')
         require_parent_readiness(state)
         workspace = Path(state['workspace'])
         definition = task(state, row['task_id'])
@@ -639,6 +1029,7 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
                       and not row.get("worker_id"), "scope_violation", "Spawn needs the prepared name and a task-focused handoff.")
         w.require(sum(r["state"] in LIVE for r in records(state).values()) <=
                   state["worker_capacity"]["effective_limit"], "worker_capacity", "Observed capacity reduced before launch.")
+        _issue_result_dispatch(state, row, cast(str, call))
         row.update(call_id=call, dispatch_digest=digest(args), state="launch_pending", launch_requested_at=now(), host="claude" if claude else "codex")
         return True
     w.require(set(args) <= ({"target", "message"} if tool in MESSAGE else {"target"})
@@ -652,6 +1043,15 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
         return True  # Cancellation is not a terminal observation.
     current(state, row)
     w.require(row["state"] in {"bootstrapping", "running"}, "scope_violation", "New input requires a live current attempt.")
+    from .worker_results import contract
+    if tool in MESSAGE and (row.get('result_ledger') or contract(task(state, row['task_id']), required=False) is not None):
+        call = event.get('tool_use_id') or event.get('call_id')
+        w.require(isinstance(call, str) and bool(call), 'scope_violation', 'Continuation needs an exact native call.')
+        seen = row.setdefault('continuation_calls', {})
+        w.require(call not in seen or seen[call] == digest(args), 'scope_violation', 'Conflicting continuation replay.')
+        if call not in seen:
+            _issue_result_dispatch(state, row, cast(str, call), continuation=True)
+            seen[call] = digest(args)
     return True
 
 
@@ -671,6 +1071,11 @@ def bind_worker(state: dict[str, Any], row: dict[str, Any], identity: str, name:
         return False
     if any(r is not row and r.get("worker_id") == identity and r["state"] in LIVE for r in records(state).values()):
         row["state"] = "unknown"
+        return False
+    if row.get('result_ledger') and any(other is not row and other['task_id'] == row['task_id']
+            and other.get('worker_id') == identity for other in records(state).values()):
+        row.update(state='unknown', identity_conflict=True)
+        _audit(row, 'identity_conflict', {'worker_id': identity, 'reason': 'Residual retry requires a fresh native identity.'})
         return False
     row["worker_id"] = identity
     if isinstance(name, str) and name:
@@ -695,7 +1100,15 @@ def terminal(row: dict[str, Any], status: str, event_id: str) -> None:
         return
     if previous is not None or row.get("terminal_status") not in (None, status):
         _audit(row, 'terminal_conflict', {'status': status, 'event_id': event_id})
-        row["state"] = "unknown"
+        if row['state'] == 'accepted':
+            # Terminal delivery cannot overwrite the independent acceptance
+            # disposition. A contradictory observation explicitly invalidates
+            # its current applicability while retaining the accepted record.
+            row['acceptance_invalidation'] = {'reason': 'contradictory_native_terminal',
+                'event_id': event_id, 'observed_status': status,
+                'accepted_terminal_status': row.get('terminal_status')}
+        else:
+            row["state"] = "unknown"
         return
     if row.get("terminal_status") == status:
         return
@@ -1105,7 +1518,8 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                     'status': 'no_report' if completed.get('no_report') else 'startup_failed' if unsuccessful else 'delivered',
                     'body_digest': report['envelope']['body_digest'] if report else completed['body_digest'],
                     'notification': completed, **delivery,
-                    'stop_event': stopped['event_id'], 'observed_at': now()}
+                    'stop_event': stopped['event_id'],
+                    'observed_at': row['handback'].get('observed_at', now()) if old is not None else now()}
                 row['handback_reconciliation'] = {'status': 'joined',
                     'delivery_transform': report.get('delivery_transform', {}).get('schema') if report else None,
                     **({'completion_sequence': report['completion_sequence']} if report and report.get('completion_sequence') else {})}
@@ -1115,7 +1529,8 @@ def observe_claude_launches(state: dict[str, Any], attempts: list[dict[str, Any]
                         'sequence': report['completion_sequence'], 'stop_event': stopped['event_id'],
                         'notification': completed['record_sha256'],
                         'peer': observation['peer_handback']['record_sha256'],
-                        'admission': digest(row['handback_call'])})
+                        'admission': digest({key: value for key, value in report.items()
+                            if key not in {'completion_sequence', 'delivery_transform'}})})
                 if unsuccessful:
                     _audit(row, 'unsuccessful_completion', {'notification': completed['record_sha256'],
                         'stop_event': stopped['event_id'], 'status': row['handback']['status']})
@@ -1415,6 +1830,37 @@ def correlate(state: dict[str, Any], row: dict[str, Any], expected_identity: str
         row['native_session_started_at'] = identity['started_at']
 
 
+def retain_rejection(workspace: Path, state: dict[str, Any], row: dict[str, Any],
+                     request: dict[str, Any]) -> dict[str, Any] | None:
+    """Retain an authorized reject-result; the host validates and commits its call.
+
+    Rejection needs a genuine joined attempt, not successful startup or passing
+    completion. Existing immutable partial evidence keeps its original identity.
+    """
+    from . import worker_results as results
+    definition = task(state, row['task_id'])
+    ledger_id = _result_policy(state, definition, initialize=False)
+    if ledger_id is None:
+        return None
+    w.require(row.get('result_ledger') == ledger_id
+              and row.get('result_binding') == state['result_ledgers'][ledger_id]['binding'],
+              'completion_contract_required', 'Native rejection lacks its previously admitted completion ledger.')
+    if row.get('result_disposition'):
+        retained = deepcopy(row['result_disposition'])
+    else:
+        fingerprints = _result_fingerprints(workspace, state, definition)
+        retained = results.retain_result_state(workspace, state, ledger_id=ledger_id, definition=definition,
+            binding=state['result_ledgers'][ledger_id]['binding'], attempt_id=row['grant_id'],
+            request={'outcome': 'rejected', 'outputs': [], 'checks': [], 'semantic_review': {},
+                     'side_effects': 'unknown', 'reason': 'semantic_inadequacy',
+                     'detail': ('Root rejected result: ' + request['reason'])[:2048]},
+            fingerprints=fingerprints, current_fingerprints=lambda: _result_fingerprints(workspace, state, definition),
+            runtime=_result_runtime())
+        row['result_disposition'] = deepcopy(retained)
+        refresh_result_budgets(workspace, state)
+    return {**retained, 'outcome_digest': digest(retained)}
+
+
 def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request: dict[str, Any]) -> dict[str, Any]:
     definition = task(state, task_id)
     w.require(all(result_valid(workspace, state, d) for d in definition["dependencies"]),
@@ -1427,7 +1873,12 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
         w.require(row and row["task_id"] == task_id and row["state"] == "result_pending",
                   "invalid_evidence", "Native attempt is not joined with a pending result.")
         assert row is not None
+        w.require(not row.get('result_rejection'), 'invalid_evidence',
+                  'This result was rejected; verification requires a fresh attempt.')
         current(state, row)
+        if state.get('context_contract') == 'bounded/v3':
+            w.require(readiness(row)['status'] == 'ready', 'invalid_evidence',
+                      'Native v3 result acceptance requires complete startup execution and the source probe.')
         if row.get("host") == "claude":
             fresh = observe_claude_launches(state, [row], {})
             w.require(fresh[0]["status"] == "matched" and not row.get("identity_conflict"),
@@ -1455,6 +1906,36 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
                       for r in records(state).values()), "scope_violation",
               "Join dependent workers before replacing their prerequisite result.")
     outputs, checks = request.get("outputs"), request.get("checks")
+    if row:
+        from .workflow_write_guard import allow_work
+        allow_work(row)
+    from . import worker_results as results
+    declared = results.contract(definition, required=False)
+    ledger_id = _result_policy(state, definition, initialize=row is None)
+    if declared is not None:
+        assert ledger_id is not None
+        if row:
+            w.require(row.get('result_ledger') == ledger_id
+                      and row.get('result_binding') == state['result_ledgers'][ledger_id]['binding'],
+                      'completion_contract_required', 'Native result has no previously admitted completion ledger.')
+        fingerprints = _result_fingerprints(workspace, state, definition)
+        result_request = {key: value for key, value in request.items() if key != 'grant'}
+        result_request.setdefault('side_effects', 'unknown')
+        retained = results.retain_result_state(workspace, state, ledger_id=ledger_id, definition=definition,
+            binding=state['result_ledgers'][ledger_id]['binding'],
+            attempt_id=row['grant_id'] if row else 'root/' + digest(binding(state)), request=result_request,
+            fingerprints=fingerprints, current_fingerprints=lambda: _result_fingerprints(workspace, state, definition),
+            runtime=_result_runtime())
+        refresh_result_budgets(workspace, state)
+        if row:
+            row['result_disposition'] = deepcopy(retained)
+        if retained['status'] != 'verified':
+            # Controller.worker persists this structured disposition in its
+            # existing locked CAS. No exception may discard retained evidence.
+            return {**retained, 'accepted': False, 'grant': grant, 'task': task_id,
+                    'outcome_digest': digest(retained), 'next_action': 'Review retained contributions and submit an exact residual retry plan.'}
+    elif request.get('outcome', 'complete') != 'complete':
+        raise w.Refusal('worker_result_incomplete', 'A declared incomplete result cannot be accepted.')
     w.require(isinstance(outputs, list) and outputs and all(isinstance(p, str) for p in outputs)
               and set(outputs) <= set(definition["paths"]), "invalid_evidence", "Result outputs must belong to the task.")
     w.require(isinstance(checks, list) and checks and all(isinstance(c, dict) and c.get("status") == "pass"
@@ -1462,13 +1943,18 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
               "invalid_evidence", "Accept results only with passing named verification evidence.")
     assert isinstance(outputs, list) and isinstance(checks, list)
     files = outputs + [c["evidence"] for c in checks]
+    from .host_capabilities import runtime_identity
     result = {"task_digest": digest(definition), "manifest": e.manifest(workspace, files),
               "outputs": list(outputs), "input_manifest": deepcopy(row["input_manifest"]) if row else
                   read_input_manifest(workspace, Session(workspace, state, task_id), definition["paths"]),
               "input_contract": "declared-source/v1",
               "dependency_results": dependency_results(state, definition["dependencies"]),
               "checks": deepcopy(checks), "accepted_at": now(), "grant": grant,
-              "reviewer": state["root"], "worker_id": row["worker_id"] if row else None}
+              "reviewer": state["root"], "worker_id": row["worker_id"] if row else None,
+              "accepted_revision": state['revision'], 'verification_plan': verification_plan(state, task_id),
+              'runtime_digest': digest(runtime_identity()),
+              'task_epoch': state.get('task_epochs', {}).get(task_id, 0),
+              'requirements_epochs': {c: state.get('criterion_epochs', {}).get(c, 0) for c in e.task_criteria(definition)}}
     state.setdefault("task_results", {})[task_id] = result
     if row:
         row["state"] = "accepted"
@@ -1514,6 +2000,7 @@ def lens_summary(state: dict[str, Any], workspace: Path) -> list[dict[str, Any]]
 
 
 def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, Any]:
+    from .workflow_write_guard import startup_status
     rows = list(state.get("workers", {}).values())
     scheduling = []
     limit = state.get('worker_capacity', {}).get('effective_limit')
@@ -1557,6 +2044,7 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
             "attempts": [{**{k: r.get(k) for k in ("grant_id", "task_id", "worker_id", "attempt", "state",
                 "prepared_at", "started_at", "ended_at", "purpose", "retry_reason", "context_preflight", "context_delivery")},
                 "readiness": readiness(r),
+                "startup": startup_status(r),
                 **({'launch_preflight': deepcopy(r['launch_preflight'])} if r.get('launch_preflight') else {}),
                 **({'handback_reconciliation': deepcopy(r['handback_reconciliation'])} if r.get('handback_reconciliation') else {}),
                 **({'launch_blocker': deepcopy(r['preflight_blocker'])} if r.get('preflight_blocker') else {}),

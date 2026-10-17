@@ -207,58 +207,108 @@ def is_dependency_edge(edge: dict) -> bool:
         return False
 
 
-def strongly_connected_components(nodes, edges) -> list[list[str]]:
-    """Return a deterministic, complete Tarjan decomposition.
+def strongly_connected_components(nodes, edges, *, metrics: dict | None = None,
+                                  max_nodes: int | None = None,
+                                  max_edges: int | None = None) -> list[list[str]]:
+    """Deterministic iterative Tarjan decomposition, without recursion.
 
-    ``edges`` contains ``(source, target)`` pairs. Unknown endpoints are not
-    silently admitted: the caller must validate them before asking for SCC
-    evidence.  This helper never truncates; bounded callers must refuse input
-    over their declared ceiling before calling it.
+    Optional caller ceilings refuse rather than truncate. ``operations`` counts
+    input records, root probes, discoveries, edge visits, frame completions and
+    stack removals. Ordering comparisons are separate: sorting input adjacency
+    and output components is deterministic but is not claimed to be linear.
+    The caller's inputs are never mutated, including on resource refusal.
     """
-    ordered = sorted({str(node) for node in nodes or ()})
-    known = set(ordered)
-    adjacency = {node: set() for node in ordered}
-    for source, target in edges or ():
-        source, target = str(source), str(target)
-        if source not in known or target not in known:
-            raise ValueError(
-                f"SCC edge names an unknown node: {source} -> {target}")
-        adjacency[source].add(target)
+    counts = {"operations": 0, "ordering_comparisons": 0, "nodes": 0, "edges": 0,
+              "ordering": "sorted nodes, unique adjacency and components; comparison cost excluded"}
+    class OrderKey:
+        def __init__(self, value):
+            self.value = value
 
-    index = 0
-    indexes: dict[str, int] = {}
-    lowlinks: dict[str, int] = {}
-    stack: list[str] = []
-    on_stack: set[str] = set()
-    components: list[list[str]] = []
+        def __lt__(self, other):
+            counts["ordering_comparisons"] += 1
+            return self.value < other.value
 
-    def visit(node: str) -> None:
-        nonlocal index
-        indexes[node] = lowlinks[node] = index
-        index += 1
-        stack.append(node)
-        on_stack.add(node)
-        for target in sorted(adjacency[node]):
-            if target not in indexes:
-                visit(target)
-                lowlinks[node] = min(lowlinks[node], lowlinks[target])
-            elif target in on_stack:
-                lowlinks[node] = min(lowlinks[node], indexes[target])
-        if lowlinks[node] != indexes[node]:
-            return
-        component = []
-        while stack:
-            member = stack.pop()
-            on_stack.remove(member)
-            component.append(member)
-            if member == node:
-                break
-        components.append(sorted(component))
+    def deterministic_order(values, *, key=lambda value: value):
+        return sorted(values, key=lambda value: OrderKey(key(value)))
 
-    for node in ordered:
-        if node not in indexes:
-            visit(node)
-    return sorted(components, key=lambda component: tuple(component))
+    if metrics is not None:
+        metrics.clear()
+    try:
+        for label, ceiling in (("nodes", max_nodes), ("edges", max_edges)):
+            if ceiling is not None and (type(ceiling) is not int or ceiling < 0):
+                raise ValueError("SCC " + label + " ceiling must be a nonnegative integer")
+        known: set[str] = set()
+        for node in nodes or ():
+            counts["operations"] += 1
+            known.add(str(node))
+            counts["nodes"] = len(known)
+            if max_nodes is not None and len(known) > max_nodes:
+                raise ValueError("SCC node resource limit exceeded")
+        ordered = deterministic_order(known)
+        adjacency: dict[str, set[str]] = {node: set() for node in ordered}
+        for source, target in edges or ():
+            counts["operations"] += 1
+            counts["edges"] += 1
+            if max_edges is not None and counts["edges"] > max_edges:
+                raise ValueError("SCC edge resource limit exceeded")
+            source, target = str(source), str(target)
+            if source not in known or target not in known:
+                raise ValueError(f"SCC edge names an unknown node: {source} -> {target}")
+            adjacency[source].add(target)
+        neighbors = {node: deterministic_order(adjacency[node]) for node in ordered}
+        indexes: dict[str, int] = {}
+        lowlinks: dict[str, int] = {}
+        stack: list[str] = []
+        on_stack: set[str] = set()
+        components: list[list[str]] = []
+
+        def discover(node: str) -> tuple[str, object]:
+            counts["operations"] += 1
+            indexes[node] = lowlinks[node] = len(indexes)
+            stack.append(node)
+            on_stack.add(node)
+            return node, iter(neighbors[node])
+
+        for root in ordered:
+            counts["operations"] += 1
+            if root in indexes:
+                continue
+            frames = [discover(root)]
+            while frames:
+                node, children = frames[-1]
+                target = next(children, None)
+                if target is not None:
+                    counts["operations"] += 1
+                    if target not in indexes:
+                        frames.append(discover(target))
+                    elif target in on_stack:
+                        lowlinks[node] = min(lowlinks[node], indexes[target])
+                    continue
+                counts["operations"] += 1
+                frames.pop()
+                if frames:
+                    parent = frames[-1][0]
+                    lowlinks[parent] = min(lowlinks[parent], lowlinks[node])
+                if lowlinks[node] == indexes[node]:
+                    component = []
+                    while stack:
+                        counts["operations"] += 1
+                        member = stack.pop()
+                        on_stack.remove(member)
+                        component.append(member)
+                        if member == node:
+                            break
+                    components.append(deterministic_order(component))
+        return deterministic_order(components, key=tuple)
+    except MemoryError as exc:
+        counts["refusal_reason"] = "SCC memory resource limit exceeded"
+        raise ValueError(counts["refusal_reason"]) from exc
+    except ValueError as exc:
+        counts["refusal_reason"] = str(exc)
+        raise
+    finally:
+        if metrics is not None:
+            metrics.update(counts)
 
 
 def graph_payload(graph: dict, modules,

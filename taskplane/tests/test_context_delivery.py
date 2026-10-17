@@ -282,8 +282,9 @@ def engine_comparison_entry():
                 args=['--phase',PHASES[min(i+1,6)]] if action=='advance' else []
                 refused=self.cli(action,*args,'--expected-revision',str(state['revision']),code=2)
                 assert refused.get('hook_refused') or refused.get('reason')=='approval_required',refused
+                question = f"Do you approve this {phase.title()} checkpoint?"
                 self.cli('present','--evidence','.taskplane/dashboard.html','--presentation','linked',
-                    '--note','Fixture-labelled artifact link; no live host display or human approval claim.')
+                    '--note',question)
                 binding=self.w.binding(state,self.w.current(state)['packet'])
                 from datetime import datetime, timezone
                 presented = datetime.now(timezone.utc).isoformat()
@@ -293,7 +294,7 @@ def engine_comparison_entry():
                     'source':{'kind':'conversation','reference':'fixture-human-'+phase,'conversation':ROOT,
                               'actor':'user','automatic':False,'observed_at':observed},
                     'presentation':{'checkpoint':binding['checkpoint'],'reference':'fixture/presentation-'+phase,
-                                    'at':presented}}
+                                    'at':presented,'text':question}}
                 self.cli('decide','--decision-json',json.dumps(decision),'--expected-revision',str(state['revision']))
                 state=self.state()
                 self.cli(action,*args,'--expected-revision',str(state['revision']))
@@ -661,3 +662,54 @@ def test_command_output_checks_combined_budget_and_terminal_errors():
     with pytest.raises(ValueError, match='Conflicting'):
         continuation({'remaining_required': 0, 'done': False})
     assert continuation({'remaining_required': 1, 'next_action': 'flow context --run bound --drain abc'})
+
+
+def test_drain_adapter_retains_complete_receipt_and_checks_whole_envelope():
+    """EVID-01 / LOCAL-SCA-01:1; transport validation grants no authority."""
+    from taskplane.context_delivery import check_drain
+    response = {'pages': [], 'remaining_required': 0, 'done': True, 'next_action': None,
+                'context_receipt': {'receipt': {'kind': 'delivery-receipt', 'sha256': 'a'*64}}}
+    assert check_drain(response) is None
+    with pytest.raises(ValueError, match='byte budget'):
+        check_drain({**response, 'padding': 'x'*32768})
+    with pytest.raises(ValueError, match='receipt'):
+        check_drain({**response, 'context_receipt': {}})
+    assert response['context_receipt']['receipt']['sha256'] == 'a'*64
+
+
+def test_cli_measurement_cannot_replace_startup_with_one_marker(tmp_path, monkeypatch):
+    from taskplane.context_delivery import ContextCliMetrics, CLI_COMPONENTS
+    monkeypatch.setenv('TASKPLANE_CONTEXT_ISOLATION', str(tmp_path))
+    metrics = ContextCliMetrics()
+    with pytest.raises(ValueError, match='Undeclared'):
+        metrics.count('process_startup')
+    for component in CLI_COMPONENTS:
+        metrics.covered(component)
+    with metrics.stage('startup'):
+        pass
+    report = metrics.finish(tmp_path/'measurement.json', argv=['python', 'tp.py'],
+                            cwd=tmp_path, stdout=b'{}\n', exit_code=0)
+    assert report['coverage'] == 'unknown'
+    assert report['byte_classes']['transport'] == 3
+
+
+def test_cli_measurement_includes_real_source_reads_and_missing_wiring(tmp_path, monkeypatch):
+    import hashlib
+    from taskplane.context_delivery import ContextCliMetrics, BYTE_CLASSES
+    monkeypatch.setenv('TASKPLANE_CONTEXT_ISOLATION', str(tmp_path))
+    source = tmp_path/'source.json'
+    raw = b'{"source": "actual bytes"}\n'
+    source.write_bytes(raw)
+    metrics = ContextCliMetrics()
+    with metrics.stage('startup'):
+        assert metrics.read_json(source) == {'source': 'actual bytes'}
+    metrics.covered('entrypoint')
+    output = b'{"done":false}\n'
+    report = metrics.finish(tmp_path/'measurement.json', argv=['python', 'tp.py'],
+                            cwd=tmp_path, stdout=output, exit_code=2)
+    assert report['coverage'] == 'unknown' and 'source-audit' in report['missing_components']
+    assert report['byte_classes']['source_fingerprints'] == len(raw)
+    assert report['operations'] == 2 and report['exit_code'] == 2
+    assert set(report['byte_classes']) == set(BYTE_CLASSES)
+    assert report['stdout_sha256'] == hashlib.sha256(output).hexdigest()
+    assert json.loads((tmp_path/'measurement.json').read_bytes()) == report

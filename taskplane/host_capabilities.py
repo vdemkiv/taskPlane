@@ -18,6 +18,37 @@ from typing import Any, Mapping, Sequence
 from .primitives import content_fingerprint
 
 CAPABILITIES = ("protected_store", "human_origin", "tool_containment", "process_tracking")
+STARTUP_TIMING_BOUNDARY = (
+    "process_start", "pre_import", "automatic_pre_hook", "prepare_claim_context_probe",
+    "state_index_fingerprints", "serialization_storage", "automatic_post_hook",
+    "final_output", "measurement_writes", "process_teardown",
+)
+
+
+def startup_timing_capability(host: str, runtime: dict[str, Any]) -> dict[str, Any]:
+    """Installed hosts expose no qualified full-boundary provider yet.
+
+    This is an internal adapter seam, not a CLI/environment/worker assertion.
+    A future provider must qualify actual native boundaries before returning a
+    qualified record. Hook entry and command wall-time are only partial data.
+    """
+    return {"schema": "taskplane.startup-timing-capability/v1", "status": "unavailable",
+            "host": host, "runtime_sha256": content_fingerprint(runtime),
+            "reason": "No supported provider covers native process start through final hook/output and teardown.",
+            "boundary": list(STARTUP_TIMING_BOUNDARY), "provider": None, "clock": None}
+
+
+def qualified_startup_timing(value: Any, host: str, runtime: dict[str, Any]) -> bool:
+    """Validate an internal provider's qualification; never certify fixture truth."""
+    return (isinstance(value, dict)
+            and value.get("schema") == "taskplane.startup-timing-capability/v1"
+            and value.get("status") == "qualified" and value.get("host") == host
+            and value.get("runtime_sha256") == content_fingerprint(runtime)
+            and value.get("boundary") == list(STARTUP_TIMING_BOUNDARY)
+            and value.get("coverage") == "complete" and value.get("gaps") == []
+            and all(isinstance(value.get(k), str) and 0 < len(value[k]) <= 512
+                    for k in ("provider", "clock", "native_version", "qualification_reference",
+                              "boundary_test_reference", "correlation_contract")))
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+codex\.[0-9A-Za-z.-]+)?$")
 _INSTALLED_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$")
 
@@ -207,7 +238,10 @@ def runtime_identity() -> dict[str, Any]:
     root = Path(__file__).resolve().parents[1]
     members = {}
     for name in ('taskplane/tp.py', 'taskplane/flow.py', 'taskplane/workflow_host.py',
+                 'taskplane/workflow.py', 'taskplane/workflow_evidence.py',
                  'taskplane/workflow_local.py', 'taskplane/worker_runtime.py', 'taskplane/native_approval.py',
+                 'taskplane/workflow_write_guard.py', 'taskplane/context.py', 'taskplane/context_delivery.py',
+                 'taskplane/context_views.py',
                  'taskplane/claude_startup_recovery.py', 'taskplane/workflow_collision.py',
                  'taskplane/host_capabilities.py', 'taskplane/host_native.py', 'taskplane/native_tool_guard.py',
                  'taskplane/delegated_approval.py', 'taskplane/state_import.py',
@@ -386,58 +420,225 @@ def unavailable_worker_observation(parent: str, worker: dict[str, Any], call_id:
 
 
 MAX_RECOVERY_BYTES = 64 * 1024 * 1024
+MAX_RECOVERY_RECORDS = 100000
+MAX_RECOVERY_SECONDS = 5.0
+MAX_RECOVERY_CURSOR_BYTES = 256 * 1024
+RECOVERY_CURSOR_SCHEMA = 'taskplane.native-recovery-cursor/v1'
 
 
 def supported_recovery_reader() -> bool:
     return hasattr(os, 'O_NONBLOCK') and hasattr(os, 'O_NOFOLLOW')
 
 
-def _recovery_transcript(session: str, workspace: str) -> tuple[Path, list[dict[str, Any]]]:
-    """Read a complete bounded native snapshot, without following file symlinks."""
-    import stat
-    from . import native_session_meter as meter, workflow as w
+class RecoveryBudget:
+    """One maintenance operation, shared by discovery and both transcripts."""
+
+    def __init__(self) -> None:
+        import time
+        self.started = time.monotonic()
+        self.bytes = 0
+        self.records = 0
+        self.entries = 0
+
+    def available(self) -> bool:
+        import time
+        return (self.bytes < MAX_RECOVERY_BYTES and self.records < MAX_RECOVERY_RECORDS
+                and time.monotonic() - self.started < MAX_RECOVERY_SECONDS)
+
+    def report(self) -> dict[str, Any]:
+        import time
+        return {'bytes': self.bytes, 'records': self.records, 'entries': self.entries,
+                'seconds': time.monotonic() - self.started,
+                'limits': {'bytes': MAX_RECOVERY_BYTES, 'records': MAX_RECOVERY_RECORDS,
+                           'seconds': MAX_RECOVERY_SECONDS}, 'account': 'recovery_not_startup'}
+
+
+def _recovery_files(session: str, budget: RecoveryBudget) -> list[Path]:
+    from . import workflow as w
     w.require(supported_recovery_reader(), 'unsupported_authority',
               'Native recovery requires nonblocking no-follow file reads unavailable on this platform.')
     home = Path(os.environ.get('CODEX_HOME', str(Path.home()/'.codex')))
     paths: list[Path] = []
-    count = 0
     for folder in ('sessions', 'archived_sessions'):
-        for candidate in (home/folder).glob('**/*' + session + '*.jsonl'):
-            count += 1
-            w.require(count <= 20000, 'state_unavailable', 'Native recovery inventory exceeds its bound.')
-            paths.append(candidate)
-    w.require(len(paths) == 1, 'invalid_evidence', 'Native recovery transcript is missing or ambiguous.')
+        pending = [home/folder] if (home/folder).exists() else []
+        while pending:
+            directory = pending.pop()
+            w.require(not any(p.is_symlink() for p in (directory, *directory.parents)),
+                      'invalid_evidence', 'Native recovery directory cannot be a symlink.')
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        budget.entries += 1
+                        w.require(budget.entries <= 20000 and budget.available(), 'state_unavailable',
+                                  'Native recovery inventory exceeds its operation bound.')
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(Path(entry.path))
+                        elif entry.name.endswith('.jsonl') and session in entry.name:
+                            w.require(not entry.is_symlink(), 'invalid_evidence',
+                                      'Native recovery transcript cannot be a symlink.')
+                            paths.append(Path(entry.path))
+            except OSError as exc:
+                raise w.Refusal('invalid_evidence', 'Native recovery directory is unreadable.') from exc
+    return sorted(paths)
+
+
+def _recovery_identity(info: Any) -> dict[str, int]:
+    return {name: getattr(info, name) for name in
+            ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')}
+
+
+def revalidate_recovery_snapshots(snapshots: list[dict[str, Any]]) -> None:
+    """Called again by the controller immediately before publishing revocation."""
+    import stat
+    from . import workflow as w
+    w.require(supported_recovery_reader(), 'unsupported_authority',
+              'Native recovery requires nonblocking no-follow file reads unavailable on this platform.')
+    for scan in snapshots:
+        path = Path(scan['path'])
+        w.require(not any(p.is_symlink() for p in (path, *path.parents)),
+                  'invalid_evidence', 'Native recovery snapshot changed before completion.')
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                w.require(stat.S_ISREG(info.st_mode) and _recovery_identity(info) == scan['identity'],
+                          'invalid_evidence', 'Native recovery snapshot changed before completion.')
+        except OSError as exc:
+            raise w.Refusal('invalid_evidence', 'Native recovery snapshot is unavailable before completion.') from exc
+
+
+def _recovery_child(parent: str, name: str, since: str,
+                    budget: RecoveryBudget) -> dict[str, str]:
+    """Bound all metadata reads; FIFOs and unsupported no-follow reads never block."""
+    import stat
+    from . import native_session_meter as meter, workflow as w
+    found = []
+    cutoff = _recovery_time(since)
+    for path in _recovery_files('', budget):
+        w.require(budget.available() and budget.bytes + meter.MAX_METADATA_BYTES <= MAX_RECOVERY_BYTES,
+                  'state_unavailable', 'Native lineage inventory exceeds its operation byte bound.')
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                w.require(stat.S_ISREG(info.st_mode), 'invalid_evidence', 'Native transcript must be regular.')
+                raw = stream.readline(meter.MAX_METADATA_BYTES)
+                budget.bytes += len(raw)
+                budget.records += 1
+                w.require(_recovery_identity(info) == _recovery_identity(os.fstat(stream.fileno())),
+                          'invalid_evidence', 'Native lineage metadata changed while reading.')
+            meta, _ = meter._session_metadata(raw)
+            if meta.get('parent_session_id') != parent or meta.get('agent_path') != name:
+                continue
+            born = _recovery_time(meta.get('started_at'))
+            if born >= cutoff:
+                found.append({'worker_id': meta['session_id'], 'canonical_name': name,
+                              'parent': parent, 'started_at': meta['started_at']})
+        except OSError as exc:
+            raise w.Refusal('invalid_evidence', 'Native lineage inventory is unreadable.') from exc
+    w.require(len(found) == 1, 'invalid_evidence', 'Native child lineage is missing or ambiguous.')
+    return found[0]
+
+
+def _recovery_scan(session: str, workspace: str, worker: dict[str, Any], calls: tuple[str, str],
+                   budget: RecoveryBudget, cursor: dict[str, Any] | None = None,
+                   *, child: bool = False) -> dict[str, Any]:
+    """Validate every record of one stable snapshot, retaining only proof projections.
+
+    Cursors are controller-owned, never accepted from CLI evidence. A changed
+    inode/size/mtime/ctime (including append) refuses this snapshot. The caller can
+    explicitly restart validation; a partial scan can never release a grant.
+    """
+    import hashlib
+    import stat
+    from copy import deepcopy
+    from . import native_session_meter as meter, workflow as w
+    paths = _recovery_files(session, budget)
+    w.require(len(paths) == 1, 'invalid_evidence', 'Native root transcript is missing or ambiguous.')
     path = paths[0]
-    w.require(not any(p.is_symlink() for p in (path, *path.parents)),
-              'invalid_evidence', 'Native recovery transcript cannot be a symlink.')
+    query = content_fingerprint({'session': session, 'workspace': workspace,
+                                 'task': worker['task_name'], 'calls': calls, 'child': child})
+    scan = deepcopy(cursor) if cursor is not None else {
+        'schema': RECOVERY_CURSOR_SCHEMA, 'query': query, 'path': str(path),
+        'offset': 0, 'records': 0, 'prefix_digest': hashlib.sha256(b'').hexdigest(),
+        'selected': [], 'activity': {}, 'max_child': None, 'done': False}
+    w.require(scan.get('schema') == RECOVERY_CURSOR_SCHEMA and scan.get('query') == query
+              and scan.get('path') == str(path), 'invalid_evidence', 'Stale or foreign recovery cursor.')
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
-            w.require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_RECOVERY_BYTES,
-                      'invalid_evidence', 'Native recovery transcript must be regular and within its byte bound.')
-            snapshot = stream.read(info.st_size)
-            w.require(len(snapshot) == info.st_size and snapshot.endswith(b'\n'),
-                      'invalid_evidence', 'Native recovery transcript snapshot is incomplete.')
+            identity = _recovery_identity(info)
+            w.require(stat.S_ISREG(info.st_mode) and info.st_size > 0, 'invalid_evidence',
+                      'Native recovery transcript must be a nonempty regular file.')
+            w.require(scan.get('identity', identity) == identity, 'invalid_evidence',
+                      'Native recovery snapshot changed; restart complete validation.')
+            scan['identity'] = identity
+            stream.seek(scan['offset'])
+            while scan['offset'] < info.st_size and budget.available():
+                remaining = MAX_RECOVERY_BYTES - budget.bytes
+                start = stream.tell()
+                raw = stream.readline(min(meter.MAX_RECORD_BYTES + 2, remaining))
+                budget.bytes += len(raw)
+                if not raw.endswith(b'\n') and len(raw) == remaining and remaining <= meter.MAX_RECORD_BYTES:
+                    w.require(start > 0 or budget.records > 0, 'invalid_evidence',
+                              'Native recovery record exceeds its operation byte bound.')
+                    break  # Do not publish an offset into an unvalidated record.
+                w.require(raw.endswith(b'\n') and 0 < len(raw) - 1 <= meter.MAX_RECORD_BYTES,
+                          'invalid_evidence', 'Native recovery record is incomplete, empty or oversized.')
+                try:
+                    item = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    raise w.Refusal('invalid_evidence', 'Native recovery transcript has malformed JSON.') from None
+                w.require(isinstance(item, dict) and isinstance(item.get('payload'), dict),
+                          'invalid_evidence', 'Native recovery transcript has a malformed record.')
+                value = item['payload']
+                ordinal = scan['records']
+                if ordinal == 0:
+                    w.require(item.get('type') == 'session_meta' and value.get('id') == session
+                              and value.get('cwd') == workspace, 'invalid_evidence',
+                              'Native recovery transcript has another identity or location.')
+                    scan['selected'].append({'index': ordinal, 'row': item})
+                else:
+                    w.require(item.get('type') != 'session_meta', 'invalid_evidence',
+                              'Native recovery transcript has a restart boundary.')
+                if child and ordinal:
+                    stamp = _recovery_time(item.get('timestamp'))
+                    maximum = scan['max_child']
+                    if maximum is None or stamp > _recovery_time(maximum.get('timestamp')):
+                        scan['max_child'] = {'timestamp': item['timestamp'], 'payload': {}}
+                elif not child and item.get('type') == 'response_item':
+                    if value.get('call_id') in calls:
+                        scan['selected'].append({'index': ordinal, 'row': item})
+                        w.require(sum(r['row']['payload'].get('call_id') == value['call_id']
+                                      for r in scan['selected']) <= 2, 'invalid_evidence',
+                                  'Duplicate native recovery call or result.')
+                    if (value.get('type') == 'function_call' and value.get('namespace') == 'collaboration'
+                            and value.get('name') in ('spawn_agent', 'followup_task', 'send_message', 'interrupt_agent')):
+                        arguments = _recovery_object(value.get('arguments'))
+                        if value['name'] == 'spawn_agent' and arguments.get('task_name') == worker['task_name']:
+                            w.require(value.get('call_id') == calls[0], 'invalid_evidence',
+                                      'Conflicting native launch uses this grant name.')
+                        elif value['name'] != 'spawn_agent' and isinstance(arguments.get('target'), str):
+                            stamp = _recovery_time(item.get('timestamp'))
+                            prior = scan['activity'].get(arguments['target'])
+                            latest = max(stamp, _recovery_time(prior['timestamp'])) if prior else stamp
+                            scan['activity'][arguments['target']] = {'index': ordinal, 'timestamp': latest.isoformat()}
+                scan['offset'] = stream.tell()
+                scan['records'] += 1
+                budget.records += 1
+                scan['prefix_digest'] = hashlib.sha256(bytes.fromhex(scan['prefix_digest'])
+                                                       + hashlib.sha256(raw).digest()).hexdigest()
+                w.require(len(json.dumps(scan).encode()) <= MAX_RECOVERY_CURSOR_BYTES,
+                          'state_unavailable', 'Native recovery proof projection exceeds its storage bound.')
+            w.require(identity == _recovery_identity(os.fstat(stream.fileno())), 'invalid_evidence',
+                      'Native recovery snapshot changed during validation.')
+            scan['done'] = scan['offset'] == info.st_size
     except OSError as exc:
         raise w.Refusal('invalid_evidence', 'Native recovery transcript is unreadable.') from exc
-    rows: list[dict[str, Any]] = []
-    for raw in snapshot.splitlines():
-        w.require(0 < len(raw) <= meter.MAX_RECORD_BYTES,
-                  'invalid_evidence', 'Native recovery record is empty or oversized.')
-        try:
-            item = json.loads(raw)
-        except ValueError:
-            raise w.Refusal('invalid_evidence', 'Native recovery transcript has malformed JSON.') from None
-        w.require(isinstance(item, dict) and isinstance(item.get('payload'), dict),
-                  'invalid_evidence', 'Native recovery transcript has a malformed record.')
-        rows.append(item)
-    meta = rows[0]['payload']
-    w.require(rows[0].get('type') == 'session_meta' and meta.get('id') == session
-              and meta.get('cwd') == workspace
-              and sum(r.get('type') == 'session_meta' for r in rows) == 1,
-              'invalid_evidence', 'Native recovery transcript has another identity, location or restart boundary.')
-    return path, rows
+    return scan
+
+
 
 
 def _recovery_object(value: Any) -> dict[str, Any]:
@@ -476,7 +677,75 @@ def _recovery_pair(rows: list[dict[str, Any]], call_id: str, tool: str) -> tuple
 
 
 def unbound_worker_observation(parent: str, worker: dict[str, Any], launch_call_id: str,
-                               terminal_call_id: str) -> dict[str, Any]:
+                               terminal_call_id: str, *, cursor: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Advance complete-history validation without turning a partial scan into proof."""
+    from copy import deepcopy
+    from . import workflow as w
+    w.require(all(isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value)
+                  for value in (parent, launch_call_id, terminal_call_id))
+              and launch_call_id != terminal_call_id,
+              'invalid_evidence', 'Recovery needs distinct exact native launch and terminal call references.')
+    key = content_fingerprint({'parent': parent, 'workspace': worker['workspace'],
+                               'grant': worker['grant_id'], 'task': worker['task_name'],
+                               'run': worker.get('run'), 'binding': worker.get('binding'),
+                               'prepared_at': worker['prepared_at'],
+                               'launch': launch_call_id, 'terminal': terminal_call_id})
+    progress = deepcopy(cursor) if cursor is not None else {'schema': RECOVERY_CURSOR_SCHEMA, 'key': key}
+    w.require(progress.get('schema') == RECOVERY_CURSOR_SCHEMA and progress.get('key') == key,
+              'invalid_evidence', 'Recovery continuation belongs to another attempt or request.')
+    budget = RecoveryBudget()
+    calls = (launch_call_id, terminal_call_id)
+    root_scan = _recovery_scan(parent, worker['workspace'], worker, calls, budget, progress.get('parent'))
+    progress['parent'] = root_scan
+    if root_scan['done'] and budget.available() and budget.bytes <= MAX_RECOVERY_BYTES // 2:
+        rows = [x['row'] for x in root_scan['selected']]
+        _, _, response = _recovery_pair(rows, launch_call_id, 'spawn_agent')
+        name = response.get('task_name')
+        w.require(isinstance(name, str) and name.startswith('/root/')
+                  and name.rsplit('/', 1)[-1] == worker['task_name'],
+                  'invalid_evidence', 'Native launch does not identify this prepared grant.')
+        assert isinstance(name, str)
+        identity = _recovery_child(parent, name, worker['prepared_at'], budget)
+        w.require(identity['worker_id'] != parent
+                  and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,128}', identity['worker_id'])),
+                  'invalid_evidence', 'Native child identity is invalid.')
+        w.require(progress.get('identity', identity) == identity, 'invalid_evidence',
+                  'Native child lineage changed during recovery.')
+        progress['identity'] = identity
+        child_scan = _recovery_scan(identity['worker_id'], worker['workspace'], worker, calls,
+                                    budget, progress.get('child'), child=True)
+        progress['child'] = child_scan
+        if child_scan['done']:
+            terminal, _, _ = _recovery_pair(rows, terminal_call_id, 'list_agents')
+            position = next(x['index'] for x in root_scan['selected'] if x['row'] == terminal[1])
+            stamp = _recovery_time(terminal[1].get('timestamp'))
+            for target in (identity['worker_id'], name, worker['task_name']):
+                activity = root_scan['activity'].get(target)
+                w.require(activity is None or (activity['index'] < position
+                          and _recovery_time(activity['timestamp']) < stamp),
+                          'invalid_evidence', 'Later native input invalidates the terminal observation.')
+            # Recheck both original snapshots after all parsing and lineage reads.
+            # Append is a changed snapshot, never an implicit permission to omit its tail.
+            revalidate_recovery_snapshots([root_scan, child_scan])
+            child_rows = [x['row'] for x in child_scan['selected']]
+            if child_scan['max_child'] is not None:
+                child_rows.append(child_scan['max_child'])
+            proof = _unbound_worker_proof(parent, worker, launch_call_id, terminal_call_id,
+                parent_snapshot=(Path(root_scan['path']), rows),
+                child_snapshot=(Path(child_scan['path']), child_rows), identity=identity)
+            return {**proof, 'scan': {'status': 'complete', 'operation': budget.report(),
+                    'snapshots': [{k: scan[k] for k in ('path', 'identity', 'records', 'prefix_digest')}
+                                  for scan in (root_scan, child_scan)]}}
+    w.require(len(json.dumps(progress).encode()) <= MAX_RECOVERY_CURSOR_BYTES, 'state_unavailable',
+              'Native recovery cursor exceeds its storage bound.')
+    return {'status': 'incomplete', 'cursor': progress, 'operation': budget.report(),
+            'reservation_released': False, 'result_accepted': False, 'process_exit': 'unknown'}
+
+
+def _unbound_worker_proof(parent: str, worker: dict[str, Any], launch_call_id: str,
+                         terminal_call_id: str, *, parent_snapshot: tuple[Path, list[dict[str, Any]]],
+                         child_snapshot: tuple[Path, list[dict[str, Any]]],
+                         identity: dict[str, str]) -> dict[str, Any]:
     """Correlate a missed launch with native lineage and terminal observations.
 
     Historical evidence can revoke a reservation, never admit it or accept work.
@@ -488,7 +757,7 @@ def unbound_worker_observation(parent: str, worker: dict[str, Any], launch_call_
                   for value in (parent, launch_call_id, terminal_call_id))
               and launch_call_id != terminal_call_id,
               'invalid_evidence', 'Recovery needs distinct exact native launch and terminal call references.')
-    path, rows = _recovery_transcript(parent, worker['workspace'])
+    path, rows = parent_snapshot
     launch, args, response = _recovery_pair(rows, launch_call_id, 'spawn_agent')
     terminal, poll, inventory = _recovery_pair(rows, terminal_call_id, 'list_agents')
     name = response.get('task_name')
@@ -501,13 +770,10 @@ def unbound_worker_observation(parent: str, worker: dict[str, Any], launch_call_
               'invalid_evidence', 'Native launch or terminal poll does not identify this prepared grant.')
     assert isinstance(name, str)
     _recovery_time(worker.get('prepared_at'))
-    identities = worker_identities(parent, canonical_name=name, since=worker['prepared_at'])
-    w.require(len(identities) == 1, 'invalid_evidence', 'Native child lineage is missing or ambiguous.')
-    identity = identities[0]
     child_id = identity['worker_id']
     w.require(child_id != parent and bool(re.fullmatch(r'[A-Za-z0-9_-]{1,128}', child_id)),
               'invalid_evidence', 'Native child identity is invalid.')
-    child_path, child_rows = _recovery_transcript(child_id, worker['workspace'])
+    child_path, child_rows = child_snapshot
     child = child_rows[0]['payload']
     meta, _ = meter._session_metadata(json.dumps(child_rows[0]).encode())
     source = child.get('source')

@@ -203,7 +203,154 @@ def _write(path: Path, value: dict[str, Any], *, exclusive: bool = True) -> None
                 os.replace(temporary, path.name, src_dir_fd=parent, dst_dir_fd=parent)
             os.fsync(parent)
         finally:
+            try:
+                os.unlink(temporary, dir_fd=parent)
+            except FileNotFoundError:
+                pass  # Replacing the destination consumed the temporary name.
+
+
+def _restoration_receipt(value: dict[str, Any], target: Path, workspace: str,
+                         owner: str) -> None:
+    """Validate the original, version-one receipt format without upgrading it."""
+    fields = {"schema", "workspace", "root", "run", "revision", "source", "sha256",
+              "request_reference", "state_bytes_preserved", "approvals_changed", "status"}
+    source, digest = value.get("source"), value.get("sha256")
+    reference, revision = value.get("request_reference"), value.get("revision")
+    if (set(value) != fields or value.get("schema") != "taskplane.initialization-recovery/v1"
+            or value.get("workspace") != workspace or value.get("root") != owner
+            or not isinstance(value.get("status"), str) or value["status"] not in {"prepared", "restored"}
+            or value.get("state_bytes_preserved") is not True or value.get("approvals_changed") is not False
+            or not isinstance(source, str)
+            or not re.fullmatch(re.escape(target.stem) + r" [1-9][0-9]*\.json", source)
+            or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or not isinstance(value.get("run"), str) or not value["run"]
+            or type(revision) is not int or revision < 0
+            or not isinstance(reference, str) or not 0 < len(reference) <= 512
+            or reference != reference.strip() or "\0" in reference):
+        _fail("Restoration receipt is incomplete or does not match its controller and source.")
+
+
+def _sync_restored_file(target: Path, raw: bytes) -> None:
+    """Verify and sync the actual linked file, including on an interrupted retry."""
+    with _directory(target.parent) as parent:
+        fd = os.open(target.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size != len(raw) or stream.read(len(raw) + 1) != raw:
+                _fail("Canonical controller differs from the exact recovery bytes.")
+            os.fsync(stream.fileno())
+        os.fsync(parent)
+
+
+def _publish_restored_file(target: Path, raw: bytes) -> None:
+    temporary = f".{target.name}.{uuid.uuid4().hex}.tmp"
+    with _directory(target.parent) as parent:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=parent)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, target.name, src_dir_fd=parent, dst_dir_fd=parent,
+                    follow_symlinks=False)
+            os.fsync(parent)
+        finally:
             os.unlink(temporary, dir_fd=parent)
+
+
+def restore_initialization(target: Path, raw: bytes, expected: dict[str, Any], *,
+                           limit: int = MAX_BYTES) -> dict[str, Any]:
+    """Finish an exact initial restoration under the caller's controller lock.
+
+    The controller must hold ``primitives.file_lock(str(target))`` from its
+    validated read through this call, and must validate native root authority,
+    the complete candidate database, seals and recovery request first. This
+    storage helper does not grant authority. ``expected`` is the existing v1
+    receipt without ``status``; no phase revision or storage generation changes
+    during restoration. Both source and target remain byte-for-byte preserved.
+
+    A matching target alone is never evidence of a recovery transaction. Only
+    its exact prepared receipt permits completion after interrupted publication.
+    Unknown I/O outcomes propagate; retry the same request. Directory fsync and
+    no-follow descriptor operations are required; unsupported platforms fail
+    explicitly. Fsync ordering is not proof of physical power-loss durability.
+    """
+    target = Path(target).absolute()
+    if type(limit) is not int or limit <= 0 or not isinstance(raw, bytes) or len(raw) > limit:
+        _fail("Recovery controller exceeds its byte limit or has an invalid representation.")
+    if not isinstance(expected, dict) or "status" in expected:
+        _fail("Recovery expects an original receipt scope without status.")
+    prepared = {**expected, "status": "prepared"}
+    workspace, owner = expected.get("workspace"), expected.get("root")
+    if (not isinstance(workspace, str) or not isinstance(owner, str) or not owner
+            or str(_absolute(workspace)) != workspace
+            or target.parent != Path(workspace) / ".taskplane"
+            or target.name != f"workflow-{hashlib.sha256(owner.encode()).hexdigest()[:32]}.json"):
+        _fail("Recovery target is outside its exact controller scope.")
+    _restoration_receipt(prepared, target, workspace, owner)
+    if max(len(primitives.canonical_bytes({**prepared, "status": status}, trailing_newline=True))
+           for status in ("prepared", "restored")) > REQUEST_BYTES:
+        _fail("Recovery receipt exceeds its byte limit.")
+    source = target.with_name(prepared["source"])
+    receipt_path = target.with_name(target.stem + ".recovery-" + prepared["sha256"] + ".json")
+    if hashlib.sha256(raw).hexdigest() != prepared["sha256"] or _read(source, limit) != raw:
+        _fail("Recovery source checksum or bytes do not match the selected request.")
+    marker = _object(target.with_name(target.stem + ".initialized.json"), REQUEST_BYTES)
+    if marker != {"schema": "taskplane.local-initialization/v1", "workspace": workspace,
+                  "root": owner, "profile": "native_workflow"}:
+        _fail("Recovery initialization marker does not match its controller scope.")
+    try:
+        db = json.loads(raw)
+        if (not isinstance(db, dict) or db.get("schema") != "taskplane.control/v1"
+                or db.get("workspace") != workspace or db.get("root") != owner
+                or db.get("profile") != "native_workflow" or db.get("active") != prepared["run"]
+                or type(db["runs"][prepared["run"]]["revision"]) is not int
+                or db["runs"][prepared["run"]]["revision"] != prepared["revision"]):
+            _fail("Recovery source controller does not match the selected run and revision.")
+    except (ValueError, UnicodeError, KeyError, TypeError) as exc:
+        if isinstance(exc, w.Refusal):
+            raise
+        raise w.Refusal("workspace_binding", "Recovery source controller is invalid.") from exc
+    exists = _exists(target)
+    if exists and _read(target, limit) != raw:
+        _fail("Canonical controller differs from the exact recovery bytes.")
+    receipt = _object(receipt_path, REQUEST_BYTES) if _exists(receipt_path) else None
+    if receipt is not None:
+        _restoration_receipt(receipt, target, workspace, owner)
+        scope = {key: value for key, value in receipt.items() if key != "status"}
+        # A later explicit retry may name its own request reference. A completed
+        # transaction still returns/preserves the original receipt's provenance.
+        if receipt["status"] == "restored":
+            scope["request_reference"] = expected["request_reference"]
+        if scope != expected:
+            _fail("Recovery request does not match its original prepared receipt.")
+        if receipt["status"] == "restored":
+            if not exists:
+                _fail("Completed recovery receipt has no canonical controller; preserve its provenance.")
+            # The previous completion may have been interrupted after rename but
+            # before its directory sync. A visible status is not a durable ack.
+            _sync_restored_file(target, raw)
+            _sync_restored_file(receipt_path, _read(receipt_path, REQUEST_BYTES))
+            return {**receipt, "status": "already_restored"}
+    elif exists:
+        _fail("Matching controller bytes have no authentic prepared recovery receipt.")
+
+    # Every validation above precedes writes: invalid requests preserve authority
+    # bytes. A prepared receipt is retained through every later interruption.
+    primitives._durable_makedirs(str(target.parent), sync_existing=True)
+    if receipt is None:
+        _write(receipt_path, prepared)
+    if _read(source, limit) != raw:
+        _fail("Recovery source changed before publication.")
+    if not exists:
+        _publish_restored_file(target, raw)
+    _sync_restored_file(target, raw)
+    if _read(source, limit) != raw or _object(receipt_path, REQUEST_BYTES) != prepared:
+        _fail("Recovery source or prepared receipt changed before completion.")
+    restored = {**prepared, "status": "restored"}
+    _write(receipt_path, restored, exclusive=False)
+    return restored
 
 
 def _relative(value: Any) -> str:
@@ -552,20 +699,12 @@ def _restoration_history(root: Path, old_root: str, name: str, current: dict[str
     from . import workflow_local, workflow_retention
     store = root / ".taskplane"
     matched: set[str] = set()
-    fields = {"schema", "workspace", "root", "run", "revision", "source", "sha256",
-              "request_reference", "state_bytes_preserved", "approvals_changed", "status"}
     for receipt_name in sorted(receipts):
         receipt = _object(store / receipt_name, REQUEST_BYTES)
+        _restoration_receipt(receipt, store / name, old_root, current["root"])
         source, run, revision = (receipt.get(key) for key in ("source", "run", "revision"))
-        reference = receipt.get("request_reference")
-        if (set(receipt) != fields or receipt.get("schema") != "taskplane.initialization-recovery/v1"
-                or receipt.get("workspace") != old_root or receipt.get("root") != current["root"]
-                or receipt.get("status") != "restored" or receipt.get("state_bytes_preserved") is not True
-                or receipt.get("approvals_changed") is not False
+        if (receipt.get("status") != "restored"
                 or not isinstance(source, str) or source not in copies or source in matched
-                or not isinstance(run, str) or not run or type(revision) is not int or revision < 0
-                or not isinstance(reference, str) or not 0 < len(reference) <= 512
-                or reference != reference.strip()
                 or receipt_name != name[:-5] + ".recovery-" + str(receipt.get("sha256")) + ".json"):
             _fail("Restoration receipt is incomplete or does not match its controller and source.")
         raw = _read(store / source)

@@ -457,7 +457,9 @@ The JSON file uses `schema: "taskplane.maintenance-request/v1"`, the actual
 `{"before": SHA256_OR_NULL, "after": SHA256_OR_NULL}`. Null denotes absence.
 The manifest must cover every changed path outside the current phase scope,
 with exact old baseline and current hashes; it cannot include phase outputs.
-The request is limited to 64 KiB and 256 paths.
+The request is limited to 256 KiB and 1,024 paths, allowing package installation
+and rollback evidence to be reconciled in one exact transaction. Every changed
+path must still be included; partial batches cannot acknowledge unrelated drift.
 
 This cooperative native-root operation requires an active unsealed phase, no
 live workers or known commands, and unchanged accepted evidence. Recover failed

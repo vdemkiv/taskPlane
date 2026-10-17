@@ -215,3 +215,27 @@ def test_executing_runtime_fingerprints_cover_recovery_and_consent():
     identity = runtime_identity()
     for name in ("taskplane/state_import.py", "taskplane/delegated_approval.py"):
         assert identity["member_sha256"][name] == hashlib.sha256((Path(identity["root"]) / name).read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("kind", ["dangling", "different", "parent"])
+def test_invalid_import_destination_refuses_before_prepared_receipt(lost, kind):
+    c, _, _, _, _, proof = lost
+    store = c.workspace / ".taskplane"
+    store.mkdir()
+    recovery_root = store / "recovery-v1"
+    if kind == "parent":
+        recovery_root.symlink_to("missing-directory", target_is_directory=True)
+    else:
+        destination = recovery_root / proof["sha256"] / "original-controller.json"
+        destination.parent.mkdir(parents=True)
+        if kind == "dangling":
+            destination.symlink_to("missing-source")
+        else:
+            destination.write_bytes(b"unrelated retained data")
+    before = tree(c.workspace)
+    links = {str(p.relative_to(c.workspace)): str(p.readlink()) for p in c.workspace.rglob("*") if p.is_symlink()}
+    with pytest.raises(w.Refusal):
+        invoke(lost, "apply")
+    assert not recovery.record_path(c.workspace, c.root).exists()
+    assert {k: v for k, v in tree(c.workspace).items() if not k.endswith(".lock")} == before
+    assert {str(p.relative_to(c.workspace)): str(p.readlink()) for p in c.workspace.rglob("*") if p.is_symlink()} == links

@@ -50,6 +50,42 @@ def test_reconciliation_pins_exact_bytes_without_expanding_scope_or_reusing_read
     with pytest.raises(w.Refusal, match='outside'): c.adapter.before_action(c.report(), 'worker')
 
 
+def test_installation_manifest_above_legacy_limit_remains_exact_and_atomic(tmp_path):
+    c, s, request, path = maintenance_fixture(tmp_path)
+    for index in range(451):
+        name = f'package/{index:04d}.py'
+        target = tmp_path / name
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(f'package_member = {index}\n')
+        request['changes'][str(target.relative_to(tmp_path))] = {'before': None, 'after': primitives.content_fingerprint(target.read_bytes())}
+    path.write_text(json.dumps(request))
+    scope, decisions = deepcopy(s['scope']), deepcopy(s['decisions'])
+    receipt = c.reconcile_maintenance(s['run'], s['revision'], str(path.relative_to(tmp_path)))
+    current = c.report()
+    assert len(receipt['changes']) == 452
+    assert current['scope'] == scope and current['decisions'] == decisions
+    assert not receipt['scope_changed'] and not receipt['approvals_changed']
+    (tmp_path / 'package/0000.py').write_text('changed_after_reconciliation = True\n')
+    with pytest.raises(w.Refusal, match='outside'):
+        c.adapter.before_action(c.report(), 'worker')
+
+
+@pytest.mark.parametrize('defect', ['path_limit', 'byte_limit', 'partial_batch'])
+def test_large_maintenance_refuses_bounds_and_partial_batches_without_mutation(tmp_path, defect):
+    c, s, request, path = maintenance_fixture(tmp_path)
+    if defect == 'path_limit':
+        request['changes'].update({f'package/{i}.py': {'before': None, 'after': 'a' * 64} for i in range(1024)})
+    elif defect == 'byte_limit':
+        request['changes'].update({f'package/{i:04d}-' + 'a' * 400: {'before': None, 'after': 'a' * 64} for i in range(600)})
+    else:
+        (tmp_path / 'unlisted.py').write_text('must_not_be_acknowledged = True\n')
+    path.write_text(json.dumps(request))
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        c.reconcile_maintenance(s['run'], s['revision'], str(path.relative_to(tmp_path)))
+    assert c._path().read_bytes() == before
+
+
 @pytest.mark.parametrize('defect', ['revision', 'principal', 'profile', 'reference', 'reason', 'missing_path',
     'hash', 'before', 'extra_path', 'phase_path', 'symlink', 'live_worker', 'live_command', 'accepted_drift',
     'empty_changes', 'malformed_change', 'unknown_field', 'repeat', 'sealed'])

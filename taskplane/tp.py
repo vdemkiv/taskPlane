@@ -2,13 +2,16 @@
 """Taskplane: human-gated delivery, native observations, graph and dashboard."""
 from __future__ import annotations
 
+import time as _entry_clock
+TASKPLANE_ENTRY_NS = _entry_clock.monotonic_ns()
+
 import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any
+from typing import Any, TextIO, cast
 
 if sys.version_info < (3, 10):
     raise SystemExit("Taskplane requires Python 3.10 or newer")
@@ -16,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "taskplane"))
 
+from taskplane.context_delivery import begin_cli_measurement, observed, operation
+_CLI_MEASUREMENT = begin_cli_measurement() if __name__ == '__main__' else None
 from taskplane import depgraph, flow, graph_primitives, primitives, storage, workspace_binding
 
 
@@ -116,12 +121,16 @@ def _git_paths(workspace: str, *args: str) -> list[str]:
     return [os.fsdecode(path) for path in result.stdout.split(b"\0") if path]
 
 
+@observed('entrypoint', stage='startup')
 def _version(verify: bool) -> dict[str, Any]:
-    manifests = [p for p in (ROOT / ".codex-plugin/plugin.json", ROOT / ".claude-plugin/plugin.json") if p.is_file()]
-    versions = [json.loads(p.read_text())["version"] for p in manifests]
+    manifests = [p for p in (ROOT / ".codex-plugin/plugin.json", ROOT / ".claude-plugin/plugin.json")
+                 if operation('source_stat', p.is_file)]
+    versions = [operation('source_parse', json.loads, operation('source_read', p.read_bytes,
+                category='source_fingerprints'))["version"] for p in manifests]
     market = ROOT / ".claude-plugin/marketplace.json"
-    if market.is_file():
-        data = json.loads(market.read_text())
+    if operation('source_stat', market.is_file):
+        data = operation('source_parse', json.loads, operation('source_read', market.read_bytes,
+                         category='source_fingerprints'))
         versions.extend([data["version"], data["plugins"][0]["version"]])
     result: dict[str, Any] = {"version": versions[0]}
     if verify:
@@ -228,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
         elif args.command == "dashboard":
             output = flow.publish_dashboard(Path(workspace), args.run,
-                output=Path(args.out) if args.out else None, select=bool(args.run))
+                output=Path(args.out) if args.out else None, select=bool(args.run),
+                checkpoint_required=True)
             print(str(output))
             return 0
         elif args.command == "lens":
@@ -263,4 +273,36 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if _CLI_MEASUREMENT is None:
+        raise SystemExit(main())
+    # A binary tee preserves the exact public output, including its newline.
+    # It does not replace stdout with a private response or suppress failures.
+    class _MeasuredOutput:
+        def __init__(self, original: TextIO) -> None:
+            self.original = original
+            self.bytes = bytearray()
+            self.encoding = original.encoding or 'utf-8'
+            self.errors = original.errors or 'strict'
+        def write(self, value: str) -> int:
+            result = self.original.write(value)
+            self.bytes.extend(value[:result].encode(self.encoding, self.errors))
+            return result
+        def flush(self) -> None:
+            self.original.flush()
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.original, name)
+    _output = _MeasuredOutput(sys.stdout)
+    sys.stdout = cast(TextIO, _output)
+    _code = 1
+    try:
+        _code = main()
+    except SystemExit as exc:
+        _code = exc.code if isinstance(exc.code, int) else 1
+        raise
+    finally:
+        _output.flush()
+        sys.stdout = _output.original
+        _CLI_MEASUREMENT.finish(Path(os.environ['TASKPLANE_CONTEXT_METRICS']),
+            argv=[sys.executable, *sys.argv], cwd=Path.cwd(),
+            stdout=bytes(_output.bytes), exit_code=_code)
+    raise SystemExit(_code)

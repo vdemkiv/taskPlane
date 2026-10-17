@@ -12,6 +12,7 @@ import uuid
 from . import workflow as w
 from .depgraph import GRAPH_SCAN_QUALITY_SCHEMA, scan_quality, source_inputs_current
 from .primitives import content_fingerprint
+from .context_delivery import observed, operation
 
 TASK_OBSERVATIONS = {"status", "started_at", "completed_at", "updated_at", "elapsed_seconds"}
 TASK_DEFINITIONS = "taskplane.task-definitions/v1"
@@ -49,7 +50,7 @@ def path(root: Path, relative: str) -> Path:
     target = root.resolve()
     for part in parts:
         target = target / part
-        w.require(not target.is_symlink(), "scope_violation", f"Symlink path is not permitted: {relative}")
+        w.require(not operation('source_stat', target.is_symlink), "scope_violation", f"Symlink path is not permitted: {relative}")
     w.require(target.is_relative_to(root.resolve()), "scope_violation", "Path escapes workspace.")
     return target
 
@@ -59,15 +60,15 @@ def read(root: Path, relative: str) -> bytes:
     try:
         fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(fd, "rb") as stream:
-            w.require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "invalid_evidence", "Evidence must be a regular file.")
-            return stream.read()
+            w.require(stat.S_ISREG(operation('source_stat', os.fstat, stream.fileno()).st_mode), "invalid_evidence", "Evidence must be a regular file.")
+            return operation('source_read', stream.read, category='source_fingerprints')
     except OSError as exc:
         raise w.Refusal("invalid_evidence", f"Evidence unavailable: {relative}: {exc}") from None
 
 
 def object_file(root: Path, relative: str) -> dict[str, Any]:
     try:
-        data = json.loads(read(root, relative))
+        data = operation('source_parse', json.loads, read(root, relative))
     except (ValueError, UnicodeError) as exc:
         if isinstance(exc, w.Refusal):
             raise
@@ -81,15 +82,15 @@ def manifest(root: Path, paths: list[str], *, allow_missing: bool = False,
     result: dict[str, Any] = {}
     for relative in sorted(set(paths)):
         target = path(root, relative)
-        if allow_missing and not target.exists():
+        if allow_missing and not operation('source_stat', target.exists):
             result[relative] = None
         elif relative == task_path:
             data = object_file(root, relative)
             rows = task_dag(data, [])
             normalized = {**data, "tasks": [{k:v for k,v in row.items() if k not in TASK_OBSERVATIONS} for row in rows]}
-            result[relative] = {"schema": TASK_DEFINITIONS, "digest": content_fingerprint(normalized)}
+            result[relative] = {"schema": TASK_DEFINITIONS, "digest": operation('source_hash', content_fingerprint, normalized)}
         else:
-            result[relative] = content_fingerprint(read(root, relative))
+            result[relative] = operation('source_hash', content_fingerprint, read(root, relative))
     return result
 
 
@@ -1125,6 +1126,15 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
                   "invalid_evidence", f"{phase} output needs substantive {field}.")
     criteria = state["scope"]["criteria"]
     w.require(output.get("criteria") == criteria, "invalid_evidence", "Output must identify the accepted criteria.")
+    revision_id = stage.get('requirements_revision')
+    if revision_id:
+        revision = state.get('requirements_revisions', {}).get(revision_id)
+        w.require(revision and revision['status'] in {'review', 'completed'}
+                  and output.get('requirements_revision') == revision_id,
+                  'invalid_evidence', 'Output must bind the current requirements revision.')
+        if phase == 'product':
+            w.require(output.get('acceptance_criteria') == revision['preview']['requirements'],
+                      'scope_violation', 'Revised Product must preserve unchanged criteria and contain the exact proposed replacements.')
     if state.get("context_contract"):
         from .context_handoff import Session
         Session(root, state, persist=False).validate(output.get("context_receipt"))
@@ -1283,6 +1293,7 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
     return packet
 
 
+@observed('source-audit')
 def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) -> tuple[str, str] | None:
     for stage in state["visits"]:
         # A native negative decision reopens this visit for correction. Its old

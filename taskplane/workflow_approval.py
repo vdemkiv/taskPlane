@@ -109,7 +109,9 @@ def _complete_approval_response(excerpt: str) -> bool:
               r'(?:looks?|sounds?) (?:good|great)(?: to (?:me|us))?|'
               r'(?:this|that|it) works for (?:me|us)|'
               r'(?:i am|we are) (?:happy|satisfied) with\s+' + obj + r')')
-    item = r'(?:' + present + '|' + assent + r')'
+    continuation = (present + r'\s+and\s+(?:proceed|continue)\s+to\s+(?:the\s+)?'
+                    + phase + r'(?:\s+phase)?')
+    item = r'(?:' + continuation + '|' + present + '|' + assent + r')'
     item = r'(?:please\s+)?' + item
     grant = item + r'(?:\s+(?:and\s+)?' + item + r')*'
     courtesy = r'(?:thanks|thank you)(?: very much)?'
@@ -248,6 +250,192 @@ def conversational_choice(excerpt: str) -> str | None:
     ):
         return None
     return next(iter(choices)) if len(choices) == 1 else None
+
+
+
+# A checkpoint question is classified in full. These bounded forms do not
+# evaluate conditions or turn surrounding arbitrary prose into authorization.
+_CHECKPOINT_REQUEST = (r"(?:^|[.?!]\s+|\n)(?:(?:do|will)\s+you\s+)?"
+                       r"(?:please\s+)?(?:accept|approve)")
+_REOPEN_REQUEST = (r"(?:^|[.?!]\s+|\n)(?:(?:may|can|could|shall|should)\s+(?:i|we)\s+|"
+                   r"(?:do|would)\s+you\s+want\s+(?:me|us)\s+to\s+)?"
+                   r"(?:please\s+)?(?:reopen|revise|request\s+changes\s+to)")
+
+
+def checkpoint_question_choice(question: str, *, phase: str, binding: dict[str, Any]) -> str:
+    """Classify the complete verified presentation, retaining no rewritten text.
+
+    Returns approved, changes_requested (a scoped reopening), or decision (the
+    supported explicit approval/change menu). Transport adapters must first
+    establish the exact original presentation, source, linkage and binding.
+    Supported acceptance forms include "Approve this Product checkpoint?",
+    "Will you approve the Product scope?", and a consequence naming the next
+    phase ("so Design can proceed"). Supporting context is limited to phase
+    readiness, exact run/revision/checkpoint metadata, one canonical snapshot
+    link in the bound workspace (already verified by the transport), the owner thumbs-up
+    instruction, and explicit implementation/later-phase separation statements.
+    Free-form scope descriptions and work bullets remain unsupported even if
+    they appear harmless: callers must request a new unqualified presentation,
+    never strip them from an existing observation. Scoped reopen questions may
+    include the bounded baseline/evidence refresh and status forms below.
+    Unknown prose, conditions and mixed targets require clarification; this
+    function neither resolves conditions nor authenticates any source.
+    """
+    w.require(_text(question, 16384) and phase in w.PHASES and isinstance(binding, dict)
+              and isinstance(binding.get('checkpoint'), str)
+              and re.fullmatch(r'[0-9a-f]{32}', binding['checkpoint']) is not None,
+              'invalid_evidence', 'Preserve the complete original checkpoint question and binding.')
+    text = question.casefold().replace('’', "'")
+    target = {'evaluate': '(?:evaluate|evaluation)', 'retro': '(?:retro|retrospective)'}.get(phase, phase)
+    identifiers = re.findall(r'\b[0-9a-f]{32}\b', text)
+    w.require(all(key in {binding.get('run'), binding.get('visit'), binding['checkpoint']} for key in identifiers),
+              'invalid_evidence', 'Original question names a different checkpoint or run.')
+    # Quoted prompts and examples are not questions addressed to this owner.
+    unquoted = decision_text(question)
+    quoted = re.search(r'[`"“”]|(?m:^\s*>)|(?<!\w)\'[^\'\n]+\'(?!\w)', text)
+    w.require(not quoted and bool(unquoted.strip()), 'invalid_evidence',
+              'Quoted or example checkpoint questions cannot authorize a decision.')
+    reopening = re.search(_REOPEN_REQUEST + r'\b', text)
+    proposed = 'changes_requested' if reopening else 'approved'
+    support: tuple[str, ...]
+    if reopening:
+        baseline = (r'update\s+(?:it|its\s+baseline|the\s+baseline)\s+to\s+'
+                    r'(?:(?:the\s+)?verified\s+)?(?:baseline\s+)?v?\d+(?:\.\d+){1,3}')
+        refresh = r'refresh\s+(?:only\s+)?(?:the\s+)?affected\s+(?:review\s+evidence|reviews|evidence)'
+        step = r'(?:' + baseline + '|' + refresh + r')'
+        tail = r'(?:(?:,\s*(?:and\s+)?|\s+(?:and|to)\s+)' + step + r'){0,2}'
+        clause = (_REOPEN_REQUEST + r'\s+(?:this|the|that)\s+' + target
+                  + r'\s+(?:checkpoint|proposal|output)' + tail + r'\s*\?')
+        match = re.search(clause, text)
+        valid = (match is not None and text.count('?') == 1
+                 and len(re.findall(_REOPEN_REQUEST + r'\b', text)) == 1)
+        if match:
+            valid = valid and len(re.findall(baseline, match[0])) <= 1 and len(re.findall(refresh, match[0])) <= 1
+        subject = r"(?:(?:the|this|that|its|our|your|[\w-]+'s)\s+)?"
+        support = (
+            subject + r'(?:native\s+)?hooks?\s+(?:is|are)\s+(?:working|ready|loaded|available)',
+            subject + target + r'\s+(?:checkpoint|proposal|output)\s+(?:is|was|has\s+been)\s+'
+            r'(?:sealed\s+against\s+(?:the|an?)\s+(?:old|previous)\s+baseline|(?:not\s+)?current|'
+            r'pending(?:\s+(?:review|approval))?|outdated|stale)',
+            r'(?:the\s+)?(?:harness|workflow)\s+(?:requires|needs)\s+(?:an?\s+)?explicit\s+'
+            r'change\s+request\s+to\s+(?:reopen|revise)\s+(?:it|the\s+checkpoint)',
+            r"this\s+(?:does\s+not|doesn't)\s+(?:approve|accept)\s+(?:the\s+)?"
+            r'(?:proposal|checkpoint|output)(?:\s+or\s+start\s+implementation)?',
+        )
+    else:
+        # A consequence of accepting this phase is not a grant for the next
+        # phase. Only the immediate next phase can appear in that bounded form.
+        phases = list(w.PHASES)
+        next_phase = phases[phases.index(phase) + 1] if phase != phases[-1] else None
+        consequence = (r'(?:\s+(?:to\s+proceed\s+to\s+' + next_phase
+                       + r'|so\s+' + next_phase + r'\s+can\s+proceed))?') if next_phase else ''
+        # An omitted phase inherits only the already verified exact binding.
+        # Keep a concrete checkpoint object; a bare "Approve?" is ambiguous.
+        obj = (r'\s+(?:(?:this|the|that)\s+)?(?:' + target
+               + r'(?:\s+(?:scope|checkpoint|proposal|output|phase))?|checkpoint)'
+               + r'(?:\s+' + re.escape(binding['checkpoint']) + r')?')
+        clause = (_CHECKPOINT_REQUEST + obj + r'(?:\s+with\s+the\s+recorded\s+limits)?'
+                  + consequence + r'\s*\?')
+        match = re.search(clause, text)
+        valid = (match is not None and text.count('?') == 1
+                 and len(re.findall(_CHECKPOINT_REQUEST + r'\b', text)) == 1)
+        if match is None:
+            # Existing native presentation asks for an explicit decision, not
+            # a short yes to two options. The answer validator enforces that.
+            match = re.search(_CHECKPOINT_REQUEST + obj + r'\s+or\s+request\s+changes[.!]?(?=\s|$)', text)
+            proposed = 'decision'
+            valid = match is not None and '?' not in text and len(re.findall(_CHECKPOINT_REQUEST + r'\b', text)) == 1
+        support = (
+            r'(?:the\s+)?' + target + r'\s+(?:checkpoint|scope|proposal|output)\s+is\s+(?:ready|pending(?:\s+approval)?)',
+            r'(?:current\s+)?checkpoint\s+' + re.escape(binding['checkpoint']),
+            r'no\s+implementation\s+has\s+started',
+            r'you\s+can\s+approve\s+by\s+reacting\s+👍\s+to\s+this\s+message',
+            r'installation\s+and\s+publication\s+remain\s+separate,?\s+and\s+later\s+phase\s+approvals\s+are\s+not\s+implied',
+            r'run\s+' + re.escape(str(binding.get('run', ''))) + r',\s+' + target
+            + r'\s+revision\s+' + re.escape(str(binding.get('revision', ''))),
+        )
+    # This is syntax for retained presentation metadata, never link proof. The
+    # transport must verify the original source and immutable snapshot first.
+    # Consume the whole line and permit only one; never strip arbitrary links
+    # or surrounding prose before classifying the original question.
+    snapshot = None
+    if not reopening and isinstance(binding.get('workspace'), str):
+        prefix = Path(binding['workspace']) / '.taskplane' / 'snapshot-'
+        # Native Windows paths and slash-form Markdown paths name the same
+        # bound directory. Match those exact spellings without normalizing any
+        # supplied link, so traversal, case changes and foreign paths still fail.
+        prefixes = sorted({str(prefix), prefix.as_posix()})
+        snapshot = (r'\[snapshot\]\((?:' + '|'.join(re.escape(p.casefold()) for p in prefixes)
+                    + r')[a-f0-9-]+\.html\)')
+        support = (*support, snapshot)
+    remainder = text if match is None else text[:match.start()] + '\n' + text[match.end():]
+    context = [part.strip().rstrip('.!') for part in re.split(r'[.!]\s+|\n+|,\s+but\s+', remainder) if part.strip()]
+    valid = valid and all(re.fullmatch('(?:' + '|'.join(support) + ')', part) for part in context)
+    if snapshot is not None:
+        count = sum(bool(re.fullmatch(snapshot, part)) for part in context)
+        exact_snapshot = (r'\[(?i:snapshot)\]\((?:' + '|'.join(re.escape(p) for p in prefixes)
+                          + r')[a-f0-9-]+\.html\)')
+        valid = valid and count <= 1 and len(re.findall(exact_snapshot, question)) == count
+    w.require(valid, 'invalid_evidence',
+              'Unsupported or conditional checkpoint question; preserve the full original question and ask for unqualified consent.')
+    return proposed
+
+
+def validate_checkpoint_consent(question: str, answer: str | None, *, phase: str,
+                                binding: dict[str, Any], reaction: bool = False) -> str:
+    """Validate full question/answer semantics AFTER original transport linkage.
+
+    The caller must retain both originals unchanged, compare the returned choice
+    with its claimed choice, enforce replay/state rules, then persist. Reactions
+    use answer=None and require separately verified owner/thumbs-up provenance.
+    This API never infers linkage and must not receive an extracted question or
+    affirmative substring. Unsupported full context always fails closed.
+    """
+    proposed = checkpoint_question_choice(question, phase=phase, binding=binding)
+    if reaction:
+        w.require(answer is None and proposed == 'approved', 'invalid_evidence',
+                  'A reaction can accept only one unqualified phase acceptance question; scoped reopen requires owner text.')
+        return 'approved'
+    w.require(_text(answer), 'invalid_evidence', 'Preserve the complete original bounded owner response.')
+    assert isinstance(answer, str)
+    # Direct linkage establishes what was answered, never what was approved.
+    phases = decision_phases(answer)
+    # A correction can name a foreign phase in its explanation even when the
+    # leading dissent is otherwise valid ("Request changes: revise Design").
+    correction_targets = re.findall(
+        r'\b(?:reopen|revise|request\s+changes\s+(?:to|for))\s+'
+        r'(?:(?:the|this|that)\s+)?(?:current\s+)?(' + '|'.join(w.PHASES) + r')\b',
+        decision_text(answer))
+    phases.update(correction_targets)
+    continuation_targets = re.findall(
+        r'\b(?:proceed|continue)\s+to\s+(?:the\s+)?(' + '|'.join(w.PHASES) + r')\b',
+        decision_text(answer))
+    phase_index = w.PHASES.index(phase)
+    next_phase = w.PHASES[phase_index + 1] if phase_index + 1 < len(w.PHASES) else None
+    w.require(not continuation_targets or set(continuation_targets) == {next_phase},
+              'invalid_evidence', 'Continuation must name only the immediate next phase.')
+    checkpoints = re.findall(r'\b[0-9a-f]{32}\b', answer.casefold())
+    w.require(not phases or phases == {phase}, 'invalid_evidence', 'Owner response names a different or mixed phase.')
+    w.require(all(key == binding['checkpoint'] for key in checkpoints),
+              'invalid_evidence', 'Owner response names a different checkpoint.')
+    choice = conversational_choice(answer)
+    if proposed == 'changes_requested':
+        affirmative = re.fullmatch(
+            r'(?:yes|yeah|yep|ok|okay|sure|go ahead|please do)(?:,?\s+(?:please|go ahead|please do))?[.!\s]*',
+            answer.strip(), re.IGNORECASE)
+        correction = re.fullmatch(r'(?:please\s+)?(?:request changes|changes requested|needs revisions|revise)[.!\s]*',
+                                  answer.strip(), re.IGNORECASE)
+        choice = 'changes_requested' if affirmative or correction else None
+    if proposed == 'decision' and choice == 'approved':
+        # An explicit acceptance selects the approval option; bare assent does
+        # not choose between approval and a request for changes.
+        w.require(bool(re.search(r'\b(?:approv(?:e|ed)|accept(?:ed)?|confirm(?:ed)?|sign(?:ed)?\s+off)\b',
+                                 decision_text(answer))), 'invalid_evidence',
+                  'A short assent cannot choose between the original decision options.')
+    w.require(choice is not None, 'invalid_evidence',
+              'Owner response does not express one unqualified decision about the original question.')
+    assert choice is not None
+    return choice
 
 
 def _unnecessary_decision(predicate: str) -> bool:

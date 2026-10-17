@@ -286,7 +286,7 @@ def test_denial_does_not_veto_bound_negative_human_decision(tmp_path, monkeypatc
     c = host.controller; db = c._read(c._path()); state = db['runs'][host.state['run']]
     stage = state['visits'][state['index']]
     stage.update(decision='awaiting_human_approval', submitted_at=now(), packet=dict(phase=stage['phase'], visit=stage['id'],
-        checkpoint='fixture', manifest={}, source_manifest={}, context={}, output={}))
+        checkpoint='c' * 32, manifest={}, source_manifest={}, context={}, output={}))
     c._write(c._path(), db)
     original = deepcopy(state['workers'][grant])
     host.parent.unlink()
@@ -516,9 +516,26 @@ def test_stale_predecessor_returns_to_its_scope_and_can_be_resubmitted(tmp_path)
 
 @pytest.mark.parametrize('margin', [-1, 0, 1])
 def test_protected_store_persisted_byte_boundary(tmp_path, monkeypatch, margin):
-    from taskplane.tests.test_workflow_local import check_store_byte_boundary
+    from taskplane import storage, workflow_local
     c, _, _ = controller(tmp_path)
-    check_store_byte_boundary(c, monkeypatch, {'nested':[['é', '東京'] * 40] * 4}, margin)
+    target = c._path()
+    before = target.read_bytes()
+    candidate = json.loads(before)
+    candidate['size_probe'] = {'nested': [['é', '東京'] * 40] * 4}
+    # Include the next committed generation and the actual CAS encoding. A
+    # stale prior snapshot is no longer a legitimate way to reset this test.
+    next_value = deepcopy(candidate)
+    next_value['storage_generation'] = storage.storage_generation(candidate) + 1
+    expected = storage.encode_controller(next_value)
+    monkeypatch.setattr(workflow_local, 'MAX_BYTES', len(expected) + margin)
+    if margin < 0:
+        with pytest.raises(w.Refusal):
+            c._write(target, candidate)
+        assert target.read_bytes() == before
+    else:
+        c._write(target, candidate)
+        assert target.read_bytes() == expected
+        assert c._read(target)['storage_generation'] == next_value['storage_generation']
 
 
 def test_protected_historical_finish_preserves_new_active_run(tmp_path):
@@ -570,3 +587,34 @@ def test_claude_question_answer_enrichment_preserves_admitted_identity(tmp_path,
         row = c.complete_admission(post)
         assert row['state'] == 'completed'
         assert 'A freeform answer' not in json.dumps(row)
+
+
+
+def test_internal_reads_skip_display_discovery_without_caching_authority(tmp_path, monkeypatch):
+    from taskplane.tests.test_workflow_local import setup
+    c, state = setup(tmp_path)
+    calls = []
+    original = c.adapter.observations
+    def observed(*args):
+        calls.append('display-discovery')
+        return original(*args)
+    monkeypatch.setattr(c.adapter, 'observations', observed)
+    assert c.report(diagnostics=False)['run'] == state['run']
+    assert calls == []
+    assert c.report()['run'] == state['run'] and calls == ['display-discovery']
+    # Current evidence validation remains mandatory on the fast internal path.
+    db = c._read(c._path())
+    db['runs'][state['run']]['revision'] = True
+    with pytest.raises(w.Refusal):
+        c._validate_database(db)
+
+
+def test_path_admission_rechecks_protected_capabilities_without_discovery(tmp_path, monkeypatch):
+    c, host, state = controller(tmp_path)
+    def no_discovery(*args):
+        raise AssertionError('Display discovery must not decide path authority')
+    monkeypatch.setattr(host, 'observations', no_discovery)
+    assert c._path() == host.store
+    monkeypatch.setattr(host, 'capabilities', lambda: {'protected_store': False})
+    with pytest.raises(w.Refusal, match='unverified'):
+        c._path()

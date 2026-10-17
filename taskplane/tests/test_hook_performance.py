@@ -40,10 +40,17 @@ def test_hooks_skip_diagnostics_and_preserve_current_binding(tmp_path, monkeypat
 def test_light_report_retains_evidence_drift_and_default_diagnostics(tmp_path):
     c, host, state = controller(tmp_path)
     state = submit(c, state)
+    before = host.store.read_bytes()
     detailed = c.report()
     light = c.report(diagnostics=False)
     assert 'storage' in detailed and 'storage' not in light
-    assert all(detailed[key] == value for key, value in light.items())
+    assert detailed['native_observations']['schema'] == 'taskplane.native-readiness/v1'
+    assert light['native_observations']['status'] == 'not_requested'
+    assert light['native_observations']['authority_verified'] is False
+    # Native discovery is display-only; all shared authority remains identical.
+    assert {key: value for key, value in light.items() if key != 'native_observations'} == {
+        key: detailed[key] for key in light if key != 'native_observations'}
+    assert host.store.read_bytes() == before
     (c.workspace / 'product.json').write_text('{}')
     before = host.store.read_bytes()
     assert c.report(diagnostics=False)['invalidation_pending'] is True
