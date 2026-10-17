@@ -1,4 +1,18 @@
-# taskplane changelog
+# Changelog
+
+## 2.33.11 — functional repair candidate
+
+- Validate the complete original approval question across supported transports. Accept an explicit current-phase approval followed by next-phase continuation, and resolve exact retries without approving another checkpoint.
+- Enforce opted-in completion, residual-work and retry contracts in controller admission and results. Preserve incomplete contributions and refuse uncertain retry authority.
+- Reconcile failed worker startup using the selected native report, retain absent outputs during preclaim recovery, and bind recovery fixtures to their exact native cycles.
+- Share the controller's persisted encoding with storage accounting, publish private state files, restore flat-module imports, and complete durable initialization-recovery receipts.
+- Preserve unknown usage boundaries and original worker provenance when reconciling saved native counters.
+- Publish an explicitly requested checkpoint dashboard durably. Acknowledge authorized additive maintenance artifacts at approved checkpoints only when sealed evidence and the complete source graph remain unchanged.
+- Repair workflow-builder delivery and retention test oracles while retaining negative integrity checks.
+- Read the accepted v6 functional verification strategy. Support a separate, hash-bound release audit after an authorized run retirement, without inventing workflow approvals or native acceptance.
+- Package all required runtime documents. New worker startups retain native identity, complete context, output integrity, durable hooks, stop fences and authority checks; performance targets are excluded.
+
+This version is an installable repair candidate. Local verification, installed-host acceptance, platform results and publication are separate observations. Read the exact release report and archive/member hashes; a version label alone does not establish verification or release readiness.
 
 ## v2.33.10 — Scoped consent and state recovery
 

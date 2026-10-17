@@ -1,124 +1,114 @@
-"""Offline source/report fixtures; these do not establish host compatibility."""
+"""Offline monitor fixtures; these never certify an external scheduled wake."""
 from copy import deepcopy
+import hashlib
 import json
-from pathlib import Path
 
 import pytest
 
 from scripts import check_host_updates as watch
 
 
-def sources():
-    data = {url: '# Official docs\nPermissions and subagent hooks.\n' for url in watch.DOCS.values()}
-    for repo in watch.RELEASES.values():
-        data[f'https://api.github.com/repos/{repo}/releases?per_page=5&page=1'] = json.dumps([
-            {'id': 2, 'tag_name': '2.0-preview', 'prerelease': True,
-             'html_url': f'https://github.com/{repo}/releases/tag/2.0-preview', 'body': 'New tool schema.'},
-            {'id': 1, 'tag_name': '1.0', 'prerelease': False,
-             'html_url': f'https://github.com/{repo}/releases/tag/1.0', 'body': 'Fixed approval and transcript recovery.'}])
-    return data
+def observation(stamp="2026-10-16T12:00:00+00:00"):
+    return {"schema": watch.SCHEMA, "host": "codex", "status": "observed",
+            "observed_at": stamp, "source": {"kind": "fixture", "reference": "fixture/host-call-1"},
+            "host_version": "1.0.0", "runtime": {"complete": True,
+                "member_sha256": {"taskplane/tp.py": "a" * 64, "hooks/hooks.json": "b" * 64}},
+            "capabilities": {name: "supported" for name in watch.CAPABILITIES}}
 
 
-def test_initial_baseline_then_unchanged_sources_are_deduplicated():
-    data = sources()
-    state, first = watch.collect({}, data.__getitem__)
-    assert len(first['findings']) == 10 and not first['errors']
-    again, report = watch.collect(state, data.__getitem__)
-    assert again == state and not report['findings'] and not report['errors']
-    assert report['observed_versions']['codex']['latest_prerelease'] == '2.0-preview'
-    assert 'not a compatibility pass' in watch.render(report)
+@pytest.mark.parametrize("case, expected", [
+    ("stable", "stable"), ("version", "changed"), ("runtime", "changed"),
+    ("member_removed", "changed"), ("capability", "changed"), ("unknown", "unknown"),
+    ("partial", "unknown"), ("unavailable", "unknown"), ("unsupported", "unsupported"),
+    ("unsupported_capability", "unsupported"), ("failed", "failed"),
+    ("missing_baseline", "unknown"), ("stale", "unknown"), ("changed_partial", "changed"),
+])
+def test_host_watch_observation_contract(case, expected):
+    previous = observation()
+    current = observation("2026-10-16T12:01:00+00:00")
+    current["source"]["reference"] = "fixture/host-call-2"
+    if case in {"version", "changed_partial"}:
+        current["host_version"] = "1.1.0"
+    if case == "runtime":
+        current["runtime"]["member_sha256"]["taskplane/tp.py"] = "c" * 64
+    if case == "member_removed":
+        del current["runtime"]["member_sha256"]["hooks/hooks.json"]
+    if case == "capability":
+        current["capabilities"]["interrupt"] = "unsupported"
+    if case == "unsupported_capability":
+        current["capabilities"]["interrupt"] = previous["capabilities"]["interrupt"] = "unsupported"
+    if case == "unknown":
+        current["capabilities"]["process_exit"] = "unknown"
+    if case in {"partial", "changed_partial"}:
+        current["runtime"]["complete"] = False
+        current["runtime"]["member_sha256"]["hooks/hooks.json"] = None
+    if case in {"unavailable", "unsupported", "failed"}:
+        current["status"], current["reason"] = case, "fixture observation boundary unavailable"
+    if case == "missing_baseline":
+        previous = None
+    if case == "stale":
+        current["observed_at"] = previous["observed_at"]
+    before = deepcopy((current, previous))
+    report = watch.compare_observations(current, previous)
+    assert report["status"] == expected
+    assert (current, previous) == before
+    assert report["current"] == current and report["previous"] == previous
+    assert report["authority_verified"] is False
+    assert report["native_execution_verified"] is False
+    assert report["scheduled_wake_verified"] is False and report["notification_sent"] is False
+    assert report["recheck_required"] == (expected != "stable")
+    if expected == "changed":
+        assert report["changes"]
+    if expected == "unknown" or case == "changed_partial":
+        assert report["unknowns"] and not report["comparison_complete"]
+    if case == "stable":
+        assert not report["changes"] and not report["unknowns"] and report["comparison_complete"]
 
 
-def test_changed_existing_release_and_doc_retain_links_topics_and_uncertainty():
-    data = sources(); state, _ = watch.collect({}, data.__getitem__)
-    url = next(url for url in data if '/openai/codex/' in url)
-    rows = json.loads(data[url]); rows[1]['body'] += ' Model configuration deprecated.'; data[url] = json.dumps(rows)
-    data[watch.DOCS['claude-hooks']] += 'New hook lifecycle.\n'
-    _, report = watch.collect(state, data.__getitem__)
-    assert len(report['findings']) == 2
-    release = report['findings'][0]
-    assert release['change'] == 'release notes changed' and release['version'] == '1.0'
-    assert 'model configuration' in release['topics']
-    rendered = watch.render(report)
-    assert release['url'] in rendered and 'runtime behavior untested' in rendered
-    assert 'do not infer a model change' in rendered
+@pytest.mark.parametrize("defect", ["foreign_host", "fixture_native", "naive_time", "bad_digest",
+                                   "escaping_member", "bad_capability", "missing_reference"])
+def test_invalid_observations_refuse_without_modifying_history(defect):
+    previous, current = observation(), observation("2026-10-16T12:01:00Z")
+    if defect == "foreign_host": current["host"] = "claude"
+    if defect == "fixture_native": current["source"]["kind"] = "native"
+    if defect == "naive_time": current["observed_at"] = "2026-10-16T12:01:00"
+    if defect == "bad_digest": current["runtime"]["member_sha256"]["taskplane/tp.py"] = "unknown"
+    if defect == "escaping_member": current["runtime"]["member_sha256"]["../outside"] = "c" * 64
+    if defect == "bad_capability": current["capabilities"]["identity"] = "invented"
+    if defect == "missing_reference": current["source"].pop("reference")
+    original = deepcopy((previous, current))
+    with pytest.raises(ValueError):
+        watch.compare_observations(current, previous)
+    assert (previous, current) == original
 
 
-def test_failure_keeps_prior_baseline_and_reports_incomplete_coverage():
-    data = sources(); state, _ = watch.collect({}, data.__getitem__)
-    previous = deepcopy(state)
-    def fetch(url):
-        if url == watch.DOCS['claude-hooks']: raise OSError('source unavailable')
-        return data[url]
-    updated, report = watch.collect(state, fetch)
-    assert updated['docs'] == previous['docs'] and state == previous
-    assert len(report['errors']) == 1 and 'unavailable' in report['errors'][0]
-    url = next(url for url in data if '/openai/codex/' in url)
-    rows = json.loads(data[url])
-    for row in rows: row['id'] += 100
-    data[url] = json.dumps(rows)
-    assert any('coverage gap' in error for error in watch.collect(state, data.__getitem__)[1]['errors'])
+def test_cli_preserves_raw_inputs_and_reports_unknown_without_baseline(tmp_path, capsys):
+    path = tmp_path / "observation.json"
+    raw = (json.dumps(observation(), indent=2) + "\n").encode()
+    path.write_bytes(raw)
+    assert watch.main(["--current", str(path)]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "unknown"
+    assert report["inputs"]["current"]["sha256"] == hashlib.sha256(raw).hexdigest()
+    assert report["inputs"]["current"]["bytes"] == len(raw)
+    assert path.read_bytes() == raw
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["observation.json"]
 
 
-@pytest.mark.parametrize('bad', ['<html>not docs</html>', '', 'permission denied'])
-def test_error_pages_are_not_saved_as_a_new_document_baseline(bad):
-    data = sources(); data[watch.DOCS['codex-security']] = bad
-    state, report = watch.collect({}, data.__getitem__)
-    assert 'codex-security' not in state['docs'] and report['errors']
+def test_cli_reports_failed_input_without_overwriting_it(tmp_path, capsys):
+    path = tmp_path / "broken.json"
+    path.write_text('{"schema": "first", "schema": "second"}', encoding="utf-8")
+    before = path.read_bytes()
+    assert watch.main(["--current", str(path)]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "failed" and "duplicate" in report["reason"]
+    assert path.read_bytes() == before
 
 
-def test_changelog_html_excludes_navigation_and_scripts():
-    data = sources()
-    url = watch.DOCS['codex-changelog']
-    data[url] = '<html><nav>one</nav><main><h1>Changes</h1><p>New hooks</p><script>dynamic()</script></main></html>'
-    state, first = watch.collect({}, data.__getitem__)
-    assert not first['errors']
-    data[url] = data[url].replace('one', 'two').replace('dynamic()', 'other()')
-    assert not watch.collect(state, data.__getitem__)[1]['findings']
-
-
-def test_release_pages_are_bounded_and_assets_are_not_persisted():
-    data = sources(); calls = []
-    def fetch(url):
-        calls.append(url)
-        if 'api.github.com' not in url: return data[url]
-        repo = 'openai/codex' if '/openai/' in url else 'anthropics/claude-code'
-        page = int(url.rsplit('=', 1)[1])
-        return json.dumps([{'id': page * 5 + i, 'tag_name': str(page * 5 + i), 'body': 'New hooks',
-                           'html_url': f'https://github.com/{repo}/releases/tag/{page * 5 + i}',
-                           'assets': ['unused']} for i in range(5)])
-    state, report = watch.collect({}, fetch)
-    assert len(state['releases']['codex']) == 100 and len(calls) == 46
-    assert 'unused' not in json.dumps(state) and not report['errors']
-
-
-def test_publish_roundtrip_and_no_duplicate_comments():
-    state, report = watch.collect({}, sources().__getitem__)
-    calls = []
-    def api(path, method='GET', value=None):
-        calls.append((path, method, value))
-        return {'number': 42, 'state': 'open', 'title': watch.TITLE, **value}
-    issue = watch.publish(api, None, state, report)
-    saved = watch.read_state(issue['body'])
-    watch.publish(api, issue, saved, report)
-    assert not any(path.endswith('/comments') for path, _, _ in calls)
-    changed = deepcopy(report); changed['errors'] = ['new failure']
-    watch.publish(api, issue, saved, changed)
-    assert len([path for path, _, _ in calls if path.endswith('/comments')]) == 1
-
-
-def test_ambiguous_closed_or_corrupt_issue_is_not_silently_reset():
-    issue = {'title': watch.TITLE, 'state': 'closed', 'number': 42}
-    with pytest.raises(ValueError, match='closed'): watch.find_issue(lambda _: [issue])
-    with pytest.raises(ValueError, match='Multiple'): watch.find_issue(lambda _: [issue, issue])
-    with pytest.raises(ValueError, match='marker'): watch.read_state('lost state')
-
-
-def test_workflow_is_report_only_and_uses_existing_pinned_actions():
-    root = Path(__file__).resolve().parents[2]
-    text = (root / '.github/workflows/host-compatibility.yml').read_text()
-    assert "cron: '17 14 * * 1'" in text and 'workflow_dispatch:' in text
-    assert 'contents: read' in text and 'issues: write' in text and 'contents: write' not in text
-    assert 'persist-credentials: false' in text and '--publish' in text
-    assert 'default_branch' in text and 'GITHUB_TOKEN: ${{ github.token }}' in text
-    assert 'pull_request' not in text and 'secrets.' not in text
+def test_new_native_reference_does_not_certify_execution_or_wake():
+    previous, current = observation(), observation("2026-10-16T12:01:00Z")
+    for value in (previous, current): value["source"]["kind"] = "native"
+    current["source"]["reference"] = "native/scheduled-run-reported-by-caller"
+    report = watch.compare_observations(current, previous)
+    assert report["status"] == "stable"
+    assert not report["native_execution_verified"] and not report["scheduled_wake_verified"]

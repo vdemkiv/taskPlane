@@ -482,7 +482,8 @@ def test_prerequisite_replacement_requires_join_and_fresh_attempt(tmp_path):
     s,request = root_prerequisite(c,s)
     item = reserve(c,s,'T1')
     frozen = wr.Store(c.workspace).resolve(item['grant']['snapshot'])
-    assert any(i['kind']=='prerequisite-artifact' and i['body']['text']=='version A' for i in frozen['inputs'][0])
+    frozen_items = Session(c.workspace, c.report(), 'T1', snapshot=frozen).items
+    assert any(i['kind']=='prerequisite-artifact' and i['body']['text']=='version A' for i in frozen_items)
     launch(c,s,item)
     consume(c,s,item['grant'],'native-0')
     with pytest.raises(w.Refusal,match='outside'):

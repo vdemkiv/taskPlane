@@ -234,8 +234,10 @@ def test_root_baseline_must_be_complete_before_run_delta(
     path.parent.mkdir()
     _write_thread_segment(path, total=150, ordinal=5)
     monkeypatch.setenv('CODEX_HOME', str(tmp_path))
-    monkeypatch.setattr(claude, 'read_snapshot', lambda *_args, **_kwargs:
-                        {'usage': counts(150), 'started': 0, 'partial': False})
+    if host == 'claude':
+        path.write_text(json.dumps({'type':'assistant','sessionId':'root','timestamp':'2026-09-01T00:00:15Z',
+            'message':{'id':'root-response','model':'fixture','usage':{'input_tokens':150,
+                'cache_read_input_tokens':0,'cache_creation_input_tokens':0,'output_tokens':0}}})+'\n')
     run = {'run': 'old', 'session': 'root', 'host': host, 'usage': baseline,
            'at': '2026-09-01T00:00:10Z', 'transcript_path': str(path)}
     if baseline_status is not None:
@@ -247,6 +249,33 @@ def test_root_baseline_must_be_complete_before_run_delta(
         assert root['usage'] is None and root['status'] == 'partial'
     else:
         assert root['usage'] == counts(expected) and root['status'] == 'measured'
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_reconcile_missing_known_worker_keeps_token_coverage_incomplete(tmp_path, monkeypatch, host):
+    from taskplane.tests.test_native_session_meter import _interval_fixture
+
+    path = tmp_path / 'sessions/root.jsonl'
+    path.parent.mkdir()
+    _interval_fixture(path, 'root', [(15, 50)])
+    if host == 'claude':
+        path.write_text(json.dumps({'type': 'assistant', 'sessionId': 'root',
+            'timestamp': '2026-09-01T00:00:15Z',
+            'message': {'id': 'root-response', 'model': 'fixture', 'usage': {
+                'input_tokens': 50, 'cache_read_input_tokens': 0,
+                'cache_creation_input_tokens': 0, 'output_tokens': 0}}}) + '\n')
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    run = {'run': str(tmp_path), 'session': 'root', 'host': host,
+           'usage': counts(0), 'usage_status': 'observed',
+           'at': '2026-09-01T00:00:10Z', 'transcript_path': str(path),
+           'worker_sessions': ['missing-worker']}
+    result = flow_usage.reconcile(run, [])
+    assert result['tokens'] == counts(50)
+    assert result['token_coverage']['measured_sessions'] == 1
+    assert result['token_coverage']['unmeasured_sessions'] == 1
+    assert not result['usage_refresh']['complete']
+    missing = next(row for row in result['sessions'] if row['session'] == 'missing-worker')
+    assert missing['usage'] is None and missing['attribution_unknown']
 
 
 def test_claude_recovered_prerun_counter_does_not_become_run_usage(tmp_path):
@@ -266,6 +295,13 @@ def test_claude_recovered_prerun_counter_does_not_become_run_usage(tmp_path):
     assert report['tokens'] is None
     assert report['native_tokens']['total_tokens'] == 284
     assert report['sessions'][0]['status'] == 'partial'
+
+
+def test_claude_missing_snapshot_still_reports_unavailable_identity(tmp_path):
+    from taskplane import claude_flow_usage as claude
+
+    with pytest.raises(ValueError, match='Claude session identity unavailable'):
+        claude.read_snapshot(tmp_path / 'missing.jsonl', 'root')
 
 
 @pytest.mark.parametrize('new_total,new_cached', [(30, 0), (150, 10), (150, 0)])
@@ -290,3 +326,61 @@ def test_resumed_codex_reset_is_not_restored_from_saved_or_closing_counts(
     root = result['sessions'][0]
     assert root['usage'] is None and root['status'] == 'partial'
     assert root['errors']
+
+
+def test_reconcile_checkpoint_preserves_partial_owned_attribution(tmp_path, monkeypatch):
+    from taskplane import native_session_meter as meter
+    from scripts.benchmark_usage import fixture, oracle
+    home=tmp_path/'native';ids=fixture(home/'sessions','Codex',0,3,65536)
+    monkeypatch.setenv('CODEX_HOME',str(home))
+    run={'run':'bounded-run','session':'root','at':'2026-01-01T00:00:00Z','usage':counts(0),'usage_status':'observed'}
+    with meter.usage_refresh(meter.UsageBudget(bytes_limit=10000)):
+        partial=flow_usage.reconcile(run,[])
+    assert not partial['usage_refresh']['complete']
+    assert partial['usage_refresh']['continuation']
+    assert partial['token_coverage']['partial_sessions'] or partial['token_coverage']['unmeasured_sessions']
+    # Detach across the caller boundary; checkpoint storage is observational and
+    # does not advance phase/controller revision.
+    flow_usage._READERS.clear()
+    run['usage_checkpoint']=json.loads(json.dumps(partial['usage_checkpoint']))
+    complete=flow_usage.reconcile(run,[])
+    expected,_=oracle(home/'sessions','Codex',ids)
+    assert complete['usage_refresh']['complete']
+    assert complete['tokens']==expected
+    assert 'revision' not in complete['usage_checkpoint']
+
+
+def test_declared_reused_codex_worker_requires_an_owned_start_boundary(tmp_path, monkeypatch):
+    from taskplane.tests.test_native_session_meter import _interval_fixture
+    folder = tmp_path / 'sessions'
+    folder.mkdir()
+    _interval_fixture(folder / 'root.jsonl', 'root', [(5, 100), (15, 150)])
+    _interval_fixture(folder / 'child.jsonl', 'child', [(15, 50)], parent='root')
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    run = {'run': 'run', 'session': 'root', 'worker_sessions': ['child'],
+           'at': '2026-09-01T00:00:10Z', 'usage': counts(100)}
+    result = flow_usage.reconcile(run, [])
+    child = next(row for row in result['sessions'] if row['session'] == 'child')
+    assert child['native_usage'] == counts(50)
+    assert child['usage'] is None and child['status'] == 'partial'
+    assert 'owned_baseline_unavailable' in child['errors']
+    assert not result['usage_refresh']['complete']
+    assert result['usage_refresh']['totals'] == result['tokens'] == counts(50)
+
+
+def test_malformed_owned_restart_cannot_restore_saved_counts(tmp_path, monkeypatch):
+    from taskplane.tests.test_native_session_meter import _interval_fixture
+    folder = tmp_path / 'sessions'
+    folder.mkdir()
+    path = folder / 'root.jsonl'
+    rows = _interval_fixture(path, 'root', [(15, 150)])
+    rows[0]['payload']['history_base'] = {'thread_id': 'foreign',
+        'end_ordinal_exclusive': 1, 'end_byte_offset': 1}
+    path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path))
+    run = {'run': 'run', 'session': 'root', 'at': '2026-09-01T00:00:10Z', 'usage': counts(100)}
+    saved = {'kind': 'usage', 'run': 'run', 'measurement': measured(20)}
+    report = flow_usage.reconcile(run, [saved])
+    root = next(row for row in report['sessions'] if row['session'] == 'root')
+    assert root['usage'] is None and 'native_metadata_invalid' in root['errors']
+    assert report['token_coverage']['inventory_errors'] == 0

@@ -28,109 +28,54 @@ def _time(value: Any) -> float | None:
         return None
 
 
+_READERS: dict[str, meter.IncrementalUsageReader] = {}
+_LAST_REFRESH: dict[str, Any] = {}
+
+
+def _reader(run: dict[str, Any], roots: list[Path], cutoff: float | None,
+            host: str) -> meter.IncrementalUsageReader:
+    key = meter.fingerprint({'host': host, 'root': run['session'], 'run': run.get('run'),
+        'roots': [str(p) for p in roots], 'start': run.get('at'), 'end': cutoff,
+        'known': sorted(run.get('worker_sessions', []))})
+    reader = _READERS.get(key)
+    if reader is None:
+        reader = meter.IncrementalUsageReader(host, run['session'], roots,
+            start=_time(run.get('at')), end=cutoff, known=run.get('worker_sessions', []),
+            checkpoint=run.get('usage_checkpoint'))
+        _READERS[key] = reader
+        # This is an advisory process cache, not an unbounded archive.
+        if len(_READERS) > 16:
+            _READERS.pop(next(iter(_READERS))).close()
+    return reader
+
+
 def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                     diagnostics: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], int]:
-    root = run['session']
-    started = _time(run.get('at'))
     home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
-    metadata = []
-    failures = []
-    paths = sorted({p for folder in ('sessions', 'archived_sessions')
-                    for p in (home / folder).glob('**/*.jsonl')})
-    for path in paths:
-        prefix = b''
-        try:
-            if any(p.is_symlink() for p in (path, *path.parents)):
-                raise ValueError('symlinked native metadata')
-            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
-            with os.fdopen(fd, 'rb') as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                    raise ValueError('native metadata is not regular')
-                prefix = stream.readline(meter.MAX_METADATA_BYTES)
-            item, _ = meter._session_metadata(prefix)
-            item['path'] = path
-            metadata.append(item)
-        except (OSError, ValueError) as exc:
-            try:
-                row = json.loads(prefix)
-                payload = row.get('payload', {}) if isinstance(row, dict) else {}
-            except (ValueError, UnicodeError):
-                payload = {}
-            if not isinstance(payload, dict):
-                payload = {}
-            failures.append({'session': payload.get('id'),
-                'parent': payload.get('forked_from_id') or payload.get('parent_thread_id'),
-                'path_fingerprint': hashlib.sha256(str(path).encode()).hexdigest(),
-                'reason': str(exc)[:200]})
-    ids = {root}
-    selected = []
-    while True:
-        selected = [m for m in metadata if m['session_id'] in ids or (
-            m.get('parent_session_id') in ids
-            and (m.get('thread_source') == 'guardian_review' or m['session_id'] in run.get('worker_sessions', []) or started is None
-                 or (_time(m['started_at']) or 0) >= started)
-            and (cutoff is None or (_time(m['started_at']) or 0) < cutoff))]
-        found = ids | {m['session_id'] for m in selected}
-        if found == ids:
-            break
-        ids = found
-    discovery_errors = 0
-    for failure in failures:
-        related = failure['session'] in ids or failure['parent'] in ids
-        unknown = not failure['session']
-        failure['scope'] = 'run_lineage' if related else 'unclassified' if unknown else 'unrelated_inventory'
-        discovery_errors += int(related or unknown)
+    reader = _reader(run, [home / 'sessions', home / 'archived_sessions'], cutoff, 'Codex')
+    result = reader.refresh()
     if diagnostics is not None:
-        diagnostics.extend(failures)
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in selected:
-        grouped.setdefault(item['session_id'], []).append(item)
-    grouped.setdefault(root, [])
-    sessions = []
-    for sid, segments in grouped.items():
-        meta = segments[0] if segments else {}
-        role = ('orchestrator' if sid == root else 'host_approval_review'
-                if meta.get('thread_source') == 'guardian_review' else 'lens')
-        errors = []
-        attribution_unknown = False
-        snapshot: dict[str, Any] = {}
-        try:
-            snapshot = meter.read_logical_snapshot(
-                [segment['path'] for segment in segments], sid, at_or_before=cutoff)
-            native = snapshot['usage']
-            if snapshot['partial']:
-                errors.append('native counter unavailable')
-        except (OSError, ValueError) as exc:
-            native = None
-            if segments:
-                errors.append(f'segment counters could not be reconciled: {exc}')
-                attribution_unknown = isinstance(exc, meter.CounterChronologyError)
-        baseline = meter.starting_baseline(run) if sid == root else None
-        if sid == root and baseline is None:
-            errors.append('run baseline is partial or unavailable; attribution is unknown')
-            attribution_unknown = True
-        usage = ({k: max(0, v - (baseline or {}).get(k, 0)) for k, v in native.items()}
-                  if native and (sid != root or baseline is not None) else None)
-        if native and baseline and any(v < baseline.get(k, 0) for k, v in native.items()):
-            usage = None
-            errors.append('native counter moved below run baseline; reset attribution is unknown')
-            attribution_unknown = True
-        interval = None
-        if sid != root and started is not None:
-            interval = meter.read_owned_interval([segment['path'] for segment in segments], sid, start=started, end=cutoff)
-            usage, native = interval['usage'], interval['native_usage']
-            errors = interval['errors']
-        sessions.append({'session': sid, 'agent': meta.get('agent_path') or role,
-                         'role': role, 'usage': usage, 'native_usage': native,
-                         'status': 'partial' if errors else 'measured' if usage else 'unavailable',
-                         'basis': interval['basis'] if interval else 'start baseline' if sid == root else 'child created during flow',
-                         'interval': interval.get('interval') if interval else None,
-                         'measured_at': (interval or snapshot).get('measured_at'),
-                         'measurement_source': 'native_sample',
-                         'attribution_schema': 'taskplane.owned-interval/v1' if interval else None,
-                         'attribution_unknown': attribution_unknown,
-                         'errors': errors})
-    return sessions, discovery_errors
+        diagnostics.extend(result.get('inventory_diagnostics', []))
+    _LAST_REFRESH.clear()
+    _LAST_REFRESH.update(result)
+    _LAST_REFRESH['checkpoint'] = reader.checkpoint()
+    baseline = meter.starting_baseline(run)
+    sessions = meter.run_sessions(result['sessions'], run['session'], run.get('worker_sessions', []),
+                                  start=_time(run.get('at')), end=cutoff)
+    if not any(s['session'] == run['session'] for s in sessions):
+        sessions.append({'session': run['session'], 'agent': 'orchestrator', 'role': 'orchestrator',
+            'usage': None, 'native_usage': None, 'status': 'unavailable',
+            'errors': ['native counter unavailable'], 'attribution_unknown': True})
+    for session in sessions:
+        if session['session'] == run['session']:
+            native = session.get('native_usage')
+            if baseline is None or native is None or any(native[k] < baseline[k] for k in baseline):
+                session.update(usage=None, status='partial', attribution_unknown=True)
+                session['errors'].append('run baseline unavailable or reset')
+            elif not session.get('errors'):
+                session['usage'] = {k: native[k] - baseline[k] for k in baseline}
+    errors = len(reader.state['discovery_errors']) + int(not result['fully_discovered'])
+    return sessions, errors
 
 
 def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
@@ -155,8 +100,10 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         boundary = closing
     cutoff = _time(boundary.get('at')) if boundary else None
     diagnostics: list[dict[str, Any]] = []
+    _LAST_REFRESH.clear()
     if run.get('host') == 'claude':
         sessions, discovery_errors = claude.sessions(run, events, cutoff)
+        _LAST_REFRESH.update(claude.last_refresh())
     else:
         known_workers = set(run.get('worker_sessions', []))
         known_workers.update(str(e.get('session')) for e in events if e.get('run') == run['run']
@@ -183,9 +130,21 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         # restore them over an explicit reset/conflict or a revised interval.
         owned = (prior.get('attribution_schema') == 'taskplane.owned-interval/v1'
                  and prior.get('interval') == {'start': started, 'end_exclusive': cutoff})
-        if (prior.get('usage') and (current is None or not current.get('usage'))
-                and not (current or {}).get('errors')
-                and not (current or {}).get('attribution_unknown')
+        current_errors = set((current or {}).get('errors', []))
+        absence = {'native counter unavailable', 'native_source_unavailable', 'native_metadata_unavailable',
+                   'run baseline unavailable or reset'}
+        unavailable = (current is None or not current.get('usage') or 'native_source_unavailable' in current_errors)
+        # Missing native bytes do not invalidate an earlier observed subtotal.
+        # Reset/identity/conflict evidence does: never restore over those errors.
+        prior_errors = set(prior.get('errors', []))
+        recoverable = (current_errors <= absence | prior_errors
+                       and not current_errors & {'native_metadata_invalid', 'native_parent_mismatch'}
+                       and not any('reset' in error or 'conflict' in error or 'mutation' in error
+                                   for error in current_errors - {'run baseline unavailable or reset'}))
+        native = (current or {}).get('native_usage')
+        if prior.get('role') == 'orchestrator' and native is not None and start is not None:
+            recoverable = recoverable and all(native.get(k, -1) >= start[k] for k in start)
+        if (prior.get('usage') and unavailable and recoverable
                 and (prior.get('role') != 'orchestrator' or start is not None)
                 and (prior.get('role') == 'orchestrator' or owned)):
             if current is not None:
@@ -219,7 +178,17 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
         values = [s[key] for s in sessions if (s['role'] == 'host_approval_review') == role and s[key]]
         return {k: sum(v.get(k, 0) for v in values) for k in values[0]} if values else None
     delivery = [s for s in sessions if s['role'] != 'host_approval_review']
+    refresh = {k:v for k,v in _LAST_REFRESH.items() if k not in ('sessions', 'checkpoint')}
+    if refresh:
+        known = [s['usage'] for s in sessions if s.get('usage') is not None]
+        refresh.update(totals={k: sum(v.get(k, 0) for v in known) for k in known[0]} if known else None,
+                       attribution={s['session']: s['usage'] for s in sessions if s.get('session')})
+        refresh['complete'] = bool(refresh.get('complete') and all(
+            s.get('status') == 'measured' and not s.get('attribution_unknown') for s in sessions))
+        refresh['coverage'] = 'complete' if refresh['complete'] else 'partial'
     return {'sessions': sessions, 'tokens': total('usage', False),
+            'usage_refresh': refresh,
+            'usage_checkpoint': _LAST_REFRESH.get('checkpoint'),
             'ownership_interval': {'start': started, 'end_exclusive': cutoff},
             'native_tokens': total('native_usage', False),
             'host_approval_tokens': total('usage', True),
@@ -227,9 +196,9 @@ def reconcile(run: dict[str, Any], events: list[dict[str, Any]],
                                'unmeasured_sessions': sum(s['usage'] is None for s in delivery),
                                'partial_sessions': sum(s['status'] == 'partial' for s in delivery),
                                'discovery_errors': discovery_errors,
-                                'inventory_errors': len(diagnostics),
+                                'inventory_errors': _LAST_REFRESH.get('inventory_errors', len(diagnostics)),
                                 'discovery_diagnostics': diagnostics[:32],
-                                'diagnostics_omitted': max(0, len(diagnostics) - 32),
+                                'diagnostics_omitted': max(0, _LAST_REFRESH.get('inventory_errors', len(diagnostics)) - 32),
                                'basis': 'Root start delta; new child usage and reused-session intervals [run start, next run start). Host approval review is separate. Missing/reset boundaries remain unknown.'}}
 
 

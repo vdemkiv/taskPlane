@@ -185,7 +185,7 @@ def test_seven_phases_across_fresh_processes(tmp_path):
     prior_decisions = {}
     for index, phase in enumerate(w.PHASES):
         for mode in ('report', 'submit', 'guard', 'decide', 'replay', 'advance'):
-            checked = subprocess.run([sys.executable, '-I', '-c', probe, runtime_root, str(tmp_path), mode], capture_output=True, text=True, env=os.environ.copy(), timeout=45)
+            checked = subprocess.run([sys.executable, '-I', '-B', '-c', probe, runtime_root, str(tmp_path), mode], capture_output=True, text=True, env=os.environ.copy(), timeout=45)
             assert checked.returncode == 0, checked.stdout + checked.stderr
             state = json.loads(checked.stdout)
             assert state['run'] == initial['run']

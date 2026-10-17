@@ -40,7 +40,8 @@ def fixture(tmp_path, monkeypatch, *, text='approve'):
     return c, state, path, event, shown, human, write
 
 
-@pytest.mark.parametrize('text', ['approve', 'Product approved', 'Approve: {checkpoint}'])
+@pytest.mark.parametrize('text', ['approve', 'Product approved', 'Approve: {checkpoint}',
+                                  'Approve Product and proceed to Design'])
 def test_ordinary_chat_approval_derives_real_ids_and_preserves_original_presentation(tmp_path, monkeypatch, text):
     c, state, _, event, shown, human, _ = fixture(tmp_path, monkeypatch, text=text)
     flow.hook(event, governor=c)
@@ -51,10 +52,39 @@ def test_ordinary_chat_approval_derives_real_ids_and_preserves_original_presenta
     assert proof['source']['observed_at'] == human['timestamp']
     assert proof['presentation']['reference'] == shown['uuid']
     assert proof['presentation']['at'] == shown['timestamp']
+    assert proof['presentation']['text'] == shown['message']['content']
     assert proof['recorder'] == 'native_prompt_hook'
     assert proof['native_proof']['human']['offset'] > proof['native_proof']['presentation']['offset']
     flow.hook(event, governor=c)
     assert c.report(diagnostics=False)['decisions'] == after['decisions']
+
+
+@pytest.mark.parametrize('question', [
+    'Approve this Design checkpoint?',
+    'Only after CI passes. Approve this Product checkpoint?',
+    'Approve this Product checkpoint? Only after CI passes.',
+    'Do not approve it. Approve this Product checkpoint?',
+    'Review this Product checkpoint.',
+])
+def test_native_hook_validates_complete_original_question_before_approval(tmp_path, monkeypatch, question):
+    c, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch, text='yes')
+    checkpoint = w.binding(state, w.current(state)['packet'])['checkpoint']
+    shown['message']['content'] = f'Current checkpoint {checkpoint}.\n{question}'
+    write([shown, human])
+    original = path.read_bytes()
+    try:
+        flow.hook(event, governor=c)
+    except w.Refusal:
+        pass
+    else:
+        # A presentation with no acceptance question is already refused by
+        # capture, before it can produce an envelope for semantic validation.
+        observed = json.loads(c._path().read_text())['runs'][state['run']]
+        assert observed['native_approval_capture']['status'] == 'needs_clarification'
+    after = json.loads(c._path().read_text())['runs'][state['run']]
+    assert after['revision'] == state['revision'] and not after['decisions']
+    assert w.current(after)['decision'] == 'awaiting_human_approval'
+    assert path.read_bytes() == original
 
 
 def test_prompt_flush_is_deferred_then_captured_before_next_tool_guard(tmp_path, monkeypatch):

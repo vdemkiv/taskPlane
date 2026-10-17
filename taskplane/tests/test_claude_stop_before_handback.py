@@ -116,3 +116,66 @@ def test_same_launch_competing_no_report_remains_conflict(tmp_path, monkeypatch)
         host.controller.worker(host.state['run'], 'reconcile-handback',
             revision=host.state['revision'], grant=host.grant)
     assert not host.controller.report().get('task_results')
+
+
+@pytest.mark.parametrize('claimed', [False, True])
+def test_selected_startup_report_audit_handles_claimed_and_preclaim_failure(tmp_path, monkeypatch, claimed):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    if claimed:
+        host.ready()
+    event, _, note = delivered(host)
+    if claimed:
+        target = host.controller._path(); db = json.loads(target.read_text())
+        row = db['runs'][host.state['run']]['workers'][host.grant]
+        # Preserve the real acknowledged admission while modeling a startup
+        # failure after claim: no optional legacy handback_call slot exists.
+        report = row.pop('handback_call')
+        row['startup_handbacks'] = {event['tool_use_id']: report}
+        host.controller._write(target, db)
+    before = host.controller.report(diagnostics=False)
+    assert 'handback_call' not in before['workers'][host.grant]
+    result = host.controller.worker(host.state['run'], 'reconcile-handback',
+        revision=host.state['revision'], grant=host.grant)
+    row = host.row()
+    assert row['state'] == 'failed' and row['handback']['status'] == 'startup_failed'
+    assert not result['result_accepted']
+    selected = row['startup_handbacks'][event['tool_use_id']]
+    joined = [x for x in row['reconciliation_events'].values() if x['kind'] == 'stop_before_handback_joined']
+    assert joined[-1]['value']['admission'] == workers.digest(selected)
+    assert row['handback']['notification']['record_sha256'] == workers.digest(note)
+    stable = deepcopy(row)
+    host.controller.worker(host.state['run'], 'reconcile-handback', revision=host.state['revision'], grant=host.grant)
+    after = host.controller.report(diagnostics=False)
+    assert after['workers'][host.grant]['handback'] == stable['handback']
+    for key in ('decisions', 'visits', 'scope', 'task_results'):
+        assert after.get(key) == before.get(key)
+
+
+@pytest.mark.parametrize('defect', ['missing_ack', 'body', 'terminal_status', 'startup_reports', 'no_report'])
+def test_failed_startup_handback_replay_revalidates_original_native_evidence(tmp_path, monkeypatch, defect):
+    host = Interactive(tmp_path, monkeypatch)
+    host.launch()
+    event, _, _ = delivered(host)
+    result = host.controller.worker(host.state['run'], 'reconcile-handback',
+        revision=host.state['revision'], grant=host.grant)
+    assert result['state'] == 'failed' and not result['result_accepted']
+    target = host.controller._path(); db = json.loads(target.read_text())
+    row = db['runs'][host.state['run']]['workers'][host.grant]
+    if defect == 'missing_ack':
+        row['startup_handbacks'][event['tool_use_id']].pop('acknowledgment')
+    elif defect == 'body':
+        row['startup_handbacks'][event['tool_use_id']]['envelope']['body_digest'] = '0' * 64
+    elif defect == 'terminal_status':
+        row['terminal_status'] = 'completed'
+    elif defect == 'startup_reports':
+        row['startup_handbacks'] = {}
+    elif defect == 'no_report':
+        row['handback']['status'] = 'no_report'
+    host.controller._write(target, db)
+    before = target.read_bytes()
+    with pytest.raises(w.Refusal):
+        host.controller.worker(host.state['run'], 'reconcile-handback',
+            revision=host.state['revision'], grant=host.grant)
+    assert target.read_bytes() == before
+    assert not host.controller.report(diagnostics=False).get('task_results')

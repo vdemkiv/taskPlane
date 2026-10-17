@@ -11,6 +11,9 @@ concurrency:
   cancel-in-progress: true
 env:
   PYTHONUTF8: "1"
+# Required jobs execute functional tests. Legacy performance nodes remain in the
+# collection report with explicit exclusions; capacity.yml is disabled history.
+# Operational timeout caps below are unchanged and are not acceptance targets.
 jobs:
   portability:
     name: portability (${{ matrix.os }})
@@ -30,12 +33,12 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite portability --junitxml reports/portability.xml
+      - run: python scripts/ci_local.py --check tests --suite portability --junitxml "${{ runner.temp }}/reports/portability.xml" --report-json "${{ runner.temp }}/reports/execution.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: portability-${{ matrix.os }}
-          path: reports/portability.xml
+          path: ${{ runner.temp }}/reports/
           if-no-files-found: error
   suites:
     name: ${{ matrix.suite }} ${{ matrix.shard }}/${{ matrix.shards }} (${{ matrix.os }})
@@ -63,12 +66,12 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --shard-index ${{ matrix.shard }} --shard-count ${{ matrix.shards }} --junitxml reports/${{ matrix.suite }}-${{ matrix.shard }}.xml
+      - run: python scripts/ci_local.py --check tests --suite ${{ matrix.suite }} --shard-index ${{ matrix.shard }} --shard-count ${{ matrix.shards }} --junitxml "${{ runner.temp }}/reports/${{ matrix.suite }}-${{ matrix.shard }}.xml" --report-json "${{ runner.temp }}/reports/execution.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: ${{ matrix.suite }}-${{ matrix.shard }}-${{ matrix.os }}
-          path: reports/*.xml
+          path: ${{ runner.temp }}/reports/
           if-no-files-found: error
   archive-journeys:
     name: archive ${{ matrix.host }} (${{ matrix.os }})
@@ -78,7 +81,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        host: [codex, claude]
+        host: [codex, claude, hostless]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
@@ -89,12 +92,12 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check tests --suite packages --host ${{ matrix.host }} --junitxml reports/archive.xml
+      - run: python scripts/ci_local.py --check tests --suite packages --host ${{ matrix.host }} --junitxml "${{ runner.temp }}/reports/archive.xml" --report-json "${{ runner.temp }}/reports/execution.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: archive-${{ matrix.host }}-${{ matrix.os }}
-          path: reports/archive.xml
+          path: ${{ runner.temp }}/reports/
           if-no-files-found: error
   quality-package:
     name: quality + package + release provenance
@@ -106,12 +109,18 @@ jobs:
         with: {python-version: "3.12", cache: pip}
       - run: python -m pip install --require-hashes --no-deps -r requirements-dev.lock
       - run: python scripts/security_checks.py
-      - run: python scripts/ci_local.py --check quality
-      - run: python scripts/ci_local.py --check package
+      - run: python scripts/ci_local.py --check quality --report-json "${{ runner.temp }}/reports/quality.json"
+      - run: python scripts/ci_local.py --check package --package-output "${{ runner.temp }}/packages" --report-json "${{ runner.temp }}/reports/package.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: plugins-${{ github.sha }}
-          path: dist/
+          path: ${{ runner.temp }}/packages/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: quality-package-profiles
+          path: ${{ runner.temp }}/reports/
           if-no-files-found: error
   dashboard-browser:
     name: dashboard browser conformance
@@ -125,12 +134,12 @@ jobs:
         run: |
           awk 'sub(/^# test-lock: /, "")' requirements-dev.lock > "$RUNNER_TEMP/tests.lock"
           python -m pip install --require-hashes --no-deps -r "$RUNNER_TEMP/tests.lock"
-      - run: python scripts/ci_local.py --check browser --junitxml reports/browser.xml
+      - run: python scripts/ci_local.py --check browser --junitxml "${{ runner.temp }}/reports/browser.xml" --report-json "${{ runner.temp }}/reports/execution.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: dashboard-browser
-          path: reports/browser.xml
+          path: ${{ runner.temp }}/reports/
           if-no-files-found: error
   security:
     name: security scanners and dependency audit

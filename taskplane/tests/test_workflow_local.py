@@ -78,12 +78,16 @@ def test_numbered_database_recovery_refuses_without_changing_control_files(tmp_p
 
 def test_numbered_database_recovery_never_overwrites_a_racing_writer(tmp_path, monkeypatch):
     c, state, target, candidate, raw, checksum = displaced_database(tmp_path)
-    def collision(source, destination):
-        destination.write_bytes(b'concurrent state')
-        raise FileExistsError('fixture concurrent writer')
+    link = os.link
+    def collision(source, destination, **kwargs):
+        if destination == target.name:
+            target.write_bytes(b'concurrent state')
+            raise FileExistsError('fixture concurrent writer')
+        return link(source, destination, **kwargs)
     monkeypatch.setattr(h.os, 'link', collision)
-    with pytest.raises(FileExistsError):
+    with pytest.raises(w.Refusal) as caught:
         c.recover_initialization(candidate.name, checksum, state['run'], state['revision'], 'conversation/recovery')
+    assert isinstance(caught.value.__cause__, FileExistsError)
     assert target.read_bytes() == b'concurrent state' and candidate.read_bytes() == raw
 
 
@@ -195,7 +199,7 @@ assert c.report()['decisions'] == state['decisions']
     env.update(PLUGIN_ROOT=str(extracted), CLAUDE_PLUGIN_ROOT=str(extracted),
                PATH=str(Path(sys.executable).parent)+os.pathsep+env['PATH'])
     env['CODEX_THREAD_ID' if adapter == 'codex' else 'TASKPLANE_CLAUDE_SESSION_ID'] = 'package-root'
-    checked = subprocess.run([sys.executable,'-I','-c',probe,str(extracted),str(tmp_path/'workspace'),adapter],
+    checked = subprocess.run([sys.executable,'-I','-B','-c',probe,str(extracted),str(tmp_path/'workspace'),adapter],
                              cwd=tmp_path,env=env,text=True,capture_output=True)
     assert checked.returncode == 0, (checked.stdout, checked.stderr)
 
@@ -302,7 +306,7 @@ def decision(s, *, text="Approved", event="message-1"):
             "source":{"kind":"conversation","reference":event,"conversation":s["root"],"actor":"user",
                       "automatic":False,"observed_at":observed},
             "presentation":{"checkpoint":binding["checkpoint"],"reference":"assistant/presentation",
-                            "at":presented}}
+                            "at":presented,"text":f"Approve this {w.current(s)['phase']} checkpoint?"}}
 
 
 def decide(c,s,value=None):
@@ -520,25 +524,30 @@ def test_native_prompt_needs_envelope_and_journal_failure_keeps_decision(tmp_pat
 
 
 def check_store_byte_boundary(c, monkeypatch, payload, margin):
-    """Use actual persisted bytes, including escaping/indentation/newline, as the boundary."""
+    """Bound the exact next-generation commit without writing a sizing probe."""
+    from taskplane import primitives, storage
     target = c.adapter.control_path(c.workspace, c.root)
     before = target.read_bytes()
     original = json.loads(before)
+    generation = storage.storage_generation(original)
     candidate = deepcopy(original)
     candidate['size_probe'] = payload
-    c._write(target, candidate)
-    measured = target.read_bytes()
-    c._write(target, original)
+    committed = deepcopy(candidate)
+    committed['storage_generation'] = generation + 1
+    measured = storage.encode_controller(committed)
     assert target.read_bytes() == before
     monkeypatch.setattr(local, 'MAX_BYTES', len(measured) + margin)
-    if margin < 0:
-        with pytest.raises(w.Refusal, match='size limit'):
+    with primitives.file_lock(str(target)):
+        if margin < 0:
+            with pytest.raises(w.Refusal, match='size limit|byte limit'):
+                c._write(target, candidate)
+            assert target.read_bytes() == before
+            assert storage.storage_generation(candidate) == generation
+        else:
             c._write(target, candidate)
-        assert target.read_bytes() == before
-    else:
-        c._write(target, candidate)
-        assert target.read_bytes() == measured
-        assert len(measured) <= local.MAX_BYTES
+            assert target.read_bytes() == measured
+            assert storage.storage_generation(candidate) == generation + 1
+            assert len(measured) <= local.MAX_BYTES
     resumed = h.Controller(c.workspace, c.root, c.adapter).report()
     active = original['runs'][original['active']]
     assert resumed['run'] == active['run'] and resumed['revision'] == active['revision']
@@ -584,12 +593,16 @@ def test_compact_write_reads_legacy_state_and_preserves_prior_acceptance(tmp_pat
 
 @pytest.mark.parametrize('failure_call', [1, 2])
 def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_path, monkeypatch, failure_call):
-    from taskplane import primitives
+    from taskplane import primitives, storage
     c, s = setup(tmp_path)
     target = c.adapter.control_path(c.workspace, c.root)
     before = target.read_bytes()
     candidate = json.loads(before)
     candidate['sync_probe'] = 'updated'
+    proposed = deepcopy(candidate)
+    generation = storage.storage_generation(candidate)
+    published = {**deepcopy(candidate), 'storage_generation': generation + 1}
+    published_bytes = storage.encode_controller(published)
     original = primitives.os.fsync
     calls = []
     def fail_sync(fd):
@@ -605,15 +618,21 @@ def test_control_write_does_not_acknowledge_failed_file_or_directory_sync(tmp_pa
                 calls.append(path)
                 raise OSError('simulated directory flush failure')
             patch.setattr(primitives, '_flush_windows_directory', fail_directory)
-        with pytest.raises(w.Refusal, match='not acknowledged'):
+        with primitives.file_lock(str(target)), pytest.raises(w.Refusal, match='not acknowledged'):
             c._write(target, candidate)
     assert len(calls) == failure_call
+    assert candidate == proposed  # A failed acknowledgment never advances the caller.
     if failure_call == 1:
         assert target.read_bytes() == before
     else:
-        assert json.loads(target.read_bytes()) == candidate
+        assert target.read_bytes() == published_bytes
+        with primitives.file_lock(str(target)), pytest.raises(w.Refusal, match='generation changed'):
+            c._write(target, candidate)
+        assert target.read_bytes() == published_bytes
     assert not list(target.parent.glob('.'+target.name+'.*.tmp'))
-    assert h.Controller(c.workspace, c.root, c.adapter).report()['revision'] == s['revision']
+    resumed = h.Controller(c.workspace, c.root, c.adapter)
+    assert resumed._read(target) == (json.loads(before) if failure_call == 1 else published)
+    assert resumed.report()['revision'] == s['revision']
 
 
 @pytest.mark.parametrize('profile', ['local', 'protected'])

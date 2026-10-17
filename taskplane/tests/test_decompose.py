@@ -779,3 +779,77 @@ class TestE4DocstringTruth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Keep dependency ordering coverage at the public decomposition boundary.
+def _dependency_graph_fixture(count, cycle=False):
+    from taskplane import graph_decomposition as decomposition
+    coverage = decomposition.build_source_touchpoint_coverage("fixture-tree",
+        [{"id": "fixture", "kind": "module"}],
+        limits={"parsers": ["fixture"], "languages": ["python"], "policy": "fixture",
+                "local_depth": 3, "max_fanout": count, "max_elapsed_ms": 1000},
+        verifier=lambda item: {"verified": True, "state": "present", "parser": "fixture",
+            "language": "python", "policy": "fixture", "source_fingerprint": "fixture-source",
+            "depth": 0, "fanout": count, "elapsed_ms": 0})
+    modules = [f"module-{index:05d}" for index in range(count)]
+    edges = [{"from": modules[index + 1], "to": modules[index], "kind": "imports", "source": "scanner"}
+             for index in range(count - 1)]
+    if cycle:
+        edges.append({"from": modules[0], "to": modules[-1], "kind": "imports", "source": "scanner"})
+    return {"meta": {"source_tree": "fixture-tree", "source_coverage": coverage,
+                     "graph_scan_quality": {"degraded": False}}, "edges": edges,
+        "components": [{"id": name + "::core", "module": name, "files": [name + ".py"],
+                        "symbols": [], "fingerprint": "fixture-" + name} for name in modules]}
+
+
+def test_dependency_decomposition_deep_chain_and_cycle():
+    from taskplane import graph_decomposition as decomposition
+    import sys
+    before = sys.getrecursionlimit()
+    count = before + 1
+    chain = decomposition.dependency_decomposition(_dependency_graph_fixture(count))
+    assert len(chain["tasks"]) == count
+    for index, task in enumerate(chain["tasks"]):
+        assert task["nodes"] == [f"module-{index:05d}"]
+        assert task["deps"] == ([chain["tasks"][index - 1]["id"]] if index else [])
+    cycle = decomposition.dependency_decomposition(_dependency_graph_fixture(count, cycle=True))
+    assert len(cycle["tasks"]) == 1 and len(cycle["tasks"][0]["nodes"]) == count
+    assert cycle["tasks"][0]["deps"] == []
+    assert sys.getrecursionlimit() == before
+
+
+def test_dependency_decomposition_preserves_owner_and_source_boundaries():
+    from taskplane import graph_decomposition as decomposition
+    from copy import deepcopy
+    import pytest
+    source = _dependency_graph_fixture(3)
+    before = deepcopy(source)
+    owners = {"module-00000": "first", "module-00001": "first", "module-00002": "second"}
+    result = decomposition.dependency_decomposition(source, task_owners=owners)
+    assert result["tasks"] == [
+        {"id": "first", "nodes": ["module-00000", "module-00001"], "deps": []},
+        {"id": "second", "nodes": ["module-00002"], "deps": ["first"]}]
+    assert source == before
+    with pytest.raises(ValueError, match="foreign"):
+        decomposition.dependency_decomposition(source, task_owners={"foreign": "owner"})
+    assert source == before
+    source["meta"]["graph_scan_quality"]["degraded"] = True
+    degraded = deepcopy(source)
+    with pytest.raises(ValueError, match="degraded"):
+        decomposition.dependency_decomposition(source)
+    assert source == degraded
+
+
+def test_dependency_decomposition_ignores_scanner_annotations_and_declared_edges():
+    from taskplane import graph_decomposition as decomposition
+    from copy import deepcopy
+    source = _dependency_graph_fixture(3)
+    expected = decomposition.dependency_decomposition(source)
+    # Reversing a real dependency through an annotation must not create a cycle.
+    source["edges"].extend([
+        {"from": "module-00000", "to": "module-00001", "kind": "contains", "source": "scanner"},
+        {"from": "module-00001", "to": "module-00002", "kind": "imports", "source": "declared"},
+    ])
+    before = deepcopy(source)
+    assert decomposition.dependency_decomposition(source) == expected
+    assert source == before

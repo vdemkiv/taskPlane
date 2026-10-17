@@ -25,36 +25,23 @@ def encoded(value):
 
 def context_session(root, binding, task=None, *, large=False, shared=False, body=None):
     """Use actual runtime CAS trees, pages and bounded transport, no host claims."""
-    session = object.__new__(Session)
-    session.workspace, session.state, session.task = root, {"run": binding["run"]}, task
-    session.binding, session.phase, session.store = binding, "engineering", Store(root)
+    from unittest.mock import patch
     if body is None:
         body = {"request": "Review bound source", "text": "".join(f"Line {n}: evidence body αβγ\n" for n in range(1200 if large else 4))}
-    session.items = [{"id": "source", "kind": "source", "body": body, "required": True}]
+    items = [{"id": "source", "kind": "source", "body": body, "required": True}]
     if shared:
-        session.items.append({"id": "finding", "kind": "finding-evidence", "body": body, "required": True})
-    session.input_refs = {item["id"]: session.store.put(item["kind"], item["body"]) for item in session.items}
-    session.view = view(session.store, binding, session.phase, [task] if task else [], [],
-                        {"binding": binding, "accepted_inputs": []}, session.items, {}, _prepared_refs=session.input_refs)
-    session.view_ref = session.store.put("context-view", session.view)
-    session.required = [{"id": item["id"], "ref": session.input_refs[item["id"]]} for item in session.items]
-    session.handoff = signed({"schema": "taskplane.context-handoff/v1", "binding": binding,
-        "view_ref": session.view_ref, "required_inputs": collection(session.store, session.required, "required-inputs", 0),
-        "accepted_inputs": collection(session.store, [], "accepted-inputs", 0), "unknowns": {}, "exclusions": []})
-    session.handoff_ref = session.store.put("context-handoff", session.handoff)
-    session.read_binding = {**binding, "source_key": session.view["source_key"]}
-    session.original_trees = {item["ref"]["sha256"]: session.store.descendants(item["ref"]) for item in session.required}
-    session.delivery_trees, session.required_trees = dict(session.original_trees), dict(session.original_trees)
-    reuse = session.view.get("body_reuse", {}).get("details")
-    if reuse:
-        for group in shared_bodies(session.items, session.input_refs):
-            for item in group["inputs"]:
-                key = item["ref"]["sha256"]
-                session.delivery_trees[key] = session.store.descendants(group["body_ref"])
-                session.required_trees[key] = session.delivery_trees[key] | session.store.descendants(reuse)
-    session.allowed = set().union(*session.required_trees.values())
-    session.ledger_path = root / ".taskplane/context-v1/delivery" / (session.handoff_ref["sha256"] + ".json")
-    return session
+        items.append({"id": "finding", "kind": "finding-evidence", "body": body, "required": True})
+    state = {**{key: binding[key] for key in ("workspace", "root", "run", "revision")},
+             "scope": {}, "index": 0,
+             "visits": [{"phase": "engineering", "id": binding["visit"]}]}
+    metadata = {"authority": {"binding": binding, "accepted_inputs": []}, "coverage": {}}
+    # Substitute fixture inputs, then use the real constructor to establish the
+    # page index, delivery journal, CAS registry and frozen context consistently.
+    with patch("taskplane.context_handoff.binding", return_value=binding), patch(
+            "taskplane.context_handoff.inputs",
+            return_value=(items, [task] if task else [], [], metadata)):
+        return Session(root, state, task)
+
 
 
 class Fixture:
@@ -756,6 +743,15 @@ def test_omitted_early_batch_cannot_be_replaced_by_empty_terminal_drain(tmp_path
     binding, _, rows, responses = context_trace(tmp_path)
     del rows[:2]
     with pytest.raises(live.EvidenceError, match="Required context body pages were omitted"):
+        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
+                                     responses[-1]["context_receipt"], "review")
+
+
+def test_completed_batch_still_requires_observed_terminal_drain(tmp_path):
+    binding, _, rows, responses = context_trace(tmp_path)
+    assert responses[-2]["context_receipt"] == responses[-1]["context_receipt"]
+    del rows[-2:]
+    with pytest.raises(live.EvidenceError, match="Full context delivery was not observed"):
         live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
                                      responses[-1]["context_receipt"], "review")
 

@@ -42,7 +42,13 @@ def test_discovers_unhooked_lenses_and_retains_final_usage(tmp_path,monkeypatch,
     flow.main(['attach','--workspace',str(ws),'--run','shared','--reviews','reviews.json'])
     capsys.readouterr()
     flow.append(ws,{'kind':'finish','run':'shared','session':'root','note':'Done'})
-    native(sessions/'lens.jsonl','lens',130,parent='root',at='2026-09-01T00:00:02Z')
+    # Native history grows by append; rewriting an observed counter is an
+    # identity/mutation conflict and cannot establish a fresh exact total.
+    latest = json.loads((sessions/'lens.jsonl').read_text().splitlines()[-1])
+    latest.update(ordinal=8, timestamp='2026-09-01T00:00:08Z')
+    latest['payload']['info']['total_token_usage'].update(input_tokens=129, total_tokens=130)
+    with (sessions/'lens.jsonl').open('a') as stream:
+        stream.write(json.dumps(latest) + '\n')
     before=(ws/flow.JOURNAL).read_bytes()
     r=flow.report(ws)
     assert r['tokens']['total_tokens']==430

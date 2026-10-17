@@ -63,7 +63,8 @@ def record(workspace: Path, root: str) -> dict[str, Any] | None:
         raise w.Refusal("state_unavailable", "Recovery receipt cannot be read; preserve it for repair.") from exc
     w.require(isinstance(value, dict) and value.get("schema") == SCHEMA
               and value.get("workspace") == str(workspace) and value.get("root") == root
-              and value.get("profile") == "native_workflow" and value.get("status") in {"prepared", "committed"}
+              and value.get("profile") == "native_workflow" and isinstance(value.get("status"), str)
+              and value["status"] in {"prepared", "committed"}
               and isinstance(value.get("binding"), dict)
               and set(value["binding"]) == {"workspace", "root", "run", "revision", "visit", "checkpoint", "manifest_digest", "scope_digest"}
               and all(isinstance(value["binding"].get(k), str) and value["binding"][k]
@@ -107,21 +108,41 @@ def initialization(workspace: Path, root: str) -> dict[str, Any] | None:
     return receipt
 
 
+def _sync_published(path: Path, raw: bytes) -> None:
+    """Sync the winning destination, which may have been published by a retry."""
+    w.require(all(not p.is_symlink() for p in (path, *path.parents)), "scope_violation", "Recovery target follows a symlink.")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        w.require(stat.S_ISREG(info.st_mode) and info.st_size == len(raw)
+                  and stream.read(len(raw) + 1) == raw,
+                  "state_unavailable", "Recovery cannot overwrite differing state or evidence.")
+        os.fsync(stream.fileno())
+    primitives._fsync_directory(str(path.parent))
+
+
 def _publish(path: Path, raw: bytes) -> None:
     """Create-if-absent, including retries; never replace a differing file."""
     w.require(all(not p.is_symlink() for p in (path, *path.parents)), "scope_violation", "Recovery target follows a symlink.")
     if path.exists():
         w.require(read_regular(path) == raw, "state_unavailable", "Recovery cannot overwrite differing state or evidence.")
+    # Flush existing ancestry too: a prior interrupted mkdir/link may be visible
+    # but not durable. Unsupported directory sync propagates; it is not success.
+    primitives._durable_makedirs(str(path.parent), mode=0o700, sync_existing=True)
+    if path.exists():
+        _sync_published(path, raw)
         return
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(prefix=".state-import-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(name, path)
-        primitives._fsync_directory(str(path.parent))
+        try:
+            os.link(name, path)
+        except FileExistsError:
+            w.require(read_regular(path) == raw, "state_unavailable", "Recovery publication raced with differing state.")
+        _sync_published(path, raw)
     finally:
         os.unlink(name)
 
@@ -137,6 +158,7 @@ def _receipt(value: dict[str, Any]) -> dict[str, Any]:
 
 def _save_receipt(path: Path, value: dict[str, Any]) -> dict[str, Any]:
     result = _receipt(value)
+    primitives._durable_makedirs(str(path.parent), mode=0o700, sync_existing=True)
     primitives.atomic_json(path, result, strict_directory_sync=True)
     return result
 
@@ -233,12 +255,20 @@ def recover(controller: Any, request_path: str, expected_sha256: str, *, mode: s
             if previous["status"] == "committed":
                 initialization(controller.workspace, controller.root)
                 controller._read(target)
+                # The last attempt may have replaced the committed receipt and
+                # then failed its directory sync. Confirm durability on retry.
+                if mode == "apply":
+                    primitives._durable_makedirs(str(receipt_path.parent), sync_existing=True)
+                    _sync_published(target, read_regular(target))
+                    _sync_published(receipt_path, read_regular(receipt_path, RECEIPT_LIMIT))
                 return {**previous, "status": "already_imported", "authority": "none"}
         else:
             w.require(not target.exists() and not target.with_name(target.stem + ".initialized.json").exists()
                       and not storage.runtime_file(str(controller.workspace), "initialization-" + target.stem.removeprefix("workflow-") + ".json").exists(),
                       "state_unavailable", "Import requires missing controller and initialization metadata; never replaces a store.")
         for path, raw in files.items():
+            w.require(all(not entry.is_symlink() for entry in (path, *path.parents)),
+                      "scope_violation", "Recovery target follows a symlink.")
             if path.exists():
                 w.require(read_regular(path) == raw, "state_unavailable", "Recovery target differs from this exact import.")
         summary = previous or {"schema": SCHEMA, "status": "prepared", "profile": "native_workflow",

@@ -2,8 +2,10 @@
 from copy import deepcopy
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 
 import pytest
 
@@ -14,6 +16,151 @@ from taskplane.tests.test_ordinary_checkpoint_reply import ordinary
 from taskplane.tests.test_state_import import invoke, lost, pin, tree
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_local import decide, present, submit
+
+
+@pytest.mark.parametrize("boundary", ["mkdir", "child_fsync", "parent_fsync", "write", "file_fsync", "link", "receipt"])
+def test_import_durability_interruptions_retry_without_false_commit(lost, monkeypatch, boundary):
+    c, state, original, _, _, _ = lost
+    publish, save = recovery._publish, recovery._save_receipt
+    mkdir, sync_directory = os.mkdir, primitives._fsync_directory
+    fdopen, fsync, link = os.fdopen, os.fsync, os.link
+    progress = {"active": False, "new_directory": None}
+
+    def active_publish(path, raw):
+        progress["active"] = True
+        try:
+            return publish(path, raw)
+        finally:
+            progress["active"] = False
+
+    def interrupted_mkdir(path, *args, **kwargs):
+        result = mkdir(path, *args, **kwargs)
+        if progress["active"]:
+            progress["new_directory"] = str(Path(path))
+            if boundary == "mkdir":
+                raise OSError("fixture stopped after mkdir")
+        return result
+
+    def interrupted_directory(path):
+        new = progress["new_directory"]
+        if new and ((boundary == "child_fsync" and str(path) == new)
+                    or (boundary == "parent_fsync" and str(path) == str(Path(new).parent))):
+            raise OSError("fixture stopped before directory fsync")
+        return sync_directory(path)
+
+    class InterruptedWriter:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+        def write(self, raw):
+            self.stream.write(raw)
+            raise OSError("fixture stopped during file write")
+
+    def interrupted_open(fd, mode, *args, **kwargs):
+        stream = fdopen(fd, mode, *args, **kwargs)
+        return InterruptedWriter(stream) if boundary == "write" and mode == "wb" and progress["active"] else stream
+
+    def interrupted_sync(fd):
+        if boundary == "file_fsync" and progress["active"] and stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("fixture stopped before file fsync")
+        return fsync(fd)
+
+    def interrupted_link(src, dst, *args, **kwargs):
+        result = link(src, dst, *args, **kwargs)
+        if boundary == "link" and progress["active"]:
+            raise OSError("fixture stopped after publication link")
+        return result
+
+    def interrupted_receipt(path, value):
+        if boundary == "receipt" and value["status"] == "committed":
+            raise OSError("fixture stopped before committed receipt")
+        return save(path, value)
+
+    with monkeypatch.context() as patch:
+        for obj, name, value in [(recovery, "_publish", active_publish), (recovery, "_save_receipt", interrupted_receipt),
+                                 (os, "mkdir", interrupted_mkdir), (primitives, "_fsync_directory", interrupted_directory),
+                                 (os, "fdopen", interrupted_open), (os, "fsync", interrupted_sync), (os, "link", interrupted_link)]:
+            patch.setattr(obj, name, value)
+        with pytest.raises(OSError, match="fixture stopped"):
+            invoke(lost, "apply")
+    receipt_path = recovery.record_path(c.workspace, c.root)
+    pending = json.loads(receipt_path.read_bytes())
+    assert pending["status"] == "prepared" and pending["approval_recorded"] is False
+    with pytest.raises(w.Refusal, match="incomplete"):
+        c.report()
+    result = invoke(lost, "apply")
+    assert result["status"] == "imported" and result["observed_at"] == pending["observed_at"]
+    assert Path(result["original_controller"]["path"]).read_bytes() == original
+    restored = c.report()
+    assert restored["run"] == state["run"] and restored["revision"] == state["revision"]
+    assert restored["decisions"] == {}
+    settled = tree(c.workspace)
+    assert invoke(lost, "apply")["status"] == "already_imported"
+    assert tree(c.workspace) == settled
+
+
+def test_new_import_ancestry_flushes_child_and_owning_parent_before_commit(lost, monkeypatch):
+    c, _, _, _, _, _ = lost
+    mkdir, sync, save = os.mkdir, primitives._fsync_directory, recovery._save_receipt
+    events = []
+    def observe_mkdir(path, *args, **kwargs):
+        result = mkdir(path, *args, **kwargs)
+        if Path(path).is_relative_to(c.workspace):
+            events.append(("mkdir", str(path)))
+        return result
+    def observe_sync(path):
+        result = sync(path)
+        events.append(("sync", str(path)))
+        return result
+    def observe_receipt(path, value):
+        if value["status"] == "committed":
+            events.append(("commit", str(path)))
+        return save(path, value)
+    monkeypatch.setattr(os, "mkdir", observe_mkdir)
+    monkeypatch.setattr(primitives, "_fsync_directory", observe_sync)
+    monkeypatch.setattr(recovery, "_save_receipt", observe_receipt)
+    assert invoke(lost, "apply")["status"] == "imported"
+    committed = next(i for i, (kind, _) in enumerate(events) if kind == "commit")
+    created = [(i, path) for i, (kind, path) in enumerate(events) if kind == "mkdir"]
+    assert any("recovery-v1" in path for _, path in created)
+    for index, path in created:
+        child = events.index(("sync", path), index + 1, committed)
+        parent = events.index(("sync", str(Path(path).parent)), child + 1, committed)
+        assert index < child < parent < committed
+
+
+def test_unsupported_import_directory_sync_cannot_commit(lost, monkeypatch):
+    c, _, _, _, _, _ = lost
+    before = tree(c.workspace)
+    def unsupported(path):
+        raise OSError("fixture filesystem cannot persist directory entries")
+    monkeypatch.setattr(primitives, "_fsync_directory", unsupported)
+    with pytest.raises(OSError, match="cannot persist directory"):
+        invoke(lost, "apply")
+    assert not recovery.record_path(c.workspace, c.root).exists()
+    assert {key: value for key, value in tree(c.workspace).items() if not key.endswith(".lock")} == before
+
+
+def test_existing_import_file_requires_successful_retry_sync(tmp_path, monkeypatch):
+    target = tmp_path.resolve() / "existing" / "nested" / "retained.json"
+    target.parent.mkdir(parents=True)
+    raw = b"retained exact recovery bytes\n"
+    target.write_bytes(raw)
+    def unsupported(path):
+        raise OSError("fixture retry directory fsync failed")
+    with monkeypatch.context() as patch:
+        patch.setattr(primitives, "_fsync_directory", unsupported)
+        with pytest.raises(OSError, match="retry directory fsync failed"):
+            recovery._publish(target, raw)
+    assert target.read_bytes() == raw
+    recovery._publish(target, raw)
+    assert target.read_bytes() == raw
 
 
 @pytest.mark.parametrize("member", ["request.json", "approval-observation.json"])

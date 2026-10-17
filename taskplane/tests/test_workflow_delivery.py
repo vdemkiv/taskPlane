@@ -398,7 +398,7 @@ def relay_fixture(tmp_path, monkeypatch):
         {'type': 'response_item', 'timestamp': start.isoformat(), 'payload': {
             'type': 'custom_tool_call_output', 'call_id': 'launch-1', 'output': [
                 {'type': 'input_text', 'text': json.dumps({'session_id': 123, 'output': ''})}]}},
-        message('assistant', 'Review checkpoint ' + binding['checkpoint'] + '\n[Snapshot](' + presentation['artifact'] + ')', shown, 'shown-1'),
+        message('assistant', 'Approve this Product checkpoint ' + binding['checkpoint'] + '?\n[Snapshot](' + presentation['artifact'] + ')', shown, 'shown-1'),
         message('user', 'approve\n', shown + timedelta(microseconds=1), 'human-1')]
     value = {'schema': 'taskplane.observed-decision/v2', 'event_id': 'parent-human-1', 'choice': 'approved',
              'binding': binding, 'excerpt': 'approve\n', 'recorder': 'root_orchestrator',

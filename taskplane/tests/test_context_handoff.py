@@ -121,6 +121,211 @@ def test_task_selection_and_untrusted_body_cannot_change_authority(tmp_path):
     with pytest.raises(w.Refusal): Session(tmp_path, state, 'foreign-task')
 
 
+def compact_fixture(tmp_path):
+    import hashlib
+    from taskplane.context import digest
+    from taskplane.context_handoff import SELECTION_SCHEMA
+    state, _, _ = prepare(tmp_path)
+    relative = '.taskplane/briefs/task.json'
+    path = tmp_path / relative; path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'requirement': 'Preserve the original consent boundary.',
+                                'unrelated': 'Supporting history.'}))
+    definition = {'id': 'T1', 'phase': 'product', 'dependencies': [], 'criteria': ['AC1'],
+                  'paths': ['product.json'], 'read_inputs': [relative], 'owner': 'root',
+                  'verification': 'Exercise exact declared input delivery.'}
+    state.update(context_contract='bounded/v3', task_generation=1,
+                 goal='Fix the approved consent behavior and preserve prior source.')
+    state['scope']['verification_inputs'].append(relative)
+    state['task_context'] = {'visit': w.current(state)['id'], 'tasks': [definition]}
+    declaration = {'id': 'consent', 'path': relative, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                   'kind': 'brief', 'reason': 'AC1 requires the exact preserved consent boundary.',
+                   'selector': {'version': 1, 'kind': 'json-pointer', 'pointer': '/requirement'}}
+    state['context_selection'] = {'schema': SELECTION_SCHEMA, 'run': state['run'],
+        'scope_digest': digest(state['scope']), 'task_generation': 1, 'tasks': {'T1': {
+            'request_reference': 'fixture/actual-request', 'criteria': {'AC1': ['consent']},
+            'prerequisites': {}, 'findings': [], 'inputs': [declaration]}}}
+    return state, definition, path
+
+
+def future_source_fixture(tmp_path):
+    from taskplane.context import digest
+    state, definition, _ = compact_fixture(tmp_path)
+    definition['read_inputs'].append('future.py')
+    definition['dependencies'] = ['producer']
+    state['scope']['paths']['build'].append('future.py')
+    state['task_context']['tasks'].append({'id': 'producer', 'phase': 'product',
+        'paths': ['future.py'], 'dependencies': [], 'criteria': ['AC1']})
+    state['context_selection']['scope_digest'] = digest(state['scope'])
+    state['context_selection']['tasks']['T1']['prerequisites'] = {'producer': ['consent']}
+    return state
+
+
+def test_preview_marks_absent_future_output_without_allowing_delivery(tmp_path):
+    from taskplane.context_handoff import compact_inputs
+    from taskplane.context import digest
+    state = future_source_fixture(tmp_path)
+    before = deepcopy(state)
+    items, _, _, _ = compact_inputs(tmp_path, state, 'T1', preview_dependencies=True)
+    brief = items[0]['body']
+    assert next(r for r in brief['read_interfaces'] if r['path'] == 'future.py') == {
+        'path': 'future.py', 'sha256': None, 'availability': 'future_result_required',
+        'producer_task': 'producer'}
+    assert state == before
+    with pytest.raises(w.Refusal, match='Evidence unavailable'):
+        compact_inputs(tmp_path, state, 'T1')
+    (tmp_path/'future.py').write_text('answer = 42\n')
+    ready, _, _, _ = compact_inputs(tmp_path, state, 'T1', preview_dependencies=True)
+    assert digest(ready[0]['body']) != digest(brief)
+    assert next(r for r in ready[0]['body']['read_interfaces'] if r['path'] == 'future.py')['sha256']
+    with pytest.raises(w.Refusal, match='no current verified result'):
+        compact_inputs(tmp_path, state, 'T1')
+
+
+@pytest.mark.parametrize('defect', ['unowned', 'unrelated', 'duplicate', 'wrong_phase', 'verified_missing'])
+def test_preview_does_not_defer_unjustified_missing_source(tmp_path, monkeypatch, defect):
+    from taskplane.context_handoff import compact_inputs
+    from taskplane import worker_runtime
+    state = future_source_fixture(tmp_path)
+    producer = state['task_context']['tasks'][-1]
+    if defect == 'unowned': producer['paths'] = []
+    if defect == 'unrelated': producer['id'] = 'unrelated'
+    if defect == 'duplicate': state['task_context']['tasks'].append({**producer, 'id': 'duplicate'})
+    if defect == 'wrong_phase': producer['phase'] = 'retro'
+    if defect == 'verified_missing': monkeypatch.setattr(worker_runtime, 'result_valid', lambda *args: True)
+    before = deepcopy(state)
+    with pytest.raises(w.Refusal, match='Evidence unavailable|Verified prerequisite output is missing'):
+        compact_inputs(tmp_path, state, 'T1', preview_dependencies=True)
+    assert state == before
+
+
+def test_preview_never_defers_a_missing_selected_mandatory_body(tmp_path):
+    from taskplane.context_handoff import compact_inputs
+    state = future_source_fixture(tmp_path)
+    declaration = state['context_selection']['tasks']['T1']['inputs'][0]
+    declaration.update(path='future.py', sha256='0'*64)
+    with pytest.raises(w.Refusal, match='Evidence unavailable'):
+        compact_inputs(tmp_path, state, 'T1', preview_dependencies=True)
+
+
+def test_compact_internal_brief_is_delivered_and_receipt_binds_current_source(tmp_path):
+    state, _, path = compact_fixture(tmp_path)
+    before = deepcopy(state)
+    session = Session(tmp_path, state, 'T1')
+    selected = next(i for i in session.items if i['id'] == 'selected/consent')
+    assert selected['required'] and 'Preserve the original consent boundary.' in selected['body']['text']
+    assert 'Supporting history.' not in selected['body']['text']
+    assert session.preflight()['required_body_bytes'] < 131072
+    receipt, responses = consume_required(session)
+    assert responses[-1]['remaining_required'] == 0
+    assert 'Preserve the original consent boundary.' in json.dumps(responses)
+    session.validate(receipt)
+    assert state == before
+    path.write_text('{"requirement":"Changed"}')
+    with pytest.raises(w.Refusal, match='Changed compact input'):
+        Session(tmp_path, state, 'T1')
+
+
+def test_warm_compact_consumer_receives_bound_brief_and_cannot_reuse_parent_receipt(tmp_path):
+    state, _, _ = compact_fixture(tmp_path)
+    root = Session(tmp_path, state, 'T1')
+    root_receipt, _ = consume_required(root)
+    consumer = {'worker_id': 'native-child', 'grant_id': 'a'*32, 'attempt': 1,
+                'task_id': 'T1', 'task_generation': 1}
+    child = Session(tmp_path, state, 'T1', consumer=consumer, snapshot=root.frozen)
+    with pytest.raises(w.Refusal):
+        child.validate(root_receipt)
+    brief = next(i['body'] for i in child.items if i['id'] == 'task-brief')
+    assert brief['binding']['consumer'] == consumer
+    assert child.input_refs['task-brief'] != root.input_refs['task-brief']
+    assert child.input_refs['selected/consent'] == root.input_refs['selected/consent']
+    delivered = []
+    while not delivered or not delivered[-1]['done']:
+        delivered.append(child.drain(child.handoff_ref['sha256']))
+    receipt = delivered[-1]['context_receipt']
+    assert 'native-child' in json.dumps(delivered) and consumer['grant_id'] in json.dumps(delivered)
+    child.validate(receipt)
+    restarted = Session(tmp_path, state, 'T1', consumer=consumer, snapshot=root.frozen)
+    restarted.validate(receipt)
+    other = Session(tmp_path, state, 'T1', consumer={**consumer, 'worker_id': 'fresh-child'}, snapshot=root.frozen)
+    with pytest.raises(w.Refusal):
+        other.validate(receipt)
+    assert other.drain(other.handoff_ref['sha256'])['pages']
+
+
+def test_compact_consumer_does_not_materialize_supporting_history(tmp_path, monkeypatch):
+    state, _, _ = compact_fixture(tmp_path)
+    root = Session(tmp_path, state, 'T1')
+    support = {root.input_refs[i['id']]['sha256'] for i in root.items if not i.get('required', True)}
+    original = Store.resolve
+    def guarded(store, ref):
+        assert ref['sha256'] not in support, 'Supporting history was replayed into startup'
+        return original(store, ref)
+    monkeypatch.setattr(Store, 'resolve', guarded)
+    consumer = {'worker_id': 'native-child', 'grant_id': 'b'*32, 'attempt': 1,
+                'task_id': 'T1', 'task_generation': 1}
+    child = Session(tmp_path, state, 'T1', consumer=consumer, snapshot=root.frozen)
+    responses = []
+    while not responses or not responses[-1]['done']:
+        responses.append(child.drain(child.handoff_ref['sha256']))
+    child.validate(responses[-1]['context_receipt'])
+
+
+def test_compact_read_manifest_keeps_required_internal_source_even_when_body_is_selected(tmp_path):
+    from taskplane.worker_runtime import read_input_manifest
+    state, definition, path = compact_fixture(tmp_path)
+    session = Session(tmp_path, state, 'T1')
+    manifest = read_input_manifest(tmp_path, session, definition['paths'])
+    assert str(path.relative_to(tmp_path)) in manifest
+    path.unlink()
+    with pytest.raises(w.Refusal):
+        read_input_manifest(tmp_path, session, definition['paths'])
+
+
+@pytest.mark.parametrize('defect', ['missing', 'symlink', 'undeclared', 'self', 'digest',
+                                   'mapping', 'generation', 'unknown_selector', 'missing_pointer'])
+def test_compact_input_refusal_preserves_authority(tmp_path, defect):
+    from taskplane.context import digest
+    state, definition, path = compact_fixture(tmp_path)
+    chosen = state['context_selection']['tasks']['T1']
+    declaration = chosen['inputs'][0]
+    if defect == 'missing': path.unlink()
+    elif defect == 'symlink':
+        actual = path.with_suffix('.txt'); path.rename(actual); path.symlink_to(actual)
+    elif defect == 'undeclared': definition['read_inputs'] = []
+    elif defect == 'self': definition['paths'].append(declaration['path'])
+    elif defect == 'digest': declaration['sha256'] = '0' * 64
+    elif defect == 'mapping': chosen['criteria'] = {}
+    elif defect == 'generation': state['context_selection']['task_generation'] += 1
+    elif defect == 'unknown_selector': declaration['selector']['version'] = 99
+    else: declaration['selector']['pointer'] = '/missing'
+    state['context_selection']['scope_digest'] = digest(state['scope'])
+    before = deepcopy(state)
+    with pytest.raises(w.Refusal): Session(tmp_path, state, 'T1')
+    assert state == before
+
+
+def test_exact_selectors_preserve_utf8_and_json_pointer_escaping():
+    from taskplane.context_handoff import select_bytes
+    raw = 'aéz'.encode()
+    assert select_bytes(raw, {'version': 1, 'kind': 'utf8-bytes', 'start': 1, 'end': 3}) == 'é'.encode()
+    for start, end in [(1, 2), (2, 3), (-1, 2), (0, 9)]:
+        with pytest.raises(w.Refusal):
+            select_bytes(raw, {'version': 1, 'kind': 'utf8-bytes', 'start': start, 'end': end})
+    assert select_bytes(b'{"a/b":{"~key":["exact"]}}',
+        {'version': 1, 'kind': 'json-pointer', 'pointer': '/a~1b/~0key/0'}) == b'"exact"'
+    with pytest.raises(w.Refusal):
+        select_bytes(b'{"a":[1]}', {'version': 1, 'kind': 'json-pointer', 'pointer': '/a/00'})
+
+
+def test_legacy_internal_input_behavior_does_not_opt_in_to_v3(tmp_path):
+    state, _, path = compact_fixture(tmp_path)
+    for contract in ('bounded/v1', 'bounded/v2'):
+        state['context_contract'] = contract
+        session = Session(tmp_path, state, 'T1')
+        assert not any(i['kind'] == 'task-brief' for i in session.items)
+        assert not any(i['id'] == 'source/' + str(path.relative_to(tmp_path)) for i in session.items)
+
+
 def test_overflow_never_issues_a_false_delivery_receipt(tmp_path):
     state, _, _ = prepare(tmp_path)
     session = Session(tmp_path, state)
@@ -468,3 +673,168 @@ def test_reuse_requires_role_provenance_and_rejects_changed_body_or_binding(tmp_
     assert changed.preflight()['unique_required_bodies'] == session.preflight()['unique_required_bodies'] + 1
     for field, value in [('root', 'other'), ('run', 'other'), ('revision', state['revision'] + 1)]:
         with pytest.raises(w.Refusal): Session(tmp_path, {**state, field: value}).validate(receipt)
+
+
+def indexed_fixture(tmp_path, count=80, shape='primary'):
+    from scripts.benchmark_context import fixture
+    state, snapshot = fixture(tmp_path, count, shape)
+    session = Session(tmp_path, state, 'BENCH', snapshot=snapshot)
+    return state, session
+
+
+def test_indexed_restart_partial_and_multiple_consumers(tmp_path):
+    """SCA-01 / LOCAL-SCA-01:1; restart uses the same immutable authority."""
+    state, initial = indexed_fixture(tmp_path)
+    frozen = initial.frozen
+    receipts = []
+    for identity in ('first', 'second'):
+        consumer = dict(worker_id=identity, grant_id=identity, attempt=1,
+                        task_id='BENCH', task_generation=0)
+        observed, final = set(), None
+        for _ in range(20):
+            # Fresh Session models the object lifetime of each actual CLI process.
+            session = Session(tmp_path, state, 'BENCH', consumer=consumer, snapshot=frozen)
+            response = session.drain(session.handoff_ref['sha256'])
+            assert len(encode(response)) <= 32768
+            assert len(response['pages']) <= 64
+            for page in response['pages']:
+                key = page['sha256'], page['page']
+                assert key not in observed
+                observed.add(key)
+            if response['done']:
+                session.validate(response['context_receipt'])
+                final = response['context_receipt']
+                break
+            with pytest.raises(w.Refusal):
+                session.validate(response['context_receipt'])
+        assert final and len(observed) == initial.page_index['pages']
+        receipts.append(final)
+    with pytest.raises(w.Refusal):
+        session.validate(receipts[0])
+
+
+@pytest.mark.parametrize('damage', ['missing-object', 'changed-object', 'missing-index', 'changed-index',
+                                   'cursor', 'missing-cursor', 'corrupt-cursor', 'receipt-replay', 'binding'])
+def test_indexed_corruption_cannot_complete(tmp_path, damage):
+    """SCA-01 / LOCAL-SCA-01:2; malformed state never grants completion."""
+    from taskplane.context import digest
+    from taskplane import primitives
+    state, session = indexed_fixture(tmp_path)
+    response = session.drain(session.handoff_ref['sha256'])
+    assert not response['done']
+    if damage in {'missing-object', 'changed-object'}:
+        # Corruption of an already returned body must also fail final reconciliation.
+        target = session.store.path(response['pages'][0]['sha256'])
+        if damage == 'missing-object': target.unlink()
+        else: target.write_text('{}')
+    elif damage in {'missing-index', 'changed-index'}:
+        target = session.store.path(session.page_index['root']['sha256'])
+        if damage == 'missing-index': target.unlink()
+        else: target.write_text('{}')
+    elif damage == 'missing-cursor':
+        session.journal.path.unlink()
+    elif damage == 'corrupt-cursor':
+        session.journal.path.write_text('{')
+    elif damage in {'cursor', 'receipt-replay'}:
+        checkpoint = session.journal.load()
+        if damage == 'cursor':
+            checkpoint['cursor'] = session.page_index['pages']
+        else:
+            checkpoint['sequence'] += 1
+        primitives.atomic_json(session.journal.path, {**checkpoint, 'checkpoint_digest': digest(checkpoint)})
+    else:
+        state['revision'] += 1
+    with pytest.raises(w.Refusal):
+        for _ in range(20):
+            current = Session(tmp_path, state, 'BENCH', snapshot=session.frozen)
+            result = current.drain(current.handoff_ref['sha256'])
+            if result['done']:
+                current.validate(result['context_receipt'])
+                pytest.fail('Corrupt input produced a validated complete receipt')
+
+
+def test_indexed_final_receipt_does_not_trust_coverage_cache(tmp_path):
+    """SCA-01 / LOCAL-SCA-01:2; a plausible forged index cannot remove obligations."""
+    from taskplane.context import PageIndex
+    state, session = indexed_fixture(tmp_path, 8)
+    session.page_index = PageIndex.build(session.store, [session.required[0]['ref']])
+    session.index = PageIndex(session.store, session.page_index['root'])
+    with pytest.raises(w.Refusal, match='unreturned'):
+        session.drain(session.handoff_ref['sha256'])
+
+
+def test_indexed_terminal_receipt_and_segments_are_retained(tmp_path):
+    """EVID-01 / LOCAL-SCA-01:1; completion retains every immutable segment."""
+    state, session = indexed_fixture(tmp_path, 8)
+    result = session.drain(session.handoff_ref['sha256'])
+    assert result['done']
+    checkpoint = session.journal.path.read_bytes()
+    again = Session(tmp_path, state, 'BENCH', snapshot=session.frozen).drain(session.handoff_ref['sha256'])
+    assert again['pages'] == [] and again['context_receipt'] == result['context_receipt']
+    assert session.journal.path.read_bytes() == checkpoint
+    session.validate(again['context_receipt'])
+    observed, receipts = session.journal.replay(session.journal.load())
+    assert len(observed) == 8
+    assert receipts[-1]['ref'] == result['context_receipt']['receipt']
+
+
+
+def test_partial_receipt_cannot_be_promoted_by_checkpoint_flags(tmp_path):
+    """LOCAL-SCA-01:2 — terminal flags remain hints, not coverage authority."""
+    from taskplane import primitives
+    from taskplane.context import digest
+    _, session = indexed_fixture(tmp_path)
+    response = session.drain(session.handoff_ref['sha256'])
+    assert not response['done']
+    checkpoint = session.journal.load()
+    checkpoint['cursor'] = session.page_index['pages']
+    checkpoint['final_receipt'] = {'ref': response['context_receipt']['receipt'], 'complete': True}
+    primitives.atomic_json(session.journal.path, {**checkpoint, 'checkpoint_digest': digest(checkpoint)})
+    with pytest.raises(w.Refusal):
+        session.drain(session.handoff_ref['sha256'])
+
+
+def test_measurement_oracle_ignores_cached_index_counts(tmp_path):
+    from scripts.benchmark_context import graph_oracle
+    _, session = indexed_fixture(tmp_path, 8)
+    expected = {r['ref']['sha256'] for r in session.required}
+    session.page_index.update(nodes=999, edges=999, pages=999, unique_body_bytes=1)
+    actual = graph_oracle(tmp_path, session.coverage_ref)
+    assert actual['nodes'] == 8 and actual['pages'] == 8 and actual['edges'] == 0
+    assert set(actual['coverage_expected']) == expected
+    assert actual['unique_body_bytes'] == sum(session.store.path(key).stat().st_size for key in expected)
+    key = next(iter(expected))
+    session.store.path(key).write_bytes(b'corrupt')
+    with pytest.raises(ValueError):
+        graph_oracle(tmp_path, session.coverage_ref)
+
+
+def test_execution_only_large_complete_brief_prepares_and_drains_without_old_targets(tmp_path):
+    import hashlib
+    from taskplane import worker_runtime
+    from taskplane.host_capabilities import runtime_identity
+    from taskplane.context_handoff import binding
+    state, definition, path = compact_fixture(tmp_path)
+    body = ''.join(f'required functional input {n:06d}\n' for n in range(14000))
+    path.write_text(json.dumps({'requirement': body}))
+    state['context_selection']['tasks']['T1']['inputs'][0]['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    definition.update(execution='native_required', owner='native', context_budget_bytes=16384)
+    state['parent_hook_readiness'] = dict(binding=binding(state), workspace=state['workspace'],
+        root=state['root'], runtime=runtime_identity(), matched_call='fixture/parent-pair',
+        reference='fixture/execution-only', admitted=True, automatic=True)
+    row = worker_runtime.prepare(tmp_path, state, 'T1',
+        {'capacity': {'host_slots': 2, 'includes_root': True, 'reference': 'fixture'}})
+    assert row['startup_account_schema'] == 'taskplane.startup-account/v3'
+    assert row['context_preflight']['required_body_bytes'] > 131072
+    assert row['context_preflight']['startup_packing']['normal_responses'] > 8
+    session = Session(tmp_path, state, 'T1')
+    responses = []
+    while not responses or not responses[-1]['done']:
+        response = session.drain(session.handoff_ref['sha256'])
+        assert len(encode(response)) <= 32768
+        responses.append(response)
+    session.validate(responses[-1]['context_receipt'])
+    assert len(responses) > 8
+    selected = next(i for i in session.items if i['id'] == 'selected/consent')
+    assert json.loads(selected['body']['text']) == body
+    assert session.items[0]['body']['startup_contract'] == 'execution_only'

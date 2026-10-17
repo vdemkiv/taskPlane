@@ -269,7 +269,7 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     out['supporting_notes'] = '\u03bb' * (8 * 1024 * 1024 // 6 + 1)
     (workspace/target).write_text(json.dumps(out))
     # Resolve the actual selected runtime's store path without a source fallback.
-    path_probe = subprocess.run([sys.executable,'-I','-c',
+    path_probe = subprocess.run([sys.executable,'-I','-B','-c',
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
         "from taskplane import workflow_host as h; "
         "assert Path(h.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "
@@ -284,11 +284,17 @@ def exercise_state_repairs(workspace, host, root=ROOT):
     assert result['reason'] == 'state_unavailable' and 'size limit' in result['detail']
     def authority(raw):
         value = json.loads(raw)
+        # Hook admissions/readiness are observational commits. Their storage
+        # generation advances even when the submitted controller mutation is
+        # refused; decisions, revision and pinned proof must remain identical.
+        value.pop('storage_generation', None)
         value.pop('admissions', None)
         for state in value.get('runs', {}).values():
             state.pop('parent_hook_readiness', None)
         return value
-    assert authority(store.read_bytes()) == authority(before)
+    after = store.read_bytes()
+    assert json.loads(after)['storage_generation'] > json.loads(before)['storage_generation']
+    assert authority(after) == authority(before)
     resumed = cli(workspace,host,'report',root=root)['workflow']
     assert resumed['run'] == state['run'] and resumed['revision'] == state['revision']
     (workspace/target).write_bytes(small)
@@ -325,7 +331,7 @@ finished = next(s for s in db['runs'].values() if s['finished'])
 check_historical_finish_preserves_active(c, finished, active)
 print('NGEM-F01 NGEM-F02 repaired state checks passed')
 '''
-    child = subprocess.run([sys.executable,'-I','-c',script,str(root),str(replay_ws),host],
+    child = subprocess.run([sys.executable,'-I','-B','-c',script,str(root),str(replay_ws),host],
                            cwd=workspace.parent,capture_output=True,text=True)
     assert child.returncode == 0, child.stdout + child.stderr
     assert 'NGEM-F01 NGEM-F02 repaired state checks passed' in child.stdout
@@ -343,7 +349,7 @@ def exercise_repeated_repair_capacity(workspace, host, root=ROOT, *, stress=True
     state = cli(workspace, host, 'start', '--scope', '.taskplane/scope.json',
                 '--request-reference', 'fixture/repeated-repair-capacity', root=root)['workflow']
     # Resolve the store with the selected archive runtime, never a source adapter.
-    probe = subprocess.run([sys.executable, '-I', '-c',
+    probe = subprocess.run([sys.executable, '-I', '-B', '-c',
         "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); "
         "from taskplane import workflow_host as h; "
         "assert Path(h.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "

@@ -5,6 +5,7 @@ These records preserve observations, including failures. They never carry gates.
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
 import os
 from pathlib import Path
 import platform
@@ -16,7 +17,10 @@ from typing import Any
 from . import depgraph, primitives, workflow as w, workflow_evidence as evidence
 from .context import Store, digest, encode
 
-ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "TZ", "PYTHONHASHSEED", "PYTHONPATH", "NODE_ENV", "CI")
+ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "TZ", "PYTHONHASHSEED", "PYTHONPATH", "NODE_ENV", "CI",
+               "HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+               "XDG_CACHE_HOME", "XDG_STATE_HOME", "TMPDIR", "TMP", "TEMP",
+               "PYTHONDONTWRITEBYTECODE", "PYTEST_DISABLE_PLUGIN_AUTOLOAD")
 
 
 def key(workspace: Path, *, paths: list[str], tests: list[str], criteria: list[str],
@@ -73,7 +77,63 @@ def key(workspace: Path, *, paths: list[str], tests: list[str], criteria: list[s
             "environment": digest({name: env.get(name) for name in ENVIRONMENT}),
             "unverified_dependencies": unverified_dependencies,
             "coverage": "complete" if complete else "unknown"}
-    return {**body, "digest": digest(body)}
+    return deepcopy({**body, "digest": digest(body)})
+
+
+def contribution_key(workspace: Path, *, paths: list[str], tests: list[str],
+                     outputs: list[str], criteria: dict[str, Any], command: list[str],
+                     tool: str, contract: str,
+                     environment: dict[str, str] | None = None) -> dict[str, Any]:
+    """Bind an individually reusable contribution, including its output bytes.
+
+    Call again at acceptance/reuse. The graph must be freshly scanned: a complete
+    source census is not evidence of external runtime dependency identity. Such
+    dependencies deliberately remain unknown under the legacy conservative rule.
+    A local closure census detects added/deleted dependency files without making
+    an unrelated component's edit invalidate every contribution.
+    """
+    provenance = key(workspace, paths=paths, tests=tests, criteria=sorted(criteria),
+                     command=command, tool=tool, contract=contract, environment=environment)
+    graph = depgraph.load(str(workspace))
+    closure = set(provenance['modules'])
+    artifacts = {}
+    for path in sorted(outputs):
+        target = evidence.path(workspace, path)
+        artifacts[path] = hashlib.sha256(evidence.read(workspace, path)).hexdigest() if target.is_file() else 'missing'
+    body = {"schema": "taskplane.contribution-key/v1", "verification": provenance,
+            "source_dependencies": dict(provenance['files']),
+            "dependency_edges": sorted([edge for edge in graph.get('edges', [])
+                                         if edge.get('from') in closure or edge.get('to') in closure],
+                                        key=lambda edge: encode(edge)),
+            "closure_census": sorted(provenance['files']), "outputs": artifacts,
+            "execution_environment_digest": digest(environment if environment is not None else dict(os.environ)),
+            "criteria": criteria, "coverage": provenance['coverage'],
+            "eligible": provenance['eligible'] and bool(outputs and criteria)
+                        and all(value != 'missing' for value in artifacts.values())}
+    return deepcopy({**body, "digest": digest(body)})
+
+
+def contribution_matches(prior: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Equality never transfers semantic acceptance or worker/context identity."""
+    def valid(value: dict[str, Any]) -> bool:
+        if not isinstance(value, dict):
+            return False
+        verification = value.get('verification', {})
+        return (isinstance(verification, dict)
+                and verification.get('schema') == 'taskplane.verification-key/v1'
+                and verification.get('eligible') is True and verification.get('coverage') == 'complete'
+                and verification.get('digest') == digest({k: v for k, v in verification.items() if k != 'digest'})
+                and bool(verification.get('tests') and verification.get('paths') and verification.get('command'))
+                and not verification.get('unverified_dependencies')
+                and isinstance(value.get('outputs'), dict) and bool(value['outputs'])
+                and all(primitives.is_sha256(item) for item in value['outputs'].values())
+                and value.get('source_dependencies') == verification.get('files')
+                and value.get('closure_census') == sorted(verification.get('files', {}))
+                and sorted(value.get('criteria', {})) == verification.get('criteria')
+                and value.get('schema') == 'taskplane.contribution-key/v1'
+                and value.get('eligible') is True and value.get('coverage') == 'complete'
+                and value.get('digest') == digest({k: v for k, v in value.items() if k != 'digest'}))
+    return valid(prior) and valid(current) and prior == current
 
 
 def record(store: Store, provenance: dict[str, Any], *, status: str, producer: str,

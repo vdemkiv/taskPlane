@@ -256,12 +256,13 @@ def atomic_write_json(path: str, data: Any, *, indent: int=1, sort_keys: bool=Fa
     _durable_makedirs(os.path.dirname(path) or '.')
     atomic_json(path, data, indent=indent, sort_keys=sort_keys, trailing_newline=False, strict_directory_sync=True)
 
-def atomic_write_bytes(path: str, data: bytes) -> None:
+def atomic_write_bytes(path: str, data: bytes, *, private: bool = False) -> None:
     """Durably replace one file with exact caller-owned bytes.
 
     This is the byte-preserving counterpart of :func:`atomic_write_json` for
     recovery paths that must restore the exact prior artifact representation,
-    rather than merely an equivalent decoded JSON value.
+    rather than merely an equivalent decoded JSON value. Private publications
+    create their temporary file with mode 0600 before writing any contents.
     """
     if not isinstance(data, bytes):
         raise TypeError('atomic_write_bytes requires bytes')
@@ -269,7 +270,9 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
     _durable_makedirs(directory)
     temporary = os.path.join(directory, f'.{os.path.basename(path)}.tmp.{os.getpid()}.{secrets.token_hex(8)}')
     try:
-        with open(temporary, 'xb') as stream:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o600 if private else 0o666)
+        with os.fdopen(descriptor, 'wb') as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
@@ -282,7 +285,7 @@ def atomic_write_bytes(path: str, data: bytes) -> None:
         except OSError:
             pass
 
-def _durable_makedirs(path: str) -> None:
+def _durable_makedirs(path: str, *, mode: int = 0o777, sync_existing: bool = False) -> None:
     """Create a directory chain without acknowledging volatile ancestors.
 
     ``os.makedirs`` makes the complete chain but provides no point at which a
@@ -294,6 +297,22 @@ def _durable_makedirs(path: str) -> None:
     retry.
     """
     target = os.path.abspath(path)
+    if sync_existing:
+        # Recovery cannot distinguish a durable pre-existing directory from one
+        # left by interruption immediately after mkdir. Revalidate and flush the
+        # complete ancestry on exact retry, including each owning parent.
+        chain = list(reversed((Path(target), *Path(target).parents)))
+        for entry in chain:
+            try:
+                os.mkdir(entry, mode=mode)
+            except FileExistsError:
+                pass
+            identity = _durable_directory_identity(str(entry))
+            _fsync_directory(str(entry))
+            _fsync_directory(str(entry.parent))
+            if _durable_directory_identity(str(entry)) != identity:
+                raise StateError(str(entry), 'durable directory identity changed during fsync')
+        return
     missing = []
     cursor = target
     while not os.path.lexists(cursor):
@@ -306,7 +325,7 @@ def _durable_makedirs(path: str) -> None:
     for directory in reversed(missing):
         parent = os.path.dirname(directory) or '.'
         try:
-            os.mkdir(directory)
+            os.mkdir(directory, mode=mode)
         except FileExistsError:
             pass
         identity = _durable_directory_identity(directory)
@@ -342,8 +361,10 @@ def _flush_windows_directory(path: str) -> None:
     try:
         if not kernel.FlushFileBuffers(handle):
             error = getattr(ctypes, "get_last_error")()
-            if error != 5:
-                raise getattr(ctypes, "WinError")(error)
+            # Access denied is not successful persistence. Some Windows/filesystem
+            # combinations cannot flush directory handles; strict callers must
+            # report unsupported durability instead of acknowledging a commit.
+            raise getattr(ctypes, "WinError")(error)
     finally:
         if not kernel.CloseHandle(handle):
             raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())

@@ -22,6 +22,7 @@ from urllib.request import url2pathname
 from typing import Any, cast
 
 from . import primitives, storage, runtime_command, workflow as w, workflow_evidence as evidence
+from .context_delivery import observed, operation
 
 PROFILE = "native_workflow"
 MAX_BYTES = 8 * 1024 * 1024
@@ -218,6 +219,12 @@ def verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: 
     The target controller supplies its own state/binding. Exact original frame and
     immutable snapshot references remain part of recorded provenance and replay.
     """
+    return _verified_decision_relay(value, expected, run)[0]
+
+
+def _verified_decision_relay(value: dict[str, Any], expected: dict[str, Any],
+                             run: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Return the original text only after its complete source proof succeeds."""
     try:
         return _verify_decision_relay(value, expected, run)
     except w.Refusal:
@@ -226,7 +233,7 @@ def verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: 
         raise DecisionRefusal("decision_relay", "Malformed original-source relay evidence.") from None
 
 
-def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], str]:
     relay, source = value.get("relay"), value.get("source", {})
     fields = {"schema", "session_meta", "human", "presentation", "launch", "launch_flag", "html", "snapshot"}
     _require_decision(value.get("schema") == "taskplane.observed-decision/v2"
@@ -311,9 +318,10 @@ def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run:
                           and native.get("digest") == hashlib.sha256(html).hexdigest()
                           and native.get("model_digest") == hashlib.sha256(model_raw).hexdigest(),
                           "decision_relay", "Relay lacks the target's current native checkpoint presentation.")
-    return deepcopy(relay)
+    return deepcopy(relay), shown_text
 
 
+@observed('source-audit')
 def inventory(workspace: Path) -> dict[str, str]:
     """Bounded source audit, including additions/deletions and symlink identity."""
     result: dict[str, str] = {}
@@ -327,19 +335,20 @@ def inventory(workspace: Path) -> dict[str, str]:
             relative = str(target.relative_to(workspace))
             w.require(len(result) < MAX_SOURCE_FILES, "state_unavailable",
                       f"Source inventory exceeds {MAX_SOURCE_FILES:,} files at {relative}. Run flow diagnose --workspace {workspace}.")
-            if target.is_symlink():
+            if operation('source_stat', target.is_symlink):
                 result[relative] = "symlink:" + os.readlink(target)
                 continue
             fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
             with os.fdopen(fd, "rb") as stream:
-                info = os.fstat(stream.fileno())
+                info = operation('source_stat', os.fstat, stream.fileno())
                 w.require(stat.S_ISREG(info.st_mode), "state_unavailable", "Source inventory requires regular files.")
                 total += info.st_size
                 w.require(total <= MAX_SOURCE_BYTES, "state_unavailable",
                           f"Source inventory exceeds {MAX_SOURCE_BYTES // (1024 * 1024)} MiB at {relative}. "
                           f"Run flow diagnose --workspace {workspace}; recover in a clean checkout without deleting source.")
-                digest = hashlib.sha256()
-                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest = operation('source_hash', hashlib.sha256)
+                for block in iter(lambda: operation('source_read', stream.read, 1024 * 1024,
+                                                    category='source_fingerprints'), b""):
                     digest.update(block)
                 result[relative] = digest.hexdigest()
     return result
@@ -568,27 +577,27 @@ class LocalWorkflow:
         from . import state_import
         imported = state_import.initialization(self.workspace, self.root)
         if imported is not None:
-            w.require(target.exists() and not marker.exists() and not transaction.exists(), "state_unavailable",
+            w.require(operation('source_stat', target.exists) and not operation('source_stat', marker.exists) and not operation('source_stat', transaction.exists), "state_unavailable",
                       "Imported store must retain its recovery receipt without fabricated initialization metadata.")
             return target, marker, transaction, None
         data = None
-        if transaction.exists():
-            w.require(transaction.stat().st_size <= 4096, "state_unavailable", "Initialization transaction is oversized.")
-            data = json.loads(transaction.read_text())
+        if operation('source_stat', transaction.exists):
+            w.require(operation('source_stat', transaction.stat).st_size <= 4096, "state_unavailable", "Initialization transaction is oversized.")
+            data = operation('source_parse', json.loads, operation('source_read', transaction.read_bytes, category='source_fingerprints'))
             expected = self.initialization_transaction()
             w.require(data == expected or data == {**expected, "status": "committed"},
                       "state_unavailable", "Initialization transaction identity is corrupt.")
-        if marker.exists():
-            w.require(marker.stat().st_size <= 4096 and json.loads(marker.read_text()) == self.marker(),
+        if operation('source_stat', marker.exists):
+            w.require(operation('source_stat', marker.stat).st_size <= 4096 and operation('source_parse', json.loads, operation('source_read', marker.read_bytes, category='source_fingerprints')) == self.marker(),
                       "state_unavailable", "Local initialization identity is corrupt.")
         if data and data["status"] == "pending":
             # Pending evidence is only valid for this exact never-used empty store.
-            if target.exists():
-                w.require(marker.exists() and target.stat().st_size <= 4096
-                          and json.loads(target.read_text()) == self.empty_database(),
+            if operation('source_stat', target.exists):
+                w.require(operation('source_stat', marker.exists) and operation('source_stat', target.stat).st_size <= 4096
+                          and operation('source_parse', json.loads, operation('source_read', target.read_bytes, category='source_fingerprints')) == self.empty_database(),
                           "state_unavailable", "Pending initialization does not match an empty never-used store.")
         else:
-            w.require(target.exists() == marker.exists() and (not data or target.exists()), "state_unavailable",
+            w.require(operation('source_stat', target.exists) == operation('source_stat', marker.exists) and (not data or operation('source_stat', target.exists)), "state_unavailable",
                       "Local workflow initialization/state is incomplete. Explicit recovery is required. "
                       "Run flow diagnose to identify the missing file; "
                       "flow recover can restore an explicitly selected, matching numbered database copy.")
@@ -604,7 +613,7 @@ class LocalWorkflow:
                       "First initialization is pending. Retry the exact validated flow start request; "
                       "read-only status does not repair state.")
             return False
-        return target.exists()
+        return operation('source_stat', target.exists)
 
     def initialize(self) -> None:
         if self.state_exists(allow_pending=True):
@@ -671,8 +680,8 @@ class LocalWorkflow:
     def validate_state(self, state: dict[str, Any]) -> None:
         from . import worker_runtime
         worker_runtime.validate(state)
-        from .context_handoff import CONTRACT, SEMANTIC_CONTRACT
-        w.require(state.get("context_contract", CONTRACT) in {CONTRACT, SEMANTIC_CONTRACT},
+        from .context_handoff import CONTRACT, SEMANTIC_CONTRACT, BRIEF_CONTRACT
+        w.require(state.get("context_contract", CONTRACT) in {CONTRACT, SEMANTIC_CONTRACT, BRIEF_CONTRACT},
                   "state_unavailable", "Unsupported context contract.")
         w.require(state.get("profile") == PROFILE and isinstance(state.get("source_baseline"), dict)
                   and isinstance(state.get("observed_handles"), dict), "state_unavailable", "Invalid local workflow state.")
@@ -688,6 +697,9 @@ class LocalWorkflow:
                   for k,v in state["source_baseline"].items()), "state_unavailable", "Invalid source audit baseline.")
 
     def before_action(self, state: dict[str, Any], action: str) -> None:
+        if action != 'context-rollback':
+            from .workflow_write_guard import require_runtime
+            require_runtime(state)
         verify_workflow(self.workspace, state)
         before, after = state["source_baseline"], inventory(self.workspace)
         allowed = {str(Path(p)) for p in state["scope"]["paths"][w.current(state)["phase"]]}
@@ -764,13 +776,17 @@ class LocalWorkflow:
         named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
         _require_decision(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
                   "decision_binding", "The response names a different checkpoint.")
-        from .workflow_approval import decision_phases
+        from .workflow_approval import decision_phases, validate_checkpoint_consent
         named_phases = decision_phases(excerpt)
         supplied = value.get("binding") or {}
         db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
         run = db.get("runs", {}).get(supplied.get("run"), {})
         stage: dict[str, Any] = next((v for v in run.get("visits", []) if v["id"] == supplied.get("visit")), {})
-        relay = verify_decision_relay(value, expected, run) if relayed else None
+        relay = None
+        presentation = value.get("presentation")
+        question = presentation.get("text") if isinstance(presentation, dict) else None
+        if relayed:
+            relay, question = _verified_decision_relay(value, expected, run)
         legacy_replay = event_id in prior and not prior[event_id].get("provenance", {}).get("recorded_at")
         if not legacy_replay:
             _require_decision(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
@@ -788,23 +804,30 @@ class LocalWorkflow:
             # A correct binding cannot turn 'Build approved' into Product consent.
             _require_decision(named_phases == {stage.get("phase")}, "decision_binding",
                       "The response names a different phase. Clarify which checkpoint the user intends to accept.")
+        _require_decision(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
+                  and isinstance(presentation.get("reference"), str) and presentation["reference"]
+                  and isinstance(presentation.get("at"), str),
+                  "decision_binding", "Approval needs the complete original checkpoint presentation.")
+        assert isinstance(presentation, dict)
         if value.get("checkpoint_explicit") is not True:
-            presentation = value.get("presentation")
-            _require_decision(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
-                      and isinstance(presentation.get("reference"), str) and presentation["reference"],
-                      "decision_binding", "Brief approval needs the presented checkpoint and ordering evidence.")
             _require_decision(timestamp(presentation.get("at")) < observed, "decision_chronology", "Response precedes presentation.")
             if not legacy_replay:
                 _require_decision(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
                           "decision_chronology", "Presentation precedes checkpoint submission.")
         else:
             _require_decision(expected["checkpoint"] in excerpt, "decision_binding", "Explicit approval must name the checkpoint.")
+        _require_decision(isinstance(question, str), "decision_binding",
+                          "Preserve the complete original checkpoint question; missing text requires fresh consent.")
+        assert isinstance(question, str)
+        validated = validate_checkpoint_consent(question, excerpt, phase=stage["phase"], binding=expected)
+        _require_decision(validated == value["choice"], "decision_grammar",
+                          "The response does not match the original checkpoint question's decision.")
         result = {"event_id": event_id, "human": True, "automatic": False, "choice": value["choice"],
                 "binding": deepcopy(expected), "assurance": "observed", "provenance": {
                     "source": {k:source[k] for k in ("kind","reference","conversation","actor","automatic","observed_at")},
                     "recorder": recorder, "excerpt": excerpt,
-                    "presentation": {k:value["presentation"][k] for k in ("checkpoint","reference","at")}
-                        if value.get("checkpoint_explicit") is not True else None,
+                    "presentation": {**{k:value["presentation"][k] for k in ("checkpoint","reference","at")},
+                                     "text": question},
                     "checkpoint_explicit": value.get("checkpoint_explicit", False)}}
         if not legacy_replay:
             result["provenance"].update(recorded_at=recorded_at, chronology="verified/v1")
@@ -859,7 +882,7 @@ class LocalWorkflow:
         if words[2] == "workflow":
             action, _ = workflow_command(self.workspace, event, state)
             return action in {"catalog", "validate", "preview", "check"}
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "resume", "reconcile-maintenance", "inspect", "prevalidate", "context", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "resume", "reconcile-maintenance", "inspect", "prevalidate", "context", "context-upgrade", "context-rollback", "revise", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -1193,10 +1216,11 @@ class Harness:
         self.path = storage.runtime_file(str(self.workspace), f'harness-{key}.json')
 
     def read(self) -> dict[str, Any]:
-        if not self.path.exists():
+        if not operation('source_stat', self.path.exists):
             return {}
-        w.require(self.path.stat().st_size <= 16384, 'state_unavailable', 'Harness record exceeds its size bound.')
-        data = json.loads(self.path.read_text())
+        w.require(operation('source_stat', self.path.stat).st_size <= 16384, 'state_unavailable', 'Harness record exceeds its size bound.')
+        data = operation('source_parse', json.loads,
+                         operation('source_read', self.path.read_bytes, category='source_fingerprints'))
         w.require(isinstance(data, dict) and data.get('schema') == 'taskplane.harness/v1'
                   and data.get('workspace') == str(self.workspace) and data.get('root') == self.root,
                   'state_unavailable', 'Harness identity is corrupt; restore this session record before continuing.')

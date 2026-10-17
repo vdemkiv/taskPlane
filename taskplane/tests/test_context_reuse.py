@@ -1,10 +1,11 @@
 """Matching provenance reuses observations; every relevant change invalidates it."""
 import sys
+from pathlib import Path
 from copy import deepcopy
 import pytest
 from taskplane import depgraph
 from taskplane.context import Store
-from taskplane.context_reuse import key, record, lookup, run_check, inherited
+from taskplane.context_reuse import key, record, lookup, run_check, inherited, contribution_key, contribution_matches
 
 
 def fixture(tmp_path):
@@ -107,3 +108,68 @@ def test_unrelated_external_dependency_does_not_disable_covered_reuse(tmp_path):
     assert current['eligible'] and current['unverified_dependencies'] == []
     ref = run_check(tmp_path, current, producer='covered-check')
     assert inherited(tmp_path, ref)['status'] == 'reused'
+
+
+@pytest.mark.parametrize('change', ['source', 'dependency', 'output', 'test', 'runtime',
+                                   'environment', 'command', 'criterion', 'tool', 'contract',
+                                   'unlisted_environment', 'added_dependency', 'deleted_dependency'])
+def test_contribution_capture_pins_each_actual_input_dimension(tmp_path, change):
+    options = fixture(tmp_path)
+    (tmp_path / 'pkg/rules.py').write_text('value = 3\n')
+    (tmp_path / 'pkg/app.py').write_text('from pkg.rules import value\n')
+    (tmp_path / 'pkg/result.txt').write_text('answer = 3\n')
+    options['criteria'] = {'AC1': {'statement': 'answer equals three'}}
+    options['outputs'] = ['pkg/result.txt']
+    options['environment'] = {'LANG': 'C'}
+    if change == 'runtime':
+        executable = tmp_path / 'runtime-copy'
+        executable.write_bytes(Path(sys.executable).read_bytes())
+        executable.chmod(0o700)
+        options['command'] = [str(executable), '-c', 'pass']
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = contribution_key(tmp_path, **options)
+    assert before['eligible'] and contribution_matches(before, contribution_key(tmp_path, **options))
+    if change == 'source': (tmp_path / 'pkg/app.py').write_text('from pkg.rules import value\nvalue += 1\n')
+    elif change == 'dependency': (tmp_path / 'pkg/rules.py').write_text('value = 4\n')
+    elif change == 'output': (tmp_path / 'pkg/result.txt').write_text('answer = 4\n')
+    elif change == 'test': (tmp_path / 'tests/check.py').write_text('assert False\n')
+    elif change == 'runtime': executable.write_bytes(executable.read_bytes() + b'changed runtime identity')
+    elif change == 'environment': options['environment'] = {'LANG': 'different'}
+    elif change == 'unlisted_environment': options['environment']['APPLICATION_FEATURE'] = 'different'
+    elif change == 'command': options['command'] = [sys.executable, '-c', 'print(4)']
+    elif change == 'criterion': options['criteria']['AC1']['statement'] = 'answer equals four'
+    elif change in ('tool', 'contract'): options[change] = 'changed'
+    elif change == 'added_dependency': (tmp_path / 'pkg/new.py').write_text('value = 5\n')
+    elif change == 'deleted_dependency': (tmp_path / 'pkg/rules.py').unlink()
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    assert not contribution_matches(before, contribution_key(tmp_path, **options))
+
+
+def test_contribution_external_coverage_remains_unknown(tmp_path):
+    options = fixture(tmp_path)
+    (tmp_path / 'pkg/app.py').write_text('from unpinned_external_library import value\n')
+    (tmp_path / 'pkg/result.txt').write_text('answer\n')
+    options.update(criteria={'AC1': {'statement': 'answer'}}, outputs=['pkg/result.txt'])
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    current = contribution_key(tmp_path, **options)
+    assert current['coverage'] == 'unknown' and not current['eligible']
+    assert not contribution_matches(current, current)
+
+
+@pytest.mark.parametrize('change', ['add', 'delete'])
+def test_transitive_dependency_census_changes_are_captured(tmp_path, change):
+    options = fixture(tmp_path)
+    for directory in ('dependencies', 'leaf'):
+        (tmp_path / directory).mkdir()
+    (tmp_path / 'pkg/app.py').write_text('from dependencies.rules import value\n')
+    (tmp_path / 'dependencies/rules.py').write_text('from leaf.implementation import value\n')
+    (tmp_path / 'leaf/implementation.py').write_text('value = 3\n')
+    (tmp_path / 'pkg/result.txt').write_text('answer\n')
+    options.update(criteria={'AC1': {'statement': 'answer'}}, outputs=['pkg/result.txt'])
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = contribution_key(tmp_path, **options)
+    assert before['eligible'] and 'leaf/implementation.py' in before['closure_census']
+    if change == 'add': (tmp_path / 'leaf/new.py').write_text('extra = 2\n')
+    else: (tmp_path / 'leaf/implementation.py').unlink()
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    assert not contribution_matches(before, contribution_key(tmp_path, **options))

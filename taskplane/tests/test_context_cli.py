@@ -153,3 +153,145 @@ def test_emitted_context_actions_execute_verbatim_outside_workspace(tmp_path, mo
     fresh = subprocess.run([sys.executable, str(ROOT/'taskplane/tp.py'), *recovery], cwd=tmp_path,
         env={**os.environ, 'CODEX_THREAD_ID':'native-0'}, capture_output=True, text=True)
     assert fresh.returncode == 0, fresh.stdout + fresh.stderr
+
+
+def test_fresh_process_indexed_context_and_concurrent_consumers(tmp_path):
+    """LOCAL-SCA-01:1,2 — real restarts and concurrent journal writers."""
+    from concurrent.futures import ThreadPoolExecutor
+    from scripts.benchmark_context import isolated_environment
+    script = ROOT/'scripts/benchmark_context.py'
+    env = isolated_environment(tmp_path/'hosts')
+    common = [sys.executable, str(script), '--workspace', str(tmp_path), '--nodes', '64']
+    def invoke(operation, consumer='concurrent'):
+        command = common + ['--operation', operation, '--sample-id', consumer]
+        result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=90)
+        assert result.returncode == 0, {'command': command, 'stdout': result.stdout, 'stderr': result.stderr}
+        return json.loads(result.stdout)
+    built = invoke('build')
+    observed = set()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(invoke, 'drain') for _ in range(2)]
+        for result in [future.result() for future in futures]:
+            for page in result['response']['pages']:
+                key = page['sha256'], page['page']
+                assert key not in observed
+                observed.add(key)
+    for _ in range(20):
+        response = invoke('drain')['response']
+        for page in response['pages']:
+            key = page['sha256'], page['page']
+            assert key not in observed
+            observed.add(key)
+        if response['done']: break
+    else: pytest.fail('Concurrent fresh CLI drain failed to complete')
+    validated = invoke('validate')
+    assert set(validated['coverage_observed']) == set(built['coverage_expected'])
+    assert len(observed) == built['index']['pages']
+    independent = invoke('drain', 'independent')['response']
+    assert independent['pages']  # previous consumer's receipts confer no coverage
+
+
+@pytest.mark.taskplane_capacity
+def test_context_measurement_grid(record_property, tmp_path):
+    """LOCAL-SCA-01:3 — all raw samples, including failing bounds, are retained."""
+    from scripts.benchmark_context import benchmark
+    result = benchmark(tmp_path)
+    record_property('remediation_measurement', json.dumps({
+        'schema': 'taskplane.remediation-measurement/v1', 'subcheck': 'LOCAL-SCA-01',
+        'scenario': 'LOCAL-SCA-01:3', 'kind': 'context', 'samples': result['samples'],
+        'execution_status': result['execution_status'],
+        'design_scenario_ids': ['SCA01-drain-grid', 'SCA01-cost']}))
+    assert result['execution_status'] == 'pass', result
+    assert len(result['samples']) == 33
+    from scripts.ci_local import validate_measurements
+    checked = validate_measurements('context', [{'schema': 'taskplane.remediation-measurement/v1',
+        'subcheck': 'LOCAL-SCA-01', 'scenario': 'LOCAL-SCA-01:3', 'kind': 'context',
+        'execution_status': result['execution_status'], 'samples': result['samples']}])
+    assert checked['status'] == 'pass', checked['problems']
+    for row in result['samples']:
+        assert row['measurement_scope'] == 'full-controller-cli'
+        assert set(row['coverage_expected']) == set(row['coverage_observed'])
+        assert row['operations'] <= 12*(row['nodes'] + row['edges'] + row['pages']) + 32*row['invocations']
+        assert row['bytes_read'] <= 3*row['unique_body_bytes'] + row['transport_bytes'] + 262144*row['invocations']
+        assert row['max_response_pages'] <= 64 and row['max_response_bytes'] <= 32768
+        assert row['max_index_rebuilds_per_invocation'] <= 1
+    for row in result['timing']:
+        assert row['timing_conclusive'], 'Resolution-dominated adjusted timing is inconclusive'
+        assert row['adjusted_growth'] is None or row['adjusted_growth'] <= 6
+
+
+@pytest.mark.taskplane_capacity
+@pytest.mark.parametrize('shape', ['shared', 'high-edge', 'multipage'])
+def test_context_measurement_variants(shape, record_property, tmp_path):
+    """LOCAL-SCA-01:1 — variants are reported separately from the fixed primary grid."""
+    from scripts.benchmark_context import sample
+    row = sample(tmp_path, nodes=16, mode='cold', repetition=0, shape=shape)
+    record_property('context_variant_measurement', json.dumps({
+        'schema': 'taskplane.remediation-measurement/v1', 'subcheck': 'LOCAL-SCA-01',
+        'scenario': 'LOCAL-SCA-01:1', 'kind': 'context', 'samples': [row],
+        'design_scenario_ids': ['SCA01-drain-grid']}))
+    assert row['execution_status'] == 'pass', row
+    assert row['measurement_scope'] == 'full-controller-cli'
+    assert set(row['coverage_expected']) == set(row['coverage_observed'])
+    assert row['max_response_pages'] <= 64 and row['max_response_bytes'] <= 32768
+
+
+def test_benchmark_isolation_precedes_candidate_children(tmp_path, monkeypatch):
+    from scripts import benchmark_context as benchmark
+    monkeypatch.setenv('HOME', '/ambient/home')
+    monkeypatch.setenv('CODEX_HOME', '/ambient/codex')
+    monkeypatch.setenv('XDG_CACHE_HOME', '/ambient/cache')
+    monkeypatch.setenv('PYTHONPATH', '/ambient/imports')
+    env = benchmark.isolated_environment(tmp_path/'isolated')
+    for name in ('HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME',
+                 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'TMPDIR', 'TEMP'):
+        assert Path(env[name]).is_relative_to(tmp_path)
+        assert Path(env[name]).is_dir()
+    assert 'PYTHONPATH' not in env and env['PYTHONDONTWRITEBYTECODE'] == '1'
+    with pytest.raises(ValueError, match='outside candidate'):
+        benchmark.isolated_environment(ROOT/'must-not-create')
+
+
+def test_benchmark_retains_exact_failed_process_channels(tmp_path):
+    import base64
+    from scripts.benchmark_context import _process, isolated_environment
+    env = isolated_environment(tmp_path/'hosts')
+    argv = [sys.executable, '-c', "import os,sys;os.write(1,b'out\\x00\\xff');os.write(2,b'err\\xfe');sys.exit(7)"]
+    record, stdout = _process(argv, cwd=tmp_path, env=env, evidence_root=tmp_path,
+                              ordinal=0, purpose='failure-test')
+    assert record['argv'] == argv and record['cwd'] == str(tmp_path.resolve())
+    assert record['exit_code'] == 7
+    assert stdout == base64.b64decode(record['stdout_base64']) == b'out\x00\xff'
+    assert base64.b64decode(record['stderr_base64']) == b'err\xfe'
+    retained = json.loads((tmp_path/'00000-failure-test.json').read_bytes())
+    assert retained == record
+
+
+def test_direct_benchmark_entry_isolates_before_candidate_imports(tmp_path):
+    """Exercise the direct entry point without a pre-isolated child environment."""
+    command = [sys.executable, str(ROOT/'scripts/benchmark_context.py'),
+               '--operation', 'noop', '--workspace', str(tmp_path)]
+    env = {key: value for key, value in os.environ.items()
+           if key in ('PATH', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT')}
+    env.update(HOME=str(tmp_path/'ambient-home'), CODEX_HOME=str(tmp_path/'ambient-codex'),
+               CLAUDE_CONFIG_DIR=str(tmp_path/'ambient-claude'))
+    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, timeout=90)
+    assert result.returncode == 0, {'argv': command, 'stdout': result.stdout, 'stderr': result.stderr}
+    response = json.loads(result.stdout)
+    assert response['bytecode_disabled'] is True
+    for name, value in response['runtime_environment'].items():
+        assert Path(value).is_relative_to(tmp_path/'isolated-hosts')
+        assert Path(value).is_dir() and value != env.get(name)
+
+
+def test_benchmark_missing_dependencies_are_retained_unknown(tmp_path, monkeypatch):
+    from scripts import benchmark_context as benchmark
+    monkeypatch.setattr(benchmark, 'CONTROLLER_DEPENDENCIES', ('missing-controller-for-test.py',))
+    def forbidden(*args, **kwargs):
+        pytest.fail('Candidate subprocess started before dependency preflight')
+    monkeypatch.setattr(benchmark.subprocess, 'run', forbidden)
+    row = benchmark.sample(tmp_path, nodes=64, mode='cold', repetition=0)
+    assert row['execution_status'] == 'unknown' and row['raw_executions'] == []
+    assert row['missing_dependencies'] == ['missing-controller-for-test.py']
+    assert 'operations' not in row and 'elapsed_seconds' not in row
+    assert json.loads((tmp_path/'benchmark-evidence/primary-64-cold-0.json').read_bytes()) == row

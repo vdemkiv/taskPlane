@@ -1125,3 +1125,96 @@ def test_pure_denial_explicit_lifecycle_and_observation_time_refuse(tmp_path, mo
     assert observations.correlate_records('parent', attempt, [call, result], [header])['status'] == 'conflict'
     for stamp in ('2026-01-01T00:00:00', call['timestamp']):
         assert observations.correlate_records('parent', attempt, [call, result], [], observed_at=stamp)['status'] == 'conflict'
+
+
+def delivery_fixture(count=3):
+    """Explicit adapter projections; these are not authenticated live host proof."""
+    attempt = {'binding': {'run': 'run', 'revision': 7}, 'attempt': 1, 'worker_id': 'child',
+               'call_id': 'launch', 'grant_id': 'grant'}
+    cycles, events = [], []
+    stamp = lambda n: (datetime.now(timezone.utc) - timedelta(seconds=200 - n)).isoformat()
+    ref = {'source': '/isolated/native/parent.jsonl', 'offset': 0, 'bytes': 42,
+           'device': 1, 'inode': 2, 'sha256': 'a' * 64}
+    previous_completion = None
+    for index in range(count):
+        call = 'launch' if not index else f'continue-{index}'
+        cycle_id = observations.delivery_cycle_id(attempt, call)
+        cycle = {'schema': observations.DELIVERY_SCHEMA, 'binding': attempt['binding'],
+            'attempt_id': 1, 'native_child_id': 'child', 'original_launch_call_id': 'launch',
+            'delivery_call_id': call, 'ordinal': index,
+            'parent_cycle_id': cycles[-1]['cycle_id'] if cycles else None,
+            'cycle_id': cycle_id, 'host_adapter_version': '2.1.296', 'source_spans': [deepcopy(ref)]}
+        base = {'cycle_id': cycle_id, 'delivery_call_id': call, 'binding': attempt['binding'],
+                'attempt_id': 1, 'native_child_id': 'child', 'parent': 'root',
+                'host_adapter_version': '2.1.296', 'source_spans': [deepcopy(ref)]}
+        envelope = {'parent': 'root', 'worker': 'child', 'grant': 'grant', 'attempt': 1,
+            'binding': attempt['binding'], 'call_id': f'report-{index}', 'task': 'task',
+            'body_digest': digest(f'Report {index}'), 'input_digest': digest({'message': f'Report {index}'})}
+        ack = {'envelope_digest': digest(envelope),
+               'response_digest': digest({'success': True, 'message': 'Report delivered to your caller.'})}
+        report = {'status': 'acknowledged', 'envelope': envelope, 'acknowledgment': ack}
+        group = [
+            {**base, 'kind': 'admitted', 'tool': 'Agent' if not index else 'SendMessage',
+             'call_id': call, 'result_call_id': call, 'result_child_id': 'child',
+             'result_status': 'async_launched' if not index else 'resumed',
+             'parent_completion_sha256': digest(previous_completion) if previous_completion else None,
+             'observed_at': stamp(index * 10)},
+            {**base, 'kind': 'acknowledged', **ack, 'report_call_id': envelope['call_id'],
+             'observed_at': stamp(index * 10 + 3)},
+            {**base, 'kind': 'handback_observed', 'report_call_id': envelope['call_id'],
+             'body_digest': envelope['body_digest'], 'report': report, 'observed_at': stamp(index * 10 + 2)},
+            {**base, 'kind': 'stop_observed', 'report_call_id': envelope['call_id'],
+             'event_id': f'stop-{index}', 'status': 'stopped', 'observed_at': stamp(index * 10 + 1)},
+            {**base, 'kind': 'completion_observed', 'call_id': call, 'report_call_id': envelope['call_id'],
+             'stop_event_id': f'stop-{index}', 'status': 'completed', 'observed_at': stamp(index * 10 + 4)}]
+        cycles.append(cycle); events.extend(group); previous_completion = group[-1]
+    return attempt, cycles, events
+
+
+@pytest.mark.parametrize('count', [1, 2, 3])
+@pytest.mark.parametrize('reordered', [False, True])
+def test_explicit_delivery_cycles_keep_sequential_reports_distinct(count, reordered):
+    attempt, cycles, events = delivery_fixture(count)
+    original = deepcopy((attempt, cycles, events))
+    supplied = list(reversed(events)) if reordered else events
+    answer = observations.correlate_delivery_cycles('root', attempt, list(reversed(cycles)), supplied + supplied)
+    assert answer['status'] == 'matched'
+    assert [c['ordinal'] for c in answer['cycles']] == list(range(count))
+    assert [c['selected_report']['envelope']['call_id'] for c in answer['cycles']] == [f'report-{i}' for i in range(count)]
+    assert not answer['retry_authorized'] and not answer['result_accepted']
+    assert (attempt, cycles, events) == original
+    assert observations.correlate_delivery_cycles('root', attempt, cycles, events) == answer
+
+
+@pytest.mark.parametrize('defect', ['fork', 'gap', 'foreign_child', 'foreign_call', 'overlap',
+    'same_cycle_report', 'cross_cycle_stop', 'unmatched_completion', 'missing_ack', 'missing_completion',
+    'ambiguous_child_only', 'stale_binding', 'unproved_predecessor'])
+def test_explicit_delivery_cycles_refuse_ambiguous_or_cross_cycle_evidence(defect):
+    attempt, cycles, events = delivery_fixture()
+    if defect == 'fork': cycles[2]['parent_cycle_id'] = cycles[0]['cycle_id']
+    elif defect == 'gap': cycles[2]['ordinal'] = 4
+    elif defect == 'foreign_child': events[7]['native_child_id'] = 'foreign'
+    elif defect == 'foreign_call': events[9]['call_id'] = 'unknown'
+    elif defect == 'overlap': events[5]['observed_at'] = events[0]['observed_at']
+    elif defect == 'same_cycle_report': events.append({**events[7], 'body_digest': 'b' * 64})
+    elif defect == 'cross_cycle_stop': events[8]['report_call_id'] = 'report-0'
+    elif defect == 'unmatched_completion': events[9]['cycle_id'] = 'unknown'
+    elif defect == 'missing_ack': del events[6]
+    elif defect == 'missing_completion': del events[9]
+    elif defect == 'ambiguous_child_only': events[8].pop('cycle_id')
+    elif defect == 'stale_binding': events[8]['binding'] = {'run': 'old', 'revision': 1}
+    elif defect == 'unproved_predecessor': events[5]['parent_completion_sha256'] = None
+    answer = observations.correlate_delivery_cycles('root', attempt, cycles, events)
+    assert answer['status'] in {'conflict', 'not_yet_available'}
+    assert not answer['retry_authorized'] and not answer['result_accepted']
+
+
+@pytest.mark.parametrize('order', ['stop_first', 'report_first'])
+def test_delivery_cycle_orders_validate_explicit_identity_not_timestamp_proximity(order):
+    attempt, cycles, events = delivery_fixture(1)
+    if order == 'report_first':
+        events[3]['observed_at'] = events[1]['observed_at']
+    assert observations.correlate_delivery_cycles('root', attempt, cycles, events)['status'] == 'matched'
+    # Even an equal timestamp cannot assign a stop with missing explicit identity.
+    events[3].pop('delivery_call_id')
+    assert observations.correlate_delivery_cycles('root', attempt, cycles, events)['status'] == 'conflict'

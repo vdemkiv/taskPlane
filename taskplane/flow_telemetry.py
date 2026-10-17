@@ -162,3 +162,63 @@ def frozen_model(model: dict[str, Any], boundary: dict[str, Any],
                           "final_observation": boundary["id"]}
     result["snapshot"].pop("digest", None)
     return result
+
+
+def measurement_dimensions(*, required_bodies: list[dict[str, Any]],
+                           deliveries: list[dict[str, Any]],
+                           supporting_reads: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+                           direct_reads: list[dict[str, Any]] | None = None,
+                           native_usage: dict[str, Any] | None = None,
+                           phase_usage: dict[str, Any] | None = None,
+                           cost: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Keep delivery bytes, independently observed tokens and sourced cost apart.
+
+    Inputs are observations, not authorization. Repeated returned bodies count
+    toward transport every time; the required-body census deduplicates by exact
+    content identity. Missing direct reads/counters/cost stay unknown, never zero.
+    """
+    def size(value: Any) -> int:
+        if type(value) is not int or value < 0:
+            raise ValueError('Observed byte counts must be nonnegative integers')
+        return value
+    unique: dict[str, int] = {}
+    for body in required_bodies:
+        identity = body['sha256']
+        count = size(body['bytes'])
+        if identity in unique and unique[identity] != count:
+            raise ValueError('One required body identity has conflicting sizes')
+        unique[identity] = count
+    transport = sum(size(item['returned_bytes']) for item in deliveries)
+    supporting = sum(size(item['bytes']) for item in supporting_reads if item.get('bytes') is not None)
+    supporting_unknown = sum(item.get('bytes') is None for item in supporting_reads)
+    direct = (None if direct_reads is None or any(item.get('bytes') is None for item in direct_reads)
+              else sum(size(item['bytes']) for item in direct_reads))
+    native = None
+    if native_usage is not None:
+        native = deepcopy(native_usage)
+        tokens = native.get('tokens')
+        if tokens is not None:
+            # Cached tokens are a subset of input, not an extra total category.
+            if (any(type(tokens.get(k)) is not int or tokens[k] < 0 for k in
+                    ('input_tokens', 'cached_input_tokens', 'output_tokens', 'total_tokens'))
+                    or tokens['cached_input_tokens'] > tokens['input_tokens']
+                    or tokens['total_tokens'] != tokens['input_tokens'] + tokens['output_tokens']):
+                raise ValueError('Native token categories do not reconcile')
+    sourced_cost = None
+    if cost is not None:
+        import math
+        amount: Any = cost.get('amount')
+        if (type(amount) not in (int, float) or not math.isfinite(amount) or amount < 0
+                or not cost.get('currency') or not cost.get('source')):
+            raise ValueError('Cost requires an independently identified finite observation')
+        sourced_cost = deepcopy(cost)
+    return {'schema': 'taskplane.telemetry-dimensions/v1',
+            'unique_required_body_bytes': sum(unique.values()),
+            'actual_transport_bytes': transport,
+            'known_supporting_read_bytes': supporting,
+            'supporting_reads_unknown': supporting_unknown,
+            'direct_read_bytes': direct,
+            'native_usage': native, 'phase_attribution': deepcopy(phase_usage),
+            'cost': sourced_cost,
+            'receipt_semantics': 'Delivered data only; no proof of model attention.',
+            'inferences': {'allowance_savings': None, 'token_savings': None, 'cost_savings': None}}

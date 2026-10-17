@@ -14,6 +14,48 @@ from taskplane import flow, workflow as w, workflow_host as h
 from taskplane.tests.test_workflow_local import setup, submit, decide, decision
 
 
+@pytest.mark.skipif(os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"),
+                    reason="Restoration and relocation require no-follow directory descriptors.")
+def test_interrupted_restore_retirement_and_relocation_preserve_authentic_history(tmp_path, monkeypatch):
+    from taskplane import workspace_binding as binding
+    from taskplane.tests.test_workflow_local import displaced_database
+    from taskplane.tests.test_workspace_binding import request, tree
+    original = (tmp_path / "original").resolve()
+    original.mkdir()
+    bound = binding.bind(original, request(original))
+    c, state, target, candidate, raw, checksum = displaced_database(original, approved=True)
+    receipt = target.with_name(target.stem + ".recovery-" + checksum + ".json")
+    write = binding._write
+    def interrupt_completion(path, value, **kwargs):
+        if value.get("schema") == "taskplane.initialization-recovery/v1" and value["status"] == "restored":
+            raise OSError("fixture stopped before restoration receipt completion")
+        return write(path, value, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(binding, "_write", interrupt_completion)
+        with pytest.raises(OSError, match="fixture stopped"):
+            c.recover_initialization(candidate.name, checksum, state["run"], state["revision"], "fixture/restore")
+    assert target.read_bytes() == candidate.read_bytes() == raw
+    pending = json.loads(receipt.read_bytes())
+    assert pending["status"] == "prepared"
+    assert c.recover_initialization(candidate.name, checksum, state["run"], state["revision"], "fixture/restore")["status"] == "restored"
+    assert json.loads(receipt.read_bytes()) == {**pending, "status": "restored"}
+    restored = c.report()
+    assert restored["decisions"] == state["decisions"] and restored["visits"] == state["visits"]
+    c.apply("retire", state["run"], expected_revision=state["revision"],
+            native_reference=json.dumps({"request_reference": "fixture/retire", "reason": "Relocate retired fixture"}))
+    assert json.loads(target.read_bytes())["active"] is None
+    before = tree(original / ".taskplane")
+    destination = tmp_path / "relocated"
+    original.rename(destination)
+    fresh = request(destination, payload=b"fresh relocation nonce", reference="fixture/new-probe")
+    fresh.update(expected_project_id=bound["project_id"], request_reference="fixture/relocate")
+    result = binding.recover(destination, fresh)
+    assert tree(Path(result["recovery"]["archive"])) == before
+    assert before[candidate.name] == raw and json.loads(before[receipt.name])["status"] == "restored"
+    assert result["recovery"]["approvals_transferred"] is False
+    assert binding.ensure(destination) == result["binding"]
+
+
 def test_deactivate_recovers_uninitialized_selection_without_mutating_history(tmp_path,capsys):
     from taskplane import workflow_local as local
     c,s=setup(tmp_path,standalone=True)

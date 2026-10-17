@@ -4,8 +4,19 @@ from copy import deepcopy
 import pytest
 
 from taskplane import workflow as w, workflow_approval as approval, workflow_local as local
-from taskplane.tests.test_workflow_local import setup, submit, decision, decide
+from taskplane.tests.test_workflow_local import setup, submit, decision as observed_decision, decide
 from taskplane.tests.test_workflow_autonomy import authorization, set_policy
+
+
+def decision(state, *, text="Approved", event="message-1"):
+    """Own the synthetic original presentation for this module's v1 fixtures.
+
+    This is new fixture evidence, never reconstruction of a historical textless
+    observation. The passive helper and its compatibility tests stay unchanged.
+    """
+    value = observed_decision(state, text=text, event=event)
+    value["presentation"]["text"] = f"Approve this {w.current(state)['phase']} checkpoint?"
+    return value
 
 
 @pytest.mark.parametrize('text', [
@@ -820,3 +831,68 @@ class TestEveryDirectiveIsClassified:
     ])
     def test_known_complete_clauses_remain_compatible(self, text):
         assert approval.affirmative_consent(text)
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("Approved", "approved"), ("yes", "approved"), ("Go ahead", "approved"),
+    ("Approve as is", "approved"), ("approve repair", "approved"),
+    ("Request changes: never accept invalid IDs", "changes_requested"),
+    ("Cancel", "cancelled"), ("Reject", "rejected"),
+])
+def test_common_checkpoint_validator_preserves_unqualified_controls(answer, expected):
+    bound = {"checkpoint": "a" * 32}
+    assert approval.validate_checkpoint_consent("Approve this Product checkpoint?", answer,
+                                               phase="product", binding=bound) == expected
+
+
+@pytest.mark.parametrize("answer", [
+    "'Approved'", "Example: approve", "Do not approve", "yes if checks pass",
+    "Approved. Only after CI passes.", "Approved. Unknown instruction.",
+    "Approve Design", "Product approved. Design approved.", "Approve: " + "b" * 32,
+    "Request changes: revise Design", "Request changes: reopen Design",
+])
+def test_common_checkpoint_validator_keeps_quotes_negations_conditions_and_targets(answer):
+    with pytest.raises(w.Refusal):
+        approval.validate_checkpoint_consent("Approve this Product checkpoint?", answer,
+                                             phase="product", binding={"checkpoint": "a" * 32})
+
+
+@pytest.mark.parametrize("phase", w.PHASES)
+def test_common_checkpoint_validator_is_phase_bound(phase):
+    bound = {"checkpoint": "a" * 32}
+    question = f"Approve this {phase} checkpoint?"
+    assert approval.validate_checkpoint_consent(question, f"Approve {phase}", phase=phase, binding=bound) == "approved"
+    for foreign in w.PHASES:
+        if foreign != phase:
+            with pytest.raises(w.Refusal, match="different or mixed phase"):
+                approval.validate_checkpoint_consent(question, f"Approve {foreign}", phase=phase, binding=bound)
+
+
+@pytest.mark.parametrize("answer,expected", [("approve", "approved"), ("request changes", "changes_requested"),
+                                              ("cancel", "cancelled"), ("reject", "rejected")])
+def test_native_choice_presentation_requires_an_explicit_decision(answer, expected):
+    bound = {"checkpoint": "a" * 32, "run": "b" * 32, "revision": 3}
+    question = "Run " + bound["run"] + ", Product revision 3. Approve Product or request changes."
+    assert approval.validate_checkpoint_consent(question, answer, phase="product", binding=bound) == expected
+    with pytest.raises(w.Refusal, match="short assent"):
+        approval.validate_checkpoint_consent(question, "yes", phase="product", binding=bound)
+
+
+@pytest.mark.parametrize("question", [None, "", "Approve this Product checkpoint? Only after CI passes."])
+def test_common_validator_never_substitutes_missing_or_qualified_original_question(question):
+    with pytest.raises(w.Refusal):
+        approval.validate_checkpoint_consent(question, "yes", phase="product", binding={"checkpoint": "a" * 32})
+
+
+@pytest.mark.parametrize("phase", w.PHASES)
+def test_explicit_continuation_is_limited_to_the_current_phases_successor(phase):
+    question = f"Approve this {phase} checkpoint?"
+    bound = {"checkpoint": "a" * 32}
+    index = w.PHASES.index(phase)
+    for continuation in w.PHASES:
+        answer = f"Approve {phase} and proceed to {continuation}"
+        if index + 1 < len(w.PHASES) and continuation == w.PHASES[index + 1]:
+            assert approval.validate_checkpoint_consent(question, answer, phase=phase, binding=bound) == "approved"
+        else:
+            with pytest.raises(w.Refusal):
+                approval.validate_checkpoint_consent(question, answer, phase=phase, binding=bound)

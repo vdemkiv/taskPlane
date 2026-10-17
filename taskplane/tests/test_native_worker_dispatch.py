@@ -11,6 +11,43 @@ from taskplane.tests.test_worker_runtime import setup, reserve, launch, consume
 from taskplane.tests.test_farm_workers import requires_native_reader
 
 
+def test_partial_recovery_persists_cursor_without_releasing_reservation(tmp_path, monkeypatch):
+    from taskplane import host_capabilities as hc
+    from taskplane.tests.test_unbound_worker_recovery import transcript_fixture, write_fixture
+    if not hc.supported_recovery_reader():
+        pytest.skip('Requires no-follow nonblocking reader')
+    c, s = setup(tmp_path, count=1)
+    prepared = reserve(c, s); grant = prepared['grant']['grant_id']
+    worker, root, child, paths = transcript_fixture(tmp_path, monkeypatch, prepared['grant'])
+    filler = {'type': 'event_msg', 'timestamp': worker['prepared_at'],
+              'payload': {'padding': 'x' * 500000}}
+    root[1:1] = [filler] * 6
+    write_fixture(root, child, paths)
+    monkeypatch.setattr(hc, 'MAX_RECOVERY_BYTES', 2 * 1024 * 1024)
+    request = {'request_reference': 'fixture/user-recovery', 'launch_call_id': 'launch',
+               'terminal_call_id': 'terminal'}
+    before = c.report()
+    partial = c.worker(s['run'], 'recover-unbound', revision=s['revision'], grant=grant, request=request)
+    after = c.report()
+    assert partial['status'] == 'incomplete' and partial['state'] == 'prepared'
+    assert 'cursor' not in partial
+    row = after['workers'][grant]
+    assert row['recovery_cursor']['parent']['offset'] > 0
+    for key in ('state', 'worker_id', 'call_id', 'events', 'context_receipt', 'claimed_at'):
+        assert row.get(key) == before['workers'][grant].get(key)
+    for key in ('decisions', 'revision', 'scope', 'history', 'task_results'):
+        assert after.get(key) == before.get(key)
+    for _ in range(10):
+        result = c.worker(s['run'], 'recover-unbound', revision=s['revision'], grant=grant, request=request)
+        if result.get('state') == 'failed':
+            break
+    else:
+        pytest.fail('Recovery continuation never completed')
+    assert result['recovery']['scan']['status'] == 'complete'
+    assert result['terminal_status'] == 'unadmitted_launch_revoked'
+    assert 'recovery_cursor' not in result and not result.get('accepted_at')
+
+
 def metadata(path, state, row, child='native-uuid'):
     path.write_text(json.dumps({'type':'session_meta','payload':{'id':child,'timestamp':wr.now(),
         'parent_thread_id':state['root'],'source':{'subagent':{'thread_spawn':{
