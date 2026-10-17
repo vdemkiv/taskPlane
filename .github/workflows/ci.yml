@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "3.12", cache: pip}
+        with: {python-version: "3.12"}
       - name: Install test dependencies
         shell: bash
         run: |
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false, fetch-depth: 0}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "3.12", cache: pip}
+        with: {python-version: "3.12"}
       - name: Install test dependencies
         shell: bash
         run: |
@@ -123,7 +123,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "3.12", cache: pip}
+        with: {python-version: "3.12"}
       - name: Install test dependencies
         shell: bash
         run: |
@@ -153,7 +153,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "3.12", cache: pip}
+        with: {python-version: "3.12"}
       - run: python -m pip install --require-hashes --no-deps -r requirements-dev.lock
       - name: Install isolation canary dependencies
         run: |
@@ -219,7 +219,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {persist-credentials: false, fetch-depth: 0}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "3.13", cache: pip, cache-dependency-path: requirements-ci.txt}
+        with: {python-version: "3.13"}
       - run: python -m pip install --require-hashes --no-deps -r requirements-ci.txt
       - name: Install verified Gitleaks release
         shell: bash
