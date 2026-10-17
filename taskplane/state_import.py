@@ -111,7 +111,11 @@ def initialization(workspace: Path, root: str) -> dict[str, Any] | None:
 def _sync_published(path: Path, raw: bytes) -> None:
     """Sync the winning destination, which may have been published by a retry."""
     w.require(all(not p.is_symlink() for p in (path, *path.parents)), "scope_violation", "Recovery target follows a symlink.")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    # Windows fsync uses _commit/FlushFileBuffers, which requires a writable
+    # handle. Open the existing file without creation or truncation; readback
+    # still verifies the exact published bytes before acknowledging durability.
+    access = os.O_RDWR if os.name == "nt" else os.O_RDONLY
+    fd = os.open(path, access | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         w.require(stat.S_ISREG(info.st_mode) and info.st_size == len(raw)

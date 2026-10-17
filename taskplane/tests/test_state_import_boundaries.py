@@ -1,11 +1,14 @@
 """Recovery durability boundaries using synthetic local-host stores only."""
 from copy import deepcopy
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import stat
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -161,6 +164,74 @@ def test_existing_import_file_requires_successful_retry_sync(tmp_path, monkeypat
     assert target.read_bytes() == raw
     recovery._publish(target, raw)
     assert target.read_bytes() == raw
+
+
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+def test_published_import_uses_platform_flush_access_without_changing_bytes(tmp_path, monkeypatch, platform_name):
+    target = tmp_path.resolve() / "retained.json"
+    raw = b"retained exact recovery bytes\r\n"
+    target.write_bytes(raw)
+    before = target.stat()
+    platform = SimpleNamespace(**vars(os))
+    platform.name = platform_name
+    opened = {}
+    events = []
+
+    def open_existing(path, flags):
+        assert path == target
+        assert not flags & (os.O_CREAT | os.O_TRUNC)
+        assert flags & getattr(os, "O_NOFOLLOW", 0) == getattr(os, "O_NOFOLLOW", 0)
+        assert flags & getattr(os, "O_NONBLOCK", 0) == getattr(os, "O_NONBLOCK", 0)
+        opened.update(fd=os.open(path, flags), flags=flags)
+        return opened["fd"]
+
+    def sync_file(fd):
+        assert fd == opened["fd"]
+        if platform_name == "nt" and not opened["flags"] & os.O_RDWR:
+            raise OSError(errno.EBADF, "Windows cannot commit a read-only file handle")
+        events.append("file")
+
+    def sync_directory(path):
+        assert path == str(target.parent)
+        events.append("directory")
+
+    platform.open = open_existing
+    platform.fsync = sync_file
+    monkeypatch.setattr(recovery, "os", platform)
+    monkeypatch.setattr(primitives, "_fsync_directory", sync_directory)
+    recovery._sync_published(target, raw)
+    assert opened["flags"] & os.O_RDWR == (os.O_RDWR if platform_name == "nt" else 0)
+    assert events == ["file", "directory"]
+    assert target.read_bytes() == raw
+    after = target.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+    with pytest.raises(OSError):
+        os.fstat(opened["fd"])
+
+
+@pytest.mark.parametrize("failure", ["open", "file_sync", "length", "content"])
+def test_published_import_flush_preserves_access_io_and_readback_failures(tmp_path, monkeypatch, failure):
+    target = tmp_path.resolve() / "retained.json"
+    raw = b"original bytes"
+    actual = b"changed! bytes" if failure == "content" else raw + b"!" if failure == "length" else raw
+    target.write_bytes(actual)
+    platform = SimpleNamespace(**vars(os))
+    platform.name = "nt"
+    failure_error = PermissionError(errno.EACCES, "fixture denied") if failure == "open" else OSError(errno.EIO, "fixture I/O")
+    platform.open = Mock(side_effect=failure_error if failure == "open" else os.open)
+    platform.fsync = Mock(side_effect=failure_error if failure == "file_sync" else None)
+    directory_sync = Mock()
+    monkeypatch.setattr(recovery, "os", platform)
+    monkeypatch.setattr(primitives, "_fsync_directory", directory_sync)
+    with pytest.raises(OSError if failure in {"open", "file_sync"} else w.Refusal) as caught:
+        recovery._sync_published(target, raw)
+    if failure in {"open", "file_sync"}:
+        assert caught.value is failure_error
+    if failure != "file_sync":
+        platform.fsync.assert_not_called()
+    directory_sync.assert_not_called()
+    assert target.read_bytes() == actual
 
 
 @pytest.mark.parametrize("member", ["request.json", "approval-observation.json"])

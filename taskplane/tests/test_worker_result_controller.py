@@ -45,7 +45,7 @@ def configured(tmp_path, *, native=True, cap=2, token_cap=None, elapsed_cap_ms=N
 
 
 def output_request(tmp_path, *, complete=True):
-    (tmp_path / 'T0.md').write_text('Useful retained output\n')
+    (tmp_path / 'T0.md').write_bytes(b'Useful retained output\n')
     if complete:
         (tmp_path / 'evidence.md').write_text('Verification evidence\n')
     depgraph.scan(str(tmp_path), decompose=True, strict=True)

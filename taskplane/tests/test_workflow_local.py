@@ -201,7 +201,7 @@ def guarded(args):
     assert observed.returncode == 0, (observed.stdout, observed.stderr)
     assert json.loads(observed.stdout).get('hookSpecificOutput',{}).get('permissionDecision') != 'deny', observed.stdout
     result = subprocess.run(argv, cwd=workspace, text=True, capture_output=True)
-    if not binding_supported:
+    if args[0] == 'recover' and not binding_supported:
         refusal = json.loads(result.stdout)
         assert result.returncode != 0 and refusal['reason'] == 'workspace_binding', (result.stdout, result.stderr)
         assert refusal['detail'] == 'This runtime lacks no-follow directory operations required for workspace binding.'
@@ -210,6 +210,8 @@ def guarded(args):
     assert result.returncode == 0, (result.stdout, result.stderr)
     return json.loads(result.stdout)
 diagnosis = guarded(['diagnose'])
+assert diagnosis['status'] == 'blocked' and diagnosis['initialization']['marker_exists']
+assert diagnosis['initialization']['database_exists'] is False
 if not binding_supported:
     # The installed CLI must report its actual platform limitation. Recovery
     # cannot claim success or write state through an unsupported binding API.
@@ -217,8 +219,6 @@ if not binding_supported:
              '--run',state['run'],'--expected-revision',str(state['revision']),
              '--request-reference','isolated-package-fixture/recovery'])
     raise SystemExit(0)
-assert diagnosis['status'] == 'blocked' and diagnosis['initialization']['marker_exists']
-assert diagnosis['initialization']['database_exists'] is False
 result = guarded(['recover','--recover-from',candidate.name,'--expected-sha256',hashlib.sha256(raw).hexdigest(),
                   '--run',state['run'],'--expected-revision',str(state['revision']),
                   '--request-reference','isolated-package-fixture/recovery'])
