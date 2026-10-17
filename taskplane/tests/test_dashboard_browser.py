@@ -9,6 +9,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import tempfile
 import time
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -191,12 +192,20 @@ def _chromium(tmp_path):
     profile = tmp_path / "chrome-profile"
     profile.mkdir()
     client = None
-    with (tmp_path / "chrome.log").open("wb") as log:
+    # Chromium puts its singleton Unix socket beneath TMPDIR. The retained CI
+    # evidence path can exceed sockaddr_un's limit, even with a short profile
+    # name. Give only the browser a private short temporary root; retain its
+    # profile, diagnostics and screenshots in the original evidence directory.
+    with (
+        tempfile.TemporaryDirectory(prefix="tpc-", dir="/tmp" if os.name == "posix" else None) as browser_tmp,
+        (tmp_path / "chrome.log").open("wb") as log,
+    ):
+        browser_env = dict(os.environ, TMPDIR=browser_tmp, TEMP=browser_tmp, TMP=browser_tmp)
         process = subprocess.Popen([
             executable, "--headless=new", "--no-first-run", "--no-default-browser-check",
             "--disable-background-networking", "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=0", f"--user-data-dir={profile}", "about:blank",
-        ], stdout=log, stderr=subprocess.STDOUT)
+        ], stdout=log, stderr=subprocess.STDOUT, env=browser_env)
         try:
             deadline = time.monotonic() + 15
             port_file = profile / "DevToolsActivePort"

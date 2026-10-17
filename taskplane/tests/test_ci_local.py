@@ -93,7 +93,7 @@ def test_package_host_selection_is_exact(tmp_path, suite, host):
     assert all(row['suite'] == suite and row['host'] == host for row in selected)
 
 
-@pytest.mark.parametrize('suite,count', [('core', 4), ('native', 2)])
+@pytest.mark.parametrize('suite,count', [('core', 4), ('native', 6)])
 def test_shards_cover_actual_collection_once(tmp_path, suite, count):
     baseline = {row['nodeid'] for row in collect(tmp_path, suite) if row['selected']}
     partitions = []
@@ -334,6 +334,92 @@ def test_subtests_never_replace_enclosing_call_or_relax_evidence(change):
 def test_missing_scenarios_and_empty_collection_fail_closed():
     assert ci_local.required_coverage({'id': 'LOCAL-UNBOUND', 'assertions': ['required']}, [], {})['status'] == 'fail'
     assert ci_local.test_verdict({'exit_code': 0, 'profile': {'selected_nodeids': []}}, collect=True)['status'] == 'fail'
+
+
+def junit_evidence_record():
+    node = 'taskplane/tests/test_probe.py::test_probe'
+    payload = {'schema': 'taskplane.remediation-measurement/v1', 'subcheck': 'LOCAL-GRAPH',
+               'scenario': 'LOCAL-GRAPH:1', 'kind': 'graph', 'samples': []}
+    suite = ET.Element('testsuite')
+    case = ET.SubElement(suite, 'testcase', classname='taskplane.tests.test_probe', name='test_probe')
+    props = ET.SubElement(case, 'properties')
+    ET.SubElement(props, 'property', name='remediation_measurement', value=json.dumps(payload))
+    return {'id': 0, 'status': 'pass', 'exit_code': 0, 'label': 'targeted/LOCAL-GRAPH',
+            'collection': [{'nodeid': node, 'selected': True}],
+            'junit.xml': ET.tostring(suite, encoding='unicode'),
+            'profile': {'selected_nodeids': [node], 'reports': [
+                {'nodeid': node, 'when': phase, 'outcome': 'passed', 'wasxfail': None}
+                for phase in ('setup', 'call', 'teardown')]}}
+
+
+@pytest.mark.parametrize('encoding', [None, 'utf-8', 'utf-16'])
+@pytest.mark.parametrize('doctype', [
+    '<!DOCTYPE testsuite>',
+    '<!DOCTYPE testsuite [<!ENTITY a "expanded"><!ENTITY b "&a;&a;&a;">]>',
+    '<!DOCTYPE testsuite [<!ENTITY external SYSTEM "file:///etc/passwd">]>',
+    '<!DOCTYPE testsuite SYSTEM "https://invalid.example/external.dtd">',
+    '<!DOCTYPE testsuite [<!ENTITY % external SYSTEM "https://invalid.example/external.dtd">%external;]>',
+], ids=['doctype', 'nested-entities', 'file-entity', 'external-dtd', 'parameter-entity'])
+def test_junit_rejects_hostile_declarations_in_both_evidence_consumers(encoding, doctype):
+    record = junit_evidence_record()
+    registry = {'LOCAL-GRAPH:1': record['profile']['selected_nodeids']}
+    assert ci_local.test_verdict(record)['status'] == 'pass'
+    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH', registry)[0]['execution_status'] == 'pass'
+    hostile = doctype + record['junit.xml']
+    if encoding is None:
+        record['junit.xml'] = hostile
+    else:
+        raw = ('<?xml version="1.0" encoding="' + encoding + '"?>' + hostile).encode(encoding)
+        # A benign text preview must never override the actual process bytes.
+        record['raw_files'] = {'junit.xml': {'base64': base64.b64encode(raw).decode('ascii'),
+            'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}}
+    verdict = ci_local.test_verdict(record)
+    assert verdict['status'] == 'fail' and verdict['problems'] == ['invalid JUnit']
+    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH', registry) == [
+        {'schema': 'invalid', 'samples': [], 'execution': 0}]
+
+
+@pytest.mark.parametrize('document', [
+    '<testsuite><testcase name="test &amp; &#233;">&lt;!DOCTYPE harmless&gt;</testcase></testsuite>',
+    '<testsuite><!-- <!DOCTYPE harmless> --><testcase><![CDATA[<!ENTITY harmless>]]></testcase></testsuite>',
+    '<testsuite xmlns="urn:junit" xmlns:p="urn:property"><testcase p:value="é">text</testcase></testsuite>',
+])
+@pytest.mark.parametrize('encoding', [None, 'utf-8', 'utf-16'])
+def test_junit_parser_preserves_ordinary_xml(document, encoding):
+    raw = document if encoding is None else document.encode(encoding)
+    actual = ci_local.parse_junit_xml(raw)
+    expected = ET.fromstring(raw)
+    assert ET.tostring(actual) == ET.tostring(expected)
+
+
+@pytest.mark.parametrize('document', ['<testsuite>', '<testsuite>&undeclared;</testsuite>', ''])
+def test_malformed_junit_evidence_fails_closed(document):
+    record = junit_evidence_record()
+    record['junit.xml'] = document
+    assert ci_local.test_verdict(record)['problems'] == ['invalid JUnit']
+    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH') == [
+        {'schema': 'invalid', 'samples': [], 'execution': 0}]
+
+
+@pytest.mark.parametrize('mutation', ['unchanged', 'enabled', 'missing-condition', 'schedule', 'capacity-suite'])
+def test_historical_capacity_workflow_stays_disabled(tmp_path, mutation):
+    workflows = tmp_path / '.github/workflows'
+    workflows.mkdir(parents=True)
+    shutil.copyfile(ROOT / '.github/workflows/ci.yml', workflows / 'ci.yml')
+    capacity = (ROOT / '.github/workflows/capacity.yml').read_text()
+    if mutation == 'enabled':
+        capacity = capacity.replace('    if: false\n', '    if: true\n')
+    elif mutation == 'missing-condition':
+        capacity = capacity.replace('    if: false\n', '')
+    elif mutation == 'schedule':
+        capacity = capacity.replace('  workflow_dispatch:', '  schedule:\n    - cron: "0 0 * * *"\n  workflow_dispatch:')
+    elif mutation == 'capacity-suite':
+        capacity = capacity.replace('echo ', 'python scripts/ci_local.py --check tests --suite capacity # ')
+    (workflows / 'capacity.yml').write_text(capacity)
+    verdict = ci_local.audit_ci_definition(tmp_path)
+    assert verdict['status'] == ('pass' if mutation == 'unchanged' else 'fail')
+    assert verdict['problems'] == ([] if mutation == 'unchanged' else [
+        'historical capacity workflow must remain disabled'])
 
 
 def test_manifest_path_validation_rejects_traversal_and_symlinks(tmp_path):

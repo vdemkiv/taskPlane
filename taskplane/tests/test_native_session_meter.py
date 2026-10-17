@@ -1,12 +1,58 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 from datetime import datetime
 
 from taskplane import native_session_meter
+
+
+def _fixture_reader(host, root, directory, **kwargs):
+    """Exercise counter contracts with explicit logs when native inventory is unavailable.
+
+    Fixture enumeration is setup, never metered directory-discovery evidence.
+    Dedicated inventory tests below retain the production unsupported result.
+    """
+    roots = [directory] if sys.platform in ('darwin', 'linux') else []
+    reader = native_session_meter.IncrementalUsageReader(host, root, roots, **kwargs)
+    if not roots and (kwargs.get('checkpoint') is None or reader.checkpoint_invalidated):
+        for path in sorted(directory.glob('*.jsonl')):
+            reader.add_file(path)
+    return reader
+
+
+def _use_codex_fixture_files(monkeypatch, *paths):
+    """Keep reconciliation and native parsing real without requiring directory APIs."""
+    if sys.platform in ('darwin', 'linux'):
+        return
+    from taskplane import flow_usage
+    original = flow_usage._reader
+    monkeypatch.setattr(flow_usage, '_READERS', {})
+
+    def explicit_reader(run, roots, cutoff, host):
+        reader = original(run, [], cutoff, host)
+        for path in paths:
+            reader.add_file(path)
+        return reader
+
+    monkeypatch.setattr(flow_usage, '_reader', explicit_reader)
+
+
+def _assert_unsupported_inventory(reader, result=None):
+    """Assert the real fail-closed capability result; never claim discovery passed."""
+    from scripts.benchmark_usage import IncompleteDrain, drain
+    result = reader.refresh() if result is None else result
+    assert not result['complete'] and not result['fully_discovered']
+    assert 'native_directory_accounting_unavailable' in result['discovery_errors']
+    assert result['directory_bytes'] == result['discovery_entries'] == 0
+    assert result['continuation'] and result['coverage'] == 'partial'
+    with pytest.raises(IncompleteDrain, match='unsupported_native_directory_api') as failure:
+        drain(reader)
+    assert len(failure.value.refreshes) == 1
+    return result
 
 
 def _interval_fixture(path, sid, points, parent=None, owned=False):
@@ -413,7 +459,7 @@ def test_incremental_owned_interval_budget_and_continuation(tmp_path, host):
     directory = tmp_path / 'native'
     ids = fixture(directory, host, 20, 3, 65536)
     expected, attributed = oracle(directory, host, ids)
-    reader = native_session_meter.IncrementalUsageReader(host, 'root', [directory], start=1767225600.0)
+    reader = _fixture_reader(host, 'root', directory, start=1767225600.0)
     prior = None
     observations = []
     for _ in range(300):
@@ -439,7 +485,7 @@ def test_incremental_owned_interval_budget_and_continuation(tmp_path, host):
     # fresh readers, rather than depending on producer object identity.
     detached = json.loads(json.dumps(reader.state))
     assert 'xxx' not in json.dumps(detached)
-    restored = native_session_meter.IncrementalUsageReader(host, 'root', [directory], start=1767225600.0, checkpoint=detached)
+    restored = _fixture_reader(host, 'root', directory, start=1767225600.0, checkpoint=detached)
     warm = restored.refresh()
     assert warm['complete'] and warm['totals'] == expected
     assert warm['unrelated_scans'] == 0
@@ -453,7 +499,7 @@ def test_incremental_inflight_record_append_and_owned_dedup(tmp_path, host):
     from scripts.benchmark_usage import fixture, oracle, encoded, event, drain
     directory = tmp_path / 'native'
     ids = fixture(directory, host, 0, 1, 65536)
-    reader = native_session_meter.IncrementalUsageReader(host, 'root', [directory], start=1767225600.0)
+    reader = _fixture_reader(host, 'root', directory, start=1767225600.0)
     drain(reader)
     path = directory / 'root.jsonl'
     record = encoded(event(host, 'root', 65))
@@ -478,7 +524,7 @@ def test_incremental_mutation_remains_unknown(tmp_path, mutation):
     directory = tmp_path / 'native'
     fixture(directory, 'Codex', 0, 1, 65536)
     path = directory / 'root.jsonl'
-    reader = native_session_meter.IncrementalUsageReader('Codex', 'root', [directory], start=1767225600.0)
+    reader = _fixture_reader('Codex', 'root', directory, start=1767225600.0)
     drain(reader)
     data = path.read_bytes()
     if mutation == 'truncate':
@@ -516,7 +562,7 @@ def test_incremental_interval_late_records_and_reset(tmp_path):
 def test_usage_budget_nested_helpers_share_one_clock_and_byte_cap(tmp_path):
     from scripts.benchmark_usage import fixture
     directory=tmp_path/'native';fixture(directory,'Codex',0,2,65536)
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory],start=1767225600.0)
+    reader=_fixture_reader('Codex','root',directory,start=1767225600.0)
     budget=native_session_meter.UsageBudget(bytes_limit=20000)
     with native_session_meter.usage_refresh(budget) as outer:
         with native_session_meter.usage_refresh() as inner:
@@ -564,6 +610,9 @@ def test_incremental_persisted_inventory_over_ten_thousand_unrelated(tmp_path, h
     directory=tmp_path/'native';ids=fixture(directory,host,10000,3,65536)
     expected,attributed=oracle(directory,host,ids)
     reader=native_session_meter.IncrementalUsageReader(host,'root',[directory],start=1767225600.0)
+    if sys.platform not in ('darwin', 'linux'):
+        _assert_unsupported_inventory(reader)
+        return
     previous=None
     for _ in range(200):
         result=reader.refresh()
@@ -585,6 +634,13 @@ def test_incremental_persisted_inventory_over_ten_thousand_unrelated(tmp_path, h
 def test_incremental_long_directory_entries_resume_without_false_eof(tmp_path, initial_bytes, name_character, record_property):
     from scripts.benchmark_usage import encoded, event
     directory=tmp_path/'children';directory.mkdir()
+    if sys.platform not in ('darwin', 'linux'):
+        reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory])
+        result=_assert_unsupported_inventory(reader)
+        record_property('usage_directory_observations',json.dumps({
+            'initial_bytes':initial_bytes,'name_character':name_character,
+            'supported':False,'reason':'unsupported_native_directory_api','refreshes':[result]}))
+        return
     root_path=tmp_path/'root.jsonl'
     for n in range(6):
         sid='root' if n==0 else f'child-{n}'
@@ -628,7 +684,7 @@ def test_incremental_checkpoint_rejects_malformed_or_foreign_state(tmp_path, cor
     from scripts.benchmark_usage import fixture, oracle, drain
     directory=tmp_path/'native';ids=fixture(directory,'Codex',0,2,65536)
     expected,attribution=oracle(directory,'Codex',ids)
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory])
+    reader=_fixture_reader('Codex','root',directory)
     drain(reader);checkpoint=reader.checkpoint();file=next(iter(checkpoint['files'].values()))
     if corruption=='schema': checkpoint['schema']='foreign'
     elif corruption=='parser': checkpoint['parser_version']+=1
@@ -641,7 +697,7 @@ def test_incremental_checkpoint_rejects_malformed_or_foreign_state(tmp_path, cor
     elif corruption=='cached_foreign':
         summary=checkpoint['session_summaries'].pop('root');summary['row']['session']='foreign'
         checkpoint['session_summaries']['foreign']=summary
-    restored=native_session_meter.IncrementalUsageReader('Codex','root',[directory],checkpoint=checkpoint)
+    restored=_fixture_reader('Codex','root',directory,checkpoint=checkpoint)
     partial=restored.refresh(native_session_meter.UsageBudget(bytes_limit=1))
     assert partial['checkpoint_invalidated']=='incompatible_or_malformed_checkpoint'
     assert not partial['complete'] and partial['coverage']=='partial'
@@ -653,10 +709,10 @@ def test_incremental_checkpoint_and_returned_rows_are_detached(tmp_path):
     from scripts.benchmark_usage import fixture, oracle, drain
     directory=tmp_path/'native';ids=fixture(directory,'Codex',0,2,65536)
     expected,attributed=oracle(directory,'Codex',ids)
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory])
+    reader=_fixture_reader('Codex','root',directory)
     drain(reader)
     checkpoint=reader.checkpoint()
-    restored=native_session_meter.IncrementalUsageReader('Codex','root',[directory],checkpoint=checkpoint)
+    restored=_fixture_reader('Codex','root',directory,checkpoint=checkpoint)
     checkpoint['files'].clear()
     result=restored.refresh()
     assert result['complete'] and result['unrelated_scans']==0
@@ -677,7 +733,7 @@ def test_incremental_checkpoint_and_returned_rows_are_detached(tmp_path):
 def test_incremental_oversized_record_and_cooperative_clock_remain_partial(tmp_path):
     from scripts.benchmark_usage import fixture, drain
     directory=tmp_path/'native';fixture(directory,'Codex',0,1,65536)
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory])
+    reader=_fixture_reader('Codex','root',directory)
     ticks=iter(n/10 for n in range(10000))
     # A deterministic semantic clock, deliberately excluded from real measurements.
     partial=reader.refresh(native_session_meter.UsageBudget(clock=lambda:next(ticks)))
@@ -699,6 +755,11 @@ def test_claude_transcript_lookup_shares_budget_and_bounds_cache(tmp_path, monke
     home=tmp_path/'claude';directory=home/'projects'/'project'
     fixture(directory,'Claude',1000,1,65536)
     monkeypatch.setenv('CLAUDE_CONFIG_DIR',str(home))
+    if sys.platform not in ('darwin', 'linux'):
+        assert claude_flow_usage.transcript('root',{}) is None
+        reader=next(iter(claude_flow_usage._READERS.values()))
+        _assert_unsupported_inventory(reader)
+        return
     budget=native_session_meter.UsageBudget(bytes_limit=4096)
     with native_session_meter.usage_refresh(budget):
         assert claude_flow_usage.transcript('root',{}) is None
@@ -734,7 +795,7 @@ def test_incremental_missing_response_and_resumed_baseline_are_unknown(tmp_path)
 def test_incremental_owned_file_replaced_by_foreign_session_stays_unknown(tmp_path, host, record_property):
     from scripts.benchmark_usage import fixture, drain, encoded, event
     directory=tmp_path/'native';fixture(directory,host,0,2,65536)
-    reader=native_session_meter.IncrementalUsageReader(host,'root',[directory])
+    reader=_fixture_reader(host,'root',directory)
     before=drain(reader)[-1]
     if host=='Codex':
         meta={'type':'session_meta','payload':{'id':'foreign','timestamp':'2026-01-01T00:00:00Z'}}
@@ -745,7 +806,7 @@ def test_incremental_owned_file_replaced_by_foreign_session_stays_unknown(tmp_pa
     replacement=tmp_path/'replacement';replacement.write_bytes(encoded(meta)+encoded(response))
     replacement.replace(directory/'owned-1.jsonl')
     after=reader.refresh()
-    restored=native_session_meter.IncrementalUsageReader(host,'root',[directory],
+    restored=_fixture_reader(host,'root',directory,
         checkpoint=json.loads(json.dumps(reader.checkpoint())))
     resumed=restored.refresh()
     record_property('usage_owner_replacement_observations',json.dumps({'before':before,'after':after,'restored':resumed}))
@@ -763,6 +824,9 @@ def test_incremental_small_inventory_admission_is_partial_without_hidden_reads(t
     expected,attribution=oracle(directory,'Codex',ids)
     reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory])
     partial=reader.refresh(native_session_meter.UsageBudget(entries_limit=10))
+    if sys.platform not in ('darwin', 'linux'):
+        _assert_unsupported_inventory(reader, partial)
+        return
     assert not partial['complete'] and not partial['fully_discovered'] and partial['exhausted']
     assert partial['read_bytes']==0 and partial['discovery_entries']==0
     restored=native_session_meter.IncrementalUsageReader('Codex','root',[directory],checkpoint=reader.checkpoint())
@@ -800,7 +864,7 @@ def test_incremental_metadata_replacement_before_replay_is_unknown(tmp_path, mon
     directory=tmp_path/'native';fixture(directory,'Codex',0,2,65536)
     child=directory/'owned-1.jsonl';replacement=tmp_path/'replacement'
     replacement.write_bytes(child.read_bytes().replace(b'owned-1',b'foreign'))
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory])
+    reader=_fixture_reader('Codex','root',directory)
     original=reader._metadata
     def replace_after_metadata(file, stream, budget):
         result=original(file,stream,budget)
@@ -833,14 +897,14 @@ def test_incremental_resumed_physical_segments_are_order_independent(tmp_path, r
 def test_incremental_partial_checkpoint_preserves_physical_size_for_mutation_detection(tmp_path):
     from scripts.benchmark_usage import fixture
     directory=tmp_path/'native';fixture(directory,'Codex',0,1,1048576)
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory])
+    reader=_fixture_reader('Codex','root',directory)
     partial=reader.refresh(native_session_meter.UsageBudget(bytes_limit=200000))
     assert not partial['complete'] and partial['exhausted']
     checkpoint=reader.checkpoint();file=next(iter(checkpoint['files'].values()))
     assert file['size']==1048576 and 0 < file['last_complete_record_offset'] < file['size']
     path=directory/'root.jsonl'
     with path.open('r+b') as stream: stream.seek(100000);stream.write(b'y')
-    restored=native_session_meter.IncrementalUsageReader('Codex','root',[directory],checkpoint=checkpoint)
+    restored=_fixture_reader('Codex','root',directory,checkpoint=checkpoint)
     result=restored.refresh()
     assert not result['complete'] and result['sessions'][0]['attribution_unknown']
     assert 'uncertain_middle_mutation' in result['sessions'][0]['errors']
@@ -855,7 +919,7 @@ def test_incremental_missing_cache_category_is_unknown(tmp_path, host, missing):
     row=event(host,'root',1)
     usage=row['payload']['usage'] if host=='Codex' else row['message']['usage']
     del usage[missing];path.write_bytes(metadata+encoded(row))
-    reader=native_session_meter.IncrementalUsageReader(host,'root',[directory])
+    reader=_fixture_reader(host,'root',directory)
     result=reader.refresh()
     assert not result['complete'] and result['sessions'][0]['attribution_unknown']
     assert 'invalid_counter_record' in result['sessions'][0]['errors']
@@ -864,7 +928,7 @@ def test_incremental_missing_cache_category_is_unknown(tmp_path, host, missing):
 def test_incremental_aggregation_clock_exhaustion_keeps_partial_then_resumes(tmp_path, monkeypatch):
     from scripts.benchmark_usage import fixture, drain, encoded, event, oracle
     directory=tmp_path/'native';ids=fixture(directory,'Codex',0,2,65536)
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory]);drain(reader)
+    reader=_fixture_reader('Codex','root',directory);drain(reader)
     for sid in ids:
         with (directory/f'{sid}.jsonl').open('ab') as stream: stream.write(encoded(event('Codex',sid,65)))
     now=[0.0];original=reader._sessions
@@ -890,13 +954,13 @@ def test_incremental_dense_aggregation_progress_survives_fresh_checkpoint_reader
         with path.open('wb') as stream:
             stream.write(metadata)
             for number in range(1,2049): stream.write(encoded(event('Codex',sid,number)))
-    reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory]);drain(reader)
+    reader=_fixture_reader('Codex','root',directory);drain(reader)
     for sid in ids:
         with (directory/f'{sid}.jsonl').open('ab') as stream: stream.write(encoded(event('Codex',sid,2049)))
     checkpoint=reader.checkpoint();observations=[]
     expected,attributed=oracle(directory,'Codex',ids)
     for _ in range(6):
-        reader=native_session_meter.IncrementalUsageReader('Codex','root',[directory],
+        reader=_fixture_reader('Codex','root',directory,
             checkpoint=json.loads(json.dumps(checkpoint)))
         now=[0.0];budget=native_session_meter.UsageBudget(clock=lambda:now[0]);original=reader._sessions
         def bounded_aggregation(shared):

@@ -11,6 +11,8 @@
 - Repair workflow-builder delivery and retention test oracles while retaining negative integrity checks.
 - Read the accepted v6 functional verification strategy. Support a separate, hash-bound release audit after an authorized run retirement, without inventing workflow approvals or native acceptance.
 - Package all required runtime documents. New worker startups retain native identity, complete context, output integrity, durable hooks, stop fences and authority checks; performance targets are excluded.
+- Request writable Windows directory handles for durable publication and retain native flush errors. Exercise unsupported counter discovery explicitly in platform fixtures.
+- Repair CI dependency setup, historical-reader availability, browser socket paths and diagnostic archiving. Reject DTD/entity-bearing test evidence and pin the patched MCP scanner dependency.
 
 This version is an installable repair candidate. Local verification, installed-host acceptance, platform results and publication are separate observations. Read the exact release report and archive/member hashes; a version label alone does not establish verification or release readiness.
 

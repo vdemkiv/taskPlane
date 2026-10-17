@@ -580,13 +580,31 @@ def test_compatible_rollback_cli_is_source_pinned_and_read_only_preview(tmp_path
 
 
 def test_actual_legacy_reader_before_upgrade_and_after_compatible_rollback(tmp_path):
-    """Requires an explicit external v2 runtime; never emulates an old reader."""
+    """Use the retained v2 runtime or its immutable Git source, never an imitation."""
     import os
     import subprocess
     import sys
     legacy = os.environ.get('TEST_TASKPLANE_LEGACY_RUNTIME')
     if not legacy:
-        pytest.skip('Actual legacy runtime path was not provided for this external reader check.')
+        # CI has no workstation-specific retained runtime. Reconstruct the
+        # historical reader from the exact published 2.33.10 commit instead.
+        # Missing history is a failure, not permission to skip compatibility.
+        source = Path(__file__).resolve().parents[2]
+        commit = '4a46e645ec628dc439cd9d163dbd63ee4906c3e6'
+        archive = tmp_path / 'legacy-source.zip'
+        result = subprocess.run(['git', '-C', str(source), 'archive', '--format=zip',
+                                 '--output', str(archive), commit],
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+        legacy = tmp_path / 'legacy-source'
+        with zipfile.ZipFile(archive) as bundle:
+            # Git generated this archive from the pinned tree; additionally
+            # confine extraction and reject symlink entries before executing it.
+            for member in bundle.infolist():
+                target = (legacy / member.filename).resolve()
+                assert target.is_relative_to(legacy.resolve())
+                assert (member.external_attr >> 16) & 0o170000 != 0o120000
+            bundle.extractall(legacy)
     legacy = Path(legacy).resolve()
     assert (legacy/'taskplane/workflow_host.py').is_file()
     c, initial, upgrade = upgrade_fixture(tmp_path)

@@ -236,6 +236,7 @@ def test_saved_legacy_guardian_is_not_run_usage(tmp_path,monkeypatch):
 @pytest.mark.parametrize('host', ['codex', 'claude'])
 def test_saved_partial_child_interval_remains_partial_after_native_file_loss(tmp_path, monkeypatch, host):
     run = dict(run='r', session='root', at='2026-09-01T00:00:10Z', worker_sessions=['child'])
+    events = []
     if host == 'codex':
         home = tmp_path/'codex'; sessions = home/'sessions'; sessions.mkdir(parents=True)
         monkeypatch.setenv('CODEX_HOME', str(home))
@@ -243,6 +244,8 @@ def test_saved_partial_child_interval_remains_partial_after_native_file_loss(tmp
         rows = native(child, 'child', [(5,100),(10,150),(15,170)], 'root', owned=True)
         del rows[2]['payload']['usage']
         child.write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+        from taskplane.tests.test_native_session_meter import _use_codex_fixture_files
+        _use_codex_fixture_files(monkeypatch, child)
     else:
         from taskplane.tests.test_claude_flow import message, write
         root = tmp_path/'claude/root.jsonl'; write(root, [])
@@ -251,12 +254,13 @@ def test_saved_partial_child_interval_remains_partial_after_native_file_loss(tmp
         del incomplete['message']['usage']['cache_read_input_tokens']
         write(child, [incomplete, message('known', agent='child', at='2026-09-01T00:00:16Z')])
         run.update(host='claude', transcript_path=str(root))
-    before = flow_usage.reconcile(run, [])
+        events.append(dict(run='r', child='child', agent_transcript_path=str(child)))
+    before = flow_usage.reconcile(run, events)
     prior = next(s for s in before['sessions'] if s['session'] == 'child')
     assert prior['status'] == 'partial' and prior['usage'] is not None
     child.unlink()
     for _ in range(2):
-        recovered = flow_usage.reconcile(run, [dict(kind='usage',run='r',measurement=before)])
+        recovered = flow_usage.reconcile(run, [*events, dict(kind='usage',run='r',measurement=before)])
         row = next(s for s in recovered['sessions'] if s['session'] == 'child')
         assert row['usage'] == prior['usage'] and row['status'] == 'partial'
         assert row['recovery_status'] == 'recorded; native counter unavailable'

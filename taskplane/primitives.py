@@ -352,9 +352,20 @@ def _flush_windows_directory(path: str) -> None:
     kernel = getattr(ctypes, "WinDLL")('kernel32', use_last_error=True)
     kernel.CreateFileW.restype = ctypes.c_void_p
     kernel.CreateFileW.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p)
+    kernel.FlushFileBuffers.restype = ctypes.c_int
     kernel.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
+    kernel.CloseHandle.restype = ctypes.c_int
     kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
-    handle = kernel.CreateFileW(str(path), 2147483648, 7, None, 3, 33554432, None)
+    # FlushFileBuffers requires GENERIC_WRITE, even for a directory opened
+    # with FILE_FLAG_BACKUP_SEMANTICS. A read-only handle always fails with
+    # ERROR_ACCESS_DENIED before the filesystem can perform the flush.
+    # https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers
+    generic_write = 0x40000000
+    share_read_write_delete = 0x00000007
+    open_existing = 3
+    backup_semantics = 0x02000000
+    handle = kernel.CreateFileW(str(path), generic_write, share_read_write_delete,
+                                None, open_existing, backup_semantics, None)
     invalid = ctypes.c_void_p(-1).value
     if handle == invalid:
         raise getattr(ctypes, "WinError")(getattr(ctypes, "get_last_error")())

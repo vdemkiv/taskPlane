@@ -22,6 +22,7 @@ import threading
 import time
 import traceback
 import xml.etree.ElementTree as ET
+from xml.parsers import expat
 import zipfile
 import zlib
 
@@ -244,6 +245,37 @@ def raw_evidence_bytes(record: dict, name: str) -> bytes:
     if len(raw) != value['bytes'] or hashlib.sha256(raw).hexdigest() != value['sha256']:
         raise ValueError('raw file identity mismatch')
     return raw
+
+
+def parse_junit_xml(data: str | bytes) -> ET.Element:
+    """Parse evidence without DTDs, declared entities, or external resources.
+
+    Reject at parser events, before the DTD's internal subset is processed;
+    byte encodings such as UTF-16 cannot bypass a text-prefix check. Expat feeds
+    only ordinary element/text events to TreeBuilder, preserving the runner's
+    standard-library-only bootstrap and ElementTree's expanded namespace names.
+    """
+    builder = ET.TreeBuilder()
+    parser = expat.ParserCreate(namespace_separator='}')
+
+    def forbidden(*_args):
+        raise ET.ParseError('DTD and entity declarations are forbidden in JUnit evidence')
+
+    def expanded(name):
+        return '{' + name if '}' in name else name
+
+    parser.StartDoctypeDeclHandler = forbidden
+    parser.EntityDeclHandler = forbidden
+    parser.ExternalEntityRefHandler = forbidden
+    parser.StartElementHandler = lambda name, attrs: builder.start(
+        expanded(name), {expanded(key): value for key, value in attrs.items()})
+    parser.EndElementHandler = lambda name: builder.end(expanded(name))
+    parser.CharacterDataHandler = builder.data
+    try:
+        parser.Parse(data, True)
+    except expat.ExpatError as exc:
+        raise ET.ParseError(str(exc)) from exc
+    return builder.close()
 
 
 def shard_for(nodeid: str, count: int) -> int:
@@ -1012,7 +1044,7 @@ def test_verdict(record: dict, *, collect: bool = False) -> dict:
             problems.append('missing JUnit')
         else:
             try:
-                cases = list(ET.fromstring(raw_evidence_bytes(record, 'junit.xml') if 'junit.xml' in record.get('raw_files', {}) else record['junit.xml']).iter('testcase'))
+                cases = list(parse_junit_xml(raw_evidence_bytes(record, 'junit.xml') if 'junit.xml' in record.get('raw_files', {}) else record['junit.xml']).iter('testcase'))
                 if len(cases) != len(nodes):
                     problems.append('JUnit/selected inventory mismatch')
             except ET.ParseError:
@@ -2149,7 +2181,7 @@ def audit_ci_definition(root: Path) -> dict:
         problems.append('representative Windows functional coverage missing')
     if any(value in ci for value in ('--suite capacity', 'benchmark_context.py', 'benchmark_usage.py')):
         problems.append('performance workload is a required CI dependency')
-    if 'schedule:' in capacity or '--suite capacity' in capacity or 'if: ${{ false }}' not in capacity:
+    if 'schedule:' in capacity or '--suite capacity' in capacity or '    if: false\n' not in capacity:
         problems.append('historical capacity workflow must remain disabled')
     if '--report-json' not in ci:
         problems.append('raw profile artifact capture missing')
@@ -2229,7 +2261,7 @@ def measurement_documents(records: list[dict], subcheck: str, registry=None) -> 
         if record['label'] != 'targeted/' + subcheck or 'junit.xml' not in record:
             continue
         try:
-            root = ET.fromstring(raw_evidence_bytes(record, 'junit.xml') if 'junit.xml' in record.get('raw_files', {}) else record['junit.xml'])
+            root = parse_junit_xml(raw_evidence_bytes(record, 'junit.xml') if 'junit.xml' in record.get('raw_files', {}) else record['junit.xml'])
             for case in root.iter('testcase'):
                 case_passed = all(case.find(tag) is None for tag in ('skipped', 'failure', 'error'))
                 selected = []

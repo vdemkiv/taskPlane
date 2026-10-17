@@ -1,12 +1,14 @@
 """Accounting regressions use cumulative native counters, never billing estimates."""
 from copy import deepcopy
 import json
+import sys
 
 import pytest
 
 from taskplane import flow, flow_dashboard, flow_usage, workflow as w
 from taskplane import context_views
 from taskplane.context import Store
+from taskplane.tests.test_native_session_meter import _use_codex_fixture_files
 
 
 def counts(value):
@@ -209,11 +211,17 @@ def test_claude_reused_worker_charges_only_current_messages(tmp_path, monkeypatc
     child = path.with_suffix('') / 'subagents/agent-reused.jsonl'
     write(child, [message('old', agent='reused'),
                   message('current', agent='reused', at='2026-09-15T00:00:04Z')])
+    flow.append(workspace, {'kind': 'hook', 'run': 'shared', 'session': 'root',
+                            'child': 'reused', 'agent_transcript_path': str(child)})
     report = flow.report(workspace)
     session = next(s for s in report['sessions'] if s['session'] == 'reused')
     assert session['usage']['total_tokens'] == 142
     assert session['native_usage']['total_tokens'] == 284
-    assert session['status'] == 'measured'
+    if sys.platform in ('darwin', 'linux'):
+        assert session['status'] == 'measured'
+    else:
+        assert session['status'] == 'partial' and session['attribution_unknown']
+        assert 'native_directory_accounting_unavailable' in report['usage_refresh']['discovery_errors']
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
@@ -233,6 +241,7 @@ def test_root_baseline_must_be_complete_before_run_delta(
     path = tmp_path / 'sessions/root.jsonl'
     path.parent.mkdir()
     _write_thread_segment(path, total=150, ordinal=5)
+    _use_codex_fixture_files(monkeypatch, path)
     monkeypatch.setenv('CODEX_HOME', str(tmp_path))
     if host == 'claude':
         path.write_text(json.dumps({'type':'assistant','sessionId':'root','timestamp':'2026-09-01T00:00:15Z',
@@ -258,6 +267,7 @@ def test_reconcile_missing_known_worker_keeps_token_coverage_incomplete(tmp_path
     path = tmp_path / 'sessions/root.jsonl'
     path.parent.mkdir()
     _interval_fixture(path, 'root', [(15, 50)])
+    _use_codex_fixture_files(monkeypatch, path)
     if host == 'claude':
         path.write_text(json.dumps({'type': 'assistant', 'sessionId': 'root',
             'timestamp': '2026-09-01T00:00:15Z',
@@ -313,6 +323,7 @@ def test_resumed_codex_reset_is_not_restored_from_saved_or_closing_counts(
     _write_thread_segment(folder / 'first.jsonl', total=100, cached=20, ordinal=5)
     _write_thread_segment(folder / 'resumed.jsonl', total=new_total, cached=new_cached,
                           resumed=True, ordinal=15)
+    _use_codex_fixture_files(monkeypatch, folder / 'first.jsonl', folder / 'resumed.jsonl')
     monkeypatch.setenv('CODEX_HOME', str(tmp_path))
     baseline = counts(100)
     baseline.update(cached_input_tokens=20, uncached_input_tokens=80)
@@ -332,6 +343,7 @@ def test_reconcile_checkpoint_preserves_partial_owned_attribution(tmp_path, monk
     from taskplane import native_session_meter as meter
     from scripts.benchmark_usage import fixture, oracle
     home=tmp_path/'native';ids=fixture(home/'sessions','Codex',0,3,65536)
+    _use_codex_fixture_files(monkeypatch, *(home / 'sessions' / f'{sid}.jsonl' for sid in ids))
     monkeypatch.setenv('CODEX_HOME',str(home))
     run={'run':'bounded-run','session':'root','at':'2026-01-01T00:00:00Z','usage':counts(0),'usage_status':'observed'}
     with meter.usage_refresh(meter.UsageBudget(bytes_limit=10000)):
@@ -356,6 +368,7 @@ def test_declared_reused_codex_worker_requires_an_owned_start_boundary(tmp_path,
     folder.mkdir()
     _interval_fixture(folder / 'root.jsonl', 'root', [(5, 100), (15, 150)])
     _interval_fixture(folder / 'child.jsonl', 'child', [(15, 50)], parent='root')
+    _use_codex_fixture_files(monkeypatch, folder / 'root.jsonl', folder / 'child.jsonl')
     monkeypatch.setenv('CODEX_HOME', str(tmp_path))
     run = {'run': 'run', 'session': 'root', 'worker_sessions': ['child'],
            'at': '2026-09-01T00:00:10Z', 'usage': counts(100)}
@@ -374,6 +387,7 @@ def test_malformed_owned_restart_cannot_restore_saved_counts(tmp_path, monkeypat
     folder.mkdir()
     path = folder / 'root.jsonl'
     rows = _interval_fixture(path, 'root', [(15, 150)])
+    _use_codex_fixture_files(monkeypatch, path)
     rows[0]['payload']['history_base'] = {'thread_id': 'foreign',
         'end_ordinal_exclusive': 1, 'end_byte_offset': 1}
     path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
