@@ -1,15 +1,38 @@
-# Test the functional candidate
+# Test the compact candidate
 
-The current candidate addresses consent, worker lifecycle, recovery, data safety, valid context reuse, stop controls, supported Product revision, runner behavior and package identity. Performance work and delivery gates are outside this revision. Legacy failures keep their original status.
+This candidate uses `taskplane.workflow/v2`, durable `brief/v1` and scoped
+`ownership/v1` across Codex and Claude. Keep seven separate actual phase decisions.
+A test contract or package/version label is not a passing test report; consult
+current Build/Evaluate evidence for exact commands, outcomes and remaining gaps.
 
-Run tests in disposable host/config/state stores before collection or import. The existing `scripts/ci_local.py` isolation helper supplies that environment; subprocesses must inherit it. Keep candidate source unchanged by tests. Use disposable directories for generated archives, logs, screenshots and caches, preserving raw evidence before cleanup.
+Run affected behavior/negative checks in disposable workspace/host/config stores.
+Preserve raw failed attempts/logs and actual source/test/command/environment
+identity. Keep source unchanged by checks. Remove obsolete assertions, helpers,
+fixtures and CI node references with retired code; do not add skips for required
+failures. Run one combined affected verification after meaningful development
+checks pass, repeating only after relevant changes/failure or a specific gap.
 
-The accepted remediation plan specifies exact source/test inputs and 30 required functional groups. The CI producer must map every assertion to real collected nodes or a named executable audit. Required missing, failed, skipped, xfailed or inconclusive checks fail. Exclude performance-only assertions explicitly; mixed modules must retain integrity, identity, stop, retention and retry-policy checks. Existing operational job timeouts remain configuration, with no elapsed-time or headroom target.
+Verify task phase ordering, fresh Evaluate attempts without rewriting Build,
+latest fail/unknown propagation, route eligibility before seal, contextual approval
+with provenance/target/chronology/replay, ordinary sealed reads versus safe writes,
+relevant freshness, durable restart, true worker identity/terminal/cancellation,
+native locking/import provenance and diagnostic Stop behavior.
 
-Startup tests must show that execution-only v3 succeeds with a complete valid brief and genuine native proof regardless of former timing, aggregate byte or response-count targets. Missing/foreign output, incomplete context, unsuccessful post-hook completion, stale inputs and post-stop work still refuse. Preserve immutable legacy accounts and exact replay/conflict behavior. Existing safe transport framing and parser bounds still apply.
+No context receipt, startup account/probe, first-worker cohort, word-count rule,
+mandatory graph/dashboard or unrelated-file acknowledgement is a test prerequisite.
+Root integrated review is valid. Explicit native/independence obligations still
+need actual observed completion; no fixture or label supplies it.
 
-After affected development regressions and configured quality checks pass, verify both actual host packages and final-source identity. Retain failures and their repairs, and reuse results only when source, dependencies, requirements, tests, runtime, environment and command fingerprints match. A passing fixture never supplies native or platform proof.
+Verify both generated archives and extracted candidate entrypoints with actual
+selected regular members and archive/member digests. Package building does not
+install/reload/publish. Legacy native acceptance scripts built around removed
+startup/receipt protocols are retired with their dedicated tests, not shipped as
+current instructions. Historical reports/approved strategy fixtures keep their
+original status and are not rewritten into candidate success.
 
-Before full delivery, collect representative Windows functional execution, actual supported native lifecycle and installed browser/restart evidence, the existing monitor's genuine wake, and the required independent functional reviews. Unknown evidence remains unknown. Installing the candidate, publishing it or running external journeys requires the applicable concrete authorization.
-
-This document is a test contract, not a passing test report. Consult the current Build evidence for executed commands, results, remaining type errors and external gaps.
+Live Codex/Claude loaded-hook journeys, interactive restart, actual invocation
+bridge, Windows launcher and platform CI require their own observations on the
+final candidate. Unknown remains unknown with reason/owner. A sandbox denial stays
+a denial; do not weaken permissions, overwrite installed caches or invent native
+identities to obtain a pass. Installation, external journeys and publication
+remain separate authorized actions.

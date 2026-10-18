@@ -1,7 +1,9 @@
 """Claude 2.1.296 incident ordering, redacted report; no live-host certification."""
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -9,19 +11,91 @@ from taskplane import claude_worker_observations as observations, flow, workflow
 from taskplane.tests.test_claude_interactive_recovery import Interactive
 from taskplane.tests.test_claude_worker_lifecycle import notification_record
 
-pytestmark = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
+requires_native_reader = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
 
 
-def test_captured_b5_projection_requires_original_chronology_and_report():
+@pytest.mark.parametrize("reentry", [False, True])
+@pytest.mark.parametrize("root_variable", ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"])
+@pytest.mark.parametrize("defect", ["unset", "stale", "missing_entrypoint", "entrypoint_directory",
+                                    "unreadable_entrypoint", "inaccessible_root",
+                                    "missing_interpreter", "failed_interpreter", "failed_runtime"])
+def test_literal_unavailable_runtime_keeps_stop_diagnostic_and_pretool_denied(
+        tmp_path, reentry, root_variable, defect):
+    hooks = json.loads((Path(__file__).resolve().parents[2] / "hooks/hooks.json").read_text())["hooks"]
+    env = {k: v for k, v in os.environ.items() if k not in {"CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"}}
+    root = tmp_path / "runtime with spaces"
+    entry = root / "taskplane/tp.py"
+    entry.parent.mkdir(parents=True)
+    # A real file which cannot initialize. Interpreter failures are separately
+    # injected below; no candidate runtime module is imported by these fixtures.
+    entry.write_text("raise SystemExit(2)\n")
+    env[root_variable] = str(root)
+    if defect == "unset":
+        env.pop(root_variable)
+    elif defect == "stale":
+        env[root_variable] = str(tmp_path / "nonexistent installed cache")
+    elif defect == "missing_entrypoint":
+        entry.unlink()
+    elif defect == "entrypoint_directory":
+        entry.unlink(); entry.mkdir()
+    elif defect == "unreadable_entrypoint":
+        entry.chmod(0)
+    elif defect == "inaccessible_root":
+        root.chmod(0)
+    elif defect in ("missing_interpreter", "failed_interpreter"):
+        binary = tmp_path / "bin"
+        binary.mkdir()
+        env["PATH"] = str(binary)
+        if defect == "failed_interpreter":
+            interpreter = binary / ("py.cmd" if os.name == "nt" else "python3")
+            interpreter.write_text("@exit /b 2\n" if os.name == "nt" else "#!/bin/sh\nexit 2\n")
+            interpreter.chmod(0o755)
+    key = "commandWindows" if os.name == "nt" else "command"
+    try:
+        for event in ("Stop", "PreToolUse"):
+            completed = subprocess.run(hooks[event][0]["hooks"][0][key], shell=True, env=env,
+                input=json.dumps({"stop_hook_active": reentry}), capture_output=True, text=True, timeout=10)
+            assert completed.returncode == 0, completed.stderr
+            result = json.loads(completed.stdout)
+            if event == "Stop":
+                assert result.get("decision") != "block" and "diagnostic" in result["systemMessage"]
+            else:
+                assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+                assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    finally:
+        root.chmod(0o755)
+        if entry.exists():
+            entry.chmod(0o755 if entry.is_dir() else 0o644)
+
+
+@pytest.mark.parametrize("root_variable", ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"])
+def test_literal_available_runtime_preserves_its_structured_response(tmp_path, root_variable):
+    hooks = json.loads((Path(__file__).resolve().parents[2] / "hooks/hooks.json").read_text())["hooks"]
+    root = tmp_path / "runtime with spaces"
+    entry = root / "taskplane/tp.py"
+    entry.parent.mkdir(parents=True)
+    entry.write_text('import json, sys\nprint(json.dumps({"runtime_action": sys.argv[1]}))\n')
+    env = {k: v for k, v in os.environ.items() if k not in {"CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"}}
+    env[root_variable] = str(root)
+    # Keep a stale lower-priority installation from overriding the current one.
+    if root_variable == "CLAUDE_PLUGIN_ROOT":
+        env["PLUGIN_ROOT"] = str(tmp_path / "stale fallback")
+    key = "commandWindows" if os.name == "nt" else "command"
+    for event, action in (("Stop", "session-verify"), ("PreToolUse", "screen")):
+        completed = subprocess.run(hooks[event][0]["hooks"][0][key], shell=True, env=env,
+            input="{}", capture_output=True, text=True, timeout=10)
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(completed.stdout) == {"runtime_action": action}
+
+
+def test_archived_capture_does_not_silently_migrate_its_binding():
     fixture = json.loads((Path(__file__).parent / 'fixtures/claude/stop-before-handback-2.1.296.json').read_text())
     s, row, completed, peer, stop = (fixture[k] for k in ('state', 'row', 'notification', 'peer_handback', 'stop'))
     original = deepcopy(row)
-    result = workers._redirect_delivery(s, row, completed, peer, stop)
-    assert result['completion_sequence'] == 'claude.stop-before-handback/v1'
-    assert result['envelope']['body_digest'] == 'fa6899f275a40336a34f958bc5a73275fb3596c2d0fab6b37e334f12421ba318'
-    assert row == original and 'textless' not in stop
-    assert workers._redirect_delivery(s, row, completed, {**peer, 'body_digest': '0' * 64}, stop) is None
-    assert workers._redirect_delivery(s, row, completed, peer, {**stop, 'observed_at': completed['timestamp']}) is None
+    # Original capture uses revision-bound v1 proof. New execution cannot adopt
+    # it; current ordinary-native chronology is exercised by delivered() below.
+    assert workers._redirect_delivery(s, row, completed, peer, stop) is None
+    assert row == original
 
 
 def delivered(host, *, defect=None):
@@ -41,6 +115,7 @@ def delivered(host, *, defect=None):
     return event, peer, note
 
 
+@requires_native_reader
 def test_pre_handback_stop_reconciles_original_call_and_preserves_other_work(tmp_path, monkeypatch):
     host = Interactive(tmp_path, monkeypatch)
     host.launch(); host.ready()
@@ -73,6 +148,7 @@ def test_pre_handback_stop_reconciles_original_call_and_preserves_other_work(tmp
 
 @pytest.mark.parametrize('defect', ['version', 'missing_ack', 'runtime', 'foreign_stop', 'stop_path',
     'stop_after_ack', 'ack_after_completion', 'bad_digest', 'body', 'call', 'future', 'tampered_span'])
+@requires_native_reader
 def test_pre_handback_sequence_does_not_relax_identity_or_delivery(tmp_path, monkeypatch, defect):
     host = Interactive(tmp_path, monkeypatch)
     host.launch(); host.ready(); delivered(host, defect=defect)
@@ -107,6 +183,7 @@ def test_pre_handback_sequence_does_not_relax_identity_or_delivery(tmp_path, mon
     assert target.read_bytes() == before
 
 
+@requires_native_reader
 def test_same_launch_competing_no_report_remains_conflict(tmp_path, monkeypatch):
     host = Interactive(tmp_path, monkeypatch)
     host.launch(); host.ready(); delivered(host)
@@ -116,66 +193,3 @@ def test_same_launch_competing_no_report_remains_conflict(tmp_path, monkeypatch)
         host.controller.worker(host.state['run'], 'reconcile-handback',
             revision=host.state['revision'], grant=host.grant)
     assert not host.controller.report().get('task_results')
-
-
-@pytest.mark.parametrize('claimed', [False, True])
-def test_selected_startup_report_audit_handles_claimed_and_preclaim_failure(tmp_path, monkeypatch, claimed):
-    host = Interactive(tmp_path, monkeypatch)
-    host.launch()
-    if claimed:
-        host.ready()
-    event, _, note = delivered(host)
-    if claimed:
-        target = host.controller._path(); db = json.loads(target.read_text())
-        row = db['runs'][host.state['run']]['workers'][host.grant]
-        # Preserve the real acknowledged admission while modeling a startup
-        # failure after claim: no optional legacy handback_call slot exists.
-        report = row.pop('handback_call')
-        row['startup_handbacks'] = {event['tool_use_id']: report}
-        host.controller._write(target, db)
-    before = host.controller.report(diagnostics=False)
-    assert 'handback_call' not in before['workers'][host.grant]
-    result = host.controller.worker(host.state['run'], 'reconcile-handback',
-        revision=host.state['revision'], grant=host.grant)
-    row = host.row()
-    assert row['state'] == 'failed' and row['handback']['status'] == 'startup_failed'
-    assert not result['result_accepted']
-    selected = row['startup_handbacks'][event['tool_use_id']]
-    joined = [x for x in row['reconciliation_events'].values() if x['kind'] == 'stop_before_handback_joined']
-    assert joined[-1]['value']['admission'] == workers.digest(selected)
-    assert row['handback']['notification']['record_sha256'] == workers.digest(note)
-    stable = deepcopy(row)
-    host.controller.worker(host.state['run'], 'reconcile-handback', revision=host.state['revision'], grant=host.grant)
-    after = host.controller.report(diagnostics=False)
-    assert after['workers'][host.grant]['handback'] == stable['handback']
-    for key in ('decisions', 'visits', 'scope', 'task_results'):
-        assert after.get(key) == before.get(key)
-
-
-@pytest.mark.parametrize('defect', ['missing_ack', 'body', 'terminal_status', 'startup_reports', 'no_report'])
-def test_failed_startup_handback_replay_revalidates_original_native_evidence(tmp_path, monkeypatch, defect):
-    host = Interactive(tmp_path, monkeypatch)
-    host.launch()
-    event, _, _ = delivered(host)
-    result = host.controller.worker(host.state['run'], 'reconcile-handback',
-        revision=host.state['revision'], grant=host.grant)
-    assert result['state'] == 'failed' and not result['result_accepted']
-    target = host.controller._path(); db = json.loads(target.read_text())
-    row = db['runs'][host.state['run']]['workers'][host.grant]
-    if defect == 'missing_ack':
-        row['startup_handbacks'][event['tool_use_id']].pop('acknowledgment')
-    elif defect == 'body':
-        row['startup_handbacks'][event['tool_use_id']]['envelope']['body_digest'] = '0' * 64
-    elif defect == 'terminal_status':
-        row['terminal_status'] = 'completed'
-    elif defect == 'startup_reports':
-        row['startup_handbacks'] = {}
-    elif defect == 'no_report':
-        row['handback']['status'] = 'no_report'
-    host.controller._write(target, db)
-    before = target.read_bytes()
-    with pytest.raises(w.Refusal):
-        host.controller.worker(host.state['run'], 'reconcile-handback',
-            revision=host.state['revision'], grant=host.grant)
-    assert target.read_bytes() == before
-    assert not host.controller.report(diagnostics=False).get('task_results')

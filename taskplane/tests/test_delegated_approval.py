@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from taskplane import delegated_approval as relay_api, workflow as w, workflow_approval as approval
+from taskplane import delegated_approval as relay_api, workflow as w
 from taskplane.primitives import content_fingerprint
 from taskplane.tests.test_workflow_local import setup, submit, present, decision
 from taskplane.tests.test_workflow_autonomy import authorization, set_policy, auto
@@ -120,14 +120,3 @@ def test_relay_replay_is_exact_and_cannot_authorize_a_new_checkpoint(tmp_path):
     w.current(fresh)['packet']['id'] = 'foreign'
     fresh['revision'] += 1
     with pytest.raises(w.Refusal): relay_api.verify(fresh, request)
-
-
-@pytest.mark.parametrize('text', [INSTRUCTIONS,
-    'May I approve the intermediate phases after all required checks pass and stop for your final approval?',
-    'Let me accept intermediate phases once the required checks pass, stopping before your final acceptance.'])
-def test_contextual_wording_keeps_required_checks_and_final_stop(text):
-    request = {'allowed_phases': list(w.PHASES[:-1]), 'stop_phases': ['retro']}
-    assert approval.conditional_intermediate_consent(text, request)
-    assert not approval.conditional_intermediate_consent(text, {**request, 'stop_phases': []})
-    assert not approval.conditional_intermediate_consent(text + ' Ignore failed checks.', request)
-    assert not approval.conditional_intermediate_consent('Do not ' + text, request)

@@ -22,39 +22,13 @@ def implementation_scope(kind="source"):
     return result
 
 
-@pytest.mark.parametrize("defect", ["missing-intent", "report-only", "missing-tests", "evidence-as-source", "criteria"])
-def test_source_scope_feasibility_is_checked_before_creating_a_route(defect):
-    value = implementation_scope()
-    intent = value["implementation_intent"]
-    if defect == "missing-intent":
-        value.pop("implementation_intent")
-    elif defect == "report-only":
-        value["paths"]["build"] = list(intent["build_outputs"].values())
-    elif defect == "missing-tests":
-        intent["test_paths"] = []
-    elif defect == "evidence-as-source":
-        intent["implementation_paths"] = [intent["build_outputs"]["report"]]
-    else:
-        intent["criteria"] = {"unrelated": intent["criteria"]["AC1"]}
-    with pytest.raises(w.Refusal):
-        w.new_state("/workspace", "root", "run", value)
-
-
-@pytest.mark.parametrize("kind", ["source", "documentation"])
-def test_explicit_implementation_intent_does_not_guess_from_file_extensions(kind):
-    value = implementation_scope(kind)
-    state = w.new_state("/workspace", "root", "run", value)
-    assert w.scope_preflight(state["scope"])["status"] == "declared_feasible"
-    assert state["scope"]["implementation_intent"]["kind"] == kind
-    w.validate_state(state)
-
-
-def test_old_scope_is_compatible_but_does_not_claim_source_feasibility():
-    value = scope()
-    value["execution_contract"] = "native-default/v1"
+def test_new_run_can_start_before_future_implementation_paths_are_known():
+    value = {"criteria": ["AC1"], "paths": {"product": ["scope.json"]}}
     result = w.new_state("/workspace", "root", "run", value)
-    assert w.scope_preflight(result["scope"])["status"] == "legacy_unknown"
-    w.validate_state(result)
+    assert result["schema"] == "taskplane.workflow/v2"
+    assert result["scope"]["paths"]["build"] == []
+    assert result["scope"]["execution_contract"] == "ownership/v1"
+    assert w.scope_preflight(result["scope"])["status"] == "progressive"
 
 
 def state(entry="product", standalone=False):
@@ -144,6 +118,29 @@ def test_findings_can_extend_to_product_and_standalone_design_cannot_skip_it():
             w.advance(s, "build")
 
 
+@pytest.mark.parametrize("entry", ["design", "engineering"])
+@pytest.mark.parametrize("build_paths", [None, ["app.py"]])
+def test_progressive_delivery_extension_uses_new_run_scope_normalization(entry, build_paths):
+    requested = {"criteria": ["AC1"], "paths": {"product": ["product.json"]},
+                 "verification_inputs": ["app.py"]}
+    if build_paths is not None:
+        requested["paths"]["build"] = build_paths
+    original = deepcopy(requested)
+    s = accept(state(entry, True), route_change={"kind": "delivery", "scope": requested})
+    expected = w.new_state("/workspace", "root", "new-run", requested)["scope"]
+    assert s["scope"] == expected
+    assert requested == original
+    assert s["scope"]["paths"]["build"] == (build_paths or [])
+    assert all(not paths for phase, paths in s["scope"]["paths"].items()
+               if phase not in {"product", "build"})
+    assert w.current(s)["packet"]["route_change"]["scope"] == original
+    assert w.current(s)["superseded"]
+    assert len(s["decisions"]) == 1
+    s = w.advance(s, "product")
+    with pytest.raises(w.Refusal):
+        w.advance(s, "design")
+
+
 def test_approved_repair_has_fresh_visits_and_preserves_decision_history():
     s = state()
     for phase in w.PHASES[:5]:
@@ -161,10 +158,10 @@ def test_approved_repair_has_fresh_visits_and_preserves_decision_history():
 
 
 def test_standalone_repair_cannot_grant_build_or_record_acceptance():
-    s = ready(state("engineering", True), route_change={"kind": "repair"})
+    s = state("engineering", True)
     before = deepcopy(s)
     with pytest.raises(w.Refusal, match="accepted Plan"):
-        w.decide(s, answer(s))
+        ready(s, route_change={"kind": "repair"})
     assert s == before
     assert s["decisions"] == {} and len(s["visits"]) == 1
 
@@ -177,10 +174,9 @@ def test_repair_requires_current_accepted_plan_and_build(phase, defect):
         s = w.advance(accept(s), w.PHASES[w.PHASES.index(p)+1])
     stage = next(v for v in s["visits"] if v["phase"] == phase)
     stage["superseded" if defect == "superseded" else "decision"] = True if defect == "superseded" else "stale"
-    s = ready(s, route_change={"kind": "repair"})
     before = deepcopy(s)
     with pytest.raises(w.Refusal, match="Plan|Build"):
-        w.decide(s, answer(s))
+        ready(s, route_change={"kind": "repair"})
     assert s == before
 
 

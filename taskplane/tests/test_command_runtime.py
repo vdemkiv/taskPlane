@@ -76,7 +76,7 @@ def test_lost_native_ownership_cannot_be_cancelled(tmp_path):
 
 def recovery_fixture(tmp_path):
     from taskplane.context import Store
-    from taskplane.context_handoff import Session
+    from taskplane.context_handoff import binding
     from taskplane.context_views import summary
     from taskplane.tests.test_workflow_evidence import prepare
     from taskplane import workflow_evidence as evidence
@@ -86,29 +86,27 @@ def recovery_fixture(tmp_path):
     w.current(state)['packet']['context']['graph']['snapshot'] = {
         'files': {f'file-{i}.py': {'symbols': list(range(12)), 'digest': 'same'} for i in range(2000)}}
     store = Store(tmp_path)
-    session = Session(tmp_path, state)
+    read_binding = binding(state)
     result = summary(store, {'workflow': state, 'status': 'blocked',
         'reason': 'approval_required', 'detail': 'A human checkpoint decision is required.'},
-        'advance', session.descriptor())
+        'advance')
     ref = result['errors']['details']
-    roots = store.roots(session.read_binding)
-    store.register(session.read_binding, [store.put('unrelated', {'number': i})
+    roots = store.roots(read_binding)
+    store.register(read_binding, [store.put('unrelated', {'number': i})
                    for i in range(243 - len(roots))])
-    return state, store, session, ref
+    return state, store, read_binding, ref
 
 
-def test_recovery_opens_exact_source_bound_result_before_large_state_or_other_objects(tmp_path, monkeypatch):
-    from taskplane.context_handoff import binding
-    state, store, session, ref = recovery_fixture(tmp_path)
-    assert store.roots(binding(state)) == []
-    assert len(store.roots(session.read_binding)) == 243
+def test_recovery_opens_exact_registered_result_before_large_state_or_other_objects(tmp_path, monkeypatch):
+    state, store, read_binding, ref = recovery_fixture(tmp_path)
+    assert len(store.roots(read_binding)) == 243
     def scalar_count(value):
         return 1 + sum(map(scalar_count, value.values() if isinstance(value, dict)
                          else value if isinstance(value, list) else []))
     assert scalar_count(state) > 27576
     monkeypatch.setattr(c, '_retained_references', lambda _: pytest.fail('Unrelated state was scanned'))
     # A registered sibling need not be opened to inspect this exact result.
-    sibling = next(row for row in store.roots(session.read_binding) if row['kind'] == 'unrelated')
+    sibling = next(row for row in store.roots(read_binding) if row['kind'] == 'unrelated')
     store.path(sibling['sha256']).write_text('corrupt unrelated object')
     before = sorted(path.name for path in store.root.rglob('*.json'))
     result = c.inspect_recovery(tmp_path, state, 'result', ref['sha256'], 3, 11)
@@ -117,15 +115,12 @@ def test_recovery_opens_exact_source_bound_result_before_large_state_or_other_ob
     assert sorted(path.name for path in store.root.rglob('*.json')) == before
 
 
-@pytest.mark.parametrize('change', ['source', 'run', 'root', 'visit', 'revision', 'scope', 'generation'])
+@pytest.mark.parametrize('change', ['run', 'root', 'visit', 'scope'])
 def test_recovery_rejects_stale_or_foreign_registered_result(tmp_path, change):
     state, _, _, ref = recovery_fixture(tmp_path)
     changed = deepcopy(state)
-    if change == 'source': (tmp_path/'app.py').write_text('value = 2\n')
-    elif change == 'visit': changed['visits'][changed['index']]['id'] = 'another-visit'
+    if change == 'visit': changed['visits'][changed['index']]['id'] = 'another-visit'
     elif change == 'scope': changed['scope']['criteria'].append('another-criterion')
-    elif change == 'generation': changed['task_generation'] = 1
-    elif change == 'revision': changed['revision'] += 1
     else: changed[change] = 'foreign'
     with pytest.raises(w.Refusal, match='not registered'):
         c.inspect_recovery(tmp_path, changed, 'result', ref['sha256'])
@@ -134,10 +129,10 @@ def test_recovery_rejects_stale_or_foreign_registered_result(tmp_path, change):
 @pytest.mark.parametrize('damage', ['metadata', 'bytes', 'oversized', 'symlink', 'missing'])
 def test_recovery_validates_selected_registered_object(tmp_path, damage):
     from taskplane.context import OBJECT_LIMIT, digest
-    state, store, session, ref = recovery_fixture(tmp_path)
+    state, store, read_binding, ref = recovery_fixture(tmp_path)
     path = store.path(ref['sha256'])
     if damage == 'metadata':
-        index = store.root/'reads'/f'{digest(session.read_binding)}.json'
+        index = store.root/'reads'/f'{digest(read_binding)}.json'
         value = json.loads(index.read_text())
         next(row for row in value['roots'] if row['sha256'] == ref['sha256'])['kind'] = 'forged'
         index.write_text(json.dumps(value))

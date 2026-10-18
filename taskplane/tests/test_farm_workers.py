@@ -204,30 +204,11 @@ def test_revocation_and_stale_binding_are_not_revived(tmp_path):
     assert row['state'] == 'failed' and row['terminal_status'] == 'unavailable' and row['worker_id'] is None
     assert len(row['reconciliation_events']) == 3
     row.pop('revoked_at'); row.update(state='launch_pending', terminal_status=None)
-    state['revision'] += 1
+    state['scope']['criteria']=['changed-authority']
     assert workers.reconcile(tmp_path, state, row, answer)['status'] == 'historical'
     assert row['worker_id'] is None
 
 
-def test_parent_readiness_requires_current_actual_pair_and_zero_reservations(tmp_path):
-    state, _, _, _ = fixture(tmp_path)
-    state['workers'] = {}
-    before = deepcopy(state)
-    with pytest.raises(w.Refusal, match='ordinary admitted command'):
-        workers.prepare(tmp_path, state, 'task', {})
-    assert state == before
-    runtime = caps.runtime_identity()
-    proof = {'binding': binding(state), 'workspace': state['workspace'], 'root': state['root'],
-             'runtime': runtime, 'matched_call': 'parent-call', 'automatic': True,
-             'admitted': True, 'reference': 'automatic-hook/parent-call'}
-    state['parent_hook_readiness'] = proof
-    assert workers.parent_readiness(state)['status'] == 'ready'
-    for delta in [{'root': 'foreign'}, {'workspace': '/foreign'}, {'automatic': False},
-                  {'admitted': False}, {'matched_call': None}, {'mismatch': True},
-                  {'runtime': {'root': runtime['root'], 'member_sha256': {'old': 'bytes'}}},
-                  {'binding': {**binding(state), 'revision': 2}}]:
-        state['parent_hook_readiness'] = {**proof, **delta}
-        assert workers.parent_readiness(state)['status'] != 'ready'
 
 
 def test_installed_claude_invocation_never_uses_inherited_identity(tmp_path, monkeypatch):
@@ -353,17 +334,13 @@ def test_controller_concurrent_identity_claim_context_and_replay(tmp_path, monke
         with pytest.raises(w.Refusal): rewritten(event)  # consumed pre cannot issue again
     for i, ((updated, _), event) in enumerate(zip(issued, calls)):
         flow.hook({**event, 'hook_event_name':'PostToolUse', 'tool_input':updated})
-        assert workers.readiness(c.report()['workers'][items[i]['grant']['grant_id']])['status'] == 'pending'
+        assert workers.readiness(c.report()['workers'][items[i]['grant']['grant_id']])['status'] == 'ready'
         context = invocation_event(c, state, parent, actor=f'child-{i}', task=f'T{i}', call=f'context-{i}')
         _, argv = rewritten(context)
         descriptor = host.Controller.invoke_claude(argv)
-        drain = invocation_event(c, state, parent, actor=f'child-{i}', task=f'T{i}', call=f'drain-{i}',
-                                 extra=('--drain', descriptor['handoff_ref']['sha256']))
-        _, argv = rewritten(drain)
-        result = host.Controller.invoke_claude(argv)
-        assert result['done']
+        assert descriptor['schema'] == 'taskplane.brief/v1'
         row = c.report()['workers'][items[i]['grant']['grant_id']]
-        assert row['worker_id'] == f'child-{i}' and row['context_receipt']
+        assert row['worker_id'] == f'child-{i}' and row['claimed_at']
         ordinary = {**context, 'tool_name':'Read', 'tool_use_id':f'ready-{i}', 'tool_input':{'file_path':'input.py'}}
         flow.hook(ordinary); flow.hook({**ordinary, 'hook_event_name':'PostToolUse'})
         assert workers.readiness(c.report()['workers'][items[i]['grant']['grant_id']])['status'] == 'ready'
@@ -463,14 +440,14 @@ def test_genuine_root_context_gets_distinct_one_use_transport(tmp_path, monkeypa
 
 
 @requires_native_reader
-def test_handback_implicit_parent_readiness_and_unsupported_terminal(tmp_path, monkeypatch):
+def test_handback_requires_actual_claim_and_observed_terminal(tmp_path, monkeypatch):
     from taskplane import flow
     from taskplane.tests.test_worker_runtime import consume
     c, state, parent, items = integrated_claude(tmp_path, monkeypatch, count=1)
     consume(c, state, items[0]['grant'], 'child-0')
     base = invocation_event(c, state, parent)
     handback = {**base, 'tool_name':'SubagentHandback', 'tool_use_id':'return', 'tool_input':{'message':'T0.md contains fixture evidence'}}
-    with pytest.raises(w.Refusal, match='startup or ready context'): flow.hook(handback)
+    flow.hook(handback)  # Actual claim suffices; no parent readiness ritual.
     ready = {**base, 'tool_name':'Read', 'tool_use_id':'ready', 'tool_input':{'file_path':'input.py'}}
     flow.hook(ready); flow.hook({**ready,'hook_event_name':'PostToolUse'})
     for delta in [{'tool_input':{'message':'report','recipient':'sibling'}}, {'agent_id':'foreign'}, {'agent_id':None}]:
@@ -513,5 +490,5 @@ def test_direct_worker_context_requires_explicit_claim(tmp_path, monkeypatch):
     from taskplane import workflow_host as host
     c, state, _, _ = integrated_claude(tmp_path, monkeypatch, count=1)
     worker = host.Controller(tmp_path,'root',host.installed_adapter('claude'),principal='child-0')
-    with pytest.raises(w.Refusal, match='claimed task'):
+    with pytest.raises(w.Refusal, match='own task identity'):
         worker.context(state['run'], task='T0')

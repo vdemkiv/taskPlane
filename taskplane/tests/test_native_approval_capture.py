@@ -15,10 +15,10 @@ from taskplane.tests.test_workflow_local import setup, submit, decision, decide
 pytestmark = pytest.mark.skipif(not native.supported_reader(), reason='Native no-follow reads unavailable')
 
 
-def fixture(tmp_path, monkeypatch, *, text='approve'):
+def fixture(tmp_path, monkeypatch, *, text='approve', dashboard=True, pin=True):
     c, state = setup(tmp_path)
     c.adapter.name = 'claude'
-    state = submit(c, state)
+    state = submit(c, state, presentation=dashboard)
     home = tmp_path.parent / (tmp_path.name + '-native-home')
     monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(home / '.claude'))
@@ -36,7 +36,17 @@ def fixture(tmp_path, monkeypatch, *, text='approve'):
         path.write_text(''.join(json.dumps(r) + '\n' for r in [prefix, *rows]))
     write([shown, human])
     event = {'hook_event_name': 'UserPromptSubmit', 'host': 'claude', 'session_id': 'root',
-             'cwd': str(tmp_path), 'transcript_path': str(path), 'prompt': human['message']['content']}
+             'cwd': str(tmp_path), 'transcript_path': str(path), 'prompt': human['message']['content'],
+             'taskplane_semantic_choice':'approved'}
+    if pin:
+        # A native adapter can retain this explicit orchestrator observation.
+        # No special metadata is added to the original transcript records.
+        write([shown])
+        flow.hook(event, governor=c)
+        state = json.loads(c._path().read_text())['runs'][state['run']]
+        observed = approval.bind_presentation(state, host='claude', reference=shown['uuid'])
+        local.Harness(c.workspace, c.root).update(presentation=observed)
+        write([shown, human])
     return c, state, path, event, shown, human, write
 
 
@@ -59,32 +69,6 @@ def test_ordinary_chat_approval_derives_real_ids_and_preserves_original_presenta
     assert c.report(diagnostics=False)['decisions'] == after['decisions']
 
 
-@pytest.mark.parametrize('question', [
-    'Approve this Design checkpoint?',
-    'Only after CI passes. Approve this Product checkpoint?',
-    'Approve this Product checkpoint? Only after CI passes.',
-    'Do not approve it. Approve this Product checkpoint?',
-    'Review this Product checkpoint.',
-])
-def test_native_hook_validates_complete_original_question_before_approval(tmp_path, monkeypatch, question):
-    c, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch, text='yes')
-    checkpoint = w.binding(state, w.current(state)['packet'])['checkpoint']
-    shown['message']['content'] = f'Current checkpoint {checkpoint}.\n{question}'
-    write([shown, human])
-    original = path.read_bytes()
-    try:
-        flow.hook(event, governor=c)
-    except w.Refusal:
-        pass
-    else:
-        # A presentation with no acceptance question is already refused by
-        # capture, before it can produce an envelope for semantic validation.
-        observed = json.loads(c._path().read_text())['runs'][state['run']]
-        assert observed['native_approval_capture']['status'] == 'needs_clarification'
-    after = json.loads(c._path().read_text())['runs'][state['run']]
-    assert after['revision'] == state['revision'] and not after['decisions']
-    assert w.current(after)['decision'] == 'awaiting_human_approval'
-    assert path.read_bytes() == original
 
 
 def test_prompt_flush_is_deferred_then_captured_before_next_tool_guard(tmp_path, monkeypatch):
@@ -99,27 +83,20 @@ def test_prompt_flush_is_deferred_then_captured_before_next_tool_guard(tmp_path,
     assert c.report(diagnostics=False)['status'] == 'approved'
 
 
-@pytest.mark.parametrize('defect', ['wrong_id', 'quoted', 'conditional', 'third_party', 'stale',
-    'wrong_run', 'wrong_revision', 'foreign_session', 'later_presentation', 'newer_human', 'ambiguous', 'missing_id',
+@pytest.mark.parametrize('defect', ['wrong_binding', 'third_party', 'stale',
+    'foreign_session', 'later_presentation', 'missing_id',
     'malformed_message', 'newer_malformed', 'external_prompt'])
 def test_capture_rejects_nonhuman_stale_or_ambiguous_decisions(tmp_path, monkeypatch, defect):
     c, state, _, event, shown, human, write = fixture(tmp_path, monkeypatch)
     rows = [shown, human]
-    if defect == 'wrong_id': human['message']['content'] = 'Approve: ' + 'f' * 32
-    if defect == 'quoted': human['message']['content'] = '> approve'
-    if defect == 'conditional': human['message']['content'] = 'approve if tests pass'
+    if defect == 'wrong_binding':
+        pinned = local.Harness(c.workspace, c.root).read()['presentation']
+        pinned['binding']['checkpoint'] = 'f' * 32
+        local.Harness(c.workspace, c.root).update(presentation=pinned)
     if defect == 'third_party': human.update(origin={'kind': 'peer'}, turnOrigin='peer')
     if defect == 'stale': human['timestamp'] = '2000-01-01T00:00:00Z'
-    if defect == 'wrong_run': shown['message']['content'] = shown['message']['content'].replace(state['run'], 'f' * 32)
-    if defect == 'wrong_revision': shown['message']['content'] = shown['message']['content'].replace(f"revision {state['revision']}", 'revision 999')
     if defect == 'foreign_session': human['sessionId'] = 'foreign'
     if defect == 'later_presentation': rows.reverse()
-    if defect == 'newer_human':
-        latest = deepcopy(human); latest.update(uuid=str(uuid.uuid4()), timestamp=datetime.now(timezone.utc).isoformat())
-        latest['message']['content'] = 'I have another question'; rows.append(latest)
-    if defect == 'ambiguous':
-        shown['message']['content'] += '\n1. Approve Product\n2. Select another setting'
-        human['message']['content'] = 'yes'
     if defect == 'missing_id': human.pop('uuid')
     if defect == 'malformed_message': human['message'] = []
     if defect == 'newer_malformed':
@@ -137,13 +114,14 @@ def test_capture_rejects_nonhuman_stale_or_ambiguous_decisions(tmp_path, monkeyp
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
 @pytest.mark.parametrize('wrong', [False, True])
-def test_explicit_colon_checkpoint_uses_shared_semantics_and_exact_binding(tmp_path, host, wrong):
+def test_semantic_candidate_uses_structured_checkpoint_binding(tmp_path, host, wrong):
     c, state = setup(tmp_path); c.adapter.name = host; state = submit(c, state)
     checkpoint = w.binding(state, w.current(state)['packet'])['checkpoint']
     text = 'Approve: ' + ('f' * 32 if wrong else checkpoint)
     value = decision(state, text=text)
     if wrong:
-        with pytest.raises(w.Refusal, match='different checkpoint'): decide(c, state, value)
+        value['binding']['checkpoint'] = 'f' * 32
+        with pytest.raises(w.Refusal, match='binding'): decide(c, state, value)
     else:
         assert w.current(decide(c, state, value))['decision'] == 'approved'
 
@@ -159,6 +137,7 @@ def test_unavailable_host_and_child_never_read_arbitrary_transcripts(tmp_path, m
 def test_native_negative_decision_preserves_human_authority_despite_artifact_drift(tmp_path, monkeypatch, text, choice):
     c, state, _, event, _, human, _ = fixture(tmp_path, monkeypatch, text=text)
     (tmp_path / 'product.json').write_text('{}')
+    event['taskplane_semantic_choice']=choice
     flow.hook(event, governor=c)
     after = json.loads(c._path().read_text())['runs'][state['run']]
     assert after['decisions'][human['uuid']]['choice'] == choice
@@ -172,6 +151,8 @@ def test_large_old_history_does_not_block_recent_approval_or_enter_proof(tmp_pat
     old.update(uuid=str(uuid.uuid4()), timestamp='2000-01-01T00:00:00Z')
     old['message']['content'] = 'x' * size
     write([old, shown, human])
+    local.Harness(c.workspace, c.root).update(presentation=
+        approval.bind_presentation(state, host='claude', reference=shown['uuid']))
     original = path.read_bytes()
     flow.hook(event, governor=c)
     after = c.report(diagnostics=False)
@@ -232,13 +213,143 @@ def test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source(tmp
     _, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch)
     filler = {'type': 'progress', 'message': 'x' * 1024}
     write([shown, *[filler for _ in range(30)], human])
-    state['claude_transcript_source'] = native.select_source('root', event, automatic=True)['source']
     original = deepcopy(state)
     budget = native.ReadBudget(max_bytes=17000 if kind == 'bytes' else native.MAX_BYTES,
                                max_records=3 if kind == 'records' else native.MAX_RECORDS)
     real = native.ReadBudget
     monkeypatch.setattr(native, 'ReadBudget', lambda: budget)
-    assert approval.capture(state, host='claude', presentation={})['status'] == 'unsupported'
+    assert approval.capture(state, host='claude', presentation=local.Harness(tmp_path, 'root').read()['presentation'], semantic_choice='approved')['status'] == 'unsupported'
     assert state == original
     monkeypatch.setattr(native, 'ReadBudget', real)
-    assert approval.capture(state, host='claude', presentation={})['status'] == 'observed'
+    assert approval.capture(state, host='claude', presentation=local.Harness(tmp_path, 'root').read()['presentation'], semantic_choice='approved')['status'] == 'observed'
+
+
+def test_native_capture_needs_orchestrator_semantic_candidate(tmp_path,monkeypatch):
+    c,state,_,event,_,human,_=fixture(tmp_path,monkeypatch)
+    event.pop('taskplane_semantic_choice')
+    flow.hook(event,governor=c)
+    after=c.report(diagnostics=False)
+    assert after['status']=='awaiting_human_approval' and not after['decisions']
+    assert after['native_approval_capture']['status']=='semantic_candidate_required'
+    assert after['native_approval_capture']['excerpt']==human['message']['content']
+
+
+def test_bound_presentation_survives_intermediate_commentary_without_prose_rules(tmp_path, monkeypatch):
+    c, state, _, event, shown, human, write = fixture(tmp_path, monkeypatch,
+        text='Approve; related run ' + 'e' * 32 + ' remains separate.', dashboard=False)
+    shown['message']['content'] = 'Here is the proposed outcome, explained in ordinary prose.'
+    unrelated = deepcopy(shown)
+    unrelated.update(uuid=str(uuid.uuid4()))
+    unrelated['message']['content'] = 'The background download finished.'
+    write([shown, unrelated, human])
+    local.Harness(c.workspace, c.root).update(presentation=
+        approval.bind_presentation(state, host='claude', reference=shown['uuid']))
+    flow.hook(event, governor=c)
+    after = c.report(diagnostics=False)
+    assert after['status'] == 'approved'
+    proof = after['decisions'][human['uuid']]['provenance']
+    assert proof['excerpt'] == human['message']['content']
+    assert proof['presentation']['text'] == shown['message']['content']
+    assert proof['presentation']['reference'] == shown['uuid']
+
+
+@pytest.mark.parametrize('defect', ['missing', 'wrong_reference', 'wrong_checkpoint', 'wrong_semantic_target',
+                                  'prior_human', 'unrelated_question'])
+def test_unbound_presentation_never_substitutes_nearest_assistant_text(tmp_path, monkeypatch, defect):
+    c, state, _, event, shown, human, write = fixture(tmp_path, monkeypatch)
+    rows = [shown, human]
+    if defect == 'missing':
+        local.Harness(c.workspace, c.root).update(presentation=None)
+        shown['message']['content'] = 'The background download finished.'
+    elif defect in {'wrong_reference', 'wrong_checkpoint'}:
+        pinned = local.Harness(c.workspace, c.root).read()['presentation']
+        if defect == 'wrong_reference': pinned['reference'] = str(uuid.uuid4())
+        else: pinned['binding']['checkpoint'] = 'f' * 32
+        local.Harness(c.workspace, c.root).update(presentation=pinned)
+    elif defect == 'wrong_semantic_target':
+        event['taskplane_semantic_binding'] = {**w.binding(state, w.current(state)['packet']), 'checkpoint': 'f' * 32}
+    else:
+        previous = deepcopy(human)
+        previous.update(uuid=str(uuid.uuid4()))
+        rows.insert(1, previous)
+        if defect == 'unrelated_question':
+            unrelated = deepcopy(shown)
+            unrelated.update(uuid=str(uuid.uuid4()))
+            unrelated['message']['content'] = 'Would you like to open the downloaded file?'
+            rows.insert(2, unrelated)
+    write(rows)
+    flow.hook(event, governor=c)
+    after = c.report(diagnostics=False)
+    assert after['status'] == 'awaiting_human_approval' and not after['decisions']
+    if defect != 'wrong_semantic_target':
+        assert 'native message reference' in after['native_approval_capture']['reason']
+
+
+def test_verifier_rereads_exact_bound_presentation_source(tmp_path, monkeypatch):
+    c, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch)
+    state['claude_transcript_source'] = native.select_source('root', event, automatic=True)['source']
+    pin = {'binding': w.binding(state, w.current(state)['packet']), 'reference': shown['uuid']}
+    envelope = approval.capture(state, host='claude', presentation=pin, semantic_choice='approved')['decision']
+    assert approval.verify(envelope, state, 'claude', {})['excerpt'] == human['message']['content']
+    shown['message']['content'] = 'The background download finished.'
+    write([shown, human])
+    with pytest.raises(w.Refusal, match='proof changed'):
+        approval.verify(envelope, state, 'claude', {})
+
+
+def test_later_explicit_presentation_target_cannot_reuse_older_current_question(tmp_path, monkeypatch):
+    c, state, _, event, shown, human, write = fixture(tmp_path, monkeypatch)
+    later = deepcopy(shown)
+    later['uuid'] = str(uuid.uuid4())
+    local.Harness(c.workspace, c.root).update(presentation={
+        'binding': {**w.binding(state, w.current(state)['packet']), 'checkpoint': 'f' * 32},
+        'reference': later['uuid']})
+    later['message']['content'] = 'Here is the later Design proposal.'
+    write([shown, later, human])
+    flow.hook(event, governor=c)
+    after = c.report(diagnostics=False)
+    assert after['status'] == 'awaiting_human_approval' and not after['decisions']
+    assert after['native_approval_capture']['status'] == 'conflict'
+
+
+
+def test_flow_decide_accepts_native_envelope_without_dashboard_or_transcript_metadata(tmp_path, monkeypatch, capsys):
+    c, state, _, _, shown, human, _ = fixture(tmp_path, monkeypatch, dashboard=False)
+    local.Harness(c.workspace, c.root).update(presentation=None)
+    pin = approval.bind_presentation(state, host='claude', reference=shown['uuid'])
+    observed = approval.capture(state, host='claude', presentation=pin, semantic_choice='approved')
+    assert observed['status'] == 'observed'
+    assert flow.main(['decide', '--workspace', str(tmp_path), '--run', state['run'],
+        '--expected-revision', str(state['revision']), '--decision-json', json.dumps(observed['decision'])],
+        compact=True, governor=c) == 0
+    capsys.readouterr()
+    proof = c.report(diagnostics=False)['decisions'][human['uuid']]['provenance']
+    assert proof['presentation']['reference'] == shown['uuid']
+    assert proof['presentation']['text'] == shown['message']['content']
+
+
+def test_explicit_native_envelope_verifies_own_pin_without_harness_presentation(tmp_path, monkeypatch):
+    c, state, _, _, shown, human, _ = fixture(tmp_path, monkeypatch, dashboard=False)
+    local.Harness(c.workspace, c.root).update(presentation=None)
+    pin = {'binding': w.binding(state, w.current(state)['packet']), 'reference': shown['uuid']}
+    envelope = approval.capture(state, host='claude', presentation=pin, semantic_choice='approved')['decision']
+    after = decide(c, state, envelope)
+    proof = after['decisions'][human['uuid']]['provenance']
+    assert proof['presentation']['text'] == shown['message']['content']
+    assert proof['native_proof'] == envelope['native_proof']
+
+
+@pytest.mark.parametrize('defect', ['missing', 'human_reference', 'stale', 'foreign_session', 'body_tool'])
+def test_bind_message_rejects_wrong_or_unavailable_native_sources(tmp_path, monkeypatch, defect):
+    c, state, _, _, shown, human, write = fixture(tmp_path, monkeypatch)
+    reference = shown['uuid']
+    if defect == 'missing': reference = str(uuid.uuid4())
+    elif defect == 'human_reference': reference = human['uuid']
+    elif defect == 'stale': shown['timestamp'] = '2000-01-01T00:00:00Z'
+    elif defect == 'foreign_session': shown['sessionId'] = 'other'
+    elif defect == 'body_tool': shown['message']['content'] = [{'type': 'tool_use', 'name': 'Read'}]
+    write([shown, human])
+    before = local.Harness(c.workspace, c.root).read()
+    with pytest.raises(w.Refusal):
+        approval.bind_presentation(state, host='claude', reference=reference)
+    assert local.Harness(c.workspace, c.root).read() == before

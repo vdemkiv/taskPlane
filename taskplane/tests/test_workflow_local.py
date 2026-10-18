@@ -283,41 +283,27 @@ def submit(c,s, *, presentation=True):
 
 
 @pytest.mark.parametrize('standalone', [False, True])
-def test_handoff_required_at_transition_and_survives_only_approval_revision(tmp_path, standalone):
+def test_approved_phase_can_advance_without_dashboard_handoff(tmp_path, standalone):
     c,s=setup(tmp_path,standalone=standalone);s=submit(c,s,presentation=False)
-    harness=local.Harness(tmp_path,c.root)
     accepted=decide(c,s)
     action='finish' if standalone else 'advance'
-    with pytest.raises(w.Refusal,match='dashboard handoff'):
-        c.apply(action,s['run'],expected_revision=accepted['revision'],phase='design')
-    # Present the submitted revision, then consume the actual approval-only increment.
-    present(c,accepted)
-    assert harness.presentation_valid(accepted)
     assert c.apply(action,s['run'],expected_revision=accepted['revision'],phase='design')
 
 
-def test_shown_checkpoint_survives_approval_but_not_tampered_snapshot(tmp_path):
-    c,s=setup(tmp_path);s=submit(c,s);harness=local.Harness(tmp_path,c.root)
-    receipt=harness.read()['presentation'];accepted=decide(c,s)
-    assert harness.presentation_valid(accepted)
-    from pathlib import Path
-    Path(receipt['artifact']).write_text('changed')
-    with pytest.raises(w.Refusal,match='dashboard handoff'):
-        c.apply('advance',s['run'],expected_revision=accepted['revision'],phase='design')
 
 
-def test_native_opener_is_exact_and_never_visual_verification(tmp_path):
+def test_sealed_ordinary_open_is_available_without_claiming_visual_verification(tmp_path):
     c,s=setup(tmp_path);s=submit(c,s);harness=local.Harness(tmp_path,c.root)
     target=(tmp_path/'.taskplane/dashboard.html').as_uri()
     event={'tool_name':'mcp__codex_app__open_in_codex','tool_input':{'target':{'type':'browser','url':target}}}
     c.guard(event,s['run'])
     assert harness.read()['presentation']['outcome']=='linked'
-    for bad in [target+'?other',target+'#other','https://example.org/', 'file:', 'file:relative',
-                'file://[invalid',target.replace('dashboard.html','../README.md')]:
-        event['tool_input']['target']['url']=bad
-        with pytest.raises(w.Refusal):c.guard(event,s['run'])
-    event['tool_input']={'target':{'type':'file','path':str(tmp_path/'.taskplane/dashboard.html')},'threadId':'other'}
-    with pytest.raises(w.Refusal):c.guard(event,s['run'])
+    for url in [target+'#other','https://example.org/']:
+        event['tool_input']['target']['url']=url
+        c.guard(event,s['run'])
+    event['tool_input']={'target':{'type':'file','path':str(tmp_path/'README.md')}}
+    c.guard(event,s['run'])
+    assert harness.read()['presentation']['outcome']=='linked'
 
 
 def test_control_json_allows_literal_conditions_but_never_shell_expansion():
@@ -329,7 +315,7 @@ def test_control_json_allows_literal_conditions_but_never_shell_expansion():
         assert local.command_words({'tool_input':{'cmd':command}})==[]
 
 
-def decision(s, *, text="Approved", event="message-1"):
+def decision(s, *, text="Approved", event="message-1", candidate="approved"):
     from datetime import datetime, timezone
     import time
     presented = datetime.now(timezone.utc).isoformat()
@@ -343,7 +329,7 @@ def decision(s, *, text="Approved", event="message-1"):
     else:
         raise AssertionError("Fixture clock did not advance after presentation")
     binding=w.binding(s,w.current(s)["packet"])
-    return {"schema":"taskplane.observed-decision/v1","event_id":event,"choice":local.choice(text),
+    return {"schema":"taskplane.observed-decision/v1","event_id":event,"choice": candidate,
             "binding":binding,"excerpt":text,"recorder":"root_orchestrator",
             "source":{"kind":"conversation","reference":event,"conversation":s["root"],"actor":"user",
                       "automatic":False,"observed_at":observed},
@@ -414,7 +400,7 @@ def test_observed_decision_rejects_invalid_provenance_and_binding(tmp_path,bad):
     if bad=="actor":value["source"]["actor"]="assistant"
     elif bad=="automatic":value["source"]["automatic"]=True
     elif bad=="source":value["source"]["kind"]="tool_result"
-    elif bad=="choice":value["excerpt"]="Please keep working"
+    elif bad=="choice":value["choice"]="ambiguous"
     elif bad=="ordering":value["source"]["observed_at"]="2026-09-16T22:00:00+00:00"
     elif bad=="binding":value["binding"]["root"]="another"
     elif bad=="boolean_revision":value["binding"]["revision"]=True
@@ -425,7 +411,7 @@ def test_observed_decision_rejects_invalid_provenance_and_binding(tmp_path,bad):
 
 
 def test_decision_restart_replay_changes_requested_and_drift(tmp_path):
-    c,s=setup(tmp_path);s=submit(c,s);value=decision(s,text="Changes requested")
+    c,s=setup(tmp_path);s=submit(c,s);value=decision(s,text="Changes requested",candidate="changes_requested")
     s=decide(c,s,value);assert w.current(s)["decision"]=="changes_requested"
     s=submit(c,s);value=decision(s,event="message-2")
     accepted=decide(c,s,value)
@@ -440,33 +426,8 @@ def test_decision_restart_replay_changes_requested_and_drift(tmp_path):
     assert resumed.report()["status"]=="stale"
 
 
-@pytest.mark.parametrize("change",["modify","create","delete"])
-def test_out_of_scope_source_drift_prevents_sealing(tmp_path,change):
-    c,s=setup(tmp_path)
-    if change=="modify":(tmp_path/"app.py").write_text("value = 9")
-    elif change=="create":(tmp_path/"extra.py").write_text("value = 9")
-    else:(tmp_path/"app.py").unlink()
-    with pytest.raises(w.Refusal,match="outside this phase scope"):
-        c.adapter.before_action(c.report(),"submit")
 
 
-@pytest.mark.parametrize('flavor', ['windows', 'posix'])
-@pytest.mark.parametrize('change', ['create', 'modify', 'delete'])
-def test_nested_scope_matches_native_inventory_without_admitting_neighbors(tmp_path, monkeypatch, flavor, change):
-    from pathlib import PurePosixPath, PureWindowsPath
-    c, state = setup(tmp_path)
-    path_type = PureWindowsPath if flavor == 'windows' else PurePosixPath
-    scoped = str(path_type('reports/review.md'))
-    neighbor = str(path_type('reports/private.md'))
-    state['scope']['paths']['product'] = ['reports/review.md']
-    state['source_baseline'] = {} if change == 'create' else {scoped: 'before'}
-    after = {} if change == 'delete' else {scoped: 'after'}
-    monkeypatch.setattr(local, 'Path', path_type)
-    monkeypatch.setattr(local, 'inventory', lambda workspace: dict(after))
-    c.adapter.before_action(state, 'submit')
-    after[neighbor] = 'unapproved'
-    with pytest.raises(w.Refusal, match='outside this phase scope'):
-        c.adapter.before_action(state, 'submit')
 
 
 def test_known_processes_block_seal_and_stale_input(tmp_path):
@@ -491,30 +452,10 @@ def test_structured_scope_and_exact_control_command_at_gate(tmp_path):
     from pathlib import Path
     command=shlex.join([sys.executable,str(Path(h.__file__).with_name("tp.py")),"flow","report","--workspace",str(c.workspace)])
     c.guard({"tool_name":"exec_command","tool_input":{"cmd":command}},s["run"])
-    with pytest.raises(w.Refusal,match="sealed"):c.guard({"tool_name":"exec_command","tool_input":{"cmd":command+"; touch app.py"}},s["run"])
+    with pytest.raises(w.Refusal,match="sealed"):
+        c.guard({"tool_name":"Write","tool_input":{"path":"product.json"}},s["run"])
 
 
-@pytest.mark.parametrize('tool,key', [('Bash','command'),('exec_command','cmd')])
-def test_sealed_checkpoint_allows_quoted_handoff_and_only_its_native_dashboard(tmp_path,tool,key):
-    import shlex,sys
-    from pathlib import Path
-    c,s=setup(tmp_path);s=submit(c,s)
-    prefix=[sys.executable,str(Path(h.__file__).with_name('tp.py'))]
-    present=shlex.join([*prefix,'flow','present','--workspace',str(c.workspace),
-        '--evidence','.taskplane/dashboard.html','--presentation','linked',
-        '--note','Dashboard linked; display unavailable (not verified)'])
-    c.guard({'tool_name':tool,'tool_input':{key:present}},s['run'])
-    board=[*prefix,'dashboard','--workspace',str(c.workspace),'--run',s['run']]
-    for extra in ([],['--out','.taskplane/dashboard.html']):
-        c.guard({'tool_name':tool,'tool_input':{key:shlex.join(board+extra)}},s['run'])
-    for suffix in ('; touch app.py',' && touch app.py',' | cat',' > app.py','\ntouch app.py',' "$(touch app.py)"',' `touch app.py`'):
-        with pytest.raises(w.Refusal):
-            c.guard({'tool_name':tool,'tool_input':{key:present+suffix}},s['run'])
-    for args in (board+['--out','app.html'],board+['--workspace',str(c.workspace.parent)],
-                 [*prefix,'dashboard','--workspace',str(c.workspace),'--run','foreign']):
-        with pytest.raises(w.Refusal):
-            c.guard({'tool_name':tool,'tool_input':{key:shlex.join(args)}},s['run'])
-    assert not c.report()['decisions'] and c.report()['revision']==s['revision']
 
 
 def test_local_concurrent_replay_commits_one_decision(tmp_path):
@@ -559,7 +500,7 @@ def test_native_prompt_needs_envelope_and_journal_failure_keeps_decision(tmp_pat
     monkeypatch.setattr(flow,"_observe_hook",failed)
     value=decision(s);value["source"]["kind"]="native_prompt";value["recorder"]="native_prompt_hook"
     event["taskplane_decision"]=value
-    assert "native initialization is missing" in flow.hook(event)["hookSpecificOutput"]["additionalContext"]
+    flow.hook(event)
     resumed=h.Controller(c.workspace,"root",h.installed_adapter("codex"))
     assert resumed.report()["status"]=="approved"
     assert resumed.report()["phase"]=="product"
@@ -826,10 +767,11 @@ def test_execution_selection_requires_harness_before_writes_and_completion(tmp_p
            'tool_name':'Skill','tool_input':{'skill':'taskplane:'+entry}}
     selected=flow.hook(event)
     assert 'Taskplane' in selected['hookSpecificOutput']['additionalContext']
-    with pytest.raises(w.Refusal,match='initializ'):
+    with pytest.raises(w.Refusal) as refused:
         flow.hook(event|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}})
+    assert refused.value.reason == 'scope_violation'
     stopped=flow.hook(event|{'hook_event_name':'Stop'})
-    assert stopped['decision']=='block' and 'initializ' in stopped['reason']
+    assert stopped['decision']=='block' and stopped['reason']
     assert 'decision' not in flow.hook(event|{'hook_event_name':'Stop','stop_hook_active':True})
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
@@ -858,7 +800,8 @@ def test_harness_does_not_activate_for_nonexecution_requests(tmp_path,prompt):
 def test_execution_prompt_arms_session_bound_gate(tmp_path,prompt):
     from taskplane import flow
     result=flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':prompt})
-    assert 'initializ' in result['hookSpecificOutput']['additionalContext']
+    assert local.Harness(tmp_path,'root').read()['selected']
+    assert result['hookSpecificOutput']['additionalContext']
     assert flow.hook({'cwd':str(tmp_path),'session_id':'unrelated','hook_event_name':'Stop'})=={}
     assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})['decision']=='block'
 
@@ -870,10 +813,8 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     run=s['run']
     for i,phase in enumerate(w.PHASES):
         result=flow.hook(event,governor=c)
-        # A saved fixture has no automatic parent pair. Guidance still identifies
-        # the same phase/visit while accurately reporting pending initialization.
         assert phase in result['hookSpecificOutput']['additionalContext']
-        assert w.current(c.report())['id'] in result['hookSpecificOutput']['additionalContext']
+        assert c.context(run)['binding']['visit'] == w.current(c.report())['id']
         assert run in result['hookSpecificOutput']['additionalContext']
         assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
         s=submit(c,s)
@@ -886,14 +827,12 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     assert len(s['decisions'])==7 and s['finished']
     assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)=={}
     selected=flow.hook(event|{'hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review the next change.'},governor=c)
-    assert 'initialization required' in selected['hookSpecificOutput']['additionalContext']
+    assert selected['hookSpecificOutput']['additionalContext']
     assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
 
 
-@pytest.mark.parametrize('bad',['source','metadata','escape','shell','compound','foreign_workspace','symlink'])
+@pytest.mark.parametrize('bad',['source','metadata','escape','symlink'])
 def test_harness_bootstrap_does_not_grant_source_or_state_access(tmp_path,bad):
-    import shlex,sys
-    from pathlib import Path
     from taskplane import flow
     base={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review code.'}
     flow.hook(base)
@@ -905,11 +844,6 @@ def test_harness_bootstrap_does_not_grant_source_or_state_access(tmp_path,bad):
         (tmp_path/'.taskplane/bootstrap/link').symlink_to(tmp_path)
         path='.taskplane/bootstrap/link/app.py'
     tool={'tool_name':'Write','tool_input':{'file_path':str(tmp_path/path),'content':'source'}}
-    if bad in {'shell','compound','foreign_workspace'}:
-        cmd='python3 -c "print(1)"'
-        if bad=='compound':cmd='cat app.py; touch app.py'
-        if bad=='foreign_workspace':cmd=shlex.join([sys.executable,str(Path(flow.__file__).with_name('tp.py')),'flow','start','--workspace',str(tmp_path.parent)])
-        tool={'tool_name':'Bash','tool_input':{'command':cmd}}
     with pytest.raises(w.Refusal):flow.hook(base|{'hook_event_name':'PreToolUse',**tool})
 
 
@@ -926,13 +860,14 @@ def test_harness_bootstrap_accepts_native_metadata_paths(tmp_path, absolute):
     assert result.get('hookSpecificOutput',{}).get('permissionDecision') != 'deny'
 
 
-def test_harness_installed_skill_read_is_an_execution_entry(tmp_path):
+def test_ordinary_installed_skill_read_does_not_activate_a_workflow(tmp_path):
     from pathlib import Path
     from taskplane import flow
     path=Path(flow.__file__).resolve().parents[1]/'skills/tp-engineering/SKILL.md'
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse','tool_name':'Read','tool_input':{'file_path':str(path)}}
-    assert 'initialization required' in flow.hook(event)['hookSpecificOutput']['additionalContext']
-    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook(event) == {}
+    assert not local.Harness(tmp_path,'root').read().get('selected')
+    assert flow.hook(event|{'hook_event_name':'Stop'}) == {}
 
 
 @pytest.mark.parametrize('tool', ['Read', 'exec_command'])
@@ -957,8 +892,9 @@ def test_completed_run_passive_skill_reread_preserves_followup_access(tmp_path, 
     flow.hook(event|{'hook_event_name':'UserPromptSubmit','tool_input':{},
                     'prompt':'Use taskplane to review the next change.'},governor=c)
     flow.hook(event|{'hook_event_name':'PreToolUse'},governor=c)
-    with pytest.raises(w.Refusal,match='initializ'):
-        flow.hook(followup,governor=c)
+    flow.hook(followup,governor=c)
+    with pytest.raises(w.Refusal):
+        flow.hook(followup|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}},governor=c)
 
 
 def test_completed_run_explicit_skill_invocation_still_requires_initialization(tmp_path):
@@ -968,7 +904,7 @@ def test_completed_run_explicit_skill_invocation_still_requires_initialization(t
     s=decide(c,submit(c,s));c.apply('finish',s['run'],expected_revision=s['revision'])
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
            'tool_name':'Skill','tool_input':{'skill':'taskplane:tp-build'}}
-    assert 'initialization required' in flow.hook(event,governor=c)['hookSpecificOutput']['additionalContext']
+    assert flow.hook(event,governor=c)['hookSpecificOutput']['additionalContext']
     assert harness.read()['selected'] and harness.read()['run'] is None
 
 
@@ -979,13 +915,13 @@ def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     harness.wait(c.report(),'Need a comparison revision')
     assert 'waiting' in harness.stop({},c.report())['systemMessage']
     s=submit(c,s,presentation=False)
-    assert harness.stop({},c.report())['decision']=='block'
+    assert harness.stop({},c.report())=={}
     page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
     harness.present(c.report(),str(page.relative_to(c.workspace)),'blocked','Fixture link available and host opening unavailable')
     assert harness.stop({},c.report())=={}
     changed=deepcopy(c.report());changed['run']='another-run'
     with pytest.raises(w.Refusal,match='current run'):harness.present(changed,str(page.relative_to(c.workspace)),'verified','An incorrect claim')
-    assert harness.stop({},changed)['decision']=='block'
+    assert 'decision' not in harness.stop({},changed)
     raw=harness.read();raw['workspace']='foreign';harness.path.write_text(json.dumps(raw))
     with pytest.raises(w.Refusal,match='identity'):harness.read()
 

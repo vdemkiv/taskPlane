@@ -226,22 +226,19 @@ def test_exact_notice_without_observed_native_trigger_stays_blocked(tmp_path, mo
     assert host.row()['state'] == 'running'
 
 
-def test_corrected_runtime_revalidates_historical_proof_without_rewriting_it(tmp_path, monkeypatch):
+def test_package_switch_refuses_mutation_and_preserves_original_native_proof(tmp_path, monkeypatch):
     from taskplane import host_capabilities
     host = Interactive(tmp_path, monkeypatch)
-    host.launch()
-    host.ready()
-    delivered(host)
+    host.launch(); host.ready(); delivered(host)
     before = deepcopy(host.row())
-    corrected = deepcopy(host_capabilities.runtime_identity())
-    corrected['root'] = '/verified/new-version'
-    corrected['member_sha256'] = {key: '1' * 64 for key in corrected['member_sha256']}
-    monkeypatch.setattr(host_capabilities, 'runtime_identity', lambda: corrected)
+    foreign = {**host_capabilities.runtime_identity(), 'root':'/foreign-package', 'package_id':'foreign'}
+    with monkeypatch.context() as patched:
+        patched.setattr(host_capabilities, 'runtime_identity', lambda: foreign)
+        with pytest.raises(w.Refusal, match='installation/package'):
+            host.controller.worker(host.state['run'], 'reconcile-handback',
+                revision=host.state['revision'], grant=host.grant)
+        assert host.row() == before
     host.controller.worker(host.state['run'], 'reconcile-handback',
         revision=host.state['revision'], grant=host.grant)
-    row = host.row()
-    assert row['expected_runtime'] == before['expected_runtime'] != corrected
-    assert row['handback_call'] == before['handback_call']
-    assert row['handback']['admission']['runtime'] == before['expected_runtime']
-    assert workers.readiness(row)['status'] == 'ready'
+    assert host.row()['handback_call'] == before['handback_call']
     host.accept()

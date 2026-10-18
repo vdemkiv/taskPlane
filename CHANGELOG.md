@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.34.1 — hook and approval boundary repairs
+
+- Make unavailable or failed hook launches diagnostic at Stop and structured denials at PreToolUse, including stale populated runtime paths.
+- Keep reviewed GitHub, CI and Codex status readers available at checkpoints; retain lifecycle-specific worktree recovery admission.
+- Bind Claude presentation capture to an observed native message and the current checkpoint, without presentation wording rules or transcript edits.
+- Remove lexical checkpoint-ID guessing, English skip-reason identity, relay completion prose and the arbitrary retry-reason minimum.
+- Reuse scoped CI source fingerprints instead of scanning the whole workspace when writing ordinary reports.
+- Allow authorized owned-source edits in native briefs and accepted results while retaining read-dependency freshness and output-integrity checks.
+- Remove associated obsolete assertions and dead receipt-accounting metadata; label the frozen Workflow Builder inspector as historical.
+- Preserve explicit target provenance, replay checks, actual capability evidence, relevant-input freshness, package integrity and native completion.
+
+Local fixture and package results remain distinct from Windows CI and live installed-host acceptance.
+
+## 2.34.0 — compact delivery candidate
+
+- Keep seven separate human phase approvals and interpret ordinary contextual intent with provenance, chronology and replay checks.
+- Replace new-run context receipts, startup accounting, compulsory worker fan-out and unrelated-file acknowledgements with durable briefs and scoped ownership.
+- Make graphs, dashboard display, telemetry and prevalidation optional; seal concrete phase results directly.
+- Preserve relevant-input freshness, immutable verification attempts, safe structured writes, native completion and historical records.
+- Repair task phase ordering, Evaluate selection, latest fail/unknown propagation, route eligibility, native lock failure, imported inactive binding and diagnostic Stop fallback.
+- Preserve producing packet context through verification execution and reuse; draft packets and sibling Evaluate logs no longer invalidate successful checks, including captured-history retries and recovery.
+- Keep genuine source, configuration and generated-artifact reads bound while rejecting foreign or malformed history roles.
+- Remove associated obsolete tests/callers and align both host packages, current workflow seeds and operational documentation.
+
+This is a source/package candidate. Installation, live Codex/Claude acceptance, platform coverage and publication require their own observed evidence. Existing 2.33.11 runs are historical/read-only in the candidate and are not silently migrated.
+
 ## 2.33.11 — functional repair candidate
 
 - Validate the complete original approval question across supported transports. Accept an explicit current-phase approval followed by next-phase continuation, and resolve exact retries without approving another checkpoint.

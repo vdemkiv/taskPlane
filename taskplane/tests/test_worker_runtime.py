@@ -6,7 +6,7 @@ from copy import deepcopy
 import pytest
 
 from taskplane import workflow as w, workflow_host as h, worker_runtime as wr
-from taskplane.context_handoff import Session, consume_required
+from taskplane.context_handoff import Brief
 
 
 def setup(tmp_path, count=4, scoped_input=False, extra_inputs=()):
@@ -41,7 +41,6 @@ def parent_pair(c):
 
 
 def reserve(c, s, task='T0', slots=5, **extra):
-    parent_pair(c)
     return c.worker(s['run'], 'prepare', revision=s['revision'], task=task,
                     request={'capacity':dict(host_slots=slots, includes_root=True, reference='fixture/capacity'), **extra})
 
@@ -171,9 +170,6 @@ def consume(c, s, row, child):
     worker = h.Controller(c.workspace, c.root, h.installed_adapter('codex'), principal=child)
     worker.worker(s['run'], 'claim', grant=row['grant_id'])
     context = worker.context(s['run'], task=row['task_id'])
-    result = worker.context(s['run'], task=row['task_id'], consume=context['handoff_ref']['sha256'])
-    while result['remaining_required']:
-        result = worker.context(s['run'], task=row['task_id'], read_required=context['handoff_ref']['sha256'])
     return worker
 
 
@@ -187,13 +183,11 @@ def complete(c, s, prepared, child):
                     checks=[dict(name='Fixture verification', status='pass', evidence=task+'.md')]))
 
 
-def scoped(c, s, tmp_path, readiness=False, budget=131072):
+def scoped(c, s, tmp_path):
     rows = deepcopy(s['initial_context_tasks'])
     for row in rows:
-        row.update(execution='native_required', read_inputs=['input.py'], context_budget_bytes=budget, purpose='Focused fixture review')
+        row.update(execution='native_required', read_inputs=['input.py'], purpose='Focused fixture review')
     rows[1]['read_inputs'] = ['other.py']
-    if readiness:
-        rows[1]['readiness_after'] = ['T0']
     (tmp_path/'.taskplane/scoped-tasks.json').write_text(json.dumps({'tasks': rows}))
     return c.update_tasks(s['run'], s['revision'], '.taskplane/scoped-tasks.json')
 
@@ -201,6 +195,12 @@ def scoped(c, s, tmp_path, readiness=False, budget=131072):
 def test_scoped_inputs_preserve_unaffected_native_results(tmp_path):
     c, s = setup(tmp_path, count=2, scoped_input=True, extra_inputs=['other.py'])
     s = scoped(c, s, tmp_path)
+    rows = json.loads((tmp_path/'.taskplane/scoped-tasks.json').read_text())['tasks']
+    for row in rows[:2]:
+        row['read_inputs'].extend(row['paths'])
+        (tmp_path / row['paths'][0]).write_text('Original owned source\n')
+    (tmp_path/'.taskplane/scoped-tasks.json').write_text(json.dumps({'tasks': rows}))
+    s = c.update_tasks(s['run'], s['revision'], '.taskplane/scoped-tasks.json')
     a = reserve(c, s, 'T0')
     launch(c, s, a, 'native-a'); consume(c, s, a['grant'], 'native-a')
     event = dict(session_id='native-a', call_id='ready', tool_name='exec_command',
@@ -215,11 +215,19 @@ def test_scoped_inputs_preserve_unaffected_native_results(tmp_path):
     for item, child in [(a, 'native-a'), (b, 'native-b')]:
         complete(c, s, item, child)
     state = c.report()
+    assert wr.result_valid(tmp_path, state, 'T0')
+    assert wr.result_valid(tmp_path, state, 'T1')
+    brief = wr.worker_session(tmp_path, state, state['workers'][a['grant']['grant_id']]).body
+    assert next(row for row in brief['inputs'] if row['path'] == 'T0.md')['status'] == 'available'
     (tmp_path/'input.py').write_text('value = 2\n')
     assert not wr.result_valid(tmp_path, state, 'T0')
+    with pytest.raises(w.Refusal, match='read dependencies'):
+        wr.worker_session(tmp_path, state, state['workers'][a['grant']['grant_id']])
     assert wr.result_valid(tmp_path, state, 'T1')
     state['revision'] += 1
-    assert not wr.result_valid(tmp_path, state, 'T1')  # No receipt/authority transfer.
+    assert wr.result_valid(tmp_path, state, 'T1')  # Progress revision is not an input change.
+    (tmp_path/'T1.md').write_text('Unverified later output\n')
+    assert not wr.result_valid(tmp_path, state, 'T1')
 
 
 @pytest.mark.parametrize('fork', [None, 'all', '1'])
@@ -235,56 +243,22 @@ def test_spawn_requires_explicit_no_history(tmp_path, fork):
     assert c.report()['workers'][item['grant']['grant_id']]['state'] == 'prepared'
 
 
-@pytest.mark.parametrize('explicit', [False, True])
-def test_cohort_requires_claim_context_and_matching_automatic_pair(tmp_path, explicit):
-    c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
-    s = scoped(c, s, tmp_path, readiness=explicit)
-    if explicit:
-        with pytest.raises(w.Refusal, match='startup'):
-            reserve(c, s, 'T1')
-    a = reserve(c, s, 'T0'); launch(c, s, a, 'native-a')
-    consume(c, s, a['grant'], 'native-a')
-    with pytest.raises(w.Refusal, match='startup'):
-        reserve(c, s, 'T1')
-    event = dict(hook_event_name='PreToolUse', session_id='native-a', call_id='child-context',
-        tool_name='exec_command', taskplane_observed_binding={'root':'root','principal':'native-a'},
-        taskplane_runtime_identity=a['grant']['expected_runtime'])
-    c.observe(event, s['run'])
-    with pytest.raises(w.Refusal, match='startup'):
-        reserve(c, s, 'T1')  # Pre alone is never readiness.
-    c.observe({**event, 'hook_event_name':'PostToolUse'}, s['run'])
-    b = reserve(c, s, 'T1'); launch(c, s, b, 'native-b')
-    status = c.worker(s['run'], 'status')
-    assert status['live'] == 2 and status['counts']['launched'] == 2
-    assert next(row for row in status['attempts'] if row['task_id'] == 'T0')['readiness']['status'] == 'ready'
-    assert status['context_cost']['returned_bytes'] > 0
-    c.observe({**event, 'taskplane_runtime_identity':{**a['grant']['expected_runtime'], 'root':'/stale/runtime'}}, s['run'])
-    assert wr.readiness(c.report()['workers'][a['grant']['grant_id']])['status'] == 'pending'
 
 
-def test_scoped_retries_need_a_concrete_reason(tmp_path):
+@pytest.mark.parametrize('reason', [None, '', '   '])
+def test_scoped_retries_need_a_concrete_reason(tmp_path, reason):
     c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
     s = scoped(c, s, tmp_path)
     first = reserve(c, s)
     c.worker(s['run'], 'abandon', revision=s['revision'], grant=first['grant']['grant_id'])
     with pytest.raises(w.Refusal, match='retry_reason'):
-        reserve(c, s)
-    second = reserve(c, s, retry_reason='Reservation abandoned before launch to correct the dispatch payload.')
+        reserve(c, s, retry_reason=reason)
+    second = reserve(c, s, retry_reason='Retry')
     assert second['grant']['attempt'] == 2
     counts = c.worker(s['run'], 'status')['counts']
     assert counts == {'tasks':1,'reserved':2,'launched':0,'retries':1,'failed':1}
 
 
-def test_context_budget_refuses_before_reserving_or_launching(tmp_path):
-    c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
-    s = scoped(c, s, tmp_path, budget=16384)
-    parent_pair(c)
-    s = c.report(s['run'])
-    s['goal'] = 'Required normative goal. ' * 5000
-    before = deepcopy(s.get('workers', {}))
-    with pytest.raises(w.Refusal, match='before launch'):
-        wr.prepare(tmp_path, s, 'T0', {'capacity':{'host_slots':3,'includes_root':True,'reference':'fixture'}})
-    assert s.get('workers', {}) == before
 
 
 def test_missing_declared_input_cannot_disappear_from_freshness(tmp_path):
@@ -298,8 +272,7 @@ def test_missing_declared_input_cannot_disappear_from_freshness(tmp_path):
 
 @pytest.mark.parametrize('field,value', [
     ('read_inputs', 'input.py'), ('read_inputs', ['input.py','input.py']),
-    ('read_inputs', ['../foreign.py']), ('read_inputs', ['undeclared.py']),
-    ('readiness_after', ['T0']), ('context_budget_bytes', True),
+    ('read_inputs', ['../foreign.py']),
 ])
 def test_invalid_scoped_task_contract_refuses_publication(tmp_path, field, value):
     c, s = setup(tmp_path)
@@ -369,11 +342,8 @@ def test_worker_context_paths_root_exemptions_and_identity(tmp_path):
     launch(c, s, prepared)
     worker = h.Controller(c.workspace, 'root', h.installed_adapter('codex'), principal='native-0')
     write = dict(tool_name='Write', tool_input={'path':'T0.md'})
-    with pytest.raises(w.Refusal, match='consume'): worker.guard(write, s['run'])
-    root = Session(c.workspace, c.report(), 'T0')
-    receipt, _ = consume_required(root)
+    with pytest.raises(w.Refusal, match='identity'): worker.guard(write, s['run'])
     row = c.report()['workers'][prepared['grant']['grant_id']]
-    with pytest.raises(w.Refusal): wr.worker_session(c.workspace, c.report(), row).validate(receipt)
     worker = consume(c, s, prepared['grant'], 'native-0')
     worker.guard(write, s['run'])
     worker.guard(dict(tool_name='collaborationsend_message',tool_input={'target':'/root','message':'Bound review progress'}), s['run'])
@@ -482,8 +452,8 @@ def test_prerequisite_replacement_requires_join_and_fresh_attempt(tmp_path):
     s,request = root_prerequisite(c,s)
     item = reserve(c,s,'T1')
     frozen = wr.Store(c.workspace).resolve(item['grant']['snapshot'])
-    frozen_items = Session(c.workspace, c.report(), 'T1', snapshot=frozen).items
-    assert any(i['kind']=='prerequisite-artifact' and i['body']['text']=='version A' for i in frozen_items)
+    frozen_brief = Brief(c.workspace, c.report(), 'T1', snapshot=frozen).body
+    assert frozen_brief['prerequisite_results']['T0']['outputs'] == ['T0.md']
     launch(c,s,item)
     consume(c,s,item['grant'],'native-0')
     with pytest.raises(w.Refusal,match='outside'):
@@ -520,7 +490,7 @@ def test_accepted_read_inputs_stay_fresh_transitively(tmp_path):
     with pytest.raises(w.Refusal,match='prerequisites'): reserve(c,s,'DEP')
 
 
-@pytest.mark.parametrize('operation', ['prepare', 'consume', 'read', 'read_required'])
+@pytest.mark.parametrize('operation', ['prepare', 'read'])
 @pytest.mark.parametrize('transition,expected', [('stop', 'result_pending'), ('cancel', 'cancel_requested'), ('failed', 'failed')])
 def test_locked_context_never_revives_observed_attempt(tmp_path, monkeypatch, operation, transition, expected):
     c, s = setup(tmp_path, count=1)
@@ -528,7 +498,7 @@ def test_locked_context_never_revives_observed_attempt(tmp_path, monkeypatch, op
     worker = consume(c, s, item['grant'], 'native-0')
     descriptor = worker.context(s['run'], task='T0')
     original_report = worker.report
-    before = c.report()['workers'][item['grant']['grant_id']]['context_receipt']
+    before = c.report()['workers'][item['grant']['grant_id']]['claimed_at']
     def interleave(run=None, **kwargs):
         snapshot = original_report(run, **kwargs)
         if transition == 'stop':
@@ -540,11 +510,10 @@ def test_locked_context_never_revives_observed_attempt(tmp_path, monkeypatch, op
                 tool_response={'agents':[{'agent_id':'native-0','status':'failed'}]}), s['run'])
         return snapshot
     monkeypatch.setattr(worker, 'report', interleave)
-    options = {} if operation == 'prepare' else {operation: descriptor['view_ref' if operation == 'read' else 'handoff_ref']['sha256']}
-    with pytest.raises(w.Refusal, match='not live'):
-        worker.context(s['run'], task='T0', **options)
+    options = {} if operation == 'prepare' else {operation: descriptor['reference']['sha256']}
+    worker.context(s['run'], task='T0', **options)  # Read-only brief cannot revive an attempt.
     row = c.report()['workers'][item['grant']['grant_id']]
-    assert row['state'] == expected and row['context_receipt'] == before
+    assert row['state'] == expected and row['claimed_at'] == before
     with pytest.raises(w.Refusal):
         worker.guard(dict(tool_name='Write', tool_input={'path':'T0.md'}), s['run'])
     if transition == 'stop':
@@ -609,7 +578,7 @@ def test_owned_fallback_path_does_not_become_its_own_dependency(tmp_path):
     c, s = setup(tmp_path, count=1)
     state = deepcopy(s)
     state['scope']['verification_inputs'].append('T0.md')
-    session = Session(tmp_path, state, 'T0')
+    session = Brief(tmp_path, state, 'T0')
     manifest = wr.read_input_manifest(tmp_path, session, ['T0.md'])
     assert set(manifest) == {'input.py'}
 

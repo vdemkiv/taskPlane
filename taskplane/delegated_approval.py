@@ -129,7 +129,7 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
     distinct and its precision is retained. A consumed source event cannot be reused.
     """
     from .workflow_local import timestamp
-    from .workflow_approval import checkpoint_question_choice, validate_checkpoint_consent
+    from .workflow_approval import validate_checkpoint_consent
 
     w.require(set(request) == {"schema", "event_id", "recorder", "choice", "binding", "relay"}
               and request.get("schema") == DECISION_SCHEMA and request.get("recorder") == "root_orchestrator",
@@ -204,7 +204,7 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
                   and message["reactions"].get(owner["user_id"]) == "👍",
                   "invalid_evidence", "Only the verified owner's current thumbs-up on the exact question can approve it.")
         choice = validate_checkpoint_consent(question["text"], None, phase=stage["phase"],
-                                             binding=expected, reaction=True)
+                                             binding=expected, candidate=request["choice"], reaction=True)
         excerpt: str | None = None
         event_source = {"kind": "owner_reaction", "channel": question["channel"], "message_id": question["message_id"],
                         "owner": owner["user_id"], "reaction": "👍"}
@@ -225,18 +225,9 @@ def verify_checkpoint(state: dict[str, Any], request: dict[str, Any], expected: 
         excerpt = message["content"].get("text")
         w.require(isinstance(excerpt, str) and 0 < len(excerpt) <= 4096,
                   "invalid_evidence", "Preserve the original bounded owner response.")
-        choice = validate_checkpoint_consent(question["text"], excerpt, phase=stage["phase"], binding=expected)
-        proposed = checkpoint_question_choice(question["text"], phase=stage["phase"], binding=expected)
-        if proposed == "changes_requested" and not adjacent:
-            _adjacent_question(raw, question, owner, message, linked=True)
-        if adjacent:
-            w.require(choice == proposed, "invalid_evidence",
-                      "Ordinary consent must answer only the proposed current phase/checkpoint decision.")
+        choice = validate_checkpoint_consent(question["text"], excerpt, phase=stage["phase"], binding=expected, candidate=request["choice"])
         event_source = {"kind": "owner_text", "channel": message["channel"], "message_id": message["message_id"], "owner": owner["user_id"]}
         normalization = {"schema": "taskplane.owner-text-normalization/v1", "derived_choice": choice, "typed_text": excerpt}
-        if proposed == "changes_requested":
-            normalization["question_choice"] = proposed
-            normalization["basis"] = "owner assent to the exact scoped checkpoint correction question"
         if adjacent:
             normalization["contextual_reply"] = {
                 "schema": "taskplane.adjacent-question/v1", "question_message_id": question["message_id"],

@@ -1,7 +1,7 @@
 {
   "schema": "taskplane.workflow-blueprint/v1",
   "id": "feature-delivery",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "Feature delivery",
   "description": "Carry an explicitly bounded feature through Product, Design, Plan, Build, Evaluate, Engineering and Retro with the existing checkpoint and native-worker contracts.",
   "route": {
@@ -133,7 +133,7 @@
         "input": "criteria"
       },
       "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
-      "instructions": "Use accepted Product decisions. Specify interfaces, state, authority, failures, graph impact and a criterion-to-validation map."
+      "instructions": "Use accepted Product decisions. Specify interfaces, state, authority, failures, relevant dependencies and a criterion-to-validation map."
     },
     {
       "id": "plan-decomposition",
@@ -496,8 +496,8 @@
     "The full route ends only after Retro acceptance."
   ],
   "runtime_requirements": [
-    "bounded/v2",
-    "native-default/v1",
+    "brief/v1",
+    "ownership/v1",
     "taskplane.phase-output/v1",
     "taskplane.task-definitions/v1",
     "taskplane.verification-strategy/v1",

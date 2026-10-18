@@ -14,7 +14,7 @@ import pytest
 
 from taskplane import primitives, state_import as recovery, workflow as w
 from taskplane import workflow_host as h, workflow_local as local
-from taskplane.context_handoff import Session, consume_required
+from taskplane.context_handoff import Brief
 from taskplane.tests.test_ordinary_checkpoint_reply import ordinary
 from taskplane.tests.test_state_import import invoke, lost, pin, tree
 from taskplane.tests.test_workflow_evidence import prepare
@@ -319,7 +319,6 @@ def test_late_interruption_retries_without_accepting_or_replacing_run(lost, monk
     restored = c.report()
     assert restored["run"] == state["run"] and restored["revision"] == state["revision"]
     assert restored["visits"] == state["visits"] and restored["decisions"] == {}
-    assert not local.Harness(c.workspace, c.root).presentation_valid(restored)
 
 
 def test_interrupted_import_cannot_switch_request_on_retry(lost, monkeypatch):
@@ -351,7 +350,7 @@ def test_complete_ignored_store_backup_restores_original_context_and_identity(tm
     source, _, _ = prepare(root)
     c = h.Controller(root, "root", h.installed_adapter(host))
     state = submit(c, c.start({"scope": source["scope"], "request_reference": "fixture/original-user"}))
-    receipt, _ = consume_required(Session(root, state))
+    brief = Brief(root, state).descriptor()
     marker = c._path().with_name(c.adapter.markername)
     assert marker.exists() and (root / ".taskplane/context-v1").is_dir()
     before = tree(root)
@@ -365,7 +364,7 @@ def test_complete_ignored_store_backup_restores_original_context_and_identity(tm
     restored = c.report()
     assert restored["run"] == state["run"] and restored["revision"] == state["revision"]
     assert restored["visits"] == state["visits"] and restored["decisions"] == state["decisions"]
-    Session(root, restored).validate(receipt)
+    assert Brief(root, restored).descriptor()["brief"] == brief["brief"]
     assert marker.read_bytes() == (backup / marker.relative_to(root)).read_bytes()
     assert not recovery.record_path(root, c.root).exists()
 
@@ -378,8 +377,7 @@ def test_recovered_product_approval_does_not_accept_submitted_design(lost):
     restored = decide(c, restored, approval)
     present(c, restored)
     design = c.apply("advance", restored["run"], expected_revision=restored["revision"], phase="design")
-    receipt, _ = consume_required(Session(c.workspace, design))
-    Session(c.workspace, design).validate(receipt)
+    assert Brief(c.workspace, design).descriptor()["schema"] == "taskplane.brief/v1"
     submitted = submit(c, design)
     assert w.current(submitted)["decision"] == "awaiting_human_approval"
     assert submitted["visits"][0]["packet"] == product["packet"]

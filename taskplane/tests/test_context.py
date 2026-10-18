@@ -5,7 +5,7 @@ import json
 import pytest
 
 from taskplane.context import Store, digest, encode, OBJECT_LIMIT, PAGE_LIMIT
-from taskplane.context_views import view, summary, PHASE_BYTES
+from taskplane.context_views import summary
 from taskplane.workflow import Refusal
 
 
@@ -73,23 +73,6 @@ def test_large_small_entry_collection_uses_pages_not_one_read_per_item(tmp_path)
     assert len(store.descendants(reference)) < 100
 
 
-@pytest.mark.parametrize('phase', PHASE_BYTES)
-def test_each_phase_bounds_context_and_retains_required_refs(tmp_path, phase):
-    store = Store(tmp_path)
-    inputs = [{'id': 'requirements', 'body': {'AC1': 'Retain the failed check'}},
-              {'id': 'blocker', 'body': {'status': 'fail', 'detail': 'large ' * 40000}},
-              {'id': 'duplicate', 'body': {'AC1': 'Retain the failed check'}}]
-    result = view(store, {'run': 'one', 'visit': phase}, phase, ['T1'], ['AC1'],
-                  {'decision': 'not_requested'}, inputs, {'graph': 'complete'})
-    assert len(encode(result)) <= PHASE_BYTES[phase]
-    assert result['digest'] == digest({k:v for k,v in result.items() if k != 'digest'})
-    refs = store.resolve(result['required_inputs']['details'])
-    assert len(refs) == 3
-    assert store.resolve(next(r['ref'] for r in refs if r['id'] == 'blocker'))['status'] == 'fail'
-    assert result['omissions'][0]['count'] >= 1
-    assert len([v for v in result['inline'].values() if v == {'AC1': 'Retain the failed check'}]) == 1
-    assert result == view(store, {'run': 'one', 'visit': phase}, phase, ['T1'], ['AC1'],
-                          {'decision': 'not_requested'}, inputs, {'graph': 'complete'})
 
 
 def test_summary_retains_blocking_spine_under_growth(tmp_path):
@@ -118,41 +101,3 @@ def test_summary_preserves_legacy_and_graph_coverage(tmp_path):
     assert result['status'] == 'legacy_unverified' and result['phase'] == 'product'
     assert result['coverage']['graph'] == 'legacy unverified'
     assert 'Initialize' in result['next_action']
-
-
-def test_immutable_page_index_membership_and_independent_coverage(tmp_path):
-    """LOCAL-SCA-01:1 — shared edges and multipage bodies remain real obligations."""
-    from taskplane.context import PageIndex, graph_coverage
-    store = Store(tmp_path)
-    shared = store._object('fixture', list(range(190)), '', 'value')
-    root = store._object('fixture', [shared, shared], '', 'list')
-    meta = PageIndex.build(store, [root])
-    index = PageIndex(store, meta['root'])
-    rows = [index.entry(i) for i in range(meta['pages'])]
-    assert len(rows) == 4  # one parent page and three pages of the shared leaf
-    assert len({(row[0], row[1]) for row in rows}) == 4
-    incomplete = {(sha, page) for sha, page, _ in rows[:-1]}
-    assert not graph_coverage(store, [root], incomplete)[root['sha256']]
-    assert graph_coverage(store, [root], {(sha, page) for sha, page, _ in rows})[root['sha256']]
-    # Neither a valid index nor all parent pages can stand in for child bytes.
-    store.path(shared['sha256']).write_text('{}')
-    with pytest.raises(Refusal, match='digest'):
-        graph_coverage(store, [root], {(sha, page) for sha, page, _ in rows})
-
-
-def test_index_missing_corrupt_and_foreign_nodes_refuse(tmp_path):
-    """LOCAL-SCA-01:2 — fail closed without repeated reconstruction."""
-    from taskplane.context import PageIndex, Metrics, measured
-    store = Store(tmp_path)
-    refs = [store.put('fixture', str(i)) for i in range(70)]
-    meta = PageIndex.build(store, refs)
-    index = PageIndex(store, meta['root'])
-    assert index.entry(69)[0] == refs[69]['sha256']
-    foreign = store.put('ordinary-body', {'entries': [[refs[0]['sha256'], 0, 1]]})
-    with pytest.raises(Refusal):
-        PageIndex(store, foreign).entry(0)
-    store.path(meta['root']['sha256']).unlink()
-    metrics = Metrics()
-    with measured(metrics), pytest.raises(Refusal):
-        PageIndex(store, meta['root']).entry(0)
-    assert metrics.index_rebuilds == 0

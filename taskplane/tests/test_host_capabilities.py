@@ -5,6 +5,21 @@ import pytest
 from taskplane import host_capabilities as h
 
 
+def test_ordinary_identity_uses_installation_and_full_audit_is_explicit(monkeypatch):
+    original = Path.read_bytes
+    reads = []
+    def observed(path):
+        reads.append(path)
+        return original(path)
+    monkeypatch.setattr(Path, "read_bytes", observed)
+    identity = h.runtime_identity()
+    assert identity["package_id"] and identity["version"] and not reads
+    assert "member_sha256" not in identity
+    audited = h.runtime_identity(full=True)
+    assert audited["package_id"] == identity["package_id"]
+    assert "taskplane/state_import.py" in audited["member_sha256"] and reads
+
+
 def executable(tmp_path, monkeypatch):
     workspace = tmp_path/'repo'; workspace.mkdir()
     cli = tmp_path/'codex'; cli.write_text('not executed')
@@ -207,26 +222,3 @@ def test_recovery_retry_has_deterministic_progress_and_detects_late_conflict(tmp
         cursor = result['cursor']
     else:
         pytest.fail('Later activity was not detected')
-
-
-def test_full_startup_timing_is_unavailable_without_supported_native_provider(monkeypatch):
-    from taskplane import host_capabilities as caps
-    monkeypatch.setenv('TASKPLANE_FULL_NATIVE_TIMING', 'true')
-    runtime = {'root': 'fixture', 'member_sha256': {'tp.py': 'abc'}}
-    for host in ('codex', 'claude', 'unknown'):
-        observed = caps.startup_timing_capability(host, runtime)
-        assert observed['status'] == 'unavailable' and observed['clock'] is None
-        assert not caps.qualified_startup_timing(observed, host, runtime)
-        assert not caps.qualified_startup_timing({**observed, 'status': 'qualified'}, host, runtime)
-
-
-def test_timing_qualification_rejects_partial_boundary_foreign_runtime_and_flags():
-    from taskplane import host_capabilities as caps
-    from taskplane.tests.test_context_startup_budget import qualified_capability
-    runtime = {'root': 'fixture-runtime'}
-    capability = qualified_capability('codex', runtime)
-    assert caps.qualified_startup_timing(capability, 'codex', runtime)
-    for change in ({'boundary': ['process_start']}, {'runtime_sha256': 'foreign'},
-                   {'gaps': ['teardown']}, {'clock': None}, {'boundary_test_reference': ''},
-                   {'host': 'claude'}, {'coverage': 'partial'}):
-        assert not caps.qualified_startup_timing({**capability, **change}, 'codex', runtime)

@@ -35,9 +35,13 @@ def _selected_names(host):
     names.update("docs/" + name for name in (
         "ci-performance.md", "cli-reference.md", "lens-catalog.md", "onboarding.md",
         "workflow-builder.md", "claude-worker-recovery.md", "claude-interactive-recovery.md",
-        "test-candidate.md", "host-compatibility-watch.md", "state-import-and-release.md"))
-    names.update({"scripts/verify_claude_workers.py", "scripts/verify_claude_interactive.py",
-                  "docs/assets/taskplane-cowork-flow.gif", "docs/assets/taskplane-flow-source.html"})
+        "test-candidate.md", "host-compatibility-watch.md", "state-import-and-release.md",
+        "state-spec.md", "routing-and-flows.md", "context-optimization.md",
+        "host-native-ux.md", "configuration.md", "security.md", "authority-matrix.md",
+        "requirements-core.md", "storage-and-repositories.md", "claude-tag.md",
+        "regression-gate-design.md", "specialist-routes.md", "lenses-and-knowledge.md"))
+    names.add("taskplane/README.md")
+    names.update({"docs/assets/taskplane-cowork-flow.gif", "docs/assets/taskplane-flow-source.html"})
     names.update("workflows/" + name for name in ("change-risk-review.workflow.json",
                  "design-brief.workflow.json", "feature-delivery.workflow.json"))
     return names

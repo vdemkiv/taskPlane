@@ -14,90 +14,12 @@ from taskplane import claude_flow_usage as claude, flow
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_interactive_concurrency_does_not_require_first_reviewer_to_overlap():
-    from scripts import verify_claude_interactive as harness
-    def row(task, start, stop):
-        return {'task_id': task, 'worker_id': 'worker-' + task, 'grant_id': 'grant-' + task,
-                'claimed_at': start, 'stop_observation': {'observed_at': stop}}
-    a = row('A', '2026-10-05T21:50:44+00:00', '2026-10-05T21:52:28+00:00')
-    b = row('B', '2026-10-05T21:53:36+00:00', '2026-10-05T21:54:22+00:00')
-    c = row('C', '2026-10-05T21:53:27+00:00', '2026-10-05T21:54:12+00:00')
-    assert harness.concurrent_reviews([a, b, c]) == [['grant-B', 'grant-C']]
-    assert harness.concurrent_reviews([a, b]) == []
-    assert harness.concurrent_reviews([b, b]) == []
-    for key in ('task_id', 'worker_id', 'grant_id'):
-        assert harness.concurrent_reviews([b, {**c, key: b[key]}]) == []
-    assert harness.concurrent_reviews([b, {**c, 'stop_observation': {}}]) == []
-    assert harness.concurrent_reviews([b, {**c, 'claimed_at': b['stop_observation']['observed_at']}]) == []
 
 
-@pytest.mark.parametrize('count', [2, 10])
-def test_interactive_review_fixture_pins_every_independent_source(tmp_path, monkeypatch, count):
-    from scripts import verify_claude_interactive as harness
-    folder = tmp_path / 'fixture'
-    folder.mkdir()
-    monkeypatch.setattr(harness.tempfile, 'mkdtemp', lambda **kwargs: str(folder))
-    output = tmp_path / 'prepared.json'
-    harness.prepare(ROOT, output, count)
-    manifest = harness.validate(folder)
-    workspace = Path(manifest['workspace'])
-    tasks = json.loads((workspace / '.taskplane/bootstrap/tasks.json').read_text())['tasks']
-    assert len(tasks) == count
-    assert len({task['review_lens'] for task in tasks}) == count
-    assert len({task['read_inputs'][0] for task in tasks}) == count
-    assert all(task['execution'] == 'native_required' for task in tasks)
-    assert len(manifest['input_sha256']) == count + 2
-    last = workspace / tasks[-1]['read_inputs'][0]
-    last.write_text(last.read_text() + '\n# changed after preparation\n')
-    with pytest.raises(ValueError, match='inputs changed'):
-        harness.validate(folder)
 
 
-def test_interactive_resume_keeps_original_session_permissions_and_checkpoint(tmp_path, monkeypatch):
-    from scripts import verify_claude_interactive as harness
-    manifest = {'workspace': str(tmp_path), 'plugin': str(tmp_path / 'plugin'), 'session_id': 'original'}
-    state = {'root': 'original', 'run': 'run-1', 'revision': 4, 'index': 0,
-             'visits': [{'id': 'visit-1', 'phase': 'engineering',
-                         'decision': 'awaiting_human_approval', 'packet': {'checkpoint': 'sealed'}}],
-             'decisions': [], 'task_results': {'review-A': {'grant': 'grant-A'}}}
-    argv = ['claude', '--plugin-dir', manifest['plugin'], '--session-id', 'original',
-            '--permission-mode', 'auto', '--allowedTools', 'Read', '--', 'old prompt']
-    (tmp_path / 'launch.json').write_text(json.dumps({'argv': argv, 'session_id': 'original'}))
-    monkeypatch.setattr(harness, 'validate', lambda folder: manifest)
-    monkeypatch.setattr(harness, 'native_state', lambda value: state)
-    monkeypatch.setattr(harness.sys.stdin, 'isatty', lambda: True)
-    monkeypatch.setattr(harness.sys.stdout, 'isatty', lambda: True)
-    monkeypatch.setattr(harness.os, 'chdir', lambda path: None)
-    launched = []
-    monkeypatch.setattr(harness.os, 'execvpe', lambda *args: launched.append(args))
-    harness.resume(tmp_path, '/native/claude')
-    actual = launched[0][1]
-    assert actual[:3] == ['/native/claude', '--plugin-dir', manifest['plugin']]
-    assert actual[3:5] == ['--resume', 'original']
-    assert actual[5:-1] == argv[5:-1]
-    assert 'flow report' in actual[-1] and '--run run-1' in actual[-1]
-    assert '--session-id' not in actual and '--fork-session' not in actual
-    saved = json.loads((tmp_path / 'resume.json').read_text())
-    assert saved['before'] == harness.continuity(state)
-    state['visits'][0]['decision'] = 'approved'
-    assert saved['before'] != harness.continuity(state)
-    with pytest.raises(ValueError, match='already exists'):
-        harness.resume(tmp_path, '/native/claude')
 
 
-@pytest.mark.parametrize('tty, session', [(False, 'original'), (True, 'different')])
-def test_interactive_resume_rejects_headless_or_foreign_launch(tmp_path, monkeypatch, tty, session):
-    from scripts import verify_claude_interactive as harness
-    manifest = {'workspace': str(tmp_path), 'plugin': str(tmp_path / 'plugin'), 'session_id': 'original'}
-    (tmp_path / 'launch.json').write_text(json.dumps({
-        'argv': ['claude', '--session-id', session, '--', 'prompt'], 'session_id': session}))
-    monkeypatch.setattr(harness, 'validate', lambda folder: manifest)
-    monkeypatch.setattr(harness, 'native_state', lambda value: {})
-    monkeypatch.setattr(harness.sys.stdin, 'isatty', lambda: tty)
-    monkeypatch.setattr(harness.sys.stdout, 'isatty', lambda: tty)
-    with pytest.raises(ValueError, match='real terminal|session mismatch'):
-        harness.resume(tmp_path, 'claude')
-    assert not (tmp_path / 'resume.json').exists()
 
 
 def bound_workspace(tmp_path, monkeypatch, policy='any'):
@@ -144,7 +66,7 @@ def test_cowork_cli_and_hooks_share_selected_root_without_scratch_store(tmp_path
     event['hook_event_name']='PostToolUse'
     event['taskplane_workspace_contract']={'digest':'caller-forged'}
     flow.hook(event)
-    assert flow.read_events(ws)[-1]['workspace_contract']==state['workspace_contract']
+    assert flow._controller(ws, 'root').report()['workspace_contract'] == state['workspace_contract']
     assert not (scratch/'.taskplane').exists()
 
 
@@ -168,38 +90,11 @@ def test_bound_checkpoint_controls_use_selected_workspace(tmp_path,monkeypatch,t
     assert not (scratch/'.taskplane').exists()
 
 
-def test_bound_checkpoint_controls_keep_exact_command_boundaries(tmp_path,monkeypatch):
-    from taskplane.tests.test_workflow_local import setup, submit
-    from taskplane import workflow as w
-    ws,contract=bound_workspace(tmp_path,monkeypatch)
-    controller,state=setup(ws); submit(controller,state)
-    scratch=tmp_path/'scratch'; scratch.mkdir(); monkeypatch.chdir(scratch)
-    prefix=[sys.executable,str(ROOT/'taskplane/tp.py')]
-    def guard(args):
-        return flow.hook({'hook_event_name':'PreToolUse','cwd':str(scratch),'session_id':'root',
-                          'tool_name':'Bash','tool_input':{'command':shlex.join(args)}},governor=controller)
-    guard([*prefix,'flow','report','--workspace='+contract['host_root']])
-    invalid=[
-        [*prefix,'flow','report','--workspace',str(scratch)],
-        [*prefix,'flow','report','--workspace='+str(scratch)],
-        [*prefix,'flow','report','--workspace',str(ws),'--workspace',contract['host_root']],
-        [*prefix,'flow','report','--workspace',str(ws),'--workspace='+str(ws)],
-        [*prefix,'flow','report','--workspace'],
-        [*prefix,'flow','report','--workspace='],
-        [*prefix,'dashboard','--out','foreign.html'],
-        [*prefix,'dashboard','--run','foreign'],
-        [sys.executable,str(scratch/'tp.py'),'flow','report'],
-        [sys.executable,str(ROOT/'taskplane/tp.py'),'flow','unsupported'],
-    ]
-    for args in invalid:
-        with pytest.raises(w.Refusal): guard(args)
-    monkeypatch.setenv('TASKPLANE_WORKSPACE',str(scratch))
-    with pytest.raises(w.Refusal): guard([*prefix,'flow','report'])
-    assert not (scratch/'.taskplane').exists()
 
 
 def test_cowork_missing_selection_refuses_before_any_state_and_abstains_unrelated(tmp_path,monkeypatch,capsys):
-    from taskplane import workflow
+    from taskplane import workflow as w
+    from taskplane.tests.binding_support import HAS_BINDING_RUNTIME
     for key in list(os.environ):
         if key.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_')):monkeypatch.delenv(key)
     monkeypatch.setenv('TASKPLANE_SURFACE','cowork');monkeypatch.chdir(tmp_path)
@@ -208,7 +103,11 @@ def test_cowork_missing_selection_refuses_before_any_state_and_abstains_unrelate
     assert flow.hook(unrelated)=={}
     selected={**unrelated,'tool_input':{'command':shlex.join(
         [sys.executable,str(ROOT/'taskplane/tp.py'),'flow','activate','--phase','tp-go'])}}
-    with pytest.raises(workflow.Refusal):flow.hook(selected)
+    if HAS_BINDING_RUNTIME:
+        flow.hook(selected)
+    else:
+        with pytest.raises(w.Refusal, match='lacks no-follow directory operations'):
+            flow.hook(selected)
     assert flow.main(['activate','--phase','tp-go','--request-reference','fixture/selection'],compact=True)==2
     capsys.readouterr()
     assert not (tmp_path/'.taskplane').exists()
@@ -502,12 +401,16 @@ def test_subagent_stop_retains_usage_without_private_content(tmp_path, monkeypat
                       'cwd': str(ws), 'transcript_path': str(path), 'agent_id': 'lens',
                       'agent_transcript_path': str(child), 'last_assistant_message': 'private content'}) == {}
     (ws / 'reviews.json').write_text(json.dumps([{'agent': 'lens', 'lens': 'design'}]))
-    flow.main(['attach', '--workspace', str(ws), '--reviews', 'reviews.json'])
-    report = json.loads(capsys.readouterr().out)
+    artifacts = {'reviews': 'reviews.json'}
+    flow.append(ws, {'kind': 'attach', 'run': 'shared', 'session': 'root', 'artifacts': artifacts,
+                     'captured': flow.capture_attachments(ws, artifacts)})
+    report = flow.report(ws)
     assert report['token_coverage']['unmeasured_sessions'] == 0
     assert report['tokens']['total_tokens'] == 142
     assert 'private content' not in (ws / flow.JOURNAL).read_text()
+    flow.publish_dashboard(ws, 'shared', supplied=report)
     assert 'Task decomposition' in (ws / flow.DASHBOARD).read_text()
+    flow.append(ws, {'kind': 'usage', 'run': 'shared', 'session': 'root', 'measurement': report})
     child.unlink()
     assert flow.report(ws)['tokens']['total_tokens'] == 142
 

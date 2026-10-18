@@ -32,7 +32,7 @@ def exercise_correction(root):
         sealed = deepcopy(w.current(s)['packet'])
         write = {'tool_name': 'Write', 'tool_input': {'path': 'product.json'}}
         refused(lambda: c.guard(write, s['run']), 'approval_required')
-        s = decide(c, s, decision(s, text=choice))
+        s = decide(c, s, decision(s, text=choice, candidate='changes_requested' if choice=='Changes requested' else 'rejected'))
         for index in range(2):
             c.guard(write, s['run'])
             data = json.loads((workspace/'product.json').read_text())
@@ -40,8 +40,7 @@ def exercise_correction(root):
             (workspace/'product.json').write_text(json.dumps(data))
             assert not c.report().get('invalidation_pending')
         refused(lambda: c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, s['run']), 'scope_violation')
-        from taskplane.context_handoff import Session, consume_required
-        data['context_receipt'], _ = consume_required(Session(workspace, c.report()))
+        from taskplane.context_handoff import Brief
         (workspace/'product.json').write_text(json.dumps(data))
         command = shlex.join([sys.executable, str(Path(flow.__file__).with_name('tp.py')), 'flow', 'submit',
                               '--workspace', str(workspace), '--output', 'product.json', '--tasks', 'tasks.json',
@@ -335,7 +334,7 @@ def test_late_task_publication_is_explicit_run_bound_and_idempotent(tmp_path,mon
     command=['attach','--workspace',str(tmp_path),'--run',s['run'],'--tasks','.taskplane/late-tasks.json','--update-context','--expected-revision',str(s['revision'])]
     assert flow.main(command,governor=c)==0
     capsys.readouterr()
-    assert c.context(s['run'],task='LATE')['phase']=='product'
+    assert c.context(s['run'],task='LATE')['brief']['phase']=='product'
     assert flow.main(command,governor=c)==0
     capsys.readouterr()
     assert c.report()['revision']==s['revision']+1

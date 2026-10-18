@@ -319,7 +319,7 @@ def _assemble(root: Path, data: dict[str, Any], bindings: dict[str, Any],
                              "criteria": list(criteria), "paths": {phase: [] for phase in w.PHASES},
                              "verification_inputs": sorted(set(snapshots.get(p, p) for p in bindings["source_manifest"])
                                  | set(owners) | set(generated_paths)),
-                             "execution_contract": "native-default/v1"}
+                             "execution_contract": "ownership/v1"}
     for row in rows:
         scope["paths"][row["phase"]].extend(row["paths"])
     scope["paths"] = {phase: sorted(paths) for phase, paths in scope["paths"].items()}

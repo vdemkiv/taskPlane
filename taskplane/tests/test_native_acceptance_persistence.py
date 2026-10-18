@@ -44,14 +44,23 @@ def test_conflicting_terminal_retains_history_with_explicit_invalidation(tmp_pat
     assert row['acceptance_invalidation'] == stable
 
 
-def test_stopped_attempt_late_completion_cannot_restore_startup_permission():
-    from taskplane import workflow_write_guard as guard
-    # The budget tests exercise genuine-proof validation separately. This test
-    # checks that a stop is sticky even when a late terminal event is delivered.
-    row = {'state': 'running', 'events': {}, 'stop_requested': {'reason': 'revision'}}
-    workers.terminal(row, 'completed', 'late-native-completion')
-    assert row['stop_requested'] == {'reason': 'revision'}
+def test_stopped_attempt_late_completion_never_restores_execution(tmp_path):
     import pytest
     from taskplane import workflow as w
-    with pytest.raises(w.Refusal, match='stopped'):
-        guard.allow_work(row)
+    controller, state = setup(tmp_path, count=1)
+    prepared = reserve(controller, state)
+    launch(controller, state, prepared, 'native-0')
+    child = consume(controller, state, prepared['grant'], 'native-0')
+    write = {'tool_name':'Write', 'tool_input':{'path':'T0.md'}}
+    child.guard(write, state['run'])
+    controller.guard({'tool_name':'interrupt_agent', 'tool_input':{'target':'native-0'}}, state['run'])
+    assert controller.report(diagnostics=False)['workers'][prepared['grant']['grant_id']]['state'] == 'cancel_requested'
+    controller.observe({'hook_event_name':'PostToolUse', 'session_id':'root', 'call_id':'late-native-completion',
+        'tool_name':'collaboration.list_agents', 'tool_input':{},
+        'tool_response':{'agents':[{'agent_id':'native-0','status':'completed'}]}}, state['run'])
+    row = controller.report(diagnostics=False)['workers'][prepared['grant']['grant_id']]
+    assert row['state'] not in workers.LIVE
+    assert workers.readiness(row)['status'] != 'ready'
+    assert not row.get('result_accepted')
+    with pytest.raises(w.Refusal):
+        child.guard(write, state['run'])

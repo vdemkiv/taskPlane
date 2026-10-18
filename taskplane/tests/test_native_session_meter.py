@@ -573,34 +573,6 @@ def test_usage_budget_nested_helpers_share_one_clock_and_byte_cap(tmp_path):
     assert second['exhausted'] and not second['complete']
 
 
-@pytest.mark.taskplane_capacity
-def test_usage_complete_grid_matches_independent_oracle(tmp_path, record_property):
-    from scripts.benchmark_usage import samples
-    measurements=[]
-    try:
-        for sample in samples(tmp_path/'grid'):
-            measurements.append(sample)
-            assert sample['complete'] is True
-            assert sample['totals'] == sample['oracle_totals']
-            assert sample['attribution'] == sample['oracle_attribution']
-            prior=None
-            for refresh in sample['refreshes']:
-                assert refresh['read_bytes'] <= 16777216
-                assert refresh['parsed_records'] <= 100000
-                assert refresh['discovery_entries'] <= 2000
-                assert refresh['max_record_bytes'] <= 1048576
-                assert refresh['max_prefix_bytes'] <= 4096
-                assert refresh['max_tail_bytes'] <= 4096
-                if prior is not None: assert refresh['resumed_from'] == prior
-                prior=refresh['continuation']
-            if sample['mode'] != 'cold':
-                assert all(r['unrelated_scans']==0 for r in sample['refreshes'])
-                assert all(r['read_bytes'] <= sample['owned_sessions']*8192+r['appended_bytes'] for r in sample['refreshes'])
-        assert len(measurements)==810
-        assert len({s['sample_id'] for s in measurements})==810
-    finally:
-        record_property('remediation_measurement', json.dumps({'schema':'taskplane.remediation-measurement/v1',
-            'subcheck':'LOCAL-SCA-02','scenario':'LOCAL-SCA-02:3','kind':'usage','samples':measurements}))
 
 
 @pytest.mark.parametrize('host', ['Codex', 'Claude'])

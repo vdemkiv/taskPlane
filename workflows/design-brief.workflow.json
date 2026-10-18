@@ -1,7 +1,7 @@
 {
   "schema": "taskplane.workflow-blueprint/v1",
   "id": "design-brief",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "Design brief",
   "description": "Turn a concrete change request and explicit repository context into a design and validation map, without implementing the change.",
   "route": {
@@ -123,7 +123,7 @@
       "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
       "execution_reason": "The root integrates prerequisite evidence and prepares the existing phase checkpoint.",
       "execution_reference": "This definition's explicit producer dependencies and the shared Taskplane phase contract.",
-      "instructions": "Integrate the accepted Design analysis with existing decisions and graph evidence. State scope, alternatives, risks, and validation. Present the existing Design checkpoint and dashboard; Design acceptance alone does not authorize implementation."
+      "instructions": "Integrate the accepted Design analysis with existing decisions and relevant dependency evidence. State scope, alternatives, risks, and validation. Present the existing Design checkpoint; Design acceptance alone does not authorize implementation."
     }
   ],
   "acceptance_scenarios": [
@@ -132,8 +132,8 @@
     "A new version preserves the prior published definition and active invocation binding."
   ],
   "runtime_requirements": [
-    "bounded/v2",
-    "native-default/v1",
+    "brief/v1",
+    "ownership/v1",
     "taskplane.phase-output/v1",
     "taskplane.task-definitions/v1"
   ]

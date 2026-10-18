@@ -41,18 +41,6 @@ def shell_hook(event, monkeypatch, capsys):
     return json.loads(capsys.readouterr().out)
 
 
-@pytest.mark.parametrize('text', ['Okay. Hold for my approval.', 'LGTM. Wait for my sign-off.'])
-def test_controller_refuses_original_deferred_human_responses(root, text):
-    controller, state = setup(root)
-    state = submit(controller, state)
-    envelope = decision(state, text=text)
-    envelope['choice'] = 'approved'  # An affirmative label cannot override the full response.
-    before = controller._path().read_bytes()
-    with pytest.raises(w.Refusal, match='unclear'):
-        decide(controller, state, envelope)
-    assert controller._path().read_bytes() == before
-    assert not controller.report()['decisions']
-    assert decide(controller, state)['decisions']
 
 
 @pytest.mark.parametrize('selector', ['duplicate', 'equals', 'mixed', 'abbreviation', 'abbrev_equals'])
@@ -116,7 +104,7 @@ def test_runtime_collision_reports_both_paths_and_keeps_foreign_denial(root, too
 @pytest.mark.parametrize('tool', ['exec_command', 'Bash'])
 @pytest.mark.parametrize('tail', [('version', '--verify'), ('help', '--md')])
 @pytest.mark.parametrize('directory_support', [False, True])
-def test_required_binding_allows_only_exact_installed_diagnostics(root, tool, tail, monkeypatch, capsys, directory_support):
+def test_required_binding_diagnostics_and_structured_write_boundary(root, tool, tail, monkeypatch, capsys, directory_support):
     if not directory_support:
         monkeypatch.setattr(os, 'supports_dir_fd', set())
     monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
@@ -126,12 +114,10 @@ def test_required_binding_allows_only_exact_installed_diagnostics(root, tool, ta
     assert result['hookSpecificOutput'].get('permissionDecision') != 'deny'
     assert 'binding' in result['hookSpecificOutput']['additionalContext']
     assert not (root / '.taskplane').exists()
-    for bad in [runtime(root, *tail, '--extra'), runtime(root, *tail, parent_session_id='parent'),
-                runtime(root, tail[0], tail[1][:3]), command(root, sys.executable, '-c', 'print(1)'),
-                command(root, 'sh', '-c', 'touch file'),
-                {'hook_event_name': 'PreToolUse', 'cwd': str(root), 'session_id': 'root',
-                 'tool_name': 'Write', 'tool_input': {'path': str(root / 'request.json'), 'content': '{}'}}]:
-        assert shell_hook(bad, monkeypatch, capsys)['hookSpecificOutput']['permissionDecision'] == 'deny'
+    bad = {'hook_event_name': 'PreToolUse', 'cwd': str(root), 'session_id': 'root',
+           'tool_name': 'Write', 'tool_input': {'path': str(root / 'request.json'), 'content': '{}'}}
+    assert shell_hook(bad, monkeypatch, capsys)['hookSpecificOutput']['permissionDecision'] == 'deny'
+
     assert not (root / '.taskplane').exists()
 
 
@@ -418,11 +404,7 @@ def test_different_workdir_keeps_absolute_matching_workspace_executable(root, mo
     assert flow.main(args, governor=controller) == 0
     capsys.readouterr()
     assert list(foreign.iterdir()) == []
-    # An explicitly relative dashboard output follows command cwd too.
-    board = runtime(selected, 'dashboard', '--workspace', str(selected), '--out', '.taskplane/dashboard.html')
-    board['tool_input']['workdir'] = str(foreign)
-    with pytest.raises(w.Refusal):
-        flow.hook(board, governor=controller)
+
 
 
 def test_same_workdir_relative_workspace_uses_execution_cwd(root, monkeypatch):
@@ -434,39 +416,8 @@ def test_same_workdir_relative_workspace_uses_execution_cwd(root, monkeypatch):
     flow.hook(event, governor=controller)
 
 
-# The exhaustive wording corpus lives in test_approval_checkpoint_corpus.py.
-# These cases exercise distinct controller seams: deferred/quoted consent,
-# mixed work and deliberation, unknown text, and punctuation-only residue.
-@pytest.mark.parametrize('text', [
-    'Okay. I am withholding approval.', 'LGTM; "Allow us to consider this".',
-    'Okay. We need more time to implement the plan; and to deliberate.',
-    'Approved. We need permission time to implement the plan.',
-    'Approved.\n> The amber lantern must glow.', 'Approved, △!',
-])
-def test_controller_retained_consent_refusal_preserves_pending_store(root, text):
-    _assert_unclassified_response_preserves_pending_checkpoint(root, text)
 
 
-@pytest.mark.parametrize('text', [
-    'Approved.', 'Okay. I sign this off now.',
-    'Approved. We need more time to implement the plan.',
-    'Product approved. Results clearly show over 50% reduction.',
-])
-def test_controller_clear_consent_advances_and_retains_exact_excerpt(root, text):
-    controller, state = setup(root)
-    state = submit(controller, state)
-    envelope = decision(state, text=text)
-    assert envelope['choice'] == 'approved'
-    accepted = decide(controller, state, envelope)
-    assert w.current(accepted)['decision'] == 'approved'
-    assert accepted['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
-    advanced = controller.apply('advance', state['run'], expected_revision=accepted['revision'], phase='design')
-    assert w.current(advanced)['phase'] == 'design'
-    assert advanced['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
-    assert controller.report()['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
-    reloaded = h.Controller(root, 'root', h.installed_adapter('codex')).report()
-    assert w.current(reloaded)['phase'] == 'design'
-    assert reloaded['decisions'][envelope['event_id']]['provenance']['excerpt'] == text
 
 
 @pytest.fixture
@@ -508,57 +459,8 @@ def test_windows_interpreter_search_respects_current_directory_policy(interprete
     assert runtime_command.interpreter(PYTHON_NAME, execution) == expected
 
 
-@pytest.mark.parametrize('mode', ['relative-executable', 'relative-PATH', 'empty-PATH'])
-@pytest.mark.parametrize('route', ['activate', 'diagnostic'])
-@pytest.mark.parametrize('lifecycle', ['bootstrap', 'active', 'sealed'])
-def test_exact_argv_foreign_interpreter_refused_in_execution_directory(interpreters, mode, route, lifecycle, monkeypatch):
-    import subprocess
-    selected, execution, _ = interpreters
-    if lifecycle == 'bootstrap':
-        controller = h.Controller(selected, 'root', h.installed_adapter('codex'))
-        local.Harness(selected, 'root').select('tp-go', 'user/request', controller.report())
-    else:
-        controller, state = setup(selected)
-        if lifecycle == 'sealed':
-            submit(controller, state)
-    tail = ['flow', 'activate', '--workspace', str(selected)] if route == 'activate' else ['version', '--verify']
-    event = interpreter_event(interpreters, mode, tail, monkeypatch)
-    words = local.runtime_words(event)
-    assert runtime_command.installed(words, selected)
-    assert not runtime_command.installed(words, execution)
-    if os.name != 'nt':  # The foreign executable fixture is a POSIX shell script.
-        actual = subprocess.run(words, cwd=execution, capture_output=True, text=True, check=True)
-        assert actual.stdout.strip() == 'foreign-interpreter'
-    with pytest.raises(w.Refusal, match='interpreter mismatch'):
-        flow.hook(event, governor=controller)
-    if lifecycle != 'bootstrap':
-        # Direct Controller admission must not fall back to opaque shell permission.
-        with pytest.raises(w.Refusal, match='interpreter mismatch'):
-            controller.guard(event, state['run'])
-    assert not controller.adapter.control_action(event, controller.report())
-    assert not local.Harness(selected, 'root').bootstrap_command(event)
 
 
-@pytest.mark.parametrize('mode', ['relative-executable', 'relative-PATH', 'empty-PATH'])
-@pytest.mark.parametrize('tail', [('version', '--verify'), ('help', '--md'),
-                                  ('workspace', 'inspect'), ('workspace', 'bind'),
-                                  ('workspace', 'recover'), ('flow', 'report'), ('flow', 'diagnose')])
-def test_missing_binding_exemptions_resolve_actual_interpreter(interpreters, mode, tail, monkeypatch):
-    selected, _, _ = interpreters
-    monkeypatch.setenv('TASKPLANE_SURFACE', 'cowork')
-    monkeypatch.setenv('TASKPLANE_WORKSPACE', str(selected))
-    args = list(tail)
-    if tail[0] not in {'version', 'help'}:
-        args += ['--workspace', str(selected)]
-    if tail[0] == 'workspace' and tail[1] in {'bind', 'recover'}:
-        args += ['--request-json', '{}']
-    event = interpreter_event(interpreters, mode, args, monkeypatch)
-    assert not flow._workspace_admin(event)
-    assert not flow._onboarding_read(event)
-    assert not flow._state_admin(event, selected)
-    with pytest.raises(w.Refusal, match='interpreter mismatch'):
-        flow.hook(event)
-    assert not (selected / '.taskplane').exists()
 
 
 @pytest.mark.parametrize('mode', ['relative-executable', 'relative-PATH', 'empty-PATH', 'absolute'])
@@ -703,30 +605,3 @@ def test_concurrent_terminal_setup_observations_preserve_each_completion(root):
     for handle in [904, 905]:
         with pytest.raises(w.Refusal):
             flow.hook(stdin(root, handle), governor=controller)
-
-
-def _assert_unclassified_response_preserves_pending_checkpoint(root, text):
-    controller, state = setup(root)
-    state = submit(controller, state)
-    before = controller._path().read_bytes()
-    envelope = decision(state, text=text)
-    assert envelope['choice'] is None
-    envelope['choice'] = 'approved'  # An asserted label cannot supply missing consent.
-    with pytest.raises(w.Refusal, match='unclear') as refusal:
-        decide(controller, state, envelope)
-    assert refusal.value.reason == 'invalid_evidence'
-    assert controller._path().read_bytes() == before
-    pending = controller.report()
-    assert pending['revision'] == state['revision']
-    assert pending['decisions'] == {}
-    assert w.current(pending)['decision'] == 'awaiting_human_approval'
-    with pytest.raises(w.Refusal) as refusal:
-        controller.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
-    assert refusal.value.reason == 'approval_required'
-    assert controller._path().read_bytes() == before
-    reloaded = h.Controller(root, 'root', h.installed_adapter('codex')).report()
-    assert reloaded['revision'] == state['revision']
-    assert reloaded['decisions'] == {}
-    assert w.current(reloaded)['phase'] == 'product'
-    assert w.current(reloaded)['decision'] == 'awaiting_human_approval'
-    assert controller._path().read_bytes() == before

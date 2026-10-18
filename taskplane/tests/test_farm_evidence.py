@@ -55,7 +55,7 @@ def attempt(tmp_path, monkeypatch, state, requirement, log, **options):
         criteria=requirement["criteria"], command=requirement["command"], tool="python", contract="assertion/v1")
     ref = reuse.run_check(tmp_path, provenance, producer="root", history_path="history.json",
         run=state["run"], visit=w.current(state)["id"], check_id=requirement["id"],
-        kind=requirement["kind"], environment=requirement["environment"], log_path=log, **options)
+        kind=requirement["kind"], environment=requirement["environment"], log_path=log, state=state, **options)
     history = json.loads((tmp_path / "history.json").read_text())
     row = history["attempts"][-1]
     assert row["record_ref"] == ref
@@ -77,14 +77,35 @@ def test_typed_plan_declares_future_owned_outputs(tmp_path):
     assert not (tmp_path / "build.json").exists()
 
 
-@pytest.mark.parametrize("defect", ["packet", "report", "history", "duplicate-owner", "undeclared-write",
+def test_plan_can_declare_owned_checks_without_duplicate_build_reports(tmp_path, monkeypatch):
+    state, plan, check = contract(tmp_path)
+    del plan['build_outputs']
+    assert e.plan_preflight(tmp_path, state, plan, plan['task_dag'])['status'] == 'validated'
+    out, _, _ = attempt(tmp_path, monkeypatch, state, check, 'check-1.log')
+    assert e.validate_verification(tmp_path, state, out)['effective_checks'][0]['status'] == 'fail'
+    e.validate_build_outputs(tmp_path, state, out, 'build.json')
+
+
+def test_plan_cannot_widen_explicit_build_boundary(tmp_path):
+    state, plan, _ = contract(tmp_path)
+    plan['write_scope'].append('outside.py')
+    plan['task_dag'][0]['paths'].append('outside.py')
+    with pytest.raises(w.Refusal, match='authorized Build scope'):
+        e.plan_preflight(tmp_path, state, plan, plan['task_dag'])
+
+
+def test_plan_can_discover_existing_readonly_tests_without_preproduct_inventory(tmp_path):
+    state, plan, _ = contract(tmp_path)
+    state['scope']['verification_inputs'] = []
+    assert 'test_app.py' not in state['scope']['paths']['build']
+    assert e.plan_preflight(tmp_path, state, plan, plan['task_dag'])['status'] == 'validated'
+
+
+@pytest.mark.parametrize("defect", ["duplicate-owner", "undeclared-write",
                                     "missing-helper", "undeclared-read", "undeclared-log", "wrong-owner"])
 def test_plan_preflight_rejects_incomplete_contract(tmp_path, defect):
     state, plan, check = contract(tmp_path)
-    if defect in {"packet", "report", "history"}:
-        kind = "verification_history" if defect == "history" else defect
-        plan["build_outputs"] = [row for row in plan["build_outputs"] if row["kind"] != kind]
-    elif defect == "duplicate-owner":
+    if defect == "duplicate-owner":
         plan["task_dag"].append({**deepcopy(plan["task_dag"][0]), "id": "SECOND"})
         plan["integration_order"].append("SECOND")
     elif defect == "undeclared-write":
@@ -250,7 +271,7 @@ def test_input_drift_is_recorded_without_running_command(tmp_path, monkeypatch):
     monkeypatch.setattr(reuse.subprocess, "run", lambda *a, **k: pytest.fail("stale command must not run"))
     ref = reuse.run_check(tmp_path, provenance, producer="root", history_path="history.json",
         run=state["run"], visit=w.current(state)["id"], check_id=check["id"], kind="unit", environment="local",
-        log_path="check-1.log")
+        log_path="check-1.log", state=state)
     assert Store(tmp_path).resolve(ref)["status"] == "unknown"
     assert len(json.loads((tmp_path / "history.json").read_text())["attempts"]) == 1
 
@@ -329,10 +350,9 @@ def test_replacements_preserve_original_obligations_and_immutable_context(tmp_pa
     assert rows[0]["id"] == "SEC-2" and rows[0]["origin_run"] == "run-a"
     assert rows[0]["disposition"] == "deferred" and rows[0]["owner"] == "infrastructure"
     assert rows[0]["required_evidence"] == ["actual grants", "write denials"]
-    monkeypatch.setattr(context_handoff.depgraph, "load", lambda _: {})
-    items, _, _, _ = context_handoff.inputs(tmp_path, third, None)
-    assert any(item["kind"] == "finding" and item.get("required", True) for item in items)
-    immutable = next(item["body"] for item in items if item["kind"] == "finding-evidence")
+    brief = context_handoff.Brief(tmp_path, third, persist=False).body
+    assert brief['findings'][0]['id'] == 'SEC-2'
+    immutable = Store(tmp_path).resolve(brief['findings'][0]['evidence_refs'][0])
     assert "remain unverified" in immutable["text"]
     assert not any(key in inherited for key in ("decisions", "approval_policy", "grants", "context_receipt"))
 
@@ -650,9 +670,7 @@ def test_historical_unproven_mapping_stays_unresolved_in_projections(tmp_path, m
         for stage in state["visits"]:
             if stage.get("packet"):
                 stage["packet"].update(checkpoint="fixture-checkpoint", manifest={})
-        monkeypatch.setattr(context_handoff.depgraph, "load", lambda _: {})
-        items, _, _, _ = context_handoff.inputs(tmp_path, state, None)
-        rows = [item["body"] for item in items if item["kind"] == "finding" and item.get("required", True)]
+        rows = context_handoff.Brief(tmp_path, state, persist=False).body['findings']
     assert len(rows) == 1
     assert rows[0]["id"] == "ASSERTION" and rows[0]["disposition"] == "open"
     assert rows[0]["evidence_requirements"] == mappings
@@ -685,11 +703,10 @@ def test_current_typed_runtime_closes_and_stale_or_replaced_evidence_reopens(tmp
 def test_prevalidation_matches_seal_without_uuid_store_or_state_mutation(tmp_path, monkeypatch):
     # Existing full fixture supplies a real strict graph and bounded receipt.
     from taskplane.tests.test_workflow_evidence import prepare
-    from taskplane.context_handoff import Session, consume_required
+    from taskplane.context_handoff import Brief
     state, output, _ = prepare(tmp_path)
     state["context_contract"] = "bounded/v2"
     output["finding_references"] = []
-    output["context_receipt"], _ = consume_required(Session(tmp_path, state))
     (tmp_path / "product.json").write_text(json.dumps(output))
     before_state = deepcopy(state)
     before_files = {str(path.relative_to(tmp_path)): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}

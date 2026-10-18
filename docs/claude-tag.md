@@ -1,54 +1,21 @@
-# Claude Tag (beta) — taskplane in your Slack channels
+# Claude channel delivery
 
-How taskplane runs governed work inside Claude Tag, Slack's shared @Claude
-identity — what changes in that environment and what stays enforced.
+The channel skill uses the same Product → Design → Plan → Build → Evaluate →
+Engineering → Retro flow and separate human approvals. Preserve the actual
+request, owning conversation and concrete result target; ordinary contextual
+assent is valid without an exact question title or phrase.
 
-[Claude Tag](https://claude.com/docs/claude-tag/overview) runs @Claude as
-your organization's shared identity in Slack (Team/Enterprise, public
-beta). taskplane adapts to that environment with three mechanisms:
+Select the intended project and establish actual storage/command/worker location
+before execution. A channel mount or ephemeral clone does not establish local
+execution or durable state. Preserve the complete quiescent `.taskplane/` store
+and referenced artifacts through authorized host storage; do not invent old
+`TASKPLANE_STORE=repo`, `share push` or loop-command recovery.
 
-- **Repo-persisted store.** Tag's sandbox is ephemeral — `~` is discarded
-  when the conversation idles. Set `TASKPLANE_STORE=repo` and the knowledge
-  store (decisions, requirements, loop state) lives at `.taskplane-kb/`
-  inside the repo, committed and pushed with the work. The next Tag session
-  resumes the loop by cloning the branch.
-- **Attributable human gates.** There is no PreToolUse hook layer in Tag,
-  so gates are process + audit: at `plan_approval` and `signoff` the loop
-  parks, the gate summary goes to the thread, and only a real person's
-  reply unlocks it — recorded with `tp loop approve --by "Dana — 'approved'
-  in #platform-eng"`. The approver lands in the trace and the KB, so every
-  gate pass is attributable. An approve without `--by` is detectable as a
-  self-approval.
-- **The `tp-tag` skill** carries the full thread protocol: compact status
-  posts, the dashboard attached at every gate, scope restated before each
-  execute step, and a hard rule the skill never breaks — it does not
-  approve gates on its own, under any phrasing of urgency.
+Hook coverage, persistence and native workers depend on actual host capability.
+If unavailable, report that limit; process/audit observations cannot be described
+as mechanical interception or independent authentication. Durable briefs replace
+receipt/startup accounting. Dashboard and usage are optional views.
 
-The approved flow contract is stored with the skill at
-`skills/tp-tag/flow.json`:
-
-`Slack thread goal → repo-persisted KB → governed loop → role dispatch +
-evidence → dashboard attached → human reply in thread → attributed approval
-→ commit KB + resume state`.
-
-The dashboard is the engine-authored `.taskplane/dashboard.html`; it shows the
-workflow/gate state and dependency graph/blast radius. Tag attaches those
-bytes by reference at a human gate and waits. A request for changes leaves the
-loop parked; only an explicit approving reply advances it, with the person's
-identity and exact words recorded through `--by`.
-
-To deploy: an Owner attaches the taskplane plugin to a scope (channel,
-workspace, or org) from the Access bundle's Plugins tab or a skills
-repository — see [Customize Claude
-Tag](https://claude.com/docs/claude-tag/admins/customize). Honest limit:
-Tag's plugin surface today is skills-only, so enforcement is by process,
-visibility, and trace — not by mechanical interception. Claude Code and Cowork
-hook coverage must be established from the installed adapter and actual host
-events. Cowork additionally needs an explicit selected-folder binding and separate
-execution/worker observations; a mounted Mac folder proves neither local commands
-nor local workers. Automated fixtures do not certify live Cowork hooks, persistence
-or dashboard display. Follow [Cowork setup and recovery](onboarding.md#cowork-workspace-and-execution)
-and stop when a required host capability is unavailable. Individuals can work
-privately even on a team plan and publish selected decisions to the
-channel's shared store with `tp share push` — see the changelog's v1.5.0
-entry.
+A channel task does not authorize sending messages to other people or publishing
+artifacts. Use existing host permissions and explicit communication scope. No
+fixture certifies live channel hooks, local workers or restart persistence.

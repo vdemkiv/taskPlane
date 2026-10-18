@@ -175,7 +175,7 @@ def test_recovery_releases_only_failed_reservation_and_allows_fresh_attempt(tmp_
     assert row['state'] == 'failed' and row['terminal_status'] == 'unadmitted_launch_revoked'
     assert row['revoked_at'] and row['recovery']['worker_id'] == 'child'
     assert row['recovery']['process_exit'] == 'unknown' and not row.get('ended_at')
-    assert row['worker_id'] is None and row['call_id'] is None and row['context_receipt'] is None
+    assert row['worker_id'] is None and row['call_id'] is None
     assert not row.get('claimed_at') and not after.get('task_results')
     assert before['workers'][sibling] == after['workers'][sibling]
     for key in ('decisions', 'revision', 'scope', 'history'):
@@ -195,23 +195,26 @@ def test_recovery_releases_only_failed_reservation_and_allows_fresh_attempt(tmp_
 
 
 @requires_recovery_reader
-def test_revocation_can_record_failure_during_drift_but_cannot_bless_source_changes(tmp_path, monkeypatch):
+def test_recovery_with_unrelated_file_preserves_history_and_allows_fresh_attempt(tmp_path, monkeypatch):
     c, s = setup(tmp_path, count=1)
     prepared = reserve(c, s)
     _, root, child, paths = transcript_fixture(tmp_path, monkeypatch, prepared['grant'])
     write_fixture(root, child, paths)
     (tmp_path / 'outside.py').write_text('maintenance edit\n')
-    before = c.report()['source_baseline']
+    before = c.report()
     recovered = c.worker(s['run'], 'recover-unbound', revision=s['revision'], grant=prepared['grant']['grant_id'],
                          request={'request_reference': 'fixture/user-repair', 'launch_call_id': 'launch', 'terminal_call_id': 'terminal'})
     assert recovered['state'] == 'failed'
-    assert c.report()['source_baseline'] == before
-    with pytest.raises(w.Refusal, match='outside'):
-        reserve(c, s, retry_reason='Verified failed launch; needs new context.')
+    after = c.report()
+    for key in ('scope', 'decisions', 'visits', 'revision', 'history'):
+        assert after[key] == before[key]
+    fresh = reserve(c, s, retry_reason='Verified failed launch; unrelated external work is unchanged.')['grant']
+    assert fresh['grant_id'] != recovered['grant_id'] and fresh['attempt'] == 2
+    assert (tmp_path / 'outside.py').read_text() == 'maintenance edit\n'
 
 
 @pytest.mark.parametrize('defect', ['revision', 'principal', 'profile', 'host', 'bound', 'admitted', 'claimed',
-                                  'context', 'accepted', 'live_command', 'reference', 'call', 'malformed_native'])
+                                  'accepted', 'live_command', 'reference', 'call', 'malformed_native'])
 def test_recovery_refusal_preserves_controller_bytes(tmp_path, monkeypatch, defect):
     c, s = setup(tmp_path, count=1)
     prepared = reserve(c, s); grant = prepared['grant']['grant_id']
@@ -223,7 +226,7 @@ def test_recovery_refusal_preserves_controller_bytes(tmp_path, monkeypatch, defe
     if defect == 'profile': monkeypatch.setattr(c.adapter, 'profile', 'protected_host')
     if defect == 'host': monkeypatch.setattr(c.adapter, 'name', 'claude')
     fields = dict(bound=('worker_id', 'child'), admitted=('call_id', 'launch'), claimed=('claimed_at', 'fixture'),
-                  context=('context_receipt', {}), accepted=('state', 'accepted'))
+                  accepted=('state', 'accepted'))
     # Corrupt fixture state through the test controller only; production never edits state directly.
     if defect in fields or defect == 'live_command':
         db = c._read(c._path()); state = db['runs'][s['run']]

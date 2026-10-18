@@ -1,5 +1,7 @@
 # Delivery wave metrics
 
+> Historical design record. The current [shared flow](../skills/tp-go/references/shared-flow.md) supersedes its retired phase, lens-quota and receipt requirements. This record does not govern new runs.
+
 Taskplane measures one delivery candidate once. `taskplane/wave_metrics.py`
 seals a `taskplane.wave-metrics-receipt/v1` only after the run interval is
 closed, and every source must identify the same candidate and exact interval

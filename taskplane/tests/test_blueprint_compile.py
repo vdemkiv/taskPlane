@@ -100,7 +100,7 @@ def test_compilation_is_deterministic_and_uses_existing_validators(source):
     assert "compilation.json" not in record["members"]
     scope = first["scope"]
     assert set(scope["paths"]) == set(w.PHASES)
-    assert scope["execution_contract"] == "native-default/v1"
+    assert scope["execution_contract"] == "ownership/v1"
     assert scope["workflow_binding"]["package_digest"] == record["digest"]
     tasks = json.loads(first["members"]["tasks.json"])["tasks"]
     assert tasks[0]["execution"] == "native_required"
@@ -324,7 +324,7 @@ def test_runtime_drift_and_missing_contract_never_downgrade(source, monkeypatch)
     check_error("runtime_drift", lambda: bc.verify_package(source, package["workflow_binding"]))
     def incompatible(*args, **kwargs):
         result = original(*args, **kwargs)
-        result.update(compatible=False, blockers=[{"code": "unsupported_contract", "location": "/runtime", "message": "bounded/v2", "remedy": "Restore runtime"}])
+        result.update(compatible=False, blockers=[{"code": "unsupported_contract", "location": "/runtime", "message": "brief/v1", "remedy": "Restore runtime"}])
         return result
     monkeypatch.setattr(c, "catalog", incompatible)
     check_error("runtime_incompatible", lambda: bc.build_package(source, definition(), inputs()))

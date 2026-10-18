@@ -18,7 +18,7 @@ import uuid
 
 from . import workflow as w, workflow_evidence as e
 from .context import Store, digest
-from .context_handoff import Session, binding
+from .context_handoff import Brief, binding
 
 # Codex desktop also flattens the namespace in actual hook payloads (observed
 # collaborationlist_agents). Keep these exact aliases; never strip arbitrary prefixes.
@@ -39,7 +39,7 @@ STATES = LIVE | {"result_pending", "accepted", "failed", "interrupted"}
 MARKER = re.compile(r"(?m)^Taskplane grant: ([0-9a-f]{32})$")
 NAME_GRANT = re.compile(r"[a-z0-9_]{1,46}__([0-9a-f]{32})")
 RECOVERY_HOSTS = {'recover-unbound': 'codex', 'recover-unavailable': 'codex',
-                  'recover-launch-denied': 'claude', 'reconcile-handback': 'claude', 'reconcile-startup': 'claude'}
+                  'recover-launch-denied': 'claude', 'reconcile-handback': 'claude'}
 
 
 def recovery_capabilities(host: str) -> dict[str, Any]:
@@ -53,7 +53,6 @@ def recovery_capabilities(host: str) -> dict[str, Any]:
         'next_action': (
             'Claude recover-launch-denied only reconciles an exact proven legacy launch denial with no child/work. '
             'reconcile-handback revalidates an owned attempt\'s recorded handback and completion; it never accepts a result. '
-            'reconcile-startup handles only a proven legacy history-limit, unclaimed no-report failure with unchanged inputs. '
             'For a launched owned worker, use exposed TaskStop and observed native completion under its current grant. '
             'An unbound identity conflict has no general recovery adapter: preserve the attempt and evidence, '
             'use flow wait for the capability repair, and do not promise a retry or substitute root work.'
@@ -96,18 +95,10 @@ def task(state: dict[str, Any], task_id: str) -> dict[str, Any]:
     return dict(e.task_definitions([found])[task_id])
 
 
-def read_input_manifest(workspace: Path, session: Session, owned_paths: list[str]) -> dict[str, Any]:
+def read_input_manifest(workspace: Path, session: Brief, owned_paths: list[str]) -> dict[str, Any]:
     """Fingerprint declared dependencies independently of context transport."""
-    paths = {item["body"]["path"] for item in session.items
-             if item["kind"] == "source" and "path" in item["body"]}
-    for item in session.items:
-        if item["kind"] == "requirements":
-            paths.update(p for row in item["body"].get("tasks", []) for p in e.read_inputs(session.state, row))
-        elif item['kind'] == 'task-brief':
-            paths.update(reference['path'] for reference in item['body']['read_interfaces'])
-            paths.update(reference['path'] for reference in item['body']['coverage'])
-    # Missing explicit or fallback inputs must refuse, even if not transported.
-    return e.manifest(workspace, sorted(paths - set(owned_paths)))
+    declarations = e.read_inputs(session.state, task(session.state, session.task)) if session.task else []
+    return e.manifest(workspace, sorted(set(declarations) - set(owned_paths)))
 
 
 def verification_plan(state: dict[str, Any], task_id: str) -> str | None:
@@ -170,8 +161,7 @@ def retained_authority(workspace: Path, state: dict[str, Any], task_id: str,
             if len(matches) != 1:
                 return None
             covered.add(matches[0]['id'])
-            current_key = context_reuse.key(workspace, **{name: key[name] for name in
-                ('paths', 'tests', 'criteria', 'command', 'tool', 'contract')})
+            current_key = context_reuse.revalidate(workspace, prior, state=state)
             if context_reuse.lookup(store, reference, current_key)['status'] != 'reused':
                 return None
         if not result.get('checks') or not {item['id'] for item in expected if item.get('required')} <= covered:
@@ -207,8 +197,6 @@ def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
         return False
     if row.get('acceptance_invalidation'):
         return False
-    if row.get('binding', {}).get('context_contract') == 'bounded/v3' and readiness(row)['status'] != 'ready':
-        return False
     if (not row.get("worker_id") or row["worker_id"] == state["root"]
             or not row.get('claimed_at') or row.get('revoked_at') or row.get('identity_conflict')
             or row["worker_id"] != result.get("worker_id")
@@ -221,7 +209,7 @@ def native_result_valid(workspace: Path, state: dict[str, Any], task_id: str,
         basis = retained_authority(workspace, state, task_id, result)
         if basis is None:
             return False
-        worker_session(workspace, basis, row).validate(row.get("context_receipt"))
+        worker_session(workspace, basis, row)
         return True
     except w.Refusal:
         return False
@@ -305,6 +293,13 @@ def current(state: dict[str, Any], row: dict[str, Any]) -> None:
               "stale_checkpoint", "Worker grant belongs to an old authority or task generation.")
 
 
+def require_execution(row: dict[str, Any]) -> None:
+    """Cancellation fences work immediately; it never proves process exit."""
+    w.require(not row.get('stop_requested') and not row.get('cancel_requested')
+              and row.get('state') != 'cancel_requested', 'scope_violation',
+              'Worker was stopped or cancellation is pending; observe genuine termination before further work.')
+
+
 def capacity(value: Any, *, host: str | None = None) -> int:
     if isinstance(value, dict) and value.get('host_slots', False) is None:
         w.require(host == 'claude' and value.get('includes_root') is False
@@ -343,84 +338,16 @@ def path_conflict(candidate: dict[str, Any], other: dict[str, Any]) -> bool:
 
 
 def readiness(row: dict[str, Any]) -> dict[str, Any]:
-    """Observed startup evidence, not a protected-host attestation."""
-    proof = row.get("hook_readiness", {})
-    missing = [label for label, passed in (
-        ("native identity", bool(row.get("worker_id"))),
-        ("claim", bool(row.get("claimed_at"))),
-        ("complete context", bool(row.get("context_receipt"))),
-        ("startup without failure handback", not row.get("startup_handbacks")),
-        ("matching automatic hook pair", bool(proof.get("matched_call"))
-         and proof.get("root") == row.get("expected_runtime", {}).get("root")
-         and proof.get("member_sha256") == row.get("expected_runtime", {}).get("member_sha256"))) if not passed]
-    if row.get('binding', {}).get('context_contract') == 'bounded/v3':
-        from . import workflow_write_guard as guard
-        try:
-            account = guard.account(row)
-            if (account.get('stage') != 'ready'
-                    or guard.timing_required(account) and account.get('measurement') != 'complete'
-                    or account['schema'] != 'taskplane.startup-account/v1' and account.get('execution') != 'complete'):
-                missing.append('verified startup execution and first source probe')
-        except w.Refusal:
-            missing.append('valid bound startup account')
+    if (row.get("state") in {"cancel_requested", "interrupted", "failed", "result_pending", "accepted"}
+            or row.get("terminal_status") or row.get("revoked_at")
+            or row.get("stop_requested") or row.get("cancel_requested")):
+        return {"status": "inactive", "missing": ["live uncancelled attempt"],
+                "basis": "Terminal or cancelled attempts have no execution permission."}
+    missing = [label for label, valid in (("native identity", bool(row.get("worker_id"))),
+                                        ("observed claim", bool(row.get("claimed_at"))),
+                                        ("no identity conflict", not row.get("identity_conflict"))) if not valid]
     return {"status": "ready" if not missing else "pending", "missing": missing,
-            "runtime_root": proof.get("root"), "basis": "Observed child claim, delivered context and automatic pre/post hook pair."}
-
-
-def parent_readiness(state: dict[str, Any], runtime: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Require a current, admitted automatic parent pair before reserving work."""
-    from .host_capabilities import runtime_identity
-    expected = runtime if runtime is not None else runtime_identity()
-    proof = state.get('parent_hook_readiness', {})
-    if not isinstance(proof, dict):
-        proof = {}
-    missing = [label for label, valid in (
-        ('admitted automatic parent hook pair', proof.get('admitted') is True
-         and proof.get('automatic') is True and isinstance(proof.get('matched_call'), str)
-         and 0 < len(proof['matched_call']) <= 512 and not proof.get('mismatch')),
-        ('current run, visit and revision', proof.get('binding') == binding(state)),
-        ('selected workspace and root', proof.get('workspace') == state.get('workspace')
-         and proof.get('root') == state.get('root')),
-        ('executing runtime', bool(expected.get('member_sha256'))
-         and all(expected['member_sha256'].values()) and proof.get('runtime') == expected),
-        ('native observation reference', isinstance(proof.get('reference'), str)
-         and 0 < len(proof['reference']) <= 2048)) if not valid]
-    return {'status': 'ready' if not missing else 'mismatch' if proof else 'missing',
-            'missing': missing, 'reference': proof.get('reference'),
-            'workspace': state.get('workspace'), 'root': state.get('root'),
-            'runtime_root': expected.get('root')}
-
-
-def require_parent_readiness(state: dict[str, Any]) -> dict[str, Any]:
-    result = parent_readiness(state)
-    w.require(result['status'] == 'ready', 'worker_readiness',
-              'Native parent readiness is ' + result['status'] + ': ' + ', '.join(result['missing'])
-              + '. Observe an ordinary admitted command pre/post pair in the selected workspace/root/runtime before retrying.')
-    return deepcopy(state['parent_hook_readiness'])
-
-
-def startup_blockers(state: dict[str, Any], definition: dict[str, Any]) -> list[str]:
-    blocked = []
-    gates = list(definition.get("readiness_after", []))
-    if "read_inputs" in definition:
-        # The first useful task doubles as the startup probe. Once ready, every
-        # independent task can fill capacity without spawning a throwaway probe.
-        cohort = [r for r in records(state).values() if r["binding"] == binding(state)
-                  and "read_inputs" in task(state, r["task_id"])]
-        first = min(cohort, key=lambda row: row["prepared_at"]) if cohort else None
-        if first and first["task_id"] != definition["id"] and first["task_id"] not in gates:
-            gates.append(first["task_id"])
-    from .host_capabilities import runtime_identity
-    expected = runtime_identity() if gates else None
-    for key in gates:
-        attempts = [row for row in records(state).values() if row["task_id"] == key]
-        latest = max(attempts, key=lambda row: row["attempt"]) if attempts else None
-        if (not latest or latest["binding"] != binding(state)
-                or latest["state"] not in {"running", "result_pending", "accepted"}
-                or latest.get("expected_runtime") != expected
-                or readiness(latest)["status"] != "ready"):
-            blocked.append(key)
-    return blocked
+            "basis": "Observed native identity and current attempt."}
 
 
 class BudgetRefusal(w.Refusal):
@@ -429,10 +356,7 @@ class BudgetRefusal(w.Refusal):
 
 def _result_runtime() -> dict[str, Any]:
     from . import worker_results as results, host_capabilities
-    import hashlib
-    return {'sha256': digest({'runtime': host_capabilities.runtime_identity(),
-                             'members': {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-                                         for path in sorted(Path(__file__).parent.glob('*.py'))}}),
+    return {'sha256': digest(host_capabilities.runtime_identity()),
             'schemas': [results.SCHEMA, results.RESULT_CONTRACT, results.LEDGER, results.BUDGET],
             'capabilities': sorted(results.CAPABILITIES)}
 
@@ -450,8 +374,10 @@ def _result_fingerprints(workspace: Path, state: dict[str, Any], definition: dic
     assert declared is not None
     try:
         strategy = w.accepted_plan(state)['packet']['output'].get('verification_strategy', {})
+        plan_roles = e.typed_plan(w.accepted_plan(state)['packet']['output'])
     except w.Refusal:
         strategy = definition.get('verification', {})
+        plan_roles = False
     checks = strategy.get('checks', []) if isinstance(strategy, dict) and strategy.get('schema') == e.VERIFICATION_STRATEGY else []
     allowed = set(e.read_inputs(state, definition)) | set(definition['paths'])
     keys = {}
@@ -468,7 +394,8 @@ def _result_fingerprints(workspace: Path, state: dict[str, Any], definition: dic
                 keys[cid] = context_reuse.contribution_key(workspace, paths=source, tests=tests,
                     outputs=sorted(set(obligation['outputs'] + obligation['evidence'])),
                     criteria={cid: obligation}, command=command, tool='taskplane-root-verification',
-                    contract=declared['schema'])
+                    contract=declared['schema'], **({'state': state, 'check_id': check['id']}
+                                                   if plan_roles else {}))
                 continue
         body = {'schema': 'taskplane.contribution-key/v1', 'coverage': 'unknown', 'eligible': False,
                 'criteria': {cid: obligation}, 'reason': 'Complete current verification plan/fingerprints unavailable.'}
@@ -664,7 +591,6 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     require_runtime(state)
     w.require(not state.get('dispatch_paused'), 'approval_required',
               'New worker dispatch is paused for requirements review.')
-    parent_proof = require_parent_readiness(state)
     from . import workspace_binding
     workspace_binding.ensure(workspace, worker=True, expected=state.get("workspace_contract"))
     definition = task(state, task_id)
@@ -682,12 +608,10 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     for p in paths:
         e.path(workspace, p)
     rows = records(state)
-    w.require(not startup_blockers(state, definition), "worker_readiness",
-              "Cohort startup needs the declared child's current claim, complete context and matching automatic hooks.")
     previous = [r for r in rows.values() if r["task_id"] == task_id]
     retry_reason = request.get("retry_reason")
     if previous and ("read_inputs" in definition or any(is_launch_denial(r) for r in previous)):
-        w.require(isinstance(retry_reason, str) and 8 <= len(retry_reason.strip()) <= 512,
+        w.require(isinstance(retry_reason, str) and 0 < len(retry_reason.strip()) <= 512,
                   "invalid_evidence", "A repeated scoped task needs a concrete retry_reason before another attempt.")
     live = [r for r in rows.values() if r["state"] in LIVE]
     limit = capacity(request.get("capacity"), host=host)
@@ -703,25 +627,12 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     # same correlation token in the native name, without decrypting the message.
     name = f"{name}__{key}"
     w.require(not any(r["task_name"] == name for r in live), "scope_violation", "Active native task names must be distinct.")
-    session = Session(workspace, state, task_id)
-    preflight = session.preflight()
-    if state.get('context_contract') == 'bounded/v3':
-        # Native identity is not known before dispatch. Budget the maximum JSON
-        # encoding of its 200-character bound; this is a preview, never a claim.
-        maximum_consumer = {'worker_id': '\x00' * 200, 'grant_id': key, 'attempt': 1024,
-                            'task_id': task_id, 'task_generation': state.get('task_generation', 0)}
-        preflight = Session(workspace, state, task_id, consumer=maximum_consumer,
-                            snapshot=session.frozen, persist=False).preflight()
-        preflight['consumer_basis'] = 'Worst-case escaped identity bound; actual consumer must receive a fresh brief.'
-    if state.get('context_contract') != 'bounded/v3':
-        budget = definition.get("context_budget_bytes", 131072 if "read_inputs" in definition else None)
-        w.require(budget is None or preflight["required_body_bytes"] <= budget, "context_overflow",
-                  "Required context exceeds the legacy task budget before launch.")
+    session = Brief(workspace, state, task_id)
     from .host_capabilities import runtime_identity
     # Preserve immutable content in the bounded object store, never the control DB.
     frozen = session.store.put("worker-input-snapshot", session.frozen)
     row = {"grant_id": key, "root": state["root"], "run": state["run"], "binding": binding(state),
-           "workspace": str(workspace), "parent_readiness": parent_proof,
+           "workspace": str(workspace),
            "task_id": task_id, "task_digest": digest(definition), "task_generation": state.get("task_generation", 0),
            "paths": paths, "criteria": e.task_criteria(definition), "task_name": name,
            "attempt": 1 + max((r["attempt"] for r in rows.values() if r["task_id"] == task_id), default=0),
@@ -729,21 +640,14 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
            "snapshot": frozen, "input_manifest": read_input_manifest(workspace, session, paths),
            "dependency_results": dependency_results(state, definition["dependencies"]),
            "dependency_manifest": dependency_manifest(state, definition["dependencies"]),
-           "prepared_at": now(), "events": {}, "context_receipt": None,
+           "prepared_at": now(), "events": {},
            "purpose": definition.get("purpose") or definition.get("review_lens") or task_id,
-           "retry_reason": retry_reason, "context_preflight": preflight,
+           "retry_reason": retry_reason,
            "expected_runtime": runtime_identity(),
            "requirements_epochs": {c: state.get('criterion_epochs', {}).get(c, 0)
                                    for c in e.task_criteria(definition)},
            "task_epoch": state.get('task_epochs', {}).get(task_id, 0),
            "workspace_contract": deepcopy(state.get("workspace_contract"))}
-    if state.get('context_contract') == 'bounded/v3':
-        row['host'] = host or 'unknown'
-        row['startup_account_schema'] = 'taskplane.startup-account/v3'
-        row['startup_supporting'] = [item['id'] for item in session.items if not item.get('required', True)]
-        row['control_epoch'] = 0
-        from .workflow_write_guard import new_account
-        row['startup_account'] = new_account(row, preflight)
     if host == "claude" and state.get("claude_transcript_selection", {}).get("status") == "selected":
         # Claude writes tool_use before PreToolUse. Freeze the root hook's
         # verified boundary at preparation, before the grant can be dispatched.
@@ -764,27 +668,14 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     return row
 
 
-def startup_commands(state: dict[str, Any], row: dict[str, Any]) -> tuple[str, str]:
-    runtime = [str(Path(sys.executable).resolve()), str(Path(__file__).with_name("tp.py").resolve())]
-    claim = shlex.join([*runtime, "flow", "worker", "--operation", "claim", "--run", state["run"],
-                        "--grant", row["grant_id"], "--workspace", state["workspace"]])
-    context = shlex.join([*runtime, "flow", "context", "--workspace", state["workspace"],
-                          "--run", state["run"], "--task", row["task_id"]])
-    return claim, context
 
 
-def startup_guidance(state: dict[str, Any], row: dict[str, Any]) -> str:
-    claim, context = startup_commands(state, row)
-    return ("Run each startup command exactly as a separate foreground command, without pipes, "
-            "redirections, head, wrappers or output truncation. First claim: " + claim +
-            "\nThen consume every required task input: " + context +
-            "\nFollow every returned next_action using this same runtime; retain every response body.")
 
 
 def dispatch_message(state: dict[str, Any], row: dict[str, Any]) -> str:
     return (f"Taskplane grant: {row['grant_id']}\n"
             f"Workspace: {state['workspace']}\nRun: {state['run']}\nTask: {row['task_id']}\n"
-            f"Use the installed Taskplane runtime. {startup_guidance(state, row)}\n"
+            f"Read the task brief using flow context --run {state['run']} --task {row['task_id']}.\n"
             "Stay within the assigned paths and return evidence. "
             "The grant is a correlation value, not approval or root authority.")
 
@@ -795,12 +686,26 @@ def find(state: dict[str, Any], worker: str) -> dict[str, Any] | None:
     return max(found, key=lambda r: r["prepared_at"]) if found else None
 
 
-def worker_session(workspace: Path, state: dict[str, Any], row: dict[str, Any]) -> Session:
+def worker_session(workspace: Path, state: dict[str, Any], row: dict[str, Any]) -> Brief:
     current(state, row)
     w.require(row.get("worker_id"), "scope_violation", "Native worker identity is not bound.")
     consumer = {k: row[k] for k in ("worker_id", "grant_id", "attempt", "task_id", "task_generation")}
-    return Session(workspace, state, row["task_id"], consumer=consumer,
-                   snapshot=Store(workspace).resolve(row["snapshot"]))
+    frozen = Store(workspace).resolve(row["snapshot"])
+    session = Brief(workspace, state, row["task_id"], consumer=consumer, persist=False)
+    old = frozen.get("brief", {})
+    owned = set(row["paths"])
+    # Owned source references remain useful in the brief, but authorized output
+    # writes cannot invalidate their own attempt. Freeze only read dependencies.
+    def dependencies(inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [item for item in inputs if item.get("path") not in owned]
+    w.require(frozen.get("binding") == session.binding and frozen.get("task") == row["task_id"]
+              and old.get("task") == session.body["task"]
+              and dependencies(old.get("inputs", [])) == dependencies(session.body["inputs"])
+              and old.get("prerequisite_results") == session.body["prerequisite_results"],
+              "invalid_context", "Relevant task read dependencies or authority changed since preparation.")
+    session.reference = session.store.put("work-brief", session.body)
+    session.store.register(session.binding, [session.reference])
+    return session
 
 
 def admit_discovery(args: dict[str, Any]) -> None:
@@ -864,6 +769,8 @@ def admit_claude_control(state: dict[str, Any], event: dict[str, Any]) -> None:
               'scope_violation', 'Claude control requires an owned native worker in this run.')
     assert row is not None
     current(state, row)
+    if tool != 'TaskStop':
+        require_execution(row)
     observed = event.get('taskplane_observed_binding', {})
     call = event.get('tool_use_id') or event.get('call_id')
     w.require(row['state'] in ({'bootstrapping', 'running', 'cancel_requested'} if tool == 'TaskStop'
@@ -952,20 +859,9 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
         w.require(len(matches) == 1 and matches[0] in records(state), "scope_violation", "Dispatch requires one prepared grant.")
         row = records(state)[matches[0]]
         current(state, row)
-        if state.get('context_contract') == 'bounded/v3':
-            from .workflow_write_guard import account, allow_work, timing_required
-            allow_work(row)
-            startup = account(row)
-            w.require((not timing_required(startup) or startup.get('measurement') == 'complete')
-                      and (startup['schema'] == 'taskplane.startup-account/v1'
-                           or startup.get('execution') == 'complete') and startup['operations']
-                      and all(op['status'] == 'completed' for op in startup['operations'].values()),
-                      'worker_readiness', 'Native launch requires completed preparation and its genuine post hook.')
-        require_parent_readiness(state)
+        require_execution(row)
         workspace = Path(state['workspace'])
         definition = task(state, row['task_id'])
-        w.require(not startup_blockers(state, definition), "worker_readiness",
-                  "Declared cohort startup proof is missing or stale before launch.")
         w.require(all(result_valid(workspace, state, d) for d in definition['dependencies'])
                   and row.get('dependency_results') == dependency_results(state, definition['dependencies'])
                   and row['input_manifest'] == e.manifest(workspace, list(row['input_manifest'])),
@@ -1042,6 +938,7 @@ def admit(state: dict[str, Any], event: dict[str, Any]) -> bool:
             row["state"] = "cancel_requested"
         return True  # Cancellation is not a terminal observation.
     current(state, row)
+    require_execution(row)
     w.require(row["state"] in {"bootstrapping", "running"}, "scope_violation", "New input requires a live current attempt.")
     from .worker_results import contract
     if tool in MESSAGE and (row.get('result_ledger') or contract(task(state, row['task_id']), required=False) is not None):
@@ -1546,7 +1443,7 @@ def admit_handback(state: dict[str, Any], row: dict[str, Any], event: dict[str, 
     """Historical implicit-parent {message} compatibility; delivery is a separate observation."""
     current(state, row)
     args = event.get("tool_input", {})
-    startup = not row.get('claimed_at') or not row.get('context_receipt') or bool(row.get('startup_handbacks'))
+    startup = not row.get('claimed_at') or bool(row.get('startup_handbacks'))
     observed = event.get('taskplane_observed_binding', {})
     w.require(row.get("host") == "claude" and row['state'] in {'bootstrapping', 'running'}
               and not row.get("identity_conflict") and not row.get('completion_conflict')
@@ -1770,29 +1667,6 @@ def observe(state: dict[str, Any], event: dict[str, Any]) -> None:
     executing = find(state, str(principal or ''))
     if executing and name == 'PreToolUse' and executing['state'] in {'bootstrapping', 'running'}:
         executing.setdefault('started_at', now())
-    if executing and executing["state"] in {"bootstrapping", "running"} and name in {"PreToolUse", "PostToolUse"}:
-        observed = event.get("taskplane_observed_binding", {})
-        runtime = event.get("taskplane_runtime_identity", {})
-        expected = executing.get("expected_runtime", {}).get("member_sha256")
-        if (observed.get("root") == state["root"] and observed.get("principal") == executing["worker_id"]
-                and expected and all(expected.values()) and runtime.get("member_sha256") == expected
-                and runtime.get("root") == executing.get("expected_runtime", {}).get("root")
-                and isinstance(call, str) and 0 < len(call) <= 512):
-            proof = executing.setdefault("hook_readiness", {})
-            from . import workflow_local
-            words = workflow_local.runtime_words(event) if tool == "Bash" else []
-            ordinary = tool not in HANDBACK and not (len(words) >= 4 and words[2] == "flow" and words[3] in {"worker", "context"})
-            paired = event.get("taskplane_admission", {})
-            admitted_post = (executing.get("host") != "claude" or
-                (paired.get("principal") == executing["worker_id"] and paired.get("call_id") == call
-                 and paired.get("automatic") is True and paired.get("state") == "completed"))
-            if name == "PreToolUse" and (executing.get("host") != "claude" or ordinary):
-                proof["pending_call"] = call
-            elif proof.get("pending_call") == call and admitted_post:
-                proof.update(matched_call=call, root=runtime.get("root"), member_sha256=expected, observed_at=now())
-        elif runtime and (runtime.get("member_sha256") != expected
-                          or runtime.get("root") != executing.get("expected_runtime", {}).get("root")):
-            executing["hook_readiness"] = {"mismatch": True, "root": runtime.get("root")}
     if name == "PostToolUse" and tool in STATUS and isinstance(response, dict):
         agents = response.get("agents")
         if isinstance(agents, list):
@@ -1876,21 +1750,16 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
         w.require(not row.get('result_rejection'), 'invalid_evidence',
                   'This result was rejected; verification requires a fresh attempt.')
         current(state, row)
-        if state.get('context_contract') == 'bounded/v3':
-            w.require(readiness(row)['status'] == 'ready', 'invalid_evidence',
-                      'Native v3 result acceptance requires complete startup execution and the source probe.')
         if row.get("host") == "claude":
             fresh = observe_claude_launches(state, [row], {})
             w.require(fresh[0]["status"] == "matched" and not row.get("identity_conflict"),
                       "invalid_evidence", "Claude result needs freshly revalidated exact launch proof.")
             w.require(row.get("handback", {}).get("status") == "delivered"
                       and fresh[0].get('completion') == row.get('handback', {}).get('notification')
-                      and not row.get('completion_conflict')
-                      and readiness(row)["status"] == "ready", "invalid_evidence",
-                      "Claude result needs verified handback delivery and automatic readiness.")
+                      and not row.get('completion_conflict'), "invalid_evidence",
+                      "Claude result needs verified handback delivery from its exact native attempt.")
         w.require(row.get('claimed_at') and not row.get('identity_conflict'), 'invalid_evidence',
                   'Worker must claim its exact non-conflicting attempt before accepting a result.')
-        w.require(row["context_receipt"] is not None, "invalid_context", "Worker did not consume its task inputs.")
         w.require(row["input_manifest"] == e.manifest(workspace, list(row["input_manifest"])),
                   "stale_checkpoint", "Worker read inputs changed; revalidate with a fresh attempt.")
         w.require(row.get("dependency_results") == dependency_results(state, definition["dependencies"]),
@@ -1906,9 +1775,6 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
                       for r in records(state).values()), "scope_violation",
               "Join dependent workers before replacing their prerequisite result.")
     outputs, checks = request.get("outputs"), request.get("checks")
-    if row:
-        from .workflow_write_guard import allow_work
-        allow_work(row)
     from . import worker_results as results
     declared = results.contract(definition, required=False)
     ledger_id = _result_policy(state, definition, initialize=row is None)
@@ -1946,7 +1812,7 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
     from .host_capabilities import runtime_identity
     result = {"task_digest": digest(definition), "manifest": e.manifest(workspace, files),
               "outputs": list(outputs), "input_manifest": deepcopy(row["input_manifest"]) if row else
-                  read_input_manifest(workspace, Session(workspace, state, task_id), definition["paths"]),
+                  read_input_manifest(workspace, Brief(workspace, state, task_id), definition["paths"]),
               "input_contract": "declared-source/v1",
               "dependency_results": dependency_results(state, definition["dependencies"]),
               "checks": deepcopy(checks), "accepted_at": now(), "grant": grant,
@@ -2000,7 +1866,6 @@ def lens_summary(state: dict[str, Any], workspace: Path) -> list[dict[str, Any]]
 
 
 def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, Any]:
-    from .workflow_write_guard import startup_status
     rows = list(state.get("workers", {}).values())
     scheduling = []
     limit = state.get('worker_capacity', {}).get('effective_limit')
@@ -2018,8 +1883,7 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
             reason = ('accepted' if result_valid(workspace, state, key) else
                       'active attempt' if any(r['task_id'] == key for r in active) else
                       'prerequisites: ' + ', '.join(missing) if missing else
-                      'root execution: ' + definition['execution_reason'] if definition.get('execution') == 'root' else
-                      'startup readiness: ' + ', '.join(startup_blockers(state, definition)) if startup_blockers(state, definition) else
+                      'root execution' if definition.get('execution') == 'root' else
                       'read/write conflict' if any(path_conflict(candidate, r) for r in active) else
                       'capacity unknown' if limit is None else
                       'native unavailable: ' + str(state['worker_capacity'].get('reason') or 'observed zero capacity') if limit == 0 else
@@ -2044,7 +1908,6 @@ def summary(state: dict[str, Any], workspace: Path | None = None) -> dict[str, A
             "attempts": [{**{k: r.get(k) for k in ("grant_id", "task_id", "worker_id", "attempt", "state",
                 "prepared_at", "started_at", "ended_at", "purpose", "retry_reason", "context_preflight", "context_delivery")},
                 "readiness": readiness(r),
-                "startup": startup_status(r),
                 **({'launch_preflight': deepcopy(r['launch_preflight'])} if r.get('launch_preflight') else {}),
                 **({'handback_reconciliation': deepcopy(r['handback_reconciliation'])} if r.get('handback_reconciliation') else {}),
                 **({'launch_blocker': deepcopy(r['preflight_blocker'])} if r.get('preflight_blocker') else {}),

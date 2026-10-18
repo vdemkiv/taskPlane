@@ -1,27 +1,22 @@
-"""Same-run migration/revision fixtures; no fixture proves installed native behavior."""
+"""Same-run requirements revision; fixtures do not prove installed native behavior."""
 from copy import deepcopy
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
-import zipfile
 
 import pytest
 
 from taskplane import workflow as w, workflow_host, workflow_evidence as evidence, host_capabilities
 from taskplane.context import digest
-from taskplane.context_handoff import Session, consume_required
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_local import decide, decision, present
 
 
-def upgrade_fixture(tmp_path, *, revision_checks=False, components=False, source_writes=False,
-                    artifact_path=None):
+def accepted_build_fixture(tmp_path, *, components=False, source_writes=False, artifact_path=None):
     template, _, _ = prepare(tmp_path)
-    scope = deepcopy(template['scope']); scope['paths']['build'] = (
-        ['build.json', 'build-report.txt', 'build-history.json'] if revision_checks else ['build.json'])
+    scope = deepcopy(template['scope'])
+    scope['paths']['build'] = ['build.json', 'build-report.txt', 'build-history.json']
     tasks = [{'id': 'T1', 'phase': 'build', 'owner': 'root', 'paths': scope['paths']['build'],
               'read_inputs': ['app.py'], 'dependencies': [], 'criteria': ['AC1'],
               'verification': 'Verify the unchanged declared outcome.'}]
@@ -52,7 +47,7 @@ def upgrade_fixture(tmp_path, *, revision_checks=False, components=False, source
     (tmp_path/'tasks.json').write_text(json.dumps({'tasks': tasks}))
     c = workflow_host.Controller(tmp_path, 'root', workflow_host.installed_adapter('codex'))
     state = c.start({'scope': scope, 'request_reference': 'fixture/original-user',
-                     'goal': 'Preserve the approved outcome during a supported runtime upgrade.'})
+                     'goal': 'Preserve accepted outcomes while reviewing an explicit requirement change.'})
     for phase, next_phase in [('product', 'design'), ('design', 'plan'), ('plan', 'build')]:
         _, output, _ = prepare(tmp_path, phase)
         (tmp_path/'tasks.json').write_text(json.dumps({'tasks': tasks}))
@@ -68,63 +63,32 @@ def upgrade_fixture(tmp_path, *, revision_checks=False, components=False, source
                           acceptance_coverage={criterion: [row['id'] for row in tasks if criterion in row['criteria']]
                                                for criterion in scope['criteria']},
                           integration_order=[row['id'] for row in tasks])
-            if revision_checks:
-                output['build_outputs'] = [{'kind': kind, 'path': path, 'task': tasks[-1]['id']} for kind, path in
-                    zip(['packet', 'report', 'verification_history'], tasks[-1]['paths'])]
-                output['verification_strategy'] = {'schema': evidence.VERIFICATION_STRATEGY, 'checks': [{
-                    'id': 'CHECK-T1', 'name': 'Fixture requirement regression', 'task': 'T1',
-                    'kind': 'unit', 'environment': 'fixture', 'required': True, 'criteria': ['AC1'],
-                    'command': ['python3', '-m', 'pytest', 'app.py'],
-                    'source_inputs': ['app.py'], 'test_inputs': ['app.py'], 'evidence_outputs': ['build-report.txt']}]}
-                if components:
-                    output['verification_strategy']['checks'] = [{
-                        'id': 'CHECK-'+row['id'], 'name': 'Verify '+row['id'], 'task': row['id'],
-                        'kind': 'unit', 'environment': 'fixture', 'required': True, 'criteria': row['criteria'],
-                        'command': [sys.executable, '-c', f'exec(open({row["read_inputs"][-1]!r}).read())'], 'source_inputs': row['read_inputs'][:1],
-                        'test_inputs': row['read_inputs'][-1:], 'evidence_outputs': [row['paths'][0]]} for row in tasks]
-        output['context_receipt'] = consume_required(Session(tmp_path, c.report()))[0]
+            output['build_outputs'] = [{'kind': kind, 'path': path, 'task': tasks[-1]['id']} for kind, path in
+                zip(['packet', 'report', 'verification_history'], tasks[-1]['paths'])]
+            output['verification_strategy'] = {'schema': evidence.VERIFICATION_STRATEGY, 'checks': [{
+                'id': 'CHECK-T1', 'name': 'Fixture requirement regression', 'task': 'T1',
+                'kind': 'unit', 'environment': 'fixture', 'required': True, 'criteria': ['AC1'],
+                'command': ['python3', '-m', 'pytest', 'app.py'],
+                'source_inputs': ['app.py'], 'test_inputs': ['app.py'], 'evidence_outputs': ['build-report.txt']}]}
+            if components:
+                output['verification_strategy']['checks'] = [{
+                    'id': 'CHECK-'+row['id'], 'name': 'Verify '+row['id'], 'task': row['id'],
+                    'kind': 'unit', 'environment': 'fixture', 'required': True, 'criteria': row['criteria'],
+                    'command': [sys.executable, '-c', f'exec(open({row["read_inputs"][-1]!r}).read())'], 'source_inputs': row['read_inputs'][:1],
+                    'test_inputs': row['read_inputs'][-1:], 'evidence_outputs': [row['paths'][0]]} for row in tasks]
         (tmp_path/(phase+'.json')).write_text(json.dumps(output))
         state = c.apply('submit', state['run'], expected_revision=state['revision'],
                         output=phase+'.json', tasks='tasks.json')
         present(c, state)
         state = decide(c, state, decision(state, event='fixture-approve-'+phase))
         state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=next_phase)
-    runtime = host_capabilities.runtime_identity()
-    folder = tmp_path/'.taskplane/upgrade-fixture'; folder.mkdir()
-    archive = folder/'candidate.zip'
-    with zipfile.ZipFile(archive, 'w') as z:
-        for name in runtime['member_sha256']:
-            z.writestr(name, (Path(runtime['root'])/name).read_bytes())
-    raw_check = folder/'raw-check.txt'
-    raw_check.write_text('Isolated compatibility fixture: passing result, not native evidence.\n')
-    pin = lambda path: {'path': str(path.relative_to(tmp_path)),
-                        'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-    check = {'exit': 0, 'command': ['fixture-only'], 'evidence': pin(raw_check)}
-    verification = folder/'verification.json'
-    verification.write_text(json.dumps({'schema': 'taskplane.context-upgrade-verification/v1',
-        'runtime_digest': digest(runtime), 'checks': {k: check for k in
-            ['v2_unchanged', 'v3_old_reader_refusal', 'migration_retry', 'authorization_refusals', 'quiescent_rollback']}}))
-    selection = {'schema': 'taskplane.context-selection/v1', 'run': state['run'],
-        'scope_digest': digest(scope), 'task_generation': state.get('task_generation', 0)+1,
-        'tasks': {'T1': {'request_reference': 'fixture/original-user', 'criteria': {'AC1': ['outcome']},
-            'prerequisites': {}, 'findings': [], 'inputs': [{'id': 'outcome', **pin(tmp_path/'product.json'),
-                'kind': 'requirement', 'reason': 'AC1 preserves this accepted requirement.',
-                'selector': {'version': 1, 'kind': 'json-pointer', 'pointer': '/acceptance_criteria/0'}}]}}}
-    checkpoints = {v['phase']: {'visit': v['id'], 'checkpoint': v['packet']['checkpoint'],
-                              'packet_digest': digest(v['packet'])} for v in state['visits'][:3]}
-    request = {'schema': 'taskplane.context-upgrade-request/v1', 'request_id': 'upgrade-one',
-        'request_reference': 'fixture/user-authorizes-exact-upgrade', 'run': state['run'],
-        'expected_revision': state['revision'], 'expected_generation': state.get('task_generation', 0),
-        'from_contract': 'bounded/v2', 'to_contract': 'bounded/v3', 'scope_digest': digest(scope),
-        'accepted_checkpoints': checkpoints, 'runtime_digest': digest(runtime),
-        'package': pin(archive), 'verification': pin(verification), 'selection': selection}
-    return c, state, request
+    return c, state
 
 
 def revision_fixture(tmp_path, *, components=False, source_writes=False, artifact_path=None):
     from taskplane import depgraph
-    c, state, _ = upgrade_fixture(tmp_path, revision_checks=True, components=components,
-                                  source_writes=source_writes, artifact_path=artifact_path)
+    c, state = accepted_build_fixture(tmp_path, components=components,
+                                      source_writes=source_writes, artifact_path=artifact_path)
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
     scope = deepcopy(state['scope'])
     if components:
@@ -288,9 +252,6 @@ def test_revision_fences_pending_reservation_until_supported_abandon(tmp_path):
     assert row['state'] == 'prepared' and row['stop_requested'] and not workers.joined(current)
     with pytest.raises(w.Refusal, match='paused'):
         workers.prepare(tmp_path, current, 'T1', {})
-    with pytest.raises(w.Refusal, match='stopped'):
-        from taskplane.workflow_write_guard import allow_work
-        allow_work(row)
     pending = c.revise(state['run'], 'resume', request)
     assert pending['status'] == 'pending'
     c.worker(state['run'], 'abandon', revision=state['revision'], grant=row['grant_id'])
@@ -302,6 +263,27 @@ def test_revision_fences_pending_reservation_until_supported_abandon(tmp_path):
     stable = c._path().read_bytes()
     assert c.revise(state['run'], 'resume', request) == opened
     assert c._path().read_bytes() == stable
+
+
+def test_revision_stops_affected_running_worker_before_terminal(tmp_path):
+    from taskplane.tests.test_worker_runtime import reserve, launch, consume
+    c, state, request = revision_fixture(tmp_path, components=True)
+    prepared = reserve(c, state, 'ALPHA')
+    launch(c, state, prepared, 'native-affected')
+    worker = consume(c, state, prepared['grant'], 'native-affected')
+    preview = c.revise(state['run'], 'preview', request)
+    result = c.revise(state['run'], 'begin', request, preview_digest=preview['preview_digest'])
+    assert result['status'] == 'pending'
+    row = c._read(c._path())['runs'][state['run']]['workers'][prepared['grant']['grant_id']]
+    assert row['state'] == 'running' and row['stop_requested'] and not row.get('terminal_status')
+    with pytest.raises(w.Refusal):
+        worker.worker(state['run'], 'claim', grant=prepared['grant']['grant_id'])
+    with pytest.raises(w.Refusal, match='paused'):
+        reserve(c, state, 'ALPHA')
+    with pytest.raises(w.Refusal):
+        worker.guard({'hook_event_name': 'PreToolUse', 'session_id': 'native-affected',
+                      'tool_name': 'Write', 'tool_input': {'file_path': 'alpha/result.txt',
+                                                         'content': 'Late affected result'}}, state['run'])
 
 
 @pytest.mark.parametrize('after_commit', [False, True])
@@ -343,10 +325,8 @@ def complete_revision_review(c, state, request, preview):
         if phase == 'product':
             output['acceptance_criteria'] = preview['requirements']
         path = preview['scope']['paths'][phase][0]
-        output.pop('context_receipt', None)
         (tmp_path/path).write_text(json.dumps(output))
         depgraph.scan(str(tmp_path), decompose=True, strict=True)
-        output['context_receipt'] = consume_required(Session(tmp_path, c.report(diagnostics=False)))[0]
         (tmp_path/path).write_text(json.dumps(output))
         current = c.apply('submit', state['run'], expected_revision=current['revision'], output=path, tasks=task_path)
         present(c, current)
@@ -367,381 +347,19 @@ def test_revision_requires_three_fresh_acceptances_before_build(tmp_path):
     assert all(current['decisions'][key] == value for key, value in state['decisions'].items())
 
 
-def test_upgrade_preview_read_only_commit_once_preserves_approvals(tmp_path):
-    c, state, request = upgrade_fixture(tmp_path)
-    before = c._path().read_bytes()
-    preview = c.context_upgrade(state['run'], 'preview', request)
-    assert c._path().read_bytes() == before
-    assert preview['selection']['criteria'] == ['AC1']
-    assert preview['selection']['briefs'][0]['preflight']['startup_packing']['normal_responses'] <= 8
-    result = c.context_upgrade(state['run'], 'commit', request, preview['preview_digest'])
-    current = c._read(c._path())['runs'][state['run']]
-    assert current['context_contract'] == 'bounded/v3' and current['revision'] == state['revision']+1
-    assert current['decisions'] == state['decisions'] and current['visits'] == state['visits']
-    assert current['scope'] == state['scope'] and len(current['context_upgrades']) == 1
-    assert not current.get('parent_hook_readiness')
-    committed = c._path().read_bytes()
-    assert c.context_upgrade(state['run'], 'commit', request, preview['preview_digest']) == result
-    assert c._path().read_bytes() == committed
-    with pytest.raises(w.Refusal, match='Conflicting'):
-        c.context_upgrade(state['run'], 'commit', {**request, 'request_reference': 'different'}, preview['preview_digest'])
-    assert c._path().read_bytes() == committed
-
-
-@pytest.fixture
-def runtime_package(tmp_path):
-    from taskplane.workflow_write_guard import runtime_artifacts
-    member = b'approved runtime bytes\n'
-    runtime = {'member_sha256': {'taskplane/tp.py': hashlib.sha256(member).hexdigest()}}
-    archive = tmp_path / 'candidate.zip'
-    with zipfile.ZipFile(archive, 'w') as bundle:
-        bundle.writestr('taskplane/tp.py', member)
-    result = tmp_path / 'check.txt'
-    result.write_text('passing compatibility evidence\n')
-    pin = lambda path: {'path': path.name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-    verification = tmp_path / 'verification.json'
-    schema = 'taskplane.context-upgrade-verification/v1'
-    verification.write_text(json.dumps({'schema': schema, 'runtime_digest': digest(runtime),
-        'checks': {'compatibility': {'exit': 0, 'command': ['fixture'], 'evidence': pin(result)}}}))
-    request = {'runtime_digest': digest(runtime), 'package': pin(archive), 'verification': pin(verification)}
-    def validate():
-        runtime_artifacts(tmp_path, request, runtime, verification_schema=schema, checks={'compatibility'})
-    return archive, validate
-
-
-def changed_stat(info, **changes):
-    return SimpleNamespace(**{**{name: getattr(info, name) for name in dir(info) if name.startswith('st_')},
-                              **changes})
-
-
-def test_runtime_package_uses_consistent_handle_timestamps(runtime_package, monkeypatch):
-    archive, validate = runtime_package
-    original = Path.stat
-    def windows_path_stat(path, *args, **kwargs):
-        info = original(path, *args, **kwargs)
-        # CPython 3.12 Windows stat(path) reports birth time in ctime; fstat
-        # reports change time. Model the different clocks on every test host.
-        return changed_stat(info, st_ctime_ns=info.st_ctime_ns - 1000000000) if path == archive else info
-    monkeypatch.setattr(Path, 'stat', windows_path_stat)
-    validate()
-
-
-@pytest.mark.parametrize('snapshot', [2, 3], ids=['validated-handle-after', 'reopened-path'])
-@pytest.mark.parametrize('field', ['st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns'])
-def test_runtime_package_retains_every_identity_and_mutation_check(runtime_package, monkeypatch, snapshot, field):
-    _, validate = runtime_package
-    original = os.fstat
-    calls = []
-    def mutated_fstat(fd):
-        info = original(fd)
-        calls.append(fd)
-        return changed_stat(info, **{field: getattr(info, field) + 1}) if len(calls) == snapshot else info
-    monkeypatch.setattr(os, 'fstat', mutated_fstat)
-    with pytest.raises(w.Refusal, match='changed while it was being validated'):
-        validate()
-    assert len(calls) == 3
-    # Both descriptors close even when a race is rejected.
-    for fd in set(calls):
-        with pytest.raises(OSError):
-            original(fd)
-
-
-def test_runtime_package_detects_reopened_path_replacement(runtime_package, monkeypatch):
-    archive, validate = runtime_package
-    replacement = archive.with_name('replacement.zip')
-    replacement.write_bytes(archive.read_bytes())
-    before = archive.stat()
-    os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
-    original = os.open
-    opened = []
-    def replaced_path(path, flags, *args, **kwargs):
-        if Path(path) == archive:
-            opened.append(path)
-            if len(opened) == 2:
-                path = replacement
-        return original(path, flags, *args, **kwargs)
-    monkeypatch.setattr(os, 'open', replaced_path)
-    # The second open observes a replaced directory entry with identical bytes,
-    # size and mtime. Keeping the first handle live preserves its distinct ID.
-    with pytest.raises(w.Refusal, match='changed while it was being validated'):
-        validate()
-    assert len(opened) == 2
-
-
-def test_runtime_package_detects_write_after_member_validation(runtime_package, monkeypatch):
-    archive, validate = runtime_package
-    original = zipfile.ZipFile.read
-    def changed_member(bundle, *args, **kwargs):
-        data = original(bundle, *args, **kwargs)
-        with archive.open('ab') as writer:
-            writer.write(b'changed after hash and member validation')
-        return data
-    monkeypatch.setattr(zipfile.ZipFile, 'read', changed_member)
-    with pytest.raises(w.Refusal, match='changed while it was being validated'):
-        validate()
-
-
-@pytest.mark.parametrize('defect', ['child', 'revision', 'generation', 'scope', 'runtime', 'package',
-                                  'verification', 'criterion', 'selector', 'plan', 'live_handle', 'preview'])
-def test_upgrade_refusal_never_changes_authority(tmp_path, defect):
-    c, state, request = upgrade_fixture(tmp_path)
-    preview = c.context_upgrade(state['run'], 'preview', request)
-    if defect == 'child': c.principal = 'foreign-child'
-    elif defect == 'revision': request['expected_revision'] += 1
-    elif defect == 'generation': request['expected_generation'] += 1
-    elif defect in {'scope', 'runtime'}: request[defect+'_digest'] = '0'*64
-    elif defect in {'package', 'verification'}: request[defect]['sha256'] = '0'*64
-    elif defect == 'criterion': request['selection']['tasks']['T1']['criteria'] = {}
-    elif defect == 'selector': request['selection']['tasks']['T1']['inputs'][0]['selector']['pointer'] = '/absent'
-    elif defect == 'plan': request['accepted_checkpoints']['plan']['packet_digest'] = '0'*64
-    elif defect == 'live_handle':
-        db = c._read(c._path()); db['runs'][state['run']]['observed_handles']['live'] = {
-            'state': 'running', 'revision': state['revision'], 'visit': w.current(state)['id']}
-        c._write(c._path(), db)
-    else: preview['preview_digest'] = '0'*64
-    stable = c._path().read_bytes()
-    with pytest.raises(w.Refusal):
-        c.context_upgrade(state['run'], 'commit', request, preview['preview_digest'])
-    assert c._path().read_bytes() == stable
-
-
-def test_upgrade_crash_before_commit_retains_v2_and_retry_has_one_event(tmp_path, monkeypatch):
-    c, state, request = upgrade_fixture(tmp_path)
-    preview = c.context_upgrade(state['run'], 'preview', request)
-    original = c._write
-    monkeypatch.setattr(c, '_write', lambda *a: (_ for _ in ()).throw(OSError('fixture before commit')))
-    before = c._path().read_bytes()
-    with pytest.raises(OSError):
-        c.context_upgrade(state['run'], 'commit', request, preview['preview_digest'])
-    assert c._path().read_bytes() == before
-    monkeypatch.setattr(c, '_write', original)
-    c.context_upgrade(state['run'], 'commit', request, preview['preview_digest'])
-    assert len(c._read(c._path())['runs'][state['run']]['context_upgrades']) == 1
-
-
-def test_upgrade_lost_reply_retries_the_committed_event_without_new_approval(tmp_path, monkeypatch):
-    c, state, request = upgrade_fixture(tmp_path)
-    preview = c.context_upgrade(state['run'], 'preview', request)
-    original = c._write
-    def lost_reply(*args):
-        original(*args)
-        raise OSError('fixture lost reply after durable commit')
-    monkeypatch.setattr(c, '_write', lost_reply)
-    with pytest.raises(OSError):
-        c.context_upgrade(state['run'], 'commit', request, preview['preview_digest'])
-    monkeypatch.setattr(c, '_write', original)
-    result = c.context_upgrade(state['run'], 'commit', request, preview['preview_digest'])
-    current = c._read(c._path())['runs'][state['run']]
-    assert result['status'] == 'committed' and len(current['context_upgrades']) == 1
-    assert current['decisions'] == state['decisions']
-
-
-def test_upgrade_refuses_an_unresolved_prepared_reservation(tmp_path):
-    from taskplane.tests.test_worker_runtime import reserve
-    c, state, request = upgrade_fixture(tmp_path)
-    reserve(c, state, 'T1')
-    stable = c._path().read_bytes()
-    with pytest.raises(w.Refusal, match='unresolved reservations'):
-        c.context_upgrade(state['run'], 'preview', request)
-    assert c._path().read_bytes() == stable
-
-
-def test_upgrade_cli_previews_exact_request_and_does_not_opt_in_on_read(tmp_path, capsys):
-    from taskplane import flow
-    c, state, request = upgrade_fixture(tmp_path)
-    path = tmp_path/'.taskplane/upgrade-fixture/request.json'; path.write_text(json.dumps(request))
-    before = c._path().read_bytes()
-    args = ['context-upgrade', '--workspace', str(tmp_path), '--run', state['run'],
-            '--upgrade-mode', 'preview', '--upgrade-request', str(path.relative_to(tmp_path)),
-            '--upgrade-sha256', hashlib.sha256(path.read_bytes()).hexdigest()]
-    assert flow.main(args, governor=c, compact=True) == 0
-    value = json.loads(capsys.readouterr().out)
-    assert value['preview_digest'] and value['approvals_created'] == 0
-    assert c._path().read_bytes() == before
-
-
-
-def rollback_fixture(tmp_path):
-    c, before, upgrade = upgrade_fixture(tmp_path)
-    preview = c.context_upgrade(before['run'], 'preview', upgrade)
-    c.context_upgrade(before['run'], 'commit', upgrade, preview['preview_digest'])
-    current = c._read(c._path())['runs'][before['run']]
-    verification = tmp_path/upgrade['verification']['path']
-    original = json.loads(verification.read_text())
-    check = next(iter(original['checks'].values()))
-    verification.write_text(json.dumps({'schema': 'taskplane.context-rollback-verification/v1',
-        'runtime_digest': upgrade['runtime_digest'], 'checks': {name: check for name in
-            ['compatible_contract', 'after_state_reader', 'obligations_preserved', 'old_reader_refusal', 'crash_retry']}}))
-    request = {key: deepcopy(value) for key, value in upgrade.items() if key != 'selection'}
-    request.update(schema='taskplane.context-rollback-request/v1', request_id='rollback-one',
-        request_reference='fixture/user-authorizes-compatible-rollback', expected_revision=current['revision'],
-        expected_generation=current['task_generation'], from_contract='bounded/v3', to_contract='bounded/v3',
-        prior_runtime_digest=current['context_runtime_digest'], reason='Fixture compatible repair rollback preserves current obligations.')
-    request['verification']['sha256'] = hashlib.sha256(verification.read_bytes()).hexdigest()
-    return c, current, request
-
-
-def test_compatible_rollback_preserves_current_history_and_never_rewinds(tmp_path):
-    c, current, request = rollback_fixture(tmp_path)
-    before = c._path().read_bytes()
-    preview = c.context_rollback(current['run'], 'preview', request)
-    assert c._path().read_bytes() == before
-    result = c.context_rollback(current['run'], 'commit', request, preview['preview_digest'])
-    after = c._read(c._path())['runs'][current['run']]
-    assert after['revision'] == current['revision'] + 1
-    assert after['task_generation'] == current['task_generation'] + 1
-    assert after['context_contract'] == 'bounded/v3'
-    for key in ('visits', 'decisions', 'history', 'scope', 'context_upgrades', 'workers', 'task_results'):
-        assert after.get(key) == current.get(key)
-    assert result['approvals_created'] == 0 and not after.get('parent_hook_readiness')
-    stable = c._path().read_bytes()
-    assert c.context_rollback(current['run'], 'commit', request, preview['preview_digest']) == result
-    assert c._path().read_bytes() == stable
-
-
-@pytest.mark.parametrize('defect', ['child', 'revision', 'generation', 'prior_runtime', 'runtime', 'contract',
-                                  'package', 'verification', 'scope', 'plan', 'live_handle', 'preview'])
-def test_compatible_rollback_refuses_unsafe_or_stale_request(tmp_path, defect):
-    c, current, request = rollback_fixture(tmp_path)
-    preview = c.context_rollback(current['run'], 'preview', request)
-    if defect == 'child': c.principal = 'foreign-child'
-    elif defect == 'revision': request['expected_revision'] += 1
-    elif defect == 'generation': request['expected_generation'] += 1
-    elif defect in {'prior_runtime', 'runtime', 'scope'}: request[defect+'_digest'] = '0'*64
-    elif defect == 'contract': request['to_contract'] = 'bounded/v2'
-    elif defect in {'package', 'verification'}: request[defect]['sha256'] = '0'*64
-    elif defect == 'plan': request['accepted_checkpoints']['plan']['packet_digest'] = '0'*64
-    elif defect == 'live_handle':
-        db = c._read(c._path()); db['runs'][current['run']]['observed_handles']['live'] = {
-            'state': 'running', 'revision': current['revision'], 'visit': w.current(current)['id']}
-        c._write(c._path(), db)
-    else: preview['preview_digest'] = '0'*64
-    stable = c._path().read_bytes()
-    with pytest.raises(w.Refusal):
-        c.context_rollback(current['run'], 'commit', request, preview['preview_digest'])
-    assert c._path().read_bytes() == stable
-
-
-@pytest.mark.parametrize('after_commit', [False, True])
-def test_compatible_rollback_crash_retry_commits_one_event(tmp_path, monkeypatch, after_commit):
-    c, current, request = rollback_fixture(tmp_path)
-    preview = c.context_rollback(current['run'], 'preview', request)
-    before = c._path().read_bytes()
-    original = c._write
-    def failure(*args):
-        if after_commit: original(*args)
-        raise OSError('Fixture rollback interruption')
-    monkeypatch.setattr(c, '_write', failure)
-    with pytest.raises(OSError):
-        c.context_rollback(current['run'], 'commit', request, preview['preview_digest'])
-    if not after_commit: assert c._path().read_bytes() == before
-    monkeypatch.setattr(c, '_write', original)
-    result = c.context_rollback(current['run'], 'commit', request, preview['preview_digest'])
-    assert result['status'] == 'committed'
-    after = c._read(c._path())['runs'][current['run']]
-    assert len(after['context_rollbacks']) == 1 and after['decisions'] == current['decisions']
-
-
 def test_runtime_pin_refuses_hot_switch_but_preserves_read_access(tmp_path, monkeypatch):
     from taskplane import worker_runtime as workers
-    c, current, request = rollback_fixture(tmp_path)
+    c, current, request = revision_fixture(tmp_path)
     runtime = host_capabilities.runtime_identity()
-    changed = deepcopy(runtime); changed['member_sha256']['taskplane/tp.py'] = '0'*64
+    changed = deepcopy(runtime); changed['package_id'] = '0'*64
     monkeypatch.setattr(host_capabilities, 'runtime_identity', lambda: changed)
     stable = c._path().read_bytes()
     assert c.report(diagnostics=False)['run'] == current['run']
-    with pytest.raises(w.Refusal, match='enforcing runtime'):
+    with pytest.raises(w.Refusal, match='installation/package identity'):
         c.adapter.before_action(current, 'submit')
-    with pytest.raises(w.Refusal, match='enforcing runtime'):
+    with pytest.raises(w.Refusal, match='installation/package identity'):
         workers.prepare(tmp_path, current, 'T1', {})
     assert c._path().read_bytes() == stable
-
-
-def test_compatible_rollback_cli_is_source_pinned_and_read_only_preview(tmp_path, capsys):
-    from taskplane import flow
-    c, current, request = rollback_fixture(tmp_path)
-    path = tmp_path/'.taskplane/upgrade-fixture/rollback-request.json'; path.write_text(json.dumps(request))
-    args = ['context-rollback', '--workspace', str(tmp_path), '--run', current['run'], '--rollback-mode', 'preview',
-            '--rollback-request', str(path.relative_to(tmp_path)), '--rollback-sha256', hashlib.sha256(path.read_bytes()).hexdigest()]
-    before = c._path().read_bytes()
-    assert flow.main(args, governor=c, compact=True) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result['schema'] == 'taskplane.context-rollback-preview/v1' and result['approvals_created'] == 0
-    assert c._path().read_bytes() == before
-    path.write_text(json.dumps({**request, 'reason': 'Changed after pinning'}))
-    assert flow.main(args, governor=c, compact=True) != 0
-    assert c._path().read_bytes() == before
-
-
-
-def test_actual_legacy_reader_before_upgrade_and_after_compatible_rollback(tmp_path):
-    """Use the retained v2 runtime or its immutable Git source, never an imitation."""
-    import os
-    import subprocess
-    import sys
-    legacy = os.environ.get('TEST_TASKPLANE_LEGACY_RUNTIME')
-    if not legacy:
-        # CI has no workstation-specific retained runtime. Reconstruct the
-        # historical reader from the exact published 2.33.10 commit instead.
-        # Missing history is a failure, not permission to skip compatibility.
-        source = Path(__file__).resolve().parents[2]
-        commit = '4a46e645ec628dc439cd9d163dbd63ee4906c3e6'
-        archive = tmp_path / 'legacy-source.zip'
-        result = subprocess.run(['git', '-C', str(source), 'archive', '--format=zip',
-                                 '--output', str(archive), commit],
-                                capture_output=True, text=True, timeout=30)
-        assert result.returncode == 0, result.stdout + result.stderr
-        legacy = tmp_path / 'legacy-source'
-        with zipfile.ZipFile(archive) as bundle:
-            # Git generated this archive from the pinned tree; additionally
-            # confine extraction and reject symlink entries before executing it.
-            for member in bundle.infolist():
-                target = (legacy / member.filename).resolve()
-                assert target.is_relative_to(legacy.resolve())
-                assert (member.external_attr >> 16) & 0o170000 != 0o120000
-            bundle.extractall(legacy)
-    legacy = Path(legacy).resolve()
-    assert (legacy/'taskplane/workflow_host.py').is_file()
-    c, initial, upgrade = upgrade_fixture(tmp_path)
-    code = ("import json,sys; from pathlib import Path; from taskplane import workflow_host as h, workflow as w; "
-            "c=h.Controller(Path(sys.argv[1]),'root',h.installed_adapter('codex')); "
-            "state=c._read(c._path())['runs'][sys.argv[2]]; "
-            "print(json.dumps({'contract':state['context_contract'],'revision':state['revision'],'decisions':len(state['decisions'])}))")
-    def read_legacy(expected):
-        before = c._path().read_bytes()
-        result = subprocess.run([sys.executable, '-B', '-c', code, str(tmp_path), initial['run']],
-            cwd=legacy, env={k: v for k, v in os.environ.items() if k not in {'PYTHONPATH', 'PYTHONHOME'}},
-            capture_output=True, text=True, timeout=30)
-        if expected:
-            assert result.returncode == 0, result.stdout + result.stderr
-            assert json.loads(result.stdout)['contract'] == 'bounded/v2'
-        else:
-            assert result.returncode != 0 and 'Unsupported context contract' in result.stderr, result.stdout + result.stderr
-        assert c._path().read_bytes() == before
-    read_legacy(True)
-    preview = c.context_upgrade(initial['run'], 'preview', upgrade)
-    c.context_upgrade(initial['run'], 'commit', upgrade, preview['preview_digest'])
-    read_legacy(False)
-    current = c.report(diagnostics=False)
-    assert current['context_contract'] == 'bounded/v3' and current['decisions'] == initial['decisions']
-    verification = tmp_path/upgrade['verification']['path']
-    old = json.loads(verification.read_text()); check = next(iter(old['checks'].values()))
-    verification.write_text(json.dumps({'schema': 'taskplane.context-rollback-verification/v1',
-        'runtime_digest': upgrade['runtime_digest'], 'checks': {name: check for name in
-            ['compatible_contract', 'after_state_reader', 'obligations_preserved', 'old_reader_refusal', 'crash_retry']}}))
-    request = {key: deepcopy(value) for key, value in upgrade.items() if key != 'selection'}
-    request.update(schema='taskplane.context-rollback-request/v1', request_id='actual-reader-rollback',
-        expected_revision=current['revision'], expected_generation=current['task_generation'],
-        from_contract='bounded/v3', prior_runtime_digest=current['context_runtime_digest'],
-        reason='Actual legacy/new reader check against disposable state.')
-    request['verification']['sha256'] = hashlib.sha256(verification.read_bytes()).hexdigest()
-    preview = c.context_rollback(initial['run'], 'preview', request)
-    c.context_rollback(initial['run'], 'commit', request, preview['preview_digest'])
-    read_legacy(False)
-    after = c.report(diagnostics=False)
-    assert after['context_contract'] == 'bounded/v3' and after['decisions'] == initial['decisions']
-    assert after['revision'] == initial['revision'] + 2
-
 
 
 @pytest.mark.parametrize('defect', ['inventory', 'request', 'preview', 'result', 'status', 'fence', 'active', 'opened', 'binding'])
@@ -785,7 +403,6 @@ def test_native_revision_dashboard_distinguishes_review_and_historical_approval(
     assert 'aborted' in revision_details(state) and 'Resume this review explicitly' in revision_details(state)
 
 
-
 @pytest.mark.parametrize('disposition', ['accept', 'reject'])
 def test_selective_revision_preserves_unaffected_worker_until_result_review(tmp_path, disposition, monkeypatch):
     from taskplane import worker_runtime as workers
@@ -796,7 +413,7 @@ def test_selective_revision_preserves_unaffected_worker_until_result_review(tmp_
     worker = consume(c, current, prepared['grant'], 'native-independent')
     before = c._read(c._path())['runs'][current['run']]
     grant = prepared['grant']['grant_id']
-    receipt = deepcopy(before['workers'][grant]['context_receipt'])
+    snapshot = deepcopy(before['workers'][grant]['snapshot'])
     preview = c.revise(current['run'], 'preview', request)
     assert preview['tasks'] == ['ALPHA', 'BETA', 'FINAL']
     assert preview['criteria'] == ['AC1'] and grant not in preview['affected_grants']
@@ -804,8 +421,8 @@ def test_selective_revision_preserves_unaffected_worker_until_result_review(tmp_
     assert result['status'] == 'pending'
     pending = c._read(c._path())['runs'][current['run']]
     row = pending['workers'][grant]
-    assert not row.get('stop_requested') and row['context_receipt'] == receipt
-    workers.worker_session(tmp_path, pending, row).validate(receipt)
+    assert not row.get('stop_requested') and row['snapshot'] == snapshot
+    workers.worker_session(tmp_path, pending, row)
     worker.guard({'hook_event_name': 'PreToolUse', 'session_id': 'native-independent', 'tool_name': 'Write',
                   'tool_input': {'file_path': 'independent/result.txt', 'content': 'Checked independent result'}}, current['run'])
     (tmp_path/'independent/result.txt').write_text('Checked independent result')
@@ -855,7 +472,7 @@ def test_selective_revision_preserves_unaffected_worker_until_result_review(tmp_
         assert current_key == prior_check['key'], [k for k in current_key if current_key[k] != prior_check['key'].get(k)]
         basis = workers.retained_authority(tmp_path, reviewed, 'INDEPENDENT', saved)
         assert basis is not None, {'verification_plan': (saved['verification_plan'], workers.verification_plan(reviewed, 'INDEPENDENT'))}
-        workers.worker_session(tmp_path, basis, reviewed['workers'][grant]).validate(receipt)
+        workers.worker_session(tmp_path, basis, reviewed['workers'][grant])
         assert workers.native_result_valid(tmp_path, reviewed, 'INDEPENDENT', saved)
         assert workers.result_valid(tmp_path, reviewed, 'INDEPENDENT')
         assert reviewed['task_results']['INDEPENDENT'] == final['task_results']['INDEPENDENT']
@@ -874,7 +491,7 @@ def test_selective_revision_preserves_unaffected_worker_until_result_review(tmp_
             assert not workers.result_valid(tmp_path, reviewed, 'INDEPENDENT')
         with monkeypatch.context() as patch:
             changed_runtime = deepcopy(host_capabilities.runtime_identity())
-            changed_runtime['member_sha256']['taskplane/tp.py'] = '0'*64
+            changed_runtime['package_id'] = '0'*64
             patch.setattr(host_capabilities, 'runtime_identity', lambda: changed_runtime)
             assert not workers.result_valid(tmp_path, reviewed, 'INDEPENDENT')
         for dimension in ('criterion', 'command'):
@@ -894,24 +511,6 @@ def test_selective_revision_preserves_unaffected_worker_until_result_review(tmp_
         approved_product = tmp_path/preview['scope']['paths']['product'][0]
         approved_product.write_text('{}')
         assert not workers.result_valid(tmp_path, reviewed, 'INDEPENDENT')
-
-
-
-
-def test_upgrade_revalidates_root_results_without_complete_current_check_provenance(tmp_path):
-    from taskplane import worker_runtime as workers
-    c, current, request = upgrade_fixture(tmp_path, revision_checks=True)
-    (tmp_path/'build-report.txt').write_text('Observed legacy check result without a complete reusable key.')
-    c.worker(current['run'], 'accept-result', revision=current['revision'], task='T1',
-        request={'outputs': ['build-report.txt'], 'checks': [{'name': 'Legacy root check', 'status': 'pass',
-                                                            'evidence': 'build-report.txt'}]})
-    before = c.report(diagnostics=False)
-    assert workers.result_valid(tmp_path, before, 'T1')
-    preview = c.context_upgrade(current['run'], 'preview', request)
-    c.context_upgrade(current['run'], 'commit', request, preview['preview_digest'])
-    after = c.report(diagnostics=False)
-    assert after['task_results'] == before['task_results']
-    assert not workers.result_valid(tmp_path, after, 'T1')
 
 
 @pytest.mark.parametrize('new_dependency', [False, True])
@@ -942,17 +541,3 @@ def test_pending_revision_rechecks_current_graph_before_opening_product(tmp_path
     event = c._read(c._path())['runs'][state['run']]['requirements_revisions'][request['request_id']]
     assert event['opening_preview']['tasks'] == preview['tasks']
     assert event['opening_preview']['graph_digest'] == digest(depgraph.load(str(tmp_path)))
-
-
-@pytest.mark.parametrize('field,value', [('prior_revision', '3'), ('prior_revision', None),
-                                        ('prior_revision', True), ('revision', {}), ('revision', False)])
-def test_context_transition_rejects_malformed_revision_authority(tmp_path, field, value):
-    from taskplane.workflow_write_guard import validate_control_history
-    c, state, request = upgrade_fixture(tmp_path)
-    preview = c.context_upgrade(state['run'], 'preview', request)
-    c.context_upgrade(state['run'], 'commit', request, preview['preview_digest'])
-    current = c.report(diagnostics=False)
-    event = current['context_upgrades'][request['request_id']]
-    (event['result'] if field == 'revision' else event)[field] = value
-    with pytest.raises(w.Refusal, match='committed context transition'):
-        validate_control_history(current)

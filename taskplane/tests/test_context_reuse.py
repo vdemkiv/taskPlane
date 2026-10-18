@@ -1,11 +1,15 @@
 """Matching provenance reuses observations; every relevant change invalidates it."""
 import sys
+import json
+from contextlib import contextmanager
+from threading import Event, Thread, current_thread
 from pathlib import Path
 from copy import deepcopy
 import pytest
-from taskplane import depgraph
+from taskplane import depgraph, primitives, workflow as w, workflow_evidence as evidence
 from taskplane.context import Store
 from taskplane.context_reuse import key, record, lookup, run_check, inherited, contribution_key, contribution_matches
+from taskplane.context_reuse import same_inputs, revalidate
 
 
 def fixture(tmp_path):
@@ -28,9 +32,114 @@ def test_actual_check_reuse_and_unrelated_edit(tmp_path):
     result = lookup(Store(tmp_path), ref, key(tmp_path, **options))
     assert result['status'] == 'reused' and result['approval'] == 'not_transferred'
     (tmp_path/'unrelated/new.py').write_text('other = True\n')
-    depgraph.scan(str(tmp_path), decompose=True, strict=True)
     assert key(tmp_path, **options) == before
     assert inherited(tmp_path, ref)['status'] == 'reused'
+
+
+def test_new_covered_configuration_invalidates_a_prior_pass_before_fresh_failure(tmp_path):
+    options = fixture(tmp_path)
+    (tmp_path/'pkg/app.py').write_text(
+        "try:\n    value = int(open('pkg/config.json').read())\n"
+        "except FileNotFoundError:\n    value = 3\n")
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options)
+    assert before['eligible'] and before['coverage'] == 'complete'
+    prior = run_check(tmp_path, before, producer='config-before')
+    assert Store(tmp_path).resolve(prior)['status'] == 'pass'
+    assert inherited(tmp_path, prior)['status'] == 'reused'
+    (tmp_path/'pkg/config.json').write_text('400')
+    current = key(tmp_path, **options)
+    assert current != before and not current['eligible'] and current['coverage'] == 'unknown'
+    assert 'pkg/config.json' in current['files']
+    assert inherited(tmp_path, prior)['status'] == 'miss'
+    fresh = run_check(tmp_path, current, producer='config-after')
+    assert Store(tmp_path).resolve(fresh)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('extension', ['toml', 'ini', 'txt'])
+def test_existing_unparsed_configuration_contents_cannot_reuse_a_passing_check(tmp_path, extension):
+    options = fixture(tmp_path)
+    relative = 'pkg/settings.' + extension
+    (tmp_path/relative).write_text('3')
+    (tmp_path/'pkg/app.py').write_text(f'value = int(open({relative!r}).read())\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options)
+    assert before['eligible'] and relative in before['files']
+    prior = run_check(tmp_path, before, producer='unparsed-config-before')
+    assert Store(tmp_path).resolve(prior)['status'] == 'pass'
+    assert inherited(tmp_path, prior)['status'] == 'reused'
+    (tmp_path/relative).write_text('400')
+    current = key(tmp_path, **options)
+    assert current != before
+    assert inherited(tmp_path, prior)['status'] == 'miss'
+    fresh = run_check(tmp_path, current, producer='unparsed-config-after')
+    assert Store(tmp_path).resolve(fresh)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('relative', ['pkg/config.json', 'pkg/schema.sql', 'pkg/settings.yaml',
+                                     'pkg/pom.xml', 'pkg/go.mod', 'package.json', 'go.mod'])
+@pytest.mark.parametrize('change', ['add', 'delete', 'edit'])
+def test_scanner_artifact_and_resolution_inputs_invalidate_covered_reuse(tmp_path, relative, change):
+    options = fixture(tmp_path)
+    target = tmp_path/relative
+    if change != 'add': target.write_text('{}' if target.suffix == '.json' else 'old\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options)
+    assert before['eligible']
+    if change == 'delete': target.unlink()
+    else: target.write_text('{}' if target.suffix == '.json' else 'new\n')
+    if change == 'edit' and target.suffix == '.json': target.write_text('{"changed":true}')
+    current = key(tmp_path, **options)
+    assert current != before and not current['eligible']
+    assert relative in current['files']
+
+
+def test_component_mapping_change_makes_dependency_resolution_unknown(tmp_path):
+    options = fixture(tmp_path)
+    before = key(tmp_path, **options)
+    (tmp_path/'components.yaml').write_text('exclude:\n  - pkg\n')
+    current = key(tmp_path, **options)
+    assert current != before and current['coverage'] == 'unknown'
+
+
+@pytest.mark.parametrize('change', ['add', 'delete'])
+def test_unparsed_covered_resolution_candidate_changes_require_fresh_coverage(tmp_path, change):
+    options = fixture(tmp_path)
+    target = tmp_path/'pkg/settings.toml'
+    if change == 'delete': target.write_text('enabled = true\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options)
+    assert before['eligible']
+    if change == 'add': target.write_text('enabled = true\n')
+    else: target.unlink()
+    current = key(tmp_path, **options)
+    assert current != before and current['coverage'] == 'unknown'
+
+
+def test_unrelated_artifacts_documents_and_excluded_generated_outputs_preserve_reuse(tmp_path):
+    options = fixture(tmp_path)
+    (tmp_path/'README.md').write_text('Initial unrelated documentation\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options)
+    assert before['eligible']
+    (tmp_path/'README.md').write_text('Updated unrelated documentation\n')
+    (tmp_path/'unrelated/config.json').write_text('{"new":true}')
+    (tmp_path/'pkg/dist').mkdir()
+    (tmp_path/'pkg/dist/generated.json').write_text('{"generated":true}')
+    (tmp_path/'pkg/__pycache__').mkdir(exist_ok=True)
+    (tmp_path/'pkg/__pycache__/generated.py').write_text('generated = True\n')
+    assert key(tmp_path, **options) == before
+
+
+def test_fresh_check_runs_without_optional_graph_or_reuse_coverage(tmp_path, monkeypatch):
+    options = fixture(tmp_path)
+    monkeypatch.setattr(depgraph, 'load', lambda _: {})
+    monkeypatch.setattr(depgraph, 'source_inputs_current', lambda *a: pytest.fail('No whole-workspace freshness gate'))
+    provenance = key(tmp_path, **options)
+    assert provenance['coverage'] == 'unknown' and not provenance['eligible']
+    reference = run_check(tmp_path, provenance, producer='fresh-check')
+    assert Store(tmp_path).resolve(reference)['status'] == 'pass'
+    assert inherited(tmp_path, reference)['status'] == 'miss'
 
 
 @pytest.mark.parametrize('change', ['source', 'test', 'added', 'deleted', 'criteria',
@@ -173,3 +282,607 @@ def test_transitive_dependency_census_changes_are_captured(tmp_path, change):
     else: (tmp_path / 'leaf/implementation.py').unlink()
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
     assert not contribution_matches(before, contribution_key(tmp_path, **options))
+
+
+def semantic_contract(tmp_path, *, declared_history=True):
+    options = fixture(tmp_path)
+    owned = ['pkg/app.py', 'pkg/history.json', 'pkg/history-a.json', 'pkg/history-b.json',
+             'pkg/check-1.log', 'pkg/check-2.log', 'pkg/check-3.log', 'pkg/build.json']
+    scope = {'criteria': ['AC1'], 'paths': {phase: [phase + '.json'] for phase in w.PHASES},
+             'verification_inputs': ['pkg/app.py', 'tests/check.py']}
+    scope['paths']['build'] = owned
+    state = w.new_state(str(tmp_path), 'root', 'semantic-run', scope)
+    state['index'] = w.PHASES.index('build')
+    task = {'id': 'BUILD', 'phase': 'build', 'owner': 'root', 'dependencies': [],
+            'paths': list(owned), 'criteria': ['AC1'],
+            'read_inputs': ['pkg/app.py', 'tests/check.py'], 'verification': 'Run the assertion'}
+    check = {'id': 'assertion', 'name': 'Actual source assertion', 'task': 'BUILD',
+             'criteria': ['AC1'], 'kind': 'unit', 'environment': 'local', 'required': True,
+             'source_inputs': options['paths'], 'test_inputs': options['tests'],
+             'command': options['command'],
+             'evidence_outputs': ['pkg/check-1.log', 'pkg/check-2.log', 'pkg/check-3.log']}
+    plan = {'task_dag': [task], 'ownership': {'BUILD': 'root'}, 'write_scope': owned,
+            'integration_order': ['BUILD'],
+            'verification_strategy': {'schema': evidence.VERIFICATION_STRATEGY, 'checks': [check]}}
+    if declared_history:
+        plan['build_outputs'] = [{'kind': 'verification_history', 'path': 'pkg/history.json',
+                                  'task': 'BUILD'}]
+    state['visits'][w.PHASES.index('plan')].update(decision='approved', packet={'output': plan})
+    return state, plan, check, options
+
+
+def semantic_attempt(tmp_path, state, check, options, *, history='pkg/history.json',
+                     log='pkg/check-1.log'):
+    provenance = key(tmp_path, **options, state=state, check_id=check['id'],
+                     history_path=history, log_path=log)
+    assert provenance['eligible']
+    reference = run_check(tmp_path, provenance, producer='root', state=state,
+        history_path=history, log_path=log, run=state['run'], visit=w.current(state)['id'],
+        check_id=check['id'], kind=check['kind'], environment=check['environment'])
+    assert Store(tmp_path).resolve(reference)['status'] == 'pass'
+    return reference
+
+
+@pytest.mark.parametrize('read_role', ['source', 'test', 'task_read'])
+@pytest.mark.parametrize('output_role', ['history', 'log'])
+def test_current_check_read_write_role_collision_refuses(tmp_path, read_role, output_role):
+    state, plan, check, options = semantic_contract(tmp_path)
+    relative = 'pkg/history.json' if output_role == 'history' else 'pkg/check-1.log'
+    (tmp_path/relative).write_text('3')
+    if read_role == 'source':
+        check['source_inputs'] = options['paths'] = options['paths'] + [relative]
+    elif read_role == 'test':
+        check['test_inputs'] = options['tests'] = options['tests'] + [relative]
+    plan['task_dag'][0]['read_inputs'].append(relative)
+    with pytest.raises(w.Refusal):
+        key(tmp_path, **options, state=state, check_id=check['id'],
+            history_path='pkg/history.json', log_path='pkg/check-1.log')
+
+
+@pytest.mark.parametrize('extension', ['log', 'json', 'lock'])
+def test_real_config_with_evidence_like_suffix_stays_bound(tmp_path, extension):
+    state, plan, check, options = semantic_contract(tmp_path)
+    relative = 'pkg/config.' + extension
+    (tmp_path/relative).write_text('3')
+    (tmp_path/'pkg/app.py').write_text(f'value = int(open({relative!r}).read())\n')
+    check['source_inputs'] = options['paths'] = options['paths'] + [relative]
+    plan['task_dag'][0]['read_inputs'].append(relative)
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    reference = semantic_attempt(tmp_path, state, check, options)
+    assert relative in Store(tmp_path).resolve(reference)['key']['files']
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    (tmp_path/relative).write_text('400')
+    assert inherited(tmp_path, reference, state=state)['status'] == 'miss'
+
+
+def test_generated_evidence_read_by_downstream_task_remains_its_input(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    relative = 'pkg/generated.json'
+    (tmp_path/relative).write_text('3')
+    plan['task_dag'][0]['paths'].append(relative)
+    plan['write_scope'].append(relative)
+    plan['build_outputs'].append({'kind': 'report', 'path': relative, 'task': 'BUILD'})
+    consumer = {'id': 'CONSUMER', 'phase': 'build', 'owner': 'root', 'dependencies': ['BUILD'],
+                'paths': ['pkg/consumer.log'], 'criteria': ['AC1'],
+                'read_inputs': ['pkg/app.py', 'tests/check.py', relative],
+                'verification': 'Read the prerequisite artifact'}
+    plan['task_dag'].append(consumer)
+    plan['ownership']['CONSUMER'] = 'root'
+    plan['integration_order'].append('CONSUMER')
+    plan['write_scope'].append('pkg/consumer.log')
+    consumer_check = deepcopy(check)
+    consumer_check.update(id='consume-evidence', task='CONSUMER',
+                          source_inputs=['pkg/app.py', relative], evidence_outputs=['pkg/consumer.log'])
+    plan['verification_strategy']['checks'].append(consumer_check)
+    options['paths'] = consumer_check['source_inputs']
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options, state=state, check_id=consumer_check['id'])
+    assert before['eligible'] and relative in before['files']
+    (tmp_path/relative).write_text('400')
+    assert key(tmp_path, **options, state=state, check_id=consumer_check['id']) != before
+
+
+def test_rescanned_metadata_references_cannot_expand_source_closure_or_contribution_edges(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    log = 'pkg/check-1.json'
+    plan['task_dag'][0]['paths'].append(log)
+    plan['write_scope'].append(log)
+    check['evidence_outputs'][0] = log
+    check['command'] = options['command'] = [sys.executable, '-c',
+        'exec(open("tests/check.py").read()); print("unrelated/other.py")']
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    contribution_options = {**options, 'criteria': {'AC1': {'statement': 'Source remains correct'}},
+                            'outputs': ['pkg/app.py'], 'state': state, 'check_id': check['id'],
+                            'history_path': 'pkg/history.json', 'log_path': log}
+    before = contribution_key(tmp_path, **contribution_options)
+    assert before['eligible'] and 'unrelated' not in before['verification']['modules']
+    reference = semantic_attempt(tmp_path, state, check, options, log=log)
+    assert 'unrelated/other.py' in (tmp_path/log).read_text()
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    after = contribution_key(tmp_path, **contribution_options)
+    assert contribution_matches(before, after)
+    assert 'unrelated' not in after['verification']['modules']
+    (tmp_path/'pkg/app.py').write_text('value = 400\n')
+    assert not contribution_matches(after, contribution_key(tmp_path, **contribution_options))
+
+
+def test_independent_fallback_histories_remain_current_after_publication_and_reload(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path, declared_history=False)
+    second_check = deepcopy(check)
+    second_check.update(id='second-assertion', evidence_outputs=['pkg/check-2.log'])
+    check['evidence_outputs'] = ['pkg/check-1.log']
+    plan['verification_strategy']['checks'].append(second_check)
+    first = semantic_attempt(tmp_path, state, check, options,
+                             history='pkg/history-a.json', log='pkg/check-1.log')
+    second = semantic_attempt(tmp_path, state, second_check, options,
+                              history='pkg/history-b.json', log='pkg/check-2.log')
+    reloaded = json.loads(json.dumps(state))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    assert inherited(tmp_path, first, state=reloaded)['status'] == 'reused'
+    assert inherited(tmp_path, second, state=reloaded)['status'] == 'reused'
+    assert inherited(tmp_path, first)['status'] == 'miss'
+
+
+def test_source_inferred_generated_report_read_stays_bound_without_explicit_read(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    relative = 'pkg/generated.json'
+    (tmp_path/relative).write_text('3')
+    (tmp_path/'pkg/app.py').write_text(f'value = int(open({relative!r}).read())\n')
+    plan['task_dag'][0]['paths'].append(relative)
+    plan['write_scope'].append(relative)
+    plan['build_outputs'].append({'kind': 'report', 'path': relative, 'task': 'BUILD'})
+    assert relative not in plan['task_dag'][0]['read_inputs']
+    assert relative not in options['paths'] + options['tests']
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    reference = semantic_attempt(tmp_path, state, check, options)
+    assert relative in Store(tmp_path).resolve(reference)['key']['files']
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    (tmp_path/relative).write_text('400')
+    assert inherited(tmp_path, reference, state=state)['status'] == 'miss'
+    current = key(tmp_path, **options, state=state, check_id=check['id'],
+                  history_path='pkg/history.json', log_path='pkg/check-2.log')
+    fresh = run_check(tmp_path, current, producer='root', state=state,
+        history_path='pkg/history.json', log_path='pkg/check-2.log', run=state['run'],
+        visit=w.current(state)['id'], check_id=check['id'], kind=check['kind'],
+        environment=check['environment'])
+    assert Store(tmp_path).resolve(fresh)['status'] == 'fail'
+
+
+def test_source_inferred_read_of_own_current_log_refuses(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    log = 'pkg/check-1.json'
+    (tmp_path/log).write_text('3')
+    (tmp_path/'pkg/app.py').write_text(f'value = int(open({log!r}).read())\n')
+    plan['task_dag'][0]['paths'].append(log)
+    plan['write_scope'].append(log)
+    check['evidence_outputs'][0] = log
+    assert log not in plan['task_dag'][0]['read_inputs']
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    with pytest.raises(w.Refusal):
+        key(tmp_path, **options, state=state, check_id=check['id'],
+            history_path='pkg/history.json', log_path=log)
+
+
+def test_canonical_history_alias_cannot_hide_own_read_write_conflict(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    plan['task_dag'][0]['read_inputs'].append('pkg/./history.json')
+    with pytest.raises(w.Refusal):
+        key(tmp_path, **options, state=state, check_id=check['id'],
+            history_path='pkg/history.json', log_path='pkg/check-1.log')
+
+
+def test_concurrent_first_history_publication_cannot_make_other_real_check_unknown(tmp_path, monkeypatch):
+    state, plan, check, options = semantic_contract(tmp_path, declared_history=False)
+    second_check = deepcopy(check)
+    second_check.update(id='second-assertion', evidence_outputs=['pkg/check-2.log'])
+    check['evidence_outputs'] = ['pkg/check-1.log']
+    plan['verification_strategy']['checks'].append(second_check)
+    selections = [(check, 'pkg/history-a.json', 'pkg/check-1.log'),
+                  (second_check, 'pkg/history-b.json', 'pkg/check-2.log')]
+    prepared = [key(tmp_path, **options, state=state, check_id=row['id'],
+                    history_path=history, log_path=log) for row, history, log in selections]
+    assert all(item['eligible'] for item in prepared)
+    first_locked, release_first, second_at_lock, second_snapshot_acquired = (
+        Event(), Event(), Event(), Event())
+    original_lock = primitives.file_lock
+    first_history = (tmp_path/'pkg/history-a.json').resolve()
+
+    @contextmanager
+    def schedule_publication(path):
+        second_snapshot = (current_thread().name == 'semantic-check-b'
+                           and Path(path).name == 'verification-publication')
+        if second_snapshot:
+            second_at_lock.set()
+        with original_lock(path):
+            if second_snapshot:
+                second_snapshot_acquired.set()
+            if Path(path).resolve() == first_history:
+                assert Path(str(first_history) + '.lock').exists()
+                assert not first_history.exists()
+                first_locked.set()
+                assert release_first.wait(15), 'First publication was not released'
+            yield
+
+    monkeypatch.setattr(primitives, 'file_lock', schedule_publication)
+    references, errors = {}, []
+
+    def execute(index):
+        try:
+            requirement, history, log = selections[index]
+            references[index] = run_check(tmp_path, prepared[index], producer='root', timeout=10,
+                state=state, history_path=history, log_path=log, run=state['run'],
+                visit=w.current(state)['id'], check_id=requirement['id'],
+                kind=requirement['kind'], environment=requirement['environment'])
+        except BaseException as exc:
+            errors.append(exc)
+
+    first = Thread(target=execute, args=(0,), name='semantic-check-a', daemon=True)
+    second = Thread(target=execute, args=(1,), name='semantic-check-b', daemon=True)
+    first.start()
+    try:
+        assert first_locked.wait(10), 'First check never reached native history publication'
+        second.start()
+        assert second_at_lock.wait(10), 'Second check never reached its snapshot/publication lock'
+        assert not second_snapshot_acquired.wait(0.1), 'Snapshot entered an unfinished evidence publication'
+    finally:
+        release_first.set()
+        first.join(15)
+        if second.ident is not None:
+            second.join(15)
+    assert not first.is_alive() and not second.is_alive(), 'Verification threads did not terminate'
+    if errors:
+        raise errors[0]
+    assert set(references) == {0, 1}
+    reloaded = json.loads(json.dumps(state))
+    for reference in references.values():
+        observed = Store(tmp_path).resolve(reference)
+        assert observed['status'] == 'pass' and observed['result']['returncode'] == 0
+        assert inherited(tmp_path, reference, state=reloaded)['status'] == 'reused'
+
+
+@pytest.mark.parametrize('history', [
+    '.taskplane/context-v1/verification-publication',
+    './.taskplane/context-v1/verification-publication',
+    '.taskplane/context-v1/verification-publication.lock',
+], ids=['logical-history', 'canonical-alias', 'native-lock-file'])
+def test_owned_history_cannot_reenter_or_overwrite_internal_publication_lock(tmp_path, history):
+    state, plan, check, options = semantic_contract(tmp_path)
+    plan['task_dag'][0]['paths'].append(history)
+    plan['write_scope'].append(history)
+    plan['build_outputs'][0]['path'] = history
+    with pytest.raises(w.Refusal):
+        key(tmp_path, **options, state=state, check_id=check['id'],
+            history_path=history, log_path='pkg/check-1.log')
+
+
+def packet_draft(state, **changes):
+    return {'schema': 'taskplane.phase-output/v1', 'run': state['run'],
+            'visit': w.current(state)['id'], 'phase': w.current(state)['phase'],
+            'value': 3, **changes}
+
+
+def run_packet_check(tmp_path, state, check, provenance, *, log='pkg/check-1.log'):
+    return run_check(tmp_path, provenance, producer='root', state=state,
+        history_path='pkg/history.json', log_path=log, run=state['run'],
+        visit=w.current(state)['id'], check_id=check['id'], kind=check['kind'],
+        environment=check['environment'])
+
+
+def test_bound_owned_packet_draft_stays_reusable_when_report_is_completed(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    path = 'pkg/build.json'
+    (tmp_path/path).write_text(json.dumps(packet_draft(state)))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options, state=state, check_id=check['id'],
+                 history_path='pkg/history.json', log_path='pkg/check-1.log')
+    assert before['eligible']
+    reference = run_packet_check(tmp_path, state, check, before)
+    assert Store(tmp_path).resolve(reference)['status'] == 'pass'
+    (tmp_path/path).write_text(json.dumps(packet_draft(state, outcome='Check passed')))
+    state['visits'][state['index']]['packet'] = {'output_path': path, 'output': packet_draft(state)}
+    current = revalidate(tmp_path, Store(tmp_path).resolve(reference), state=state, output_path=path)
+    assert same_inputs(before, current)
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+
+
+@pytest.mark.parametrize('draft_exists_at_key', [True, False], ids=['existing-draft', 'created-after-key'])
+def test_explicit_packet_context_reaches_execution_without_repeating_output_argument(tmp_path, draft_exists_at_key):
+    state, plan, check, options = semantic_contract(tmp_path)
+    path = 'pkg/build.json'
+    if draft_exists_at_key:
+        (tmp_path/path).write_text(json.dumps(packet_draft(state)))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    provenance = key(tmp_path, **options, state=state, check_id=check['id'],
+                     history_path='pkg/history.json', log_path='pkg/check-1.log', output_path=path)
+    if not draft_exists_at_key:
+        (tmp_path/path).write_text(json.dumps(packet_draft(state)))
+    # run_check receives the ordinary provenance, with no repeated output_path.
+    reference = run_packet_check(tmp_path, state, check, provenance)
+    observed = Store(tmp_path).resolve(reference)
+    assert observed['status'] == 'pass' and observed['result']['returncode'] == 0
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+
+
+def test_producing_packet_context_survives_later_evaluate_and_contribution_reuse(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    path = 'pkg/build.json'
+    (tmp_path/path).write_text(json.dumps(packet_draft(state)))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    producing_visit = w.current(state)['id']
+    provenance = key(tmp_path, **options, state=state, check_id=check['id'],
+                     history_path='pkg/history.json', log_path='pkg/check-1.log', output_path=path)
+    contribution_options = {**options, 'criteria': {'AC1': {'statement': 'Source remains correct'}},
+        'outputs': ['pkg/app.py'], 'state': state, 'check_id': check['id'],
+        'history_path': 'pkg/history.json', 'log_path': 'pkg/check-1.log', 'visit': producing_visit}
+    before = contribution_key(tmp_path, **contribution_options, output_path=path)
+    reference = run_packet_check(tmp_path, state, check, provenance)
+    state['visits'][state['index']].update(decision='approved',
+        packet={'output_path': path, 'output': packet_draft(state)})
+    state['index'] = w.PHASES.index('evaluate')
+    (tmp_path/'evaluate.json').write_text(json.dumps(packet_draft(state)))
+    current = revalidate(tmp_path, Store(tmp_path).resolve(reference), state=state,
+                         output_path='evaluate.json')
+    assert same_inputs(provenance, current)
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    after = contribution_key(tmp_path, **contribution_options, output_path='evaluate.json')
+    assert contribution_matches(before, after)
+
+
+@pytest.mark.parametrize('declared_read', [True, False], ids=['explicit-read', 'scanner-proven-read'])
+def test_real_packet_read_remains_input_and_edit_invalidates_observed_pass(tmp_path, declared_read):
+    state, plan, check, options = semantic_contract(tmp_path)
+    path = 'pkg/build.json'
+    (tmp_path/path).write_text(json.dumps(packet_draft(state)))
+    (tmp_path/'pkg/app.py').write_text(f'value = eval(open({path!r}).read())["value"]\n')
+    if declared_read:
+        plan['task_dag'][0]['read_inputs'].append(path)
+        check['source_inputs'] = options['paths'] = options['paths'] + [path]
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options, state=state, check_id=check['id'],
+                 history_path='pkg/history.json', log_path='pkg/check-1.log', output_path=path)
+    assert before['eligible']
+    reference = run_packet_check(tmp_path, state, check, before)
+    assert Store(tmp_path).resolve(reference)['status'] == 'pass'
+    (tmp_path/path).write_text(json.dumps(packet_draft(state, value=400)))
+    current = key(tmp_path, **options, state=state, check_id=check['id'],
+                  history_path='pkg/history.json', log_path='pkg/check-2.log', output_path=path)
+    assert not same_inputs(before, current)
+    assert inherited(tmp_path, reference, state=state)['status'] == 'miss'
+    failed = run_packet_check(tmp_path, state, check, current, log='pkg/check-2.log')
+    assert Store(tmp_path).resolve(failed)['status'] == 'fail'
+
+
+@pytest.mark.parametrize('defect', ['malformed', 'wrong-run', 'wrong-visit', 'wrong-phase', 'unowned'])
+def test_explicit_packet_role_refuses_unbound_or_unowned_draft(tmp_path, defect):
+    state, plan, check, options = semantic_contract(tmp_path)
+    path = 'pkg/build.json' if defect != 'unowned' else 'pkg/unowned.json'
+    draft = packet_draft(state)
+    if defect == 'wrong-run': draft['run'] = 'foreign-run'
+    if defect == 'wrong-visit': draft['visit'] = 'foreign-visit'
+    if defect == 'wrong-phase': draft['phase'] = 'evaluate'
+    (tmp_path/path).write_text('not a packet' if defect == 'malformed' else json.dumps(draft))
+    with pytest.raises(w.Refusal):
+        key(tmp_path, **options, state=state, check_id=check['id'],
+            history_path='pkg/history.json', log_path='pkg/check-1.log', output_path=path)
+
+
+@pytest.mark.parametrize('draft_kind', ['ordinary-config', 'foreign-packet'])
+def test_implicit_packet_discovery_cannot_hide_unbound_owned_config(tmp_path, draft_kind):
+    state, plan, check, options = semantic_contract(tmp_path)
+    path = 'pkg/build.json'
+    contents = {'value': 3} if draft_kind == 'ordinary-config' else packet_draft(state, run='foreign-run')
+    (tmp_path/path).write_text(json.dumps(contents))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options, state=state, check_id=check['id'],
+                 history_path='pkg/history.json', log_path='pkg/check-1.log')
+    contents['value'] = 400
+    (tmp_path/path).write_text(json.dumps(contents))
+    after = key(tmp_path, **options, state=state, check_id=check['id'],
+                history_path='pkg/history.json', log_path='pkg/check-1.log')
+    assert not same_inputs(before, after)
+
+
+def test_retained_packet_sidecar_cannot_hide_dynamic_runtime_config(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    relative = 'pkg/config.json'
+    (tmp_path/relative).write_text('3')
+    plan['task_dag'][0]['paths'].append(relative)
+    plan['write_scope'].append(relative)
+    # Assemble the path at runtime so static literal references do not prove
+    # this dependency; the admitted component census must still bind it.
+    (tmp_path/'pkg/app.py').write_text(
+        f'name = "".join(map(chr, {list(relative.encode())!r}))\n'
+        'value = int(open(name).read())\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    before = key(tmp_path, **options, state=state, check_id=check['id'],
+                 history_path='pkg/history.json', log_path='pkg/check-1.log')
+    reference = run_packet_check(tmp_path, state, check, before)
+    assert Store(tmp_path).resolve(reference)['status'] == 'pass'
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    with pytest.raises(w.Refusal):
+        key(tmp_path, **options, state=state, check_id=check['id'],
+            history_path='pkg/history.json', log_path='pkg/check-2.log',
+            packet_context=[{'visit': w.current(state)['id'], 'path': relative}])
+    (tmp_path/relative).write_text('400')
+    assert inherited(tmp_path, reference, state=state)['status'] == 'miss'
+    current = key(tmp_path, **options, state=state, check_id=check['id'],
+                  history_path='pkg/history.json', log_path='pkg/check-2.log')
+    fresh = run_packet_check(tmp_path, state, check, current, log='pkg/check-2.log')
+    assert Store(tmp_path).resolve(fresh)['status'] == 'fail'
+
+
+def test_captured_packet_role_survives_same_visit_resubmission_history(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    path = 'pkg/build.json'
+    revised = 'pkg/revised-build.json'
+    plan['write_scope'].append(revised)
+    plan['task_dag'][0]['paths'].append(revised)
+    draft = packet_draft(state)
+    (tmp_path/path).write_text(json.dumps(draft))
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    provenance = key(tmp_path, **options, state=state, check_id=check['id'],
+                     history_path='pkg/history.json', log_path='pkg/check-1.log')
+    reference = run_packet_check(tmp_path, state, check, provenance)
+    # Submission history remains authoritative when the current packet changes.
+    state['history'].append({'id': w.current(state)['id'], 'phase': 'build',
+        'packet': {'visit': w.current(state)['id'], 'output_path': path, 'output': draft}})
+    state['visits'][state['index']]['packet'] = {'visit': w.current(state)['id'],
+                                               'output_path': revised, 'output': draft}
+    (tmp_path/revised).write_text(json.dumps(draft))
+    (tmp_path/path).write_text(json.dumps({'review_note': 'Earlier captured report'}))
+    assert inherited(tmp_path, reference, state=json.loads(json.dumps(state)))['status'] == 'reused'
+
+
+def evaluation_contract(tmp_path):
+    state, plan, first, options = semantic_contract(tmp_path)
+    second = deepcopy(first)
+    second.update(id='second-assertion', evidence_outputs=['pkg/check-2.log'])
+    first['evidence_outputs'] = ['pkg/check-1.log']
+    plan['verification_strategy']['checks'].append(second)
+    state['visits'][state['index']]['decision'] = 'approved'
+    state['index'] = w.PHASES.index('evaluate')
+    state['scope']['paths']['evaluate'] = [
+        'pkg/evaluate-history.json', 'pkg/eval-one.json', 'pkg/eval-two.json', 'pkg/eval-three.json',
+        'pkg/reader-history.json', 'pkg/reader-one.json', 'pkg/reader-two.json']
+    return state, plan, first, second, options
+
+
+def evaluation_attempt(tmp_path, state, check, options, log, *,
+                       history='pkg/evaluate-history.json', expected='pass'):
+    provenance = key(tmp_path, **options, state=state, check_id=check['id'],
+                     history_path=history, log_path=log)
+    reference = run_check(tmp_path, provenance, producer='root', state=state,
+        history_path=history, log_path=log, run=state['run'], visit=w.current(state)['id'],
+        check_id=check['id'], kind=check['kind'], environment=check['environment'])
+    observed = Store(tmp_path).resolve(reference)
+    assert observed['status'] == expected
+    assert observed['result']['returncode'] == (0 if expected == 'pass' else 1)
+    return reference
+
+
+def capture_evaluation_history(tmp_path, state):
+    relative = 'pkg/evaluate-history.json'
+    state['visits'][state['index']]['packet'] = {'verification': {
+        'history_path': relative, 'history': json.loads((tmp_path/relative).read_text())}}
+
+
+@pytest.mark.parametrize('history_role', ['current', 'declared', 'captured', 'discovered'])
+def test_shared_evaluate_history_sibling_logs_have_consistent_roles(tmp_path, history_role):
+    state, plan, first, second, options = evaluation_contract(tmp_path)
+    relative = 'pkg/evaluate-history.json'
+    if history_role == 'declared':
+        plan['write_scope'].append(relative)
+        plan['task_dag'][0]['paths'].append(relative)
+        plan['build_outputs'].append({'kind': 'verification_history', 'path': relative, 'task': 'BUILD'})
+    one = evaluation_attempt(tmp_path, state, first, options, 'pkg/eval-one.json')
+    if history_role == 'captured':
+        capture_evaluation_history(tmp_path, state)
+    two = evaluation_attempt(tmp_path, state, second, options, 'pkg/eval-two.json')
+    assert inherited(tmp_path, one, state=state)['status'] == 'reused'
+    assert inherited(tmp_path, two, state=state)['status'] == 'reused'
+    if history_role == 'discovered':
+        current = key(tmp_path, **options, state=state, check_id=first['id'])
+        assert same_inputs(Store(tmp_path).resolve(one)['key'], current)
+
+
+def test_captured_history_retains_sibling_log_roles_when_mutable_history_is_missing(tmp_path):
+    state, plan, first, second, options = evaluation_contract(tmp_path)
+    one = evaluation_attempt(tmp_path, state, first, options, 'pkg/eval-one.json')
+    two = evaluation_attempt(tmp_path, state, second, options, 'pkg/eval-two.json')
+    capture_evaluation_history(tmp_path, state)
+    (tmp_path/'pkg/evaluate-history.json').unlink()
+    reloaded = json.loads(json.dumps(state))
+    assert inherited(tmp_path, one, state=reloaded)['status'] == 'reused'
+    assert inherited(tmp_path, two, state=reloaded)['status'] == 'reused'
+
+
+def test_attempts_appended_after_capture_supply_new_sibling_log_roles(tmp_path):
+    state, plan, first, second, options = evaluation_contract(tmp_path)
+    one = evaluation_attempt(tmp_path, state, first, options, 'pkg/eval-one.json')
+    capture_evaluation_history(tmp_path, state)
+    two = evaluation_attempt(tmp_path, state, second, options, 'pkg/eval-two.json')
+    three = evaluation_attempt(tmp_path, state, first, options, 'pkg/eval-three.json')
+    reloaded = json.loads(json.dumps(state))
+    for reference in [one, two, three]:
+        assert inherited(tmp_path, reference, state=reloaded)['status'] == 'reused'
+
+
+@pytest.mark.parametrize('read_role', ['explicit', 'scanner'])
+@pytest.mark.parametrize('input_role', ['sibling-log', 'sibling-history'])
+def test_real_reads_of_sibling_verification_artifacts_remain_dependencies(tmp_path, read_role, input_role):
+    state, plan, first, second, options = evaluation_contract(tmp_path)
+    evaluation_attempt(tmp_path, state, first, options, 'pkg/eval-one.json')
+    relative = 'pkg/eval-one.json' if input_role == 'sibling-log' else 'pkg/evaluate-history.json'
+    condition = 'data["returncode"] == 0' if input_role == 'sibling-log' else 'data["run"] == "semantic-run"'
+    (tmp_path/'pkg/app.py').write_text(
+        f'data = eval(open({relative!r}).read())\nvalue = 3 if {condition} else 400\n')
+    if read_role == 'explicit':
+        plan['task_dag'][0]['read_inputs'].append(relative)
+        second['source_inputs'] = options['paths'] = options['paths'] + [relative]
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    reference = evaluation_attempt(tmp_path, state, second, options, 'pkg/reader-one.json',
+                                   history='pkg/reader-history.json')
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    data = json.loads((tmp_path/relative).read_text())
+    if input_role == 'sibling-log': data['returncode'] = 1
+    else: data['run'] = 'foreign-run'
+    (tmp_path/relative).write_text(json.dumps(data))
+    assert inherited(tmp_path, reference, state=state)['status'] == 'miss'
+    evaluation_attempt(tmp_path, state, second, options, 'pkg/reader-two.json',
+                       history='pkg/reader-history.json', expected='fail')
+
+
+@pytest.mark.parametrize('history_kind', ['malformed', 'foreign'])
+def test_unproven_history_does_not_hide_owned_runtime_config(tmp_path, history_kind):
+    state, plan, first, second, options = evaluation_contract(tmp_path)
+    relative = 'pkg/ordinary-config.json'
+    state['scope']['paths']['evaluate'].append(relative)
+    ordinary = {'value': 3}
+    if history_kind == 'foreign':
+        ordinary.update(schema=evidence.VERIFICATION_HISTORY, run='foreign-run',
+                        visit=w.current(state)['id'], attempts=[])
+    else:
+        ordinary.update(schema=evidence.VERIFICATION_HISTORY, run=state['run'], attempts='not attempts')
+    (tmp_path/relative).write_text(json.dumps(ordinary))
+    (tmp_path/'pkg/app.py').write_text(f'value = eval(open({relative!r}).read())["value"]\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    reference = evaluation_attempt(tmp_path, state, second, options, 'pkg/reader-one.json',
+                                   history='pkg/reader-history.json')
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    ordinary['value'] = 400
+    (tmp_path/relative).write_text(json.dumps(ordinary))
+    assert inherited(tmp_path, reference, state=state)['status'] == 'miss'
+    evaluation_attempt(tmp_path, state, second, options, 'pkg/reader-two.json',
+                       history='pkg/reader-history.json', expected='fail')
+
+
+@pytest.mark.parametrize('overlay_defect', ['nonobject-record', 'nonobject-context'])
+def test_malformed_current_history_cannot_override_captured_roles_or_hide_config(tmp_path, overlay_defect):
+    state, plan, first, second, options = evaluation_contract(tmp_path)
+    relative = 'pkg/ordinary-config.json'
+    state['scope']['paths']['evaluate'].append(relative)
+    (tmp_path/relative).write_text('3')
+    (tmp_path/'pkg/app.py').write_text(
+        f'name = "".join(map(chr, {list(relative.encode())!r}))\n'
+        'value = int(open(name).read())\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    one = evaluation_attempt(tmp_path, state, first, options, 'pkg/eval-one.json')
+    two = evaluation_attempt(tmp_path, state, second, options, 'pkg/eval-two.json')
+    capture_evaluation_history(tmp_path, state)
+    mutable_history = tmp_path/'pkg/evaluate-history.json'
+    history = json.loads(mutable_history.read_text())
+    malformed = [] if overlay_defect == 'nonobject-record' else Store(tmp_path).resolve(two)
+    if overlay_defect == 'nonobject-context':
+        malformed['source_context'] = []
+        malformed['log_path'] = relative
+    history['attempts'][-1]['record_ref'] = Store(tmp_path).put('verification-record', malformed)
+    history['attempts'][-1]['evidence'] = relative
+    mutable_history.write_text(json.dumps(history))
+    reloaded = json.loads(json.dumps(state))
+    assert inherited(tmp_path, one, state=reloaded)['status'] == 'reused'
+    assert inherited(tmp_path, two, state=reloaded)['status'] == 'reused'
+    (tmp_path/relative).write_text('400')
+    assert inherited(tmp_path, one, state=reloaded)['status'] == 'miss'
+    evaluation_attempt(tmp_path, reloaded, second, options, 'pkg/reader-one.json',
+                       history='pkg/reader-history.json', expected='fail')

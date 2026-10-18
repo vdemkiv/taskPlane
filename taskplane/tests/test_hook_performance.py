@@ -30,8 +30,6 @@ def test_hooks_skip_diagnostics_and_preserve_current_binding(tmp_path, monkeypat
         flow.hook({**event, 'hook_event_name': name}, governor=c)
     current = c.report(diagnostics=False)
     assert current['run'] == state['run'] and current['revision'] == state['revision']
-    if name == 'PostToolUse':
-        assert current['parent_hook_readiness']['matched_call'] == event['call_id']
     with pytest.raises(w.Refusal, match='outside'):
         flow.hook({**event, 'call_id': 'fixture-denial', 'tool_name': 'Write',
                    'tool_input': {'path': 'outside.py'}}, governor=c)
@@ -59,7 +57,7 @@ def test_light_report_retains_evidence_drift_and_default_diagnostics(tmp_path):
     assert host.store.read_bytes() == before
 
 
-def test_light_child_guard_still_requires_delivered_context_and_own_paths(tmp_path, monkeypatch):
+def test_light_child_guard_requires_actual_claim_and_own_paths(tmp_path, monkeypatch):
     c, state = setup(tmp_path, count=1)
     prepared = reserve(c, state)
     launch(c, state, prepared)
@@ -67,9 +65,9 @@ def test_light_child_guard_still_requires_delivered_context_and_own_paths(tmp_pa
     child = Controller(tmp_path, 'root', installed_adapter('codex'), principal='native-0')
     no_diagnostics(monkeypatch, child.adapter)
     event = {'tool_name': 'Write', 'tool_input': {'path': 'T0.md'}}
-    with pytest.raises(w.Refusal, match='consume'):
+    with pytest.raises(w.Refusal, match='exact observed live identity'):
         child.guard(event, state['run'])
-    # Context delivery is explicit work and keeps its full validation contract.
+    # An actual claim binds the child; reading a brief is not attention authority.
     monkeypatch.undo()
     child = consume(c, state, prepared['grant'], 'native-0')
     no_diagnostics(monkeypatch, child.adapter)

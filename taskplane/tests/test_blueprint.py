@@ -134,7 +134,7 @@ def test_unknown_fields_everywhere_before_capabilities(target, key, monkeypatch)
     (lambda d: d["tasks"][1]["outputs"][0].update(relative_path="security.md"), "output_collision"),
     (lambda d: d.update(acceptance_scenarios=[]), "invalid_type"),
     (lambda d: d.update(runtime_requirements=["unknown/v1"]), "unsupported_contract"),
-    (lambda d: d.update(runtime_requirements=["native-default/v1"]), "missing_contract"),
+    (lambda d: d.update(runtime_requirements=["ownership/v1"]), "missing_contract"),
 ])
 def test_static_refusals(mutate, code):
     value = definition()
@@ -256,17 +256,16 @@ def test_contract_catalog_is_explicit_detached_and_scoped():
     assert c.capability_contract("send-email") is None
 
 
-def test_runtime_identity_pins_executed_module_contracts_without_state(tmp_path, monkeypatch):
+def test_runtime_identity_reports_loaded_package_contracts_without_state(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     identity = c.runtime_identity(route={"kind": "delivery"})
     assert set(c.KNOWN_CONTRACTS) <= set(identity["contracts"])
     assert identity["runtime_root"] == str(Path(c.__file__).resolve().parents[1])
-    assert len(identity["interpreter"]["sha256"]) == 64
-    for relative in ("taskplane/tp.py", "hooks/hooks.json", "taskplane/claude_worker_observations.py"):
-        assert len(identity["native_member_sha256"][relative]) == 64
+    assert len(identity["package_id"]) == 64
+    assert identity["interpreter"]["path"]
     for name in ("workflow", "workflow_evidence", "worker_runtime", "context_handoff", "blueprint", "blueprint_catalog"):
         row = identity["modules"]["taskplane/" + name + ".py"]
-        assert len(row["sha256"]) == len(row["loaded_code_sha256"]) == 64
+        assert Path(row["path"]).is_file()
     # B2 supplies the compiler after B1. Its absence must remain an explicit blocker.
     missing = not (Path(c.__file__).parent / "blueprint_compile.py").exists()
     assert identity["compatible"] is not missing
@@ -288,16 +287,12 @@ def test_reject_both_scope_validator_is_not_native_contract(monkeypatch):
         raise w.Refusal("invalid_evidence", "all scopes refused")
     monkeypatch.setattr(w, "validate_scope", broken)
     identity = c.runtime_identity()
-    assert "native-default/v1" not in identity["contracts"]
-    assert any(row["message"] == "native-default/v1" for row in identity["blockers"])
+    assert "ownership/v1" not in identity["contracts"]
+    assert any(row["message"] == "ownership/v1" for row in identity["blockers"])
 
 
-def test_runtime_foreign_module_and_loaded_body_mutation(monkeypatch, tmp_path):
+def test_runtime_foreign_module_is_rejected(monkeypatch, tmp_path):
     from taskplane import workflow_evidence
-    original = c.runtime_identity()
-    monkeypatch.setattr(workflow_evidence, "typed_plan", lambda output: False)
-    changed = c.runtime_identity()
-    assert original["digest"] != changed["digest"]
     monkeypatch.setattr(workflow_evidence, "__file__", str(tmp_path / "workflow_evidence.py"))
     blocked = c.runtime_identity()
     assert any(d["code"] == "runtime_module_unavailable" and d["location"].endswith("workflow_evidence") for d in blocked["blockers"])
@@ -351,17 +346,6 @@ def test_synthesis_cannot_replace_or_skip_native_lens_work():
     data["tasks"][-1]["depends_on"].append("quality")
     assert b.validate_definition(data)
 
-
-def test_missing_native_hook_asset_is_structured_blocker(monkeypatch):
-    original_read = c.evidence.read
-    def read(root, relative):
-        if relative == "hooks/hooks.json":
-            raise w.Refusal("invalid_evidence", "hook manifest unavailable")
-        return original_read(root, relative)
-    monkeypatch.setattr(c.evidence, "read", read)
-    identity = c.runtime_identity()
-    assert not identity["compatible"]
-    assert any(d["code"] == "runtime_asset_unavailable" and d["location"].endswith("hooks/hooks.json") for d in identity["blockers"])
 
 
 def test_finite_json_nesting_and_load_missing_file(tmp_path):

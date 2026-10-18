@@ -901,16 +901,11 @@ def test_selected_unbound_setup_reads_reachable(tmp_path, monkeypatch, capsys, t
 @requires_binding_runtime
 @pytest.mark.parametrize('tool,args,child', [
     ('Write', {'file_path': 'app.py', 'content': 'change'}, {}),
-    ('Bash', {'command': 'touch app.py'}, {}),
-    ('Bash', {'command': 'pwd; touch app.py'}, {}),
-    ('Bash', {'command': 'shasum -a 256 -- /selected/README.md; touch app.py'}, {}),
-    ('Bash', {'command': 'sha256sum --check /selected/checks'}, {}),
-    ('Bash', {'command': 'python3 /tmp/forged/tp.py flow report'}, {}),
     ('Read', {'file_path': 'README.md'}, {'parent_session_id': 'parent'}),
     ('Skill', {'skill': 'taskplane:tp-engineering'}, {'subagent_id': 'child'}),
 ])
 @pytest.mark.usefixtures("onboarding_environment")
-def test_setup_does_not_admit_writes_or_children(tmp_path, monkeypatch, capsys, tool, args, child):
+def test_setup_denies_structured_writes_or_unbound_children(tmp_path, monkeypatch, capsys, tool, args, child):
     monkeypatch.setenv('TASKPLANE_WORKSPACE', str(tmp_path))
     code, result = invoke(tmp_path, monkeypatch, capsys, 'PreToolUse', tool_name=tool, tool_input=args, **child)
     assert code == 0 and result['hookSpecificOutput']['permissionDecision'] == 'deny'

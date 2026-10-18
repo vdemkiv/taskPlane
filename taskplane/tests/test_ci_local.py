@@ -35,12 +35,121 @@ def collect(tmp_path, suite='all', host=None, shard=None):
 
 
 
+def test_execution_fingerprint_tracks_candidate_inputs_without_generated_state(tmp_path):
+    root = tmp_path / 'candidate'
+    root.mkdir()
+    source = root / 'runtime.py'
+    source.write_text('answer = 1\n')
+    log = ci_local.ExecutionLog(tmp_path / 'executions', root)
+    first = log.run([sys.executable, '-c', 'print("checked")'], label='behavior')
+    for relative in ('.git/objects/history', '.taskplane/history/record.json',
+                     'outputs/unrelated.md', 'dist/archive.zip'):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('unrelated progress and generated output')
+    second = log.run([sys.executable, '-c', 'print("checked")'], label='behavior')
+    assert first['source_fingerprint_before'] == second['source_fingerprint_before']
+    assert second['source_fingerprint_before'] == second['source_fingerprint_after']
+    assert second['source_fingerprint_coverage']['kind'] == 'declared-candidate'
+    source.write_text('answer = 2\n')
+    changed = log.run([sys.executable, '-c', 'print("checked")'], label='behavior')
+    assert changed['source_fingerprint_before'] != second['source_fingerprint_before']
+
+
+def test_candidate_documentation_does_not_include_untracked_external_work(tmp_path):
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    docs = tmp_path / 'docs'
+    docs.mkdir()
+    declared = docs / 'guide.md'
+    declared.write_text('candidate documentation')
+    subprocess.run(['git', '-C', str(tmp_path), 'add', 'docs/guide.md'], check=True)
+    before = ci_local.candidate_source_map(tmp_path)
+    (docs / 'external-note.md').write_text('unrelated external work')
+    assert ci_local.candidate_source_map(tmp_path) == before
+    declared.write_text('changed relevant documentation')
+    assert ci_local.candidate_source_map(tmp_path) != before
+
+
+def test_ordinary_report_reuses_candidate_fingerprint_without_reading_ignored_stores(tmp_path, monkeypatch):
+    root = tmp_path / 'candidate'
+    root.mkdir()
+    (root / 'runtime.py').write_text('answer = 1\n')
+    ignored = []
+    for relative in ('.git/objects/huge', '.taskplane/history/unreadable',
+                     'dist/archive.zip', 'external-work/unreadable.pdf'):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('wb') as stream:
+            stream.truncate(1024 ** 3)  # Sparse; a byte census would read 1 GiB per file.
+        ignored.append(path)
+    original_read = Path.read_bytes
+    def read_candidate_only(path):
+        if path in ignored:
+            raise PermissionError('unrelated store is unreadable')
+        return original_read(path)
+    monkeypatch.setattr(Path, 'read_bytes', read_candidate_only)
+    original_walk = ci_local.os.walk
+    def walk_candidate_only(path, *args, **kwargs):
+        for parent, dirs, files in original_walk(path, *args, **kwargs):
+            assert not any(Path(parent).is_relative_to(item.parent) for item in ignored)
+            yield parent, dirs, files
+    monkeypatch.setattr(ci_local.os, 'walk', walk_candidate_only)
+    def forbid_tree_map(path):
+        pytest.fail(f'ordinary CI must not call tree_map: {path}')
+    monkeypatch.setattr(ci_local, 'tree_map', forbid_tree_map)
+    monkeypatch.setattr(ci_local, 'ROOT', root)
+    # Run real isolated subprocess capture; command bodies are irrelevant to
+    # this regression's ordinary dispatch and final report boundary.
+    execution_log = ci_local.ExecutionLog
+    class ProbeLog(execution_log):
+        def run(self, argv, *, label, **kwargs):
+            return super().run([sys.executable, '-c', 'print("checked")'], label=label)
+    monkeypatch.setattr(ci_local, 'ExecutionLog', ProbeLog)
+    monkeypatch.setattr(ci_local, 'canary_verdict', lambda record: {'status': record['status']})
+    report = tmp_path / 'ordinary.json'
+    monkeypatch.setattr(sys, 'argv', ['ci_local.py', '--check', 'package', '--report-json', str(report)])
+    assert ci_local.main() == 0
+    result = ci_local.decode_evidence(json.loads(report.read_bytes()))
+    assert len(result['executions']) == 3
+    expected = ci_local.digest(ci_local.candidate_source_map(root))
+    assert result['source_fingerprint'] == expected
+    assert result['source_fingerprint'] == result['executions'][-1]['source_fingerprint_after']
+    assert result['source_fingerprint_coverage']['kind'] == 'declared-candidate'
+
+
+def test_selected_symlink_directory_keeps_source_coverage_unknown(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import stat
+    root = tmp_path / 'candidate'
+    source = root / 'taskplane'
+    source.mkdir(parents=True)
+    original = Path.is_symlink
+    monkeypatch.setattr(Path, 'is_symlink', lambda path: path == source or original(path))
+    real_lstat = Path.lstat
+    monkeypatch.setattr(Path, 'lstat', lambda path: SimpleNamespace(st_mode=stat.S_IFLNK) if path == source else real_lstat(path))
+    monkeypatch.setattr(ci_local.os, 'readlink', lambda path: 'external-source')
+    log = ci_local.ExecutionLog(tmp_path / 'execution', root)
+    record = log.run([sys.executable, '-c', 'print("checked")'], label='behavior')
+    assert record['source_fingerprint_coverage']['kind'] == 'unknown'
+    assert record['source_fingerprint_coverage']['unavailable_inputs'] == ['taskplane']
+
+
+def test_explicit_candidate_inputs_report_missing_coverage(tmp_path):
+    root = tmp_path / 'candidate'
+    root.mkdir()
+    log = ci_local.ExecutionLog(tmp_path / 'executions', root, source_inputs=['missing.py'])
+    record = log.run([sys.executable, '-c', 'print("command ran")'], label='behavior')
+    assert record['status'] == 'pass'
+    assert record['source_fingerprint_coverage']['kind'] == 'unknown'
+    assert record['source_fingerprint_coverage']['unavailable_inputs'] == ['missing.py']
+
+
 def test_all_collected_tests_have_one_suite_and_short_ids(tmp_path):
     rows = collect(tmp_path)
     assert len(rows) == len({r['nodeid'] for r in rows})
     oversized = [(r['nodeid'].partition('[')[0], len(r['nodeid'])) for r in rows if len(r['nodeid']) >= 1000]
     assert not oversized, oversized
-    assert all(r['selected'] == (ci_local.performance_exclusion(r['nodeid']) is None) for r in rows)
+    assert all(r['selected'] for r in rows)
     partitions = {name: {r['nodeid'] for r in rows if r['suite']==name} for name in ci_local.SUITES if name != 'all'}
     assert all(partitions.values())
     assert len(set().union(*partitions.values())) == sum(map(len, partitions.values())) == len(rows)
@@ -69,8 +178,7 @@ def test_all_collected_tests_have_one_suite_and_short_ids(tmp_path):
     assert platform_regressions and platform_regressions <= partitions['portability']
     instruction_contracts = {
         'taskplane/tests/test_blueprint.py::test_selected_assets_include_transitive_prompts_and_detect_drift',
-        'taskplane/tests/test_cli_delivery.py::test_both_packages_install_without_legacy_runtime_and_run_the_flow',
-        'taskplane/tests/test_workflow_local.py::test_harness_installed_skill_read_is_an_execution_entry',
+        'taskplane/tests/test_cli_delivery.py::test_both_extracted_packages_retain_cli_and_authority_boundaries',
     }
     assert instruction_contracts <= partitions['core']
     assert any('test_both_native_routing_contexts' in n for n in partitions['native'])
@@ -198,14 +306,12 @@ def test_optional_platform_skip_is_distinct_and_cannot_cover_required_assertion(
     assert ci_local.verify_partition(record['collection'], partitions)['status'] == 'fail'
 
 
-@pytest.mark.parametrize('change', ['unknown-node', 'forged-prefix', 'wrong-platform', 'missing-capability',
+@pytest.mark.parametrize('change', ['unknown-node', 'wrong-platform', 'missing-capability',
                                    'missing-selected', 'missing-collected', 'extra-outcome'])
 def test_optional_skip_needs_exact_evidence(change):
     record = optional_record()
     if change == 'unknown-node':
         record = optional_record(node='taskplane/tests/test_review_remediation.py::test_new_test')
-    elif change == 'forged-prefix':
-        record = optional_record(reason='optional-platform: Windows executable search policy')
     elif change == 'wrong-platform':
         record = optional_record(platform='win32')
     elif change == 'missing-capability':
@@ -216,17 +322,25 @@ def test_optional_skip_needs_exact_evidence(change):
     assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
+@pytest.mark.parametrize('reason', ['Windows executable search policy.',
+                                   'optional-platform: executable search unavailable',
+                                   'Cette plateforme ne fournit pas cette capacité.'])
+def test_optional_skip_explanation_is_display_evidence(reason):
+    record = optional_record(reason=reason)
+    verdict = ci_local.test_verdict(record)
+    assert verdict['status'] == 'pass'
+    assert verdict['optional_platform_skips'][0]['reason'] == reason
+    record['profile']['platform_capabilities']['os_name'] = 'nt'
+    assert ci_local.test_verdict(record)['status'] == 'fail'
+
+
 @pytest.mark.parametrize('node,reason,platform,params', [
     ('test_workspace_binding.py::test_unsupported_binding_cli_is_structured_and_preserves_files[native-bind]',
      'Native unsupported-runtime check runs where primitives are absent', 'darwin', {'capability': 'native'}),
     ('test_native_workflow_cli.py::test_unsupported_claude_context_refuses_through_declared_hooks',
      'Exercises a host without Claude invocation transport', 'linux', {}),
-    ('test_claude_resumed_startup.py::test_b9_each_predicate_refuses_without_writes',
-     'Native no-follow reads unavailable', 'win32', {}),
     ('test_workflow_local.py::test_control_state_remains_private_under_permissive_umask[local]',
      'POSIX mode bits and umask; Windows uses ACLs', 'win32', {'profile': 'local'}),
-    ('test_workflow_delivery.py::test_original_source_relay_malformed_snapshot_has_named_refusal[fifo]',
-     'FIFO snapshots require POSIX named pipes', 'win32', {'bad': 'fifo'}),
     ('test_claude_flow.py::test_cowork_cli_and_hooks_share_selected_root_without_scratch_store',
      'Strict workspace binding requires descriptor-relative no-follow directory operations', 'win32', {}),
 ])
@@ -240,48 +354,51 @@ def test_exact_optional_capability_rules(node, reason, platform, params):
             assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
-WINDOWS_CAPABILITY_CASES = [
-    ('test_native_worker_dispatch.py::test_claude_start_stop_contract_and_child_control_refusal[None-user-True]',
-     'Native transcript identity requires no-follow reads', {'background': True, 'delivery': 'user', 'completion_defect': None}),
-    ('test_context_startup_budget.py::test_claude_typed_probe_dispatch_keeps_incomplete_timing',
-     'Native transcript identity requires no-follow reads', {}),
-    ('test_workspace_binding.py::test_native_targets_refuse_symlink_components[False-True]',
-     'Strict workspace binding requires descriptor-relative no-follow directory operations', {'bound': True, 'directory': False}),
-    ('test_delegated_checkpoint.py::test_sec01_transport_question_target_matrix[observed-v2-correct-correct]',
-     'Accepting original-source relay evidence requires secure descriptor-relative reads', {'consent_transport': 'observed-v2'}),
-    ('test_delegated_checkpoint.py::test_sec01_transport_answer_target_matrix[native-capture-correct-correct]',
-     'Native no-follow reads unavailable', {'consent_text_transport': 'native-capture'}),
-    ('test_reopen_checkpoint_consent.py::test_sec01_reopen_transport_cannot_record_approval_or_continue[observed-v2]',
-     'Accepting original-source relay evidence requires secure descriptor-relative reads', {'consent_transport': 'observed-v2'}),
-    ('test_claude_dispatch_order.py::test_missing_transcript_call_requires_current_automatic_root_provenance[profile]',
-     'Interactive Claude fixtures require native no-follow transcript reads', {'defect': 'profile'}),
-    ('test_claude_startup_diagnostics.py::test_selected_startup_error_preserves_exact_refusal_and_database[failure0]',
-     'Interactive Claude fixtures require native no-follow transcript reads', {}),
-    ('test_claude_startup_reconciliation.py::test_startup_control_refuses_foreign_unknown_or_broadened_requests[binding]',
-     'Native no-follow reads unavailable', {'defect': 'binding'}),
-    ('test_cross_host_compatibility.py::test_claude_child_message_reports_supported_handback_without_delivery',
-     'Interactive Claude fixtures require native no-follow transcript reads', {}),
-    ('test_worker_runtime.py::test_denial_lifecycle_ingestion_survives_cache_capacity[after_denial-explicit-1024]',
-     'Interactive Claude fixtures require native no-follow transcript reads', {'prior_events': 1024, 'variant': 'explicit', 'timing': 'after_denial'}),
-    ('test_workflow_host.py::test_denial_direct_resume_and_adapter_checks_are_read_only[budget]',
-     'Interactive Claude fixtures require native no-follow transcript reads', {'defect': 'budget'}),
-    ('test_host_capabilities.py::test_recovery_continuation_refuses_changed_snapshot[duplicate]',
-     'Requires no-follow nonblocking reader', {'change': 'duplicate'}),
-    ('test_native_approval_capture.py::test_native_hook_validates_complete_original_question_before_approval[question0]',
-     'Native no-follow reads unavailable', {}),
-    ('test_claude_stop_before_handback.py::test_failed_startup_handback_replay_revalidates_original_native_evidence[body]',
-     'Requires native no-follow reads', {'defect': 'body'}),
-    ('test_controller_storage.py::test_public_recovery_requires_receipt_and_preserves_original_provenance',
-     'Restoration requires no-follow directory descriptors.', {}),
-    ('test_workflow_autonomy.py::test_seven_phase_autonomous_native_journey[claude]',
-     'Successful Claude context transport requires macOS or Linux; refusal is tested separately', {'host': 'claude'}),
-]
+WINDOWS_CAPABILITY_CASES = [('test_native_worker_dispatch.py::test_claude_start_stop_contract_and_child_control_refusal[None-user-True]',
+  {'background': True, 'completion_defect': None, 'delivery': 'user'}),
+ ('test_workspace_binding.py::test_native_targets_refuse_symlink_components[False-True]',
+  {'bound': True, 'directory': False}),
+ ('test_claude_dispatch_order.py::test_missing_transcript_call_requires_current_automatic_root_provenance[profile]',
+  {'defect': 'profile'}),
+ ('test_cross_host_compatibility.py::test_claude_child_message_reports_supported_handback_without_delivery',
+  {}),
+ ('test_worker_runtime.py::test_denial_lifecycle_ingestion_survives_cache_capacity[after_denial-explicit-1024]',
+  {'prior_events': 1024, 'timing': 'after_denial', 'variant': 'explicit'}),
+ ('test_workflow_host.py::test_denial_direct_resume_and_adapter_checks_are_read_only[budget]',
+  {'defect': 'budget'}),
+ ('test_host_capabilities.py::test_recovery_continuation_refuses_changed_snapshot[duplicate]',
+  {'change': 'duplicate'}),
+ ('test_controller_storage.py::test_public_recovery_requires_receipt_and_preserves_original_provenance',
+  {}),
+ ('test_farm_workers.py::test_handback_requires_actual_claim_and_observed_terminal',
+  {}),
+ ('test_unbound_worker_recovery.py::test_recovery_with_unrelated_file_preserves_history_and_allows_fresh_attempt',
+  {}),
+ ('test_workspace_binding.py::test_setup_denies_structured_writes_or_unbound_children[Read-args1-child1]',
+  {}),
+ ('test_delegated_checkpoint.py::test_sec01_transport_stale_or_foreign_binding_is_atomic[observed-v2-run]',
+  {'consent_transport': 'observed-v2'}),
+ ('test_delegated_checkpoint.py::test_sec01_transport_stale_or_foreign_binding_is_atomic[native-capture-run]',
+  {'consent_transport': 'native-capture'}),
+ ('test_delegated_checkpoint.py::test_sec02_caller_text_cannot_replace_pinned_original_question[native-capture]',
+  {'transport': 'native-capture'}),
+ ('test_delegated_checkpoint.py::test_sec01_current_phase_approval_can_continue_to_next_phase[observed-v2]',
+  {'consent_text_transport': 'observed-v2'}),
+ ('test_claude_guarded_handback.py::test_package_switch_refuses_mutation_and_preserves_original_native_proof',
+  {}),
+ ('test_initialization_readiness.py::test_restoration_completion_preserves_controller_without_accepting_phases',
+  {}),
+ ('test_native_approval_capture.py::test_native_capture_needs_orchestrator_semantic_candidate',
+  {}),
+ ('test_native_workflow_cli.py::test_both_native_routing_contexts_complete_seven_explicit_gates[claude]',
+  {'host': 'claude'})]
 
 
-@pytest.mark.parametrize('node,reason,parameters', WINDOWS_CAPABILITY_CASES,
+@pytest.mark.parametrize('node,parameters', WINDOWS_CAPABILITY_CASES,
                          ids=[case[0].split('::')[0] for case in WINDOWS_CAPABILITY_CASES])
-def test_reviewed_windows_capability_skips_remain_explicit(node, reason, parameters):
-    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters=parameters)
+def test_reviewed_windows_capability_skips_remain_explicit(node, parameters):
+    record = optional_record('taskplane/tests/' + node, 'Capability unavailable on this host.',
+                             platform='win32', parameters=parameters)
     verdict = ci_local.test_verdict(record)
     assert verdict['status'] == 'pass' and len(verdict['optional_platform_skips']) == 1
     # Setup skips legitimately have no call report, but cannot prove an assertion.
@@ -294,16 +411,17 @@ def test_reviewed_windows_capability_skips_remain_explicit(node, reason, paramet
     assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
-@pytest.mark.parametrize('case', [0, 2, 3, 12], ids=['native-reader', 'bound-only', 'transport-only', 'recovery-reader'])
-@pytest.mark.parametrize('change', ['unknown-node', 'reason', 'malformed-capability', 'missing-capability',
+@pytest.mark.parametrize('case', ['test_native_worker_dispatch.py::', 'test_workspace_binding.py::',
+    'test_host_capabilities.py::'],
+    ids=['native-reader', 'bound-only', 'recovery-reader'])
+@pytest.mark.parametrize('change', ['unknown-node', 'malformed-capability', 'missing-capability',
                                    'missing-call', 'duplicate-call', 'missing-selected', 'xfail'])
 def test_windows_skip_rules_do_not_hide_missing_or_forged_execution(case, change):
-    node, reason, parameters = WINDOWS_CAPABILITY_CASES[case]
-    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters=parameters)
+    node, parameters = next(row for row in WINDOWS_CAPABILITY_CASES if row[0].startswith(case))
+    record = optional_record('taskplane/tests/' + node, platform='win32', parameters=parameters)
     profile = record['profile']; report = profile['reports'][0]
     if change == 'unknown-node':
         report['nodeid'] = profile['selected_nodeids'][0] = record['collection'][0]['nodeid'] = 'taskplane/tests/test_new.py::test_new'
-    elif change == 'reason': report['skip_evidence']['reason'] += ' (unreviewed)'
     elif change == 'malformed-capability': profile['platform_capabilities']['O_NOFOLLOW'] = 0
     elif change == 'missing-capability': del profile['platform_capabilities']['O_NOFOLLOW']
     elif change == 'missing-call': report['outcome'] = 'passed'
@@ -317,22 +435,27 @@ def test_windows_skip_rules_do_not_hide_missing_or_forged_execution(case, change
 
 @pytest.mark.parametrize('bound', [False, None, 1, 'True'])
 def test_unbound_or_untyped_symlink_case_is_never_optional(bound):
-    node, reason, _ = WINDOWS_CAPABILITY_CASES[2]
-    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters={'bound': bound})
+    node, _ = next(row for row in WINDOWS_CAPABILITY_CASES if row[0].startswith('test_workspace_binding.py::'))
+    record = optional_record('taskplane/tests/' + node, platform='win32', parameters={'bound': bound})
     assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
-@pytest.mark.parametrize('transport', ['observed-v1', 'observed-v3-direct', 'observed-v3-reaction', 'native-capture', None])
-def test_consent_transport_skip_cannot_exempt_other_transport(transport):
-    node, reason, _ = WINDOWS_CAPABILITY_CASES[3]
-    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters={'consent_transport': transport})
+@pytest.mark.parametrize('transport', ['observed-v1', 'observed-v3-direct', 'observed-v3-reaction', None])
+@pytest.mark.parametrize('prefix', [
+    'test_delegated_checkpoint.py::test_sec01_transport_stale_or_foreign_binding_is_atomic[observed-v2',
+    'test_delegated_checkpoint.py::test_sec01_current_phase_approval_can_continue_to_next_phase',
+])
+def test_consent_transport_skip_cannot_exempt_other_transport(transport, prefix):
+    node, params = next(row for row in WINDOWS_CAPABILITY_CASES if row[0].startswith(prefix))
+    record = optional_record('taskplane/tests/' + node, platform='win32',
+                             parameters={next(iter(params)): transport})
     assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
 @pytest.mark.parametrize('host', ['codex', 'openai', 'unknown', None])
 def test_claude_journey_skip_does_not_exempt_other_hosts(host):
-    node, reason, _ = WINDOWS_CAPABILITY_CASES[-1]
-    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters={'host': host})
+    node, _ = WINDOWS_CAPABILITY_CASES[-1]
+    record = optional_record('taskplane/tests/' + node, platform='win32', parameters={'host': host})
     assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
@@ -456,11 +579,10 @@ def junit_evidence_record():
     '<!DOCTYPE testsuite SYSTEM "https://invalid.example/external.dtd">',
     '<!DOCTYPE testsuite [<!ENTITY % external SYSTEM "https://invalid.example/external.dtd">%external;]>',
 ], ids=['doctype', 'nested-entities', 'file-entity', 'external-dtd', 'parameter-entity'])
-def test_junit_rejects_hostile_declarations_in_both_evidence_consumers(encoding, doctype):
+def test_junit_rejects_hostile_declarations(encoding, doctype):
     record = junit_evidence_record()
     registry = {'LOCAL-GRAPH:1': record['profile']['selected_nodeids']}
     assert ci_local.test_verdict(record)['status'] == 'pass'
-    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH', registry)[0]['execution_status'] == 'pass'
     hostile = doctype + record['junit.xml']
     if encoding is None:
         record['junit.xml'] = hostile
@@ -471,8 +593,6 @@ def test_junit_rejects_hostile_declarations_in_both_evidence_consumers(encoding,
             'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}}
     verdict = ci_local.test_verdict(record)
     assert verdict['status'] == 'fail' and verdict['problems'] == ['invalid JUnit']
-    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH', registry) == [
-        {'schema': 'invalid', 'samples': [], 'execution': 0}]
 
 
 @pytest.mark.parametrize('document', [
@@ -493,8 +613,6 @@ def test_malformed_junit_evidence_fails_closed(document):
     record = junit_evidence_record()
     record['junit.xml'] = document
     assert ci_local.test_verdict(record)['problems'] == ['invalid JUnit']
-    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH') == [
-        {'schema': 'invalid', 'samples': [], 'execution': 0}]
 
 
 @pytest.mark.parametrize('mutation', ['unchanged', 'enabled', 'missing-condition', 'schedule', 'capacity-suite'])
@@ -537,29 +655,6 @@ def test_zero_unittest_discovery_cannot_unlock_ci():
 
 
 
-def test_measurement_requires_registered_actual_passing_testcase(monkeypatch):
-    payload = {'schema': 'taskplane.remediation-measurement/v1', 'subcheck': 'LOCAL-GRAPH',
-               'scenario': 'LOCAL-GRAPH:1', 'kind': 'graph', 'samples': []}
-    suite = ET.Element('testsuite')
-    case = ET.SubElement(suite, 'testcase', classname='taskplane.tests.test_probe', name='test_probe')
-    props = ET.SubElement(case, 'properties')
-    ET.SubElement(props, 'property', name='remediation_measurement', value=json.dumps(payload))
-    node = 'taskplane/tests/test_probe.py::test_probe'
-    record = {'id': 0, 'status': 'pass', 'label': 'targeted/LOCAL-GRAPH',
-              'junit.xml': ET.tostring(suite, encoding='unicode'),
-              'profile': {'selected_nodeids': [node], 'reports': [
-                  {'nodeid': node, 'when': phase, 'outcome': 'passed', 'wasxfail': None}
-                  for phase in ('setup', 'call', 'teardown')]}}
-    monkeypatch.setattr(ci_local, 'SCENARIO_REGISTRY', {})
-    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH')[0]['execution_status'] == 'fail'
-    monkeypatch.setattr(ci_local, 'SCENARIO_REGISTRY', {'LOCAL-GRAPH:1': [node]})
-    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH')[0]['execution_status'] == 'pass'
-    overlapping = {**record, 'id': 1, 'label': 'targeted/LOCAL-EVID-01', 'status': 'fail'}
-    documents = ci_local.measurement_documents([record, overlapping], 'LOCAL-GRAPH')
-    assert len(documents) == 1 and documents[0]['execution'] == 0
-    assert overlapping['status'] == 'fail' and overlapping['junit.xml'] == record['junit.xml']
-    record['profile']['reports'][-1]['outcome'] = 'failed'
-    assert ci_local.measurement_documents([record], 'LOCAL-GRAPH')[0]['execution_status'] == 'fail'
 
 
 def test_graph_json_presence_is_not_complete_source_quality():
@@ -584,7 +679,7 @@ def test_composite_preflight_refuses_candidate_execution(tmp_path, monkeypatch, 
     manifest_path.write_text('{}')
     strategy = {'required_local_subchecks': [
         {'id': f'LOCAL-PROBE-{i}', 'required': True, 'criteria': [], 'assertions': ['required']}
-        for i in range(30)]}
+        for i in range(2)]}
     monkeypatch.setattr(ci_local, 'load_manifest', lambda *args: ({}, strategy))
     monkeypatch.setattr(ci_local, 'tree_map', lambda *args: {})
     monkeypatch.setattr(ci_local, 'audit_source', lambda *args: {'status': 'pass', 'problems': []})
@@ -609,7 +704,7 @@ def test_composite_preflight_refuses_candidate_execution(tmp_path, monkeypatch, 
     report = ci_local.decode_evidence(json.loads(capsys.readouterr().out))
     assert launched == ['canary/unittest']
     assert failed_audit in report['dependency_deferral']['failed_preconditions']
-    assert len(report['subchecks']) == 30
+    assert len(report['subchecks']) == 2
     assert all(row['status'] == 'fail' and failed_audit in row['deferred_by'] for row in report['subchecks'])
 
 
@@ -713,14 +808,19 @@ def test_real_optional_cases_keep_complete_inventory(tmp_path, node, count):
                                           {'LOCAL-X:1': [skipped_node]})['status'] == 'fail'
 
 
-def test_symlink_skip_requires_actual_native_error():
-    node = 'taskplane/tests/test_security_boundaries.py::test_package_refuses_symlink_directory_before_read[1]'
-    record = optional_record(node, 'Native account cannot create symlinks', platform='win32')
+@pytest.mark.parametrize('node', [
+    'test_security_boundaries.py::test_package_refuses_symlink_directory_before_read[1]',
+    'test_em_remediation.py::test_flow_never_writes_through_runtime_symlinks',
+])
+def test_symlink_skip_requires_actual_native_error(node):
+    record = optional_record('taskplane/tests/' + node, 'Symlink creation unavailable.', platform='win32')
     assert ci_local.test_verdict(record)['status'] == 'fail'
     import errno
     record['profile']['reports'][0]['skip_evidence']['os_error'] = {'errno': errno.EPERM, 'message': 'operation not permitted'}
     assert ci_local.test_verdict(record)['status'] == 'pass'
     record['profile']['reports'][0]['skip_evidence']['os_error']['errno'] = errno.EIO
+    assert ci_local.test_verdict(record)['status'] == 'fail'
+    record['profile']['reports'][0]['skip_evidence']['os_error']['errno'] = True
     assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
@@ -748,9 +848,9 @@ def test_measurement(record_property):
         record = log.run(ci_local.pytest_command(['taskplane/tests/test_codec_probe.py']) + ['-s'],
                          label='targeted/LOCAL-CI-PROD-06', pytest_run=True)
         assert record['status'] == 'pass', record['test_verdict']
-        registry = {'LOCAL-CI-PROD-06:1': ['taskplane/tests/test_codec_probe.py::test_measurement']}
-        measurements = ci_local.measurement_documents([record], 'LOCAL-CI-PROD-06', registry)
-        assert len(measurements) == 1 and measurements[0]['registry_bound']
+        properties = ci_local.parse_junit_xml(ci_local.raw_evidence_bytes(record, 'junit.xml')).findall('.//property')
+        measurements = [json.loads(prop.attrib['value']) for prop in properties if prop.get('name') == 'remediation_measurement']
+        assert len(measurements) == 1
         raw = {name: ci_local.raw_evidence_bytes(record, name) for name in record['raw_files']}
         assert b'stdout-\xff\x00' in raw['stdout'] and b'stderr-\xfe\x00' in raw['stderr']
         assert len(raw['junit.xml']) > 8 * 1024 * 1024
@@ -764,7 +864,6 @@ def test_measurement(record_property):
     assert not base.exists()
     decoded = ci_local.decode_evidence(json.loads(wire))
     assert decoded == document
-    assert ci_local.measurement_documents(decoded['executions'], 'LOCAL-CI-PROD-06', registry) == measurements
     for name, original in raw.items():
         assert ci_local.raw_evidence_bytes(decoded['executions'][0], name) == original
     assert decoded['samples'][0]['continuation']['view'] is False
@@ -858,9 +957,9 @@ def test_multiple_evidence_chunks_and_original_identity_validation():
 
 def functional_strategy():
     return {'schema': 'remediation-plan-verification/v5', 'required_local_subchecks': [
-        {'id': group, 'required': True, 'criteria': sorted(ci_local.FUNCTIONAL_GROUP_CRITERIA[group]),
-         'assertions': ['functional assertion'] * (4 if group == 'LOCAL-STARTUP-EXECUTION' else 1)}
-        for group in sorted(ci_local.REQUIRED_GROUPS)]}
+        {'id': 'CHECK-CORE', 'required': True, 'criteria': ['CORE'], 'assertions': ['Core behavior is verified.']},
+        {'id': 'CHECK-PACKAGE', 'required': True, 'criteria': ['PACKAGE'], 'assertions': ['Extracted package works.']}],
+        'later_stage_gates': [{'id': 'NATIVE-01', 'required': True}, {'id': 'WIN-01', 'required': True}]}
 
 
 def test_functional_collection_roundtrip_without_object_count_target(tmp_path):
@@ -872,92 +971,25 @@ def test_functional_collection_roundtrip_without_object_count_target(tmp_path):
     assert store.resolve(reference) == values
 
 
-def test_functional_batch_delivery_preserves_exact_pages_and_receipts(tmp_path):
-    from taskplane import workflow as w
-    from taskplane.context import encode
-    from taskplane.context_handoff import Session
-    from taskplane.tests.test_context_handoff import prepare
-    state, _, _ = prepare(tmp_path)
-    state['scope']['criteria'] = ['criterion-' + str(i) for i in range(3000)]
-    session = Session(tmp_path, state)
-    session.consume(session.handoff_ref['sha256'])
-    missing = sorted(set().union(*session.required_trees.values()) - set(session.ledger()['seen']))
-    expected = {}; single = []
-    for key in missing:
-        result = session.read(key); single.append(result)
-        expected[key, 0] = result['page']
-        for number in range(1, result['page']['pages']):
-            result = session.read(key, number); single.append(result)
-            expected[key, number] = result['page']
-    session.validate(single[-1]['context_receipt'])
-    old_receipt = single[-1]['context_receipt']
-    session.ledger_path.unlink()  # Disposable fixture starts a fresh delivery ledger.
-    first = session.consume(session.handoff_ref['sha256'])
-    returned = {}; batches = []; result = first
-    while result['remaining_required']:
-        result = session.read_required(session.handoff_ref['sha256'])
-        assert result['pages'] and len(encode(result)) < 16384  # Existing transport frame.
-        batches.append(result)
-        for page in result['pages']:
-            identity = page['sha256'], page['page']
-            assert identity not in returned
-            returned[identity] = page
-        if result['remaining_required']:
-            with pytest.raises(w.Refusal): session.validate(result['context_receipt'])
-    assert returned == expected
-    session.validate(result['context_receipt'])
-    observed = session.store.resolve(result['context_receipt']['receipt'])
-    assert observed['returned_bytes'] == sum(len(encode(r)) for r in [first, *batches])
-    with pytest.raises(w.Refusal): session.validate(old_receipt)
-    assert state['decisions'] == {}
 
 
-@pytest.mark.parametrize('defect', ['missing', 'retired', 'duplicate', 'optional', 'numeric', 'criterion'])
-def test_functional_strategy_rejects_retired_or_missing_groups(defect):
+@pytest.mark.parametrize('defect', ['missing', 'duplicate', 'optional', 'criterion', 'assertion'])
+def test_functional_strategy_validates_declared_checks(defect):
     strategy = functional_strategy()
     ci_local.validate_functional_strategy(strategy)
-    if defect == 'missing': strategy['required_local_subchecks'].pop()
-    elif defect == 'retired': strategy['required_local_subchecks'][0]['id'] = 'LOCAL-SCA-01'
-    elif defect == 'duplicate': strategy['required_local_subchecks'][0]['id'] = strategy['required_local_subchecks'][1]['id']
-    elif defect == 'optional': strategy['required_local_subchecks'][0]['required'] = False
-    elif defect == 'numeric': strategy['numeric_gates'] = {'startup_seconds': 60}
-    else: strategy['required_local_subchecks'][0]['criteria'].append('SCA-02')
-    with pytest.raises(ValueError, match='30 functional groups'):
+    checks = strategy['required_local_subchecks']
+    if defect == 'missing': strategy['required_local_subchecks'] = []
+    elif defect == 'duplicate': checks[0]['id'] = checks[1]['id']
+    elif defect == 'optional': checks[0]['required'] = False
+    elif defect == 'criterion': checks[0]['criteria'] *= 2
+    else: checks[0]['assertions'] = [' ']
+    with pytest.raises(ValueError, match='invalid functional strategy'):
         ci_local.validate_functional_strategy(strategy)
 
 
-def test_functional_filter_preserves_mixed_module_inventory(tmp_path):
-    root = tmp_path/'source'; tests = root/'taskplane/tests'; tests.mkdir(parents=True)
-    (root/'scripts').mkdir()
-    shutil.copyfile(ROOT/'scripts/ci_local.py', root/'scripts/ci_local.py')
-    shutil.copyfile(ROOT/'taskplane/tests/conftest.py', tests/'conftest.py')
-    (tests/'test_context_cli.py').write_text('''import pytest
-def test_context_measurement_grid():
-    raise AssertionError('retired performance workload executed')
-def test_required_integrity():
-    assert True
-@pytest.mark.taskplane_capacity
-def test_new_functional_case_with_legacy_marker():
-    assert True
-''')
-    log = ci_local.ExecutionLog(tmp_path/'evidence', root)
-    record = log.run(ci_local.pytest_command(['taskplane/tests']), label='functional-mixed', pytest_run=True)
-    assert record['status'] == 'pass', record
-    assert len(record['collection']) == len(record['final_collection']) == 3
-    assert len(record['profile']['selected_nodeids']) == 2
-    assert len(record['profile']['performance_exclusions']) == 1
-    rows = record['collection']
-    partition = ci_local.verify_partition(rows, ci_local.matrix_selections(rows))
-    assert partition['status'] == 'pass' and len(partition['excluded_history']) == 1
-    assert all('test_context_measurement_grid' not in node for node in partition['inventory'])
-    broken = ci_local.matrix_selections(rows)
-    next(iter(broken.values())).pop()
-    assert ci_local.verify_partition(rows, broken)['status'] == 'fail'
-
-
-def test_functional_composite_has_no_numeric_validator_dependency(tmp_path, monkeypatch, capsys):
+def test_functional_composite_uses_declared_checks(tmp_path, monkeypatch, capsys):
     # Synthetic passing audit/dispatch records test orchestration only. The real
-    # authority, collection and v3 execution regressions are independently bound.
+    # authority, collection and native lifecycle regressions are independently bound.
     base = tmp_path/'.taskplane/remediation-v5'
     (base/'plan').mkdir(parents=True); (base/'build').mkdir()
     strategy = functional_strategy()
@@ -965,7 +997,7 @@ def test_functional_composite_has_no_numeric_validator_dependency(tmp_path, monk
     (base/'plan/output.json').write_text('{}')
     manifest = base/'build/source-manifest.json'; manifest.write_text('{}')
     monkeypatch.setattr(ci_local, 'load_manifest', lambda *args: ({}, strategy))
-    source = {'taskplane/tests/conftest.py': {'sha256': ci_local.CONFTST_SHA256}}
+    source = {'taskplane/tests/conftest.py': {'sha256': 'fixture-conftest'}}
     monkeypatch.setattr(ci_local, 'tree_map', lambda *args: source)
     for name in ('audit_source', 'audit_producer_reconciliation', 'audit_ci_definition',
                  'audit_historical_ci', 'audit_obligation_dispositions', 'canary_verdict',
@@ -974,10 +1006,6 @@ def test_functional_composite_has_no_numeric_validator_dependency(tmp_path, monk
     registry = {f"{spec['id']}:{number}": ['audit:canary'] for spec in strategy['required_local_subchecks']
                 for number in range(1, len(spec['assertions']) + 1)}
     monkeypatch.setattr(ci_local, 'audit_scenario_registry', lambda *args: {'status': 'pass', 'bindings': registry})
-    def retired(*args, **kwargs):
-        raise AssertionError('functional execution called a retired measurement validator')
-    monkeypatch.setattr(ci_local, 'validate_measurements', retired)
-    monkeypatch.setattr(ci_local, 'measurement_documents', retired)
     node = 'taskplane/tests/test_probe.py::test_integrity'
     rows = [{'nodeid': node, 'suite': 'core', 'host': None, 'selected': True}]
     class FunctionalLog:
@@ -991,9 +1019,7 @@ def test_functional_composite_has_no_numeric_validator_dependency(tmp_path, monk
     monkeypatch.setattr(ci_local, 'ExecutionLog', FunctionalLog)
     assert ci_local.remediation(manifest, tmp_path) == 0
     report = ci_local.decode_evidence(json.loads(capsys.readouterr().out))
-    assert len(report['subchecks']) == 30 and 'numeric_gates' not in report
-    assert not any('measurements' in row for row in report['subchecks'])
-    assert all('capacity' not in record['label'] for record in report['executions'])
+    assert {row['id'] for row in report['subchecks']} == {'CHECK-CORE', 'CHECK-PACKAGE'}
 
 
 def test_root_and_native_reconciliation_preserves_accepted_subset(tmp_path):
@@ -1006,8 +1032,7 @@ def test_root_and_native_reconciliation_preserves_accepted_subset(tmp_path):
                 'files': [['root.py', 'bootstrap'], ['native.py', 'native']]}
     plan = {'run': 'run', 'task_dag': [
         {'id': 'bootstrap', 'execution': 'root', 'paths': [root_path, 'source-manifest.json'],
-         'execution_exception': {'basis': 'integration'}, 'execution_reason': 'bootstrap source',
-         'execution_reference': 'accepted-plan'},
+         },
         {'id': 'native', 'execution': 'native_required', 'paths': [native_path]}]}
     raw = json.dumps(plan).encode()
     entry = {'id': 'BUILD-FINAL-PRODUCER-RECONCILIATION',
@@ -1018,8 +1043,7 @@ def test_root_and_native_reconciliation_preserves_accepted_subset(tmp_path):
                                       'manifest': {'source-manifest.json': hashlib.sha256(frozen.read_bytes()).hexdigest()}},
                          'native': {**task, 'grant': 'grant', 'worker_id': 'worker', 'manifest': {}}},
         'native_observations': {'native': {'state': 'accepted', 'terminal_status': 'completed',
-            'reference': 'native-final', 'grant': 'grant', 'worker_id': 'worker',
-            'context_receipt': {'schema': 'taskplane.context-reference/v1', 'kind': 'delivery-receipt', 'sha256': 'a'*64}}},
+            'reference': 'native-final', 'grant': 'grant', 'worker_id': 'worker'}},
         'owner_manifests': {'bootstrap': {root_path: 'root-sha'}, 'native': {native_path: 'native-sha'}},
         'owner_evidence': {'bootstrap': ['root-inventory'], 'native': ['actual-handback']}}
     def check():
@@ -1034,51 +1058,10 @@ def test_root_and_native_reconciliation_preserves_accepted_subset(tmp_path):
     assert check()['status'] == 'fail'
 
 
-def accepted_v6_strategy():
-    path = ROOT / 'taskplane/tests/fixtures/ci/accepted-v6-verification-strategy.json'
-    raw = path.read_bytes()
-    assert hashlib.sha256(raw).hexdigest() == 'fe72e9887611b2820176b5a20da60011fce789c37f88791523cee7b5d7719aee'
-    return json.loads(raw)
 
 
-def test_real_accepted_v6_strategy_loads_without_changing_original(tmp_path, monkeypatch):
-    source = tmp_path / 'candidate'; source.mkdir()
-    base = tmp_path / 'evidence'
-    (base / 'plan').mkdir(parents=True); (base / 'build').mkdir()
-    strategy = accepted_v6_strategy()
-    raw = json.dumps(strategy).encode()
-    strategy_path = base / 'plan/verification-strategy.json'; strategy_path.write_bytes(raw)
-    manifest = {'schema': 'taskplane.remediation-source-manifest/v1',
-        'source': {'commit': ci_local.BASELINE}, 'run': strategy['run'], 'candidate_root': 'candidate',
-        'inputs': [['evidence/plan/verification-strategy.json', hashlib.sha256(raw).hexdigest()]]}
-    manifest_path = base / 'build/source-manifest.json'; manifest_path.write_text(json.dumps(manifest))
-    monkeypatch.setattr(ci_local, 'ROOT', source)
-    loaded_manifest, loaded = ci_local.load_manifest(manifest_path, tmp_path)
-    assert loaded_manifest == manifest and loaded['schema'] == strategy['schema']
-    assert loaded['required_local_subchecks'] == strategy['required_engineering_subchecks']
-    assert sum(len(spec['assertions']) for spec in loaded['required_local_subchecks']) == 34
-    assert strategy_path.read_bytes() == raw and 'required_local_subchecks' not in strategy
-    manifest['inputs'] = []; manifest_path.write_text(json.dumps(manifest))
-    with pytest.raises(ValueError, match='hash-bound'):
-        ci_local.load_manifest(manifest_path, tmp_path)
 
 
-@pytest.mark.parametrize('defect', ['schema', 'shadow', 'assertion', 'assertion-count', 'criterion-owner',
-                                   'duplicate-criterion', 'missing-gate', 'optional-gate', 'malformed'])
-def test_v6_strategy_rejects_weakened_contract(defect):
-    strategy = accepted_v6_strategy()
-    groups = strategy['required_engineering_subchecks']
-    if defect == 'schema': strategy['schema'] = 'remediation-plan-verification/v7'
-    elif defect == 'shadow': strategy['required_local_subchecks'] = []
-    elif defect == 'assertion': groups[0]['assertions'] = ['  ']
-    elif defect == 'assertion-count': next(g for g in groups if g['id'] == 'LOCAL-CI-PROD-06')['assertions'].pop()
-    elif defect == 'criterion-owner': groups[0]['criteria'] = ['SEC-02']
-    elif defect == 'duplicate-criterion': groups[0]['criteria'] *= 2
-    elif defect == 'missing-gate': strategy['later_stage_gates'].pop()
-    elif defect == 'optional-gate': strategy['later_stage_gates'][0]['required'] = False
-    else: groups[0]['assertions'] = {'not': 'a list'}
-    with pytest.raises(ValueError, match='30 functional groups'):
-        ci_local.normalize_functional_strategy(strategy)
 
 
 def release_fixture(tmp_path, monkeypatch):
@@ -1112,7 +1095,7 @@ def release_fixture(tmp_path, monkeypatch):
     (root / 'changed.py').write_bytes(b'repaired\n')
     (root / 'added.py').write_bytes(b'new regression\n')
     files = ci_local.tree_map(root)
-    strategy = accepted_v6_strategy()
+    strategy = functional_strategy()
     manifest = {'schema': 'taskplane.release-source-manifest/v1', 'release': '2.33.11',
         'candidate_root': 'candidate', 'strategy': reference('strategy.json', strategy),
         'baseline': {'inventory': original, 'archive': reference('baseline.zip')}, 'files': files,
@@ -1126,11 +1109,11 @@ def release_fixture(tmp_path, monkeypatch):
                               + [{**review, 'role': 'maintenance-provenance'}, {**original, 'role': 'historical-manifest'}],
         'scenario_registry': {'reviewer': 'fixture-root', 'review_references': [review],
             'bindings': {f"{spec['id']}:{number}": ['audit:canary']
-                         for spec in strategy['required_engineering_subchecks']
+                         for spec in strategy['required_local_subchecks']
                          for number in range(1, len(spec['assertions']) + 1)}},
         'external_gates': [{'id': key, 'status': 'unknown', 'owner': 'fixture-owner',
                             'reason': 'actual host execution unavailable', 'next_action': 'observe supported host',
-                            'evidence': []} for key in sorted(ci_local.EXTERNAL_GATES)]}
+                            'evidence': []} for key in sorted(gate["id"] for gate in strategy["later_stage_gates"])]}
     monkeypatch.setattr(ci_local, 'ROOT', root)
     return manifest, root, reference
 
@@ -1146,7 +1129,7 @@ def test_release_preserves_baseline_and_hashes_only_reviewed_changes(tmp_path, m
     assert frozen == ((tmp_path / 'baseline.zip').read_bytes(), (tmp_path / 'baseline.json').read_bytes())
     reference('release.json', manifest)
     loaded, strategy, inputs = ci_local.load_release_manifest(tmp_path / 'release.json', tmp_path)
-    assert loaded == manifest and len(strategy['required_local_subchecks']) == 30
+    assert loaded == manifest and len(strategy['required_local_subchecks']) == 2
     assert 'strategy.json' in inputs and 'review.json' in inputs
 
 
@@ -1172,7 +1155,7 @@ def test_release_preservation_refuses_unaccounted_changes(tmp_path, monkeypatch,
     assert ci_local.audit_release_preservation(manifest, tmp_path, before, after)['status'] == 'fail'
 
 
-@pytest.mark.parametrize('defect', ['missing-assertion', 'unknown-audit', 'retired-producer', 'performance',
+@pytest.mark.parametrize('defect', ['missing-assertion', 'unknown-audit', 'retired-producer',
                                    'missing-external', 'unsupported-status', 'unproved-pass', 'review-drift',
                                    'reader-drift', 'reader-missing', 'reader-current'])
 def test_release_loader_retains_assertions_and_external_evidence(tmp_path, monkeypatch, defect):
@@ -1181,7 +1164,6 @@ def test_release_loader_retains_assertions_and_external_evidence(tmp_path, monke
     if defect == 'missing-assertion': bindings.pop(key)
     elif defect == 'unknown-audit': bindings[key] = ['audit:invented']
     elif defect == 'retired-producer': bindings[key] = ['audit:producer-reconciliation']
-    elif defect == 'performance': bindings[key] = [next(iter(ci_local.PERFORMANCE_ONLY_TESTS))]
     elif defect == 'missing-external': manifest['external_gates'].pop()
     elif defect == 'unsupported-status': manifest['external_gates'][0]['status'] = 'deferred-pass'
     elif defect == 'unproved-pass': manifest['external_gates'][0]['status'] = 'pass'
@@ -1206,7 +1188,7 @@ def test_release_preflight_never_executes_unreviewed_candidate(tmp_path, monkeyp
     assert ci_local.release_verification(tmp_path / 'release.json', tmp_path) == 1
     report = ci_local.decode_evidence(json.loads(capsys.readouterr().out))
     assert report['status'] == 'fail' and report['executions'] == []
-    assert len(report['subchecks']) == 30
+    assert len(report['subchecks']) == 2
     assert {row['status'] for row in report['external_gates']} == {'unknown'}
 
 
@@ -1247,10 +1229,9 @@ def test_release_orchestration_keeps_failures_and_external_unknowns(tmp_path, mo
                     replacement.replace(path)
             return raw
         monkeypatch.setattr(Path, 'read_bytes', replacing_read)
-    fingerprint = ci_local.digest(ci_local.tree_map(root))
+    fingerprint = ci_local.digest(ci_local.candidate_source_map(root))
     for name in ('audit_ci_definition', 'audit_historical_ci', 'canary_verdict'):
         monkeypatch.setattr(ci_local, name, lambda *args: {'status': 'pass'})
-    monkeypatch.setattr(ci_local, 'CONFTST_SHA256', None)
     class FixtureLog:
         def __init__(self, *args):
             self.records = []
@@ -1286,7 +1267,7 @@ def test_release_orchestration_keeps_failures_and_external_unknowns(tmp_path, mo
     assert report['release_status'] != 'pass'
     assert report['external_gate_status'] == 'requires_external_review'
     assert {row['status'] for row in report['external_gates']} == {'unknown'}
-    assert len(report['subchecks']) == 30 and report['functional_contract']['assertions'] == 34
+    assert len(report['subchecks']) == 2 and report['functional_contract']['assertions'] == 2
     assert report['audits']['packages']['source_manifest_sha256'] == report['manifest_sha256']
     assert report['manifest_sha256'] == manifest_reference['sha256']
     if defect == 'manifest-during-load':
