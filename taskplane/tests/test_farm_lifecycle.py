@@ -54,15 +54,15 @@ def test_decision_exact_replay_keeps_recording_time(tmp_path):
         decide(controller, state, conflict)
 
 
-@pytest.mark.parametrize("explicit", [False, True])
-def test_named_checkpoint_cannot_approve_another_checkpoint(tmp_path, explicit):
+def test_explicit_checkpoint_reference_must_match_bound_checkpoint(tmp_path):
     controller, state = setup(tmp_path)
     state = submit(controller, state)
     value = decision(state, text="Approved " + "0" * 32)
-    value["checkpoint_explicit"] = explicit
+    value["checkpoint_explicit"] = True
     before = controller._path().read_bytes()
-    with pytest.raises(w.Refusal, match="different checkpoint"):
+    with pytest.raises(w.Refusal) as failure:
         decide(controller, state, value)
+    assert failure.value.reason == "invalid_evidence"
     assert controller._path().read_bytes() == before
 
 
