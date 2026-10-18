@@ -99,14 +99,17 @@ def test_installed_hook_commands_abstain_without_workspace_setup(tmp_path):
 
 
 def test_progress_is_observation_and_cannot_accept_a_stage(tmp_path, capsys):
-    start(tmp_path)
+    from taskplane import workflow
+    from taskplane.tests.test_workflow_local import setup
+    controller, state = setup(tmp_path)
     with patch.dict(os.environ, {"CODEX_THREAD_ID": "root"}):
         assert flow.main(["progress", "--phase", "product", "--note", "work produced",
-                          "--workspace", str(tmp_path)]) == 0
+                          "--workspace", str(tmp_path)], governor=controller) == 0
         report = json.loads(capsys.readouterr().out)
-        assert report["status"] == "legacy_unverified"
+        assert workflow.current(report['workflow'])['decision'] == 'not_requested'
+        assert report['run'] == state['run']
         for action in (["progress", "--phase", "build"], ["finish"]):
-            assert flow.main([*action, "--workspace", str(tmp_path)]) == 2
+            assert flow.main([*action, "--workspace", str(tmp_path), '--expected-revision', str(state['revision'])], governor=controller) == 2
             assert json.loads(capsys.readouterr().out)["reason"] in {"approval_required", "state_unavailable"}
     assert not any(row["kind"] == "finish" for row in flow.read_events(tmp_path))
 

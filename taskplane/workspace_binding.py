@@ -652,7 +652,7 @@ def _new(root: Path, fields: dict[str, Any], project_id: str | None = None) -> d
 def _recovery_state(state: dict[str, Any], workspace: str, root: str, run: str,
                     *, historical: bool = False) -> None:
     try:
-        if (state.get("schema") != "taskplane.workflow/v1" or state.get("workspace") != workspace
+        if (state.get("schema") not in {"taskplane.workflow/v1", "taskplane.workflow/v2"} or state.get("workspace") != workspace
                 or state.get("root") != root or state.get("run") != run
                 or state.get("profile") != "native_workflow"):
             _fail("Stored workflow identity cannot be validated for recovery.")
@@ -665,7 +665,7 @@ def _recovery_state(state: dict[str, Any], workspace: str, root: str, run: str,
             _fail("Stored retirement provenance cannot be validated.")
         if state.get("superseded_by") is not None and not isinstance(state["superseded_by"], str):
             _fail("Stored replacement identity cannot be validated.")
-        baseline = state.get("source_baseline")
+        baseline = state.get("source_baseline", {} if state.get("schema") == "taskplane.workflow/v2" else None)
         if (not isinstance(baseline, dict) or len(baseline) > MAX_FILES
                 or not all(isinstance(key, str) and isinstance(value, str) for key, value in baseline.items())):
             _fail("Stored source baseline cannot be validated.")
@@ -751,6 +751,8 @@ def _inactive(root: Path, old_root: str) -> None:
     stores = sorted(name for name in names if re.fullmatch(r"workflow-[a-f0-9]{32}\.json", name))
     markers = {name.replace(".initialized.json", ".json") for name in names
                if re.fullmatch(r"workflow-[a-f0-9]{32}\.initialized\.json", name)}
+    imports = {name.replace("state-import-", "workflow-") for name in names
+               if re.fullmatch(r"state-import-[a-f0-9]{32}\.json", name)}
     copies = {name for name in names if re.fullmatch(r"workflow-[a-f0-9]{32} [1-9][0-9]*\.json", name)}
     receipts = {name for name in names
                 if re.fullmatch(r"workflow-[a-f0-9]{32}\.recovery-[a-f0-9]{64}\.json", name)}
@@ -759,21 +761,27 @@ def _inactive(root: Path, old_root: str) -> None:
            and name.replace(".initialized.json", ".json") not in markers
            for name in names):
         _fail("Unknown controller filename cannot be validated.")
-    if set(stores) != markers:
-        _fail("Controller initialization markers are incomplete; preserve the original state.")
+    if set(stores) != markers | imports or markers & imports:
+        _fail("Controller initialization provenance is incomplete or ambiguous; preserve the original state.")
     if any(name.split(" ", 1)[0].split(".", 1)[0] + ".json" not in stores for name in copies | receipts):
         _fail("Historical restoration artifacts have no canonical controller.")
     for name in stores:
         db = _object(store / name)
-        marker = _object(store / name.replace(".json", ".initialized.json"), REQUEST_BYTES)
         owner = db.get("root")
         if (db.get("schema") != "taskplane.control/v1" or db.get("workspace") != old_root
                 or db.get("profile") != "native_workflow" or not isinstance(owner, str) or not owner
                 or name != f"workflow-{hashlib.sha256(owner.encode()).hexdigest()[:32]}.json"
-                or not isinstance(db.get("runs"), dict) or "active" not in db
-                or marker != {"schema": "taskplane.local-initialization/v1", "workspace": old_root,
-                              "root": owner, "profile": "native_workflow"}):
-            _fail("Controller identity or initialization marker cannot be validated.")
+                or not isinstance(db.get("runs"), dict) or "active" not in db):
+            _fail("Controller identity cannot be validated.")
+        if name in markers:
+            marker = _object(store / name.replace(".json", ".initialized.json"), REQUEST_BYTES)
+            if marker != {"schema": "taskplane.local-initialization/v1", "workspace": old_root,
+                          "root": owner, "profile": "native_workflow"}:
+                _fail("Controller initialization marker cannot be validated.")
+        else:
+            from . import state_import
+            if state_import.initialization(root, owner, source_workspace=old_root) is None:
+                _fail("Controller import initialization cannot be validated.")
         if db["active"] is not None:
             _fail("A workflow is selected as active; retire it in its original binding before recovery.")
         for run, state in db["runs"].items():

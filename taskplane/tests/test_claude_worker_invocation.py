@@ -67,8 +67,7 @@ def consume(record, command, who, *, persist=None, dispatch=None, reference=None
                               persist=persist or (lambda value: None), dispatch=dispatch or (lambda: "done"))
 
 
-@pytest.mark.parametrize("selector", [[], ["--consume", SHA], ["--read-required", SHA],
-                                     ["--drain", SHA], ["--read", SHA],
+@pytest.mark.parametrize("selector", [[], ["--read", SHA],
                                      ["--read", SHA, "--page", "7", "--section", "some section"]])
 def test_supported_context_grammar_reorders_flags(selector):
     canonical = words("context") + selector

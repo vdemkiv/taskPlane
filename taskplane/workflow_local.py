@@ -48,10 +48,6 @@ def _require_decision(condition: object, category: str, detail: str) -> None:
         raise DecisionRefusal(category, detail)
 
 
-def choice(text: str) -> str | None:
-    from .workflow_approval import conversational_choice
-    return conversational_choice(text)
-
 
 def timestamp(value: Any) -> datetime:
     w.require(isinstance(value, str) and len(value) <= 64, "invalid_evidence", "Decision time is missing.")
@@ -217,7 +213,7 @@ def verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: 
     """Read-only v2 original-source consistency check; cooperative, not host attestation.
 
     The target controller supplies its own state/binding. Exact original frame and
-    immutable snapshot references remain part of recorded provenance and replay.
+    source references remain part of recorded provenance and replay.
     """
     return _verified_decision_relay(value, expected, run)[0]
 
@@ -235,9 +231,9 @@ def _verified_decision_relay(value: dict[str, Any], expected: dict[str, Any],
 
 def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], str]:
     relay, source = value.get("relay"), value.get("source", {})
-    fields = {"schema", "session_meta", "human", "presentation", "launch", "launch_flag", "html", "snapshot"}
+    fields = {"schema", "session_meta", "human", "presentation", "launch", "launch_flag"}
     _require_decision(value.get("schema") == "taskplane.observed-decision/v2"
-                      and isinstance(relay, dict) and set(relay) == fields
+                      and isinstance(relay, dict) and fields <= set(relay) <= fields | {"html", "snapshot"}
                       and relay.get("schema") == "taskplane.original-source-relay/v1"
                       and isinstance(source, dict) and set(source) == {"kind", "reference", "conversation", "actor", "automatic", "observed_at"}
                       and source.get("kind") == "conversation" and source.get("actor") == "user" and source.get("automatic") is False
@@ -277,7 +273,7 @@ def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run:
         return f"{ref['path']}#offset={ref['offset']}&bytes={ref['bytes']}"
     _require_decision(source["reference"] == reference(refs[4]) and source["observed_at"] == human.get("timestamp")
                       and value.get("excerpt") == excerpt and 0 < len(excerpt) <= 4096
-                      and choice(excerpt) is not None and choice(excerpt) == value.get("choice")
+                      and value.get("choice") in {"approved", "changes_requested", "rejected", "cancelled"}
                       and value.get("presentation") == {"checkpoint": expected["checkpoint"], "reference": reference(refs[3]), "at": shown.get("timestamp")},
                       "decision_relay", "Relay changed original human text, reference, time or presentation.")
     stage: dict[str, Any] = next((item for item in run.get("visits", []) if item.get("id") == expected["visit"]), {})
@@ -289,69 +285,10 @@ def _verify_decision_relay(value: dict[str, Any], expected: dict[str, Any], run:
                       and all(a["offset"] + a["bytes"] <= b["offset"] for a, b in zip(refs, refs[1:])),
                       "decision_relay", "Relay evidence is stale or precedes its target checkpoint presentation.")
     _relay_launch(call, result, expected, relay["launch_flag"])
-    _require_decision(isinstance(relay["html"], dict) and isinstance(relay["snapshot"], dict),
-                      "decision_relay", "Missing immutable presentation references.")
-    artifact = Path(relay["html"]["path"])
-    _require_decision(artifact.parent == Path(expected["workspace"]) / ".taskplane"
-                      and re.fullmatch(r"snapshot-[a-f0-9-]+\.html", artifact.name)
-                      and Path(relay["snapshot"]["path"]) == artifact.with_suffix(".json"),
-                      "decision_relay", "Relay needs the original immutable native checkpoint snapshot.")
-    html, model_raw = _relay_bytes(relay["html"]), _relay_bytes(relay["snapshot"])
-    model = _relay_json(model_raw)
-    snapshot = model.get("snapshot", {})
-    checkpoint = {**{k: v for k, v in expected.items() if k != "revision"}, "packet_revision": expected["revision"]}
-    harness = Harness(Path(expected["workspace"]), expected["root"])
-    named = set(re.findall(r"\b[0-9a-f]{32}\b", shown_text))
-    links = re.findall(r"\[[^\]\n]+\]\(<?([^\n<>]+?)>?\)", shown_text)
-    snapshots = {link for link in links if re.fullmatch(r"snapshot-[a-f0-9-]+\.html", Path(link).name)}
-    _require_decision(isinstance(snapshot, dict) and isinstance(model.get("workflow"), dict)
-                      and all(snapshot.get(k) == expected[k] for k in ("root", "run", "workspace", "visit", "revision"))
-                      and not snapshot.get("historical") and harness.checkpoint(model["workflow"]) == checkpoint
-                      and timestamp(snapshot.get("generated_at")) <= timestamp(shown.get("timestamp"))
-                      and expected["checkpoint"] in named and named <= {expected[key] for key in ("checkpoint", "run", "visit")}
-                      and snapshots == {str(artifact)},
-                      "decision_relay", "Parent presentation or native snapshot identifies a different checkpoint.")
-    if value.get("event_id") not in run.get("decisions", {}):
-        native = harness.read().get("presentation", {})
-        _require_decision(harness.presentation_valid(run) and native.get("outcome") in {"linked", "verified"}
-                          and native.get("artifact") == str(artifact) and native.get("checkpoint") == checkpoint
-                          and native.get("digest") == hashlib.sha256(html).hexdigest()
-                          and native.get("model_digest") == hashlib.sha256(model_raw).hexdigest(),
-                          "decision_relay", "Relay lacks the target's current native checkpoint presentation.")
     return deepcopy(relay), shown_text
 
 
 @observed('source-audit')
-def inventory(workspace: Path) -> dict[str, str]:
-    """Bounded source audit, including additions/deletions and symlink identity."""
-    result: dict[str, str] = {}
-    total = 0
-    def failed(error: OSError) -> None:
-        raise w.Refusal("state_unavailable", f"Source inventory is unreadable: {error.filename}")
-    for parent, dirs, files in os.walk(workspace, followlinks=False, onerror=failed):
-        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED)
-        for name in sorted([*files, *(d for d in dirs if (Path(parent)/d).is_symlink())]):
-            target = Path(parent)/name
-            relative = str(target.relative_to(workspace))
-            w.require(len(result) < MAX_SOURCE_FILES, "state_unavailable",
-                      f"Source inventory exceeds {MAX_SOURCE_FILES:,} files at {relative}. Run flow diagnose --workspace {workspace}.")
-            if operation('source_stat', target.is_symlink):
-                result[relative] = "symlink:" + os.readlink(target)
-                continue
-            fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-            with os.fdopen(fd, "rb") as stream:
-                info = operation('source_stat', os.fstat, stream.fileno())
-                w.require(stat.S_ISREG(info.st_mode), "state_unavailable", "Source inventory requires regular files.")
-                total += info.st_size
-                w.require(total <= MAX_SOURCE_BYTES, "state_unavailable",
-                          f"Source inventory exceeds {MAX_SOURCE_BYTES // (1024 * 1024)} MiB at {relative}. "
-                          f"Run flow diagnose --workspace {workspace}; recover in a clean checkout without deleting source.")
-                digest = operation('source_hash', hashlib.sha256)
-                for block in iter(lambda: operation('source_read', stream.read, 1024 * 1024,
-                                                    category='source_fingerprints'), b""):
-                    digest.update(block)
-                result[relative] = digest.hexdigest()
-    return result
 
 
 def diagnose(workspace: Path) -> dict[str, Any]:
@@ -660,11 +597,12 @@ class LocalWorkflow:
                 "request_reference": reference}
 
     def state_created(self, state: dict[str, Any], request: dict[str, Any]) -> None:
-        from .context_handoff import SEMANTIC_CONTRACT
-        state.update(profile=PROFILE, source_baseline=inventory(self.workspace),
+        from .context_handoff import BRIEF_CONTRACT
+        from .host_capabilities import runtime_identity
+        state.update(profile=PROFILE, runtime_identity=runtime_identity(),
                      observed_handles=Harness(self.workspace, self.root).initial_handles(state),
                      request_provenance={"reference": request["request_reference"], "assurance": "observed"},
-                     context_contract=SEMANTIC_CONTRACT)
+                     context_contract=BRIEF_CONTRACT)
 
     def decorate(self, state: dict[str, Any]) -> dict[str, Any]:
         from . import worker_runtime
@@ -680,11 +618,10 @@ class LocalWorkflow:
     def validate_state(self, state: dict[str, Any]) -> None:
         from . import worker_runtime
         worker_runtime.validate(state)
-        from .context_handoff import CONTRACT, SEMANTIC_CONTRACT, BRIEF_CONTRACT
-        w.require(state.get("context_contract", CONTRACT) in {CONTRACT, SEMANTIC_CONTRACT, BRIEF_CONTRACT},
+        from .context_handoff import BRIEF_CONTRACT
+        w.require(state.get("context_contract") in {"bounded/v1", "bounded/v2", "bounded/v3", BRIEF_CONTRACT},
                   "state_unavailable", "Unsupported context contract.")
-        w.require(state.get("profile") == PROFILE and isinstance(state.get("source_baseline"), dict)
-                  and isinstance(state.get("observed_handles"), dict), "state_unavailable", "Invalid local workflow state.")
+        w.require(state.get("profile") == PROFILE and isinstance(state.get("observed_handles"), dict), "state_unavailable", "Invalid local workflow state.")
         for handle, record in state["observed_handles"].items():
             w.require(isinstance(handle, str) and isinstance(record, dict)
                       and record.get("state") in {"running", "completed", "failed", "cancelled"}
@@ -693,33 +630,20 @@ class LocalWorkflow:
         for decision in state["decisions"].values():
             w.require(decision.get("assurance") == "observed" and isinstance(decision.get("provenance"), dict),
                       "state_unavailable", "Local decisions require observed provenance, not host authentication.")
-        w.require(len(state["source_baseline"]) <= 20000 and all(isinstance(k, str) and isinstance(v, str)
-                  for k,v in state["source_baseline"].items()), "state_unavailable", "Invalid source audit baseline.")
+        w.require("source_baseline" not in state or isinstance(state["source_baseline"], dict) and len(state["source_baseline"]) <= 20000
+                  and all(isinstance(k, str) and isinstance(v, str) for k,v in state["source_baseline"].items()), "state_unavailable", "Invalid source audit baseline.")
 
     def before_action(self, state: dict[str, Any], action: str) -> None:
-        if action != 'context-rollback':
-            from .workflow_write_guard import require_runtime
-            require_runtime(state)
+        from .workflow_write_guard import require_runtime
+        require_runtime(state)
         verify_workflow(self.workspace, state)
-        before, after = state["source_baseline"], inventory(self.workspace)
-        allowed = {str(Path(p)) for p in state["scope"]["paths"][w.current(state)["phase"]]}
-        changed = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
-        w.require(not changed - allowed, "scope_violation",
-                  "Source changed outside this phase scope: " + ", ".join(sorted(changed - allowed)[:10]))
-        if not state.get("finished") and (action == "auto-decide" or (action in {"advance", "finish"}
-                                       and w.current(state)["decision"] == "approved")):
-            w.require(Harness(self.workspace, self.root).presentation_valid(state), "approval_required",
-                      "Current checkpoint needs a native dashboard handoff before continuation. "
-                      "Regenerate/link the dashboard and record flow present with its actual outcome.")
+        w.require(state.get("schema") == "taskplane.workflow/v2", "incompatible_runtime",
+                  "This active historical run needs its original runtime. Inspect or archive it; start a fresh compact run.")
 
     def can_seal(self, state: dict[str, Any]) -> bool:
         from . import worker_runtime
         return (not any(record["state"] == "running" for record in state.get("observed_handles", {}).values())
                 and worker_runtime.joined(state))
-
-    def after_action(self, state: dict[str, Any], action: str) -> None:
-        if action == "advance":
-            state["source_baseline"] = inventory(self.workspace)
 
     def verify_decision_context(self, reference: str, expected: dict[str, Any],
                                 prior: dict[str, Any]) -> dict[str, Any]:
@@ -735,8 +659,6 @@ class LocalWorkflow:
             db = evidence.object_file(self.workspace, '.taskplane/' + self.filename)
             run = db.get('runs', {}).get(expected.get('run'), {})
             harness = Harness(self.workspace, self.root)
-            w.require(harness.presentation_valid(run), 'invalid_evidence',
-                      'Native approval requires the original current checkpoint handoff.')
             value = native_approval.verify(value, run, getattr(self, 'name', 'unsupported'), harness.read().get('presentation') or {})
             native_proof = value['native_proof']
         if isinstance(value, dict) and value.get("schema") == delegated_approval.DECISION_SCHEMA:
@@ -760,9 +682,8 @@ class LocalWorkflow:
                   and isinstance(excerpt, str) and 0 < len(excerpt) <= 4096
                   and recorder in ("root_orchestrator", "native_prompt_hook"),
                   "decision_provenance", "Preserve the complete bounded human excerpt, event reference and recorder.")
-        interpreted = choice(excerpt)
-        _require_decision(interpreted is not None and value.get("choice") == interpreted,
-                  "decision_grammar", "The response's decision is unclear or differs from its recorded choice. Clarify the intended decision; no exact wording is required.")
+        _require_decision(value.get("choice") in {"approved", "changes_requested", "rejected", "cancelled"},
+                          "decision_provenance", "Supply the orchestrator's semantic decision candidate.")
         observed = timestamp(source.get("observed_at"))
         if event_id in prior:
             old_source = prior[event_id].get("provenance", {}).get("source", {})
@@ -776,8 +697,7 @@ class LocalWorkflow:
         named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
         _require_decision(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
                   "decision_binding", "The response names a different checkpoint.")
-        from .workflow_approval import decision_phases, validate_checkpoint_consent
-        named_phases = decision_phases(excerpt)
+        from .workflow_approval import validate_checkpoint_consent
         supplied = value.get("binding") or {}
         db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)
         run = db.get("runs", {}).get(supplied.get("run"), {})
@@ -799,11 +719,6 @@ class LocalWorkflow:
                         and earlier):
                     _require_decision(observed > timestamp(earlier), "decision_chronology",
                                       "Cancellation must follow the approval it revokes.")
-        if named_phases:
-            # Resolve the named visit under the Controller's existing store lock.
-            # A correct binding cannot turn 'Build approved' into Product consent.
-            _require_decision(named_phases == {stage.get("phase")}, "decision_binding",
-                      "The response names a different phase. Clarify which checkpoint the user intends to accept.")
         _require_decision(isinstance(presentation, dict) and presentation.get("checkpoint") == expected["checkpoint"]
                   and isinstance(presentation.get("reference"), str) and presentation["reference"]
                   and isinstance(presentation.get("at"), str),
@@ -819,9 +734,9 @@ class LocalWorkflow:
         _require_decision(isinstance(question, str), "decision_binding",
                           "Preserve the complete original checkpoint question; missing text requires fresh consent.")
         assert isinstance(question, str)
-        validated = validate_checkpoint_consent(question, excerpt, phase=stage["phase"], binding=expected)
+        validated = validate_checkpoint_consent(question, excerpt, phase=stage["phase"], binding=expected, candidate=value["choice"])
         _require_decision(validated == value["choice"], "decision_grammar",
-                          "The response does not match the original checkpoint question's decision.")
+                          "The semantic decision candidate is invalid.")
         result = {"event_id": event_id, "human": True, "automatic": False, "choice": value["choice"],
                 "binding": deepcopy(expected), "assurance": "observed", "provenance": {
                     "source": {k:source[k] for k in ("kind","reference","conversation","actor","automatic","observed_at")},
@@ -882,7 +797,7 @@ class LocalWorkflow:
         if words[2] == "workflow":
             action, _ = workflow_command(self.workspace, event, state)
             return action in {"catalog", "validate", "preview", "check"}
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "resume", "reconcile-maintenance", "inspect", "prevalidate", "context", "context-upgrade", "context-rollback", "revise", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "resume", "inspect", "prevalidate", "context", "revise", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -940,7 +855,7 @@ class LocalWorkflow:
                         "worker_id": previous.get("worker_id") if previous else (
                             (event.get("thread_id") or event.get("session_id"))
                             if (event.get("thread_id") or event.get("session_id")) != state["root"] else None),
-                        "read_only": previous.get("read_only", False) if previous else readonly_command(event),
+                        "read_only": previous.get("read_only", False) if previous else opaque_command(event),
                         "control": previous.get("control", False) if previous else self.control_action(event, state)}
 
 
@@ -1048,7 +963,7 @@ def workflow_diagnostic_event(workspace: Path, event: dict[str, Any], state: dic
     from . import worker_runtime
     if tool in worker_runtime.STATUS | worker_runtime.WAIT | worker_runtime.INTERRUPT:
         return True  # The existing worker adapter still checks target and operation.
-    if tool in READ_TOOLS | QUESTION_TOOLS or readonly_command(event):
+    if tool in READ_TOOLS | QUESTION_TOOLS or opaque_command(event):
         return True
     if Harness(workspace, state["root"]).dashboard_opener(event, state):
         return True
@@ -1068,40 +983,12 @@ def workflow_diagnostic_event(workspace: Path, event: dict[str, Any], state: dic
                    and index + 1 < len(options) and options[index + 1] == operation
                    for index, word in enumerate(options) for operation in ("status", "recover-unbound"))
     return len(words) > 3 and words[2] == "flow" and words[3] in {
-        "report", "diagnose", "inspect", "recover", "resume", "reconcile-maintenance", "retire", "start", "wait", "present", "decide"}
+        "report", "diagnose", "inspect", "recover", "resume", "retire", "start", "wait", "present", "decide"}
 
 
-def readonly_command(event: dict[str, Any]) -> bool:
-    """Small, non-executing diagnostic grammar; no shell operators or rg helpers."""
-    words = command_words(event)
-    if words == ['pwd']:
-        return True
-    if words and words[0] == 'ls':
-        return all(not word.startswith('-') or word in {'-l', '-a', '-la', '-al', '-d', '-ld', '-1'} for word in words[1:])
-    if words in (['date'], ['date', '-u'], ['date', '-Iseconds']):
-        return True
-    if words and words[0] == 'cat':
-        return len(words) > 1 and all(not value.startswith('-') for value in words[1:])
-    if not words or words[0] != 'rg':
-        return False
-    flags = {'-n', '--line-number', '-l', '--files-with-matches', '--files', '--hidden',
-             '-i', '--ignore-case', '-F', '--fixed-strings', '-S', '--smart-case',
-             '--no-heading', '--no-messages', '--count', '-c', '--no-ignore', '--no-ignore-vcs'}
-    values = {'-g', '--glob', '-t', '--type', '-m', '--max-count', '-e', '--regexp',
-              '-A', '--after-context', '-B', '--before-context', '-C', '--context'}
-    index = 1
-    while index < len(words):
-        word = words[index]
-        if word == '--':
-            return True  # Following arguments cannot select an executable helper.
-        if word in values:
-            index += 1
-            if index >= len(words):
-                return False
-        elif word.startswith('-') and word not in flags:
-            return False
-        index += 1
-    return len(words) > 1
+def opaque_command(event: dict[str, Any]) -> bool:
+    """Host-permitted shell, with cooperative effect coverage disclosed separately."""
+    return (event.get("tool_name") or event.get("tool")) in {"Bash", "exec_command"}
 
 
 def bootstrap_write(workspace: Path, event: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -1137,7 +1024,7 @@ def bootstrap_write(workspace: Path, event: dict[str, Any], state: dict[str, Any
     return True
 
 
-def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> str | None:
+def execution_entry(event: dict[str, Any]) -> str | None:
     """Recognize explicit execution selection, never arbitrary mentions or approval."""
     args = event.get('tool_input', {})
     if not isinstance(args, dict):
@@ -1153,19 +1040,6 @@ def execution_entry(event: dict[str, Any], *, allow_skill_read: bool = True) -> 
             return 'taskplane'  # Cowork can expose the router without a plugin namespace.
         if isinstance(name, str) and name.startswith('taskplane:') and name[10:] in EXECUTION_ENTRIES:
             return name[10:]
-    # Codex can load skills through a native read instead of a Skill event.
-    paths = [args.get('file_path') or args.get('path')] if tool in READ_TOOLS else []
-    words = command_words(event) if tool in {'Bash', 'exec_command'} else []
-    if words and words[0] == 'cat':
-        paths += words[1:]
-    for value in paths if allow_skill_read else []:
-        if isinstance(value, str):
-            path = Path(value)
-            for entry in EXECUTION_ENTRIES:
-                if entry == 'tp-workflow':
-                    continue  # The skill resolves inspect/run/author intent before activation.
-                if path.is_absolute() and path.resolve() == Path(__file__).resolve().parents[1]/'skills'/entry/'SKILL.md':
-                    return entry
     if event.get('hook_event_name') != 'UserPromptSubmit':
         return None
     prompt = event.get('prompt', '')
@@ -1344,55 +1218,18 @@ class Harness:
         self.update(waiting={'binding': self.binding(state), 'reason': reason.strip()})
 
     def readiness(self, state: dict[str, Any]) -> dict[str, Any]:
-        from .worker_runtime import parent_readiness
-        data = self.read()
-        terminal = bool(state.get('finished') or state.get('retired') or state.get('cancellation'))
-        created = bool(state.get('visits'))
-        parent = parent_readiness(state) if created and not terminal else None
-        status = ('inactive' if terminal else
-                  'active' if parent and parent['status'] == 'ready' else
-                  'initialization_stale' if parent and parent['status'] == 'mismatch' else
-                  'initialization_pending' if created else
-                  'initialization_required' if data.get('selected') else 'inactive')
-        return {'status': status, 'run_created': created,
-                'observed_at': datetime.now(timezone.utc).isoformat(), 'parent_hook': parent,
-                'hook_observed': bool(data.get('hook_observed')), 'entry': data.get('entry'),
-                'binding': self.binding(state), 'presentation': data.get('presentation'),
-                'assurance': 'observed; not host authentication'}
+        terminal = any(state.get(key) for key in ("finished", "retired", "cancellation"))
+        return {"status": "inactive" if terminal or not self.read().get("selected") else "active" if state.get("visits") else "initialization_required",
+                "run_created": bool(state.get("visits")), "binding": self.binding(state),
+                "assurance": "observed; not host authentication"}
 
     def guidance(self, state: dict[str, Any]) -> str:
-        if state.get('cancellation'):
-            return (f'Taskplane run {state["run"]} is cancelled; continuation grants are revoked. '
-                    'Preserve its decision history. Observe/stop any remaining native work; '
-                    'cancellation alone does not prove termination. An explicit new run is required to restart.')
-        if not state.get('visits'):
-            entry = self.read().get('entry', 'taskplane')
-            phase = {'tp-engineering': 'engineering', 'tp-northstar': 'engineering',
-                     'tp-design': 'design', 'tp-workflow': 'design', 'tp-product': 'product'}.get(entry)
-            route = f'--standalone --phase {phase}' if phase else 'the requested route (Product for full delivery)'
-            return ('Taskplane selected; initialization required before implementation or completing the review. '
-                    'Prepare exact scope/evidence under .taskplane/bootstrap/, then run the installed tp.py flow start with '
-                    f'{route}, --scope and --request-reference. Read/search, loading skills, asking the user and exact '
-                    'Taskplane setup commands remain available. Standalone review does not require seven delivery phases.')
+        if not state.get("visits"):
+            return "Taskplane selected. Start the requested scoped workflow before implementation."
         stage = w.current(state)
-        readiness = self.readiness(state)
-        if readiness['status'] in {'initialization_pending', 'initialization_stale'}:
-            return (f'Taskplane run {state["run"]} is saved, but native initialization is {readiness["parent_hook"]["status"]}. '
-                    f'Current phase: {stage["phase"]}, visit {stage["id"]}, revision {state["revision"]}. '
-                    'A selected skill, saved run or single hook event does not establish native readiness. '
-                    'Observe an ordinary admitted command through the native host in the selected workspace, '
-                    'then inspect flow report for a current automatic parent pre/post pair. '
-                    'If the pair is absent, report the host hook initialization blocker; do not dispatch workers '
-                    'or substitute serial work. Preserve this run and its approval state.')
-        if readiness['status'] == 'inactive':
-            return (f'Taskplane run {state["run"]} is inactive. Preserve its evidence and decisions; '
-                    'an explicit new run is required for new work.')
-        return (f'Taskplane harness {readiness["status"]}: run {state["run"]}, {stage["phase"]} visit {stage["id"]}, revision {state["revision"]}. '
-                'Use flow context to obtain and consume the current handoff; read every required input before phase submission. '
-                'Context receipts prove returned data, never approval or model attention. '
-                f'Use the native dashboard at {self.workspace / ".taskplane/dashboard.html"}. '
-                'After submitting phase evidence, provide the exact dashboard link/open result and record flow present. '
-                'A queued open is not verified display. If user input is needed, record flow wait --note with the actual reason.')
+        return (f"Taskplane run {state['run']}, current phase {stage['phase']}. "
+                "Read the durable brief and relevant references, complete useful phase evidence, "
+                "then present that result for its separate human decision. Dashboards and telemetry are optional.")
 
     def recovery_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
         tool = event.get('tool_name') or event.get('tool')
@@ -1541,7 +1378,7 @@ class Harness:
 
     def bootstrap_command(self, event: dict[str, Any]) -> bool:
         words = runtime_words(event)
-        if readonly_command(event):
+        if opaque_command(event):
             return True
         try:
             cwd = runtime_command.validate_workdir(words, event, self.workspace)
@@ -1655,69 +1492,19 @@ class Harness:
                                   'assurance': 'observed', 'digest': hashlib.sha256(immutable.read_bytes()).hexdigest(),
                                   'model_digest': hashlib.sha256(immutable.with_suffix('.json').read_bytes()).hexdigest()}, waiting=None)
 
-    def presentation_valid(self, state: dict[str, Any]) -> bool:
-        try:
-            presentation = self.read().get('presentation') or {}
-            checkpoint = self.checkpoint(state)
-            if not checkpoint or presentation.get('checkpoint') != checkpoint or state.get('invalidation_pending'):
-                return False
-            if presentation.get('outcome') not in {'linked', 'verified', 'blocked'}:
-                return False
-            binding = presentation.get('binding', {})
-            expected = self.binding(state)
-            if binding != expected:
-                # Only the approval of this exact, previously shown packet may
-                # increment the revision without another presentation.
-                if (w.current(state)['decision'] != 'approved'
-                        or binding != {**expected, 'revision': state['revision'] - 1}
-                        or not any(d.get('choice') == 'approved' and
-                            all(d.get('binding', {}).get(k) == v for k, v in binding.items()) and
-                            d.get('binding', {}).get('checkpoint') == checkpoint['checkpoint']
-                            for d in state['decisions'].values())):
-                    return False
-            artifact = str(Path(presentation['artifact']).relative_to(self.workspace))
-            immutable, model = self.native_snapshot(state, artifact, current=False)
-            return (model['snapshot'].get('revision') == binding['revision']
-                    and hashlib.sha256(immutable.read_bytes()).hexdigest() == presentation.get('digest')
-                    and hashlib.sha256(immutable.with_suffix('.json').read_bytes()).hexdigest() == presentation.get('model_digest'))
-        except (OSError, ValueError, KeyError, TypeError):
-            return False
 
     def dashboard_opener(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
+        """Opening a documented host panel is observation, never phase authority."""
         if (event.get('tool_name') or event.get('tool')) not in {
                 'mcp__codex_app__open_in_codex', 'mcp__codex_app.open_in_codex'}:
             return False
         args = event.get('tool_input', {})
-        if (not isinstance(args, dict) or set(args) - {'target', 'placement', 'threadId'}
-                or args.get('threadId', self.root) != self.root):
+        if not isinstance(args, dict) or set(args) - {'target', 'placement', 'threadId'}:
             return False
-        target = args.get('target', {})
-        if not isinstance(target, dict):
-            return False
-        if target.get('type') == 'file' and set(target) <= {'type', 'path'}:
-            value = target.get('path')
-        elif target.get('type') == 'browser' and set(target) == {'type', 'url'}:
-            url = target.get('url')
-            if not isinstance(url, str):
-                return False
-            try:
-                parsed = urlsplit(url)
-                value = url2pathname(parsed.path)
-                canonical = Path(value).as_uri()
-            except ValueError:
-                return False
-            if (parsed.scheme != 'file' or parsed.netloc or parsed.query or parsed.fragment
-                    or canonical != url):
-                return False
-        else:
-            return False
-        if not isinstance(value, str) or not Path(value).is_absolute():
-            return False
-        try:
-            self.native_snapshot(state, str(Path(value).relative_to(self.workspace)))
-        except (OSError, ValueError, KeyError, TypeError):
-            return False
-        return True
+        target = args.get('target')
+        return (isinstance(target, dict) and target.get('type') in {'file', 'page', 'browser', 'review', 'terminal'}
+                and args.get('placement', 'right') in {'right', 'bottom'}
+                and ('threadId' not in args or isinstance(args['threadId'], str)))
 
     def stop(self, event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
         data = self.read()
@@ -1731,9 +1518,7 @@ class Harness:
         elif state.get('invalidation_pending'):
             reason = 'Taskplane evidence is stale; resolve the current phase before reporting completion.'
         elif w.current(state)['decision'] in {'not_requested', 'changes_requested', 'rejected', 'stale'}:
-            reason = 'Taskplane phase evidence is not submitted. Submit the review/current phase and present its native dashboard before completing.'
-        elif not self.presentation_valid(state):
-            reason = 'Taskplane dashboard handoff is missing for this checkpoint. Link/open the current native dashboard and record flow present with the actual outcome.'
+            reason = 'Taskplane phase evidence is not submitted. Present the current phase result for its separate human decision.'
         else:
             return {}
         # One corrective continuation, never a forced loop while the user waits.

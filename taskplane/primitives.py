@@ -106,8 +106,6 @@ def unlock_file(handle: BinaryIO) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-_LOCK_STALE_S = 120.0
-
 class StateError(RuntimeError):
     """A governance state file is unreadable or unprotectable.
 
@@ -124,69 +122,34 @@ class StateError(RuntimeError):
 
 
 @_contextlib.contextmanager
-def file_lock(path: str, *, timeout: float = 10.0) -> Iterator[None]:
-    """Advisory exclusive lock on <path>.lock — NEVER silently lock-free.
+def file_lock(path: str) -> Iterator[None]:
+    """Hold the native exclusive lock, or refuse before entering the body.
 
-    Primary: fcntl.flock. Where flock is unavailable or refused (Windows,
-    some FUSE/network mounts — exactly the hosts this plugin targets), fall
-    back to an atomic mkdir spin-lock with staleness recovery instead of
-    proceeding unlocked. If even that cannot be acquired within `timeout`,
-    raise StateError: failing closed beats corrupting shared state."""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    Native locks release when the owning handle/process exits. Directory ages
+    cannot establish owner death and must never be used to steal a live lock.
+    """
     lock_path = path + ".lock"
-    # ACQUISITION failures fall through to the mkdir lock; an exception
-    # raised by the CALLER'S BODY must propagate unchanged (v2.3.0 — the
-    # earlier shape caught the body's OSError too, then yielded a second
-    # time from the fallback path).
     lf = None
     try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_APPEND
                              | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
         lf = os.fdopen(descriptor, "a+b")
         if not stat.S_ISREG(os.fstat(lf.fileno()).st_mode):
             raise OSError("state lock must be a regular file")
         lock_file(lf)
-    except (ImportError, OSError):
+    except (ImportError, OSError) as exc:
         if lf is not None:
             lf.close()
-        lf = None     # fall through to the mkdir lock — not to "no lock"
-    if lf is not None:
-        try:
-            yield
-        finally:
-            try:
-                unlock_file(lf)
-            finally:
-                lf.close()
-        return
-    lockdir = path + ".lockdir"
-    deadline = _time.monotonic() + max(0.1, timeout)
-    while True:
-        try:
-            os.mkdir(lockdir)
-            break
-        except FileExistsError:
-            try:  # steal a lock left behind by a dead process
-                if _time.time() - os.stat(lockdir).st_mtime > _LOCK_STALE_S:
-                    os.rmdir(lockdir)
-                    continue
-            except OSError:
-                pass
-            if _time.monotonic() >= deadline:
-                raise StateError(
-                    lockdir, "could not acquire state lock",
-                    "another process holds it; if it is dead, remove the "
-                    "lockdir") from None
-            _time.sleep(0.05)
-        except OSError as e:
-            raise StateError(lockdir, f"lock unavailable ({e})") from None
+        raise StateError(lock_path, f"native state lock unavailable ({exc})",
+                         "use a filesystem with supported native file locking") from exc
     try:
         yield
     finally:
         try:
-            os.rmdir(lockdir)
-        except OSError:
-            pass
+            unlock_file(lf)
+        finally:
+            lf.close()
 
 
 def git_environment(git_path: Path) -> dict[str, str]:

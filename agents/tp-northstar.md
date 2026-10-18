@@ -5,27 +5,21 @@ model: inherit
 color: purple
 ---
 
-# Shared delivery responsibilities
+# Assigned responsibility
 
-Read [the shared flow](../skills/tp-go/references/shared-flow.md). Product, Design,
-Plan, Build, Evaluate, Engineering, lenses and Retro all consume the same run ID,
-workspace, attached task decomposition, dependency graph and dashboard. Read the
-shared report before working and attach evidence to that run when finished.
-The root orchestrator advances only after explicit human checkpoint approval. Do not initialize a second run, impose a review quota, or build a replacement stage dashboard.
+Give a proportionate advisory assessment of alignment, reversibility and opportunity cost against available project direction. State missing direction and recommend a concrete next action. Do not add a mandatory gate or implement.
 
-Use the shared run, task decomposition and graph when relevant to a requested strategic assessment. Return an advisory note; do not introduce a mandatory stage or gate.
+Follow [the shared flow](../skills/tp-go/references/shared-flow.md). Reuse the
+matching run and durable brief, then inspect relevant source/evidence references.
+Graph, dashboard and telemetry are optional. No receipt, startup accounting,
+worker quota or exact approval wording is required.
 
-Standalone execution uses the same dependency graph, source and task decomposition, and shared dashboard. The root starts a scoped run at the requested phase when none exists; workers reuse it. Engineering findings can become Product inputs in that run. Preserve the requested scope and native host permissions.
+When assigned native work, preserve actual launch/attempt/worker identity, exact
+write ownership, relevant freshness and terminal completion. Stay in scope and
+return evidence to the root; do not operate root phase decisions or widen your
+authority. A message, Stop or cancellation request is not proof of process exit.
+See [native ownership](../skills/tp-go/references/codex-native-dispatch.md).
 
-Follow the shared flow human approval, workflow profile and host-limit policy. Work produced,
-evidence validated and human accepted remain separate. Fix source only in an
-approved Build visit; review or evaluation findings alone do not grant a repair.
-
-## Native worker assignment
-
-When this role runs as an authorized native worker, claim the observed grant in the
-existing run and consume every required task-focused input before execution. A root
-receipt cannot satisfy worker context. Stay within assigned paths; return evidence
-to the root for verification and result acceptance. Do not operate root workflow
-controls or create another run. Follow the packaged native dispatch protocol;
-missing identity, context or lifecycle coverage remains unresolved.
+Preserve native host permissions. Separate produced work, validated evidence and
+human acceptance. Review/design output does not authorize implementation; every
+required phase keeps its own approval.

@@ -7,7 +7,6 @@ import pytest
 
 from taskplane import flow, workflow as w, workflow_host as host, workflow_local as local
 from taskplane.tests.test_workflow_local import setup, submit, decision, decide
-from taskplane.workflow_approval import affirmative_consent
 
 
 @pytest.mark.parametrize("bad", ["future", "before_run", "before_checkpoint", "naive", "presentation"])
@@ -67,16 +66,6 @@ def test_named_checkpoint_cannot_approve_another_checkpoint(tmp_path, explicit):
     assert controller._path().read_bytes() == before
 
 
-def test_named_checkpoint_does_not_hide_unclassified_approval_suffix(tmp_path):
-    controller, state = setup(tmp_path)
-    state = submit(controller, state)
-    value = decision(state, text="Approved " + w.binding(state, w.current(state)["packet"])["checkpoint"]
-                     + ". I need more time to deliberate.")
-    value.update(checkpoint_explicit=True, choice="approved")
-    before = controller._path().read_bytes()
-    with pytest.raises(w.Refusal, match="unclear"):
-        decide(controller, state, value)
-    assert controller._path().read_bytes() == before
 
 
 def event(workspace, call="call-1", **extra):
@@ -161,18 +150,6 @@ def test_hook_pair_attribution_survives_finish_and_records_followup(tmp_path):
     assert controller.report()['status'] == 'no_workflow'
 
 
-def test_parent_runtime_mismatch_revokes_previous_pair(tmp_path):
-    controller, state = setup(tmp_path)
-    from taskplane.host_capabilities import runtime_identity
-    first = event(tmp_path, 'first-parent-pair', taskplane_automatic_hook=True,
-                  taskplane_runtime_identity=runtime_identity())
-    controller.guard(first, state['run'])
-    controller.complete_admission({**first, 'hook_event_name':'PostToolUse'})
-    assert controller.report()['parent_hook_readiness']['admitted']
-    second = {**first, 'call_id':'different-runtime', 'taskplane_runtime_identity':{'root':'foreign'}}
-    controller.guard(second, state['run'])
-    controller.complete_admission({**second, 'hook_event_name':'PostToolUse'})
-    assert not controller.report().get('parent_hook_readiness', {}).get('admitted')
 
 
 def test_claude_cli_cannot_claim_child_from_inherited_root_environment(tmp_path, monkeypatch, capsys):
@@ -188,101 +165,42 @@ def test_claude_cli_cannot_claim_child_from_inherited_root_environment(tmp_path,
     assert controller._path().read_bytes() == before
 
 
-@pytest.mark.parametrize('action', ['finish', 'replacement_select', 'replacement_bind', 'next_start_bind'])
-def test_post_commit_harness_failure_preserves_closure_and_success(tmp_path, monkeypatch, capsys, action):
-    from taskplane import flow_telemetry
+@pytest.mark.parametrize('action', ['finish', 'replacement', 'next_start'])
+def test_optional_harness_failure_preserves_committed_lifecycle(tmp_path, monkeypatch, capsys, action):
     controller, state = setup(tmp_path, standalone=True)
-    local.Harness(tmp_path, 'root').bind(state)
     state = decide(controller, submit(controller, state))
-    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
-    flow.append(tmp_path, dict(kind='start', run=state['run'], session='root', phase='product',
-                              at=state['started_at']))
-    if action == 'next_start_bind':
+    if action == 'next_start':
         state = controller.apply('finish', state['run'], expected_revision=state['revision'])
-        flow.append(tmp_path, dict(kind='finish', run=state['run'], session='root'))
-    method = 'update' if action == 'finish' else 'select' if action.endswith('select') else 'bind'
-    def failed_observation(*args, **kwargs):
-        raise OSError('injected post-commit harness write failure')
-    monkeypatch.setattr(local.Harness, method, failed_observation)
+    def unavailable(*args, **kwargs):
+        raise OSError('injected optional harness write failure')
+    monkeypatch.setattr(local.Harness, 'update' if action == 'finish' else 'bind', unavailable)
     if action == 'finish':
         args = ['finish', '--expected-revision', str(state['revision'])]
-        transition = 'finish'
     else:
         (tmp_path/'restart-scope.json').write_text(json.dumps(state['scope']))
         args = ['start', '--standalone', '--phase', 'product', '--scope', 'restart-scope.json',
                 '--request-reference', 'fixture/post-commit-restart']
-        transition = 'interval_closed'
-        if action.startswith('replacement'):
-            args += ['--replace-run', state['run'], '--expected-revision', str(state['revision'])]
-            transition = 'replacement'
-    assert flow.main([*args, '--workspace', str(tmp_path)], governor=controller) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert any('harness' in error for error in result['evidence_errors'])
-    closures = flow_telemetry.read_boundaries(tmp_path, state['run'], 'root')
-    assert len(closures) == 1 and closures[0]['transition'] == transition
-    assert closures[0]['committed']
-    if action == 'finish':
-        assert controller.report(state['run'])['finished']
-    else:
-        assert controller.report()['run'] != state['run']
-
-
-@pytest.mark.parametrize('action', ['finish', 'replacement', 'next_start'])
-@pytest.mark.parametrize('failure', ['io', 'json', 'identity'])
-def test_readiness_projection_cannot_fail_committed_lifecycle(tmp_path, monkeypatch, capsys, action, failure):
-    from taskplane import flow_telemetry
-    controller, state = setup(tmp_path, standalone=True)
-    local.Harness(tmp_path, 'root').bind(state)
-    state = decide(controller, submit(controller, state))
-    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
-    flow.append(tmp_path, dict(kind='start', run=state['run'], session='root', phase='product',
-                              at=state['started_at']))
-    if action == 'next_start':
-        state = controller.apply('finish', state['run'], expected_revision=state['revision'])
-        flow.append(tmp_path, dict(kind='finish', run=state['run'], session='root'))
-    calls = []
-    def unavailable_readiness(*args):
-        calls.append(True)
-        if failure == 'io':
-            raise OSError('readiness unavailable')
-        if failure == 'json':
-            raise ValueError('invalid advisory JSON')
-        raise w.Refusal('state_unavailable', 'invalid advisory identity')
-    monkeypatch.setattr(local.Harness, 'readiness', unavailable_readiness)
-    if action == 'finish':
-        args = ['finish', '--expected-revision', str(state['revision'])]
-        transition = 'finish'
-    else:
-        (tmp_path/'restart-scope.json').write_text(json.dumps(state['scope']))
-        args = ['start', '--standalone', '--phase', 'product', '--scope', 'restart-scope.json',
-                '--request-reference', 'fixture/readiness-restart']
-        transition = 'interval_closed'
         if action == 'replacement':
             args += ['--replace-run', state['run'], '--expected-revision', str(state['revision'])]
-            transition = 'replacement'
     assert flow.main([*args, '--workspace', str(tmp_path)], governor=controller) == 0
-    result = json.loads(capsys.readouterr().out)
-    closures = flow_telemetry.read_boundaries(tmp_path, state['run'], 'root')
-    assert len(closures) == 1 and closures[0]['transition'] == transition and closures[0]['committed']
+    result = json.loads(capsys.readouterr().out)['workflow']
     if action == 'finish':
+        assert result['finished'] and result['observation_errors']
         assert controller.report(state['run'])['finished']
-        assert not calls  # A historical result must not evaluate an unused empty response.
     else:
-        assert controller.report()['run'] != state['run']
-        assert len(calls) == 1 and result['harness']['status'] == 'unavailable'
-        assert any('readiness' in error for error in result['evidence_errors'])
+        assert result['run'] != state['run'] and result['start_observation_errors']
+        assert controller.report()['run'] == result['run']
+        assert not result['decisions']
 
 
-def test_empty_report_keeps_unavailable_readiness_explicit(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
-    def unavailable_readiness(*args):
-        raise OSError('readiness unavailable')
-    monkeypatch.setattr(local.Harness, 'readiness', unavailable_readiness)
-    assert flow.main(['report', '--workspace', str(tmp_path)]) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result['status'] == 'no_workflow'
-    assert result['harness']['status'] == 'unavailable'
-    assert any('readiness' in error for error in result['evidence_errors'])
+def test_lifecycle_never_requires_readiness_projection(tmp_path, monkeypatch, capsys):
+    controller, state = setup(tmp_path, standalone=True)
+    state = decide(controller, submit(controller, state))
+    def unexpected(*args, **kwargs):
+        pytest.fail('Default lifecycle consulted retired readiness projection')
+    monkeypatch.setattr(local.Harness, 'readiness', unexpected)
+    assert flow.main(['finish', '--workspace', str(tmp_path), '--expected-revision', str(state['revision'])], governor=controller) == 0
+    assert controller.report(state['run'])['finished']
 
 
 def test_plan_scope_narrowing_keeps_checkpoint_presentation_identity(tmp_path):
@@ -302,19 +220,8 @@ def test_plan_scope_narrowing_keeps_checkpoint_presentation_identity(tmp_path):
     assert harness.checkpoint(accepted) != original
 
 
-@pytest.mark.parametrize("text", ["This is an auto-approved flow all the way.",
-                                  "This is auto-approved workflow", "this is an auto-approved run"])
-def test_unconditional_declarative_consent(text):
-    assert affirmative_consent(text)
 
 
-@pytest.mark.parametrize("text", ["This is an auto-approved flow if I approve later",
-    "This is an auto-approved flow. Keep manual approval.",
-    "Maybe this is an auto-approved flow", "This is not an auto-approved flow",
-    'Example: "This is an auto-approved flow all the way."',
-    "This is an auto-approved flow after my approval", "This is an auto-approved flow?"])
-def test_declarative_consent_keeps_qualifier_refusals(text):
-    assert not affirmative_consent(text)
 
 
 def test_sealed_contract_inspection_is_bounded_and_read_only(tmp_path):

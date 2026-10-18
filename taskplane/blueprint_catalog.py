@@ -11,7 +11,7 @@ import inspect
 from pathlib import Path
 import platform
 import sys
-from types import CodeType, ModuleType
+from types import ModuleType
 from typing import Any
 
 from . import workflow as w, workflow_evidence as evidence
@@ -20,7 +20,7 @@ from .primitives import content_fingerprint
 CATALOG_SCHEMA = "taskplane.workflow-capabilities/v1"
 IDENTITY_SCHEMA = "taskplane.workflow-runtime/v1"
 BASE_CONTRACTS = (
-    "native-default/v1", "bounded/v2", "taskplane.task-definitions/v1",
+    "ownership/v1", "brief/v1", "taskplane.task-definitions/v1",
     "taskplane.phase-output/v1",
 )
 DELIVERY_CONTRACTS = (
@@ -119,12 +119,12 @@ def _contracts(modules: dict[str, ModuleType]) -> dict[str, bool]:
                   ("prepare", ("workspace", "state", "task_id", "request")),
                   ("accept_result", ("workspace", "state", "task_id", "request")),
                   ("bind_worker", ("state", "row", "identity")),
-                  ("parent_readiness", ("state",)), ("readiness", ("row",)),
+                  ("readiness", ("row",)),
               )))
     # Exercise pure validation too: mere names or a version string are insufficient.
     if native:
         scope = {"criteria": ["C1"], "paths": {p: [] for p in _PHASES},
-                 "execution_contract": "native-default/v1"}
+                 "execution_contract": "ownership/v1"}
         try:
             assert workflow is not None
             workflow.validate_scope(scope)
@@ -140,10 +140,9 @@ def _contracts(modules: dict[str, ModuleType]) -> dict[str, bool]:
             except (AttributeError, TypeError, ValueError):
                 native = False
     return {
-        "native-default/v1": native,
-        "bounded/v2": (getattr(context, "SEMANTIC_CONTRACT", None) == "bounded/v2"
-                       and _shape(getattr(context, "consume_required", None), ("session",))
-                       and _shape(getattr(getattr(context, "Session", None), "__init__", None),
+        "ownership/v1": native,
+        "brief/v1": (getattr(context, "BRIEF_CONTRACT", None) == "brief/v1"
+                       and _shape(getattr(getattr(context, "Brief", None), "__init__", None),
                                   ("workspace", "state"))),
         "taskplane.task-definitions/v1": (
             getattr(ev, "TASK_DEFINITIONS", None) == "taskplane.task-definitions/v1"
@@ -167,45 +166,6 @@ def _contracts(modules: dict[str, ModuleType]) -> dict[str, bool]:
     }
 
 
-def _constant_identity(value: Any) -> Any:
-    if isinstance(value, CodeType):
-        return _code_identity(value)
-    if isinstance(value, (tuple, frozenset)):
-        values = [_constant_identity(item) for item in value]
-        return {type(value).__name__: sorted(values, key=content_fingerprint)
-                if isinstance(value, frozenset) else values}
-    if isinstance(value, bytes):
-        return {"bytes": value.hex()}
-    return {type(value).__name__: repr(value)}
-
-
-def _code_identity(code: CodeType) -> dict[str, Any]:
-    # marshal encodes reference/interning flags that can change while a function
-    # executes. Pin stable public bytecode fields instead of that process state.
-    return {"code": code.co_code.hex(), "constants": [_constant_identity(v) for v in code.co_consts],
-            "names": code.co_names, "varnames": code.co_varnames, "freevars": code.co_freevars,
-            "cellvars": code.co_cellvars, "flags": code.co_flags, "argcount": code.co_argcount,
-            "posonlyargcount": code.co_posonlyargcount, "kwonlyargcount": code.co_kwonlyargcount,
-            "exceptiontable": getattr(code, "co_exceptiontable", b"").hex()}
-
-
-def _code_digest(module: ModuleType) -> str:
-    """Pin executed Python bodies as well as their current source-file bytes."""
-    bodies: dict[str, str] = {}
-    for name, value in sorted(vars(module).items()):
-        if getattr(value, "__module__", None) != module.__name__:
-            continue
-        if inspect.isfunction(value):
-            bodies[name] = content_fingerprint(_code_identity(value.__code__))
-        elif inspect.isclass(value):
-            for member, method in sorted(vars(value).items()):
-                if isinstance(method, (staticmethod, classmethod)):
-                    method = method.__func__
-                if inspect.isfunction(method):
-                    bodies[name + "." + member] = content_fingerprint(_code_identity(method.__code__))
-    return content_fingerprint(bodies)
-
-
 def runtime_identity(requirements: list[str] | None = None, *,
                      route: dict[str, Any] | None = None) -> dict[str, Any]:
     """Inspect only this package's loaded modules, without loading another runtime.
@@ -226,28 +186,18 @@ def runtime_identity(requirements: list[str] | None = None, *,
             if loaded != expected or not expected.is_file():
                 raise ValueError("Loaded module does not belong to this runtime root")
             modules[name] = module
-            members[relative] = {"path": str(loaded), "sha256": content_fingerprint(evidence.read(root, relative)),
-                                 "loaded_code_sha256": _code_digest(module)}
+            members[relative] = {"path": str(loaded)}
         except (ImportError, OSError, ValueError) as exc:
             blockers.append(_diagnostic("runtime_module_unavailable", "/runtime/" + name, str(exc)))
     contracts = _contracts(modules)
-    native_members: dict[str, str | None] = {}
     native_module = modules.get("host_capabilities")
+    native: dict[str, Any] = {}
     try:
         if native_module is None:
             raise ValueError("Native runtime identity is unavailable")
         native = native_module.runtime_identity()
-        if native["root"] != str(root):
-            raise ValueError("Native runtime identity has a different root")
-        for relative in sorted(native["member_sha256"]):
-            try:
-                # Supplement, do not replace, the native admission-path identity.
-                native_members[relative] = content_fingerprint(evidence.read(root, relative))
-                if native_members[relative] != native["member_sha256"][relative]:
-                    raise ValueError("Native runtime member changed while reading identity")
-            except (OSError, ValueError) as exc:
-                native_members[relative] = None
-                blockers.append(_diagnostic("runtime_asset_unavailable", "/runtime/assets/" + relative, str(exc)))
+        if native["root"] != str(root) or not native.get("package_id"):
+            raise ValueError("Native runtime identity has a different root or no package identity")
     except (AttributeError, KeyError, TypeError, ValueError, OSError) as exc:
         blockers.append(_diagnostic("native_identity_unavailable", "/runtime/native", str(exc)))
     requested = sorted(set(required_contracts(route)) | set(requirements or []))
@@ -255,19 +205,15 @@ def runtime_identity(requirements: list[str] | None = None, *,
         if not contracts.get(contract, False):
             blockers.append(_diagnostic("unsupported_contract", "/runtime_requirements", contract))
     executable = Path(sys.executable).resolve()
-    try:
-        interpreter_hash = content_fingerprint(executable.read_bytes())
-    except OSError as exc:
-        interpreter_hash = None
-        blockers.append(_diagnostic("interpreter_unavailable", "/runtime/interpreter", str(exc)))
     body: dict[str, Any] = {
         "schema": IDENTITY_SCHEMA, "runtime_root": str(root),
-        "interpreter": {"path": str(executable), "sha256": interpreter_hash,
+        "package_id": native.get("package_id"),
+        "interpreter": {"path": str(executable),
                         "implementation": platform.python_implementation(), "version": platform.python_version()},
         "contracts": sorted(k for k, supported in contracts.items() if supported),
-        "required_contracts": requested, "modules": members, "native_member_sha256": native_members,
+        "required_contracts": requested, "modules": members,
         "compatible": not blockers, "blockers": blockers,
-        "basis": "Loaded module paths, Python bodies and file bytes; observation, not host attestation.",
+        "basis": "Selected installation/package identity, loaded module paths and supported contracts; cooperative observation, not host attestation. Full member hashes belong to explicit package verification.",
     }
     body["digest"] = content_fingerprint(body)
     return body

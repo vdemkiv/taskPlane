@@ -8,77 +8,25 @@ from __future__ import annotations
 from copy import deepcopy
 import re
 from typing import Any
-from urllib.parse import urlsplit
 
 from . import workflow as w
 from .context import digest
 from .context_handoff import binding
 
 READERS = {
-    'webrun': ('codex', 'web'),
-    'web.run': ('codex', 'web'),
-    'web__run': ('codex', 'web'),
-    'mcp__codex_apps__github__fetch_issue': ('codex', 'github_issue'),
-    'mcp__codex_apps__github_fetch_issue': ('codex', 'github_issue'),
-    'WebFetch': ('claude', 'web'),
-    'WebSearch': ('claude', 'web'),
+    'webrun': 'codex',
+    'web.run': 'codex',
+    'web__run': 'codex',
+    'mcp__codex_apps__github__fetch_issue': 'codex',
+    'mcp__codex_apps__github_fetch_issue': 'codex',
+    'WebFetch': 'claude',
+    'WebSearch': 'claude',
 }
 AUTOMATION = 'mcp__codex_app__automation_update'
 
 
 def _text(value: Any, limit: int = 32768) -> bool:
     return isinstance(value, str) and 0 < len(value) <= limit and '\0' not in value
-
-
-def _url(value: Any) -> bool:
-    if not _text(value, 4096):
-        return False
-    try:
-        url = urlsplit(value)
-        return url.scheme == 'https' and bool(url.hostname) and not url.username and not url.password
-    except ValueError:
-        return False
-
-
-def _web(args: dict[str, Any]) -> bool:
-    if set(args) - {'open', 'search_query', 'response_length'} or not (args.get('open') or args.get('search_query')):
-        return False
-    if args.get('response_length', 'short') not in ('short', 'medium', 'long'):
-        return False
-    for name in ('open', 'search_query'):
-        values = args.get(name, [])
-        if not isinstance(values, list) or len(values) > (4 if name == 'search_query' else 8):
-            return False
-        for row in values:
-            if not isinstance(row, dict):
-                return False
-            if name == 'open':
-                if set(row) - {'ref_id', 'lineno'} or not _url(row.get('ref_id')):
-                    return False
-                if 'lineno' in row and (type(row['lineno']) is not int or row['lineno'] < 0):
-                    return False
-            else:
-                if set(row) - {'q', 'domains', 'recency'} or not _text(row.get('q')):
-                    return False
-                if 'recency' in row and (type(row['recency']) is not int or row['recency'] < 1):
-                    return False
-                if 'domains' in row and not _domains(row['domains']):
-                    return False
-    return True
-
-
-def _domains(value: Any) -> bool:
-    return (isinstance(value, list) and 0 < len(value) <= 20
-            and all(isinstance(item, str) and re.fullmatch(r'[A-Za-z0-9.-]{1,253}', item) for item in value))
-
-
-def _issue(args: dict[str, Any]) -> bool:
-    # Only the captured selector is verified. Other connector selectors remain
-    # unsupported until their schemas and repository resolution are tested.
-    return (set(args) == {'repository_full_name', 'issue_number'}
-            and isinstance(args['repository_full_name'], str)
-            and bool(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', args['repository_full_name']))
-            and type(args['issue_number']) is int and args['issue_number'] > 0)
 
 
 def _heartbeat(args: Any) -> bool:
@@ -96,15 +44,6 @@ def _heartbeat(args: Any) -> bool:
 
 
 def validate_scope(scope: dict[str, Any]) -> None:
-    reads = scope.get('external_reads')
-    if reads is not None:
-        w.require(isinstance(reads, dict) and set(reads) == {'host', 'operations', 'request_reference'}
-                  and reads['host'] in ('codex', 'claude') and _text(reads['request_reference'], 512)
-                  and isinstance(reads['operations'], list) and bool(reads['operations'])
-                  and all(isinstance(op, str) and op in ({'web', 'github_issue'} if reads['host'] == 'codex'
-                                                       else {'web'}) for op in reads['operations'])
-                  and len(set(reads['operations'])) == len(reads['operations']),
-                  'invalid_evidence', 'external_reads needs an exact host, supported operations and user request reference.')
     action = scope.get('native_automation')
     if action is not None:
         w.require(isinstance(action, dict) and set(action) == {'host', 'phase', 'request_reference', 'request'}
@@ -113,24 +52,18 @@ def validate_scope(scope: dict[str, Any]) -> None:
                   'invalid_evidence', 'native_automation supports one explicit Codex thread heartbeat create request.')
 
 
-def read(tool: str, args: dict[str, Any], host: str, state: dict[str, Any], *, root: bool) -> bool:
+def read(tool: str, host: str) -> bool:
+    """Recognize pure reader entry points; their host validates request schemas.
+
+    Recognition grants neither mutation authority nor connector/network access.
+    Do not duplicate the reader's argument parser or restrict result references.
+    """
     if tool not in READERS:
         return False
-    expected, operation = READERS[tool]
+    expected = READERS[tool]
     w.require(host == expected, 'unsupported_authority',
-              f'{tool} requires {expected}. Use the current host native web reader when exposed and scoped; '
+              f'{tool} requires {expected}. Use the current host native web reader when exposed and permitted; '
               'a private GitHub issue still requires an authorized connected reader.')
-    scoped = state['scope'].get('external_reads', {})
-    w.require(root and scoped.get('host') == host and operation in scoped.get('operations', [])
-              and scoped.get('request_reference') == state.get('request_provenance', {}).get('reference'),
-              'scope_violation', 'External read is not declared for this root request. Initialize an exact external_reads scope; '
-              'do not widen a sealed scope or bypass host access restrictions.')
-    valid = (_issue(args) if operation == 'github_issue' else _web(args) if host == 'codex' else
-             set(args) == {'url', 'prompt'} and _url(args.get('url')) and _text(args.get('prompt'))
-             if tool == 'WebFetch' else
-             not set(args) - {'query', 'allowed_domains', 'blocked_domains'} and _text(args.get('query'))
-             and all(_domains(args[key]) for key in ('allowed_domains', 'blocked_domains') if key in args))
-    w.require(valid, 'scope_violation', 'Unsupported native read arguments; only the documented read schema is admitted.')
     return True
 
 

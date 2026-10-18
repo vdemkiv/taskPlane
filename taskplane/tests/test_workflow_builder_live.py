@@ -9,10 +9,6 @@ import sys
 
 import pytest
 
-from taskplane.context import Store, signed
-from taskplane.context_handoff import Session
-from taskplane.context_views import collection, shared_bodies, view
-
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/verify_workflow_builder_live.py"
 spec = importlib.util.spec_from_file_location("workflow_builder_live", SCRIPT)
 live = importlib.util.module_from_spec(spec)
@@ -23,25 +19,53 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
-def context_session(root, binding, task=None, *, large=False, shared=False, body=None):
-    """Use actual runtime CAS trees, pages and bounded transport, no host claims."""
-    from unittest.mock import patch
-    if body is None:
-        body = {"request": "Review bound source", "text": "".join(f"Line {n}: evidence body αβγ\n" for n in range(1200 if large else 4))}
-    items = [{"id": "source", "kind": "source", "body": body, "required": True}]
-    if shared:
-        items.append({"id": "finding", "kind": "finding-evidence", "body": body, "required": True})
-    state = {**{key: binding[key] for key in ("workspace", "root", "run", "revision")},
-             "scope": {}, "index": 0,
-             "visits": [{"phase": "engineering", "id": binding["visit"]}]}
-    metadata = {"authority": {"binding": binding, "accepted_inputs": []}, "coverage": {}}
-    # Substitute fixture inputs, then use the real constructor to establish the
-    # page index, delivery journal, CAS registry and frozen context consistently.
-    with patch("taskplane.context_handoff.binding", return_value=binding), patch(
-            "taskplane.context_handoff.inputs",
-            return_value=(items, [task] if task else [], [], metadata)):
-        return Session(root, state, task)
+def archived_context(root, binding):
+    """Fixed v0.1 archive data for the frozen inspector, not a live protocol.
 
+    Keep this fixture independent of current context delivery. It deliberately
+    has one leaf and one historical drain: no sessions, ledgers or paging engine.
+    """
+    def object_ref(kind, value):
+        node = {"schema": "taskplane.context-object/v1", "kind": kind,
+                "source_key": live.digest(value), "form": "value", "data": value}
+        raw = encoded(node)
+        key = live.digest(raw)
+        path = root / ".taskplane/context-v1/objects" / (key + ".json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            assert path.read_bytes() == raw
+        else:
+            path.write_bytes(raw)
+        return {"schema": "taskplane.context-reference/v1", "kind": kind,
+                "sha256": key, "bytes": len(raw), "source_key": node["source_key"]}
+
+    def collection(items):
+        return {"items": items, "total": len(items)}
+
+    def signed(value):
+        return {**value, "digest": live.digest(value)}
+
+    body = {"request": "Review archived source"}
+    source = object_ref("source", body)
+    required = collection([{"id": "source", "ref": source}])
+    view = signed({"schema": "taskplane.context-view/v1", "binding": binding,
+                   "authority_ref": object_ref("authority", {"binding": binding}),
+                   "required_inputs": required, "references": required})
+    handoff = signed({"schema": "taskplane.context-handoff/v1", "binding": binding,
+                      "view_ref": object_ref("context-view", view),
+                      "required_inputs": required, "accepted_inputs": collection([])})
+    handoff_ref = object_ref("context-handoff", handoff)
+    receipt = {"receipt": object_ref("delivery-receipt", {
+        "schema": "taskplane.context-delivery-receipt/v1", "binding": binding,
+        "status": "returned", "handoff_digest": handoff["digest"],
+        "view_digest": view["digest"], "returned_refs": [source["sha256"]]}),
+        "consumed_inputs": [source["sha256"]]}
+    page = {"schema": "taskplane.context-page/v1", "sha256": source["sha256"],
+            "kind": "source", "form": "value", "section": None, "page": 0,
+            "pages": 1, "total": 1, "data": body, "next_page": None, "untrusted_data": True}
+    return {"schema": "taskplane.context-drain/v1", "handoff_ref": handoff_ref,
+            "pages": [page], "done": True, "remaining_required": 0,
+            "next_action": None, "context_receipt": receipt}
 
 
 class Fixture:
@@ -126,14 +150,13 @@ class Fixture:
             manifest = {task["paths"][0]: output["sha256"]}
             bound = {"root": "session", "workspace": workspace, "run": run, "visit": visit, "revision": 1, "task_generation": 1}
             consumer = {"worker_id": identity, "grant_id": grant, "attempt": 1, "task_id": task["id"], "task_generation": 1}
-            context = context_session(self.root, {**bound, "consumer": consumer}, task["id"])
-            response = context.drain(context.handoff_ref["sha256"])
+            response = archived_context(self.root, {**bound, "consumer": consumer})
             receipt = response["context_receipt"]
             native = {"type": "user", "sessionId": "session", "cwd": workspace,
                 "origin": {"kind": "task-notification", "producer": "session-task"}, "promptSource": "system", "turnOrigin": "task_notification",
                 "message": {"role": "user", "content": f"Task {identity} completed"}}
             child = self.pair(f"flow worker --operation claim --run {run} --grant {grant}", {"grant_id": grant, "task_id": task["id"]}, worker=identity)
-            child += self.pair(f"flow context --workspace {shlex.quote(workspace)} --run {run} --task {task['id']} --drain {context.handoff_ref['sha256']}", response, worker=identity)
+            child += self.pair(f"flow context --workspace {shlex.quote(workspace)} --run {run} --task {task['id']} --drain {response['handoff_ref']['sha256']}", response, worker=identity)
             hook_call = f"hook-{number}-{index}"
             child += self.pair("cat source.py", "source", worker=identity, call=hook_call)
             worker_transcripts.append({"worker_id": identity, "transcript": self.transcript(f"child-{number}-{index}.jsonl", child)})
@@ -636,7 +659,6 @@ def test_success_booleans_and_prose_are_not_evidence(tmp_path):
     ("state", "result_pending", "Missing claimed"), ("run", "foreign", "Foreign worker"),
     ("completion_conflict", True, "Missing claimed"),
     ("hook_readiness", {"matched_call": "made-up"}, "Automatic hook pair"),
-    ("context_delivery", {"remaining_required": 1}, "partial, stale or foreign"),
     ("handback", {"status": "delivered", "notification": {"record_sha256": "0" * 64}}, "actual native completion"),
 ])
 def test_worker_evidence_cannot_be_asserted(evidence, field, value, reason):
@@ -644,164 +666,11 @@ def test_worker_evidence_cannot_be_asserted(evidence, field, value, reason):
     failed(evidence, reason)
 
 
-def test_context_receipt_tampering(evidence):
+def test_archived_context_bytes_are_verified(evidence):
     row = evidence.states[0]["workers"]["grant-1-0"]
     path = evidence.root / ".taskplane/context-v1/objects" / (row["context_receipt"]["receipt"]["sha256"] + ".json")
     path.write_bytes(path.read_bytes() + b" ")
     failed(evidence, "Stale evidence")
-
-
-def change_worker_context(evidence, transform):
-    entry = evidence.index["invocations"][0]["worker_transcripts"][0]
-    rows = [json.loads(line) for line in Path(entry["transcript"]["path"]).read_text().splitlines()]
-    transform(rows)
-    entry["transcript"] = evidence.transcript("child-1-0.jsonl", rows)
-
-
-def test_valid_final_receipt_without_delivered_bodies_refuses(evidence):
-    def omit(rows):
-        result = rows[3]["message"]["content"][0]
-        body = json.loads(result["content"])
-        body["pages"] = []
-        result["content"] = json.dumps(body)
-    change_worker_context(evidence, omit)
-    failed(evidence, "Required context body pages were omitted")
-
-
-@pytest.mark.parametrize("replacement", ["<persisted-output>Output too large. Preview: {}…</persisted-output>",
-                                        '{"done":true,"remaining_required":0', "Output truncated: {}"])
-def test_persisted_or_truncated_context_is_not_delivery(evidence, replacement):
-    def hide(rows):
-        rows[3]["message"]["content"][0]["content"] = replacement
-    change_worker_context(evidence, hide)
-    failed(evidence, "incomplete, filtered or persisted")
-
-
-@pytest.mark.parametrize("field,value", [("data", "replaced body"), ("kind", "foreign"), ("pages", 2),
-                                         ("total", 999), ("next_page", 1), ("untrusted_data", False)])
-def test_altered_context_page_refuses(evidence, field, value):
-    def alter(rows):
-        result = rows[3]["message"]["content"][0]
-        body = json.loads(result["content"])
-        body["pages"][0][field] = value
-        result["content"] = json.dumps(body)
-    change_worker_context(evidence, alter)
-    failed(evidence, "Omitted or altered context body page")
-
-
-@pytest.mark.parametrize("suffix", [" | head -c 2000", " > /dev/null", " &"])
-def test_filtered_context_command_refuses(evidence, suffix):
-    def filter_command(rows):
-        rows[2]["message"]["content"][0]["input"]["command"] += suffix
-    change_worker_context(evidence, filter_command)
-    failed(evidence, "unfiltered foreground")
-
-
-def test_foreign_worker_context_frame_refuses(evidence):
-    change_worker_context(evidence, lambda rows: rows[3].update(agentId="another-worker"))
-    failed(evidence, "Foreign native context consumer")
-
-
-def context_trace(root, *, mode="small", shared=False, task="review", body=None):
-    binding = {"workspace": str(root), "root": "session", "run": "context-run", "revision": 1,
-               "visit": "context-visit", "task_generation": 1}
-    fixture = object.__new__(Fixture)
-    fixture.root, fixture.serial = root, 0
-    session = context_session(root, binding, task, large=True, shared=shared, body=body)
-    prefix = f"flow context --workspace {shlex.quote(str(root))} --run context-run" + (f" --task {task}" if task else "")
-    key, rows, responses = session.handoff_ref["sha256"], [], []
-    def emit(command, result):
-        rows.extend(fixture.pair(prefix + " " + command, result))
-        responses.append(result)
-    if mode == "consume":
-        emit("--consume " + key, session.consume(key))
-    if mode == "read":
-        for sha in sorted(set().union(*session.required_trees.values())):
-            for page in range(session.store.page(sha)["pages"]):
-                emit(f"--read {sha} --page {page}", session.read(sha, page))
-    else:
-        while not responses or responses[-1]["remaining_required"]:
-            emit("--read-required " + key, session.read_required(key))
-    emit("--drain " + key, session.drain(key))
-    return binding, session, rows, responses
-
-
-@pytest.mark.parametrize("mode,shared,task", [("small", False, "review"), ("small", True, "review"),
-                                           ("read", False, "review"), ("consume", True, None)])
-def test_complete_small_batches_pages_and_root_consumption_pass(tmp_path, mode, shared, task):
-    binding, session, rows, responses = context_trace(tmp_path, mode=mode, shared=shared, task=task)
-    assert responses[-1]["pages"] == [] and responses[-1]["done"] is True
-    if mode == "small":
-        assert len(responses) >= 3
-        assert all(len(encoded(response)) < 16 * 1024 for response in responses)
-    result = live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                          responses[-1]["context_receipt"], task)
-    assert result["required_roots"] == len(session.required_trees)
-
-
-def test_omitted_early_batch_cannot_be_replaced_by_empty_terminal_drain(tmp_path):
-    binding, _, rows, responses = context_trace(tmp_path)
-    del rows[:2]
-    with pytest.raises(live.EvidenceError, match="Required context body pages were omitted"):
-        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                     responses[-1]["context_receipt"], "review")
-
-
-def test_completed_batch_still_requires_observed_terminal_drain(tmp_path):
-    binding, _, rows, responses = context_trace(tmp_path)
-    assert responses[-2]["context_receipt"] == responses[-1]["context_receipt"]
-    del rows[-2:]
-    with pytest.raises(live.EvidenceError, match="Full context delivery was not observed"):
-        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                     responses[-1]["context_receipt"], "review")
-
-
-def test_persisted_early_batch_refuses_despite_valid_final_receipt(tmp_path):
-    binding, _, rows, responses = context_trace(tmp_path)
-    rows[1]["message"]["content"][0]["content"] = "<persisted-output>Full output saved. Preview: {}…</persisted-output>"
-    with pytest.raises(live.EvidenceError, match="incomplete, filtered or persisted"):
-        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                     responses[-1]["context_receipt"], "review")
-
-
-def test_all_cursors_required_for_multi_page_canonical_node(tmp_path):
-    binding, _, rows, responses = context_trace(tmp_path, mode="read", body=list(range(100)))
-    assert [response["page"]["page"] for response in responses[:-1]] == [0, 1]
-    live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                 responses[-1]["context_receipt"], "review")
-    with pytest.raises(live.EvidenceError, match="Required context body pages were omitted"):
-        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows[2:]), binding,
-                                     responses[-1]["context_receipt"], "review")
-
-
-def test_foreign_handoff_and_foreign_cas_page_refuse(tmp_path):
-    binding, session, rows, responses = context_trace(tmp_path)
-    result = rows[-1]["message"]["content"][0]
-    final = json.loads(result["content"])
-    final["handoff_ref"] = session.store.put("context-handoff", {**session.handoff, "binding": {**binding, "root": "foreign"}})
-    result["content"] = json.dumps(final)
-    with pytest.raises(live.EvidenceError, match="Foreign or altered context handoff"):
-        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                     responses[-1]["context_receipt"], "review")
-    result["content"] = json.dumps(responses[-1])
-    first = rows[1]["message"]["content"][0]
-    body = json.loads(first["content"])
-    foreign = session.store.put("foreign-input", "unrelated context")
-    body["pages"][0] = session.store.page(foreign["sha256"])
-    first["content"] = json.dumps(body)
-    with pytest.raises(live.EvidenceError, match="Foreign context body page"):
-        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                     responses[-1]["context_receipt"], "review")
-
-
-def test_cas_body_bytes_are_verified_even_with_valid_native_page(tmp_path):
-    binding, session, rows, responses = context_trace(tmp_path)
-    key = responses[0]["pages"][0]["sha256"]
-    path = session.store.path(key)
-    path.write_bytes(path.read_bytes() + b" ")
-    with pytest.raises(live.EvidenceError, match="Stale evidence"):
-        live.verify_context_delivery(live.Reader(tmp_path), tmp_path, live.Transcript(rows), binding,
-                                     responses[-1]["context_receipt"], "review")
 
 
 @pytest.mark.parametrize("file", ["source-1.py", "runtime/taskplane/tp.py", "reports/1/security.md", ".taskplane/bootstrap/workflow-1/bindings.json"])

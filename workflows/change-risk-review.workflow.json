@@ -1,7 +1,7 @@
 {
   "schema": "taskplane.workflow-blueprint/v1",
   "id": "change-risk-review",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "Change risk review",
   "description": "Review a bound change through distinct security and code-quality workers, then root synthesis. Write review artifacts only; findings do not authorize repairs.",
   "route": {
@@ -206,7 +206,7 @@
       "verification": "Map each criterion to observed evidence; retain source locations, failed checks and unknown coverage.",
       "execution_reason": "The root integrates prerequisite evidence and prepares the existing phase checkpoint.",
       "execution_reference": "This definition's explicit producer dependencies and the shared Taskplane phase contract.",
-      "instructions": "Wait for both distinct native workers to finish, join, and have their fresh results accepted by root. Preserve finding IDs, severity, locations, actual lens coverage and disagreements. Missing evidence remains unknown. Prepare the existing Engineering checkpoint and shared dashboard."
+      "instructions": "Wait for both distinct native workers to finish, join, and have their fresh results accepted by root. Preserve finding IDs, severity, locations, actual lens coverage and disagreements. Missing evidence remains unknown. Prepare the existing Engineering checkpoint."
     }
   ],
   "acceptance_scenarios": [
@@ -217,8 +217,8 @@
     "Fixture validation does not establish candidate-loaded live host execution."
   ],
   "runtime_requirements": [
-    "bounded/v2",
-    "native-default/v1",
+    "brief/v1",
+    "ownership/v1",
     "taskplane.phase-output/v1",
     "taskplane.task-definitions/v1"
   ]

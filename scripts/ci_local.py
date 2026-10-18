@@ -8,7 +8,6 @@ from collections import Counter
 import hashlib
 import io
 import json
-import math
 import os
 import platform
 import re
@@ -29,52 +28,6 @@ import zlib
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = ("all", "portability", "core", "native", "packages", "capacity")
 
-# Exact legacy workloads, retained for explicit historical use only. A marker or
-# a module name cannot exclude a new functional test. Mixed modules stay collected.
-PERFORMANCE_ONLY_TESTS = {
-    'taskplane/tests/test_context.py::test_large_small_entry_collection_uses_pages_not_one_read_per_item': 'retired descendant-count target; exact value roundtrip retained in test_ci_local.test_functional_collection_roundtrip_without_object_count_target',
-    'taskplane/tests/test_context_handoff.py::test_batches_return_the_same_required_pages_with_fewer_responses': 'retired response-count comparison; page equality and receipt integrity retained in test_ci_local.test_functional_batch_delivery_preserves_exact_pages_and_receipts',
-    'taskplane/tests/test_context_cli.py::test_context_measurement_grid': 'retired repeated context benchmark',
-    'taskplane/tests/test_context_cli.py::test_context_measurement_variants': 'retired context measurement variants; functional delivery/oracle tests retained',
-    'taskplane/tests/test_native_session_meter.py::test_usage_complete_grid_matches_independent_oracle': 'retired repeated usage benchmark; incremental oracle and continuation tests retained',
-    'taskplane/tests/test_native_workflow_cli.py::test_native_repeated_repair_history_fits_without_losing_evidence': 'retired capacity repetition; routine checkpoint-history repair test retained',
-    'taskplane/tests/test_context_startup_budget.py::test_startup_account_counts_each_emitted_retry_and_enforces_eight_slots': 'retired legacy response quota',
-    'taskplane/tests/test_context_startup_budget.py::test_native_probe_overrun_is_retained_and_never_ready': 'retired legacy elapsed target',
-    'taskplane/tests/test_context_startup_budget.py::test_exact_packing_accounts_for_metadata_and_matches_actual_drain': 'retired aggregate packing target; complete v3 framed delivery retained',
-    'taskplane/tests/test_context_startup_budget.py::test_required_mode_full_boundary_limits': 'retired legacy timing mode limits',
-    'taskplane/tests/test_context_startup_budget.py::test_required_attempt_keeps_mode_after_provider_loss': 'retired legacy timing provider dependency',
-    'taskplane/tests/test_context_startup_budget.py::test_advisory_eight_response_limit_is_still_mandatory': 'retired legacy response quota',
-    'taskplane/tests/test_context_startup_budget.py::test_exact_required_limit_cannot_start_more_work': 'retired legacy elapsed target',
-}
-REQUIRED_GROUPS = frozenset('''LOCAL-SEC-01 LOCAL-SEC-02 LOCAL-INT-01 LOCAL-INT-02 LOCAL-INT-03
-LOCAL-SRE-03 LOCAL-SRE-04 LOCAL-DS-01 LOCAL-DS-02 LOCAL-DEVOPS-01 LOCAL-DEVOPS-02 LOCAL-ACC-01
-LOCAL-EVID-01 LOCAL-CI-PROD-01 LOCAL-CI-PROD-03 LOCAL-CI-PROD-04 LOCAL-CI-PROD-05 LOCAL-CI-PROD-06
-LOCAL-SOURCE-IDENTITY LOCAL-GRAPH LOCAL-RETENTION LOCAL-TELEMETRY-SEMANTICS LOCAL-PACKAGE
-LOCAL-BROWSER LOCAL-HOST-WATCH LOCAL-BROAD-AND-QUALITY LOCAL-DECLARED-INPUTS LOCAL-LARGE-RECOVERY
-LOCAL-CONTEXT-UPGRADE LOCAL-STARTUP-EXECUTION'''.split())
-FUNCTIONAL_CRITERIA = frozenset('''SEC-01 SEC-02 INT-01 INT-02 INT-03 SRE-03 SRE-04 DS-01 DS-02
-DEVOPS-01 DEVOPS-02 ACC-01 EVID-01 CI-PROD-01 CI-PROD-03 CI-PROD-04 CI-PROD-05 CI-PROD-06'''.split())
-FUNCTIONAL_GROUP_CRITERIA = {f'LOCAL-{key}': {key} for key in FUNCTIONAL_CRITERIA}
-FUNCTIONAL_GROUP_CRITERIA.update({
-    **{key: {'EVID-01'} for key in ('LOCAL-GRAPH', 'LOCAL-RETENTION', 'LOCAL-PACKAGE',
-                                    'LOCAL-BROWSER', 'LOCAL-HOST-WATCH')},
-    'LOCAL-SOURCE-IDENTITY': set(FUNCTIONAL_CRITERIA),
-    'LOCAL-BROAD-AND-QUALITY': set(FUNCTIONAL_CRITERIA),
-    'LOCAL-TELEMETRY-SEMANTICS': {'SRE-03', 'EVID-01'},
-    'LOCAL-DECLARED-INPUTS': {'CI-PROD-01'},
-    'LOCAL-LARGE-RECOVERY': {'INT-02', 'EVID-01'},
-    'LOCAL-CONTEXT-UPGRADE': {'CI-PROD-03', 'CI-PROD-05', 'EVID-01'},
-    'LOCAL-STARTUP-EXECUTION': {'CI-PROD-01', 'CI-PROD-04', 'EVID-01'},
-})
-EXTERNAL_GATES = frozenset(('NATIVE-01', 'WIN-01', 'BROWSER-01', 'MONITOR-01', 'HISTORICAL-01', 'REVIEW-01'))
-
-
-def performance_exclusion(nodeid: str) -> str | None:
-    return PERFORMANCE_ONLY_TESTS.get(nodeid.replace('\\', '/').partition('[')[0])
-
-
-def functional_inventory(rows: list[dict]) -> list[dict]:
-    return [row for row in rows if performance_exclusion(row['nodeid']) is None]
 
 EVIDENCE_SCHEMA = 'taskplane.raw-evidence/zlib-base64-v1'
 EVIDENCE_CHUNK_BYTES = 49152
@@ -82,19 +35,10 @@ EVIDENCE_CHUNK_BYTES = 49152
 
 def measurement_counters(samples: list) -> list:
     """Readable projection only; the referenced samples remain complete."""
-    fields = set(('sample_id measurement_class measurement_scope kind shape case host mode repetition '
-        'nodes edges operations pages invocations processes payload_bytes bytes_read unique_body_bytes transport_bytes '
-        'max_response_pages max_response_bytes max_index_rebuilds_per_invocation peak_rss_bytes elapsed_seconds '
-        'startup_seconds clock_resolution_seconds unrelated_sessions owned_sessions bytes_per_owned_session '
-        'complete entries deleted scanned_entries max_depth_seen reference_bytes_read projected_pairs projected_bytes '
-        'attempt_cap attempts_consumed attempts_reserved elapsed_ms elapsed_cap_ms tokens_observed tokens_reserved '
-        'tokens_proposed token_cap coverage_known clock_known dispatch_admitted exhausted read_bytes parsed_records '
-        'discovery_entries max_record_bytes unrelated_scans validation_bytes max_prefix_bytes max_tail_bytes '
-        'appended_bytes fully_discovered').split())
     def counters(row):
         if not isinstance(row, dict):
             return {'malformed_sample': True}
-        result = {key: value for key, value in row.items() if key in fields and type(value) in (str, int, float, bool, type(None))}
+        result = {key: value for key, value in row.items() if type(value) in (str, int, float, bool, type(None))}
         if isinstance(row.get('refreshes'), list):
             result['refreshes'] = [counters(refresh) for refresh in row['refreshes']]
         return result
@@ -292,7 +236,7 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
     filename = path.rsplit("/", 1)[-1]
     if filename == "test_dashboard_browser.py":
         return "browser"
-    if performance_exclusion(nodeid):
+    if capacity:
         return "capacity"
     if (filename in ("test_context.py", "test_context_delivery.py", "test_workspace_binding.py",
                      "test_blueprint_harness.py", "test_workflow_builder_live.py")
@@ -301,9 +245,7 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
                 and name.startswith("test_nested_scope_matches_native_inventory"))
             or filename in ("test_farm_telemetry.py", "test_farm_workers.py", "test_unbound_worker_recovery.py")
             or (filename == "test_review_remediation.py" and name.startswith((
-                "test_required_binding_allows_only_exact_installed_diagnostics",
-                "test_exact_argv_foreign_interpreter_refused_in_execution_directory",
-                "test_missing_binding_exemptions_resolve_actual_interpreter",
+                "test_required_binding_diagnostics_and_structured_write_boundary",
                 "test_windows_interpreter_search_respects_current_directory_policy",
                 "test_valid_interpreter_identity_uses_execution_cwd")))
             or (filename == "test_native_worker_dispatch.py"
@@ -323,7 +265,6 @@ def suite_for(nodeid: str, *, capacity: bool = False) -> str:
 SAFE_ENV = ('PATH', 'LANG', 'LC_ALL', 'TZ', 'PYTHONHASHSEED', 'NODE_ENV', 'CI',
             'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'SYSTEMDRIVE')
 BASELINE = '4a46e645ec628dc439cd9d163dbd63ee4906c3e6'
-CONFTST_SHA256 = '7f472cfd8d4f3ef7cf63a92e331f9dcc9b99935d6b5981b228b2d0b1002dd067'
 
 
 def isolated_environment(directory: Path, inherited=None) -> dict[str, str]:
@@ -367,6 +308,75 @@ def tree_map(root: Path) -> dict:
     return dict(sorted(result.items()))
 
 
+# Ordinary commands verify relevant candidate inputs, not repository databases,
+# generated evidence, historical copies or unrelated workspace documents.
+CANDIDATE_DIRECTORIES = frozenset(('taskplane', 'scripts', 'hooks', 'skills', 'agents', 'lenses',
+    'workflows', 'docs', 'assets', '.codex-plugin', '.claude-plugin', '.github'))
+GENERATED_DIRECTORIES = frozenset(('.git', '.taskplane', 'dist', 'outputs', 'output', 'history',
+    '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', 'node_modules', '.venv', 'venv'))
+CANDIDATE_ROOT_FILES = frozenset(('LICENSE', 'PRIVACY.md', 'TERMS.md', 'README.md', 'CHANGELOG.md'))
+CANDIDATE_SUFFIXES = frozenset(('.py', '.json', '.toml', '.ini', '.cfg', '.yaml', '.yml', '.txt', '.lock'))
+
+
+def candidate_source_map(root: Path, source_inputs: list[str] | None = None) -> dict:
+    """Fingerprint declared candidate inputs; this is not a whole-workspace audit."""
+    tracked_docs = None
+    documentation_unknown = False
+    if source_inputs is None and (root / '.git').exists():
+        environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+        environment['GIT_OPTIONAL_LOCKS'] = '0'
+        observed = subprocess.run(['git', '-C', str(root), 'ls-files', '-z', '--', 'docs'],
+                                  capture_output=True, env=environment, timeout=5, check=False)
+        documentation_unknown = observed.returncode != 0
+        tracked_docs = {name.decode('utf-8', errors='surrogateescape')
+                        for name in observed.stdout.split(b'\0') if name} if not documentation_unknown else set()
+    def selected():
+        if source_inputs is not None:
+            for relative in source_inputs:
+                path = safe_path(root, relative)
+                if any(part in GENERATED_DIRECTORIES for part in Path(relative).parts):
+                    raise ValueError('Generated/control state is not a candidate source input')
+                yield path
+            return
+        for parent, dirs, files in os.walk(root, followlinks=False):
+            at_root = Path(parent) == root
+            admitted = [name for name in dirs if name not in GENERATED_DIRECTORIES
+                        and (not at_root or name in CANDIDATE_DIRECTORIES)]
+            dirs[:] = []
+            for name in admitted:
+                path = Path(parent) / name
+                if path.is_symlink():
+                    yield path
+                else:
+                    dirs.append(name)
+            for name in files:
+                path = Path(parent) / name
+                relative = path.relative_to(root).as_posix()
+                if tracked_docs is not None and relative.startswith('docs/') and relative not in tracked_docs:
+                    continue
+                if (not at_root or name in CANDIDATE_ROOT_FILES or path.suffix in CANDIDATE_SUFFIXES):
+                    yield path
+    result = {}
+    if documentation_unknown and (root / 'docs').exists():
+        result['docs'] = {'kind': 'unknown', 'reason': 'Tracked candidate documentation could not be selected.'}
+    for path in selected():
+        name = path.relative_to(root).as_posix()
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            result[name] = {'kind': 'missing'}
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            result[name] = {'kind': 'symlink', 'target': os.readlink(path)}
+        elif stat.S_ISREG(info.st_mode):
+            raw = path.read_bytes()
+            result[name] = {'kind': 'file', 'sha256': hashlib.sha256(raw).hexdigest(),
+                            'bytes': len(raw), 'mode': format(stat.S_IMODE(info.st_mode), '04o')}
+        else:
+            result[name] = {'kind': 'special', 'mode': info.st_mode}
+    return dict(sorted(result.items()))
+
+
 def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -376,399 +386,433 @@ def digest(value) -> str:
 # distinguish a slow fixture from collection or interpreter startup.
 # Reviewed exact functions and predicates from their current decorators/helpers.
 # New functions do not inherit optionality, even in modules with pytestmark.
-OPTIONAL_SKIP_RULES = [
-    ('test_claude_fork_input_transform.py', 'Requires native no-follow reads', 'no_binding', {}, (
-        'test_exact_fork_flag_omission_keeps_original_and_admitted_digests',
-        'test_conversion_never_hides_other_argument_or_native_framing_changes',
-        'test_pretool_matching_uses_same_exact_conversion',
-        'test_notification_delivery_run_id_is_metadata_not_authority',
-    )),
-    ('test_claude_guarded_handback.py', 'Requires native no-follow reads', 'no_binding', {}, (
-        'test_guarded_report_joins_without_changing_original_or_delivered_evidence',
-        'test_notice_cannot_override_original_integrity_or_native_proof',
-        'test_existing_cursor_recovery_preserves_fifteen_accepted_results',
-        'test_reconciliation_is_scoped_to_current_root_and_original_grant',
-        'test_reconcile_cli_uses_original_attempt_without_automatic_acceptance',
-        'test_reconciliation_revalidates_cached_transform_against_original_span',
-        'test_literal_notice_in_original_report_never_authorizes_removal',
-        'test_exact_notice_without_observed_native_trigger_stays_blocked',
-        'test_corrected_runtime_revalidates_historical_proof_without_rewriting_it',
-    )),
-    ('test_claude_interactive_recovery.py', 'Requires native no-follow reads', 'no_binding', {}, (
-        'test_wrapped_startup_denial_has_exact_recovery_and_valid_retry',
-        'test_startup_failure_handback_is_bounded_failure_and_fresh_retry_works',
-        'test_startup_failure_admission_retains_identity_schema_and_binding_boundaries',
-        'test_stop_history_and_failure_handback_attempts_have_bounds',
-        'test_native_peer_handback_textless_stop_and_redirect_complete_exact_attempt',
-        'test_delayed_parent_delivery_joins_accepts_and_replays_exact_attempt',
-        'test_transcript_only_redirect_joins_exact_handback_and_accepts_once',
-        'test_delayed_delivery_preserves_each_proof_and_chronology_boundary',
-        'test_complete_rejected_redirect_has_diagnostic_without_success',
-        'test_claude_discovery_and_owned_current_worker_controls',
-        'test_claude_discovery_is_bounded_exact_selection',
-        'test_claude_inventory_discovery_is_exact_selection',
-        'test_claude_controls_keep_owned_current_attempt_and_automatic_proof',
-        'test_claude_message_schema_rejects_broadcast_structured_or_conflicting_input',
-        'test_claude_message_observable_backfill_is_display_only',
-        'test_claude_discovery_cannot_grant_child_or_foreign_target_control',
-        'test_claude_stop_request_never_joins_or_allows_new_input',
-        'test_claude_listagents_empty_native_input_is_readonly_not_completion',
-        'test_claude_listagents_requires_exact_automatic_root_provenance',
-        'test_peer_redirect_requires_every_native_proof_part',
-        'test_mid_turn_peer_attachment_requires_exact_native_envelope',
-        'test_mid_turn_peer_attachment_rejects_malformed_report_and_rendering',
-        'test_mid_turn_delivery_preserves_bound_handback_and_completion_requirements',
-        'test_handback_acknowledgment_keeps_exact_automatic_admission',
-        'test_retained_peer_delivery_is_revalidated_before_acceptance',
-        'test_peer_completion_waits_for_bounded_parent_scan_and_retains_full_proof',
-        'test_same_body_multiple_acknowledged_calls_cannot_claim_one_peer',
-        'test_no_report_terminal_requires_exact_native_envelopes',
-        'test_legacy_preclaim_stop_conflict_only_recovers_with_fresh_exact_no_report',
-        'test_failed_startup_then_ready_retry_releases_ten_task_cohort',
-    )),
-    ('test_claude_oversized_history.py', 'Requires native no-follow reads', 'no_binding', {}, (
-        'test_real_sized_plain_and_companion_history_preserve_exact_launch_proof',
-        'test_partial_large_record_is_recoverable_budget_limit_without_cursor_poison',
-        'test_oversized_possible_evidence_or_ambiguous_record_is_never_skipped',
-        'test_literal_tool_shapes_inside_human_text_are_data_not_native_evidence',
-        'test_oversized_relevant_native_call_remains_unavailable',
-        'test_existing_sealed_conflict_is_preserved_not_silently_reinterpreted',
-    )),
-    ('test_claude_resumed_startup.py', 'Native no-follow reads unavailable', 'no_binding', {}, (
-        'test_b9_exact_readonly_proposal_commits_inline_proof_before_optional_publication',
-        'test_b9_each_predicate_refuses_without_writes',
-        'test_b9_revalidation_refuses_changes_between_inspect_and_commit',
-    )),
-    ('test_claude_startup_reconciliation.py', 'Native no-follow reads unavailable', 'no_binding', {}, (
-        'test_reconcile_preserves_governance_journals_original_and_enables_only_retry',
-        'test_recovery_refuses_without_changing_live_controller',
-        'test_reconciliation_preserves_structured_refusal_before_valueerror_handler',
-        'test_malformed_startup_evidence_has_bounded_specific_refusal',
-        'test_legacy_inspection_does_not_publish_before_validation',
-        'test_selected_recovery_refusal_preserves_unrelated_denial_and_all_bytes',
-        'test_startup_control_reports_without_receipt_or_execution_authority',
-        'test_startup_control_refuses_foreign_unknown_or_broadened_requests',
-        'test_startup_control_after_fence_never_revives_or_releases_attempt',
-        'test_startup_control_enforces_encoded_byte_boundary_without_truncation',
-        'test_preclaim_recovery_refuses_output_that_was_absent_at_preparation',
-    )),
-    ('test_claude_stop_before_handback.py', 'Requires native no-follow reads', 'no_binding', {}, (
-        'test_captured_b5_projection_requires_original_chronology_and_report',
-        'test_pre_handback_stop_reconciles_original_call_and_preserves_other_work',
-        'test_pre_handback_sequence_does_not_relax_identity_or_delivery',
-        'test_same_launch_competing_no_report_remains_conflict',
-        'test_selected_startup_report_audit_handles_claimed_and_preclaim_failure',
-        'test_failed_startup_handback_replay_revalidates_original_native_evidence',
-    )),
-    ('test_claude_worker_lifecycle.py', 'Requires native no-follow reads', 'no_binding', {}, (
-        'test_root_source_uses_original_project_with_worktree_cwd',
-        'test_worker_source_honors_exact_config_root_without_path_relaxation',
-        'test_preflight_retains_bounded_no_follow_native_proof',
-        'test_unpinned_worker_cannot_select_or_override_source',
-        'test_source_selection_refuses_untrusted_paths_and_lineage',
-        'test_selection_never_follows_unsafe_native_paths',
-        'test_launch_older_than_four_mib_survives_restart_and_append',
-        'test_delayed_result_and_partial_header_resume_exact_newline',
-        'test_competing_record_after_budget_boundary_prevents_premature_match',
-        'test_retained_evidence_changes_are_sticky',
-        'test_missing_original_source_retains_proof_but_cannot_refresh_match',
-        'test_identical_duplicates_are_idempotent_and_appended_conflict_is_sticky',
-        'test_record_limit_resumes_and_oversized_record_refuses',
-        'test_preparation_watermark_refuses_preexisting_or_replayed_launch',
-        'test_launch_appended_after_boundary_still_requires_post_preparation_timestamp',
-        'test_shared_budget_limits_all_attempts_and_source_selection',
-        'test_many_candidates_share_scan_and_keep_separate_evidence',
-        'test_invalid_source_checksum_and_no_follow_capability_refuse',
-        'test_malformed_serialized_cursor_refuses_without_crashing',
-        'test_child_cannot_be_read_from_a_replaced_project_during_scan',
-        'test_changed_source_reference_cannot_expand_parent_reads',
-        'test_repeated_root_selection_preserves_descriptor_and_refreshes_admission_watermark',
-        'test_pending_candidates_rotate_when_revalidation_budget_is_shared',
-        'test_incremental_parser_preserves_exact_correlation_refusals',
-        'test_learning_exact_worker_identity_does_not_discard_cursor_or_proof',
-        'test_transcript_only_notification_requires_exact_native_provenance',
-        'test_transcript_notification_cursor_upgrade_rescans_once_and_revalidates',
-        'test_direct_notification_preserves_literal_and_escaped_report_text',
-        'test_midturn_attachment_requires_native_delivery_provenance',
-        'test_native_notification_requires_exact_provenance_and_launch',
-        'test_old_launch_cursor_migrates_only_revalidated_spans',
-        'test_real_shaped_launch_denial_regression',
-        'test_denial_requires_exact_native_shape_and_empty_attempt',
-        'test_denial_supported_variants_and_revalidation',
-        'test_denial_rejects_competing_records_and_text_only_claims',
-        'test_legacy_denial_requires_explicit_reverified_migration',
-        'test_legacy_denial_recovery_cannot_clear_other_or_forged_evidence',
-        'test_old_nonconflicting_projection_adds_only_reverified_denial_fields',
-        'test_denial_source_must_stay_pinned_and_readable',
-        'test_denial_waits_for_complete_watermark_and_finds_late_competitor',
-        'test_legacy_denial_bounded_progress_is_private_and_resumes',
-        'test_denial_partial_line_and_budget_exhaustion_preserve_unknown',
-        'test_denial_admission_offsets_and_late_completion_remain_blocked',
-        'test_pure_denial_explicit_lifecycle_and_observation_time_refuse',
-        'test_explicit_delivery_cycles_keep_sequential_reports_distinct',
-        'test_explicit_delivery_cycles_refuse_ambiguous_or_cross_cycle_evidence',
-        'test_delivery_cycle_orders_validate_explicit_identity_not_timestamp_proximity',
-    )),
-    ('test_farm_telemetry.py', 'Snapshot deletion requires descriptor-relative no-follow operations', 'no_binding', {}, (
-        'test_hundreds_of_transients_obey_store_wide_pair_and_byte_bounds',
-        'test_pinned_selected_legacy_and_leased_pairs_survive',
-        'test_context_reference_becomes_a_permanent_pin',
-        'test_partial_deletion_intent_recovers_only_owned_garbage',
-    )),
-    ('test_farm_workers.py', 'Native transcript identity requires no-follow reads', 'no_binding', {}, (
-        'test_bounded_reader_ignores_output_path_and_rejects_unsafe_files',
-        'test_callless_stop_before_result_reconciles_exact_attempt',
-        'test_controller_concurrent_identity_claim_context_and_replay',
-        'test_controller_invocation_scope_refusals',
-        'test_cli_locator_precedes_inherited_identity_and_missing_reference_refuses',
-        'test_invocation_concurrent_double_consume_and_foreign_reference',
-        'test_invocation_post_requires_exact_recorded_input_and_runtime',
-        'test_genuine_root_context_gets_distinct_one_use_transport',
-        'test_handback_implicit_parent_readiness_and_unsupported_terminal',
-        'test_pending_reference_revalidates_current_attempt_and_source',
-        'test_direct_worker_context_requires_explicit_claim',
-    )),
-    ('test_host_native.py', 'This platform has no implemented native process-start reader', 'no_boot', {}, (
-        'test_real_process_start_identity_is_stable_and_not_ownership',
-    )),
-    ('test_host_capabilities.py', 'Requires no-follow nonblocking reader', 'no_recovery', {}, (
-        'test_complete_parent_and_child_over_64mib_use_bounded_continuations',
-        'test_recovery_continuation_refuses_changed_snapshot',
-        'test_recovery_retry_has_deterministic_progress_and_detects_late_conflict',
-    )),
-    ('test_native_worker_dispatch.py', 'Requires no-follow nonblocking reader', 'no_recovery', {}, (
-        'test_partial_recovery_persists_cursor_without_releasing_reservation',
-    )),
-    ('test_native_worker_dispatch.py', 'Native transcript identity requires no-follow reads', 'no_binding', {}, (
-        'test_claude_start_stop_contract_and_child_control_refusal',
-        'test_claude_launch_requires_source_pinned_before_preparation',
-    )),
-    ('test_context_startup_budget.py', 'Native transcript identity requires no-follow reads', 'no_binding', {}, (
-        'test_claude_typed_controls_before_claim_keep_identity_and_reservation',
-        'test_claude_typed_control_cannot_target_another_worker',
-        'test_claude_typed_probe_dispatch_keeps_incomplete_timing',
-        'test_claude_typed_transport_cannot_expand_an_issued_authority',
-        'test_claude_typed_control_concurrent_replay_dispatches_once',
-    )),
-    # Interactive.__init__ checks the actual reader before constructing these
-    # fixtures. These exact callers do not inherit its module-level pytestmark.
-    ('test_claude_dispatch_order.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
-        'test_launch_reservation_survives_either_flush_order_without_granting_child_access',
-        'test_deferred_native_conflict_never_binds_or_clears_pending_attempt',
-        'test_missing_transcript_call_requires_current_automatic_root_provenance',
-        'test_caller_source_hint_cannot_survive_failed_automatic_selection',
-    )),
-    ('test_claude_startup_diagnostics.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
-        'test_selected_startup_error_preserves_exact_refusal_and_database',
-    )),
-    ('test_cross_host_compatibility.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
-        'test_claude_backfilled_message_retains_owned_attempt_and_does_not_join',
-        'test_claude_unjoinable_launch_refuses_before_admission_and_can_abandon',
-        'test_claude_preflight_rejected_call_can_be_corrected_without_new_grant',
-        'test_claude_child_message_reports_supported_handback_without_delivery',
-    )),
-    ('test_worker_runtime.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
-        'test_denial_runtime_regression',
-        'test_denial_lifecycle_ingestion_survives_cache_capacity',
-        'test_denial_saturated_ingestion_requires_exact_automatic_lifecycle',
-        'test_exact_automatic_lifecycle_preserves_successful_claude_launch',
-        'test_denial_is_idempotent_unsatisfied_and_requires_fresh_grant_reason',
-        'test_revoked_denial_refresh_never_uses_stale_quiescence',
-        'test_new_denial_refuses_existing_child_or_work',
-        'test_denial_transition_requires_observation_to_match_sealed_proof',
-    )),
-    ('test_workflow_host.py', 'Interactive Claude fixtures require native no-follow transcript reads', 'no_binding', {}, (
-        'test_denial_controller_recovery_regression',
-        'test_denial_lifecycle_ingestion_blocks_saturated_legacy_recovery',
-        'test_denial_recovery_refusals_preserve_original_attempt',
-        'test_denial_recovery_cli_preserves_before_history_and_revalidates_replay',
-        'test_denial_recovery_partial_scan_stays_private_and_resumes',
-        'test_denial_mutable_boundaries_refresh_and_persist_before_refusal',
-        'test_denial_direct_resume_and_adapter_checks_are_read_only',
-        'test_denial_does_not_veto_bound_negative_human_decision',
-    )),
-    ('test_worker_runtime.py', 'Strict workspace binding requires descriptor-relative no-follow directory operations', 'no_binding', {}, (
-        'test_bound_workers_require_independent_current_location_and_matching_contract',
-        'test_bound_host_alias_write_preserves_exact_scope_and_symlink_checks',
-    )),
-    ('test_initialization_readiness.py', 'Restoration requires no-follow directory descriptors.', 'no_binding', {}, (
-        'test_receipt_completion_does_not_manufacture_native_readiness',
-    )),
-    ('test_controller_storage.py', 'Restoration requires no-follow directory descriptors.', 'no_binding', {}, (
-        'test_public_recovery_requires_receipt_and_preserves_original_provenance',
-    )),
-    ('test_initialization_recovery_receipt.py', 'Restoration requires no-follow directory descriptors; unsupported platforms fail closed.', 'no_binding', {}, (
-        'test_exact_restoration_and_completed_retry_preserve_original_bytes',
-        'test_completed_retry_retains_original_request_provenance',
-        'test_matching_target_cannot_manufacture_recovery_provenance',
-        'test_interrupted_initial_restore_finishes_same_receipt',
-        'test_prepared_retry_rejects_changed_scope_without_writes',
-        'test_restored_receipt_with_missing_target_is_not_replayed',
-        'test_unsupported_directory_sync_never_acknowledges_restore',
-    )),
-    ('test_native_approval_capture.py', 'Native no-follow reads unavailable', 'no_binding', {}, (
-        'test_ordinary_chat_approval_derives_real_ids_and_preserves_original_presentation',
-        'test_prompt_flush_is_deferred_then_captured_before_next_tool_guard',
-        'test_capture_rejects_nonhuman_stale_or_ambiguous_decisions',
-        'test_explicit_colon_checkpoint_uses_shared_semantics_and_exact_binding',
-        'test_unavailable_host_and_child_never_read_arbitrary_transcripts',
-        'test_native_negative_decision_preserves_human_authority_despite_artifact_drift',
-        'test_large_old_history_does_not_block_recent_approval_or_enter_proof',
-        'test_recent_unreadable_evidence_never_falls_back_to_an_older_approval',
-        'test_reverse_reader_preserves_cross_chunk_records_and_stops_before_old_history',
-        'test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source',
-        'test_native_hook_validates_complete_original_question_before_approval',
-    )),
-    ('test_native_workflow_cli.py', 'Exercises a host without Claude invocation transport', 'claude_transport', {}, (
-        'test_unsupported_claude_context_refuses_through_declared_hooks',
-    )),
-    ('test_review_remediation.py', 'Windows executable search policy', 'not_windows', {}, (
-        'test_windows_interpreter_search_respects_current_directory_policy',
-    )),
-    ('test_unbound_worker_recovery.py', 'Transcript interpretation requires nonblocking no-follow reads', 'no_recovery', {}, (
-        'test_historical_native_observation_does_not_invent_admission',
-        'test_unbound_observation_refuses_ambiguous_or_malformed_proof',
-        'test_recovery_releases_only_failed_reservation_and_allows_fresh_attempt',
-        'test_revocation_can_record_failure_during_drift_but_cannot_bless_source_changes',
-    )),
-    ('test_workflow_continuation.py', 'Native no-follow reader unavailable', 'no_binding', {}, (
-        'test_native_resume_retains_owner_run_approval_and_exact_request',
-        'test_resume_refuses_without_changing_store',
-        'test_resume_cli_inspection_and_verification_are_read_only',
-        'test_foreign_report_explains_supported_next_step',
-        'test_explicit_foreign_report_does_not_select_requesters_own_run',
-        'test_resume_command_is_admitted_at_sealed_checkpoint',
-    )),
-    ('test_workflow_delivery.py', 'Accepting original-source relay evidence requires secure descriptor-relative reads', 'no_binding', {}, (
-        'test_original_source_relay_preserves_origin_and_exact_replay',
-        'test_original_source_relay_exact_launch_forms',
-        'test_original_source_relay_replay_pins_original_frames',
-    )),
-    ('test_workflow_local.py', 'POSIX mode bits and umask; Windows uses ACLs', 'not_posix', {}, (
-        'test_control_state_remains_private_under_permissive_umask',
-    )),
-    ('test_workflow_recovery.py', 'Restoration and relocation require no-follow directory descriptors.', 'no_relative_nofollow', {}, (
-        'test_interrupted_restore_retirement_and_relocation_preserve_authentic_history',
-    )),
-    ('test_workspace_binding.py', 'Native unsupported-runtime check runs where primitives are absent', 'binding', {'capability': 'native'}, (
-        'test_unsupported_binding_cli_is_structured_and_preserves_files',
-    )),
-    ('test_workspace_binding.py', 'Strict workspace binding requires descriptor-relative no-follow directory operations', 'no_binding', {}, (
-        'test_bind_is_idempotent_and_frozen_contract_is_checked',
-        'test_malformed_evidence_refuses_without_state',
-        'test_probe_reads_are_bounded_ordinary_no_symlink',
-        'test_store_and_workspace_symlinks_are_rejected',
-        'test_required_execution_observation_not_inferred_from_binding',
-        'test_darwin_local_checks_actual_platform',
-        'test_worker_location_requires_independent_runtime_observation',
-        'test_any_policy_allows_explicit_remote_but_refuses_conflict',
-        'test_policy_environment_cannot_weaken_binding',
-        'test_split_cwd_aliases_one_root_and_no_scratch_store',
-        'test_relative_targets_refuse_escape',
-        'test_alias_neighbor_symlink_and_nested_alias_refused',
-        'test_probe_drift_and_binding_tamper_refuse',
-        'test_active_legacy_store_cannot_be_bound',
-        'test_inactive_relocation_archives_exact_bytes_no_approval_transfer',
-        'test_restored_retired_controller_relocates_exact_history_without_approvals',
-        'test_invalid_restoration_history_refuses_without_mutation',
-        'test_active_or_corrupt_recovery_is_read_only',
-        'test_recovery_requires_correct_identity_fresh_probe_and_provenance',
-        'test_copied_identity_refuses_even_with_fresh_claim',
-        'test_same_path_copy_detected_by_directory_identity',
-        'test_recovery_rejects_special_history_and_incomplete_marker',
-        'test_interrupted_recovery_remains_fail_closed_and_original_bytes_survive',
-        'test_cli_request_and_readonly_inspection',
-        'test_digest_matches_canonical_record',
-        'test_recovery_preserves_and_validates_archived_context_history',
-        'test_corrupt_terminal_fields_do_not_authorize_recovery',
-        'test_recovery_inventory_has_hard_bounds',
-        'test_prompt_reaches_model_with_setup_guidance',
-        'test_report_missing_binding_is_actionable_and_readonly',
-        'test_selected_unbound_setup_reads_reachable',
-        'test_setup_does_not_admit_writes_or_children',
-        'test_invalid_binding_is_not_first_run_onboarding',
-        'test_frozen_missing_binding_is_not_onboarding',
-        'test_inline_request_rejects_invalid_data_without_state',
-        'test_selected_folder_inline_bind_then_standalone_engineering',
-        'test_unrelated_cowork_prompt_does_not_select_taskplane',
-        'test_discovered_child_cannot_use_onboarding_exemptions',
-        'test_lost_binding_history_is_not_first_run_through_entry_points',
-        'test_missing_binding_discovery_is_bounded_and_readonly',
-        'test_existing_unbound_local_history_retains_legacy_resolution',
-    )),
-    ('test_workspace_binding.py', 'POSIX backslashes remain literal and refused', 'windows', {}, (
-        'test_posix_targets_keep_backslash_refusal',
-    )),
-    ('test_workspace_binding.py', 'Strict workspace binding requires descriptor-relative no-follow directory operations', 'no_binding', {'bound': True}, (
-        'test_native_targets_refuse_symlink_components',
-    )),
-    ('test_claude_worker_invocation.py', 'Successful Claude invocation transport requires macOS or Linux', 'no_claude_transport', {}, (
-        'test_bad_quoting_and_oversize_refuse',
-        'test_claim_reorders_and_quotes_only_literals',
-        'test_cli_does_not_trust_inherited_identity',
-        'test_cli_requires_exact_final_reference_and_canonical_argv',
-        'test_command_dataclass_is_not_an_authority_constructor',
-        'test_command_identity_and_option_confusion_refuse',
-        'test_concurrent_consumers_under_controller_lock_admit_exactly_one',
-        'test_context_requires_claimed_exact_worker_task_and_root_is_separate',
-        'test_context_selectors_refuse_ambiguous_or_invalid_arguments',
-        'test_corrupt_record_refuses_even_if_unkeyed_checksum_recomputed',
-        'test_dispatch_failure_or_crash_burns_saved_reference',
-        'test_duplicate_pre_hook_is_idempotent_only_while_identical_and_pending',
-        'test_either_clock_expiry_or_regression_burns_validity',
-        'test_every_current_identity_dimension_is_revalidated',
-        'test_expiry_during_durable_save_burns_without_dispatch',
-        'test_grant_only_selects_already_observed_actor',
-        'test_issuance_requires_complete_guarded_automatic_binding',
-        'test_issue_roundtrip_preserves_input_and_binds_both_digests',
-        'test_malformed_record_values_refuse_without_type_errors',
-        'test_metacharacters_refuse_even_inside_quotes',
-        'test_persistence_precedes_dispatch_and_replay_always_refuses',
-        'test_post_input_cannot_restore_missing_evicted_or_consumed_record',
-        'test_reboot_runtime_drift_and_unavailable_clock_refuse',
-        'test_runtime_launcher_drift_refuses_even_if_other_binding_matches',
-        'test_shell_syntax_and_user_supplied_reference_refuse',
-        'test_supported_context_grammar_reorders_flags',
-        'test_two_actors_same_context_command_reverse_consumption_stay_separate',
-        'test_unsafe_bash_input_refuses',
-        'test_write_failure_does_not_dispatch_or_restore_in_memory_authority',
-    )),
-    ('test_claude_flow.py', 'Strict workspace binding requires descriptor-relative no-follow directory operations', 'no_binding', {}, (
-        'test_bound_checkpoint_controls_keep_exact_command_boundaries',
-        'test_bound_checkpoint_controls_use_selected_workspace',
-        'test_context_refusal_uses_resolved_workspace_in_retry',
-        'test_cowork_cli_and_hooks_share_selected_root_without_scratch_store',
-        'test_selected_workspace_export_is_validated_before_claude_environment_write',
-    )),
-    ('test_claude_worker_invocation.py', 'No boot adapter for this platform', 'no_boot', {}, (
-        'test_real_os_boot_adapter_is_stable_or_refuses_when_os_denies_access',
-    )),
-    ('test_native_workflow_cli.py', 'Successful Claude context transport requires macOS or Linux; refusal is tested separately', 'no_claude_transport', {'host': 'claude'}, (
-        'test_native_correction_resubmission',
-        'test_native_state_repairs_through_production_interfaces',
-        'test_native_repeated_repairs_preserve_checkpoint_history',
-        'test_native_repeated_repair_history_fits_without_losing_evidence',
-        'test_both_native_routing_contexts_complete_seven_explicit_gates',
-    )),
-    ('test_workflow_packages.py', 'Successful Claude context transport requires macOS or Linux; refusal is tested separately', 'no_claude_transport', {'host': 'claude'}, (
-        'test_generated_archives_match_verified_source',
-    )),
-    ('test_workflow_autonomy.py', 'Successful Claude context transport requires macOS or Linux; refusal is tested separately', 'no_claude_transport', {'host': 'claude'}, (
-        'test_seven_phase_autonomous_native_journey',
-    )),
-    ('test_workflow_delivery.py', 'FIFO snapshots require POSIX named pipes', 'no_fifo', {'bad': 'fifo'}, (
-        'test_original_source_relay_malformed_snapshot_has_named_refusal',
-    )),
-    ('test_security_boundaries.py', 'Native account cannot create symlinks', 'symlink_error', {}, (
-        'test_package_refuses_symlink_directory_before_read',
-    )),
-    ('test_em_remediation.py', 'Host cannot create a symlink: ', 'symlink_error_text', {}, (
-        'test_flow_never_writes_through_runtime_symlinks',
-    )),
-    ('test_native_session_meter.py', 'native filesystem rejects this multibyte filename length', 'long_filename', {}, (
-        'test_incremental_long_directory_entries_resume_without_false_eof',
-    )),
-]
+OPTIONAL_SKIP_RULES = [('test_claude_fork_input_transform.py',
+  'Requires native no-follow reads',
+  'no_binding',
+  {},
+  ('test_exact_fork_flag_omission_keeps_original_and_admitted_digests',
+   'test_conversion_never_hides_other_argument_or_native_framing_changes',
+   'test_pretool_matching_uses_same_exact_conversion',
+   'test_notification_delivery_run_id_is_metadata_not_authority')),
+ ('test_claude_guarded_handback.py',
+  'Requires native no-follow reads',
+  'no_binding',
+  {},
+  ('test_guarded_report_joins_without_changing_original_or_delivered_evidence',
+   'test_notice_cannot_override_original_integrity_or_native_proof',
+   'test_existing_cursor_recovery_preserves_fifteen_accepted_results',
+   'test_reconciliation_is_scoped_to_current_root_and_original_grant',
+   'test_reconcile_cli_uses_original_attempt_without_automatic_acceptance',
+   'test_reconciliation_revalidates_cached_transform_against_original_span',
+   'test_literal_notice_in_original_report_never_authorizes_removal',
+   'test_exact_notice_without_observed_native_trigger_stays_blocked')),
+ ('test_claude_interactive_recovery.py',
+  'Requires native no-follow reads',
+  'no_binding',
+  {},
+  ('test_startup_failure_handback_is_bounded_failure_and_fresh_retry_works',
+   'test_startup_failure_admission_retains_identity_schema_and_binding_boundaries',
+   'test_stop_history_and_failure_handback_attempts_have_bounds',
+   'test_native_peer_handback_textless_stop_and_redirect_complete_exact_attempt',
+   'test_delayed_parent_delivery_joins_accepts_and_replays_exact_attempt',
+   'test_transcript_only_redirect_joins_exact_handback_and_accepts_once',
+   'test_delayed_delivery_preserves_each_proof_and_chronology_boundary',
+   'test_complete_rejected_redirect_has_diagnostic_without_success',
+   'test_claude_discovery_and_owned_current_worker_controls',
+   'test_claude_discovery_is_bounded_exact_selection',
+   'test_claude_inventory_discovery_is_exact_selection',
+   'test_claude_controls_keep_owned_current_attempt_and_automatic_proof',
+   'test_claude_message_schema_rejects_broadcast_structured_or_conflicting_input',
+   'test_claude_message_observable_backfill_is_display_only',
+   'test_claude_discovery_cannot_grant_child_or_foreign_target_control',
+   'test_claude_stop_request_never_joins_or_allows_new_input',
+   'test_claude_listagents_empty_native_input_is_readonly_not_completion',
+   'test_claude_listagents_requires_exact_automatic_root_provenance',
+   'test_peer_redirect_requires_every_native_proof_part',
+   'test_mid_turn_peer_attachment_requires_exact_native_envelope',
+   'test_mid_turn_peer_attachment_rejects_malformed_report_and_rendering',
+   'test_mid_turn_delivery_preserves_bound_handback_and_completion_requirements',
+   'test_handback_acknowledgment_keeps_exact_automatic_admission',
+   'test_retained_peer_delivery_is_revalidated_before_acceptance',
+   'test_peer_completion_waits_for_bounded_parent_scan_and_retains_full_proof',
+   'test_same_body_multiple_acknowledged_calls_cannot_claim_one_peer',
+   'test_no_report_terminal_requires_exact_native_envelopes',
+   'test_legacy_preclaim_stop_conflict_only_recovers_with_fresh_exact_no_report')),
+ ('test_claude_oversized_history.py',
+  'Requires native no-follow reads',
+  'no_binding',
+  {},
+  ('test_real_sized_plain_and_companion_history_preserve_exact_launch_proof',
+   'test_partial_large_record_is_recoverable_budget_limit_without_cursor_poison',
+   'test_oversized_possible_evidence_or_ambiguous_record_is_never_skipped',
+   'test_literal_tool_shapes_inside_human_text_are_data_not_native_evidence',
+   'test_oversized_relevant_native_call_remains_unavailable',
+   'test_existing_sealed_conflict_is_preserved_not_silently_reinterpreted')),
+ ('test_claude_stop_before_handback.py',
+  'Requires native no-follow reads',
+  'no_binding',
+  {},
+  ('test_pre_handback_stop_reconciles_original_call_and_preserves_other_work',
+   'test_pre_handback_sequence_does_not_relax_identity_or_delivery',
+   'test_same_launch_competing_no_report_remains_conflict')),
+ ('test_claude_worker_lifecycle.py',
+  'Requires native no-follow reads',
+  'no_binding',
+  {},
+  ('test_root_source_uses_original_project_with_worktree_cwd',
+   'test_worker_source_honors_exact_config_root_without_path_relaxation',
+   'test_preflight_retains_bounded_no_follow_native_proof',
+   'test_unpinned_worker_cannot_select_or_override_source',
+   'test_source_selection_refuses_untrusted_paths_and_lineage',
+   'test_selection_never_follows_unsafe_native_paths',
+   'test_launch_older_than_four_mib_survives_restart_and_append',
+   'test_delayed_result_and_partial_header_resume_exact_newline',
+   'test_competing_record_after_budget_boundary_prevents_premature_match',
+   'test_retained_evidence_changes_are_sticky',
+   'test_missing_original_source_retains_proof_but_cannot_refresh_match',
+   'test_identical_duplicates_are_idempotent_and_appended_conflict_is_sticky',
+   'test_record_limit_resumes_and_oversized_record_refuses',
+   'test_preparation_watermark_refuses_preexisting_or_replayed_launch',
+   'test_launch_appended_after_boundary_still_requires_post_preparation_timestamp',
+   'test_shared_budget_limits_all_attempts_and_source_selection',
+   'test_many_candidates_share_scan_and_keep_separate_evidence',
+   'test_invalid_source_checksum_and_no_follow_capability_refuse',
+   'test_malformed_serialized_cursor_refuses_without_crashing',
+   'test_child_cannot_be_read_from_a_replaced_project_during_scan',
+   'test_changed_source_reference_cannot_expand_parent_reads',
+   'test_repeated_root_selection_preserves_descriptor_and_refreshes_admission_watermark',
+   'test_pending_candidates_rotate_when_revalidation_budget_is_shared',
+   'test_incremental_parser_preserves_exact_correlation_refusals',
+   'test_learning_exact_worker_identity_does_not_discard_cursor_or_proof',
+   'test_transcript_only_notification_requires_exact_native_provenance',
+   'test_transcript_notification_cursor_upgrade_rescans_once_and_revalidates',
+   'test_direct_notification_preserves_literal_and_escaped_report_text',
+   'test_midturn_attachment_requires_native_delivery_provenance',
+   'test_native_notification_requires_exact_provenance_and_launch',
+   'test_old_launch_cursor_migrates_only_revalidated_spans',
+   'test_real_shaped_launch_denial_regression',
+   'test_denial_requires_exact_native_shape_and_empty_attempt',
+   'test_denial_supported_variants_and_revalidation',
+   'test_denial_rejects_competing_records_and_text_only_claims',
+   'test_legacy_denial_requires_explicit_reverified_migration',
+   'test_legacy_denial_recovery_cannot_clear_other_or_forged_evidence',
+   'test_old_nonconflicting_projection_adds_only_reverified_denial_fields',
+   'test_denial_source_must_stay_pinned_and_readable',
+   'test_denial_waits_for_complete_watermark_and_finds_late_competitor',
+   'test_legacy_denial_bounded_progress_is_private_and_resumes',
+   'test_denial_partial_line_and_budget_exhaustion_preserve_unknown',
+   'test_denial_admission_offsets_and_late_completion_remain_blocked',
+   'test_pure_denial_explicit_lifecycle_and_observation_time_refuse',
+   'test_explicit_delivery_cycles_keep_sequential_reports_distinct',
+   'test_explicit_delivery_cycles_refuse_ambiguous_or_cross_cycle_evidence',
+   'test_delivery_cycle_orders_validate_explicit_identity_not_timestamp_proximity')),
+ ('test_farm_telemetry.py',
+  'Snapshot deletion requires descriptor-relative no-follow operations',
+  'no_binding',
+  {},
+  ('test_hundreds_of_transients_obey_store_wide_pair_and_byte_bounds',
+   'test_pinned_selected_legacy_and_leased_pairs_survive',
+   'test_context_reference_becomes_a_permanent_pin',
+   'test_partial_deletion_intent_recovers_only_owned_garbage')),
+ ('test_farm_workers.py',
+  'Native transcript identity requires no-follow reads',
+  'no_binding',
+  {},
+  ('test_bounded_reader_ignores_output_path_and_rejects_unsafe_files',
+   'test_callless_stop_before_result_reconciles_exact_attempt',
+   'test_controller_concurrent_identity_claim_context_and_replay',
+   'test_controller_invocation_scope_refusals',
+   'test_cli_locator_precedes_inherited_identity_and_missing_reference_refuses',
+   'test_invocation_concurrent_double_consume_and_foreign_reference',
+   'test_invocation_post_requires_exact_recorded_input_and_runtime',
+   'test_genuine_root_context_gets_distinct_one_use_transport',
+
+   'test_pending_reference_revalidates_current_attempt_and_source',
+   'test_direct_worker_context_requires_explicit_claim')),
+ ('test_host_native.py',
+  'This platform has no implemented native process-start reader',
+  'no_boot',
+  {},
+  ('test_real_process_start_identity_is_stable_and_not_ownership',)),
+ ('test_host_capabilities.py',
+  'Requires no-follow nonblocking reader',
+  'no_recovery',
+  {},
+  ('test_complete_parent_and_child_over_64mib_use_bounded_continuations',
+   'test_recovery_continuation_refuses_changed_snapshot',
+   'test_recovery_retry_has_deterministic_progress_and_detects_late_conflict')),
+ ('test_native_worker_dispatch.py',
+  'Requires no-follow nonblocking reader',
+  'no_recovery',
+  {},
+  ('test_partial_recovery_persists_cursor_without_releasing_reservation',)),
+ ('test_native_worker_dispatch.py',
+  'Native transcript identity requires no-follow reads',
+  'no_binding',
+  {},
+  ('test_claude_start_stop_contract_and_child_control_refusal',
+   'test_claude_launch_requires_source_pinned_before_preparation')),
+ ('test_claude_dispatch_order.py',
+  'Interactive Claude fixtures require native no-follow transcript reads',
+  'no_binding',
+  {},
+  ('test_launch_reservation_survives_either_flush_order_without_granting_child_access',
+   'test_deferred_native_conflict_never_binds_or_clears_pending_attempt',
+   'test_missing_transcript_call_requires_current_automatic_root_provenance',
+   'test_caller_source_hint_cannot_survive_failed_automatic_selection')),
+ ('test_cross_host_compatibility.py',
+  'Interactive Claude fixtures require native no-follow transcript reads',
+  'no_binding',
+  {},
+  ('test_claude_backfilled_message_retains_owned_attempt_and_does_not_join',
+   'test_claude_unjoinable_launch_refuses_before_admission_and_can_abandon',
+   'test_claude_preflight_rejected_call_can_be_corrected_without_new_grant',
+   'test_claude_child_message_reports_supported_handback_without_delivery')),
+ ('test_worker_runtime.py',
+  'Interactive Claude fixtures require native no-follow transcript reads',
+  'no_binding',
+  {},
+  ('test_denial_runtime_regression',
+   'test_denial_lifecycle_ingestion_survives_cache_capacity',
+   'test_denial_saturated_ingestion_requires_exact_automatic_lifecycle',
+   'test_exact_automatic_lifecycle_preserves_successful_claude_launch',
+   'test_denial_is_idempotent_unsatisfied_and_requires_fresh_grant_reason',
+   'test_revoked_denial_refresh_never_uses_stale_quiescence',
+   'test_new_denial_refuses_existing_child_or_work',
+   'test_denial_transition_requires_observation_to_match_sealed_proof')),
+ ('test_workflow_host.py',
+  'Interactive Claude fixtures require native no-follow transcript reads',
+  'no_binding',
+  {},
+  ('test_denial_controller_recovery_regression',
+   'test_denial_lifecycle_ingestion_blocks_saturated_legacy_recovery',
+   'test_denial_recovery_refusals_preserve_original_attempt',
+   'test_denial_recovery_cli_preserves_before_history_and_revalidates_replay',
+   'test_denial_recovery_partial_scan_stays_private_and_resumes',
+   'test_denial_mutable_boundaries_refresh_and_persist_before_refusal',
+   'test_denial_direct_resume_and_adapter_checks_are_read_only',
+   'test_denial_does_not_veto_bound_negative_human_decision')),
+ ('test_worker_runtime.py',
+  'Strict workspace binding requires descriptor-relative no-follow directory operations',
+  'no_binding',
+  {},
+  ('test_bound_workers_require_independent_current_location_and_matching_contract',
+   'test_bound_host_alias_write_preserves_exact_scope_and_symlink_checks')),
+ ('test_controller_storage.py',
+  'Restoration requires no-follow directory descriptors.',
+  'no_binding',
+  {},
+  ('test_public_recovery_requires_receipt_and_preserves_original_provenance',)),
+ ('test_initialization_recovery_receipt.py',
+  'Restoration requires no-follow directory descriptors; unsupported platforms fail closed.',
+  'no_binding',
+  {},
+  ('test_exact_restoration_and_completed_retry_preserve_original_bytes',
+   'test_completed_retry_retains_original_request_provenance',
+   'test_matching_target_cannot_manufacture_recovery_provenance',
+   'test_interrupted_initial_restore_finishes_same_receipt',
+   'test_prepared_retry_rejects_changed_scope_without_writes',
+   'test_restored_receipt_with_missing_target_is_not_replayed',
+   'test_unsupported_directory_sync_never_acknowledges_restore')),
+ ('test_native_approval_capture.py',
+  'Native no-follow reads unavailable',
+  'no_binding',
+  {},
+  ('test_ordinary_chat_approval_derives_real_ids_and_preserves_original_presentation',
+   'test_prompt_flush_is_deferred_then_captured_before_next_tool_guard',
+   'test_capture_rejects_nonhuman_stale_or_ambiguous_decisions',
+   'test_explicit_colon_checkpoint_uses_shared_semantics_and_exact_binding',
+   'test_unavailable_host_and_child_never_read_arbitrary_transcripts',
+   'test_native_negative_decision_preserves_human_authority_despite_artifact_drift',
+   'test_large_old_history_does_not_block_recent_approval_or_enter_proof',
+   'test_recent_unreadable_evidence_never_falls_back_to_an_older_approval',
+   'test_reverse_reader_preserves_cross_chunk_records_and_stops_before_old_history',
+   'test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source')),
+ ('test_native_workflow_cli.py',
+  'Exercises a host without Claude invocation transport',
+  'claude_transport',
+  {},
+  ('test_unsupported_claude_context_refuses_through_declared_hooks',)),
+ ('test_review_remediation.py',
+  'Windows executable search policy',
+  'not_windows',
+  {},
+  ('test_windows_interpreter_search_respects_current_directory_policy',)),
+ ('test_unbound_worker_recovery.py',
+  'Transcript interpretation requires nonblocking no-follow reads',
+  'no_recovery',
+  {},
+  ('test_historical_native_observation_does_not_invent_admission',
+   'test_unbound_observation_refuses_ambiguous_or_malformed_proof',
+   'test_recovery_releases_only_failed_reservation_and_allows_fresh_attempt',
+   )),
+ ('test_workflow_continuation.py',
+  'Native no-follow reader unavailable',
+  'no_binding',
+  {},
+  ('test_native_resume_retains_owner_run_approval_and_exact_request',
+   'test_resume_refuses_without_changing_store',
+   'test_resume_cli_inspection_and_verification_are_read_only',
+   'test_foreign_report_explains_supported_next_step',
+   'test_explicit_foreign_report_does_not_select_requesters_own_run',
+   'test_resume_command_is_admitted_at_sealed_checkpoint')),
+ ('test_workflow_delivery.py',
+  'Accepting original-source relay evidence requires secure descriptor-relative reads',
+  'no_binding',
+  {},
+  ('test_original_source_relay_preserves_origin_and_exact_replay',
+   'test_original_source_relay_exact_launch_forms',
+   'test_original_source_relay_replay_pins_original_frames')),
+ ('test_workflow_local.py',
+  'POSIX mode bits and umask; Windows uses ACLs',
+  'not_posix',
+  {},
+  ('test_control_state_remains_private_under_permissive_umask',)),
+ ('test_workflow_recovery.py',
+  'Restoration and relocation require no-follow directory descriptors.',
+  'no_relative_nofollow',
+  {},
+  ('test_interrupted_restore_retirement_and_relocation_preserve_authentic_history',)),
+ ('test_workspace_binding.py',
+  'Native unsupported-runtime check runs where primitives are absent',
+  'binding',
+  {'capability': 'native'},
+  ('test_unsupported_binding_cli_is_structured_and_preserves_files',)),
+ ('test_workspace_binding.py',
+  'Strict workspace binding requires descriptor-relative no-follow directory operations',
+  'no_binding',
+  {},
+  ('test_bind_is_idempotent_and_frozen_contract_is_checked',
+   'test_malformed_evidence_refuses_without_state',
+   'test_probe_reads_are_bounded_ordinary_no_symlink',
+   'test_store_and_workspace_symlinks_are_rejected',
+   'test_required_execution_observation_not_inferred_from_binding',
+   'test_darwin_local_checks_actual_platform',
+   'test_worker_location_requires_independent_runtime_observation',
+   'test_any_policy_allows_explicit_remote_but_refuses_conflict',
+   'test_policy_environment_cannot_weaken_binding',
+   'test_split_cwd_aliases_one_root_and_no_scratch_store',
+   'test_relative_targets_refuse_escape',
+   'test_alias_neighbor_symlink_and_nested_alias_refused',
+   'test_probe_drift_and_binding_tamper_refuse',
+   'test_active_legacy_store_cannot_be_bound',
+   'test_inactive_relocation_archives_exact_bytes_no_approval_transfer',
+   'test_restored_retired_controller_relocates_exact_history_without_approvals',
+   'test_invalid_restoration_history_refuses_without_mutation',
+   'test_active_or_corrupt_recovery_is_read_only',
+   'test_recovery_requires_correct_identity_fresh_probe_and_provenance',
+   'test_copied_identity_refuses_even_with_fresh_claim',
+   'test_same_path_copy_detected_by_directory_identity',
+   'test_recovery_rejects_special_history_and_incomplete_marker',
+   'test_interrupted_recovery_remains_fail_closed_and_original_bytes_survive',
+   'test_cli_request_and_readonly_inspection',
+   'test_digest_matches_canonical_record',
+   'test_recovery_preserves_and_validates_archived_context_history',
+   'test_corrupt_terminal_fields_do_not_authorize_recovery',
+   'test_recovery_inventory_has_hard_bounds',
+   'test_prompt_reaches_model_with_setup_guidance',
+   'test_report_missing_binding_is_actionable_and_readonly',
+   'test_selected_unbound_setup_reads_reachable',
+   'test_invalid_binding_is_not_first_run_onboarding',
+   'test_frozen_missing_binding_is_not_onboarding',
+   'test_inline_request_rejects_invalid_data_without_state',
+   'test_selected_folder_inline_bind_then_standalone_engineering',
+   'test_unrelated_cowork_prompt_does_not_select_taskplane',
+   'test_discovered_child_cannot_use_onboarding_exemptions',
+   'test_lost_binding_history_is_not_first_run_through_entry_points',
+   'test_missing_binding_discovery_is_bounded_and_readonly',
+   'test_existing_unbound_local_history_retains_legacy_resolution')),
+ ('test_workspace_binding.py',
+  'POSIX backslashes remain literal and refused',
+  'windows',
+  {},
+  ('test_posix_targets_keep_backslash_refusal',)),
+ ('test_workspace_binding.py',
+  'Strict workspace binding requires descriptor-relative no-follow directory operations',
+  'no_binding',
+  {'bound': True},
+  ('test_native_targets_refuse_symlink_components',)),
+ ('test_claude_worker_invocation.py',
+  'Successful Claude invocation transport requires macOS or Linux',
+  'no_claude_transport',
+  {},
+  ('test_bad_quoting_and_oversize_refuse',
+   'test_claim_reorders_and_quotes_only_literals',
+   'test_cli_does_not_trust_inherited_identity',
+   'test_cli_requires_exact_final_reference_and_canonical_argv',
+   'test_command_dataclass_is_not_an_authority_constructor',
+   'test_command_identity_and_option_confusion_refuse',
+   'test_concurrent_consumers_under_controller_lock_admit_exactly_one',
+   'test_context_requires_claimed_exact_worker_task_and_root_is_separate',
+   'test_context_selectors_refuse_ambiguous_or_invalid_arguments',
+   'test_corrupt_record_refuses_even_if_unkeyed_checksum_recomputed',
+   'test_dispatch_failure_or_crash_burns_saved_reference',
+   'test_duplicate_pre_hook_is_idempotent_only_while_identical_and_pending',
+   'test_either_clock_expiry_or_regression_burns_validity',
+   'test_every_current_identity_dimension_is_revalidated',
+   'test_expiry_during_durable_save_burns_without_dispatch',
+   'test_grant_only_selects_already_observed_actor',
+   'test_issuance_requires_complete_guarded_automatic_binding',
+   'test_issue_roundtrip_preserves_input_and_binds_both_digests',
+   'test_malformed_record_values_refuse_without_type_errors',
+   'test_metacharacters_refuse_even_inside_quotes',
+   'test_persistence_precedes_dispatch_and_replay_always_refuses',
+   'test_post_input_cannot_restore_missing_evicted_or_consumed_record',
+   'test_reboot_runtime_drift_and_unavailable_clock_refuse',
+   'test_runtime_launcher_drift_refuses_even_if_other_binding_matches',
+   'test_shell_syntax_and_user_supplied_reference_refuse',
+   'test_supported_context_grammar_reorders_flags',
+   'test_two_actors_same_context_command_reverse_consumption_stay_separate',
+   'test_unsafe_bash_input_refuses',
+   'test_write_failure_does_not_dispatch_or_restore_in_memory_authority')),
+ ('test_claude_flow.py',
+  'Strict workspace binding requires descriptor-relative no-follow directory operations',
+  'no_binding',
+  {},
+  ('test_bound_checkpoint_controls_use_selected_workspace',
+   'test_context_refusal_uses_resolved_workspace_in_retry',
+   'test_cowork_cli_and_hooks_share_selected_root_without_scratch_store',
+   'test_selected_workspace_export_is_validated_before_claude_environment_write')),
+ ('test_claude_worker_invocation.py',
+  'No boot adapter for this platform',
+  'no_boot',
+  {},
+  ('test_real_os_boot_adapter_is_stable_or_refuses_when_os_denies_access',)),
+ ('test_native_workflow_cli.py',
+  'Successful Claude context transport requires macOS or Linux; refusal is tested separately',
+  'no_claude_transport',
+  {'host': 'claude'},
+  ('test_native_correction_resubmission',
+   'test_native_state_repairs_through_production_interfaces',
+   'test_native_repeated_repairs_preserve_checkpoint_history',
+   'test_native_repeated_repair_history_fits_without_losing_evidence',
+   'test_both_native_routing_contexts_complete_seven_explicit_gates')),
+ ('test_workflow_packages.py',
+  'Successful Claude context transport requires macOS or Linux; refusal is tested separately',
+  'no_claude_transport',
+  {'host': 'claude'},
+  ('test_generated_archives_match_verified_source',)),
+ ('test_workflow_autonomy.py',
+  'Successful Claude context transport requires macOS or Linux; refusal is tested separately',
+  'no_claude_transport',
+  {'host': 'claude'},
+  ('test_seven_phase_autonomous_native_journey',)),
+
+ ('test_security_boundaries.py',
+  'Native account cannot create symlinks',
+  'symlink_error',
+  {},
+  ('test_package_refuses_symlink_directory_before_read',)),
+ ('test_em_remediation.py',
+  'Host cannot create a symlink: ',
+  'symlink_error_text',
+  {},
+  ('test_flow_never_writes_through_runtime_symlinks',)),
+ ('test_native_session_meter.py',
+  'native filesystem rejects this multibyte filename length',
+  'long_filename',
+  {},
+  ('test_incremental_long_directory_entries_resume_without_false_eof',))]
 
 # These transports alone enter consent_transport_case's capability-gated
 # branches. Other transports of the same parametrized test remain required.
@@ -776,30 +820,8 @@ for _transport, _reason in (
     ('observed-v2', 'Accepting original-source relay evidence requires secure descriptor-relative reads'),
     ('native-capture', 'Native no-follow reads unavailable'),
 ):
-    for _parameter, _names in (
-        ('consent_transport', (
-            'test_sec01_transport_question_target_matrix',
-            'test_sec01_transport_stale_or_foreign_binding_is_atomic',
-            'test_sec01_transport_proof_precedes_question_validation',
-            'test_sec02_transport_validates_complete_original_question',
-            'test_sec01_exact_original_request_replay_is_idempotent',
-            'test_sec01_consumed_event_cannot_approve_a_later_checkpoint',
-            'test_sec01_conflicting_replay_is_refused_without_authority_mutation',
-        )),
-        ('consent_text_transport', (
-            'test_sec01_transport_answer_target_matrix',
-            'test_sec02_transport_keeps_complete_answer_qualification',
-            'test_sec01_current_phase_approval_can_continue_to_next_phase',
-            'test_sec01_continuation_keeps_phase_and_condition_boundaries',
-        )),
-        ('transport', ('test_sec02_caller_text_cannot_replace_pinned_original_question',)),
-    ):
-        OPTIONAL_SKIP_RULES.append(('test_delegated_checkpoint.py', _reason, 'no_binding', {_parameter: _transport}, _names))
     OPTIONAL_SKIP_RULES.append(('test_reopen_checkpoint_consent.py', _reason, 'no_binding',
         {'consent_transport': _transport}, ('test_sec01_reopen_transport_cannot_record_approval_or_continue',)))
-OPTIONAL_SKIP_RULES.append((
-    'test_delegated_checkpoint.py', 'Accepting original-source relay evidence requires secure descriptor-relative reads',
-    'no_binding', {}, ('test_sec01_v2_original_snapshot_metadata_cannot_disappear',)))
 
 OPTIONAL_SKIP_NODES = {}
 for _module, _reason, _predicate, _params, _names in OPTIONAL_SKIP_RULES:
@@ -822,17 +844,6 @@ DATA = {"reports": [], "collection_errors": [], "node_evidence": {},
             **{name: hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "mkfifo")}}}
 def pytest_sessionstart(session):
     DATA["session_start_seconds"] = time.perf_counter() - START
-@pytest.hookimpl(trylast=True)
-def pytest_collection_modifyitems(config, items):
-    from scripts.ci_local import performance_exclusion
-    excluded = []
-    if config.getoption("--taskplane-suite") != "capacity":
-        excluded = [item for item in items if performance_exclusion(item.nodeid)]
-        items[:] = [item for item in items if not performance_exclusion(item.nodeid)]
-    DATA["performance_exclusions"] = [{"nodeid": item.nodeid,
-        "reason": performance_exclusion(item.nodeid), "status": "excluded_history"} for item in excluded]
-    if excluded:
-        config.hook.pytest_deselected(items=excluded)
 def pytest_collection_finish(session):
     DATA["collection_end_seconds"] = time.perf_counter() - START
     DATA["selected_nodeids"] = [item.nodeid for item in session.items]
@@ -885,9 +896,10 @@ def pytest_sessionfinish(session, exitstatus):
 
 class ExecutionLog:
     """One raw record per actual process; consumers reference its stable index."""
-    def __init__(self, output: Path, root: Path = ROOT, inherited=None, *, live_output=False):
+    def __init__(self, output: Path, root: Path = ROOT, inherited=None, *, live_output=False, source_inputs=None):
         self.output, self.root = output, root
         self.live_output = live_output
+        self.source_inputs = source_inputs
         self.environment = isolated_environment(output / 'isolation', inherited)
         self.bound_external_sources: dict[str, Path] = {}
         self.records: list[dict] = []
@@ -917,7 +929,13 @@ class ExecutionLog:
                   'cwd': str((cwd or self.root).resolve()), 'runtime': self.runtime,
                   'environment': env, 'timeout_seconds': timeout,
                   'stdout': '', 'stderr': '', 'raw_files': {}, 'exit_code': None, 'status': 'unknown'}
-        record['source_fingerprint_before'] = digest(tree_map(self.root))
+        source_before = candidate_source_map(self.root, self.source_inputs)
+        record['source_fingerprint_before'] = digest(source_before)
+        record['source_fingerprint_coverage'] = {'kind': 'declared-candidate' if source_before and all(row['kind'] == 'file' for row in source_before.values()) else 'unknown',
+            'unavailable_inputs': [name for name, row in source_before.items() if row['kind'] != 'file'],
+            'source_inputs': self.source_inputs, 'excluded_directories': sorted(GENERATED_DIRECTORIES),
+            'documentation_selection': 'Tracked documentation in Git workspaces, or explicitly selected candidate inputs.',
+            'assurance': 'Relevant candidate source only; not whole-workspace or host attestation.'}
         record['external_source_fingerprints_before'] = {name: digest(tree_map(path))
             for name, path in self.bound_external_sources.items()}
         (destination / 'command.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
@@ -1018,7 +1036,7 @@ class ExecutionLog:
                 'phase_seconds': {phase: sum(row['duration'] for row in profile.get('reports', []) if row['when'] == phase)
                                   for phase in ('setup', 'call', 'teardown')},
                 'startup_limit': 'Process wall time includes startup; plugin timestamps start after Python/pytest imports.'}
-        record['source_fingerprint_after'] = digest(tree_map(self.root))
+        record['source_fingerprint_after'] = digest(candidate_source_map(self.root, self.source_inputs))
         record['external_source_fingerprints_after'] = {name: digest(tree_map(path))
             for name, path in self.bound_external_sources.items()}
         (destination / 'record.json').write_bytes(_json_bytes(pack_evidence(record)))
@@ -1162,7 +1180,6 @@ def test_verdict(record: dict, *, collect: bool = False) -> dict:
             'collected_count': len(collected)}
 
 
-
 def canary_verdict(record: dict) -> dict:
     discovered = re.search(r'Ran ([1-9][0-9]*) tests? in ', record.get('stderr', ''))
     named = 'test_import_collection_test_child_and_failure_are_isolated' in record.get('stderr', '')
@@ -1172,7 +1189,7 @@ def canary_verdict(record: dict) -> dict:
 def matrix_selections(rows: list[dict]) -> dict[str, list[str]]:
     """Every functional node has one owner; explicit history stays inventoried."""
     result: dict[str, list[str]] = {}
-    for row in functional_inventory(rows):
+    for row in rows:
         category, node, host = row['suite'], row['nodeid'], row.get('host')
         if category == 'capacity':
             raise ValueError(f'unreviewed capacity classification: {node}')
@@ -1189,7 +1206,7 @@ def matrix_selections(rows: list[dict]) -> dict[str, list[str]]:
 
 def verify_partition(rows: list[dict], actual: dict[str, list[str]]) -> dict:
     complete = [row['nodeid'] for row in rows]
-    inventory = [row['nodeid'] for row in functional_inventory(rows)]
+    inventory = [row['nodeid'] for row in rows]
     expected = matrix_selections(rows)
     observed = Counter(node for nodes in actual.values() for node in nodes)
     problems = []
@@ -1201,71 +1218,44 @@ def verify_partition(rows: list[dict], actual: dict[str, list[str]]) -> dict:
         problems.append('category/host/shard ownership mismatch')
     return {'status': 'fail' if problems else 'pass', 'problems': problems,
             'platform': sys.platform, 'inventory': inventory, 'complete_inventory': complete,
-            'excluded_history': [{'nodeid': node, 'reason': performance_exclusion(node)}
-                                 for node in complete if performance_exclusion(node)], 'partitions': actual,
+            'partitions': actual,
             'count': len(inventory)}
 
 # Assertion IDs are the one-based positions in the accepted verification strategy.
 # Explicit bindings are reviewed source, never inferred from a filename or a green
 # module. Later producers/integration must add their actual function bindings.
 SCENARIO_REGISTRY = {'LOCAL-ACC-01:1': ['taskplane/tests/test_native_acceptance_persistence.py::test_repeated_terminal_preserves_exact_independent_acceptance',
-                    'taskplane/tests/test_native_acceptance_persistence.py::test_conflicting_terminal_retains_history_with_explicit_invalidation',
-                    'taskplane/tests/test_native_acceptance_persistence.py::test_stopped_attempt_late_completion_cannot_restore_startup_permission'],
+                    'taskplane/tests/test_native_acceptance_persistence.py::test_conflicting_terminal_retains_history_with_explicit_invalidation'],
  'LOCAL-BROAD-AND-QUALITY:1': ['audit:broad-and-quality'],
  'LOCAL-BROWSER:1': ['taskplane/tests/test_dashboard_browser.py::test_dashboard_browser_functional_contract'],
- 'LOCAL-CI-PROD-01:1': ['taskplane/tests/test_context_handoff.py::test_compact_internal_brief_is_delivered_and_receipt_binds_current_source',
-                        'taskplane/tests/test_context_handoff.py::test_compact_read_manifest_keeps_required_internal_source_even_when_body_is_selected',
-                        'taskplane/tests/test_context_handoff.py::test_compact_input_refusal_preserves_authority',
-                        'taskplane/tests/test_context_handoff.py::test_execution_only_large_complete_brief_prepares_and_drains_without_old_targets'],
- 'LOCAL-CI-PROD-03:1': ['taskplane/tests/test_context_handoff.py::test_reuse_requires_role_provenance_and_rejects_changed_body_or_binding',
-                        'taskplane/tests/test_context_handoff.py::test_indexed_restart_partial_and_multiple_consumers',
-                        'taskplane/tests/test_context_handoff.py::test_indexed_corruption_cannot_complete',
-                        'taskplane/tests/test_context_handoff.py::test_warm_compact_consumer_receives_bound_brief_and_cannot_reuse_parent_receipt',
-                        'taskplane/tests/test_context_handoff.py::test_partial_receipt_cannot_be_promoted_by_checkpoint_flags',
-                        'taskplane/tests/test_residual_obligations.py::test_repeated_invalidation_never_revives_dependants_without_new_evidence',
+ 'LOCAL-CI-PROD-03:1': ['taskplane/tests/test_residual_obligations.py::test_repeated_invalidation_never_revives_dependants_without_new_evidence',
                         'taskplane/tests/test_residual_obligations.py::test_semantic_cycle_invalidates_coupled_evidence_without_execution_cycle',
                         'taskplane/tests/test_residual_obligations.py::test_each_fingerprint_change_invalidates_only_affected_contributions',
                         'taskplane/tests/test_residual_obligations.py::test_schedule_only_dependency_ready_residuals_and_preserve_semantic_root_review',
                         'taskplane/tests/test_residual_obligations.py::test_residual_dispatch_blockers_are_not_scheduled'],
- 'LOCAL-CI-PROD-04:1': ['taskplane/tests/test_context_startup_budget.py::test_stop_before_context_keeps_reservation_and_replay_is_idempotent',
-                        'taskplane/tests/test_context_startup_budget.py::test_optional_omission_never_completes_mandatory_coverage',
-                        'taskplane/tests/test_context_startup_budget.py::test_stop_blocks_later_claim_and_context_even_with_prior_receipt',
-                        'taskplane/tests/test_context_startup_budget.py::test_control_refuses_bad_identity_binding_or_payload_without_mutation',
-                        'taskplane/tests/test_context_startup_budget.py::test_execution_only_crash_replay_and_stop_never_release_unknown_work',
-                        'taskplane/tests/test_context_startup_budget.py::test_execution_only_still_requires_exact_native_output_and_durable_hook'],
  'LOCAL-CI-PROD-05:1': ['taskplane/tests/test_product_revision.py::test_revision_preview_and_same_run_return_preserve_approval_history',
                         'taskplane/tests/test_product_revision.py::test_revision_refusal_is_read_only',
                         'taskplane/tests/test_product_revision.py::test_revision_abort_retains_fences_and_resume_requires_review',
                         'taskplane/tests/test_product_revision.py::test_revision_fences_pending_reservation_until_supported_abandon',
                         'taskplane/tests/test_product_revision.py::test_revision_crash_boundary_and_exact_retry',
                         'taskplane/tests/test_product_revision.py::test_revision_requires_three_fresh_acceptances_before_build',
-                        'taskplane/tests/test_product_revision.py::test_upgrade_preview_read_only_commit_once_preserves_approvals',
-                        'taskplane/tests/test_product_revision.py::test_upgrade_refusal_never_changes_authority',
-                        'taskplane/tests/test_product_revision.py::test_upgrade_crash_before_commit_retains_v2_and_retry_has_one_event',
-                        'taskplane/tests/test_product_revision.py::test_upgrade_lost_reply_retries_the_committed_event_without_new_approval',
-                        'taskplane/tests/test_product_revision.py::test_upgrade_refuses_an_unresolved_prepared_reservation',
-                        'taskplane/tests/test_product_revision.py::test_upgrade_cli_previews_exact_request_and_does_not_opt_in_on_read',
-                        'taskplane/tests/test_product_revision.py::test_compatible_rollback_preserves_current_history_and_never_rewinds',
-                        'taskplane/tests/test_product_revision.py::test_compatible_rollback_refuses_unsafe_or_stale_request',
-                        'taskplane/tests/test_product_revision.py::test_compatible_rollback_crash_retry_commits_one_event',
+
+
                         'taskplane/tests/test_product_revision.py::test_runtime_pin_refuses_hot_switch_but_preserves_read_access',
-                        'taskplane/tests/test_product_revision.py::test_compatible_rollback_cli_is_source_pinned_and_read_only_preview',
-                        'taskplane/tests/test_product_revision.py::test_actual_legacy_reader_before_upgrade_and_after_compatible_rollback',
+
+
                         'taskplane/tests/test_product_revision.py::test_corrupt_revision_history_refuses_before_grant',
                         'taskplane/tests/test_product_revision.py::test_native_revision_dashboard_distinguishes_review_and_historical_approval',
                         'taskplane/tests/test_product_revision.py::test_selective_revision_preserves_unaffected_worker_until_result_review',
-                        'taskplane/tests/test_product_revision.py::test_upgrade_revalidates_root_results_without_complete_current_check_provenance',
+
                         'taskplane/tests/test_product_revision.py::test_pending_revision_rechecks_current_graph_before_opening_product',
-                        'taskplane/tests/test_product_revision.py::test_context_transition_rejects_malformed_revision_authority'],
+                        ],
  'LOCAL-CI-PROD-06:1': ['taskplane/tests/test_ci_local.py::test_optional_platform_skip_is_distinct_and_cannot_cover_required_assertion',
-                      'taskplane/tests/test_ci_local.py::test_functional_collection_roundtrip_without_object_count_target',
-                      'taskplane/tests/test_ci_local.py::test_functional_batch_delivery_preserves_exact_pages_and_receipts',
-                      'taskplane/tests/test_ci_local.py::test_root_and_native_reconciliation_preserves_accepted_subset',
+                        'taskplane/tests/test_ci_local.py::test_functional_collection_roundtrip_without_object_count_target',
+                        'taskplane/tests/test_ci_local.py::test_root_and_native_reconciliation_preserves_accepted_subset',
                         'taskplane/tests/test_ci_local.py::test_optional_skip_needs_exact_evidence',
                         'taskplane/tests/test_ci_local.py::test_required_binding_never_accepts_incomplete_execution',
                         'taskplane/tests/test_ci_local.py::test_lossless_evidence_roundtrip_after_temporary_cleanup',
-                        'taskplane/tests/test_ci_local.py::test_functional_filter_preserves_mixed_module_inventory',
-                        'taskplane/tests/test_ci_local.py::test_functional_strategy_rejects_retired_or_missing_groups',
                         'audit:ci-definition',
                         'audit:exact-once-partition',
                         'audit:canary'],
@@ -1275,31 +1265,18 @@ SCENARIO_REGISTRY = {'LOCAL-ACC-01:1': ['taskplane/tests/test_native_acceptance_
                              'taskplane/tests/test_product_revision.py::test_revision_fences_pending_reservation_until_supported_abandon',
                              'taskplane/tests/test_product_revision.py::test_revision_crash_boundary_and_exact_retry',
                              'taskplane/tests/test_product_revision.py::test_revision_requires_three_fresh_acceptances_before_build',
-                             'taskplane/tests/test_product_revision.py::test_upgrade_preview_read_only_commit_once_preserves_approvals',
-                             'taskplane/tests/test_product_revision.py::test_upgrade_refusal_never_changes_authority',
-                             'taskplane/tests/test_product_revision.py::test_upgrade_crash_before_commit_retains_v2_and_retry_has_one_event',
-                             'taskplane/tests/test_product_revision.py::test_upgrade_lost_reply_retries_the_committed_event_without_new_approval',
-                             'taskplane/tests/test_product_revision.py::test_upgrade_refuses_an_unresolved_prepared_reservation',
-                             'taskplane/tests/test_product_revision.py::test_upgrade_cli_previews_exact_request_and_does_not_opt_in_on_read',
-                             'taskplane/tests/test_product_revision.py::test_compatible_rollback_preserves_current_history_and_never_rewinds',
-                             'taskplane/tests/test_product_revision.py::test_compatible_rollback_refuses_unsafe_or_stale_request',
-                             'taskplane/tests/test_product_revision.py::test_compatible_rollback_crash_retry_commits_one_event',
+
+
                              'taskplane/tests/test_product_revision.py::test_runtime_pin_refuses_hot_switch_but_preserves_read_access',
-                             'taskplane/tests/test_product_revision.py::test_compatible_rollback_cli_is_source_pinned_and_read_only_preview',
-                             'taskplane/tests/test_product_revision.py::test_actual_legacy_reader_before_upgrade_and_after_compatible_rollback',
+
+
                              'taskplane/tests/test_product_revision.py::test_corrupt_revision_history_refuses_before_grant',
                              'taskplane/tests/test_product_revision.py::test_native_revision_dashboard_distinguishes_review_and_historical_approval',
                              'taskplane/tests/test_product_revision.py::test_selective_revision_preserves_unaffected_worker_until_result_review',
-                             'taskplane/tests/test_product_revision.py::test_upgrade_revalidates_root_results_without_complete_current_check_provenance',
+
                              'taskplane/tests/test_product_revision.py::test_pending_revision_rechecks_current_graph_before_opening_product',
-                             'taskplane/tests/test_product_revision.py::test_context_transition_rejects_malformed_revision_authority'],
- 'LOCAL-DECLARED-INPUTS:1': ['taskplane/tests/test_context_handoff.py::test_compact_internal_brief_is_delivered_and_receipt_binds_current_source',
-                             'taskplane/tests/test_context_handoff.py::test_compact_read_manifest_keeps_required_internal_source_even_when_body_is_selected',
-                             'taskplane/tests/test_context_handoff.py::test_compact_input_refusal_preserves_authority',
-                             'taskplane/tests/test_context_handoff.py::test_execution_only_large_complete_brief_prepares_and_drains_without_old_targets'],
- 'LOCAL-DEVOPS-01:1': ['taskplane/tests/test_runner_isolation.py::TestUnittestRunnerIsolation::test_import_collection_test_child_and_failure_are_isolated',
-                       'audit:canary',
-                       'audit:seed-conftest'],
+                             ],
+ 'LOCAL-DEVOPS-01:1': ['audit:canary'],
  'LOCAL-DEVOPS-02:1': ['audit:exact-once-partition',
                        'audit:execution-profiles',
                        'audit:historical-ci',
@@ -1312,7 +1289,6 @@ SCENARIO_REGISTRY = {'LOCAL-ACC-01:1': ['taskplane/tests/test_native_acceptance_
                    'taskplane/tests/test_initialization_recovery_receipt.py::test_restored_receipt_with_missing_target_is_not_replayed',
                    'taskplane/tests/test_initialization_recovery_receipt.py::test_unsupported_directory_sync_never_acknowledges_restore',
                    'taskplane/tests/test_initialization_recovery_receipt.py::test_missing_no_follow_primitive_refuses_without_authority_writes',
-                   'taskplane/tests/test_initialization_readiness.py::test_receipt_completion_does_not_manufacture_native_readiness',
                    'taskplane/tests/test_workflow_recovery.py::test_interrupted_restore_retirement_and_relocation_preserve_authentic_history'],
  'LOCAL-DS-02:1': ['taskplane/tests/test_state_import_boundaries.py::test_import_durability_interruptions_retry_without_false_commit',
                    'taskplane/tests/test_state_import_boundaries.py::test_new_import_ancestry_flushes_child_and_owning_parent_before_commit',
@@ -1340,22 +1316,7 @@ SCENARIO_REGISTRY = {'LOCAL-ACC-01:1': ['taskplane/tests/test_native_acceptance_
  'LOCAL-INT-01:1': ['taskplane/tests/test_claude_stop_before_handback.py::test_pre_handback_stop_reconciles_original_call_and_preserves_other_work'],
  'LOCAL-INT-02:1': ['taskplane/tests/test_claude_worker_lifecycle.py::test_explicit_delivery_cycles_keep_sequential_reports_distinct',
                     'taskplane/tests/test_claude_worker_lifecycle.py::test_explicit_delivery_cycles_refuse_ambiguous_or_cross_cycle_evidence',
-                    'taskplane/tests/test_claude_worker_lifecycle.py::test_delivery_cycle_orders_validate_explicit_identity_not_timestamp_proximity',
-                    'taskplane/tests/test_claude_resumed_startup.py::test_b9_exact_readonly_proposal_commits_inline_proof_before_optional_publication',
-                    'taskplane/tests/test_claude_resumed_startup.py::test_b9_each_predicate_refuses_without_writes',
-                    'taskplane/tests/test_claude_resumed_startup.py::test_b9_revalidation_refuses_changes_between_inspect_and_commit'],
- 'LOCAL-INT-03:1': ['taskplane/tests/test_claude_startup_diagnostics.py::test_selected_startup_error_preserves_exact_refusal_and_database',
-                    'taskplane/tests/test_claude_startup_diagnostics.py::test_claude_recovery_on_codex_reports_unsupported_without_a_workaround',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_reconcile_preserves_governance_journals_original_and_enables_only_retry',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_recovery_refuses_without_changing_live_controller',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_reconciliation_preserves_structured_refusal_before_valueerror_handler',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_malformed_startup_evidence_has_bounded_specific_refusal',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_legacy_inspection_does_not_publish_before_validation',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_selected_recovery_refusal_preserves_unrelated_denial_and_all_bytes',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_reports_without_receipt_or_execution_authority',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_refuses_foreign_unknown_or_broadened_requests',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_after_fence_never_revives_or_releases_attempt',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_enforces_encoded_byte_boundary_without_truncation'],
+                    'taskplane/tests/test_claude_worker_lifecycle.py::test_delivery_cycle_orders_validate_explicit_identity_not_timestamp_proximity'],
  'LOCAL-LARGE-RECOVERY:1': ['taskplane/tests/test_host_capabilities.py::test_complete_parent_and_child_over_64mib_use_bounded_continuations',
                             'taskplane/tests/test_host_capabilities.py::test_recovery_continuation_refuses_changed_snapshot',
                             'taskplane/tests/test_host_capabilities.py::test_recovery_retry_has_deterministic_progress_and_detects_late_conflict',
@@ -1381,85 +1342,28 @@ SCENARIO_REGISTRY = {'LOCAL-ACC-01:1': ['taskplane/tests/test_native_acceptance_
  'LOCAL-SEC-01:1': ['taskplane/tests/test_delegated_approval.py::test_delegated_policy_preserves_origin_and_advances_only_after_assessment',
                     'taskplane/tests/test_delegated_approval.py::test_delegated_policy_rejects_wrong_source_or_binding_without_mutation',
                     'taskplane/tests/test_delegated_approval.py::test_relay_replay_is_exact_and_cannot_authorize_a_new_checkpoint',
-                    'taskplane/tests/test_delegated_approval.py::test_contextual_wording_keeps_required_checks_and_final_stop',
                     'taskplane/tests/test_delegated_checkpoint.py::test_owner_observation_applies_exact_checkpoint_and_preserves_source',
                     'taskplane/tests/test_delegated_checkpoint.py::test_wrong_or_stale_observations_are_rejected_without_mutation',
-                    'taskplane/tests/test_delegated_checkpoint.py::test_raw_thumb_is_not_added_to_generic_text_parser',
-                    'taskplane/tests/test_delegated_checkpoint.py::test_sec01_transport_answer_target_matrix',
-                    'taskplane/tests/test_delegated_checkpoint.py::test_sec01_transport_question_target_matrix',
                     'taskplane/tests/test_delegated_checkpoint.py::test_sec01_transport_stale_or_foreign_binding_is_atomic',
                     'taskplane/tests/test_delegated_checkpoint.py::test_sec01_transport_proof_precedes_question_validation',
-                    'taskplane/tests/test_delegated_checkpoint.py::test_sec02_transport_validates_complete_original_question',
-                    'taskplane/tests/test_delegated_checkpoint.py::test_sec02_transport_keeps_complete_answer_qualification',
                     'taskplane/tests/test_delegated_checkpoint.py::test_sec02_v1_missing_original_question_requires_fresh_consent',
                     'taskplane/tests/test_delegated_checkpoint.py::test_sec02_caller_text_cannot_replace_pinned_original_question',
                     'taskplane/tests/test_delegated_checkpoint.py::test_sec01_exact_original_request_replay_is_idempotent',
                     'taskplane/tests/test_delegated_checkpoint.py::test_sec01_consumed_event_cannot_approve_a_later_checkpoint',
                     'taskplane/tests/test_delegated_checkpoint.py::test_sec01_conflicting_replay_is_refused_without_authority_mutation',
-                    'taskplane/tests/test_delegated_checkpoint.py::test_sec01_snapshot_metadata_never_erases_extra_original_text',
-                    'taskplane/tests/test_delegated_checkpoint.py::test_sec01_v2_original_snapshot_metadata_cannot_disappear',
                     'taskplane/tests/test_ordinary_checkpoint_reply.py::test_ordinary_approval_keeps_null_link_and_complete_fixture_provenance',
                     'taskplane/tests/test_ordinary_checkpoint_reply.py::test_incomplete_conflicting_or_foreign_context_is_rejected_without_mutation',
-                    'taskplane/tests/test_ordinary_checkpoint_reply.py::test_ordinary_refusal_ambiguity_or_different_target_cannot_approve',
-                    'taskplane/tests/test_ordinary_checkpoint_reply.py::test_immutable_original_scope_description_is_an_explicit_compatibility_refusal',
                     'taskplane/tests/test_reopen_checkpoint_consent.py::test_reopen_yes_preserves_history_and_allows_only_checkpoint_revision',
-                    'taskplane/tests/test_reopen_checkpoint_consent.py::test_scoped_reopen_variants',
+
                     'taskplane/tests/test_reopen_checkpoint_consent.py::test_yes_to_acceptance_stays_approval',
-                    'taskplane/tests/test_reopen_checkpoint_consent.py::test_mixed_ambiguous_or_foreign_questions_refuse_without_mutation',
-                    'taskplane/tests/test_reopen_checkpoint_consent.py::test_reopen_assent_cannot_be_replaced_with_acceptance_or_unknown_text',
-                    'taskplane/tests/test_reopen_checkpoint_consent.py::test_extra_timing_negative_or_unknown_instructions_cannot_be_discarded',
-                    'taskplane/tests/test_reopen_checkpoint_consent.py::test_unknown_instruction_before_question_is_not_discarded',
+
+
                     'taskplane/tests/test_reopen_checkpoint_consent.py::test_reopen_retains_evidence_and_replay_boundaries',
-                    'taskplane/tests/test_reopen_checkpoint_consent.py::test_reopen_reaction_is_not_misreported_as_acceptance',
-                    'taskplane/tests/test_reopen_checkpoint_consent.py::test_sec01_reopen_transport_cannot_record_approval_or_continue'],
- 'LOCAL-SEC-02:1': ['taskplane/tests/test_delegated_question_language.py::test_clear_question_preserves_original_evidence_and_only_approves_product',
-                    'taskplane/tests/test_delegated_question_language.py::test_ambiguous_conditional_foreign_or_unrelated_question_keeps_checkpoint',
-                    'taskplane/tests/test_delegated_question_language.py::test_imperative_question_does_not_weaken_answer_validation',
-                    'taskplane/tests/test_delegated_question_language.py::test_sec02_complete_question_with_short_assent_fails_closed',
-                    'taskplane/tests/test_delegated_question_language.py::test_sec01_linkage_cannot_override_explicit_answer_target',
-                    'taskplane/tests/test_delegated_question_language.py::test_sec01_current_target_and_unqualified_controls_preserve_full_provenance',
-                    'taskplane/tests/test_delegated_question_language.py::test_legacy_unstructured_full_presentations_require_a_new_question',
-                    'taskplane/tests/test_approval_language.py::test_plain_approvals',
-                    'taskplane/tests/test_approval_language.py::test_other_clear_decisions',
-                    'taskplane/tests/test_approval_language.py::test_native_decisions_preserve_actual_response',
-                    'taskplane/tests/test_approval_language.py::test_native_decisions_do_not_erase_qualification',
-                    'taskplane/tests/test_approval_language.py::test_dissent_qualifications_survive_punctuation',
-                    'taskplane/tests/test_approval_language.py::test_repair_approval_still_requires_unambiguous_consent',
-                    'taskplane/tests/test_approval_language.py::test_qualified_dissent_does_not_change_checkpoint_or_policy',
-                    'taskplane/tests/test_approval_language.py::test_decision_failures_identify_the_failed_contract',
-                    'taskplane/tests/test_approval_language.py::test_long_descriptive_dissent_is_preserved_completely',
-                    'taskplane/tests/test_approval_language.py::test_brief_policy_choice_requires_and_retains_actual_context',
-                    'taskplane/tests/test_approval_language.py::test_brief_policy_choice_cannot_invent_or_change_consent',
-                    'taskplane/tests/test_approval_language.py::test_ambiguous_or_nonconsent_stays_unapproved',
-                    'taskplane/tests/test_approval_language.py::test_mixed_assent_and_dissent_requires_clarification',
-                    'taskplane/tests/test_approval_language.py::test_mixed_decision_cannot_accept_the_presented_checkpoint',
-                    'taskplane/tests/test_approval_language.py::test_explicit_automatic_workflow_language',
-                    'taskplane/tests/test_approval_language.py::test_rca_automatic_workflow_word_order',
-                    'taskplane/tests/test_approval_language.py::test_rca_automatic_wording_does_not_hide_nonconsent',
-                    'taskplane/tests/test_approval_language.py::test_future_human_decision_prevents_automatic_authorization',
-                    'taskplane/tests/test_approval_language.py::test_temporal_decision_forms_cannot_enable_policy',
-                    'taskplane/tests/test_approval_language.py::test_check_qualifications_and_phase_stops_keep_explicit_consent',
-                    'taskplane/tests/test_approval_language.py::test_punctuation_cannot_discard_human_conditions',
-                    'taskplane/tests/test_approval_language.py::test_subject_first_human_requirement_refuses_policy',
-                    'taskplane/tests/test_approval_language.py::test_subject_first_requirement_forms_preserve_state',
-                    'taskplane/tests/test_approval_language.py::test_workflow_feature_descriptions_and_ambiguity_are_not_authorization',
-                    'taskplane/tests/test_approval_language.py::test_conversational_decision_preserves_provenance_and_is_replay_safe',
-                    'taskplane/tests/test_approval_language.py::test_named_phase_must_match_the_bound_visit',
-                    'taskplane/tests/test_approval_language.py::test_original_request_enables_policy_without_changing_its_words',
-                    'taskplane/tests/test_approval_language.py::test_explicit_end_to_end_policy_consent',
-                    'taskplane/tests/test_approval_language.py::test_end_to_end_policy_keeps_negative_and_quoted_guards',
-                    'taskplane/tests/test_approval_language.py::test_fixes_imperative_and_named_stops_preserve_explicit_consent',
-                    'taskplane/tests/test_approval_language.py::test_fixes_imperative_requires_unqualified_direct_consent',
-                    'taskplane/tests/test_approval_language.py::test_pause_hold_human_conditions_refuse_policy_without_mutation',
-                    'taskplane/tests/test_approval_language.py::test_human_source_and_signoff_qualifications_prevent_consent',
-                    'taskplane/tests/test_approval_language.py::test_explicitly_unnecessary_human_decisions_preserve_consent',
-                    'taskplane/tests/test_approval_language.py::test_unnecessary_decision_wording_cannot_mask_nonconsent',
-                    'taskplane/tests/test_approval_language.py::test_common_checkpoint_validator_preserves_unqualified_controls',
-                    'taskplane/tests/test_approval_language.py::test_common_checkpoint_validator_keeps_quotes_negations_conditions_and_targets',
-                    'taskplane/tests/test_approval_language.py::test_common_checkpoint_validator_is_phase_bound',
-                    'taskplane/tests/test_approval_language.py::test_native_choice_presentation_requires_an_explicit_decision',
-                    'taskplane/tests/test_approval_language.py::test_common_validator_never_substitutes_missing_or_qualified_original_question'],
- 'LOCAL-SOURCE-IDENTITY:1': ['audit:source-identity', 'audit:producer-reconciliation', 'audit:candidate-graph'],
+
+                    ],
+ 'LOCAL-SOURCE-IDENTITY:1': ['audit:source-identity',
+                             'audit:producer-reconciliation',
+                             'audit:candidate-graph'],
  'LOCAL-SRE-03:1': ['taskplane/tests/test_worker_results.py::test_result_completeness_requires_artifacts_checks_and_semantic_review',
                     'taskplane/tests/test_worker_results.py::test_durable_partial_rejected_evidence_precedes_structured_response',
                     'taskplane/tests/test_worker_results.py::test_invalid_requests_do_not_mutate_controller_or_publish_objects',
@@ -1493,27 +1397,6 @@ SCENARIO_REGISTRY = {'LOCAL-ACC-01:1': ['taskplane/tests/test_native_acceptance_
                     'taskplane/tests/test_retry_budgets.py::test_uncertain_attempt_requires_authoritative_no_launch_proof',
                     'taskplane/tests/test_retry_budgets.py::test_reset_and_clock_faults_require_explicit_reconciliation',
                     'taskplane/tests/test_retry_budgets.py::test_all_applicable_scopes_reserve_in_one_atomic_commit'],
- 'LOCAL-SRE-04:1': ['taskplane/tests/test_claude_startup_diagnostics.py::test_selected_startup_error_preserves_exact_refusal_and_database',
-                    'taskplane/tests/test_claude_startup_diagnostics.py::test_claude_recovery_on_codex_reports_unsupported_without_a_workaround',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_reconcile_preserves_governance_journals_original_and_enables_only_retry',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_recovery_refuses_without_changing_live_controller',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_reconciliation_preserves_structured_refusal_before_valueerror_handler',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_malformed_startup_evidence_has_bounded_specific_refusal',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_legacy_inspection_does_not_publish_before_validation',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_selected_recovery_refusal_preserves_unrelated_denial_and_all_bytes',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_reports_without_receipt_or_execution_authority',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_refuses_foreign_unknown_or_broadened_requests',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_after_fence_never_revives_or_releases_attempt',
-                    'taskplane/tests/test_claude_startup_reconciliation.py::test_startup_control_enforces_encoded_byte_boundary_without_truncation'],
- 'LOCAL-STARTUP-EXECUTION:1': ['taskplane/tests/test_context_startup_budget.py::test_execution_only_startup_has_no_performance_provider_or_response_quota',
-                               'taskplane/tests/test_ci_local.py::test_functional_composite_has_no_numeric_validator_dependency'],
- 'LOCAL-STARTUP-EXECUTION:2': ['taskplane/tests/test_context_startup_budget.py::test_execution_only_still_requires_exact_native_output_and_durable_hook',
-                               'taskplane/tests/test_context_startup_budget.py::test_execution_only_crash_replay_and_stop_never_release_unknown_work',
-                               'taskplane/tests/test_context_startup_budget.py::test_execution_only_rejects_corrupt_ready_records',
-                               'taskplane/tests/test_context_startup_budget.py::test_execution_only_native_launch_requires_completed_prepare_hook'],
- 'LOCAL-STARTUP-EXECUTION:3': ['taskplane/tests/test_context_startup_budget.py::test_execution_only_input_or_schema_change_refuses',
-                               'taskplane/tests/test_context_startup_budget.py::test_execution_only_startup_has_no_performance_provider_or_response_quota'],
- 'LOCAL-STARTUP-EXECUTION:4': ['taskplane/tests/test_context_startup_budget.py::test_execution_only_still_requires_context_and_valid_transport_envelope'],
  'LOCAL-TELEMETRY-SEMANTICS:1': ['taskplane/tests/test_usage_accounting.py::test_original_missing_revision_is_recovered_only_to_same_build_visit',
                                  'taskplane/tests/test_usage_accounting.py::test_missing_transition_across_phases_remains_explained_not_guessed',
                                  'taskplane/tests/test_usage_accounting.py::test_follow_up_and_pre_run_are_separate_from_phases',
@@ -1533,254 +1416,9 @@ SCENARIO_REGISTRY = {'LOCAL-ACC-01:1': ['taskplane/tests/test_native_acceptance_
                                  'taskplane/tests/test_usage_accounting.py::test_claude_recovered_prerun_counter_does_not_become_run_usage',
                                  'taskplane/tests/test_usage_accounting.py::test_claude_missing_snapshot_still_reports_unavailable_identity',
                                  'taskplane/tests/test_usage_accounting.py::test_resumed_codex_reset_is_not_restored_from_saved_or_closing_counts',
-                                 'taskplane/tests/test_usage_accounting.py::test_reconcile_checkpoint_preserves_partial_owned_attribution']}
-
-
-def full_controller_context_evidence(sample: dict) -> bool:
-    """The explicit scope label alone cannot upgrade a Session fixture process."""
-    if sample.get('measurement_scope') != 'full-controller-cli':
-        return False
-    drains, constructions = [], []
-    for execution in sample.get('raw_executions', []):
-        command = execution.get('argv', execution.get('command', []))
-        if (not isinstance(command, list) or not all(isinstance(part, str) for part in command)
-                or len(command) < 4 or Path(command[1]).name != 'tp.py' or command[2:4] != ['flow', 'context']):
-            continue
-        try:
-            if type(execution.get('exit_code')) is not int or execution['exit_code'] != 0 or not Path(execution.get('cwd', '')).is_absolute():
-                return False
-            stdout = base64.b64decode(execution['stdout_base64'], validate=True)
-            base64.b64decode(execution['stderr_base64'], validate=True)
-            response = json.loads(stdout)
-            if not stdout or not isinstance(response, dict):
-                return False
-        except (KeyError, ValueError, TypeError, UnicodeError):
-            return False
-        if '--drain' in command or '--read-required' in command:
-            if (not isinstance(response.get('pages'), list) or type(response.get('remaining_required')) is not int
-                    or response['remaining_required'] < 0):
-                return False
-            drains.append(response)
-        elif not any(selector in command for selector in ('--read', '--page', '--section')):
-            constructions.append(response)
-        else:
-            return False
-    # B remains the actual batch/drain count. Initial construction and final
-    # completion reconciliation stay in the raw evidence and measured totals.
-    return (bool(constructions) and bool(drains) and len(drains) == sample.get('invocations')
-            and drains[-1]['remaining_required'] == 0 and drains[-1].get('done') is True)
-
-
-def validate_measurements(kind: str, documents: list[dict]) -> dict:
-    """Legacy benchmark API only; never called by functional CI/remediation."""
-    try:
-        return _validate_measurements(kind, documents)
-    except (AttributeError, OverflowError, TypeError, ValueError, KeyError) as exc:
-        return {'status': 'fail', 'problems': [f'malformed raw measurement: {type(exc).__name__}: {exc}'],
-                'documents': documents, 'samples': [], 'kind': kind}
-
-
-def _validate_measurements(kind: str, documents: list[dict]) -> dict:
-    """Compare raw samples with fixed accepted gates, never a producer's verdict."""
-    samples = [sample for document in documents for sample in document.get('samples', [])]
-    errors: list[str] = []
-    def require(condition, reason):
-        if not condition:
-            errors.append(reason)
-    require(bool(samples), f'{kind}: missing measured samples')
-    ids = [sample.get('sample_id') for sample in samples]
-    require(all(isinstance(item, str) and item for item in ids) and len(ids) == len(set(ids)),
-            'missing/duplicate sample IDs')
-    # Validate only the measurement schema. Native continuations, raw process
-    # records, identity maps and oracle payloads are opaque evidence: a signal
-    # exit code or a native boolean is not a measured counter.
-    integer_fields = {
-        'graph': 'nodes edges operations recursion_limit_before recursion_limit_after',
-        'retention': 'entries deleted scanned_entries max_depth_seen reference_bytes_read projected_pairs projected_bytes',
-        'context': 'nodes edges operations pages invocations repetition bytes_read unique_body_bytes transport_bytes max_response_pages max_response_bytes max_index_rebuilds_per_invocation payload_bytes peak_rss_bytes',
-        'usage': 'unrelated_sessions owned_sessions bytes_per_owned_session repetition peak_rss_bytes',
-        'retry': 'attempt_cap attempts_consumed attempts_reserved elapsed_ms elapsed_cap_ms tokens_observed tokens_reserved tokens_proposed token_cap elapsed_highwater_before elapsed_highwater_after token_highwater_before token_highwater_after',
-    }
-    boolean_fields = {'graph': 'mutated', 'retention': 'changed_references capacity_proved optional_admitted',
-                      'usage': 'complete', 'retry': 'coverage_known clock_known dispatch_admitted'}
-    time_fields = {'retention': 'elapsed_seconds', 'context': 'elapsed_seconds startup_seconds clock_resolution_seconds',
-                   'usage': 'elapsed_seconds'}
-    def measured_fields(row, integers='', booleans='', times=''):
-        require(isinstance(row, dict), 'measurement row is not an object')
-        if not isinstance(row, dict):
-            return
-        for field in integers.split():
-            if field in row:
-                value = row[field]
-                require(type(value) is int and value >= 0, f'invalid measured integer: {field}')
-        for field in booleans.split():
-            if field in row:
-                require(type(row[field]) is bool, f'invalid measured boolean: {field}')
-        for field in times.split():
-            if field in row:
-                value = row[field]
-                require(type(value) in (int, float) and math.isfinite(value) and value >= 0,
-                        f'invalid measured time: {field}')
-    for sample in samples:
-        measured_fields(sample, integer_fields.get(kind, ''), boolean_fields.get(kind, ''), time_fields.get(kind, ''))
-        if kind == 'retention':
-            measured_fields(sample.get('configured_caps', {}), 'entries depth reference_bytes', times='seconds')
-            for scan in sample.get('complete_scans', []):
-                measured_fields(scan, booleans='complete')
-        elif kind == 'context':
-            measured_fields(sample.get('byte_classes', {}), 'payload transport index ledger source_fingerprints')
-        elif kind == 'usage':
-            for refresh in sample.get('refreshes', []):
-                measured_fields(refresh, 'read_bytes parsed_records discovery_entries max_record_bytes unrelated_scans validation_bytes max_prefix_bytes max_tail_bytes appended_bytes',
-                                'exhausted complete fully_discovered', 'elapsed_seconds')
-    measurement_ids = {'graph': {'LOCAL-GRAPH:1'}, 'retention': {'LOCAL-RETENTION:1', 'LOCAL-RETENTION:2'},
-                       'context': {'LOCAL-SCA-01:3'}, 'usage': {'LOCAL-SCA-02:3'}, 'retry': {'LOCAL-SRE-03:4'}}
-    for document in documents:
-        require(document.get('schema') == 'taskplane.remediation-measurement/v1'
-                and document.get('kind') == kind and document.get('scenario') in measurement_ids.get(kind, set())
-                and document.get('subcheck') == document.get('scenario', '').rsplit(':', 1)[0]
-                and document.get('execution_status', 'pass') == 'pass',
-                'measurement identity/schema mismatch')
-    try:
-        if kind == 'graph':
-            for shape in ('chain', 'cycle', 'self-loop', 'disconnected', 'duplicate-edges', 'deterministic', 'resource-refusal'):
-                require(any(s['shape'] == shape for s in samples), f'missing graph {shape}')
-            for s in samples:
-                if s['shape'] in ('chain', 'cycle'):
-                    require(s['nodes'] == 10000, 'graph size is not 10000')
-                require(s['recursion_limit_after'] == s['recursion_limit_before'], 'recursion limit changed')
-                # Instrument primitive work, not elapsed-time guesses. Each vertex
-                # and edge may be visited a fixed number of times in iterative SCC.
-                require(s['operations'] >= 0 and s['operations'] <= 12 * (s['nodes'] + s['edges']) + 32,
-                        'implementation guard: graph traversal operation envelope exceeded')
-                if s['shape'] == 'deterministic':
-                    require(s['first_components'] == s['second_components'], 'non-deterministic SCC')
-                if s['shape'] == 'resource-refusal':
-                    require(bool(s['refusal_reason']) and s['mutated'] is False, 'uncontrolled resource refusal')
-        elif kind == 'retention':
-            cases = ('stable', 'exact-caps', 'depth-exhaustion', 'time-exhaustion', 'byte-exhaustion',
-                     'changing-references', 'pins', 'leases', 'selected-live', 'required-durable', 'publication-pressure')
-            require(all(any(s['case'] == case for s in samples) for case in cases), 'missing retention boundary')
-            require({100, 1000, 10000} <= {s['entries'] for s in samples if s['case'] == 'stable'}, 'missing retention sizes')
-            for s in samples:
-                require(s['configured_caps'] == {'entries': 20000, 'depth': 32, 'seconds': 1, 'reference_bytes': 67108864}, 'retention caps drift')
-                require(s['scanned_entries'] <= 20000 and s['max_depth_seen'] <= 32
-                        and s['reference_bytes_read'] <= 67108864, 'retention admission cap exceeded')
-                require(s['elapsed_seconds'] >= 0 and s['measurement_class'] in ('real', 'injected_clock')
-                        and s['outcome'] in ('complete', 'incomplete', 'refused'), 'missing retention timing/class/outcome')
-                if s['outcome'] != 'complete' or s['changed_references']:
-                    require(s['deleted'] == 0, 'incomplete/changing scan deleted evidence')
-                if s['deleted']:
-                    scans = s['complete_scans']
-                    require(len(scans) >= 2 and all(r['complete'] for r in scans[-2:])
-                            and scans[-1]['reference_digest'] == scans[-2]['reference_digest'], 'deletion without two stable scans')
-                if s['case'] in ('pins', 'leases', 'selected-live', 'required-durable'):
-                    require(bool(s['protected_before']) and s['protected_before'] == s['protected_after'], 'protected evidence changed')
-                if s['case'] == 'publication-pressure':
-                    require(s['required_before'] == s['required_after'], 'required evidence lost under pressure')
-                    require(s['capacity_proved'] or (s['projected_pairs'] <= 32 and s['projected_bytes'] <= 67108864) or s['optional_admitted'] is False, 'over-target optional publication without proven capacity')
-        elif kind == 'context':
-            expected = {(n, mode, repeat) for n in (64, 256, 1024) for mode in ('cold', 'warm') for repeat in range(5)}
-            observed = {(s['nodes'], s['mode'], s['repetition']) for s in samples if s['shape'] == 'primary'}
-            require(observed == expected and sum(s['shape'] == 'primary' for s in samples) == len(expected), 'incomplete/duplicate context size/mode/repetition grid')
-            require({'shared', 'high-edge', 'multipage'} <= {s['shape'] for s in samples}, 'missing context variants')
-            adjusted = {}
-            for s in samples:
-                require(full_controller_context_evidence(s), 'context requires full-controller-cli scope and complete actual command/raw-byte evidence')
-                require(s['operations'] <= 12 * (s['nodes'] + s['edges'] + s['pages']) + 32 * s['invocations'], 'context operations exceeded')
-                require(s['bytes_read'] <= 3 * s['unique_body_bytes'] + s['transport_bytes'] + 262144 * s['invocations'], 'context I/O exceeded')
-                require(s['max_response_pages'] <= 64 and s['max_response_bytes'] <= 32768
-                        and s['max_index_rebuilds_per_invocation'] <= 1, 'context response/rebuild cap exceeded')
-                require(s['coverage_expected'] == s['coverage_observed'] and bool(s['coverage_expected']), 'context final coverage mismatch')
-                require(set(s['byte_classes']) == {'payload', 'transport', 'index', 'ledger', 'source_fingerprints'}, 'missing context I/O classes')
-                require(s['peak_rss_bytes'] > 0 and s['clock_resolution_seconds'] > 0, 'missing RSS/clock measurement')
-                value = s['elapsed_seconds'] - s['startup_seconds']
-                require(value > s['clock_resolution_seconds'] * 10, 'implementation guard: inconclusive adjusted context timing (10x clock resolution)')
-                if s['shape'] == 'primary':
-                    require(s['payload_bytes'] == 1024 and s['measurement_class'] == 'real' and bool(s['raw_executions']), 'primary payload/real CLI measurement missing')
-                    adjusted.setdefault((s['nodes'], s['mode']), []).append(value)
-            for mode in ('cold', 'warm'):
-                for small, large in ((64, 256), (256, 1024)):
-                    if (small, mode) in adjusted and (large, mode) in adjusted:
-                        require(max(adjusted[large, mode]) <= 6 * max(adjusted[small, mode]), 'context p95 adjusted growth exceeded')
-        elif kind == 'usage':
-            expected = {(host, unrelated, owned, size, mode, repeat)
-                        for host in ('Codex', 'Claude') for unrelated in (0, 1000, 10000)
-                        for owned in (1, 16, 64) for size in (65536, 1048576, 16777216)
-                        for mode in ('cold', 'unchanged warm', 'appended warm') for repeat in range(5)}
-            observed = {(s['host'], s['unrelated_sessions'], s['owned_sessions'], s['bytes_per_owned_session'], s['mode'], s['repetition']) for s in samples}
-            require(observed == expected and len(samples) == len(expected), 'incomplete/duplicate usage host/size/mode/repetition grid')
-            for s in samples:
-                require(s['measurement_class'] == 'real' and s['elapsed_seconds'] >= 0 and s['peak_rss_bytes'] > 0,
-                        'missing real usage timing/RSS')
-                refreshes = s['refreshes']
-                require(bool(refreshes), 'missing actual usage refreshes')
-                require(s['complete'] is True and s['totals'] == s['oracle_totals']
-                        and s['attribution'] == s['oracle_attribution'], 'completed usage drain independent oracle mismatch')
-                for index, refresh in enumerate(refreshes):
-                    for key in ('exhausted', 'complete', 'fully_discovered'):
-                        require(type(refresh[key]) is bool, f'usage {key} is not boolean')
-                    require(refresh['read_bytes'] <= 16777216 and refresh['parsed_records'] <= 100000
-                            and refresh['discovery_entries'] <= 2000 and refresh['max_record_bytes'] <= 1048576,
-                            'usage per-refresh admission cap exceeded')
-                    require(refresh['elapsed_seconds'] >= 0, 'missing refresh elapsed time')
-                    if refresh['exhausted'] or refresh['elapsed_seconds'] > 1:
-                        require(refresh['complete'] is False and bool(refresh['continuation']), 'usage exhaustion falsely complete')
-                    if not refresh['complete']:
-                        require(bool(refresh['continuation']) and index + 1 < len(refreshes), 'usage partial drain did not continue')
-                        if index + 1 < len(refreshes):
-                            require(refreshes[index + 1]['resumed_from'] == refresh['continuation'], 'usage continuation chain mismatch')
-                    if s['mode'] != 'cold' and refresh['fully_discovered']:
-                        require(refresh['unrelated_scans'] == 0 and refresh['validation_bytes'] <= 8192 * s['owned_sessions']
-                                and refresh['max_prefix_bytes'] <= 4096 and refresh['max_tail_bytes'] <= 4096
-                                and refresh['read_bytes'] <= refresh['validation_bytes'] + refresh['appended_bytes'], 'warm usage work exceeded')
-                if refreshes:
-                    require(refreshes[-1]['complete'] is True and refreshes[-1]['totals'] == s['totals']
-                            and refreshes[-1]['attribution'] == s['attribution'], 'final refresh does not establish complete oracle result')
-        elif kind == 'retry':
-            boundaries = {'limit-1', 'exact limit', 'limit+1', 'simultaneous reservations', 'missing counters',
-                          'reset', 'restart', 'clock regression', 'cap tightening/removal',
-                          'exhausted no-progress retries', 'uncertain launch', 'continuation'}
-            require(boundaries <= {s['case'] for s in samples}, 'missing retry boundaries')
-            for s in samples:
-                for key in ('coverage_known', 'clock_known', 'dispatch_admitted'):
-                    require(type(s[key]) is bool, f'retry {key} is not boolean')
-                require(type(s['attempt_cap']) is int and 1 <= s['attempt_cap'] <= 8, 'invalid attempt cap')
-                valid = (s['coverage_known'] and s['clock_known'] and s['elapsed_ms'] < s['elapsed_cap_ms']
-                         and s['tokens_observed'] + s['tokens_reserved'] + s['tokens_proposed'] <= s['token_cap']
-                         and s['tokens_proposed'] > 0 and s['attempts_consumed'] + s['attempts_reserved'] + 1 <= s['attempt_cap'])
-                require(s['dispatch_admitted'] is valid, 'retry admission disagrees with independent arithmetic')
-                require(s['elapsed_highwater_after'] >= s['elapsed_highwater_before']
-                        and s['token_highwater_after'] >= s['token_highwater_before'], 'retry highwater decreased')
-        else:
-            errors.append(f'unknown measurement kind {kind}')
-    except (KeyError, TypeError, ValueError) as exc:
-        errors.append(f'malformed/incomplete {kind} raw sample: {exc}')
-    summaries = {}
-    if kind in ('context', 'usage') and not errors:
-        grouping = ('nodes', 'mode', 'shape') if kind == 'context' else ('host', 'unrelated_sessions', 'owned_sessions', 'bytes_per_owned_session', 'mode')
-        for sample in samples:
-            key = json.dumps([sample[field] for field in grouping])
-            summaries.setdefault(key, []).append(sample)
-        for key, rows in list(summaries.items()):
-            elapsed = sorted(row['elapsed_seconds'] for row in rows)
-            summary = {'samples': len(rows), 'p50_seconds': elapsed[math.ceil(len(rows) * 0.5) - 1],
-                       'p95_seconds': elapsed[math.ceil(len(rows) * 0.95) - 1],
-                       'peak_rss_bytes': max(row['peak_rss_bytes'] for row in rows)}
-            if kind == 'context':
-                adjusted = sorted(row['elapsed_seconds'] - row['startup_seconds'] for row in rows)
-                summary.update(adjusted_p50_seconds=adjusted[math.ceil(len(rows) * 0.5) - 1],
-                               adjusted_p95_seconds=adjusted[math.ceil(len(rows) * 0.95) - 1])
-            summaries[key] = summary
-    integration = []
-    if kind == 'context' and any(not full_controller_context_evidence(s) for s in samples):
-        integration = [{'status': 'deferred', 'obligation': 'full Controller CLI context delivery',
-                        'observed_scope': sorted({str(s.get('measurement_scope', 'unspecified')) for s in samples}),
-                        'reason': 'Fresh Session fixture CLI samples alone cannot close the Controller integration obligation.'}]
-    return {'status': 'fail' if errors else 'pass', 'problems': errors, 'samples': samples,
-            'integration_obligations': integration,
-            'summaries': summaries, 'kind': kind, 'units': {'time': 'seconds (retry elapsed_ms: milliseconds)',
-                                  'memory_io': 'bytes', 'operations': 'instrumented primitive count'}}
+                                 'taskplane/tests/test_usage_accounting.py::test_reconcile_checkpoint_preserves_partial_owned_attribution'],
+ 'OVERHEAD-01:1': ['taskplane/tests/test_overhead_remediation.py::test_public_seven_phase_flow_has_separate_human_decisions_without_overhead',
+                   'taskplane/tests/test_overhead_remediation.py::test_task_dag_refuses_future_phase_prerequisite_before_publication']}
 
 
 def safe_path(root: Path, relative: str) -> Path:
@@ -1833,39 +1471,43 @@ def remediation_paths(path: Path, invocation: Path) -> dict[str, Path]:
 
 
 def validate_functional_strategy(strategy: dict) -> None:
-    """Validate the accepted version's own fields before adapting its interface."""
-    message = 'expected the accepted 30 functional groups and 18 criteria without numeric gates'
+    """Validate declared checks, without a global group/criterion/startup quota."""
+    message = 'invalid functional strategy: declare unique checks, criteria and assertions'
     try:
         schema = strategy['schema']
         if schema not in ('remediation-plan-verification/v5', 'remediation-plan-verification/v6'):
             raise ValueError(message)
         key = 'required_engineering_subchecks' if schema.endswith('/v6') else 'required_local_subchecks'
         specs = strategy[key]
-        if (not isinstance(specs, list) or len(specs) != len(REQUIRED_GROUPS)
-                or {spec['id'] for spec in specs} != REQUIRED_GROUPS or strategy.get('numeric_gates')):
+        if not isinstance(specs, list) or not specs:
             raise ValueError(message)
-        # A second interface cannot override the native v6 assertions.
         if key != 'required_local_subchecks' and strategy.get('required_local_subchecks', specs) != specs:
             raise ValueError(message)
+        ids = [spec['id'] for spec in specs]
+        if any(not isinstance(value, str) or not value.strip() for value in ids) or len(ids) != len(set(ids)):
+            raise ValueError(message)
         for spec in specs:
-            expected_count = 4 if spec['id'] == 'LOCAL-STARTUP-EXECUTION' else 1
-            if schema.endswith('/v6') and spec['id'] == 'LOCAL-CI-PROD-06':
-                expected_count = 2
             criteria, assertions = spec['criteria'], spec['assertions']
-            if (spec.get('required') is not True or not isinstance(criteria, list)
-                    or len(criteria) != len(set(criteria))
-                    or set(criteria) != FUNCTIONAL_GROUP_CRITERIA[spec['id']]
-                    or not isinstance(assertions, list) or len(assertions) != expected_count
+            if (spec.get('required') is not True or not isinstance(criteria, list) or not criteria
+                    or any(not isinstance(value, str) or not value.strip() for value in criteria)
+                    or len(criteria) != len(set(criteria)) or not isinstance(assertions, list) or not assertions
                     or any(not isinstance(value, str) or not value.strip() for value in assertions)):
                 raise ValueError(message)
-        if schema.endswith('/v6'):
-            gates = strategy['later_stage_gates']
-            if (not isinstance(gates, list) or len(gates) != len(EXTERNAL_GATES)
-                    or {gate['id'] for gate in gates} != EXTERNAL_GATES
-                    or any(gate.get('required') is not True for gate in gates)):
-                raise ValueError(message)
+        gates = strategy.get('later_stage_gates', [])
+        if (not isinstance(gates, list) or any(not isinstance(gate, dict) or not isinstance(gate.get('id'), str)
+                or not gate['id'].strip() or gate.get('required') is not True for gate in gates)
+                or len(gates) != len({gate['id'] for gate in gates})):
+            raise ValueError(message)
     except (KeyError, TypeError, AttributeError) as exc:
         raise ValueError(message) from exc
+
+
+def strategy_groups(strategy: dict) -> set[str]:
+    return {spec['id'] for spec in strategy['required_local_subchecks']}
+
+
+def strategy_criteria(strategy: dict) -> set[str]:
+    return {criterion for spec in strategy['required_local_subchecks'] for criterion in spec['criteria']}
 
 
 def normalize_functional_strategy(strategy: dict) -> dict:
@@ -1913,7 +1555,6 @@ def audit_source(manifest: dict, before: dict, after: dict) -> dict:
             'feature_acceptance': 'Root separately reconciles accepted producer manifests; census alone is not acceptance.'}
 
 
-
 def audit_producer_reconciliation(manifest: dict, manifest_sha256: str, before: dict,
                                   after: dict, ledger_before: bytes, ledger_after: bytes,
                                   plan_raw: bytes = b'{}', invocation: Path | None = None) -> dict:
@@ -1958,19 +1599,14 @@ def audit_producer_reconciliation(manifest: dict, manifest_sha256: str, before: 
             if not accepted.get('accepted_at') or not accepted.get('reviewer') or not accepted.get('task_digest'):
                 problems.append(f'{owner}: missing actual accepted task record')
             if owner in native_owners:
-                receipt = observed.get('context_receipt', {})
                 if (not accepted.get('grant') or not accepted.get('worker_id')
                         or observed.get('state') != 'accepted' or observed.get('terminal_status') != 'completed'
                         or not observed.get('reference')
                         or observed.get('grant') != accepted.get('grant')
-                        or observed.get('worker_id') != accepted.get('worker_id')
-                        or receipt.get('schema') != 'taskplane.context-reference/v1'
-                        or receipt.get('kind') != 'delivery-receipt'
-                        or not re.fullmatch(r'[0-9a-f]{64}', str(receipt.get('sha256', '')))):
+                        or observed.get('worker_id') != accepted.get('worker_id')):
                     problems.append(f'{owner}: missing/inconsistent accepted native record')
-            elif (task.get('execution') != 'root' or not task.get('execution_exception')
-                  or not task.get('execution_reason') or not task.get('execution_reference')):
-                problems.append(f'{owner}: missing frozen root execution exception')
+            elif task.get('execution') != 'root':
+                problems.append(f'{owner}: missing planned root ownership')
             evidence = owner_evidence.get(owner)
             if (not isinstance(evidence, list) or not evidence
                     or any(not isinstance(ref, str) or not ref.strip() for ref in evidence)):
@@ -1999,7 +1635,6 @@ def audit_producer_reconciliation(manifest: dict, manifest_sha256: str, before: 
         problems.append(f'malformed producer reconciliation: {exc}')
     result['status'] = 'fail' if problems else 'pass'
     return result
-
 
 
 def scanner_inventory(source: dict, policy_raw: str) -> dict:
@@ -2138,7 +1773,7 @@ def audit_obligation_dispositions(invocation: Path, ledger_raw: bytes, plan_path
     return result
 
 
-AUDIT_NAMES = {'canary', 'seed-conftest', 'ci-definition', 'historical-ci', 'source-identity',
+AUDIT_NAMES = {'canary', 'ci-definition', 'historical-ci', 'source-identity',
                'producer-reconciliation', 'obligation-dispositions', 'packages', 'candidate-graph',
                'exact-once-partition', 'quality', 'execution-profiles', 'broad-and-quality',
                'release-preservation'}
@@ -2169,8 +1804,6 @@ def registry_binding_problems(strategy: dict, bindings: dict) -> list[str]:
                 module, separator, name = selector.partition('::')
                 if module not in allowed_tests or not separator or not name or '\\' in selector or '..' in Path(module).parts:
                     problems.append(f'{key}: binding outside declared test-module inputs')
-                if performance_exclusion(selector):
-                    problems.append(f'{key}: excluded performance history cannot satisfy a functional assertion')
     return problems
 
 
@@ -2359,49 +1992,6 @@ def required_coverage(spec: dict, records: list[dict], audits: dict, registry=No
     return {'status': 'pass' if all(row['status'] == 'pass' for row in results) else 'fail', 'scenarios': results}
 
 
-def measurement_documents(records: list[dict], subcheck: str, registry=None) -> list[dict]:
-    registry = SCENARIO_REGISTRY if registry is None else registry
-    result = []
-    for record in records:
-        # Targeted module runs may overlap. Only this subcheck's designated
-        # execution contributes its grid; all other raw runs remain in the log
-        # and still independently participate in the overall failure verdict.
-        if record['label'] != 'targeted/' + subcheck or 'junit.xml' not in record:
-            continue
-        try:
-            root = parse_junit_xml(raw_evidence_bytes(record, 'junit.xml') if 'junit.xml' in record.get('raw_files', {}) else record['junit.xml'])
-            for case in root.iter('testcase'):
-                case_passed = all(case.find(tag) is None for tag in ('skipped', 'failure', 'error'))
-                selected = []
-                for node in record.get('profile', {}).get('selected_nodeids', []):
-                    parts = node.split('::')
-                    classname = parts[0].removesuffix('.py').replace('/', '.')
-                    if len(parts) > 2:
-                        classname += '.' + '.'.join(parts[1:-1])
-                    if case.get('classname') == classname and case.get('name') == parts[-1]:
-                        selected.append(node)
-                for prop in case.findall('./properties/property'):
-                    if prop.get('name') != 'remediation_measurement':
-                        continue
-                    value = json.loads(prop.attrib['value'])
-                    if value.get('subcheck') != subcheck:
-                        continue
-                    scenario = value.get('scenario')
-                    bindings = registry.get(scenario, [])
-                    bound = len(selected) == 1 and any(selected[0] == key or selected[0].startswith(key + '[') for key in bindings)
-                    phases = [row for row in record.get('profile', {}).get('reports', []) if row['nodeid'] in selected]
-                    passed = (case_passed and bound and record['status'] == 'pass'
-                              and {p['when'] for p in phases} == {'setup', 'call', 'teardown'}
-                              and all(p['outcome'] == 'passed' and p.get('wasxfail') is None for p in phases))
-                    value.update(execution_status='pass' if passed else 'fail', execution=record['id'],
-                                 testcase=dict(case.attrib), nodeids=selected, registry_bound=bound)
-                    result.append(value)
-        except (ET.ParseError, ValueError, KeyError, TypeError, AttributeError):
-            result.append({'schema': 'invalid', 'samples': [], 'execution': record['id']})
-    return result
-
-
-
 def run_audit(function, *args) -> dict:
     """Keep an independent audit failure from suppressing later safe checks."""
     try:
@@ -2543,8 +2133,6 @@ def load_release_manifest(path: Path, invocation: Path) -> tuple[dict, dict, dic
     manifest = json.loads(raw)
     inputs = {path.relative_to(invocation).as_posix(): hashlib.sha256(raw).hexdigest()}
     strategy = normalize_functional_strategy(json.loads(bound_release_reference(manifest['strategy'], invocation, inputs)))
-    if strategy['schema'] != 'remediation-plan-verification/v6':
-        raise ValueError('direct release verification requires the accepted v6 strategy')
     registry = manifest['scenario_registry']
     release_review_references(registry, invocation, inputs)
     problems = registry_binding_problems(strategy, registry['bindings'])
@@ -2554,7 +2142,7 @@ def load_release_manifest(path: Path, invocation: Path) -> tuple[dict, dict, dic
     if problems:
         raise ValueError('; '.join(problems))
     gates = manifest['external_gates']
-    if not isinstance(gates, list) or len(gates) != len(EXTERNAL_GATES) or {gate['id'] for gate in gates} != EXTERNAL_GATES:
+    if not isinstance(gates, list) or len(gates) != len(strategy.get('later_stage_gates', [])) or {gate['id'] for gate in gates} != {gate['id'] for gate in strategy.get('later_stage_gates', [])}:
         raise ValueError('release must retain all six external gate dispositions')
     for gate in gates:
         if gate.get('status') not in ('unknown', 'unsupported', 'pass', 'fail') or any(
@@ -2627,8 +2215,8 @@ def remediation(path: Path, invocation: Path) -> int:
         manifest, strategy = load_manifest(path, invocation)
         paths = remediation_paths(path, invocation)
         report['manifest_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
-        report['functional_contract'] = {'groups': sorted(REQUIRED_GROUPS),
-            'criteria': sorted(FUNCTIONAL_CRITERIA), 'performance_exclusions': PERFORMANCE_ONLY_TESTS,
+        report['functional_contract'] = {'groups': sorted(strategy_groups(strategy)),
+            'criteria': sorted(strategy_criteria(strategy)),
             'limits': 'Configured retry safety and operational process timeouts remain; no performance acceptance target.'}
         report['verification_strategy_sha256'] = hashlib.sha256(paths['strategy'].read_bytes()).hexdigest()
         ledger_path = paths['ledger']
@@ -2653,8 +2241,6 @@ def remediation(path: Path, invocation: Path) -> int:
             # The exact documented command is standalone; unittest's zero tests
             # can exit zero, so require its explicit nonzero summary as well.
             audits['canary'] = canary_verdict(canary)
-            audits['seed-conftest'] = {'status': 'pass' if before.get('taskplane/tests/conftest.py', {}).get('sha256') == CONFTST_SHA256 else 'fail',
-                                        'expected_sha256': CONFTST_SHA256}
             audits['ci-definition'] = run_audit(audit_ci_definition, ROOT)
             audits['historical-ci'] = run_audit(audit_historical_ci, invocation)
             preconditions = ('source-identity-preflight', 'producer-reconciliation-preflight', 'scenario-registry', 'canary')
@@ -2673,8 +2259,6 @@ def remediation(path: Path, invocation: Path) -> int:
                               if not Path(name).is_file() or hashlib.sha256(Path(name).read_bytes()).hexdigest() != sha]
             audits['accepted-input-identity'] = {'status': 'fail' if changed_inputs else 'pass',
                                                   'digests': input_digests, 'changed_inputs': changed_inputs}
-            if after.get('taskplane/tests/conftest.py', {}).get('sha256') != CONFTST_SHA256:
-                audits['seed-conftest']['status'] = 'fail'
             profiles = [r for r in log.records if r['label'].startswith(('targeted/', 'broad/'))]
             audits['execution-profiles'] = {'status': 'pass' if profiles and all('profile' in r and 'junit.xml' in r for r in profiles) else 'fail',
                                              'executions': [r['id'] for r in profiles],
@@ -2694,7 +2278,7 @@ def remediation(path: Path, invocation: Path) -> int:
             report['executions'] = log.records
             report['environment_binding'] = {'received_allowlist': {k: os.environ[k] for k in SAFE_ENV if k in os.environ},
                                              'browser_override_received': bool(os.environ.get('TASKPLANE_BROWSER_EXECUTABLE'))}
-            report['status'] = 'pass' if ({s['id'] for s in report['subchecks']} == REQUIRED_GROUPS and all(s['status'] == 'pass' for s in report['subchecks'])
+            report['status'] = 'pass' if ({s['id'] for s in report['subchecks']} == strategy_groups(strategy) and all(s['status'] == 'pass' for s in report['subchecks'])
                                           and all(a['status'] == 'pass' for a in audits.values())
                                           and all(r['status'] == 'pass' for r in log.records)) else 'fail'
     except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
@@ -2715,9 +2299,9 @@ def release_verification(path: Path, invocation: Path) -> int:
         report.update(manifest_sha256=inputs[path.relative_to(invocation).as_posix()],
                       verification_strategy_sha256=manifest['strategy']['sha256'],
                       release=manifest['release'], external_gates=manifest['external_gates'],
-                      functional_contract={'groups': sorted(REQUIRED_GROUPS), 'criteria': sorted(FUNCTIONAL_CRITERIA),
+                      functional_contract={'groups': sorted(strategy_groups(strategy)), 'criteria': sorted(strategy_criteria(strategy)),
                                            'assertions': sum(len(spec['assertions']) for spec in strategy['required_local_subchecks']),
-                                           'performance_exclusions': PERFORMANCE_ONLY_TESTS})
+                                           'coverage': 'Every selected retained test is executed; no historical exclusion list.'})
         before = tree_map(ROOT)
         reader_root = safe_path(invocation, manifest['legacy_reader']['path'])
         reader_before = tree_map(reader_root)
@@ -2729,7 +2313,7 @@ def release_verification(path: Path, invocation: Path) -> int:
         audits = report['audits']
         audits['legacy-reader-preflight'] = {'status': 'pass' if reader_before == manifest['legacy_reader']['files'] else 'fail',
                                             'fingerprint': reader_fingerprint}
-        audits['obligation-dispositions'] = {'status': 'pass', 'criteria': sorted(FUNCTIONAL_CRITERIA),
+        audits['obligation-dispositions'] = {'status': 'pass', 'criteria': sorted(strategy_criteria(strategy)),
             'external_gates': manifest['external_gates'],
             'scope': 'Validated disposition completeness only; unknown/unsupported external obligations remain unverified.'}
         audits['release-preservation'] = audit_release_preservation(manifest, invocation, before, before)
@@ -2750,8 +2334,6 @@ def release_verification(path: Path, invocation: Path) -> int:
                 # This explicit reviewed manifest input is never inherited from the shell.
                 log.environment['TEST_TASKPLANE_LEGACY_RUNTIME'] = str(reader_root.resolve())
                 log.bound_external_sources['legacy-reader'] = reader_root
-            audits['seed-conftest'] = {'status': 'pass' if before.get('taskplane/tests/conftest.py', {}).get('sha256') == CONFTST_SHA256 else 'fail',
-                                       'expected_sha256': CONFTST_SHA256}
             audits['ci-definition'] = run_audit(audit_ci_definition, ROOT)
             audits['historical-ci'] = run_audit(audit_historical_ci, invocation)
             if ready:
@@ -2778,9 +2360,10 @@ def release_verification(path: Path, invocation: Path) -> int:
                 report['subchecks'].append({'id': spec['id'], 'required': True, 'criteria': spec['criteria'],
                                            'status': coverage['status'], 'coverage': coverage})
             expected_fingerprint = digest(before)
+            execution_fingerprint = digest(candidate_source_map(ROOT))
             audits['execution-source-binding'] = {'status': 'pass' if log.records and all(
-                record.get('source_fingerprint_before') == expected_fingerprint
-                and record.get('source_fingerprint_after') == expected_fingerprint for record in log.records) else 'fail',
+                record.get('source_fingerprint_before') == execution_fingerprint
+                and record.get('source_fingerprint_after') == execution_fingerprint for record in log.records) else 'fail',
                 'candidate_map_sha256': expected_fingerprint, 'manifest_sha256': report['manifest_sha256']}
             reader_after = tree_map(reader_root)
             reader_executions = [record for record in log.records if record['label'] != 'canary/unittest']

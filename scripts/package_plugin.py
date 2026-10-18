@@ -85,13 +85,16 @@ def package(host: str, output_dir: Path, extension: str | None = None) -> dict:
                      if p.is_file() and "__pycache__" not in p.parts)
     files.update((ROOT / "taskplane").glob("*.py"))
     files.update(p for p in (ROOT / "lenses").rglob("*") if p.suffix == ".md" or p.name == "catalog.json")
+    files.add(ROOT / "taskplane/README.md")
     files.add(ROOT / "docs/ci-performance.md")
     files.update(ROOT / "docs" / name for name in
                  ("cli-reference.md", "lens-catalog.md", "onboarding.md", "workflow-builder.md",
                   "claude-worker-recovery.md", "claude-interactive-recovery.md", "test-candidate.md",
-                  "host-compatibility-watch.md", "state-import-and-release.md"))
-    files.add(ROOT / "scripts" / "verify_claude_workers.py")
-    files.add(ROOT / "scripts" / "verify_claude_interactive.py")
+                  "host-compatibility-watch.md", "state-import-and-release.md",
+                  "state-spec.md", "routing-and-flows.md", "context-optimization.md",
+                  "host-native-ux.md", "configuration.md", "security.md", "authority-matrix.md",
+                  "requirements-core.md", "storage-and-repositories.md", "claude-tag.md",
+                  "regression-gate-design.md", "specialist-routes.md", "lenses-and-knowledge.md"))
     files.update(ROOT / "workflows" / name for name in
                  ("change-risk-review.workflow.json", "design-brief.workflow.json",
                   "feature-delivery.workflow.json"))

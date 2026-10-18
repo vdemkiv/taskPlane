@@ -53,6 +53,49 @@ def invoke(lost, mode="inspect"):
     return recovery.recover(c, proof["path"], proof["sha256"], mode=mode)
 
 
+@pytest.mark.parametrize("relocate", [False, True])
+def test_authentic_import_can_retire_bind_and_relocate_without_fabricated_marker(lost, relocate):
+    from taskplane import workspace_binding
+    from taskplane.tests.test_workspace_binding import request
+    c, state, original, _, _, _ = lost
+    imported = invoke(lost, "apply")
+    retired = c.apply("retire", state["run"], expected_revision=state["revision"],
+        native_reference=json.dumps({"request_reference": "user/retire-import", "reason": "Retire imported history"}))
+    assert retired["retired"] and not retired["decisions"]
+    marker = c._path().with_name(c.adapter.markername)
+    assert not marker.exists()
+    bound = workspace_binding.bind(c.workspace, request(c.workspace))
+    assert recovery.initialization(c.workspace, c.root)["status"] == "committed"
+    assert Path(imported["original_controller"]["path"]).read_bytes() == original
+    if relocate:
+        destination = c.workspace.with_name("relocated")
+        c.workspace.rename(destination)
+        fresh = request(destination, payload=b"relocated import probe", reference="host/relocated-import")
+        fresh.update(expected_project_id=bound["project_id"], request_reference="user/relocate-import")
+        result = workspace_binding.recover(destination, fresh)
+        assert result["recovery"]["approvals_transferred"] is False
+        archive = Path(result["recovery"]["archive"])
+        retained = archive / "recovery-v1" / imported["request_sha256"] / "original-controller.json"
+        assert retained.read_bytes() == original
+        assert not (archive / marker.name).exists()
+
+
+@pytest.mark.parametrize("damage", ["active", "ambiguous"])
+def test_import_binding_refuses_active_or_ambiguous_initialization(lost, damage):
+    from taskplane import workspace_binding
+    from taskplane.tests.test_workspace_binding import request
+    c, state, _, _, _, _ = lost
+    invoke(lost, "apply")
+    if damage == "ambiguous":
+        c.apply("retire", state["run"], expected_revision=state["revision"],
+            native_reference=json.dumps({"request_reference": "user/retire-import", "reason": "Retire imported history"}))
+        c._path().with_name(c.adapter.markername).write_text(json.dumps({
+            "schema": "taskplane.local-initialization/v1", "workspace": str(c.workspace),
+            "root": c.root, "profile": "native_workflow"}))
+    with pytest.raises(w.Refusal, match="active|ambiguous"):
+        workspace_binding.bind(c.workspace, request(c.workspace))
+
+
 def tree(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
@@ -71,20 +114,16 @@ def test_archive_loss_import_preserves_checkpoint_and_requires_separate_approval
     assert observed["revision"] == state["revision"] and observed["run"] == state["run"]
     assert observed["visits"] == state["visits"] and observed["decisions"] == {}
     assert not observed.get("parent_hook_readiness")
-    assert not local.Harness(c.workspace, c.root).presentation_valid(observed)
-    assert observed["state_import"]["historical_context_refs_unverified"]
+    assert observed["state_import"]
     assert invoke(lost, "apply")["status"] == "already_imported"
     accepted = decide(c, observed, approval)
     assert accepted["decisions"][approval["event_id"]]["provenance"]["relay"] == approval["relay"]
-    with pytest.raises(w.Refusal, match="dashboard handoff"):
-        c.apply("advance", state["run"], expected_revision=accepted["revision"], phase="design")
-    present(c, accepted)  # A newly generated linked fixture, never a restored old observation.
     advanced = c.apply("advance", state["run"], expected_revision=accepted["revision"], phase="design")
     assert w.current(advanced)["phase"] == "design" and w.current(advanced)["decision"] == "not_requested"
     assert len(advanced["decisions"]) == 1
-    from taskplane.context_handoff import Session, consume_required
-    receipt, returned = consume_required(Session(c.workspace, advanced))
-    assert returned and receipt["consumed_inputs"]
+    from taskplane.context_handoff import Brief
+    brief = Brief(c.workspace, advanced).descriptor()
+    assert brief["schema"] == "taskplane.brief/v1"
     assert Path(result["original_controller"]["path"]).read_bytes() == original
 
 
@@ -212,7 +251,7 @@ def test_racing_file_is_never_overwritten_or_retried_as_success(lost, monkeypatc
 
 def test_executing_runtime_fingerprints_cover_recovery_and_consent():
     from taskplane.host_capabilities import runtime_identity
-    identity = runtime_identity()
+    identity = runtime_identity(full=True)
     for name in ("taskplane/state_import.py", "taskplane/delegated_approval.py"):
         assert identity["member_sha256"][name] == hashlib.sha256((Path(identity["root"]) / name).read_bytes()).hexdigest()
 

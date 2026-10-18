@@ -99,5 +99,5 @@ def test_exact_worker_binding_still_wins_over_a_fork_label(tmp_path, monkeypatch
     selected, current = flow.select_controller(tmp_path, 'fork', 'root')
     assert selected.root == 'root' and selected.principal == 'fork'
     assert current['workers'][prepared['grant']['grant_id']]['worker_id'] == 'fork'
-    with pytest.raises(w.Refusal, match='consume'):
+    with pytest.raises(w.Refusal, match='exact observed live identity'):
         selected.guard({'tool_name': 'Read', 'tool_input': {'file_path': 'input.py'}}, state['run'])

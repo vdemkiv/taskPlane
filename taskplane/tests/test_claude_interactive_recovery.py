@@ -125,14 +125,12 @@ class Interactive:
         return result
 
     def consume(self):
-        claim, context = workers.startup_commands(self.controller.report(), self.row())
+        runtime=shlex.join(invocation._runtime(None,None))
+        claim=runtime+' flow worker --operation claim --run '+self.state['run']+' --grant '+self.grant+' --workspace '+shlex.quote(str(self.workspace))
+        context=runtime+' flow context --workspace '+shlex.quote(str(self.workspace))+' --run '+self.state['run']+' --task '+self.row()['task_id']
         self.invoke(claim)
-        descriptor = self.invoke(context)
-        result = self.invoke(context + ' --drain ' + descriptor['handoff_ref']['sha256'])
-        while result['remaining_required']:
-            runtime = shlex.join(invocation._runtime(None, None))
-            result = self.invoke(runtime + ' ' + result['next_action'])
-        assert result['done']
+        descriptor=self.invoke(context)
+        assert descriptor['schema']=='taskplane.brief/v1'
 
     def stop(self, body, **extra):
         event = dict(hook_event_name='SubagentStop', session_id='root', agent_id=self.child_id,
@@ -201,21 +199,6 @@ class Interactive:
         return event, peer
 
 
-@pytest.mark.parametrize('wrapper', [' 2>&1 | head -50', ' | head -80', ' && true', ' > /tmp/output'])
-def test_wrapped_startup_denial_has_exact_recovery_and_valid_retry(tmp_path, monkeypatch, wrapper):
-    host = Interactive(tmp_path, monkeypatch)
-    item = host.launch()
-    claim, context = workers.startup_commands(host.controller.report(), host.row())
-    assert 'without pipes' in item['message']
-    for command in (claim, context):
-        with pytest.raises(w.Refusal) as failure:
-            flow.hook(host.event('Bash', {'command': command + wrapper}))
-        assert claim in str(failure.value) and context in str(failure.value)
-        assert 'without pipes' in str(failure.value)
-    assert not host.row().get('claimed_at') and not host.row()['context_receipt']
-    host.consume()
-    assert host.row()['state'] == 'running'
-    assert host.row()['context_receipt']
 
 
 @pytest.mark.parametrize('notification', ['no_report', 'failure_report'])
@@ -232,7 +215,7 @@ def test_startup_failure_handback_is_bounded_failure_and_fresh_retry_works(tmp_p
         assert not host.row().get('completion_conflict')
         assert workers.readiness(host.row())['status'] == 'pending'
     assert len(host.row()['startup_handbacks']) == 4
-    assert not host.row().get('claimed_at') and not host.row()['context_receipt']
+    assert not host.row().get('claimed_at')
     with pytest.raises(w.Refusal):
         flow.hook(host.event('Write', {'file_path': 'T0.md', 'content': 'forbidden'}))
     body = observations.NO_REPORT_RESULT if notification == 'no_report' else 'Startup failure report delivered.'
@@ -979,28 +962,3 @@ def test_legacy_preclaim_stop_conflict_only_recovers_with_fresh_exact_no_report(
                    for event in row['reconciliation_events'].values())
     else:
         assert row['state'] == 'unknown' and row['completion_conflict'] is True
-
-
-def test_failed_startup_then_ready_retry_releases_ten_task_cohort(tmp_path, monkeypatch):
-    host = Interactive(tmp_path, monkeypatch, count=10, scoped=True)
-    host.launch()
-    with pytest.raises(w.Refusal, match='Cohort startup'):
-        reserve(host.controller, host.state, task='T1', slots=11)
-    host.stop('Could not claim this attempt.')
-    host.notify(observations.NO_REPORT_RESULT)
-    assert host.row()['state'] == 'failed'
-    with pytest.raises(w.Refusal, match='Cohort startup'):
-        reserve(host.controller, host.state, task='T1', slots=11)
-    host.launch(retry_reason='Exact native no-report proves first startup failed; retry corrected commands.')
-    host.consume()
-    with pytest.raises(w.Refusal, match='Cohort startup'):
-        reserve(host.controller, host.state, task='T1', slots=11)
-    event = host.event('Read', {'file_path': 'input.py'})
-    flow.hook(event)
-    flow.hook({**event, 'hook_event_name': 'PostToolUse'})
-    assert workers.readiness(host.row())['status'] == 'ready'
-    grants = [reserve(host.controller, host.state, task='T' + str(index), slots=11)['grant']
-              for index in range(1, 10)]
-    assert len({grant['grant_id'] for grant in grants}) == 9
-    assert {grant['task_id'] for grant in grants} == {'T' + str(index) for index in range(1, 10)}
-    assert len([row for row in host.controller.report()['workers'].values() if row['state'] in workers.LIVE]) == 10

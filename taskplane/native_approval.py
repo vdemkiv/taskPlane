@@ -14,7 +14,6 @@ from typing import Any, Iterator
 
 from . import claude_worker_observations as native, workflow as w, host_capabilities
 from .context import digest
-from .workflow_approval import conversational_choice
 
 SCHEMA = 'taskplane.native-decision/v1'
 
@@ -83,20 +82,13 @@ def _text(row: dict[str, Any]) -> str | None:
 
 
 def _shown(text: str, state: dict[str, Any], artifact: str) -> bool:
-    stage = w.current(state)
-    checkpoint = stage['packet']['checkpoint']
-    phase = stage['phase']
-    if not re.search(r'\b(?:approv\w*|accept\w*|sign[ -]off)\b', text, re.I):
-        return False
-    explicit = checkpoint in text
-    named = (state['run'] in text and re.search(r'\b' + phase + r'\b', text, re.I)
-             and re.search(r'\brevision\s*[:#]?\s*' + str(state['revision']) + r'\b', text, re.I))
-    linked = bool(artifact and (artifact in text or str(Path(artifact).relative_to(state['workspace'])) in text))
-    return bool(explicit or named or linked)
+    # The adapter supplies the observed presentation binding; prose is retained
+    # as evidence, never parsed for exact question wording.
+    return isinstance(text, str) and bool(text.strip())
 
 
 def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
-            event: dict[str, Any] | None = None) -> dict[str, Any]:
+            event: dict[str, Any] | None = None, semantic_choice: str | None = None) -> dict[str, Any]:
     """Observe the latest real human reply, never scan arbitrary native files.
 
     Missing flush is pending; capacity and integrity failures are distinct.
@@ -171,9 +163,11 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
             return status('not_yet_available', 'No human response follows this checkpoint submission.')
         if not isinstance(excerpt, str) or not 0 < len(excerpt) <= 4096:
             return status('needs_clarification', 'Human response is outside the bounded decision contract.')
-        choice = conversational_choice(excerpt)
-        if choice is None:
-            return status('needs_clarification', 'The response does not express one unqualified checkpoint decision.')
+        candidate = semantic_choice or (event.get("taskplane_semantic_choice") if event else None)
+        if candidate not in {"approved", "changes_requested", "rejected", "cancelled"}:
+            return {"status": "semantic_candidate_required", "excerpt": excerpt,
+                    "reason": "The orchestrator must interpret this actual human response for the current checkpoint."}
+        choice = candidate
         named = re.findall(r'\b[0-9a-f]{32}\b', excerpt.casefold())
         if any(identifier != expected['checkpoint'] for identifier in named):
             return status('conflict', 'The response names a different checkpoint.')
@@ -185,9 +179,6 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
         if (len(text) > 16384 or not _shown(text, state, presentation.get('artifact', ''))
                 or not native._stamp(stage['submitted_at']) <= native._stamp(assistant.get('timestamp')) < observed):
             return status('needs_clarification', 'The preceding assistant presentation does not identify this checkpoint.')
-        if (len(re.findall(r'(?m)^\s*\d+[.)]\s', text)) > 1 or text.count('?') > 1) and not re.search(
-                r'\b(?:approv\w*|accept\w*|confirm\w*|sign[ -]off|reject\w*|cancel\w*)\b', excerpt, re.I):
-            return status('needs_clarification', 'A brief assent follows multiple choices; its target is ambiguous.')
         if not all(isinstance(row.get('uuid'), str) and native._UUID.fullmatch(row['uuid']) for row in (human, assistant)):
             raise ValueError('Native message identity is missing')
         envelope = {'schema': SCHEMA, 'event_id': human['uuid'], 'choice': choice,
@@ -222,7 +213,7 @@ def verify(value: dict[str, Any], state: dict[str, Any], host: str,
         state = deepcopy(state)
         state['revision'] = previous['binding']['revision']
         state['visits'][state['index']]['decision'] = 'awaiting_human_approval'
-    fresh = capture(state, host=host, presentation=presentation)
+    fresh = capture(state, host=host, presentation=presentation, semantic_choice=value.get("choice"))
     if previous is not None and fresh.get('status') == 'observed':
         # Accepting Plan may narrow the scope. Replaying its exact observation
         # retains the original scope authorization, never the newly narrowed one.

@@ -1,278 +1,53 @@
-# Native delegation
+# Native ownership for Codex and Claude
 
-Reservation and dispatch require a current matched automatic parent hook pair
-for the selected workspace, root, run, visit and runtime. A CLI workspace option
-does not prove hook propagation. Inspect readiness before reserving workers;
-missing observations require a real host event, never an authored readiness flag.
-Keep fixture protocol checks separate from live host execution. In particular,
-an inherited Claude environment or prompt grant does not identify a child CLI
-invocation; unsupported invocation identity remains unavailable.
+Use scoped native workers only when useful or explicitly required. Root integrated
+work and serial ownership are valid. Observe actual host capacity and true task
+prerequisites; there is no first-worker cohort, startup gate, lens quota or parent
+probe. This reference does not require delegation for a task that benefits from
+one integrated owner.
 
-Native dispatch is the default for useful independent work under this skill.
-Every new run scope must declare `execution_contract: "native-default/v1"`; this
-is mandatory in this entry flow. Publish typed `execution: "native_required"`
-tasks for ready independent work and one worker per selected Engineering lens,
-with a unique `review_lens` on each lens task. This instruction authorizes that
-bounded delegation; do not ask again solely because the user did not name agents.
+## Scope and identity
 
-Explicit user serial/no-delegation constraints take priority. For the versioned
-planning contract, each root task needs `execution_reason`, `execution_reference`
-and a task-specific `execution_exception` as defined in the
-[scope preflight](shared-flow.md#implementation-scope-preflight). Cite an actual
-read/write relationship, a single integrated task, the user's serial request, or
-this run's current recorded capability observation. Dependencies order work;
-shared-interface prose and earlier failed workers do not justify making all
-independent producers root tasks. Preserve legitimate final root integration.
-Root lens coverage is `serial_scope`, never native independence. Observe host capacity.
-Launch the first
-useful native task, pass its startup gate, then fill observed capacity with the
-ready independent cohort and refill as prerequisites complete. Limited capacity
-queues distinct workers. An unavailable adapter needs an observed reference;
-required native tasks remain incomplete and block sealing. A capability exception
-cannot rewrite their frozen definitions.
+Give each task a stable ID/generation, purpose, relevant input references, accepted
+prerequisite results and exact output/write paths. Keep one owner per path.
+Prepare/launch/claim operations correlate the actual host attempt; a supplied
+worker label, inherited environment or grant string is not native identity.
+Do not replay a predecessor's conversation into the brief.
 
-Use the installed prepare/claim/context/join/result protocol. Execute the exact
-returned `next_action` with the installed runtime launcher; it retains workspace,
-run and task. Follow `--read-required` actions until `remaining_required` is zero.
-Workers return scoped evidence. Only the root verifies and accepts joined fresh
-results and advances phases under the existing approval policy. `native_verified`
-lens coverage binds `task_id`, `grant` and the actual worker `reviewer`; labels alone
-cannot satisfy frozen requirements. Historical untyped evidence stays unverified.
+For Codex, bind the actual collaboration response/lineage and authoritative native
+worker ID. For Claude, bind the actual Agent/Task call, pinned native child ID and
+original completion/handback observations. The ordinary one-use Claude invocation
+bridge may identify an observed principal; no separate startup transport or
+source-probe ritual is required. Use actual exposed schemas rather than send
+Codex-only fields to Claude.
 
+Workers read the durable task brief and relevant references, stay in scope and
+return artifacts plus actual check outcomes. They cannot approve phases, widen
+scope or create a nested run. Independent task B does not wait for A's startup;
+actual prerequisites and read/write conflicts still serialize work.
 
-Give the worker the shared root workspace, run ID, attached task ID, graph and
-dashboard paths. Require [the shared flow](shared-flow.md), so the worker reads
-existing dependencies and returns its evidence to the root. Also give the
-worker the goal, relevant paths, scope, existing decisions, and expected
-verification. Use native agent tools and the host's supported settings. Keep
-context small; do not copy whole histories, catalogs, or unrelated source trees.
-Avoid conflicting writes by assigning disjoint files or isolated checkouts.
+## Completion and cancellation
 
-Use native status observations to join the attempt, inspect the actual output, and integrate it.
-In Codex, `list_agents` reports native status and `wait_agent` only waits for mailbox
-activity. In Claude, use observed completion notifications/handback and available
-`ListAgents`, `SendMessage` or `TaskStop` controls under the installed contract.
-Claude inventory labels, either host's wait, and stop requests do not prove completion. Native terminal/idle status and root result verification are separate.
-Fix concrete defects without repeating all reviews. Interruptions and missing
-results are not successful completion. Telemetry records available activity and
-usage; missing observations never prevent collection or progress.
+Retain prepared/launch-pending/running/result-pending/accepted facts and actual
+attempt identities. Observe authoritative native terminal completion before
+accepting results. Mailbox delivery, a successful wait call, Stop, a TaskStop
+request or output bytes cannot prove completion. Known command handles must also
+be terminal. Lost launch output or cancellation leaves completion unknown until
+actual evidence arrives; do not release uncertain writes or silently substitute
+another identity.
 
-Native host permissions and the user’s scope remain authoritative.
+Compare relevant inputs/task generation/prerequisites when accepting a result.
+Unrelated files, progress revisions and optional telemetry do not stale it.
+Invalidate affected dependency closure only. Repeat checks/reviews after relevant
+changes or failures, not merely because another worker progressed.
 
-Workers cannot accept checkpoints or broaden writes. Use the accepted phase scope
-and join known live work before sealing. Native-workflow scope checks apply to
-covered structured tools and auditable source effects; they do not certify opaque
-commands or host-wide process containment. Return requested changes as evidence;
-route amendments require human acceptance. Normal phase acceptance follows the
-root’s recorded manual/autonomous policy; workers never grant it independently.
+## Honest coverage
 
-Observed handles retain their visit and revision. Known terminal or stale handles
-cannot receive input through a covered hook. Unknown coverage stays visible.
-Protected-host handles additionally require native process identity and complete
-revocation proof. No Stop/cancel observation manufactures approval or process exit.
+Record who reviewed which scope and whether that person/worker was independent
+of implementation. Two lenses from one reviewer are one reviewer. Explicit
+native/independence obligations cannot be silently downgraded when capacity is
+unavailable. Report the missing capability and preserve incomplete work.
 
-## Consume bounded context
-
-After activation, start, advancement or resumption, use the installed runtime's
-`flow context --workspace <checkout> --run <run>` and consume the returned
-handoff with `--consume <handoff-ref-sha256>`. Use `--task <current-task-id>` for
-focused work. Read every omitted required input using `--read <ref-sha256>`;
-follow index children and page cursors until all required bodies are returned.
-A fresh consumer receives these bodies, scoped source and relevant findings;
-do not copy the predecessor conversation or tool history into its instructions.
-No context operation authorizes dispatch or a phase transition.
-
-For phase submission, obtain a current whole-phase receipt (without `--task`)
-and include the returned `context_receipt` object in the phase output. Renew it
-after source, scope, revision or accepted input changes. New bounded/v1 runs
-reject missing, partial, foreign or stale receipts. Legacy runs keep their
-original evidence contract. A receipt proves returned data, not model attention.
-
-Routine command summaries preserve the current gate and reference full details.
-Expand specific references when needed; request `--full` only for a consumer that
-requires the complete legacy report. Native dashboards retain complete evidence.
-Reuse a prior passing check only when its verification record matches current
-source/dependency, tests, runtime, environment, command and criteria fingerprints.
-Retain failed/unknown results and findings; reuse never transfers approval.
-
-## Adapter availability
-
-Validate the [workspace and execution contract](shared-flow.md#workspace-and-execution-contract)
-before preparation and again at claim. Supply the same selected execution root,
-binding and run to children; native host paths remain validated aliases. Under
-`local` or `darwin-local`, current worker location/reference evidence is required
-independently of the root command's observation. A mount, parent identity or grant
-prompt cannot prove child execution location or identity. Unknown required locality, binding
-drift or missing host propagation blocks the attempt; never substitute serial work
-for required native coverage. Existing claim, context and automatic pre/post startup
-checks remain mandatory, including after a host or mount change.
-
-Check the actually loaded runtime and workflow coverage before dispatch. The scoped
-native adapter supports explicit Codex collaboration and Claude Agent/Task contracts
-in `native_workflow`. Source changes and fixture tests do not prove the host loaded
-this adapter. Do not substitute a shell worker, new user-owned task, cache edit or
-disabled hook for a refused native launch.
-
-## Prepare, execute and accept
-
-The root uses `flow worker --operation prepare --workspace PATH --run RUN --task ID
---expected-revision N --worker-json JSON`. JSON supplies `capacity` with observed
-`host_slots`, `includes_root` and a real source `reference`; optional
-`configured_limit` and `resource_limit` narrow it. No default of two is applied.
-For Claude only, when the host exposes no capacity value, record `host_slots: null`,
-`includes_root: false`, a positive explicit `configured_limit` and the actual
-observed schema reference. This bounds local admission while keeping host capacity
-unknown; it is never a claim about the host's maximum or available slots.
-Count reservations, live attempts and unknown launches. Fill available capacity
-with useful ready tasks, then refill when results satisfy prerequisites. Two
-overlapping workers is the minimum live acceptance test, not the normal limit.
-
-Preparation returns a grant and bounded message. In Codex, pass the message unchanged
-as the prefix of `collaboration.spawn_agent` with the prepared `task_name` and
-`fork_turns: "none"`. In Claude, pass it unchanged as the prefix of Agent/Task
-`prompt`, with a concise `description` and the exposed `subagent_type` when required.
-Do not send `task_name`, `fork_turns` or `reasoning_effort` to Claude. Use
-`run_in_background: true` only when exposed; otherwise the native launch must still
-return structured asynchronous child identity. An explicit foreground launch is
-unsupported. Use the actual exposed native tool schema. An observed call
-binds the reservation; a returned canonical name is correlated to the real session
-ID through native parent/name metadata. Ambiguous correlation remains blocked.
-The prepared name includes the reservation ID because Codex desktop can expose
-encrypted message text to hooks. Preserve that exact name; custom name prefixes
-are limited to 46 characters. This is a correlation token, not worker authority.
-Opaque follow-up messages without an observable grant remain unsupported; use a
-new prepared native spawn for a fresh attempt instead of weakening grant checks.
-
-Claude's current call may reach PreToolUse before it is flushed to the transcript.
-Launch preflight verifies the pinned source and compares any readable call with
-the automatic hook input, without coercing strings or dropping fields. If a
-complete snapshot lacks the current call, the current root hook may reserve it as
-`launch_pending` with preflight status `awaiting_transcript`. This binds only the
-call ID and input digest; child identity, claim, context and execution remain
-blocked until the exact native call/result and child header agree. Do not retry
-the launch or abandon that admitted attempt; use `flow wait` if evidence stays
-unavailable. Later conflicts retain an unknown-attempt barrier.
-
-An unreadable/incomplete source or mismatched call still refuses before dispatch;
-the unlaunched reservation may be corrected or abandoned while required work
-stays pending. A native result already present before admission also preserves
-an unknown-attempt barrier: do not abandon, retry, clear identity or mark it done.
-Use `flow wait` for evidence-based recovery. Current Agent sessions may omit
-legacy `run_in_background` and `resume`; do not add them when unexposed. Native
-`effort` and scope-changing `isolation` are outside this adapter's implemented
-dispatch subset; omit them, or wait if that capability is required.
-
-The worker claims its observed identity using `flow worker --operation claim
---workspace PATH --run RUN --grant GRANT`, then obtains `flow context --task ID`
-with workspace/run and consumes every required page. Its receipt is unique to the
-worker, grant, attempt, task and generation. Only assigned writes are admitted.
-Pinned inputs survive own output edits; changed read inputs require revalidation.
-Grants pin exact prerequisite results and deliver their output evidence in task
-context. Join affected readers before replacing prerequisites. Accepted results
-retain read-input and prerequisite fingerprints, so later source edits invalidate
-dependent admission until fresh verification. Codex workers may report progress
-only to their bound parent. Claude child SendMessage-to-main is not supported by
-this adapter; use the supported native final handback/startup-failure path and let
-the root inspect observed status. Neither path permits nested delegation or root controls.
-Preparation and launch reject both write/write and read/write conflicts, including
-replacement workers that would change a live reader's prerequisite evidence.
-Workers cannot operate root controls, publish tasks, start a run or delegate.
-
-The root uses `--operation accept-result --task ID --grant GRANT` with the current
-revision and `--worker-json` containing `outputs` and `checks`. Each check has a
-name, `status: "pass"` and an existing evidence path. Native attempts must be
-joined, context consumed and child commands stopped. Explicit root-owned prerequisites
-use the same result operation without a grant or fictional worker ID. Root results
-pin the same declared source inputs as native attempts. Legacy root results without
-`input_contract: "declared-source/v1"` require reacceptance before reuse. Read and
-verify actual outputs first; assertions in check records are not independent proof.
-
-`--operation status` shows attempts and ready/waiting reasons. `capacity` updates
-observed limits; a reduction stops admission without cancelling live work.
-`abandon --grant GRANT` releases only an unlaunched reservation. A Codex idle worker's
-follow-up needs a new preparation with its actual `worker_id`, a fresh grant and
-fresh task context. Claude native SendMessage continuation is not new-attempt
-authority: use a fresh prepared Agent after the preceding attempt is joined.
-Unknown attempts remain visible and block sealing.
-Before proposing any recovery or retry, inspect `flow worker --operation status`
-and its `recovery` host capabilities, then verify the exact attempt and evidence.
-A host-supported operation still requires evidence; it is not a release grant.
-When an actual launch escaped hook admission, do not label it unlaunched or edit
-the controller. **Codex only:** if the prepared grant has no admitted call, identity, claim,
-context or result, `recover-unbound --grant GRANT` can revoke it after the root
-supplies the actual `request_reference`, `launch_call_id` and `terminal_call_id`
-in `--worker-json`, with the current run and revision. The installed CLI validates
-native spawn/terminal inventory pairs, independent child lineage and chronology,
-and refuses later child input/activity or known live commands. Historical proof
-only releases the reservation as failed; it cannot replace startup hooks, accept
-work or prove process exit. Retry with a fresh grant after hooks are restored.
-**Claude:** `recover-unbound` and `recover-unavailable` have no Claude adapter.
-For an owned worker with a recorded report and completion, use
-`reconcile-handback --grant GRANT` with the current run/revision to revalidate the
-original native evidence. It accepts no supplied proof or overrides, preserves
-the attempt and other results, and only advances a matched report to
-`result_pending`. Follow normal `accept-result` and approval gates. If it refuses,
-preserve its precise blocker; do not relaunch or ask for a duplicate handback.
-`recover-launch-denied` is only for the exact retained legacy denial with no child
-or work evidence described in the CLI reference. It cannot resolve an admitted
-launch with a child identity conflict. The distinct `reconcile-startup` operation handles only the documented
-legacy history-limit conflict before claim/context, with exact original admission,
-pinned native launch/stop/no-report evidence and unchanged accepted inputs. It
-journals the old failure and enables a fresh attempt; it cannot accept work or
-clear arbitrary identity conflicts. Use native TaskStop only for an owned bound
-worker and retain observed completion evidence; a stop request alone cannot release
-the attempt. If identity or termination remains unknown, preserve the blocked
-attempt, record `flow wait` with the precise missing capability, and request a
-scoped adapter repair. Do not promise a retry, call abandon on a launched worker,
-rewrite a frozen native task as root work or manufacture terminal evidence.
-
-For a reused worker, join with a native status call admitted during the new
-attempt, or a terminal event correlated to that attempt's launch. An old poll
-or an uncorrelated stop cannot complete a newer attempt.
-Missing or conflicting stop identities preserve the join barrier. Desktop tool
-hooks may report the parent session alongside a child `agent_id`; select that child
-only with matching native lineage before checking its scope. An unresolved or
-conflicting child actor refuses admission. Start/stop lifecycle hooks name an
-observed child, not a replacement actor. A different executing environment identity
-is also used only with matching native child lineage when the actor field is absent.
-
-Native final status is an observation, not a measured execution interval. Live
-overlap evidence must use actual task-start/end records; delayed polling alone
-cannot prove overlap. Keep Claude contract tests distinct from live Claude coverage.
-
-
-## Efficient native startup and context
-
-For every new native task, declare exact `read_inputs` from the run verification
-inputs or accepted Build paths, a concise `purpose`, and `context_budget_bytes`
-(default 128 KiB of unique required bodies). Include source dependencies and tests
-needed for the conclusion; narrow inputs must not hide a relevant dependency.
-Missing read inputs retain conservative legacy coverage. Inspect preparation's
-`context_preflight` before launch. Declare source/log/test detail artifacts as
-`source`, `raw-log`, `verification` or `supporting`; keep concise requirements and
-reports normative. Use `required_for` when supporting bodies are mandatory.
-
-For Codex, supply `fork_turns: "none"` explicitly. For Claude, use the exposed
-Agent/Task schema and prepared prompt; do not send Codex-only fields. Start the first useful scoped task,
-then observe its successful claim, complete context and matching automatic pre/post
-hook pair before preparing the rest of the cohort. Scoped preparation enforces
-this automatically; `readiness_after` can name an additional same-phase startup
-prerequisite. Release remaining ready work together while the first task works.
-Do not use throwaway probes or relaunch unchanged failures. A repeated scoped
-attempt needs `retry_reason` naming the observed defect or changed input.
-
-Execute the exact returned context action. New scoped workers use `--drain`, which
-returns at most 32 KiB including bodies and receipt. Return every response to the
-consumer, then follow `next_action` only while `remaining_required` is nonzero.
-Terminal responses have `done: true` and no action. Accumulate all subprocess/tool
-chunks until exit before parsing; never parse a running handle's partial output.
-Keep the combined response budget large enough and use bounded long waits (up to
-60 seconds between user updates), not repeated short model-facing polls.
-
-After a narrow repair, repeat affected checks and reviewers only. Unchanged
-scoped results remain fresh within their original binding; across visits use
-independently fingerprinted check evidence and a fresh scoped delta review.
-Never transfer approval, worker identity or a context receipt to another binding.
-Inspect attempt purposes, retry causes and delivered bytes in worker status and
-the dashboard. Delivered bytes, native tokens and Codex allowance are different
-measurements; no allowance saving can be inferred from byte counts alone.
+Fixtures validate local behavior; they do not certify a live loaded hook, bridge,
+process exit, Windows launcher or cross-host transfer. Candidate installation and
+host reload require separate authorization and actual observations.

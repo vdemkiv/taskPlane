@@ -15,98 +15,6 @@ def collection(store: Store, values: list[Any], kind: str, limit: int = 4) -> di
             "details": store.put(kind, values) if len(values) > limit else None}
 
 
-def shared_bodies(inputs: list[dict[str, Any]], refs: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Share exact bodies while retaining every role and required obligation."""
-    groups: dict[str, list[dict[str, Any]]] = {}
-    count("sort", len(inputs))
-    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
-        count("selection")
-        groups.setdefault(digest(item["body"]), []).append(item)
-    return [{"body_ref": refs[items[0]["id"]], "inputs": [
-                {"id": item["id"], "kind": item.get("kind", "input"),
-                 "required": item.get("required", True), "ref": refs[item["id"]]}
-                for item in items]}
-            for items in groups.values()
-            if len({refs[item["id"]]["sha256"] for item in items}) > 1
-            and any(item.get("required", True) for item in items)]
-
-
-def view_source_key(binding: dict[str, Any], refs: dict[str, dict[str, Any]],
-                    authority: dict[str, Any], inputs: list[dict[str, Any]]) -> str:
-    return digest({"binding": binding, "refs": refs, "authority": authority,
-                   "delivery": [(item["id"], item.get("required", True), item.get("priority", 1)) for item in inputs]})
-
-
-def view(store: Store, binding: dict[str, Any], phase: str, task_ids: list[str],
-         criteria: list[str], authority: dict[str, Any], inputs: list[dict[str, Any]],
-         coverage: dict[str, Any], *,
-         _prepared_refs: dict[str, dict[str, Any]] | None = None,
-         _streamed: bool = False) -> dict[str, Any]:
-    w.require(phase in PHASE_BYTES, "invalid_context", "Unknown context phase.")
-    refs: dict[str, dict[str, Any]] = {}
-    bodies: dict[str, Any] = {}
-    count("sort", len(inputs))
-    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
-        ref = (_prepared_refs[item["id"]] if _prepared_refs is not None
-               else store.put(item.get("kind", "input"), item["body"]))
-        refs[item["id"]] = ref
-        bodies[item["id"]] = item["body"]
-    required = [{"id": item["id"], "ref": refs[item["id"]]}
-                for item in inputs if item.get("required", True)]
-    count("sort", len(required))
-    required.sort(key=lambda x: x["id"])
-    source_key = view_source_key(binding, refs, authority, inputs)
-    result: dict[str, Any] = {"schema": "taskplane.context-view/v1", "binding": binding,
-              "source_key": source_key, "phase": phase,
-              "task_ids": collection(store, task_ids, "task-ids", 16),
-              "criteria": collection(store, criteria, "criteria", 16),
-              "authority_ref": store.put("authority", authority),
-              "required_inputs": collection(store, required, "required-inputs", 0),
-              "inline": {}, "references": collection(store, [{"id": k, "ref": v} for k,v in refs.items()], "input-index", 0),
-              "omissions": [], "coverage": coverage,
-              "budget": {"limit_bytes": PHASE_BYTES[phase], "overflow": False}}
-    reuse = shared_bodies(inputs, refs)
-    if reuse:
-        result["body_reuse"] = collection(store, reuse, "body-reuse", 0)
-    if _streamed:
-        # Typed tasks already advertise indexed drain. Keep their preparation
-        # metadata small; every required body still travels through that index.
-        result['omissions'] = [{'reason': 'Read every required body through the bound page index.',
-                                'count': len(refs)}]
-        result['budget']['overflow'] = bool(refs)
-        w.require(len(encode(signed(result))) <= PHASE_BYTES[phase], 'context_overflow',
-                  'Required context metadata cannot fit the phase budget.')
-        return signed(result)
-    inline: dict[str, Any] = {}
-    inline_bodies: set[str] = set()
-    required_ids = {row["id"] for row in inputs if row.get("required", True)}
-    returned: set[str] = set()
-    count("sort", len(inputs))
-    for item in sorted(inputs, key=lambda x: (not x.get("required", True), x.get("priority", 1), x["id"])):
-        count("selection")
-        key = item["id"]
-        # Repeated bodies are referenced once, not repeatedly supplied inline.
-        body_key = digest(bodies[key])
-        if body_key in inline_bodies:
-            continue
-        candidate = {**result, "inline": {**inline, key: bodies[key]}}
-        candidate_returned = returned | ({refs[key]["sha256"]} if key in required_ids else set())
-        # Leave room both for this consume receipt and for a later maximum-size
-        # page. Hundreds of tiny inline roots otherwise strand omitted bodies.
-        reserve = max(4096, 1024 + 67 * len(candidate_returned))
-        if len(candidate_returned) <= 100 and len(encode(signed(candidate))) <= PHASE_BYTES[phase] - reserve:
-            inline[key] = bodies[key]
-            inline_bodies.add(body_key)
-            returned = candidate_returned
-    result["inline"] = inline
-    result["omissions"] = [{"reason": "Read verified input references for bodies outside the inline budget.",
-                            "count": len(refs) - len(inline)}] if len(inline) != len(refs) else []
-    result["budget"]["overflow"] = bool(result["omissions"])
-    w.require(len(encode(signed(result))) <= PHASE_BYTES[phase], "context_overflow",
-              "Required context metadata cannot fit the phase budget.")
-    return signed(result)
-
-
 def summary(store: Store, payload: dict[str, Any], action: str,
             context: dict[str, Any] | None = None) -> dict[str, Any]:
     state = payload.get("workflow", payload)
@@ -136,7 +44,7 @@ def summary(store: Store, payload: dict[str, Any], action: str,
                    "Request the human decision for this checkpoint." if status == "awaiting_human_approval" else
                    "Advance to the next authorized phase or finish the accepted route." if status == "approved" else
                    "Finished; no phase work remains." if state.get("finished") else
-                   "Consume current context, complete phase evidence, then submit for approval.")
+                   "Read the current brief, complete phase evidence, then submit for approval.")
     details = store.put("command-result", payload)
     from .workflow_evidence import outcome_summary
     outcomes = outcome_summary(state) if visits else {}

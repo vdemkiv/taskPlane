@@ -18,37 +18,10 @@ from typing import Any, Mapping, Sequence
 from .primitives import content_fingerprint
 
 CAPABILITIES = ("protected_store", "human_origin", "tool_containment", "process_tracking")
-STARTUP_TIMING_BOUNDARY = (
-    "process_start", "pre_import", "automatic_pre_hook", "prepare_claim_context_probe",
-    "state_index_fingerprints", "serialization_storage", "automatic_post_hook",
-    "final_output", "measurement_writes", "process_teardown",
-)
 
 
-def startup_timing_capability(host: str, runtime: dict[str, Any]) -> dict[str, Any]:
-    """Installed hosts expose no qualified full-boundary provider yet.
-
-    This is an internal adapter seam, not a CLI/environment/worker assertion.
-    A future provider must qualify actual native boundaries before returning a
-    qualified record. Hook entry and command wall-time are only partial data.
-    """
-    return {"schema": "taskplane.startup-timing-capability/v1", "status": "unavailable",
-            "host": host, "runtime_sha256": content_fingerprint(runtime),
-            "reason": "No supported provider covers native process start through final hook/output and teardown.",
-            "boundary": list(STARTUP_TIMING_BOUNDARY), "provider": None, "clock": None}
 
 
-def qualified_startup_timing(value: Any, host: str, runtime: dict[str, Any]) -> bool:
-    """Validate an internal provider's qualification; never certify fixture truth."""
-    return (isinstance(value, dict)
-            and value.get("schema") == "taskplane.startup-timing-capability/v1"
-            and value.get("status") == "qualified" and value.get("host") == host
-            and value.get("runtime_sha256") == content_fingerprint(runtime)
-            and value.get("boundary") == list(STARTUP_TIMING_BOUNDARY)
-            and value.get("coverage") == "complete" and value.get("gaps") == []
-            and all(isinstance(value.get(k), str) and 0 < len(value[k]) <= 512
-                    for k in ("provider", "clock", "native_version", "qualification_reference",
-                              "boundary_test_reference", "correlation_contract")))
 _VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\+codex\.[0-9A-Za-z.-]+)?$")
 _INSTALLED_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$")
 
@@ -232,25 +205,33 @@ def inspect_native(host: str, workspace: Path, session: str) -> dict[str, Any]:
             "detail": "Discovery is observational. No native issuer, protected store or complete process/tool boundary is certified."}
 
 
-def runtime_identity() -> dict[str, Any]:
-    """Identity of this executing runtime; a manifest alone does not prove hook loading."""
+def runtime_identity(*, full: bool = False) -> dict[str, Any]:
+    """Identify the selected installation; explicitly audit members at a boundary.
+
+    An installation/version must be immutable while active. This cooperative
+    package identity is not host attestation or proof of which hooks loaded.
+    """
     import hashlib
     root = Path(__file__).resolve().parents[1]
-    members = {}
-    for name in ('taskplane/tp.py', 'taskplane/flow.py', 'taskplane/workflow_host.py',
-                 'taskplane/workflow.py', 'taskplane/workflow_evidence.py',
-                 'taskplane/workflow_local.py', 'taskplane/worker_runtime.py', 'taskplane/native_approval.py',
-                 'taskplane/workflow_write_guard.py', 'taskplane/context.py', 'taskplane/context_delivery.py',
-                 'taskplane/context_views.py',
-                 'taskplane/claude_startup_recovery.py', 'taskplane/workflow_collision.py',
-                 'taskplane/host_capabilities.py', 'taskplane/host_native.py', 'taskplane/native_tool_guard.py',
-                 'taskplane/delegated_approval.py', 'taskplane/state_import.py',
-                 'taskplane/claude_worker_observations.py', 'taskplane/claude_worker_invocation.py',
-                 'taskplane/context_handoff.py', 'taskplane/workspace_binding.py', 'hooks/hooks.json'):
-        target = root/name
-        members[name] = hashlib.sha256(target.read_bytes()).hexdigest() if target.is_file() else None
-    return {'root': str(root), 'member_sha256': members,
-            'basis': 'executing Python module path and file bytes; observation, not host attestation'}
+    versions = set()
+    for folder in ('.codex-plugin', '.claude-plugin'):
+        manifest = root / folder / 'plugin.json'
+        if manifest.is_file() and not manifest.is_symlink():
+            value = json.loads(manifest.read_text(encoding='utf-8'))
+            if value.get('name') != 'taskplane' or not isinstance(value.get('version'), str):
+                raise ValueError('Invalid Taskplane installation manifest')
+            versions.add(value['version'])
+    if len(versions) != 1:
+        raise ValueError('Taskplane installation manifests are missing or disagree')
+    package = {'name': 'taskplane', 'version': versions.pop(), 'workflow': 'taskplane.workflow/v2',
+               'context': 'brief/v1', 'execution': 'ownership/v1'}
+    result = {'root': str(root), 'package_id': content_fingerprint(package), **package,
+              'basis': 'selected immutable installation/version; cooperative observation, not host attestation'}
+    if full:
+        members = [*sorted((root / 'taskplane').glob('*.py')), root / 'hooks/hooks.json']
+        result['member_sha256'] = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                                   for p in members}
+    return result
 
 
 def worker_identities(parent: str, *, canonical_name: str | None = None,

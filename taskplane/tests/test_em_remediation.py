@@ -11,7 +11,6 @@ import pytest
 from taskplane import depgraph, flow, native_session_meter as meter, workflow
 from taskplane.tests.test_workflow_host import controller, native as human_event
 from taskplane.tests.test_workflow_evidence import prepare
-from taskplane.tests.test_cli_delivery import run_cli
 from contextlib import redirect_stdout
 import io
 
@@ -23,6 +22,14 @@ def cli(ws, *args, root=ROOT):
                             cwd=ws, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)
+
+
+def flow_call(controller, *arguments):
+    stream = io.StringIO()
+    with redirect_stdout(stream):
+        code = flow.main([*arguments, '--workspace', str(controller.workspace)], governor=controller)
+    assert code == 0, stream.getvalue()
+    return json.loads(stream.getvalue())
 
 
 def symlink(link, target):
@@ -47,19 +54,15 @@ def test_flow_never_writes_through_runtime_symlinks(tmp_path, target):
     else:
         (ws / ".taskplane").mkdir()
         symlink(ws / ".taskplane" / target, victim)
-    stream = io.StringIO()
-    with redirect_stdout(stream):
-        code = flow.main(["start", "--workspace", str(ws), "--goal", "Safe persistence"], governor=c)
-    report = json.loads(stream.getvalue())
-    assert code in (0, 2)
+    # Exercise the selected optional writer directly. A valid workflow start
+    # need not touch a dashboard, journal, ignore file or observation lock.
+    with pytest.raises((ValueError, OSError, workflow.Refusal, flow.primitives.StateError)):
+        if target == 'dashboard.html':
+            flow.publish_dashboard(ws, c.report()['run'], governor=c)
+        else:
+            flow.append(ws, {'kind': 'start', 'run': 'fixture', 'session': 'root'})
     assert victim.read_bytes() == b"KEEP THESE BYTES"
     assert sorted(p.name for p in outside.iterdir()) == ["sentinel"]
-    assert report.get("status") == "blocked" or report.get("evidence_errors")
-    if target == "dashboard.html":
-        result = subprocess.run([sys.executable, str(ROOT / "taskplane/tp.py"), "dashboard",
-                                 "--workspace", str(ws)], capture_output=True, text=True)
-        assert result.returncode != 0
-        assert victim.read_bytes() == b"KEEP THESE BYTES"
 
 
 def test_torn_journal_and_short_writes_preserve_finish(tmp_path, monkeypatch):
@@ -149,35 +152,33 @@ def native(path, total, *, resumed=False, sid="root", timestamp="2026-09-01T00:0
     path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
 
 
-def test_resumed_task_start_captures_one_logical_baseline(tmp_path, monkeypatch):
+def test_resumed_thread_measurement_uses_one_explicit_logical_baseline(tmp_path, monkeypatch):
     sessions = Path(os.environ['CODEX_HOME']) / 'sessions'
     sessions.mkdir(parents=True)
     monkeypatch.setenv('CODEX_THREAD_ID', 'root')
-    native(sessions / 'part1-root.jsonl', 100)
-    native(sessions / 'part2-root.jsonl', 160, resumed=True, timestamp="2026-09-01T00:00:06Z")
+    first, resumed = sessions / 'part1-root.jsonl', sessions / 'part2-root.jsonl'
+    native(first, 100)
+    native(resumed, 160, resumed=True, timestamp="2026-09-01T00:00:06Z")
     native(sessions / 'foreign-root.jsonl', 999, sid='unrelated')
-    c, _, _ = controller(tmp_path)
-    started = json.loads(run_cli(c.workspace, 'flow', 'start', '--workspace', str(c.workspace), '--goal', 'Resume', governor=c))
-    baseline = next(row for row in flow.read_events(c.workspace) if row['kind'] == 'start')
-    assert baseline['usage_status'] == 'observed'
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    baseline = meter.read_logical_snapshot([first, resumed], 'root')
     assert baseline['usage']['total_tokens'] == 160
-    native(sessions / 'part2-root.jsonl', 220, resumed=True, timestamp="2026-09-01T00:00:07Z")
-    report = cli(c.workspace, 'flow', 'report', '--workspace', str(c.workspace), '--full')
+    flow.append(workspace, {'kind': 'start', 'run': 'measurement-fixture', 'session': 'root',
+        'at': '2026-09-01T00:00:06Z', 'usage': baseline['usage'], 'usage_status': 'observed'})
+    with resumed.open('a') as stream:
+        stream.write(json.dumps({'type': 'token_usage_record', 'ordinal': 3,
+            'timestamp': '2026-09-01T00:00:07Z', 'payload': {'thread_id': 'root',
+            'thread_token_usage': {'input_tokens': 210, 'cached_input_tokens': 0,
+                                  'output_tokens': 10, 'total_tokens': 220}}}) + '\n')
+    report = flow.report(workspace)
     if sys.platform not in ('darwin', 'linux'):
-        # Capturing the logical baseline does not prove that the
-        # separate advisory inventory can discover every native segment.
-        for result in (started, report):
-            assert result['tokens'] is None and result['native_tokens'] is None
-            assert result['sessions'][0]['status'] == 'partial'
-            assert result['sessions'][0]['attribution_unknown']
-            refresh = result['usage_refresh']
-            assert not refresh['complete'] and not refresh['fully_discovered']
-            assert 'native_directory_accounting_unavailable' in refresh['discovery_errors']
-        return
-    assert started['tokens']['total_tokens'] == 0
-    assert report['tokens']['total_tokens'] == 60
-    assert report['native_tokens']['total_tokens'] == 220
-    assert report['token_coverage']['measured_sessions'] == 1
+        assert report['tokens'] is None
+        assert not report['usage_refresh']['fully_discovered']
+    else:
+        assert report['tokens']['total_tokens'] == 60
+        assert report['native_tokens']['total_tokens'] == 220
+        assert report['token_coverage']['measured_sessions'] == 1
 
 
 def test_partial_thread_counter_is_disclosed(tmp_path):
@@ -225,10 +226,13 @@ def test_standalone_entry_and_engineering_product_handoff_share_artifacts(tmp_pa
     (tmp_path / 'tasks.json').write_text(json.dumps({'tasks': [{'id':'F1', 'title':'Review input', 'paths':['app.py','build.json'], 'phase':'build', 'owner':'primary', 'verification':'Check F1 sentinel', 'criteria':['AC1'], 'status':'pending', 'dependencies':[]}]}))
     (tmp_path / 'reviews.json').write_text(json.dumps([{'lens':'security','agent':'root','evidence':'finding.md'}]))
     (tmp_path / 'finding.md').write_text('F1: protect the outside sentinel')
-    started = json.loads(run_cli(tmp_path, 'flow', 'start', '--workspace', str(tmp_path), '--phase', entry, '--standalone',
-                  '--tasks', 'tasks.json', '--reviews', 'reviews.json', '--evidence', 'finding.md', governor=c))
-    assert started['phase'] == entry and started['entry_phase'] == entry
-    assert len(started['tasks']) == 1 and len(started['reviews']) == 1
+    started = flow_call(c, 'start', '--phase', entry, '--standalone')['workflow']
+    flow_call(c, 'attach', '--run', started['run'], '--tasks', 'tasks.json',
+              '--reviews', 'reviews.json', '--evidence', 'finding.md')
+    view = flow.report(tmp_path, started['run'], governor=c)
+    assert view['phase'] == entry and view['entry_phase'] == entry
+    assert len(view['tasks']) == 1 and len(view['reviews']) == 1
+    flow.publish_dashboard(tmp_path, started['run'], governor=c, supplied=view)
     page = (tmp_path / flow.DASHBOARD).read_text()
     assert f'Authorized route: {entry.title()}' in page
     assert page.count('<a class="stage ') == 1
@@ -244,8 +248,10 @@ def test_standalone_entry_and_engineering_product_handoff_share_artifacts(tmp_pa
         state=c.apply('submit',state['run'],expected_revision=state['revision'],output='engineering.json',tasks='tasks.json')
         key=human_event(host,state)
         state=c.apply('decide',state['run'],expected_revision=state['revision'],native_reference=key)
-        product = json.loads(run_cli(tmp_path, 'flow', 'advance', '--workspace', str(tmp_path), '--phase', 'product',
-                      '--expected-revision',str(state['revision']), '--note', 'F1 defines the product criterion',governor=c))
-        assert product['run'] == started['run'] and product['phase'] == 'product'
-        assert product['artifacts'] == started['artifacts']
+        product = flow_call(c, 'advance', '--phase', 'product', '--run', state['run'],
+                            '--expected-revision', str(state['revision']))['workflow']
+        assert product['run'] == started['run'] and workflow.current(product)['phase'] == 'product'
+        next_view = flow.report(tmp_path, product['run'], governor=c)
+        assert next_view['artifacts'] == view['artifacts']
+        flow.publish_dashboard(tmp_path, product['run'], governor=c, supplied=next_view)
         assert 'Engineering → Product' in (tmp_path / flow.DASHBOARD).read_text()

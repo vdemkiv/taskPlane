@@ -53,7 +53,8 @@ def record_path(workspace: Path, root: str) -> Path:
     return storage.runtime_file(str(workspace), "state-import-" + key + ".json")
 
 
-def record(workspace: Path, root: str) -> dict[str, Any] | None:
+def record(workspace: Path, root: str, *, source_workspace: str | None = None) -> dict[str, Any] | None:
+    original_workspace = source_workspace or str(workspace)
     path = record_path(workspace, root)
     if not path.exists():
         return None
@@ -62,7 +63,7 @@ def record(workspace: Path, root: str) -> dict[str, Any] | None:
     except (OSError, ValueError) as exc:
         raise w.Refusal("state_unavailable", "Recovery receipt cannot be read; preserve it for repair.") from exc
     w.require(isinstance(value, dict) and value.get("schema") == SCHEMA
-              and value.get("workspace") == str(workspace) and value.get("root") == root
+              and value.get("workspace") == original_workspace and value.get("root") == root
               and value.get("profile") == "native_workflow" and isinstance(value.get("status"), str)
               and value["status"] in {"prepared", "committed"}
               and isinstance(value.get("binding"), dict)
@@ -73,23 +74,30 @@ def record(workspace: Path, root: str) -> dict[str, Any] | None:
               and isinstance(value.get("request_sha256"), str)
               and re.fullmatch(r"[a-f0-9]{64}", value["request_sha256"])
               and isinstance(value.get("original_controller"), dict)
-              and value["original_controller"].get("path") == str(workspace / ".taskplane" / "recovery-v1" / value["request_sha256"] / "original-controller.json")
+              and value["binding"].get("workspace") == original_workspace
+              and value["binding"].get("root") == root
+              and value["original_controller"].get("path") == str(Path(original_workspace) / ".taskplane" / "recovery-v1" / value["request_sha256"] / "original-controller.json")
               and isinstance(value.get("digest"), str)
               and value["digest"] == primitives.content_fingerprint({k: v for k, v in value.items() if k != "digest"}),
               "state_unavailable", "Recovery receipt identity or integrity changed.")
     return dict(value)
 
 
-def initialization(workspace: Path, root: str) -> dict[str, Any] | None:
-    receipt = record(workspace, root)
+def initialization(workspace: Path, root: str, *, source_workspace: str | None = None) -> dict[str, Any] | None:
+    """Validate retained provenance, including an explicitly relocated archive.
+
+    Relocation reads the retained files beneath the current directory but keeps
+    their original identities and bytes; it never rebinds their authority.
+    """
+    receipt = record(workspace, root, source_workspace=source_workspace)
     if receipt is None:
         return None
     w.require(receipt["status"] == "committed", "state_unavailable",
               "State import is incomplete. Retry the exact flow recover --recovery-request request; do not initialize a new run.")
     try:
-        raw = pinned(receipt["original_controller"])
+        retained = workspace / ".taskplane" / "recovery-v1" / receipt["request_sha256"]
+        raw = pinned({**receipt["original_controller"], "path": str(retained / "original-controller.json")})
         original = json.loads(raw)
-        retained = Path(receipt["original_controller"]["path"]).parent
         request = json.loads(pinned({"path": str(retained / "request.json"), "sha256": receipt["request_sha256"]}, 262144))
         w.require(isinstance(request, dict) and request.get("schema") == REQUEST
                   and request.get("host") == receipt.get("host")
@@ -98,7 +106,7 @@ def initialization(workspace: Path, root: str) -> dict[str, Any] | None:
                   "state_unavailable", "Retained recovery request differs from its receipt.")
         pinned({"path": str(retained / "approval-observation.json"), "sha256": request["approval"]["sha256"]}, 16384)
         state = original["runs"][receipt["binding"]["run"]]
-        w.require(original.get("root") == root and original.get("workspace") == str(workspace)
+        w.require(original.get("root") == root and original.get("workspace") == (source_workspace or str(workspace))
                   and original.get("active") == receipt["binding"]["run"]
                   and primitives.content_fingerprint(w.binding(state, w.current(state)["packet"]))
                       == primitives.content_fingerprint(receipt["binding"]),
@@ -202,11 +210,10 @@ def recover(controller: Any, request_path: str, expected_sha256: str, *, mode: s
     w.require(all(isinstance(value, str) for value in manifest.values()), "state_unavailable",
               "This bounded import does not support a normalized task manifest; restore the complete original store "
               "or preserve this checkpoint for a recovery that validates task definitions.")
-    current_source = local.inventory(controller.workspace)
-    before_source = state["source_baseline"]
-    w.require(all(before_source.get(p) == current_source.get(p) for p in set(before_source) | set(current_source)
-                  if p not in manifest), "stale_checkpoint",
-              "Source differs from the original baseline; import cannot silently migrate it.")
+    before_source = stage["packet"].get("source_manifest", {})
+    observed_source = evidence.manifest(controller.workspace, list(before_source), allow_missing=True)
+    w.require(before_source == observed_source, "stale_checkpoint",
+              "Relevant source differs from the preserved checkpoint; import cannot silently migrate it.")
     approval = pinned(request["approval"], 16384)
     verified = delegated_approval.verify_checkpoint(state, json.loads(approval), binding, state["decisions"])
     w.require(verified.get("choice") == "approved", "invalid_evidence", "Preserve the original scoped approval evidence.")

@@ -82,7 +82,7 @@ def test_denial_recovery_refusals_preserve_original_attempt(tmp_path, monkeypatc
     if defect == 'result_hash': request['expected_result_sha256'] = '0' * 64
     if defect == 'missing_reference': request['request_reference'] = ''
     if defect == 'extra_field': request['force'] = True
-    if defect == 'binding': row['binding']['revision'] += 1
+    if defect == 'binding': row['binding']['visit'] = 'foreign-visit'
     if defect == 'digest': row['dispatch_digest'] = '0' * 64
     if defect.startswith('admission'):
         admitted = next((key, value) for key, value in db['admissions'].items() if value['call_id'] == row['call_id'])
@@ -190,17 +190,13 @@ def test_denial_recovery_partial_scan_stays_private_and_resumes(tmp_path, monkey
 
 
 @pytest.mark.parametrize('boundary', ['prepare', 'dispatch', 'write', 'update_tasks', 'prevalidate',
-                                    'submit', 'advance', 'finish', 'auto-decide', 'retire', 'replace', 'stop', 'maintenance'])
+                                    'submit', 'advance', 'finish', 'auto-decide', 'retire', 'replace', 'stop'])
 @pytest.mark.parametrize('defect', ['late_result', 'missing', 'partial'])
 def test_denial_mutable_boundaries_refresh_and_persist_before_refusal(tmp_path, monkeypatch, boundary, defect):
     from taskplane.tests.test_worker_runtime import recorded_denial
     from taskplane import flow
     host, grant, event, _, result = recorded_denial(tmp_path, monkeypatch)
     c = host.controller; state = c.report()
-    if boundary == 'maintenance':
-        (tmp_path / '.taskplane/maintenance.json').write_text(json.dumps(dict(schema='taskplane.maintenance-request/v1',
-            request_reference='human/maintenance', reason='Authorized exact maintenance.',
-            changes={'unrelated.py': {'before': None, 'after': '0' * 64}})))
     if defect == 'late_result':
         changed = deepcopy(result); changed['extra'] = 'late competing result'; host.append(changed)
     if defect == 'missing': host.parent.unlink()
@@ -216,7 +212,6 @@ def test_denial_mutable_boundaries_refresh_and_persist_before_refusal(tmp_path, 
         if boundary == 'write': return c.guard(dict(tool_name='Write', tool_input={'file_path': 'T0.md'}), run)
         if boundary == 'update_tasks': return c.update_tasks(run, revision, 'tasks.json')
         if boundary == 'prevalidate': return c.prevalidate(run, revision=revision, output='product.json', tasks='tasks.json')
-        if boundary == 'maintenance': return c.reconcile_maintenance(run, revision, '.taskplane/maintenance.json')
         if boundary == 'replace':
             return c.start(dict(replace_run=run, expected_revision=revision, request_reference='human/new-run',
                                 scope=state['scope'], entry='product', standalone=True, tasks='tasks.json'))
@@ -292,7 +287,7 @@ def test_denial_does_not_veto_bound_negative_human_decision(tmp_path, monkeypatc
     host.parent.unlink()
     words = {'changes_requested': 'Changes requested', 'rejected': 'Rejected', 'cancelled': 'Cancelled'}[choice]
     updated = c.apply('decide', state['run'], expected_revision=state['revision'],
-                      native_reference=json.dumps(decision(state, text=words)))
+                      native_reference=json.dumps(decision(state, text=words, candidate=choice)))
     assert w.current(updated)['decision'] == choice
     assert updated['workers'][grant] == original
     assert not c.can_seal(state['run'])
@@ -363,17 +358,19 @@ def test_standalone_repair_refusal_preserves_protected_authorization(tmp_path):
     out = json.loads(target.read_text())
     out["route_change"] = {"kind": "repair"}
     target.write_text(json.dumps(out))
-    s = c.apply("submit", s["run"], expected_revision=s["revision"], output="engineering.json", tasks="tasks.json")
     event = native(host, s)
+    observed = deepcopy(host.events[event])
     before = host.store.read_bytes()
     with pytest.raises(w.Refusal, match="accepted Plan"):
-        c.apply("decide", s["run"], expected_revision=s["revision"], native_reference=event)
+        c.apply("submit", s["run"], expected_revision=s["revision"], output="engineering.json", tasks="tasks.json")
+    assert host.events[event] == observed  # Invalid route never consumes human input.
     assert host.store.read_bytes() == before
     with pytest.raises(w.Refusal):
         c.apply("advance", s["run"], expected_revision=s["revision"], phase="build")
     with pytest.raises(w.Refusal):
         c.guard({"tool_name": "Write", "tool_input": {"path": "app.py"}}, s["run"])
-    assert host.store.read_bytes() == before
+    assert c.report(s["run"])["decisions"] == {}
+    assert host.events[event] == observed
 
 
 def test_native_origin_required_and_concurrent_duplicate_applied_once(tmp_path):

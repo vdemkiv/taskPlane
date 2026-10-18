@@ -52,17 +52,6 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
         s["visits"][w.PHASES.index("plan")] = w.current(plan_state)
         s["decisions"] = plan_state["decisions"]
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
-    # Existing native fixture clients now explicitly consume their current inputs.
-    # Pure state-machine fixtures remain legacy data and need no retroactive receipt.
-    from taskplane import workflow_host
-    from taskplane.context_handoff import Session, consume_required
-    controller = workflow_host.Controller(tmp_path, "root", workflow_host.installed_adapter("codex"))
-    if controller.adapter.state_exists():
-        active = controller.report()
-        if active.get("context_contract") and w.current(active)["phase"] == phase:
-            receipt, returned = consume_required(Session(tmp_path, active))
-            assert returned and receipt["consumed_inputs"]
-            out["context_receipt"] = receipt
     return s, out, tasks
 
 
@@ -100,7 +89,7 @@ def test_normative_and_source_changes_have_different_effects(tmp_path):
     s = w.submit(s, e.seal(tmp_path, s, "product.json", "tasks.json"))
     (tmp_path/"app.py").write_text("value = 2\n")
     (tmp_path/".taskplane/dashboard.html").write_text("<html>New telemetry</html>")
-    assert e.changed(tmp_path, s) is None
+    assert e.changed(tmp_path, s)  # Declared relevant source changed before Build approval.
     (tmp_path/"product.json").write_text("{}")
     assert e.changed(tmp_path, s)[0] == w.current(s)["id"]
     s, _, _ = prepare(tmp_path, "evaluate")
@@ -189,101 +178,12 @@ def test_build_uses_accepted_criterion_associations_and_dependencies(tmp_path, d
         e.build_task_map(s, tasks["tasks"], mapping, ["AC1", "AC2"])
 
 
-@pytest.mark.parametrize("defect", ["degraded", "missing", "bad-meta", "bad-schema", "bad-type",
-                                   "incomplete", "fingerprint", "producer-failure", "component-failure"])
-def test_required_graph_quality_cannot_default_to_healthy(tmp_path, defect):
-    from taskplane import depgraph
-
-    s, _, _ = prepare(tmp_path)
-    target = tmp_path/".taskplane/knowledge/graph.json"
-    graph = json.loads(target.read_text())
-    quality = graph["meta"]["graph_scan_quality"]
-    if defect == "degraded":
-        quality["degraded"] = True
-        # A healthy top-level decoy cannot conceal the real persisted record.
-        graph["graph_scan_quality"] = {"degraded": False}
-        assert depgraph.scan_quality(graph)["degraded"]
-    elif defect == "missing":
-        graph["meta"].pop("graph_scan_quality")
-    elif defect == "bad-meta":
-        graph["meta"] = "invalid"
-    elif defect == "bad-schema":
-        quality["schema"] = "unsupported"
-    elif defect == "bad-type":
-        quality["degraded"] = 0
-    elif defect == "incomplete":
-        quality["producers"]["decomposition"]["status"] = "not-requested"
-    elif defect == "producer-failure":
-        quality["producers"]["base-scanner"]["failures"] = [{"reason": "parse failed"}]
-    elif defect == "component-failure":
-        graph["components"][0]["degraded"] = True
-    else:
-        quality["fingerprint"] = "corrupt"
-    target.write_text(json.dumps(graph))
-    with pytest.raises(w.Refusal, match="graph|decomposition"):
-        e.seal(tmp_path, s, "product.json", "tasks.json")
 
 
-def test_missing_or_corrupt_required_graph_refuses(tmp_path):
-    s, _, _ = prepare(tmp_path)
-    target = tmp_path/".taskplane/knowledge/graph.json"
-    target.unlink()
-    with pytest.raises(w.Refusal):
-        e.seal(tmp_path, s, "product.json", "tasks.json")
-    target.write_text("{broken")
-    with pytest.raises(w.Refusal):
-        e.seal(tmp_path, s, "product.json", "tasks.json")
 
 
-def test_real_scanner_quality_is_accepted_then_degradation_refuses(tmp_path):
-    from taskplane import depgraph
-
-    s, _, _ = prepare(tmp_path)
-    graph = depgraph.scan(str(tmp_path), decompose=True, strict=True)
-    packet = e.seal(tmp_path, s, "product.json", "tasks.json")
-    assert packet["context"]["graph"]["meta"]["graph_scan_quality"] == depgraph.scan_quality(graph)
-    (tmp_path/"app.py").write_text("def broken(:\n")
-    graph = depgraph.scan(str(tmp_path), decompose=True)
-    assert depgraph.scan_quality(graph)["degraded"]
-    with pytest.raises(w.Refusal, match="graph|decomposition"):
-        e.seal(tmp_path, s, "product.json", "tasks.json")
 
 
-@pytest.mark.parametrize('phase', ['product', 'design', 'engineering', 'build'])
-@pytest.mark.parametrize('change', ['source', 'add', 'remove', 'manifest', 'exclusions', 'artifact'])
-def test_checkpoint_rejects_source_and_resolution_drift_until_rescanned(tmp_path, phase, change):
-    import os
-    from taskplane import depgraph
-
-    (tmp_path/'lib').mkdir()
-    (tmp_path/'lib/util.py').write_text('value = 1\n')
-    (tmp_path/'lib/package.json').write_text('{"name":"first"}')
-    (tmp_path/'lib/guide.md').write_text('lib/util.py\n')
-    s, _, _ = prepare(tmp_path, phase, plan_fixture=phase == 'build')
-    packet = e.seal(tmp_path, s, phase+'.json', 'tasks.json')
-    if change == 'source':
-        path = tmp_path/'app.py'
-        before = path.stat()
-        path.write_text('value = 2\n')
-        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-    elif change == 'add':
-        (tmp_path/'lib/new.py').write_text('from lib import util\n')
-    elif change == 'remove':
-        (tmp_path/'lib/util.py').unlink()
-    elif change == 'manifest':
-        (tmp_path/'lib/package.json').write_text('{"name":"second"}')
-    elif change == 'exclusions':
-        (tmp_path/'components.yaml').write_text('exclude:\n  - lib\n')
-    else:
-        (tmp_path/'lib/guide.md').write_text('app.py\n')
-    with pytest.raises(w.Refusal, match='stale.*scan'):
-        e.seal(tmp_path, s, phase+'.json', 'tasks.json')
-    graph = depgraph.scan(str(tmp_path), decompose=True, strict=True)
-    fresh = e.seal(tmp_path, s, phase+'.json', 'tasks.json')
-    assert fresh['context']['graph']['meta']['source_inputs'] == graph['meta']['source_inputs']
-    assert packet['context']['graph']['meta']['source_inputs'] != graph['meta']['source_inputs']
-    if change == 'source':
-        assert packet['context']['graph']['files']['app.py']['hash'] != graph['files']['app.py']['hash']
 
 
 def test_source_freshness_ignores_runtime_and_task_observations(tmp_path):
@@ -295,18 +195,10 @@ def test_source_freshness_ignores_runtime_and_task_observations(tmp_path):
     (tmp_path/'.taskplane/flow-events.jsonl').write_text('{"kind":"usage"}\n')
     tasks['tasks'][0].update(status='complete', elapsed_seconds=1)
     (tmp_path/'tasks.json').write_text(json.dumps(tasks))
-    assert depgraph.source_inputs_current(str(tmp_path), packet['context']['graph'])
+    assert packet['context']['graph'] == {}  # Optional graph is not checkpoint authority.
     assert e.seal(tmp_path, s, 'build.json', 'tasks.json')['context']['tasks'][0]['status'] == 'complete'
 
 
-def test_legacy_graph_without_source_identity_requires_rescan(tmp_path):
-    s, _, _ = prepare(tmp_path)
-    path = tmp_path/'.taskplane/knowledge/graph.json'
-    graph = json.loads(path.read_text())
-    del graph['meta']['source_inputs']
-    path.write_text(json.dumps(graph))
-    with pytest.raises(w.Refusal, match='source input evidence'):
-        e.seal(tmp_path, s, 'product.json', 'tasks.json')
 
 
 @pytest.mark.parametrize('spelling', ['criteria', 'acceptance_criteria', 'both'])
@@ -358,17 +250,12 @@ def test_frozen_native_lens_cannot_seal_with_plausible_root_labels(tmp_path):
         e.seal(tmp_path, s, 'engineering.json', 'tasks.json')
 
 
-def test_native_contract_requires_typed_task_execution(tmp_path):
-    s, _, tasks = prepare(tmp_path)
-    s['scope']['execution_contract'] = 'native-default/v1'
-    with pytest.raises(w.Refusal, match='execution'):
-        e.freeze_tasks(tmp_path, s, tasks)
 
 
 def native_lens_fixture(tmp_path, *, serial=False, phase='engineering'):
     from taskplane import workflow_host as h, depgraph
     from taskplane.tests.test_worker_runtime import reserve, launch, consume, complete
-    from taskplane.context_handoff import Session, consume_required
+    from taskplane.context_handoff import Brief
     (tmp_path/'input.py').write_text('value = 1\n')
     scope = dict(criteria=['AC'], execution_contract='native-default/v1',
                  paths={p:[p+'.json'] for p in w.PHASES}, verification_inputs=['input.py'])
@@ -403,7 +290,6 @@ def native_lens_fixture(tmp_path, *, serial=False, phase='engineering'):
     (tmp_path/(phase+'.json')).write_text(json.dumps(out))
     (tmp_path/'.taskplane/dashboard.html').write_text('<html>Fixture dashboard</html>')
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
-    out['context_receipt'], _ = consume_required(Session(tmp_path, c.report()))
     (tmp_path/(phase+'.json')).write_text(json.dumps(out))
     return c, c.report(), out, rows
 
@@ -422,7 +308,7 @@ def test_distinct_real_native_lenses_seal_and_pin_result_artifacts(tmp_path):
 
 @pytest.mark.parametrize('defect', ['missing','extra','duplicate','reviewer','task','grant','status','downgrade'])
 def test_native_lens_false_claims_and_frozen_downgrade_refuse(tmp_path, defect):
-    from taskplane.context_handoff import Session, consume_required
+    from taskplane.context_handoff import Brief
     from taskplane import depgraph
     c, s, out, rows = native_lens_fixture(tmp_path)
     claims = out['lens_coverage']
@@ -433,7 +319,6 @@ def test_native_lens_false_claims_and_frozen_downgrade_refuse(tmp_path, defect):
         for row in rows: row.pop('execution'); row.pop('review_lens')
         (tmp_path/'tasks.json').write_text(json.dumps({'tasks':rows}))
         depgraph.scan(str(tmp_path), decompose=True, strict=True)
-        out['context_receipt'], _ = consume_required(Session(tmp_path, c.report()))
     else:
         claims[0][{'reviewer':'reviewer','task':'task_id','grant':'grant','status':'status'}[defect]] = {
             'reviewer':'plausible label', 'task':'T1', 'grant':claims[1]['grant'], 'status':'serial_scope'}[defect]
@@ -442,9 +327,9 @@ def test_native_lens_false_claims_and_frozen_downgrade_refuse(tmp_path, defect):
         e.seal(tmp_path, s, 'engineering.json', 'tasks.json')
 
 
-@pytest.mark.parametrize('defect', ['root-result','unjoined','receipt','source','stale-attempt','same-reviewer'])
+@pytest.mark.parametrize('defect', ['root-result','unjoined','source','same-reviewer'])
 def test_native_lens_actual_result_integrity_refuses(tmp_path, defect):
-    from taskplane.context_handoff import Session, consume_required
+    from taskplane.context_handoff import Brief
     from taskplane import depgraph
     c, s, out, rows = native_lens_fixture(tmp_path)
     result = s['task_results']['T0']; row = s['workers'][result['grant']]
@@ -455,14 +340,12 @@ def test_native_lens_actual_result_integrity_refuses(tmp_path, defect):
     elif defect == 'source':
         (tmp_path/'input.py').write_text('value = 2\n')
         depgraph.scan(str(tmp_path), decompose=True, strict=True)
-        out['context_receipt'], _ = consume_required(Session(tmp_path, s))
     else:
         # Preserve a valid consumer receipt for the reassigned identity so the
         # independent-reviewer rule, rather than receipt mismatch, is exercised.
         from taskplane import worker_runtime as wr
         other = s['task_results']['T1']; second = s['workers'][other['grant']]
         result['worker_id'] = row['worker_id'] = second['worker_id']
-        row['context_receipt'], _ = consume_required(wr.worker_session(tmp_path, s, row))
         out['lens_coverage'][0]['reviewer'] = second['worker_id']
     (tmp_path/'engineering.json').write_text(json.dumps(out))
     with pytest.raises(w.Refusal, match='native result|identities'):
@@ -491,7 +374,7 @@ def test_all_current_phase_required_native_tasks_need_results(tmp_path):
     assert 'native unavailable' in next(row['reason'] for row in status['scheduling'] if row['task'] == 'T1')
 
 
-@pytest.mark.parametrize('change', ['unknown-mode','missing-reason','missing-reference','root-owner','native-exception','duplicate-lens','wrong-phase'])
+@pytest.mark.parametrize('change', ['unknown-mode','root-owner','duplicate-lens','wrong-phase'])
 def test_typed_execution_metadata_validation(tmp_path, change):
     s, _, _ = prepare(tmp_path, 'engineering')
     rows = [dict(id='L', phase='engineering', owner='root', paths=['engineering.json'], dependencies=[],
@@ -511,7 +394,7 @@ def test_typed_execution_metadata_validation(tmp_path, change):
 def test_actual_sequential_reuse_of_one_native_worker_cannot_cover_two_lenses(tmp_path, projection):
     from taskplane.tests.test_worker_runtime import reserve, consume
     from taskplane import worker_runtime as wr, depgraph
-    from taskplane.context_handoff import Session, consume_required
+    from taskplane.context_handoff import Brief
     c, s, out, rows = native_lens_fixture(tmp_path)
     # Replace T1's completed result with a fresh actual follow-up to T0's worker.
     item = reserve(c, s, 'T1', worker_id='native-0'); grant = item['grant']['grant_id']
@@ -540,7 +423,6 @@ def test_actual_sequential_reuse_of_one_native_worker_cannot_cover_two_lenses(tm
         assert rendered.count('distinct actual worker') == 2
     out['lens_coverage'][1].update(reviewer='native-0', grant=grant)
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
-    out['context_receipt'], _ = consume_required(Session(tmp_path, s))
     (tmp_path/'engineering.json').write_text(json.dumps(out))
     with pytest.raises(w.Refusal, match='distinct actual worker'):
         e.seal(tmp_path, s, 'engineering.json', 'tasks.json')
@@ -559,7 +441,7 @@ def test_verified_lens_dashboard_preserves_token_coverage_and_plain_labels(tmp_p
 
 def test_observed_unavailable_capacity_never_completes_required_lenses(tmp_path):
     from taskplane.tests.test_worker_runtime import parent_pair
-    from taskplane.context_handoff import Session, consume_required
+    from taskplane.context_handoff import Brief
     c, s, out, rows = native_lens_fixture(tmp_path, serial=True)
     for row in rows:
         row.update(execution='native_required', owner='native/reviewer')
@@ -577,7 +459,6 @@ def test_observed_unavailable_capacity_never_completes_required_lenses(tmp_path)
     s = c.report()
     out['lens_coverage'] = [dict(lens=row['review_lens'],task_id=row['id'],reviewer='root',
         status='unavailable',rationale='Observed host refusal') for row in rows]
-    out['context_receipt'], _ = consume_required(Session(tmp_path, s))
     (tmp_path/'engineering.json').write_text(json.dumps(out))
     with pytest.raises(w.Refusal, match='T0.*unavailable'):
         e.seal(tmp_path, s, 'engineering.json', task_path)
@@ -609,7 +490,7 @@ def test_engineering_coverage_survives_retro_transition_with_sealed_freshness(tm
 
 
 @pytest.mark.parametrize('relative,valid', [
-    ('app.py', True), ('build.json', True), ('undeclared.py', False),
+    ('app.py', True), ('build.json', True), ('undeclared.py', True),
     ('../outside.py', False), ('linked.py', False),
 ])
 def test_initial_and_published_read_boundaries_match(tmp_path, relative, valid):
@@ -635,16 +516,6 @@ def test_initial_and_published_read_boundaries_match(tmp_path, relative, valid):
             assert failure.value.reason == 'scope_violation'
 
 
-def test_start_refuses_unscoped_reads_before_initializing(tmp_path):
-    from taskplane import workflow_host as h
-    state, _, tasks = prepare(tmp_path)
-    tasks['tasks'][0]['read_inputs'] = ['unscoped.json']
-    (tmp_path/'tasks.json').write_text(json.dumps(tasks))
-    (tmp_path/'unscoped.json').write_text('{"private":"fixture"}')
-    controller = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
-    with pytest.raises(w.Refusal, match='read inputs'):
-        controller.start({'scope':state['scope'], 'tasks':'tasks.json', 'request_reference':'fixture'})
-    assert not controller.adapter.state_exists()
 
 
 def serial_plan(tmp_path):
@@ -665,109 +536,18 @@ def root_exception(row, basis, **details):
                    schema='taskplane.execution-exception/v1', task=row['id'], basis=basis, **details))
 
 
-def test_blanket_historical_serial_build_is_rejected_but_legacy_contract_remains_readable(tmp_path):
-    state, rows = serial_plan(tmp_path)
-    # Reproduce the observed three disjoint ready producers plus six dependent
-    # tasks. Adding downstream edges does not justify serializing the producers.
-    for i in range(6):
-        path = 'src/dependent-' + str(i)
-        state['scope']['paths']['build'].append(path)
-        rows.append(dict(rows[i % 3], id='FOLLOW-' + str(i), paths=[path], dependencies=[rows[i % 3]['id']]))
-    for row in rows:
-        row.update(execution='root', owner='root', execution_reason='Shared interfaces and earlier stranded native runs require serial suite execution.',
-                   execution_reference='prior-review/report')
-    with pytest.raises(w.Refusal, match='task-specific'):
-        e.freeze_tasks(tmp_path, state, {'tasks': rows})
-    historical = deepcopy(state)
-    historical['scope'].pop('planning_contract')
-    historical['scope'].pop('implementation_intent')
-    assert len(e.freeze_tasks(tmp_path, historical, {'tasks': rows})) == 9
 
 
-def test_native_producers_and_root_integration_have_a_real_read_dependency(tmp_path):
-    state, rows = serial_plan(tmp_path)
-    root = dict(id='INTEGRATE', phase='build', owner='root', dependencies=[row['id'] for row in rows],
-                paths=['build/output.json', 'build/report.md', 'build/checks.json'],
-                read_inputs=[path for row in rows for path in row['paths']], criteria=['AC1'], verification='Run the combined suite')
-    root_exception(root, 'integration', related_tasks=root['dependencies'], paths=root['read_inputs'])
-    rows.append(root)
-    assert e.freeze_tasks(tmp_path, state, {'tasks': rows})[-1]['execution'] == 'root'
-    root['read_inputs'] = []
-    with pytest.raises(w.Refusal, match='read/write'):
-        e.freeze_tasks(tmp_path, state, {'tasks': rows})
 
 
-def test_serial_conflict_requires_actual_paths_and_order_not_shared_interface_prose(tmp_path):
-    state, rows = serial_plan(tmp_path)
-    rows[1]['read_inputs'] = rows[0]['paths']
-    rows[1]['dependencies'] = [rows[0]['id']]
-    root_exception(rows[1], 'task_conflict', related_tasks=[rows[0]['id']], paths=rows[0]['paths'])
-    assert e.freeze_tasks(tmp_path, state, {'tasks': rows})[1]['execution'] == 'root'
-    for defect in ('disjoint', 'unordered'):
-        broken = deepcopy(rows)
-        if defect == 'disjoint':
-            broken[1]['read_inputs'] = []
-        else:
-            broken[1]['dependencies'] = []
-        with pytest.raises(w.Refusal, match='read/write'):
-            e.freeze_tasks(tmp_path, state, {'tasks': broken})
 
 
-def test_trivial_exception_only_covers_one_integrated_task(tmp_path):
-    state, rows = serial_plan(tmp_path)
-    root_exception(rows[0], 'trivial')
-    assert e.freeze_tasks(tmp_path, state, {'tasks': rows[:1]})
-    with pytest.raises(w.Refusal, match='one integrated task'):
-        e.freeze_tasks(tmp_path, state, {'tasks': rows})
 
 
-def test_explicit_user_serial_constraint_applies_to_each_named_task(tmp_path):
-    state, rows = serial_plan(tmp_path)
-    request = dict(reference='user/this-run', excerpt='Please do this work serially without additional agents.')
-    state['scope']['serial_execution'] = request
-    for row in rows:
-        root_exception(row, 'user_serial', request=request)
-        row['execution_reference'] = request['reference']
-    assert len(e.freeze_tasks(tmp_path, state, {'tasks': rows})) == 3
-    rows[0]['execution_exception']['request'] = dict(request, reference='user/previous-run')
-    with pytest.raises(w.Refusal, match='exact request'):
-        e.freeze_tasks(tmp_path, state, {'tasks': rows})
 
 
-@pytest.mark.parametrize('defect', [None, 'old-run', 'old-visit', 'prior-visit-capacity', 'changed-observation', 'available'])
-def test_capability_serial_exception_uses_current_recorded_observation(tmp_path, defect):
-    state, rows = serial_plan(tmp_path)
-    state['worker_capacity'] = dict(status='unavailable', effective_limit=0, reference='host/current',
-                                   reason='The current host has no worker adapter.', observed_at='2026-10-05T12:00:00Z',
-                                   binding=dict(run=state['run'], visit=w.current(state)['id']))
-    observation = dict(run=state['run'], visit=w.current(state)['id'], reference='host/current',
-                       observed_at=state['worker_capacity']['observed_at'])
-    root_exception(rows[0], 'capability', observation=observation)
-    rows[0]['execution_reference'] = 'host/current'
-    if defect == 'old-run': observation['run'] = 'previous-run'
-    elif defect == 'old-visit': observation['visit'] = 'previous-visit'
-    elif defect == 'prior-visit-capacity': state['worker_capacity']['binding']['visit'] = 'previous-visit'
-    elif defect == 'changed-observation': state['worker_capacity']['observed_at'] = '2026-10-05T13:00:00Z'
-    elif defect == 'available': state['worker_capacity']['status'] = 'available'
-    if defect:
-        with pytest.raises(w.Refusal, match='recorded unavailable'):
-            e.freeze_tasks(tmp_path, state, {'tasks': rows})
-    else:
-        assert e.freeze_tasks(tmp_path, state, {'tasks': rows})
-        # The observation does not convert the remaining native task definitions.
-        assert [row['execution'] for row in rows] == ['root', 'native_required', 'native_required']
 
 
-def test_plan_cannot_remove_source_contract_or_widen_its_outer_scope(tmp_path):
-    state, rows = serial_plan(tmp_path)
-    output = dict(write_scope=state['scope']['paths']['build'])
-    for change in ('remove-source', 'remove-test', 'widen'):
-        broken = deepcopy(output)
-        if change == 'remove-source': broken['write_scope'].remove('src/rules.md')
-        elif change == 'remove-test': broken['write_scope'].remove('tests/check_rules')
-        else: broken['write_scope'].append('outside.py')
-        with pytest.raises(w.Refusal, match='cannot remove|exceed'):
-            e.plan_preflight(tmp_path, state, broken, rows)
 
 
 def test_feasible_plan_can_narrow_optional_paths_and_preserve_root_integration(tmp_path):
@@ -793,19 +573,6 @@ def test_feasible_plan_can_narrow_optional_paths_and_preserve_root_integration(t
                           evidence_outputs=['build/report.md'])]))
     assert e.plan_preflight(tmp_path, state, output, rows)['status'] == 'validated'
     assert 'optional.txt' not in output['write_scope']
-    for defect in ('unrelated-source', 'unrelated-test'):
-        unrelated = deepcopy(output)
-        check = unrelated['verification_strategy']['checks'][0]
-        if defect == 'unrelated-source': check['source_inputs'] = ['src/database']
-        else: check['test_inputs'] = ['src/api']
-        with pytest.raises(w.Refusal, match='declared implementation|declared test'):
-            e.plan_preflight(tmp_path, state, unrelated, rows)
-    packet = dict(phase='plan', visit=w.current(state)['id'], checkpoint='plan-checkpoint', output=output)
-    state = w.submit(state, packet)
-    state = w.decide(state, dict(event_id='human-plan', human=True, automatic=False, choice='approved',
-                                 binding=w.binding(state, w.current(state)['packet'])))
-    assert state['scope']['paths']['build'] == output['write_scope']
-    w.validate_scope(state['scope'])
 
 
 def test_documentation_only_plan_has_real_deliverable_and_review_without_fabricated_tests(tmp_path):
@@ -838,7 +605,7 @@ def test_stronger_contract_still_requires_unavailable_native_results(tmp_path):
 
 def test_legacy_checkpoint_reports_unknown_feasibility(tmp_path):
     state, _, _ = prepare(tmp_path)
-    assert e.prevalidate(tmp_path, state, 'product.json', 'tasks.json')['scope_preflight']['status'] == 'legacy_unknown'
+    assert e.prevalidate(tmp_path, state, 'product.json', 'tasks.json')['scope_preflight']['status'] == 'progressive'
 
 
 @pytest.mark.parametrize('change', ['root', 'rename', 'remove', 'phase', 'capability', 'criteria',
@@ -985,3 +752,151 @@ def test_plan_prevalidation_and_sealing_keep_valid_compiled_native_work(tmp_path
     assert e.prevalidate(tmp_path, state, files['packet'], files['tasks'])['phase'] == 'plan'
     assert e.seal(tmp_path, state, files['packet'], files['tasks'])['phase'] == 'plan'
     assert state == before_state
+
+
+@pytest.mark.parametrize('status', ['fail', 'unknown'])
+def test_evaluate_records_own_attempt_without_rewriting_accepted_build(tmp_path, monkeypatch, status):
+    import subprocess
+    from taskplane import context_reuse as reuse
+    from taskplane.tests.test_farm_evidence import contract, attempt, capture, fake_key
+    state, _, check = contract(tmp_path)
+    (tmp_path / 'app.py').write_text('value = 2\n')
+    output, _, _ = attempt(tmp_path, monkeypatch, state, check, 'check-1.log')
+    capture(state, output, e.validate_verification(tmp_path, state, output))
+    originals = {p: (tmp_path / p).read_bytes() for p in ('history.json', 'check-1.log')}
+    state['index'] = w.PHASES.index('evaluate')
+    state['scope']['paths']['evaluate'] += ['evaluate-history.json', 'evaluate-check.log']
+    def observed_failure(*args, **kwargs):
+        if status == 'unknown':
+            raise subprocess.TimeoutExpired(args[0], 1)
+        return subprocess.CompletedProcess(args[0], 1, '', 'Observed failing fixture command')
+    monkeypatch.setattr(reuse.subprocess, 'run', observed_failure)
+    key = fake_key(tmp_path, paths=check['source_inputs'], tests=check['test_inputs'],
+                   criteria=check['criteria'], command=check['command'], tool='python', contract='assertion/v1')
+    reuse.run_check(tmp_path, key, producer='root', history_path='evaluate-history.json',
+        run=state['run'], visit=w.current(state)['id'], check_id=check['id'], kind=check['kind'],
+        environment=check['environment'], log_path='evaluate-check.log', state=state)
+    evaluated = {'verification_history': 'evaluate-history.json', 'criterion_results': {'AC1': {'status': status}}}
+    validation = e.validate_verification(tmp_path, state, evaluated)
+    assert validation['effective_checks'][0]['status'] == status
+    stage = state['visits'][state['index']]
+    stage.update(decision='awaiting_human_approval', packet={'output': evaluated, 'verification': validation})
+    for phase in ('evaluate', 'engineering', 'retro'):
+        state['index'] = w.PHASES.index(phase)
+        assert e.effective_checks(state)[0]['status'] == status
+        assert e.effective_checks(state, output)[0]['status'] == status
+        assert e.outcome_summary(state)['current_checks'][0]['status'] == status
+    assert {p: (tmp_path / p).read_bytes() for p in originals} == originals
+
+
+def test_rejected_evaluate_snapshot_does_not_reveal_old_build_pass(tmp_path):
+    from taskplane.tests.test_farm_evidence import contract, capture
+    state, _, check = contract(tmp_path)
+    capture(state, {}, {'effective_checks': [{'check_id': check['id'], 'status': 'pass'}]})
+    state['index'] = w.PHASES.index('evaluate')
+    state['visits'][state['index']].update(decision='rejected', packet={
+        'output': {}, 'verification': {'effective_checks': [{'check_id': check['id'], 'status': 'fail'}]}})
+    state['index'] = w.PHASES.index('retro')
+    assert e.effective_checks(state)[0]['status'] == 'unknown'
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('status', ['fail', 'unknown'])
+@pytest.mark.parametrize('decision', ['awaiting_human_approval', 'changes_requested', 'rejected'])
+def test_evaluate_history_alias_preserves_captured_attempts(tmp_path, monkeypatch, host, status, decision):
+    import subprocess
+    import sys
+    from taskplane import context_reuse as reuse, workflow_host as h
+    from taskplane.tests.test_farm_evidence import fake_key
+    from taskplane.tests.test_workflow_local import decision as human_decision
+
+    monkeypatch.setattr(reuse, 'key', fake_key)
+    scope = {'criteria': ['AC1'], 'paths': {phase: [phase + '.json'] for phase in w.PHASES}}
+    scope['paths']['build'] += ['app.py', 'history.json', 'build.log']
+    scope['paths']['evaluate'] += ['eval-history.json', 'replacement.json', 'alias.json',
+                                  'eval-pass.log', 'eval-negative.log', 'eval-recovery.log']
+    (tmp_path / 'app.py').write_text('value = 1\n')
+    (tmp_path / 'test_app.py').write_text('assert True\n')
+    scope['verification_inputs'] = ['app.py', 'test_app.py']
+    controller = h.Controller(tmp_path, 'root', h.installed_adapter(host))
+    state = controller.start({'scope': scope, 'request_reference': 'fixture/history-alias'})
+    task = {'id': 'BUILD', 'phase': 'build', 'owner': 'root', 'dependencies': [],
+            'paths': scope['paths']['build'], 'criteria': ['AC1'],
+            'read_inputs': ['app.py', 'test_app.py'], 'verification': 'Run assertion'}
+    check = {'id': 'check', 'name': 'Check', 'task': 'BUILD', 'criteria': ['AC1'],
+             'kind': 'unit', 'environment': 'local', 'required': True,
+             'source_inputs': ['app.py'], 'test_inputs': ['test_app.py'],
+             'command': [sys.executable, '-c', 'assert True'], 'evidence_outputs': ['build.log']}
+
+    def submit(extra, filename):
+        output = {'schema': 'taskplane.phase-output/v1', 'run': state['run'],
+                  'visit': w.current(state)['id'], 'phase': w.current(state)['phase'],
+                  'criteria': ['AC1'], **extra}
+        (tmp_path / filename).write_text(json.dumps(output))
+        return controller.apply('submit', state['run'], expected_revision=state['revision'], output=filename)
+
+    def decide(choice='approved'):
+        observed = human_decision(state, candidate=choice, event='fixture/' + str(state['revision']))
+        return controller.apply('decide', state['run'], expected_revision=state['revision'],
+                                native_reference=json.dumps(observed))
+
+    for phase, extra in [
+        ('product', {'scope': 'One assertion', 'acceptance_criteria': [{'id': 'AC1', 'statement': 'Run assertion'}]}),
+        ('design', {'approach': 'Run check', 'acceptance_test_map': {'AC1': 'Check'}}),
+        ('plan', {'task_dag': [task], 'ownership': {'BUILD': 'root'}, 'write_scope': task['paths'],
+                  'acceptance_coverage': {'AC1': ['BUILD']}, 'integration_order': ['BUILD'],
+                  'verification_strategy': {'schema': e.VERIFICATION_STRATEGY, 'checks': [check]}}),
+    ]:
+        state = submit(extra, phase + '.json')
+        state = decide()
+        state = controller.apply('advance', state['run'], expected_revision=state['revision'],
+                                 phase=w.PHASES[w.PHASES.index(phase) + 1])
+
+    def attempt(history, log, observed_status):
+        provenance = fake_key(tmp_path, paths=check['source_inputs'], tests=check['test_inputs'],
+                              criteria=check['criteria'], command=check['command'], tool='python', contract='fixture/v1')
+        def observed_command(*args, **kwargs):
+            if observed_status == 'unknown':
+                raise subprocess.TimeoutExpired(args[0], 1)
+            return subprocess.CompletedProcess(args[0], 0 if observed_status == 'pass' else 1, 'Fixture outcome', '')
+        with monkeypatch.context() as observation:
+            observation.setattr(reuse.subprocess, 'run', observed_command)
+            reuse.run_check(tmp_path, provenance, producer='root', history_path=history,
+                run=state['run'], visit=w.current(state)['id'], check_id=check['id'],
+                kind=check['kind'], environment=check['environment'], log_path=log, state=state)
+
+    attempt('history.json', 'build.log', 'pass')
+    row = json.loads((tmp_path / 'history.json').read_text())['attempts'][-1]
+    state = submit({'change_inventory': ['app.py'], 'task_acceptance_map': {'AC1': ['BUILD']},
+        'known_gaps': [], 'verification_history': 'history.json', 'build_checks': [
+            {'check_id': 'check', 'name': 'Check', 'attempt_id': row['id'], 'status': 'pass', 'evidence': 'build.log'}]},
+        'build.json')
+    state = decide()
+    state = controller.apply('advance', state['run'], expected_revision=state['revision'], phase='evaluate')
+    attempt('eval-history.json', 'eval-pass.log', 'pass')
+    attempt('eval-history.json', 'eval-negative.log', status)
+    state = submit({'verification_history': 'eval-history.json', 'criterion_results': {
+        'AC1': {'status': status, 'evidence': 'eval-negative.log', 'explanation': 'Latest observation'}}}, 'evaluate.json')
+    if decision != 'awaiting_human_approval':
+        state = decide(decision)
+    before = controller._path().read_bytes()
+    original = (tmp_path / 'eval-history.json').read_bytes()
+    history = json.loads(original)
+    (tmp_path / 'alias.json').write_text(json.dumps({**history, 'attempts': history['attempts'][:1]}))
+    with pytest.raises(w.Refusal, match='cannot be removed'):
+        submit({'verification_history': 'alias.json', 'criterion_results': {
+            'AC1': {'status': 'pass', 'evidence': 'eval-pass.log', 'explanation': 'Old pass'}}}, 'replacement.json')
+    assert controller._path().read_bytes() == before
+    assert (tmp_path / 'eval-history.json').read_bytes() == original
+
+    # A renamed complete history remains valid; a fresh attempt can recover.
+    (tmp_path / 'alias.json').write_bytes(original)
+    state = submit({'verification_history': 'alias.json', 'criterion_results': {
+        'AC1': {'status': status, 'evidence': 'eval-negative.log', 'explanation': 'Retained latest observation'}}}, 'replacement.json')
+    assert e.effective_checks(state)[0]['status'] == status
+    attempt('alias.json', 'eval-recovery.log', 'pass')
+    state = submit({'verification_history': 'alias.json', 'criterion_results': {
+        'AC1': {'status': 'pass', 'evidence': 'eval-recovery.log', 'explanation': 'Fresh passing attempt'}}}, 'replacement.json')
+    assert e.effective_checks(state)[0]['status'] == 'pass'
+    assert [row['status'] for row in json.loads((tmp_path / 'alias.json').read_text())['attempts']] == ['pass', status, 'pass']
+    assert (tmp_path / 'eval-history.json').read_bytes() == original

@@ -3,6 +3,8 @@ import ctypes
 import errno
 import json
 import os
+import subprocess
+import sys
 from pathlib import PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -10,6 +12,54 @@ from unittest.mock import Mock
 import pytest
 
 from taskplane import primitives
+
+
+@pytest.mark.parametrize("failure", [OSError("native filesystem locking refused"), ImportError("no native lock API")])
+def test_native_lock_failure_refuses_before_entering_body(tmp_path, monkeypatch, failure):
+    target = tmp_path / "state.json"
+    entered = False
+    monkeypatch.setattr(primitives, "lock_file", Mock(side_effect=failure))
+    with pytest.raises(primitives.StateError, match="native state lock unavailable"):
+        with primitives.file_lock(str(target)):
+            entered = True
+    assert not entered
+    assert not target.with_suffix(".json.lockdir").exists()
+
+
+def test_lock_body_error_propagates_and_releases_native_lock(tmp_path):
+    target = str(tmp_path / "state.json")
+    failure = OSError(errno.EIO, "caller failed")
+    with pytest.raises(OSError) as caught:
+        with primitives.file_lock(target):
+            raise failure
+    assert caught.value is failure
+    with primitives.file_lock(target):
+        pass
+
+
+def test_native_lock_excludes_another_process_until_release(tmp_path):
+    target = str(tmp_path / "state.json")
+    acquired = tmp_path / "acquired"
+    program = (
+        "import sys; from pathlib import Path; from taskplane.primitives import file_lock; "
+        "print('attempting', flush=True); "
+        "\nwith file_lock(sys.argv[1]):\n Path(sys.argv[2]).write_text('acquired')\n"
+    )
+    with primitives.file_lock(target):
+        child = subprocess.Popen([sys.executable, "-c", program, target, str(acquired)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            assert child.stdout.readline().strip() == "attempting"
+            with pytest.raises(subprocess.TimeoutExpired):
+                child.wait(timeout=0.15)
+            assert not acquired.exists()
+        except BaseException:
+            child.kill()
+            child.communicate()
+            raise
+    stdout, stderr = child.communicate(timeout=10)
+    assert child.returncode == 0, stdout + stderr
+    assert acquired.read_text() == "acquired"
 
 
 @pytest.fixture

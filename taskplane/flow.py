@@ -771,7 +771,7 @@ def _onboarding_read(event: dict[str, Any]) -> bool:
             'taskplane', *('taskplane:' + name for name in (*workflow_local.EXECUTION_ENTRIES, 'tp-status', 'tp-help'))}
     if tool not in {'Bash', 'exec_command'}:
         return False
-    if workflow_local.readonly_command(event):
+    if workflow_local.opaque_command(event):
         return True
     words = workflow_local.runtime_words(event)
     cwd = runtime_command.execution_directory(event, Path.cwd())
@@ -916,17 +916,6 @@ def _hook(event: dict[str, Any], *,
     from .host_capabilities import runtime_identity
     event["taskplane_runtime_identity"] = runtime_identity()
     event["taskplane_automatic_hook"] = True
-    if (guarded.get('context_contract') == 'bounded/v3' and any(
-            row.get('startup_account', {}).get('schema') in {
-                'taskplane.startup-account/v1', 'taskplane.startup-account/v2'}
-            for row in guarded.get('workers', {}).values())):
-        from .workflow_write_guard import clock_identity
-        entry_ns = getattr(sys.modules.get('__main__'), 'TASKPLANE_ENTRY_NS', None)
-        event['taskplane_startup_entry'] = {
-            'monotonic_ns': entry_ns if type(entry_ns) is int else time.monotonic_ns(),
-            'includes_runtime_imports': type(entry_ns) is int, 'clock': clock_identity()}
-    if name == "PreToolUse":
-        controller.reconcile_startup(event)
     if name == "PostToolUse":
         pair = controller.complete_admission(event)
         if pair:
@@ -943,12 +932,6 @@ def _hook(event: dict[str, Any], *,
                 startup_observed = True
                 if observed_run:
                     guarded = controller.report(observed_run, diagnostics=False)
-        if selected and not guarded.get("run") and not workflow_local.execution_entry(event, allow_skill_read=False):
-            # A passive reread is not a new user request. Check completion before
-            # select() can erase the historical binding needed for cleanup.
-            previous_run = harness.read().get("run")
-            if previous_run and controller.report(previous_run, diagnostics=False).get("finished"):
-                selected = None
         if selected:
             selection_reference = str(event.get("tool_use_id") or event.get("call_id") or event.get("turn_id") or
                             "observed/" + hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest())[:512]
@@ -1022,8 +1005,6 @@ def _hook(event: dict[str, Any], *,
     if harness and harness.read().get("selected") and (selected or name in {"SessionStart", "UserPromptSubmit"}):
         output = result.setdefault("hookSpecificOutput", {"hookEventName": name})
         output["additionalContext"] = harness.guidance(guarded) + " " + output.get("additionalContext", "")
-    if name == "PostToolUse" and event.get('taskplane_admission', {}).get('startup'):
-        event['_startup_completion_controller'] = controller
     return result
 
 
@@ -1100,12 +1081,6 @@ def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = N
                     advice.get("hookSpecificOutput", {}).get("additionalContext", "")).strip()
         except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
             pass
-    controller = event.pop('_startup_completion_controller', None)
-    if controller is not None:
-        if completion is None:
-            controller.finish_startup_hook(event)
-        else:
-            completion.update(controller=controller, event=event)
     return result
 
 
@@ -1146,17 +1121,13 @@ def run_hook(command: str | None = None, *,
         print(json.dumps({"decision": "block", "reason": reason}))
         return 2
     print(json.dumps(result), flush=True)
-    # Production hook output must be emitted successfully before its durable
-    # completion marker. Failed output or persistence cannot release startup.
-    if completion:
-        completion['controller'].finish_startup_hook(completion['event'])
     return 0
 
 
 def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = False) -> None:
     """Bound shipped CLI transport while preserving full Python reports and hook envelopes."""
     from .context import Store, encode
-    from .context_handoff import Session
+    from .context_handoff import Brief
     from .context_views import summary
     if full or action in {'diagnose', 'recover', 'resume'}:
         print(json.dumps(payload, indent=2))
@@ -1167,7 +1138,7 @@ def emit(payload: dict[str, Any], workspace: Path, action: str, *, full: bool = 
         if action == "context" and payload.get("reason"):
             context = {"status": "blocked", "next_action": payload.get("next_action")}
         elif state.get("visits") and not state.get("finished") and not payload.get("historical"):
-            context = Session(workspace, state).descriptor()
+            context = Brief(workspace, state).descriptor()
     except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
         context = {"status": "unavailable", "reason": str(exc)[:512],
                    "next_action": "Repair context storage and retry flow context; do not replay a committed action."}
@@ -1197,17 +1168,11 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "resume", "reconcile-maintenance", "inspect", "prevalidate", "context", "context-upgrade", "context-rollback", "revise", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker"])
     parser.add_argument('--revision-mode', choices=['preview', 'begin', 'resume', 'abort'])
     parser.add_argument('--revision-request', help='Exact source-pinned requirements revision request')
     parser.add_argument('--revision-sha256')
     parser.add_argument('--revision-note', help='Actual abort reason')
-    parser.add_argument('--rollback-mode', choices=['preview', 'commit'])
-    parser.add_argument('--rollback-request', help='Exact source-pinned compatible rollback request')
-    parser.add_argument('--rollback-sha256')
-    parser.add_argument('--upgrade-mode', choices=['preview', 'commit'])
-    parser.add_argument('--upgrade-request', help='Exact source-pinned same-run context upgrade request file')
-    parser.add_argument('--upgrade-sha256')
     parser.add_argument('--preview-digest')
     parser.add_argument("--resume-mode", choices=["inspect", "verify"], help="Read-only native same-session continuation step")
     parser.add_argument("--resume-json", help="Observed human resume request with exact source run binding")
@@ -1216,19 +1181,14 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int, default=32768)
     parser.add_argument("--update-context", action="store_true", help="Publish run-bound task definitions; attach only")
-    parser.add_argument("--operation", choices=["prepare", "claim", "source-probe", "accept-result", "reject-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound", "recover-launch-denied", "reconcile-handback", "reconcile-startup", "startup-status", "stop", "omit-optional"])
+    parser.add_argument("--operation", choices=["prepare", "claim", "accept-result", "reject-result", "status", "abandon", "capacity", "recover-unavailable", "recover-unbound", "recover-launch-denied", "reconcile-handback"])
     parser.add_argument("--invocation-ref", help=argparse.SUPPRESS)
     parser.add_argument("--grant", default="")
     parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")
-    parser.add_argument('--startup-request', help='Canonical base64url JSON for a typed Claude startup invocation')
-    parser.add_argument("--maintenance-file", help="Exact user-requested maintenance hashes and provenance JSON")
     parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
     parser.add_argument("--task", help="Current phase task ID for context selection")
     context_read = parser.add_mutually_exclusive_group()
-    context_read.add_argument("--consume", help="Consume the current handoff SHA-256")
     context_read.add_argument("--read", help="Read a current verified reference SHA-256")
-    context_read.add_argument("--read-required", help="Return a bounded batch of missing required pages for this handoff SHA-256")
-    context_read.add_argument("--drain", help="Return up to 32 KiB of missing required bodies, with explicit terminal state")
     parser.add_argument("--section")
     parser.add_argument("--page", type=int)
     parser.add_argument("--workspace")
@@ -1264,16 +1224,10 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     except ValueError as exc:
         parser.error(str(exc))
     args = parser.parse_args(arguments)
-    if args.action != 'context-upgrade' and any(value is not None for value in
-            (args.upgrade_mode, args.upgrade_request, args.upgrade_sha256)):
-        parser.error('upgrade options apply only to flow context-upgrade')
-    if args.action != 'context-rollback' and any(value is not None for value in
-            (args.rollback_mode, args.rollback_request, args.rollback_sha256)):
-        parser.error('rollback options apply only to flow context-rollback')
     if args.action != 'revise' and any(value is not None for value in
             (args.revision_mode, args.revision_request, args.revision_sha256, args.revision_note)):
         parser.error('revision options apply only to flow revise')
-    if args.preview_digest is not None and args.action not in {'revise', 'context-upgrade', 'context-rollback'}:
+    if args.preview_digest is not None and args.action != 'revise':
         parser.error('preview digest applies only to a supported revision or upgrade')
     if args.action != 'resume' and (args.resume_mode is not None or args.resume_json is not None):
         parser.error('resume options apply only to flow resume')
@@ -1287,7 +1241,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         parser.error('--recovery-mode requires --recovery-request')
     if args.task is not None and args.action not in {"context", "worker"}:
         parser.error("--task applies to context or worker")
-    if any(value is not None for value in (args.consume, args.read, args.read_required, args.drain, args.section, args.page)) and args.action != "context":
+    if any(value is not None for value in (args.read, args.section, args.page)) and args.action != "context":
         parser.error("context selection options apply only to flow context")
     if args.update_context and (args.action != "attach" or not args.tasks or not args.run):
         parser.error("--update-context requires attach --tasks and --run")
@@ -1298,20 +1252,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     workspace = Path(args.workspace or os.getcwd()).resolve()
     workspace_validated = False
     protected: dict[str, Any] = {}
-    startup_control = args.action == 'worker' and args.operation in {'startup-status', 'stop', 'omit-optional'}
     def show(payload: dict[str, Any]) -> None:
-        startup_failure = payload.get('reason') and (
-            args.action == 'worker' and args.operation in {'prepare', 'claim', 'source-probe'}
-            or args.action == 'context' and protected.get('context_contract') == 'bounded/v3')
-        if startup_control or startup_failure:
-            from .context import encode
-            failure = {k: payload[k] for k in ('status', 'reason', 'detail') if k in payload}
-            failure['detail'] = str(failure.get('detail', ''))[:2048]
-            failure['schema'] = ('taskplane.startup-failure/v1' if startup_failure
-                                 else 'taskplane.startup-control-error/v1')
-            failure['permissions'] = {'implementation': False, 'result_acceptance': False}
-            print(encode(failure).decode('utf-8'))
-            return
         if payload.get("reason") and protected.get("run"):
             payload = {**payload, "workflow": {**protected, "status": payload["status"]}}
         if not workspace_validated or args.action in {"inspect", "prevalidate"}:
@@ -1336,29 +1277,12 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             invoked_result = workflow_host.Controller.invoke_claude(list(sys.argv))
             print(encode(invoked_result).decode("utf-8"))
             return 0
-        workflow.require(args.startup_request is None, 'unsupported_authority',
-                         'Encoded startup requests require an automatic Claude invocation reference.')
         if governor is None and claude_session({}) and (args.action == "context"
-                or args.action == "worker" and args.operation in {'claim', 'source-probe', 'startup-status', 'stop', 'omit-optional'}):
+                or args.action == "worker" and args.operation in {'claim'}):
             raise workflow.Refusal("unsupported_authority",
                 "Claude invocation identity is unavailable; startup and context operations require an automatic invocation reference.")
-        if startup_control:
-            from .context import encode
-            workflow.require(args.run and args.grant and len((args.worker_json or '{}').encode()) <= 4096,
-                             'invalid_evidence', 'Startup control requires an exact run, grant and at most 4 KiB request.')
-            request = json.loads(args.worker_json or '{}')
-            workflow.require(isinstance(request, dict), 'invalid_evidence', 'Startup control request must be an object.')
-            actor = governor.principal if governor else session_id({})
-            parent = governor.root if governor else observed_parent({}, actor)
-            selected, _ = select_controller(workspace, actor, parent, profile=args.profile,
-                                             governor=governor, diagnostics=False)
-            response = selected.worker(args.run, args.operation, revision=args.expected_revision,
-                                       grant=args.grant, request=request)
-            workflow.require(len(encode(response)) <= 4096, 'context_overflow', 'Startup control response exceeds 4 KiB.')
-            print(encode(response).decode('utf-8'))
-            return 0
         if args.action == 'context' or (args.action == 'worker' and args.operation in
-                                       {'prepare', 'claim', 'source-probe'}):
+                                       {'prepare', 'claim'}):
             # The current controller and observed actor are sufficient for
             # startup. Usage/history reconciliation is unrelated to delivery.
             # Keep all actual authority checks in the selected controller.
@@ -1368,9 +1292,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             controller, protected = select_controller(workspace, actor, parent, profile=args.profile,
                                                        governor=governor, diagnostics=False)
             if args.action == 'context':
-                response = controller.context(args.run, task=args.task, consume=args.consume,
+                response = controller.context(args.run, task=args.task,
                     read=args.read, page=args.page if args.page is not None else 0,
-                    section=args.section, read_required=args.read_required, drain=args.drain)
+                    section=args.section)
             else:
                 workflow.require(args.run and len((args.worker_json or '{}').encode()) <= 65536,
                                  'invalid_evidence', 'Startup operation needs an exact run and bounded request.')
@@ -1394,41 +1318,6 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                                              governor=governor, diagnostics=False)
             response = selected.revise(args.run, args.revision_mode, json.loads(raw),
                                        preview_digest=args.preview_digest, note=args.revision_note)
-            print(encode(response).decode('utf-8'))
-            return 0
-        if args.action == 'context-rollback':
-            from .context import encode
-            from . import workflow_evidence
-            workflow.require(args.run and args.rollback_request and args.rollback_mode and args.rollback_sha256,
-                             'invalid_evidence', 'Select the exact run, mode and pinned compatible rollback request.')
-            raw = workflow_evidence.read(workspace, args.rollback_request)
-            workflow.require(len(raw) <= 262144 and hashlib.sha256(raw).hexdigest() == args.rollback_sha256,
-                             'stale_checkpoint', 'Rollback request changed or exceeds its bound.')
-            actor = governor.principal if governor else session_id({})
-            parent = governor.root if governor else observed_parent({}, actor)
-            selected, _ = select_controller(workspace, actor, parent, profile=args.profile,
-                                             governor=governor, diagnostics=False)
-            response = selected.context_rollback(args.run, args.rollback_mode, json.loads(raw), args.preview_digest)
-            print(encode(response).decode('utf-8'))
-            return 0
-        if args.action == 'context-upgrade':
-            from .context import encode
-            from . import workflow_evidence
-            workflow.require(args.run and args.upgrade_request and args.upgrade_mode and args.upgrade_sha256,
-                             'invalid_evidence', 'Select an exact run, mode and hash-pinned upgrade request.')
-            raw = workflow_evidence.read(workspace, args.upgrade_request)
-            workflow.require(len(raw) <= 262144 and hashlib.sha256(raw).hexdigest() == args.upgrade_sha256,
-                             'stale_checkpoint', 'Upgrade request is oversized or changed.')
-            request = json.loads(raw)
-            actor = governor.principal if governor else session_id({})
-            parent = governor.root if governor else observed_parent({}, actor)
-            selected, _ = select_controller(workspace, actor, parent, profile=args.profile,
-                                             governor=governor, diagnostics=False)
-            response = selected.context_upgrade(args.run, args.upgrade_mode, request, args.preview_digest)
-            if response.get('schema') == 'taskplane.context-upgrade-preview/v1' and not args.full:
-                response = {k: v for k, v in response.items() if k != 'selection'} | {'selection': {
-                    k: v for k, v in response['selection'].items() if k != 'source_sha256'},
-                    'source_files': len(response['selection']['source_sha256'])}
             print(encode(response).decode('utf-8'))
             return 0
         if args.action == 'resume':
@@ -1509,10 +1398,10 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                                  'scope_violation', 'Workers cannot inspect root continuation.')
                 print(json.dumps(continuation.guidance(protected)))
                 return 0
-            workflow.require(args.action == "context" or args.action == "worker" and args.operation in {"claim", "source-probe"},
+            workflow.require(args.action == "context" or args.action == "worker" and args.operation in {"claim"},
                              "scope_violation", "Worker CLI is limited to claim and scoped context.")
         if protected.get("visits") and "workflow_binding" in protected.get("scope", {}):
-            diagnostic = args.action in {"report", "diagnose", "inspect", "recover", "reconcile-maintenance",
+            diagnostic = args.action in {"report", "diagnose", "inspect", "recover",
                                          "retire", "wait", "present", "decide"}
             replacement = args.action == "start" and args.replace_run
             worker_recovery = args.action == "worker" and args.operation in {"status", "recover-unbound", "recover-launch-denied", "abandon"}
@@ -1526,12 +1415,6 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                           revision=args.expected_revision, output=args.output or "", tasks=args.tasks or ""))
             show(recovery_read)
             return 0
-        if args.action == 'reconcile-maintenance':
-            from .context import encode
-            workflow.require(args.run and args.maintenance_file, 'invalid_evidence',
-                             'Maintenance reconciliation needs the exact run and manifest file.')
-            print(encode(controller.reconcile_maintenance(args.run, args.expected_revision, args.maintenance_file)).decode('utf-8'))
-            return 0
         if args.action == "worker":
             from .context import encode
             workflow.require(args.run and args.operation and len((args.worker_json or "{}").encode()) <= 65536,
@@ -1543,9 +1426,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             return 0
         if args.action == "context":
             from .context import encode
-            context_result = controller.context(args.run, task=args.task, consume=args.consume,
-                                        read=args.read, page=args.page if args.page is not None else 0, section=args.section,
-                                        read_required=args.read_required, drain=args.drain)
+            context_result = controller.context(args.run, task=args.task,
+                                        read=args.read, page=args.page if args.page is not None else 0, section=args.section)
             print(encode(context_result).decode("utf-8"))
             return 0
         if protected.get("run") and (run is None or args.action not in {"report", "attach"}):
@@ -1582,192 +1464,53 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             show({"workflow": protected, "harness": harness.readiness(protected),
                   "guidance": harness.guidance(protected)})
             return 0
-        before_measurement: dict[str, Any] | None = None
-        outgoing_run = deepcopy(run)
-        outgoing_state = deepcopy(protected)
-        if args.action == "start" and not outgoing_state.get("run"):
-            outgoing_run = next((r for r in reversed(rows) if r.get("kind") == "start"
-                                 and r.get("session") == controller.root), None)
-            if outgoing_run:
-                try:
-                    outgoing_state = controller.report(outgoing_run["run"])
-                except workflow.Refusal as exc:
-                    if exc.reason != "state_unavailable":
-                        raise
-                    # A journal-only predecessor has no committed controller
-                    # state to close. It stays legacy evidence, not a start gate.
-                    outgoing_run = None
-                    observation_errors.append("Prior journal has no governed run; legacy usage remains unverified.")
-        measured_at = datetime.now(timezone.utc).isoformat()
-        if outgoing_run and args.action != "report":
-            try:
-                before_measurement = reconcile_usage(outgoing_run, rows, outgoing_state)
-            except (OSError, ValueError, TypeError, KeyError):
-                observation_errors.append("Transition counters unavailable; phase allocation remains partial.")
-        start_counter = counter({}, session) if args.action == "start" else {}
-        committed_state: dict[str, Any] | None = None
         if args.action == "start":
             from . import workflow_evidence
             scope = workflow_evidence.object_file(workspace, args.scope) if args.scope else None
-            start_graph = None
-            if not protected.get('run') or args.replace_run:
-                start_graph = depgraph.scan(str(workspace), decompose=True)
-                workflow.require(not depgraph.scan_quality(start_graph).get("degraded"),
-                                 "invalid_evidence", "Repair the source graph before starting the workflow.")
-            if harness and not protected.get("run"):
-                selected_entry = harness.read().get("entry") if harness.read().get("selected") else None
-                standalone_phase = {"tp-engineering": "engineering", "tp-northstar": "engineering",
-                                    "tp-design": "design", "tp-workflow": "design", "tp-product": "product",
-                                    "engineering": "engineering", "design": "design", "product": "product"}.get(str(selected_entry))
-                workflow.require(not standalone_phase or args.standalone and args.phase == standalone_phase,
-                                 "scope_violation", "The selected standalone task requires --standalone --phase " + str(standalone_phase))
             state = controller.start({"entry": args.phase or "product", "standalone": args.standalone,
-                                      "goal": args.goal, "native_reference": args.native_event,
-                                      "scope": scope, "request_reference": args.request_reference, "tasks": args.tasks,
-                                      "replace_run": args.replace_run, "expected_revision": args.expected_revision})
-            committed_state = state
-            observation_errors.extend(state.pop("start_observation_errors", []))
-            if harness:
-                try:
-                    if args.replace_run:
-                        harness.select("tp-" + (args.phase or "product") if args.standalone else "tp-go",
-                                       args.request_reference, state)
-                    harness.bind(state)
-                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                    observation_errors.append("Run started; harness selection or binding observation unavailable.")
-            if not any(r.get("kind") == "start" and r.get("run") == state["run"] for r in rows):
-                run = {"kind": "start", "run": state["run"], "session": state["root"],
-                       "at": state.get("started_at"), "goal": state.get("goal", args.goal),
-                       "phase": workflow.current(state)["phase"], "hook_setup": "host_adapter", **start_counter}
-                try:
-                    if start_graph:
-                        record_scan(workspace, start_graph)
-                    if "tasks" not in artifacts:
-                        task_path = storage.runtime_file(str(workspace), "tasks.json")
-                        primitives.atomic_json(task_path, {"tasks": [{
-                            "id": "SCOPE", "title": args.goal or "Prepare the requested outcome",
-                            "owner": state["root"], "dependencies": [], "status": "working",
-                            "paths": state["scope"]["paths"][workflow.current(state)["phase"]],
-                            "criteria": state["scope"]["criteria"],
-                            "verification": "Produce criterion evidence and request human stage acceptance."}]})
-                        artifacts["tasks"] = str(task_path.relative_to(workspace))
-                    run.update(artifacts=artifacts, captured=capture_attachments(workspace, artifacts))
-                    append(workspace, run)
-                    initial = {"sessions": [{"session": state["root"], "role": "orchestrator", "native_usage": start_counter.get("usage"),
-                        "status": "measured" if start_counter.get("usage_status") == "observed" else "unavailable"}]}
-                    append(workspace, usage_point(state, initial, observed_at=measured_at))
-                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                    observation_errors.append("Run started; initial graph, journal or phase observation unavailable.")
+                "goal": args.goal, "native_reference": args.native_event, "scope": scope,
+                "request_reference": args.request_reference, "tasks": args.tasks,
+                "replace_run": args.replace_run, "expected_revision": args.expected_revision})
         elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide", "retire"}:
-            workflow.require(run, "state_unavailable", "No active workflow binding.")
-            assert run is not None
-            state = controller.apply(args.action, str(run["run"]),
-                expected_revision=args.expected_revision, output=(args.assessment if args.action == "auto-decide" else args.output) or "",
+            target_run = args.run or protected.get("run")
+            workflow.require(target_run, "state_unavailable", "No active workflow binding.")
+            assert isinstance(target_run, str)
+            state = controller.apply(args.action, target_run, expected_revision=args.expected_revision,
+                output=(args.assessment if args.action == "auto-decide" else args.output) or "",
                 tasks=args.tasks or "", phase=args.phase, assessment_json=args.assessment_json,
-                native_reference=json.dumps({"request_reference": args.request_reference, "reason": args.note}) if args.action == "retire" else args.policy_json if args.action == "policy" else args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
-            committed_state = state
+                native_reference=json.dumps({"request_reference": args.request_reference, "reason": args.note})
+                    if args.action == "retire" else args.policy_json if args.action == "policy"
+                    else args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
             if harness and (state.get("finished") or state.get("retired")):
                 try:
                     harness.update(selected=False, waiting=None)
-                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                    observation_errors.append("Workflow action committed; harness completion observation unavailable.")
-            try:
-                append(workspace, {"kind": args.action, "run": run["run"], "session": run["session"],
-                                   "phase": workflow.current(state)["phase"], "note": args.note[:1000],
-                                   "artifacts": artifacts, "captured": capture_attachments(workspace, artifacts)})
-            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                # The authoritative action has already committed. Observation
-                # failure cannot turn its actual result into a rejected command.
-                observation_errors.append("Workflow action committed; optional journal recording unavailable.")
+                except (OSError, ValueError, workflow.Refusal) as exc:
+                    state = {**state, "observation_errors": [f"Optional harness update unavailable: {exc}"]}
         elif args.action in {"progress", "attach"}:
-            workflow.require(run, "state_unavailable", "No run to attach observations to.")
-            assert run is not None
+            target_run = args.run or protected.get("run")
+            workflow.require(target_run, "state_unavailable", "No active workflow binding.")
+            assert isinstance(target_run, str)
             if args.update_context:
-                controller.update_tasks(args.run, args.expected_revision, args.tasks)
-            if args.action == "progress" and args.phase:
-                current_phase = protected.get("phase") or summarize(rows, run)["phase"]
-                if args.phase != current_phase:
-                    raise workflow.Refusal("approval_required", "Progress cannot advance a phase. Use the explicit advance action after human approval.")
-            append(workspace, {"kind": args.action, "run": run["run"], "session": run["session"],
-                               "phase": args.phase[:80], "note": args.note[:1000],
-                               "artifacts": artifacts, "captured": capture_attachments(workspace, artifacts), **counter({}, session)})
-        if outgoing_run and outgoing_state.get("run") and committed_state and args.action in {"finish", "start"}:
-            try:
-                from . import flow_telemetry
-                after_outgoing = controller.report(outgoing_state["run"])
-                transition = "finish" if args.action == "finish" else "replacement" if args.replace_run else "interval_closed"
-                cutoff = measured_at
-                closing = None
-                measurement = before_measurement or {"sessions": [], "token_coverage": {"status": "unavailable"}}
-                if args.action == "start" and committed_state["run"] != outgoing_state["run"]:
-                    cutoff = committed_state["started_at"]
-                    closing = {**start_counter, "session": controller.root, "at": cutoff}
-                    measurement = reconcile_usage(outgoing_run, rows, outgoing_state, closing=closing)
-                if (after_outgoing["revision"] != outgoing_state["revision"]
-                        or args.action == "start" and committed_state["run"] != outgoing_state["run"]):
-                    closure = flow_telemetry.commit_boundary(workspace, outgoing_state, after_outgoing,
-                        transition, measurement, measured_at, cutoff=cutoff, closing_counter=closing,
-                        host=outgoing_run.get("host", "codex"), next_state=committed_state if args.action == "start" else None)
-                    if not any(r.get("closure_id") == closure["id"] for r in read_events(workspace)):
-                        append(workspace, closure["point"])
-                # Retry rendering from the original committed sample, never replace it with new counters.
-                for closure in flow_telemetry.read_boundaries(workspace, outgoing_state["run"], controller.root):
-                    current_rows = read_events(workspace)
-                    if any(r.get("kind") == "final_snapshot" and r.get("closure_id") == closure["id"] for r in current_rows):
-                        continue
-                    closing_model = report(workspace, outgoing_state["run"], governor=controller)
-                    if closing_model:
-                        frozen = flow_telemetry.frozen_model(closing_model, closure, current_rows)
-                        snapshot = publish_dashboard(workspace, outgoing_state["run"], governor=controller,
-                            supplied=frozen, detached=True, pin_reason="closure/" + closure["id"])
-                        append(workspace, {"kind": "final_snapshot", "run": outgoing_state["run"],
-                            "session": controller.root, "closure_id": closure["id"], "artifact": str(snapshot),
-                            "label": closure["label"], "cutoff": closure["cutoff"]})
-            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                observation_errors.append("Lifecycle committed; frozen usage closure or publication unavailable.")
-        if before_measurement and run and args.action not in {"start", "finish"}:
-            try:
-                after_state = controller.report(str(run["run"]))
-                if after_state.get("visits"):
-                    # Idempotent control retries must not add duplicate boundaries.
-                    mutated = after_state["revision"] != protected.get("revision")
-                    if mutated or args.action in ("progress", "attach"):
-                        append(workspace, usage_point(after_state, before_measurement, observed_at=measured_at,
-                               previous_revision=protected.get("revision")))
-            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                observation_errors.append("Action committed; phase boundary observation unavailable.")
-        result = report(workspace, str(run["run"]) if run else args.run, governor=controller)
-        if result and args.action == "attach" and args.tasks:
-            result["task_context_update"] = ("published run-bound definitions" if args.update_context else
-                "Observational attachment only. Publish definitions with attach --tasks FILE --update-context --run RUN --expected-revision N.")
-        if result:
-            result["evidence_errors"].extend(observation_errors)
-        if result and run and args.action != "report":
-            try:
-                if result.get("sessions"):
-                    append(workspace, {"kind": "usage", "run": run["run"], "session": run["session"],
-                        "measurement": {k: result[k] for k in ("sessions", "tokens", "native_tokens", "token_coverage")}})
-                result["dashboard"] = str(publish_dashboard(workspace, str(run["run"]), governor=controller,
-                    supplied=result, select=args.action == "start"))
-            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                result["evidence_errors"].append("Optional observations or dashboard refresh unavailable.")
-        if result:
-            if harness and not result.get("historical"):
-                try:
-                    result["harness"] = harness.readiness(controller.report())
-                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                    result["harness"] = {"status": "unavailable"}
-                    result["evidence_errors"].append("Optional harness readiness observation unavailable.")
-            show(result)
+                state = controller.update_tasks(target_run, args.expected_revision, args.tasks)
+            else:
+                state = controller.report(target_run, diagnostics=False)
+                workflow.require(not args.phase or args.phase == workflow.current(state)["phase"],
+                                 "approval_required", "Progress does not advance a phase.")
+                append(workspace, {"kind": args.action, "run": target_run, "session": controller.root,
+                                   "note": args.note, "artifacts": artifacts,
+                                   "captured": capture_attachments(workspace, artifacts)})
         else:
-            empty = controller.report() if harness else controller.availability()
-            if harness:
-                try:
-                    empty["harness"] = harness.readiness(protected)
-                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
-                    empty["harness"] = {"status": "unavailable"}
-                    empty.setdefault("evidence_errors", []).append("Optional harness readiness observation unavailable.")
-            show(empty)
+            # Detailed history/graph/usage projections are explicit report work.
+            result = report(workspace, args.run, governor=controller)
+            show(result or controller.report(args.run))
+            return 0
+        # One authoritative result; optional views cannot turn a committed action
+        # into failure or introduce mandatory dashboard/graph/usage work.
+        state = {**state, "phase": workflow.current(state)["phase"],
+                 "status": "retired" if state.get("retired") else "superseded" if state.get("superseded_by")
+                 else "accepted" if state.get("finished") else workflow.current(state)["decision"]}
+        print(json.dumps({"workflow": state, "status": state["status"],
+                          "run": state["run"], "revision": state["revision"]}))
         return 0
     except workflow.Refusal as exc:
         failure = exc.result()

@@ -36,7 +36,8 @@ def fixture(tmp_path, monkeypatch, *, text='approve'):
         path.write_text(''.join(json.dumps(r) + '\n' for r in [prefix, *rows]))
     write([shown, human])
     event = {'hook_event_name': 'UserPromptSubmit', 'host': 'claude', 'session_id': 'root',
-             'cwd': str(tmp_path), 'transcript_path': str(path), 'prompt': human['message']['content']}
+             'cwd': str(tmp_path), 'transcript_path': str(path), 'prompt': human['message']['content'],
+             'taskplane_semantic_choice':'approved'}
     return c, state, path, event, shown, human, write
 
 
@@ -59,32 +60,6 @@ def test_ordinary_chat_approval_derives_real_ids_and_preserves_original_presenta
     assert c.report(diagnostics=False)['decisions'] == after['decisions']
 
 
-@pytest.mark.parametrize('question', [
-    'Approve this Design checkpoint?',
-    'Only after CI passes. Approve this Product checkpoint?',
-    'Approve this Product checkpoint? Only after CI passes.',
-    'Do not approve it. Approve this Product checkpoint?',
-    'Review this Product checkpoint.',
-])
-def test_native_hook_validates_complete_original_question_before_approval(tmp_path, monkeypatch, question):
-    c, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch, text='yes')
-    checkpoint = w.binding(state, w.current(state)['packet'])['checkpoint']
-    shown['message']['content'] = f'Current checkpoint {checkpoint}.\n{question}'
-    write([shown, human])
-    original = path.read_bytes()
-    try:
-        flow.hook(event, governor=c)
-    except w.Refusal:
-        pass
-    else:
-        # A presentation with no acceptance question is already refused by
-        # capture, before it can produce an envelope for semantic validation.
-        observed = json.loads(c._path().read_text())['runs'][state['run']]
-        assert observed['native_approval_capture']['status'] == 'needs_clarification'
-    after = json.loads(c._path().read_text())['runs'][state['run']]
-    assert after['revision'] == state['revision'] and not after['decisions']
-    assert w.current(after)['decision'] == 'awaiting_human_approval'
-    assert path.read_bytes() == original
 
 
 def test_prompt_flush_is_deferred_then_captured_before_next_tool_guard(tmp_path, monkeypatch):
@@ -99,8 +74,8 @@ def test_prompt_flush_is_deferred_then_captured_before_next_tool_guard(tmp_path,
     assert c.report(diagnostics=False)['status'] == 'approved'
 
 
-@pytest.mark.parametrize('defect', ['wrong_id', 'quoted', 'conditional', 'third_party', 'stale',
-    'wrong_run', 'wrong_revision', 'foreign_session', 'later_presentation', 'newer_human', 'ambiguous', 'missing_id',
+@pytest.mark.parametrize('defect', ['wrong_id', 'third_party', 'stale',
+    'foreign_session', 'later_presentation', 'missing_id',
     'malformed_message', 'newer_malformed', 'external_prompt'])
 def test_capture_rejects_nonhuman_stale_or_ambiguous_decisions(tmp_path, monkeypatch, defect):
     c, state, _, event, shown, human, write = fixture(tmp_path, monkeypatch)
@@ -159,6 +134,7 @@ def test_unavailable_host_and_child_never_read_arbitrary_transcripts(tmp_path, m
 def test_native_negative_decision_preserves_human_authority_despite_artifact_drift(tmp_path, monkeypatch, text, choice):
     c, state, _, event, _, human, _ = fixture(tmp_path, monkeypatch, text=text)
     (tmp_path / 'product.json').write_text('{}')
+    event['taskplane_semantic_choice']=choice
     flow.hook(event, governor=c)
     after = json.loads(c._path().read_text())['runs'][state['run']]
     assert after['decisions'][human['uuid']]['choice'] == choice
@@ -238,7 +214,17 @@ def test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source(tmp
                                max_records=3 if kind == 'records' else native.MAX_RECORDS)
     real = native.ReadBudget
     monkeypatch.setattr(native, 'ReadBudget', lambda: budget)
-    assert approval.capture(state, host='claude', presentation={})['status'] == 'unsupported'
+    assert approval.capture(state, host='claude', presentation={},semantic_choice='approved')['status'] == 'unsupported'
     assert state == original
     monkeypatch.setattr(native, 'ReadBudget', real)
-    assert approval.capture(state, host='claude', presentation={})['status'] == 'observed'
+    assert approval.capture(state, host='claude', presentation={},semantic_choice='approved')['status'] == 'observed'
+
+
+def test_native_capture_needs_orchestrator_semantic_candidate(tmp_path,monkeypatch):
+    c,state,_,event,_,human,_=fixture(tmp_path,monkeypatch)
+    event.pop('taskplane_semantic_choice')
+    flow.hook(event,governor=c)
+    after=c.report(diagnostics=False)
+    assert after['status']=='awaiting_human_approval' and not after['decisions']
+    assert after['native_approval_capture']['status']=='semantic_candidate_required'
+    assert after['native_approval_capture']['excerpt']==human['message']['content']

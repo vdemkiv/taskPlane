@@ -1,9 +1,8 @@
 """Local admission fixtures only; no installed host/tool compatibility certification."""
 import pytest
 
-from taskplane import workflow as w, workflow_local as local, worker_runtime as workers
+from taskplane import workflow as w, worker_runtime as workers
 from taskplane.tests.test_worker_runtime import setup, reserve
-from taskplane.tests.test_workflow_local import setup as dashboard_setup, submit
 
 
 @pytest.mark.parametrize('host,tool,args,alternative', [
@@ -30,25 +29,6 @@ def test_foreign_worker_tools_refuse_before_admission(tmp_path, host, tool, args
     assert c.report()['workers'][item['grant']['grant_id']]['state'] == 'prepared'
 
 
-@pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_dashboard_host_mismatch_keeps_supported_link_and_checkpoint(tmp_path, host):
-    c, state = dashboard_setup(tmp_path)
-    state = submit(c, state)
-    c.adapter.name = host
-    harness = local.Harness(tmp_path, c.root)
-    event = {'tool_name': 'mcp__codex_app__open_in_codex', 'tool_input': {
-        'target': {'type': 'file', 'path': str(tmp_path/'.taskplane/dashboard.html')}}}
-    before = c._path().read_bytes()
-    if host == 'codex':
-        c.guard(event, state['run'])
-    else:
-        with pytest.raises(w.Refusal, match='flow present') as exc:
-            c.guard(event, state['run'])
-        assert exc.value.reason == 'unsupported_authority'
-    assert c._path().read_bytes() == before
-    assert harness.read()['presentation']['outcome'] == 'linked'
-    assert harness.presentation_valid(state)
-    assert c.report()['decisions'] == state['decisions']
 
 
 @pytest.mark.parametrize('host,operation', [

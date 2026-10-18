@@ -8,6 +8,9 @@ from taskplane.tests.test_worker_runtime import setup
 
 WEB = {'open': [{'ref_id': 'https://learn.chatgpt.com/docs/changelog'}], 'response_length': 'long'}
 ISSUE = {'issue_number': 43, 'repository_full_name': 'vdemkiv/taskPlane'}
+RESULT_READS = {'open': [{'ref_id': 'turn0search0'}],
+                'find': [{'ref_id': 'turn0view0', 'pattern': 'evidence'}],
+                'click': [{'ref_id': 'turn0view0', 'id': 3}]}
 HEARTBEAT = {'mode': 'create', 'kind': 'heartbeat', 'name': 'Review taskPlane host updates',
              'prompt': 'Read official host updates and report verified compatibility changes.',
              'rrule': 'FREQ=DAILY;INTERVAL=2', 'status': 'ACTIVE', 'destination': 'thread'}
@@ -20,8 +23,6 @@ def scoped(tmp_path, host='codex'):
     db = c._read(c._path())
     s = db['runs'][state['run']]
     reference = s['request_provenance']['reference']
-    s['scope']['external_reads'] = {'host': host, 'operations': ['web', 'github_issue'] if host == 'codex' else ['web'],
-                                    'request_reference': reference}
     s['scope']['native_automation'] = {'host': 'codex', 'phase': 'product',
                                       'request_reference': reference, 'request': deepcopy(HEARTBEAT)}
     c._write(c._path(), db)
@@ -39,7 +40,7 @@ def event(tool, args, call='captured-call'):
     ('claude', 'WebFetch', {'url': WEB['open'][0]['ref_id'], 'prompt': 'Summarize documented changes.'}),
     ('claude', 'WebSearch', {'query': 'official host release notes', 'allowed_domains': ['code.claude.com']}),
 ])
-def test_explicit_native_read_preserves_results_and_approvals(tmp_path, host, tool, args):
+def test_native_read_preserves_results_and_approvals(tmp_path, host, tool, args):
     c, s = scoped(tmp_path, host)
     before = c.report()
     c.guard(event(tool, args), s['run'])
@@ -47,6 +48,25 @@ def test_explicit_native_read_preserves_results_and_approvals(tmp_path, host, to
     for key in ('decisions', 'visits', 'scope', 'workers'):
         assert after.get(key) == before.get(key)
     assert after.get('task_results') == before.get('task_results')
+
+
+@pytest.mark.parametrize('sealed', [False, True])
+@pytest.mark.parametrize('host,tool,args', [
+    ('codex', 'web__run', RESULT_READS),
+    ('codex', 'web.run', {'screenshot': [{'ref_id': 'turn0view0', 'pageno': 0}]}),
+    ('codex', 'mcp__codex_apps__github__fetch_issue', ISSUE),
+    ('claude', 'WebFetch', {'url': WEB['open'][0]['ref_id'], 'prompt': 'Read the evidence.'}),
+    ('claude', 'WebSearch', {'query': 'official release notes'}),
+])
+def test_known_readers_work_during_work_and_sealed_review(tmp_path, sealed, host, tool, args):
+    from taskplane.tests.test_workflow_local import setup as prepare, submit
+    c, state = prepare(tmp_path)
+    c.adapter.name = host
+    if sealed:
+        state = submit(c, state, presentation=False)
+    before = c._path().read_bytes()
+    c.guard({'tool_name': tool, 'tool_input': args}, state['run'])
+    assert c._path().read_bytes() == before
 
 
 @pytest.mark.parametrize('host,tool,args', [
@@ -63,36 +83,24 @@ def test_foreign_host_read_is_precise_and_denied(tmp_path, host, tool, args):
 
 
 @pytest.mark.parametrize('tool,args', [
-    ('webrun', {'open': [{'ref_id': 'file:///etc/passwd'}]}),
-    ('webrun', {'open': [{'ref_id': 'https://user:secret@example.com'}]}),
-    ('webrun', {'open': WEB['open'], 'upload': 'private'}),
-    ('webrun', {'search_query': [{'q': 'example', 'recency': True}]}),
-    ('webrun', {'open': WEB['open'], 'response_length': {}}),
-    ('mcp__codex_apps__github__fetch_issue', {**ISSUE, 'issue_number': True}),
-    ('mcp__codex_apps__github__fetch_issue', {**ISSUE, 'body': 'post this'}),
     ('mcp__codex_apps__github__create_issue', ISSUE),
     ('mcp__unknown__fetch_issue', ISSUE),
+    ('web__upload', {'path': 'private.txt'}),
 ])
-def test_no_prefix_or_unknown_schema_grants(tmp_path, tool, args):
+def test_unknown_or_effectful_tools_are_not_reader_grants(tmp_path, tool, args):
     c, s = scoped(tmp_path)
     before = c._path().read_bytes()
     with pytest.raises(w.Refusal): c.guard(event(tool, args), s['run'])
     assert c._path().read_bytes() == before
 
 
-def test_missing_read_scope_is_configuration_not_missing_host_capability(tmp_path):
-    c, s = setup(tmp_path)
-    with pytest.raises(w.Refusal, match='external_reads') as exc:
-        c.guard(event('webrun', WEB), s['run'])
-    assert exc.value.reason == 'scope_violation'
-
-
 @pytest.mark.parametrize('host,tool,args', [
     ('codex', 'webrun', WEB), ('codex', 'mcp__codex_apps__github__fetch_issue', ISSUE),
+    ('codex', 'web__run', RESULT_READS),
     ('claude', 'WebFetch', {'url': WEB['open'][0]['ref_id'], 'prompt': 'Summarize documented changes.'}),
     ('codex', guard.AUTOMATION, HEARTBEAT),
 ])
-def test_normal_automatic_hook_path_admits_only_scoped_call(tmp_path, host, tool, args):
+def test_normal_automatic_hook_path_admits_supported_call(tmp_path, host, tool, args):
     from taskplane import flow
     c, s = scoped(tmp_path, host)
     e = {'hook_event_name': 'PreToolUse', 'session_id': c.root, 'cwd': str(tmp_path),
@@ -162,7 +170,6 @@ def test_sealed_phase_refuses_automation_before_dispatch(tmp_path):
     assert c._path().read_bytes() == before
 
 
-@pytest.mark.parametrize('field', ['external_reads', 'native_automation'])
 @pytest.mark.parametrize('bad', [True, [], {}, {'host': 'other'}, {'request': 'trust me'}])
-def test_malformed_scope_rejected_at_initialization(field, bad):
-    with pytest.raises(w.Refusal): guard.validate_scope({field: bad})
+def test_malformed_automation_scope_rejected_at_initialization(bad):
+    with pytest.raises(w.Refusal): guard.validate_scope({'native_automation': bad})

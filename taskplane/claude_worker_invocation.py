@@ -124,7 +124,7 @@ def _parse_words(words: Sequence[str], command: str, runtime: tuple[str, str]) -
              "Only worker claim and context invocation transport is supported.")
     action = words[3]
     allowed = ({"--operation", "--run", "--grant", "--workspace"} if action == "worker" else
-               {"--workspace", "--run", "--task", "--consume", "--read-required", "--drain",
+               {"--workspace", "--run", "--task",
                 "--read", "--page", "--section"})
     rest = words[4:]
     _require(len(rest) % 2 == 0, "Every invocation option requires one value.")
@@ -144,7 +144,7 @@ def _parse_words(words: Sequence[str], command: str, runtime: tuple[str, str]) -
                  "Only the exact worker claim operation is supported.")
         order = ("--operation", "--run", "--grant", "--workspace")
     else:
-        selectors = set(values) & {"--consume", "--read-required", "--drain", "--read"}
+        selectors = set(values) & { "--read"}
         _require(len(selectors) <= 1 and all(_sha(values[k]) for k in selectors),
                  "Context requires at most one exact SHA-256 selector.")
         _require(not ({"--page", "--section"} & values.keys()) or "--read" in values,
@@ -153,7 +153,7 @@ def _parse_words(words: Sequence[str], command: str, runtime: tuple[str, str]) -
                  "Context page must be a bounded canonical nonnegative integer.")
         _require("--section" not in values or _text(values["--section"], 256),
                  "Context section is invalid.")
-        order = ("--workspace", "--run", "--task", "--consume", "--read-required", "--drain",
+        order = ("--workspace", "--run", "--task",
                  "--read", "--page", "--section")
     canonical = (*runtime, "flow", action, *(item for key in order if key in values
                                             for item in (key, values[key])))

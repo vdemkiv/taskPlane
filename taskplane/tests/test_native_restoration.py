@@ -106,7 +106,7 @@ def test_full_native_start_requires_opaque_event_reference(tmp_path,capsys):
     c,owner,_=configured(tmp_path)
     # Existing protected state is reused without replacing its original authority.
     assert flow.main(['start','--workspace',str(c.workspace),'--native-event','scope'],governor=c)==0
-    assert json.loads(capsys.readouterr().out)['workflow']['authority_verified']
+    assert json.loads(capsys.readouterr().out)['workflow']['run'] == c.report()['run']
 
 
 def test_native_support_projection_separates_readiness_from_authority(tmp_path):

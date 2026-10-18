@@ -32,6 +32,11 @@ def setup_run(tmp_path, monkeypatch):
     return ws,sessions,run
 
 
+def attach_view_inputs(workspace, run='shared', **artifacts):
+    flow.append(workspace, {'kind': 'attach', 'run': run, 'session': 'root',
+                           'artifacts': artifacts, 'captured': flow.capture_attachments(workspace, artifacts)})
+
+
 def test_discovers_unhooked_lenses_and_retains_final_usage(tmp_path,monkeypatch,capsys):
     ws,sessions,run=setup_run(tmp_path,monkeypatch)
     native(sessions/'root.jsonl','root',400)
@@ -40,7 +45,7 @@ def test_discovers_unhooked_lenses_and_retains_final_usage(tmp_path,monkeypatch,
     native(sessions/'old.jsonl','old',700,parent='root')
     native(sessions/'guardian.jsonl','guardian',20,parent='root',guardian=True)
     (ws/'reviews.json').write_text(json.dumps([{'lens':'quality','agent':'/root/lens'}]))
-    flow.main(['attach','--workspace',str(ws),'--run','shared','--reviews','reviews.json'])
+    attach_view_inputs(ws, reviews='reviews.json')
     capsys.readouterr()
     flow.append(ws,{'kind':'finish','run':'shared','session':'root','note':'Done'})
     # Native history grows by append; rewriting an observed counter is an
@@ -65,8 +70,7 @@ def test_discovers_unhooked_lenses_and_retains_final_usage(tmp_path,monkeypatch,
         assert not r['usage_refresh']['complete'] and not r['usage_refresh']['fully_discovered']
         assert 'native_directory_accounting_unavailable' in r['usage_refresh']['discovery_errors']
     assert (ws/flow.JOURNAL).read_bytes()==before # reports never mutate evidence
-    flow.main(['attach','--workspace',str(ws),'--run','shared','--reviews','reviews.json'])
-    capsys.readouterr()
+    flow.append(ws, {'kind': 'usage', 'run': 'shared', 'session': 'root', 'measurement': r})
     (sessions/'lens.jsonl').unlink()
     recovered=flow.report(ws)
     lens = next(s for s in recovered['sessions'] if s['agent']=='/root/lens')
@@ -84,7 +88,7 @@ def test_missing_reviewer_is_unknown_not_zero_and_artifacts_are_run_scoped(tmp_p
     ws,sessions,run=setup_run(tmp_path,monkeypatch)
     _use_codex_fixture_files(monkeypatch, sessions/'root.jsonl')
     (ws/'reviews.json').write_text(json.dumps([{'lens':'qa','agent':'/root/missing'}]))
-    flow.main(['attach','--workspace',str(ws),'--run','shared','--reviews','reviews.json'])
+    attach_view_inputs(ws, reviews='reviews.json')
     capsys.readouterr()
     r=flow.report(ws)
     assert r['token_coverage']['unmeasured_sessions']==1
@@ -128,9 +132,9 @@ def test_dashboard_renders_multiple_review_evidence_paths_from_immutable_snapsho
     (ws/'two.md').write_text('Second finding')
     (ws/'reviews.json').write_text(json.dumps({'reviews':[
         {'lens':'quality','agent':'root','evidence':['one.md','two.md']}]}))
-    assert flow.main(['attach','--workspace',str(ws),'--reviews','reviews.json',
-                      '--evidence','one.md','--evidence','two.md'])==0
-    result=json.loads(capsys.readouterr().out)
+    attach_view_inputs(ws, reviews='reviews.json', evidence=['one.md', 'two.md'])
+    result = flow.report(ws)
+    flow.publish_dashboard(ws, 'shared', supplied=result)
     assert not any('dashboard refresh' in error for error in result['evidence_errors'])
     page=(ws/flow.DASHBOARD).read_text()
     assert 'First &lt;finding&gt;' in page and 'Second finding' in page
@@ -150,7 +154,7 @@ def test_dashboard_displays_shared_tasks_lenses_stages_graph_and_escaped_evidenc
     for phase in ('product','design','plan','build','evaluate','engineering','retro'):
         flow.append(ws,{'kind':'progress','run':'shared','session':'root','phase':phase,'note':phase+' evidence'})
     flow.append(ws,{'kind':'finish','run':'shared','session':'root','note':'Product passed; original dashboard failed'})
-    flow.main(['attach','--workspace',str(ws),'--tasks','tasks.json','--reviews','reviews.json','--evidence','review.md'])
+    attach_view_inputs(ws, tasks='tasks.json', reviews='reviews.json', evidence=['review.md'])
     capsys.readouterr()
     depgraph.save(str(ws),{'modules':{'src':{'kind':'module','files':1},'cli':{'kind':'module','files':1}},'edges':[{'from':'cli','to':'src','kind':'imports'}]})
     page=dashboard.report_widget(str(ws))

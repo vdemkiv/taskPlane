@@ -36,7 +36,7 @@ def test_readonly_commands_precede_all_persistence(source, monkeypatch, capsys):
     from taskplane import context_handoff, workflow_host
     def fail_context(self, workspace, state, task=None, *, consumer=None, persist=True, snapshot=None):
         pytest.fail('persistent context')
-    monkeypatch.setattr(context_handoff.Session, '__init__', fail_context)
+    monkeypatch.setattr(context_handoff.Brief, '__init__', fail_context)
     monkeypatch.setattr(workflow_host.Controller, 'start', lambda *a, **k: pytest.fail('run started'))
     assert invoke(source, capsys, 'validate', '--definition', 'definition.json')['status'] == 'valid'
     incomplete = invoke(source, capsys, 'preview', '--definition', 'definition.json')

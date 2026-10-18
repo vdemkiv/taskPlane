@@ -9,57 +9,6 @@ import pytest
 from taskplane import flow, workflow as w, workflow_host as h, workflow_local as local
 from taskplane.tests.test_workflow_local import setup, submit, decision, decide
 
-AFFIRMATIVES = ['Approved.', 'I approve this checkpoint.', 'Looks good, proceed.', 'I sign off on this checkpoint.', 'I confirm the checkpoint.', 'I authorize this work.', 'My approval is given.', 'You have my approval.', 'Looks good to me.', 'Approved, thanks.', 'Yes, please proceed.', 'This meets the requirements; go ahead.', 'I am happy with this checkpoint. Please proceed.', 'Everything checks out. I approve this checkpoint.', 'That works for me; proceed.', 'The current checkpoint is approved.', 'We approve this checkpoint.', 'I hereby approve this checkpoint.', 'Yes, approved as presented.', 'I approve the Product phase.']
-
-UNAUTHORIZED = ['I do not approve this checkpoint.', 'Approved if the tests pass.', 'Approved. Only for documentation.', 'Approved, but not the current checkpoint.', 'Approve the tests only.', 'I approve the Product phase, not the Design phase.', 'Approved. Actually, I withdraw my approval.', 'Approved. I revoke that approval.', 'Approved. Wait, stop.', 'Approved. Never mind.', 'Approved. On second thought, no.', 'I approved the previous checkpoint.', 'I will approve this checkpoint.', 'My manager said "Approved".', 'The assistant says approved.', '"Approved."', 'Could you approve it?', 'Okay, keep reviewing.', 'Proceed with the review, not implementation.', 'Yes, explain the changes.', 'Approved pending legal review.', 'I approve some of these changes.', 'All but the deployment is approved.', 'Approved for staging only.', 'Approved unless the scope changed.']
-
-
-@pytest.mark.parametrize('text', AFFIRMATIVES)
-def test_clear_paraphrases_preserve_exact_human_excerpt(tmp_path, text):
-    c, s = setup(tmp_path); s = submit(c, s)
-    value = decision(s, text=text)
-    accepted = decide(c, s, value)
-    assert w.current(accepted)['decision'] == 'approved'
-    assert accepted['decisions'][value['event_id']]['provenance']['excerpt'] == text
-
-
-@pytest.mark.parametrize('text', UNAUTHORIZED + [
-    'Thanks.', 'The tests passed.', 'Everything checks out.',
-    'This meets the requirements.', 'I sign off on some of this.',
-    'I sign off on this checkpoint pending review.',
-    'My approval is given only for tests.', 'You have my approval if tests pass.',
-    'Looks good to me except for the safety check.',
-    'We approve this checkpoint. I withdraw my approval.',
-    'Approved, thanks. I still need to approve this.',
-    'Everything checks out. "I approve this checkpoint."',
-    'I sign off on this checkpoint?','Cancel. You have my approval.',
-    'Do not revoke my approval.', 'Withdraw my approval if tests fail.',
-    'Revoke my approval. Never mind.',
-])
-def test_unknown_conditional_partial_and_retracted_intent_cannot_approve(tmp_path, text):
-    c, s = setup(tmp_path); s = submit(c, s)
-    value = decision(s, text=text); value['choice'] = 'approved'
-    before = c._path().read_bytes()
-    with pytest.raises(w.Refusal): decide(c, s, value)
-    assert c._path().read_bytes() == before
-
-
-@pytest.mark.parametrize('text', [
-    'I sign off on Build.', 'The Design phase is approved.',
-    'I confirm the Engineering phase.', 'I authorize the Plan phase.',
-    'Product approved. Design approved.', 'Product approved and accept Build.',
-    'I sign off on this checkpoint. Build is signed off.',
-    'I sign the Build phase off.', 'I am happy with Design.', 'Apparoved Build.',
-])
-def test_every_named_phase_remains_bound(tmp_path, text):
-    c, s = setup(tmp_path); s = submit(c, s)
-    assert local.choice(text) == 'approved'
-    before = c._path().read_bytes()
-    with pytest.raises(w.Refusal, match='different phase'):
-        decide(c, s, decision(s, text=text))
-    assert c._path().read_bytes() == before
-
-
 @pytest.mark.parametrize('timing', ['pending', 'approved', 'policy-approved'])
 @pytest.mark.parametrize('route', ['controller', 'hook'])
 @pytest.mark.parametrize('text', ['Cancel this workflow.', 'I withdraw my approval.'])
@@ -73,7 +22,7 @@ def test_cancellation_is_durable_append_only_and_revokes_continuation(tmp_path, 
     if timing == 'approved': s = decide(c, s, approval)
     elif timing == 'policy-approved': s = auto(c, s)
     old = deepcopy(s)
-    value = decision(s, text=text, event='later-human-cancellation')
+    value = decision(s, text=text, candidate='cancelled', event='later-human-cancellation')
     if route == 'controller':
         cancelled = decide(c, s, value)
     else:
@@ -115,7 +64,7 @@ def test_cancellation_is_durable_append_only_and_revokes_continuation(tmp_path, 
                                   'manifest_digest','actor','automatic','conversation','chronology'])
 def test_cancellation_never_accepts_stale_or_fabricated_binding(tmp_path, defect):
     c, s = setup(tmp_path); s = decide(c, submit(c, s))
-    value = decision(s, text='Cancel this workflow.', event='cancel')
+    value = decision(s, text='Cancel this workflow.', candidate='cancelled', event='cancel')
     if defect in value['binding']:
         value['binding'][defect] = 'foreign'
     elif defect == 'actor': value['source']['actor'] = 'assistant'
@@ -134,7 +83,7 @@ def test_cancellation_never_accepts_stale_or_fabricated_binding(tmp_path, defect
 def test_only_explicit_new_run_can_restart_cancellation(tmp_path):
     from taskplane.tests.test_workflow_recovery import restart_request
     c, s = setup(tmp_path); s = decide(c, submit(c, s), None)
-    s = decide(c, s, decision(s, text='Cancel.', event='cancel'))
+    s = decide(c, s, decision(s, text='Cancel.', candidate='cancelled', event='cancel'))
     old = deepcopy(s)
     replacement = c.start(restart_request(s))
     assert replacement['run'] != old['run'] and not replacement.get('cancellation')
@@ -195,27 +144,27 @@ def test_seven_phases_across_fresh_processes(tmp_path):
     assert state['finished'] and len(state['decisions']) == 7
 
 
-def test_bounded_context_reconstructed_by_separate_cli_processes(tmp_path):
+def test_durable_brief_reconstructed_by_separate_cli_processes(tmp_path):
     from taskplane.tests.test_native_workflow_cli import create
     from taskplane.tests.test_context_cli import command
     create(tmp_path)
-    start, size = command(tmp_path, 'start', '--scope', '.taskplane/scope.json', '--request-reference', 'synthetic-review/request')
+    start, _ = command(tmp_path, 'start', '--scope', '.taskplane/scope.json', '--request-reference', 'synthetic-review/request')
     prepared, _ = command(tmp_path, 'context', '--run', start['run'])
-    key = prepared['handoff_ref']['sha256']
-    delivered, size = command(tmp_path, 'context', '--drain', key)
-    assert delivered['done'] and delivered['remaining_required'] == 0
-    assert delivered['context_receipt'] and size <= 32768
-    replay, replay_size = command(tmp_path, 'context', '--drain', key)
-    assert replay['done'] and replay['pages'] == []
+    assert prepared['schema'] == 'taskplane.brief/v1'
+    key = prepared['reference']['sha256']
+    delivered, _ = command(tmp_path, 'context', '--run', start['run'], '--read', key)
+    replay, _ = command(tmp_path, 'context', '--run', start['run'], '--read', key)
+    assert delivered == replay
+    assert not delivered['context_is_authority']
     after, _ = command(tmp_path, 'report', '--full')
     assert after['workflow']['run'] == start['run']
-    assert after['workflow']['context_contract'] == 'bounded/v2'
+    assert after['workflow']['context_contract'] == 'brief/v1'
     assert after['workflow']['decisions'] == {}
 
 
 def test_cancellation_write_failure_is_not_acknowledged(tmp_path, monkeypatch):
     c, s = setup(tmp_path); s = decide(c, submit(c, s))
-    value = decision(s, text='Cancel this workflow.', event='cancel')
+    value = decision(s, text='Cancel this workflow.', candidate='cancelled', event='cancel')
     raw = c._path().read_bytes()
     with monkeypatch.context() as patch:
         def failed(*args): raise OSError('fixture durable storage failure')
@@ -231,7 +180,7 @@ def test_cancellation_write_failure_is_not_acknowledged(tmp_path, monkeypatch):
 def test_cancel_and_advance_serialize_on_revision(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     c, s = setup(tmp_path); s = decide(c, submit(c, s))
-    value = decision(s, text='Cancel this workflow.', event='cancel')
+    value = decision(s, text='Cancel this workflow.', candidate='cancelled', event='cancel')
     def invoke(action):
         controller = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
         try:
@@ -252,7 +201,7 @@ def test_cancel_and_advance_serialize_on_revision(tmp_path):
 @pytest.mark.parametrize('defect', ['history', 'event', 'binding', 'status', 'event_type'])
 def test_durable_cancellation_cannot_lose_its_audit_record(tmp_path, defect):
     c, s = setup(tmp_path); s = submit(c, s)
-    s = decide(c, s, decision(s, text='Cancel.', event='cancel'))
+    s = decide(c, s, decision(s, text='Cancel.', candidate='cancelled', event='cancel'))
     if defect == 'history': s['history'].clear()
     elif defect == 'event': s['decisions'].pop('cancel')
     elif defect == 'binding': s['cancellation']['binding']['revision'] += 1

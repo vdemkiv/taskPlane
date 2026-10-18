@@ -1,5 +1,7 @@
 # Focused Dynamic Lens Routing — Design Amendment
 
+> Historical design record. The current [shared flow](../skills/tp-go/references/shared-flow.md) supersedes its retired phase, lens-quota and receipt requirements. This record does not govern new runs.
+
 Status: approved requirement amendment
 
 This amendment supersedes any part of the token-efficiency design that limits dynamic lens routing to Evaluate or Engineering Review.

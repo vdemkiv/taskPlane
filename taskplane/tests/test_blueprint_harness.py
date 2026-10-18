@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from taskplane import blueprint_compile as bc, context_handoff as ch, flow, flow_dashboard
+from taskplane import blueprint_compile as bc, flow, flow_dashboard
 from taskplane import workflow as w, workflow_host as host, workflow_local as local
 from taskplane.tests.test_blueprint import definition
 from taskplane.tests.test_blueprint_compile import delivery_definition
@@ -58,24 +58,21 @@ def test_start_requires_package_route_and_exact_tasks_before_initialization(tmp_
     assert state['decisions'] == {} and state['scope']['workflow_binding'] == compiled['workflow_binding']
 
 
-def test_pinned_context_is_required_and_snapshots_recheck(tmp_path):
+def test_compiled_brief_exposes_relevant_inputs_and_rechecks_package(tmp_path):
     c, state, compiled = start(tmp_path)
-    session = ch.Session(tmp_path, state, 'security', persist=False)
-    assert {'workflow/definition', 'workflow/compilation', 'workflow/bindings'} <= {r['id'] for r in session.required}
-    binding = next(i['body'] for i in session.items if i['id'] == 'workflow/bindings')
-    assert binding['values']['source_files'] == ['dependency.py', 'main.py']
-    assert binding['context_is_authority'] is False
-    snapshot = session.frozen
+    brief = c.context(state['run'], task='security')
+    assert brief['schema'] == 'taskplane.brief/v1'
+    assert brief['brief']['task']['id'] == 'security'
+    assert {row['path'] for row in brief['brief']['inputs']} == {'main.py', 'dependency.py'}
+    assert brief['brief']['context_is_authority'] is False
     (tmp_path / compiled['package_path'] / 'definition.json').write_text('{}')
+    assert c.context(state['run'], task='security')['schema'] == 'taskplane.brief/v1'
     with pytest.raises(w.Refusal, match='Pinned package member'):
-        ch.Session(tmp_path, state, 'security', snapshot=snapshot, persist=False)
-    with pytest.raises(w.Refusal):
-        c.context(state['run'], task='security')
+        local.verify_workflow(tmp_path, state)
 
 
 def compiled_review_evidence(workspace):
     """Exercise compiler/native/context seams in fixtures, never live acceptance."""
-    from taskplane import depgraph
     from taskplane.tests.test_worker_runtime import reserve, launch, consume
     c, state, compiled = start(workspace)
     prepared = reserve(c, state, 'security')
@@ -109,27 +106,13 @@ def compiled_review_evidence(workspace):
                       for name, kind, schema in [('report', 'report', 'markdown/v1'),
                                                 ('evidence', 'verification', 'taskplane.checks/v1')]])
     (workspace / files['packet']).write_text(json.dumps(output))
-    (workspace / '.taskplane/dashboard.html').write_text('<html>Fixture dashboard</html>')
-    depgraph.scan(str(workspace), decompose=True, strict=True)
     return state, compiled, files, output
 
 
-def test_compiled_receipt_write_converges_through_prevalidate_and_seal(tmp_path):
-    from taskplane import depgraph, workflow_evidence as evidence
+def test_compiled_result_submits_without_receipt_graph_or_dashboard(tmp_path):
+    from taskplane import workflow_evidence as evidence
     state, compiled, files, output = compiled_review_evidence(tmp_path)
-    before = depgraph.source_inputs(str(tmp_path))
-    session = ch.Session(tmp_path, state)
-    receipt, returned = ch.consume_required(session)
-    assert returned[-1]['remaining_required'] == 0
-    output['context_receipt'] = receipt
-    (tmp_path / files['packet']).write_text(json.dumps(output))
-    # This exact write made the nested compiled packet stale its own graph,
-    # then invalidated its handoff receipt on the next prevalidation.
     assert evidence.prevalidate(tmp_path, state, files['packet'], files['tasks'])['phase'] == 'engineering'
-    assert depgraph.source_inputs(str(tmp_path)) == before
-    assert ch.Session(tmp_path, state).handoff_ref == session.handoff_ref
-    depgraph.scan(str(tmp_path), decompose=True, strict=True)
-    ch.Session(tmp_path, state).validate(receipt)
     sealed = evidence.seal(tmp_path, state, files['packet'], files['tasks'])
     assert {files['packet'], files['report'], files['evidence'], 'reports/first/security.md'} <= set(sealed['manifest'])
     assert bc.verify_package(tmp_path, compiled['workflow_binding'])['status'] == 'valid'
@@ -153,7 +136,6 @@ def test_compiled_phase_evidence_writes_remain_within_exact_scope(tmp_path):
 def test_compiled_hidden_and_native_evidence_remains_bound_after_seal(tmp_path, name):
     from taskplane import workflow_evidence as evidence
     state, _, files, output = compiled_review_evidence(tmp_path)
-    output['context_receipt'], _ = ch.consume_required(ch.Session(tmp_path, state))
     (tmp_path / files['packet']).write_text(json.dumps(output))
     state = w.submit(state, evidence.seal(tmp_path, state, files['packet'], files['tasks']))
     assert evidence.changed(tmp_path, state) is None
@@ -172,16 +154,13 @@ def test_compiled_hidden_and_native_evidence_remains_bound_after_seal(tmp_path, 
     assert evidence.changed(tmp_path, state)[0] == w.current(state)['id']
 
 
-def test_compiled_receipt_and_seal_reject_real_source_and_accepted_result_drift(tmp_path):
+def test_compiled_seal_rejects_relevant_source_and_accepted_result_drift(tmp_path):
     from taskplane import workflow_evidence as evidence
     state, _, files, output = compiled_review_evidence(tmp_path)
-    output['context_receipt'], _ = ch.consume_required(ch.Session(tmp_path, state))
     (tmp_path / files['packet']).write_text(json.dumps(output))
     report = tmp_path / 'reports/first/security.md'
     original_report = report.read_bytes()
     report.write_text('Changed accepted native evidence\n')
-    # Refresh root context so result freshness, not an old receipt, rejects it.
-    output['context_receipt'], _ = ch.consume_required(ch.Session(tmp_path, state))
     (tmp_path / files['packet']).write_text(json.dumps(output))
     with pytest.raises(w.Refusal, match='fresh accepted native result'):
         evidence.prevalidate(tmp_path, state, files['packet'], files['tasks'])
@@ -191,28 +170,16 @@ def test_compiled_receipt_and_seal_reject_real_source_and_accepted_result_drift(
         original_source = source.read_bytes()
         source.write_text('changed_source = True\n')
         with pytest.raises(w.Refusal, match='Bound source/dependency/test bytes changed'):
-            ch.Session(tmp_path, state)
+            local.verify_workflow(tmp_path, state)
         with pytest.raises(w.Refusal, match='Bound source/dependency/test bytes changed'):
             evidence.prevalidate(tmp_path, state, files['packet'], files['tasks'])
         source.write_bytes(original_source)
 
 
-def test_compiled_internal_evidence_does_not_hide_other_graph_source_drift(tmp_path):
-    from taskplane import depgraph, workflow_evidence as evidence
+def test_unrelated_source_file_does_not_invalidate_compiled_result(tmp_path):
+    from taskplane import workflow_evidence as evidence
     state, _, files, output = compiled_review_evidence(tmp_path)
-    output['context_receipt'], _ = ch.consume_required(ch.Session(tmp_path, state))
-    (tmp_path / files['packet']).write_text(json.dumps(output))
-    # This source is not a declared blueprint input, but remains graph-bound.
-    (tmp_path / 'new_source.py').write_text('new_dependency = True\n')
-    with pytest.raises(w.Refusal, match='current handoff'):
-        evidence.prevalidate(tmp_path, state, files['packet'], files['tasks'])
-    output['context_receipt'], _ = ch.consume_required(ch.Session(tmp_path, state))
-    (tmp_path / files['packet']).write_text(json.dumps(output))
-    with pytest.raises(w.Refusal, match='Source graph is stale'):
-        evidence.prevalidate(tmp_path, state, files['packet'], files['tasks'])
-    depgraph.scan(str(tmp_path), decompose=True, strict=True)
-    output['context_receipt'], _ = ch.consume_required(ch.Session(tmp_path, state))
-    (tmp_path / files['packet']).write_text(json.dumps(output))
+    (tmp_path / 'unrelated.py').write_text('unrelated = True\n')
     assert evidence.seal(tmp_path, state, files['packet'], files['tasks'])['phase'] == 'engineering'
 
 
@@ -243,8 +210,8 @@ def test_execution_blocked_but_diagnostics_and_retirement_preserved(tmp_path, dr
 def test_flow_control_and_native_spawn_cannot_skip_verification(tmp_path, capsys):
     c, state, compiled = start(tmp_path)
     (tmp_path / compiled['package_path'] / 'preview.md').write_text('tampered')
-    assert flow.main(['context', '--workspace', str(tmp_path), '--run', state['run']], governor=c) == 2
-    assert json.loads(capsys.readouterr().out)['reason'] == 'package_integrity'
+    assert flow.main(['context', '--workspace', str(tmp_path), '--run', state['run']], governor=c) == 0
+    assert json.loads(capsys.readouterr().out)['schema'] == 'taskplane.brief/v1'
     with pytest.raises(w.Refusal, match='Pinned package member'):
         flow.hook(event(tmp_path, tool_name='collaboration.spawn_agent',
                         tool_input={'task_name': 'review', 'message': 'untrusted', 'fork_turns': 'none'}), governor=c)
@@ -277,12 +244,13 @@ def test_runtime_incompatibility_reports_named_blocker(tmp_path, monkeypatch):
     def incompatible(*args, **kwargs):
         result = original(*args, **kwargs)
         result.update(compatible=False, blockers=[{'code': 'unsupported_contract', 'location': '/runtime',
-                       'message': 'bounded/v2 unavailable', 'remedy': 'Restore loaded runtime'}])
+                       'message': 'brief/v1 unavailable', 'remedy': 'Restore loaded runtime'}])
         return result
     monkeypatch.setattr(catalog, 'catalog', incompatible)
     assert c.report(state['run'])['workflow_provenance']['diagnostics'][0]['code'] == 'runtime_incompatible'
-    with pytest.raises(w.Refusal, match='bounded/v2'):
-        c.context(state['run'])
+    assert c.context(state['run'])['schema'] == 'taskplane.brief/v1'
+    with pytest.raises(w.Refusal, match='brief/v1'):
+        c.worker(state['run'], 'prepare', revision=state['revision'], task='security', request={})
 
 
 def test_standalone_task_republication_cannot_downgrade_native_review(tmp_path):
@@ -298,7 +266,6 @@ def test_authoring_entry_and_exact_data_command_guard(tmp_path):
     assert local.execution_entry({'tool_name': 'Skill', 'tool_input': {'skill': 'taskplane:tp-workflow', 'args': 'create a workflow'}}) == 'tp-workflow'
     harness = local.Harness(tmp_path, 'root')
     harness.select('tp-workflow', 'fixture/author', {})
-    assert '--standalone --phase design' in harness.guidance({})
     data = definition()
     (tmp_path / 'definition.json').write_text(json.dumps(data))
     save = ['workflow', 'save', '--workspace', str(tmp_path), '--definition', 'definition.json',
@@ -321,12 +288,12 @@ def test_bootstrap_compile_is_finite_and_no_preview_write_flags(tmp_path):
     command = ['workflow', 'compile', '--workspace', str(tmp_path), '--definition', 'definition.json',
                '--inputs', 'inputs.json', '--out', '.taskplane/bootstrap/workflow-first']
     harness = local.Harness(tmp_path, 'root')
-    assert harness.bootstrap_command(event(tmp_path, command))
+    assert local.workflow_command(tmp_path, event(tmp_path, command), {})[0] == 'compile'
     with pytest.raises(w.Refusal):
-        harness.bootstrap_command(event(tmp_path, command[:-1] + ['arbitrary']))
+        local.workflow_command(tmp_path, event(tmp_path, command[:-1] + ['arbitrary']), {})
     with pytest.raises(w.Refusal):
-        harness.bootstrap_command(event(tmp_path, ['workflow', 'preview', '--workspace', str(tmp_path),
-                                  '--definition', 'definition.json', '--out', 'arbitrary']))
+        local.workflow_command(tmp_path, event(tmp_path, ['workflow', 'preview', '--workspace', str(tmp_path),
+                                  '--definition', 'definition.json', '--out', 'arbitrary']), {})
     assert not (tmp_path / '.taskplane').exists()
 
 
@@ -475,7 +442,7 @@ def test_delivery_publication_refusals_preserve_controller_bytes(tmp_path, chang
     assert after.get('task_context') == state.get('task_context')
 
 
-@pytest.mark.parametrize('operation', ['guard', 'context', 'dispatch'])
+@pytest.mark.parametrize('operation', ['guard', 'dispatch'])
 def test_delivery_current_context_downgrade_blocks_use(tmp_path, operation):
     c, state, compiled = start(tmp_path, package(tmp_path, delivery=True))
     rows = deepcopy(compiled['compilation']['task_patterns']['build']['tasks'])
@@ -490,8 +457,6 @@ def test_delivery_current_context_downgrade_blocks_use(tmp_path, operation):
     with pytest.raises(w.Refusal, match='native obligation'):
         if operation == 'guard':
             local.verify_workflow(tmp_path, state)
-        elif operation == 'context':
-            c.context(state['run'])
         else:
             c.worker(state['run'], 'prepare', revision=state['revision'], task='product-analysis', request={})
     assert c._path().read_bytes() == before
