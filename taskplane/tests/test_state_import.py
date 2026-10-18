@@ -13,6 +13,7 @@ from taskplane import flow, state_import as recovery, workflow as w, workflow_ho
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_local import submit, decide, present
 from taskplane.tests.test_ordinary_checkpoint_reply import ordinary
+from taskplane.tests.binding_support import HAS_BINDING_RUNTIME
 
 
 def pin(path, raw):
@@ -64,9 +65,14 @@ def test_authentic_import_can_retire_bind_and_relocate_without_fabricated_marker
     assert retired["retired"] and not retired["decisions"]
     marker = c._path().with_name(c.adapter.markername)
     assert not marker.exists()
+    assert Path(imported["original_controller"]["path"]).read_bytes() == original
+    if not HAS_BINDING_RUNTIME:
+        with pytest.raises(w.Refusal, match="lacks no-follow directory operations"):
+            workspace_binding.bind(c.workspace, request(c.workspace))
+        assert not marker.exists()
+        return
     bound = workspace_binding.bind(c.workspace, request(c.workspace))
     assert recovery.initialization(c.workspace, c.root)["status"] == "committed"
-    assert Path(imported["original_controller"]["path"]).read_bytes() == original
     if relocate:
         destination = c.workspace.with_name("relocated")
         c.workspace.rename(destination)
@@ -92,7 +98,8 @@ def test_import_binding_refuses_active_or_ambiguous_initialization(lost, damage)
         c._path().with_name(c.adapter.markername).write_text(json.dumps({
             "schema": "taskplane.local-initialization/v1", "workspace": str(c.workspace),
             "root": c.root, "profile": "native_workflow"}))
-    with pytest.raises(w.Refusal, match="active|ambiguous"):
+    reason = "active|ambiguous" if HAS_BINDING_RUNTIME else "lacks no-follow directory operations"
+    with pytest.raises(w.Refusal, match=reason):
         workspace_binding.bind(c.workspace, request(c.workspace))
 
 

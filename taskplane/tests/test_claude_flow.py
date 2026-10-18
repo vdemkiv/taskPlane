@@ -93,6 +93,8 @@ def test_bound_checkpoint_controls_use_selected_workspace(tmp_path,monkeypatch,t
 
 
 def test_cowork_missing_selection_refuses_before_any_state_and_abstains_unrelated(tmp_path,monkeypatch,capsys):
+    from taskplane import workflow as w
+    from taskplane.tests.binding_support import HAS_BINDING_RUNTIME
     for key in list(os.environ):
         if key.startswith(('CODEX_', 'CLAUDE_', 'TASKPLANE_')):monkeypatch.delenv(key)
     monkeypatch.setenv('TASKPLANE_SURFACE','cowork');monkeypatch.chdir(tmp_path)
@@ -101,7 +103,11 @@ def test_cowork_missing_selection_refuses_before_any_state_and_abstains_unrelate
     assert flow.hook(unrelated)=={}
     selected={**unrelated,'tool_input':{'command':shlex.join(
         [sys.executable,str(ROOT/'taskplane/tp.py'),'flow','activate','--phase','tp-go'])}}
-    flow.hook(selected)
+    if HAS_BINDING_RUNTIME:
+        flow.hook(selected)
+    else:
+        with pytest.raises(w.Refusal, match='lacks no-follow directory operations'):
+            flow.hook(selected)
     assert flow.main(['activate','--phase','tp-go','--request-reference','fixture/selection'],compact=True)==2
     capsys.readouterr()
     assert not (tmp_path/'.taskplane').exists()
