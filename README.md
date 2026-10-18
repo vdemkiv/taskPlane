@@ -4,7 +4,7 @@ Plan, build and review software with Codex or Claude, keeping decisions and actu
 verification connected. Use full delivery, standalone Product/Design/Engineering,
 or a reusable workflow with fresh inputs.
 
-Candidate version: **2.34.0**. Source, extracted packages, installed runtimes and
+Candidate version: **2.34.1**. Source, extracted packages, installed runtimes and
 live host acceptance are separate observations. This candidate does not certify
 a loaded Codex/Claude update or publication.
 
@@ -62,7 +62,7 @@ Check the actual loaded installation with:
 python3 /actual/plugin/taskplane/tp.py version --verify
 ```
 
-Both host manifests use `2.34.0`. A source edit or archive does not update a
+Both host manifests use `2.34.1`. A source edit or archive does not update a
 running session. Preserve its original runtime and evidence; update/reload through
 the host between runs. Candidate active old-contract mutation refuses rather than
 silently migrating history. Installed caches are never modified by package build.
@@ -93,8 +93,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-Packages go to `dist/taskplane-2.34.0.plugin` and
-`dist/taskplane-2.34.0-openai.zip`. Sidecars record source/dirty lineage and exact
+Packages go to `dist/taskplane-2.34.1.plugin` and
+`dist/taskplane-2.34.1-openai.zip`. Sidecars record source/dirty lineage and exact
 archive/member hashes at this package boundary. Building does not install or
 publish. Use actual targeted/combined check evidence and keep unavailable live
 host/platform acceptance explicit. See [CI coverage](docs/ci-performance.md).

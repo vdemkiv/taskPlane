@@ -318,7 +318,11 @@ def verify_relay(evidence):
 
 def test_relay_original_human_approval_and_aggregate(relay_evidence):
     assert verify_relay(relay_evidence)["recorded"] is True
-    assert live.verify(relay_evidence.save())["status"] == "pass"
+    report = live.verify(relay_evidence.save())
+    assert report["status"] == "pass"
+    assert report["historical_only"] is True
+    assert report["current_runtime_compatible"] is False
+    assert report["inspection_contract"] == "historical-workflow-builder/v0.1"
 
 
 def test_relay_pending_does_not_require_finish_or_second_invocation(relay_evidence):

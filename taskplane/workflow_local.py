@@ -154,6 +154,30 @@ def _relay_message(row: dict[str, Any], role: str) -> str:
     return "".join(block["text"] for block in blocks)
 
 
+def _relay_exec_arguments(source: str) -> dict[str, Any]:
+    """Decode one JSON-only execution expression; never run JavaScript.
+
+    Support direct text(await ...) and const/let result followed by text(result).
+    Full consumption rejects extra statements, hidden executions and aliases.
+    Structured function_call frames remain the preferred representation.
+    """
+    prefix = re.match(r"\s*(?:text\s*\(\s*await\s+tools\.exec_command\s*\(|"
+                      r"(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*await\s+tools\.exec_command\s*\()\s*", source)
+    _require_decision(prefix is not None, "decision_relay", "Relay needs one bounded JSON exec_command expression.")
+    assert prefix is not None
+    body = source[prefix.end():]
+    try:
+        _, end = json.JSONDecoder().raw_decode(body)
+    except (ValueError, RecursionError):
+        raise DecisionRefusal("decision_relay", "Relay execution arguments must be literal JSON.") from None
+    name = prefix[1]
+    suffix = (r"\s*\)\s*;\s*text\s*\(\s*" + re.escape(name) + r"\s*\)\s*;?\s*"
+              if name else r"\s*\)\s*\)\s*;?\s*")
+    _require_decision(re.fullmatch(suffix, body[end:]) is not None, "decision_relay",
+                      "Relay must expose exactly one execution result without other statements.")
+    return _relay_json(body[:end])
+
+
 def _relay_launch(call: dict[str, Any], result: dict[str, Any], expected: dict[str, Any], flag: Any) -> None:
     """Recognize actual direct execution frames, never evaluate JavaScript."""
     tool, output = call.get("payload", {}), result.get("payload", {})
@@ -171,10 +195,7 @@ def _relay_launch(call: dict[str, Any], result: dict[str, Any], expected: dict[s
         _require_decision(tool.get("type") == "custom_tool_call" and tool.get("name") in {"exec", "functions.exec"}
                           and output.get("type") == "custom_tool_call_output" and isinstance(tool.get("input"), str),
                           "decision_relay", "Unsupported relay launch tool.")
-        match = re.fullmatch(r"\s*text\(await tools\.exec_command\((\{.*\})\)\);?\s*", tool["input"], re.S)
-        _require_decision(match is not None, "decision_relay", "Relay requires one direct JSON exec_command wrapper.")
-        assert match is not None
-        args = _relay_json(match[1])
+        args = _relay_exec_arguments(tool["input"])
     tokens = command_words({"tool_input": args})
     _require_decision(args.get("tty") is True and args.get("workdir") == expected["workspace"] and bool(tokens),
                       "decision_relay", "Relay launch needs the actual target workspace and TTY.")
@@ -200,7 +221,14 @@ def _relay_launch(call: dict[str, Any], result: dict[str, Any], expected: dict[s
                           and block.get("type") == "input_text" and isinstance(block.get("text"), str) for block in body),
                           "decision_relay", "Invalid native launch result blocks.")
         if len(body) == 2:
-            _require_decision(body[0]["text"].startswith("Script completed\n"), "decision_relay", "Launch wrapper did not complete.")
+            # The first block is optional host display text. A second object
+            # would make the native result ambiguous, regardless of its prose.
+            try:
+                json.loads(body[0]["text"])
+            except (ValueError, RecursionError):
+                pass
+            else:
+                raise DecisionRefusal("decision_relay", "Multiple native launch result values.")
         body = body[-1]["text"]
     _require_decision(isinstance(body, str), "decision_relay", "Native launch result is missing.")
     observed = _relay_json(body)
@@ -694,9 +722,6 @@ class LocalWorkflow:
         expected = prior[event_id]["binding"] if event_id in prior else expected
         _require_decision(primitives.content_fingerprint(value.get("binding")) == primitives.content_fingerprint(expected),
                   "decision_binding", "Observed decision has a stale or foreign checkpoint binding.")
-        named_checkpoints = re.findall(r"\b[0-9a-f]{32}\b", excerpt.casefold())
-        _require_decision(all(identifier == expected["checkpoint"] for identifier in named_checkpoints),
-                  "decision_binding", "The response names a different checkpoint.")
         from .workflow_approval import validate_checkpoint_consent
         supplied = value.get("binding") or {}
         db = evidence.object_file(self.workspace, ".taskplane/" + self.filename)

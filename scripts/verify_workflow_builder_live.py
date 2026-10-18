@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only inspection of actual Workflow Builder acceptance evidence.
+"""Read-only inspection of historical Workflow Builder v0.1 acceptance evidence.
 
 This verifies cooperative file/transcript evidence, not host attestation. Test
 fixtures exercise the inspector; a passing fixture is never WFB-LIVE evidence.
-See docs/workflow-builder.md for the evidence-index and byte-slice contract.
+This frozen inspector retains the old receipt, dashboard and lens obligations.
+It does not certify current brief/v1 and ownership/v1 delivery. See
+docs/workflow-builder.md for the historical evidence-index contract.
 """
 from __future__ import annotations
 
@@ -1181,6 +1183,8 @@ def verify(path: Path) -> dict[str, Any]:
                 require(a["resumed"] or b["resumed"], "Actual same-session interruption/resume is not_run")
             check("two fresh invocations and recovery", distinct)
     return {"schema": "taskplane.workflow-builder-live-verification/v1",
+            "inspection_contract": "historical-workflow-builder/v0.1",
+            "historical_only": True, "current_runtime_compatible": False,
             "status": "pass" if checks and all(row["status"] == "pass" for row in checks) else "fail",
             "checks": checks, "runs": [row["run"] for row in observations],
             "assurance": "Cooperative native controller, package and transcript consistency; no host attestation. Screenshot semantics and user intent still require review. Fixtures certify this verifier only."}

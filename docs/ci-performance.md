@@ -26,3 +26,13 @@ and live installed-host journeys are separate observations. Missing scanners,
 browser, sandbox capability or native host remain unknown when required, with a
 precise reason. Do not infer speed/token savings from removed byte accounting or
 claim a benchmark/platform run that was not observed.
+
+Ordinary JSON reports reuse the final execution's candidate fingerprint and its
+coverage description. They do not traverse `.git`, `.taskplane`, `dist`, outputs
+or unrelated workspace documents. Explicit archive/isolation and historical
+audit operations retain their own integrity checks.
+
+An optional skip is identified by its reviewed test node, typed parameters and
+actual platform capability evidence. The explanation remains in the report but
+its punctuation and English wording are not an eligibility key. Unknown test or
+capability bindings, missing native errors and required-scenario skips still fail.

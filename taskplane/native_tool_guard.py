@@ -13,12 +13,47 @@ from . import workflow as w
 from .context import digest
 from .context_handoff import binding
 
+# These are reviewed entrypoints, not a prefix policy. In particular, MCP
+# get/create names and multi-mode mutation tools gain no authority by spelling.
+# App tools are exposed with both connector-qualified and normalized aliases.
+_GITHUB_READERS = (
+    'compare_commits', 'download_user_content', 'download_workflow_artifact',
+    'fetch', 'fetch_blob', 'fetch_commit', 'fetch_commit_workflow_runs', 'fetch_file',
+    'fetch_issue', 'fetch_issue_comments', 'fetch_pr', 'fetch_pr_comments',
+    'fetch_pr_file_patch', 'fetch_pr_patch', 'fetch_workflow_job_logs',
+    'fetch_workflow_job_steps', 'fetch_workflow_run_artifacts', 'fetch_workflow_run_jobs',
+    'get_commit_combined_status', 'get_issue_comment_reactions', 'get_pr_diff',
+    'get_pr_info', 'get_pr_reactions', 'get_pr_review_comment_reactions', 'get_profile',
+    'get_repo', 'get_repo_collaborator_permission', 'get_user_login',
+    'get_users_recent_prs_in_repo', 'list_installations', 'list_installed_accounts',
+    'list_pr_changed_filenames', 'list_pull_request_review_threads',
+    'list_pull_request_reviews', 'list_recent_issues', 'list_repositories',
+    'list_repositories_by_affiliation', 'list_repositories_by_installation',
+    'list_user_org_memberships', 'list_user_orgs', 'search', 'search_branches',
+    'search_commits', 'search_installed_repositories_streaming',
+    'search_installed_repositories_v2', 'search_issues', 'search_prs',
+    'search_repositories',
+)
+_CODEX_READERS = (
+    'check_app_update', 'get_handoff_status', 'get_usage_limits',
+    'list_archived_threads', 'list_artifacts',
+    'list_projects', 'list_threads', 'load_workspace_dependencies',
+    'read_page_reference', 'read_thread', 'read_thread_terminal', 'wait_threads',
+)
+# Worktree creation status belongs to recovery admission, which correlates each
+# poll with its pending operation before accepting a completed destination.
 READERS = {
+    **{f'mcp__codex_apps__github{separator}{name}': 'codex'
+       for name in _GITHUB_READERS for separator in ('__', '_')},
+    **{f'mcp__codex_app__{name}': 'codex' for name in _CODEX_READERS},
+    'mcp__code_review__pull_requests_checks': 'codex',
+    'mcp__code_review_pull_requests_checks': 'codex',
     'webrun': 'codex',
     'web.run': 'codex',
     'web__run': 'codex',
-    'mcp__codex_apps__github__fetch_issue': 'codex',
-    'mcp__codex_apps__github_fetch_issue': 'codex',
+    'clockcurr_time': 'codex',
+    'clock.curr_time': 'codex',
+    'clock__curr_time': 'codex',
     'WebFetch': 'claude',
     'WebSearch': 'claude',
 }

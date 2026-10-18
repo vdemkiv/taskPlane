@@ -2,7 +2,7 @@
 
 Use the actual loaded entrypoint, explicit selected workspace and relevant
 `--help`. Source, an extracted archive and an installed plugin are distinct.
-These commands describe the 2.34.0 candidate; an old-contract active run requires
+These commands describe the 2.34.1 candidate; an old-contract active run requires
 its original compatible runtime for mutation.
 
 ```sh
@@ -127,3 +127,11 @@ inspection aids. Missing measurements are unknown. Their outputs do not authoriz
 or veto a phase. Old `loop`, `repository`, `share`, wave transports, maintenance
 reconciliation and context-upgrade/rollback rituals are not current new-run
 procedures. Consult actual help rather than reuse historical commands.
+
+For a Claude root with an automatically selected native transcript,
+`flow decide --decision-json <observed-envelope>` verifies an actually observed
+current checkpoint response and its original native presentation reference.
+The UUID selects an original assistant record; source, chronology and current
+binding are checked without parsing its prose. Missing association stays pending.
+Codex and ordinary observed v1 decision envelopes retain their existing
+structured provenance route.

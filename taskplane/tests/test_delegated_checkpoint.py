@@ -187,7 +187,7 @@ def consent_transport_case(tmp_path, monkeypatch, transport, question, answer="A
         from taskplane.tests.test_native_approval_capture import fixture
         if not native.supported_reader():
             pytest.skip("Native no-follow reads unavailable")
-        controller, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch)
+        controller, state, path, event, shown, human, write = fixture(tmp_path, monkeypatch, pin=False)
     else:
         controller, state = setup(tmp_path)
         state = submit(controller, state)
@@ -226,6 +226,8 @@ def consent_transport_case(tmp_path, monkeypatch, transport, question, answer="A
         assert w.current(state)["decision"] == "awaiting_human_approval"
         assert not state["decisions"]
         assert w.binding(state, w.current(state)["packet"]) == binding
+        local.Harness(controller.workspace, controller.root).update(presentation=
+            native_approval.bind_presentation(state, host='claude', reference=shown['uuid']))
         write([shown, human])
         before_capture = controller._path().read_bytes()
         capture = native_approval.capture(state, host="claude", semantic_choice="approved", presentation=

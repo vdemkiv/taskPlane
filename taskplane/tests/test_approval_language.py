@@ -39,3 +39,14 @@ def test_observed_candidate_cannot_replace_provenance_or_current_target(tmp_path
     before=c._path().read_bytes()
     with pytest.raises(w.Refusal):decide(c,state,value)
     assert c._path().read_bytes()==before
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_unrelated_identifiers_are_preserved_with_current_semantic_target(tmp_path, host):
+    c, state = setup(tmp_path)
+    c.adapter.name = host
+    state = submit(c, state, presentation=False)
+    value = decision(state, text='Approve Product; related run ' + 'e' * 32 + ' remains separate.')
+    result = decide(c, state, value)
+    assert result['decisions'][value['event_id']]['provenance']['excerpt'] == value['excerpt']
+    assert w.current(result)['decision'] == 'approved'

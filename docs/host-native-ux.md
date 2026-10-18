@@ -21,3 +21,23 @@ Claude transcript/hook flush order. Report unavailable capabilities and missing
 measurements honestly. Host permissions remain in force; Taskplane does not create
 an OS sandbox or complete opaque-shell containment. See
 [native ownership](../skills/tp-go/references/codex-native-dispatch.md).
+
+Claude automatic capture needs an explicit observed association between the current
+checkpoint and the original native assistant message. Use the existing `flow decide --decision-json` observed-envelope route after
+observing that actual result in the selected root conversation. Its structured
+presentation reference and checkpoint binding identify the original message. The reader
+re-reads the native message and retains its ID, time, original body and checkpoint
+binding. A native observed envelope can supply that association directly; ordinary
+v1 observed envelopes keep their existing contract. An unbound nearest assistant
+message stays pending. No special sentence, dashboard or transcript metadata is
+required. This association is cooperative observation, not host authentication.
+
+Unavailable hook entrypoints/interpreters produce a diagnostic success at Stop
+and native deny JSON at PreToolUse. Reviewed pure-reader entrypoints remain usable
+at sealed or stale checkpoints. Worktree completion polling retains its existing
+correlated recovery admission because that operation also updates lifecycle state.
+
+Owned source files can appear as useful brief references. A worker changing its
+assigned output must not invalidate its own brief or result. Read-only source
+dependencies, task/checkpoint identity, prerequisites and accepted output
+integrity remain enforced; later unverified output edits still invalidate reuse.

@@ -25,7 +25,7 @@ OPERATION_UNITS = {
     'hash': 'one digest computation', 'parse': 'one parser invocation',
     'write': 'one body publication', 'index_lookup': 'one index selection',
     'reconstruction': 'one reconstructed node', 'selection': 'one examined item',
-    'sort': 'one item admitted to a sort', 'receipt_write': 'one receipt publication',
+    'sort': 'one item admitted to a sort',
     'traversal_node': 'one graph node visit', 'traversal_edge': 'one graph edge visit',
     'checkpoint_write': 'one checkpoint publication', 'directory_flush': 'one directory flush',
     'ledger_replay': 'one replayed page record',

@@ -50,23 +50,79 @@ def test_native_read_preserves_results_and_approvals(tmp_path, host, tool, args)
     assert after.get('task_results') == before.get('task_results')
 
 
-@pytest.mark.parametrize('sealed', [False, True])
-@pytest.mark.parametrize('host,tool,args', [
-    ('codex', 'web__run', RESULT_READS),
-    ('codex', 'web.run', {'screenshot': [{'ref_id': 'turn0view0', 'pageno': 0}]}),
-    ('codex', 'mcp__codex_apps__github__fetch_issue', ISSUE),
-    ('claude', 'WebFetch', {'url': WEB['open'][0]['ref_id'], 'prompt': 'Read the evidence.'}),
-    ('claude', 'WebSearch', {'query': 'official release notes'}),
-])
-def test_known_readers_work_during_work_and_sealed_review(tmp_path, sealed, host, tool, args):
+@pytest.mark.parametrize('condition', ['working', 'sealed', 'stale'])
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_explicit_read_catalog_works_through_controller_without_state_changes(tmp_path, condition, host):
     from taskplane.tests.test_workflow_local import setup as prepare, submit
     c, state = prepare(tmp_path)
     c.adapter.name = host
-    if sealed:
+    if condition == 'sealed':
         state = submit(c, state, presentation=False)
+    elif condition == 'stale':
+        db = c._read(c._path())
+        db['runs'][state['run']]['invalidation_pending'] = True
+        c._write(c._path(), db)
     before = c._path().read_bytes()
-    c.guard({'tool_name': tool, 'tool_input': args}, state['run'])
-    assert c._path().read_bytes() == before
+    # Exercise every explicitly catalogued alias via real admission ordering,
+    # including the sealed/stale gates. No external connector is invoked.
+    for tool, expected_host in guard.READERS.items():
+        if expected_host == host:
+            c.guard({'tool_name': tool, 'tool_input': {}}, state['run'])
+            assert c._path().read_bytes() == before, tool
+
+
+@pytest.mark.parametrize('tool', [
+    'mcp__codex_apps__github__fetch_commit_workflow_runs',
+    'mcp__codex_apps__github_fetch_commit_workflow_runs',
+    'mcp__codex_apps__github__fetch_workflow_job_logs',
+    'mcp__codex_apps__github_fetch_workflow_job_steps',
+    'mcp__codex_apps__github__fetch_workflow_run_jobs',
+    'mcp__codex_apps__github_fetch_workflow_run_artifacts',
+    'mcp__codex_apps__github__download_workflow_artifact',
+    'mcp__codex_apps__github_get_commit_combined_status',
+    'mcp__codex_apps__github__get_pr_info',
+    'mcp__codex_apps__github_list_pull_request_reviews',
+    'mcp__code_review__pull_requests_checks',
+    'mcp__codex_app__read_thread', 'mcp__codex_app__get_handoff_status',
+    'mcp__codex_app__list_artifacts', 'mcp__codex_app__get_usage_limits',
+])
+def test_supported_ci_and_metadata_reader_aliases_are_explicit(tool):
+    assert guard.read(tool, 'codex')
+
+
+@pytest.mark.parametrize('tool', [
+    'mcp__codex_app__get_worktree_creation_status',
+    'mcp__codex_app.get_worktree_creation_status',
+])
+def test_worktree_lifecycle_poll_requires_recovery_admission(tool):
+    assert tool not in guard.READERS
+    assert not guard.read(tool, 'codex')
+
+
+@pytest.mark.parametrize('condition', ['working', 'sealed', 'stale'])
+def test_expanded_catalog_keeps_mutations_and_unknown_getters_denied(tmp_path, condition):
+    from taskplane.tests.test_workflow_local import setup as prepare, submit
+    c, state = prepare(tmp_path)
+    if condition == 'sealed':
+        state = submit(c, state, presentation=False)
+    elif condition == 'stale':
+        db = c._read(c._path())
+        db['runs'][state['run']]['invalidation_pending'] = True
+        c._write(c._path(), db)
+    before = c._path().read_bytes()
+    for tool in (
+            'mcp__codex_apps__github__create_issue', 'mcp__codex_apps__github_update_pull_request',
+            'mcp__codex_apps__github__rerun_failed_workflow_run_jobs',
+            'mcp__codex_apps__github_rerun_workflow_job', 'mcp__codex_apps__github__merge_pull_request',
+            'mcp__codex_app__send_message_to_thread', 'mcp__codex_app__create_worktree',
+            'mcp__codex_app__get_worktree_creation_status',
+            'mcp__codex_app.get_worktree_creation_status',
+            'mcp__codex_app__automation_update', 'mcp__codex_app__connect_spaces_artifact',
+            'mcp__unknown__get_status', 'mcp__codex_apps__github_get_unreviewed_tool',
+            'mcp__code_review__create_review'):
+        with pytest.raises(w.Refusal):
+            c.guard(event(tool, {}), state['run'])
+        assert c._path().read_bytes() == before, tool
 
 
 @pytest.mark.parametrize('host,tool,args', [

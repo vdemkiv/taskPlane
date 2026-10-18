@@ -102,3 +102,11 @@ unverified until a separately authorized host actually loads the final candidate
 and demonstrates its journey/restart behavior. Source/version labels and fixtures
 cannot close it. Candidate installation/reload/publication are separate actions;
 no cache overwrite, permission bypass or invented identity establishes success.
+
+The frozen `scripts/verify_workflow_builder_live.py` inspector reads historical
+v0.1 evidence, including old context receipts, dashboard observations and declared
+lens obligations. Its report explicitly sets `historical_only: true` and
+`current_runtime_compatible: false`, even when historical consistency passes.
+It does not impose those retired obligations on current brief/v1 delivery.
+Historical fixtures and immutable transcript/package checks remain useful for
+reading old evidence; a passing inspector result cannot certify a current run.

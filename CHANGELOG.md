@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.34.1 — hook and approval boundary repairs
+
+- Make unavailable or failed hook launches diagnostic at Stop and structured denials at PreToolUse, including stale populated runtime paths.
+- Keep reviewed GitHub, CI and Codex status readers available at checkpoints; retain lifecycle-specific worktree recovery admission.
+- Bind Claude presentation capture to an observed native message and the current checkpoint, without presentation wording rules or transcript edits.
+- Remove lexical checkpoint-ID guessing, English skip-reason identity, relay completion prose and the arbitrary retry-reason minimum.
+- Reuse scoped CI source fingerprints instead of scanning the whole workspace when writing ordinary reports.
+- Allow authorized owned-source edits in native briefs and accepted results while retaining read-dependency freshness and output-integrity checks.
+- Remove associated obsolete assertions and dead receipt-accounting metadata; label the frozen Workflow Builder inspector as historical.
+- Preserve explicit target provenance, replay checks, actual capability evidence, relevant-input freshness, package integrity and native completion.
+
+Local fixture and package results remain distinct from Windows CI and live installed-host acceptance.
+
 ## 2.34.0 — compact delivery candidate
 
 - Keep seven separate human phase approvals and interpret ordinary contextual intent with provenance, chronology and replay checks.

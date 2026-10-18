@@ -9,7 +9,6 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import re
 from typing import Any, Iterator
 
 from . import claude_worker_observations as native, workflow as w, host_capabilities
@@ -81,10 +80,61 @@ def _text(row: dict[str, Any]) -> str | None:
     return None
 
 
-def _shown(text: str, state: dict[str, Any], artifact: str) -> bool:
-    # The adapter supplies the observed presentation binding; prose is retained
-    # as evidence, never parsed for exact question wording.
-    return isinstance(text, str) and bool(text.strip())
+def _shown(row: dict[str, Any], expected: dict[str, Any], presentation: dict[str, Any]) -> bool:
+    """An orchestrator pins native identity and checkpoint, never prose grammar."""
+    return (isinstance(row.get('uuid'), str) and presentation.get('reference') == row['uuid']
+            and presentation.get('binding') == expected)
+
+
+def bind_presentation(state: dict[str, Any], *, host: str, reference: str) -> dict[str, Any]:
+    """Read an explicitly observed message from the selected automatic source.
+
+    This cooperative orchestrator observation associates a message with the
+    current checkpoint. It does not authenticate a human or infer consent.
+    """
+    stage = w.current(state)
+    w.require(host == 'claude' and native.supported_reader(), 'unsupported_host',
+              'Native message presentation binding requires the Claude source reader.')
+    w.require(stage['decision'] == 'awaiting_human_approval' and stage.get('packet'),
+              'stale_checkpoint', 'Bind a presentation for the current pending checkpoint.')
+    w.require(isinstance(reference, str) and native._UUID.fullmatch(reference), 'invalid_evidence',
+              'Supply the actual native assistant message UUID.')
+    source = state.get('claude_transcript_source')
+    try:
+        if (not isinstance(source, dict)
+                or not native._valid_seal(source, 'taskplane.claude-transcript-source/v1')
+                or source.get('parent') != state['root']):
+            raise ValueError('No selected automatic root source')
+        path = native._source_path(state['root'], source['path'])
+        fd, project = native._open_source(path)
+        budget = native.ReadBudget()
+        with os.fdopen(fd, 'rb', buffering=0) as stream:
+            info = native._regular(stream.fileno())
+            if (native._identity(info) != source['identity'] or project != source['project_identity']
+                    or info.st_size < source['selected_size']):
+                raise ValueError('Selected source changed')
+            session = native._verify(stream.fileno(), source['session_reference'], budget)
+            if not session or session.get('sessionId') != state['root'] or session.get('isSidechain') is True:
+                raise ValueError('Selected session changed')
+            for row, ref in _reverse_records(stream.fileno(), path, info, budget):
+                if row.get('uuid') != reference:
+                    continue
+                text = _text(row)
+                if (row.get('sessionId') != state['root'] or row.get('isSidechain') is not False
+                        or row.get('type') != 'assistant' or not isinstance(row.get('message'), dict)
+                        or row['message'].get('role') != 'assistant'
+                        or not isinstance(text, str) or not 0 < len(text) <= 16384
+                        or not native._stamp(stage['submitted_at']) <= native._stamp(row.get('timestamp'))
+                        <= datetime.now(timezone.utc)):
+                    raise ValueError('Message is not a current assistant presentation')
+                if native._regular(stream.fileno()).st_size < info.st_size:
+                    raise ValueError('Selected source truncated')
+                return {'binding': w.binding(state, stage['packet']), 'reference': reference,
+                        'at': row['timestamp'], 'text': text, 'assurance': 'observed; not host authentication',
+                        'native_proof': {'source_sha256': source['sha256'], 'presentation': ref}}
+    except (OSError, ValueError, TypeError, KeyError, IndexError, UnicodeError) as exc:
+        raise w.Refusal('invalid_evidence', 'Cannot bind the actual native presentation: ' + str(exc)) from None
+    raise w.Refusal('invalid_evidence', 'The native assistant message reference was not found in the bounded selected source.')
 
 
 def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
@@ -114,6 +164,11 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
     if stage['decision'] != 'awaiting_human_approval' or not stage.get('packet'):
         return status('not_applicable', 'There is no pending human checkpoint.')
     expected = w.binding(state, stage['packet'])
+    if (event is not None and 'taskplane_semantic_binding' in event
+            and event['taskplane_semantic_binding'] != expected):
+        return status('conflict', 'The semantic candidate targets a different checkpoint binding.')
+    if presentation.get('reference') is not None and presentation.get('binding') != expected:
+        return status('conflict', 'The pinned native message reference has a different checkpoint binding.')
     source = state.get('claude_transcript_source')
     if not source:
         return status('not_yet_available', 'The automatic root transcript source has not been observed.')
@@ -144,6 +199,12 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
                 elif (human_pair is not None and row.get('type') == 'assistant'
                       and isinstance(row.get('message'), dict) and row['message'].get('role') == 'assistant'
                       and _text(row)):
+                    if not _shown(row, expected, presentation):
+                        continue
+                    pin = presentation.get('native_proof')
+                    if pin is not None and (not isinstance(pin, dict)
+                            or pin.get('source_sha256') != source['sha256'] or pin.get('presentation') != ref):
+                        return status('conflict', 'The pinned native presentation source changed; observe and bind the actual checkpoint presentation again.')
                     shown_pair = row, ref
                     break
             if native._regular(stream.fileno()).st_size < info.st_size:
@@ -168,15 +229,12 @@ def capture(state: dict[str, Any], *, host: str, presentation: dict[str, Any],
             return {"status": "semantic_candidate_required", "excerpt": excerpt,
                     "reason": "The orchestrator must interpret this actual human response for the current checkpoint."}
         choice = candidate
-        named = re.findall(r'\b[0-9a-f]{32}\b', excerpt.casefold())
-        if any(identifier != expected['checkpoint'] for identifier in named):
-            return status('conflict', 'The response names a different checkpoint.')
         if shown_pair is None:
-            return status('not_yet_available', 'The original checkpoint presentation has not been observed.')
+            return status('not_yet_available', 'Automatic capture has no bound native message reference for the current checkpoint presentation. The orchestrator can observe the actual message, build a native observed envelope with bind_presentation and capture, and submit it using flow decide --decision-json. Unrelated assistant text cannot supply that association.')
         assistant, shown_ref = shown_pair
         text = _text(assistant)
         assert text is not None
-        if (len(text) > 16384 or not _shown(text, state, presentation.get('artifact', ''))
+        if (len(text) > 16384
                 or not native._stamp(stage['submitted_at']) <= native._stamp(assistant.get('timestamp')) < observed):
             return status('needs_clarification', 'The preceding assistant presentation does not identify this checkpoint.')
         if not all(isinstance(row.get('uuid'), str) and native._UUID.fullmatch(row['uuid']) for row in (human, assistant)):
@@ -213,7 +271,17 @@ def verify(value: dict[str, Any], state: dict[str, Any], host: str,
         state = deepcopy(state)
         state['revision'] = previous['binding']['revision']
         state['visits'][state['index']]['decision'] = 'awaiting_human_approval'
-    fresh = capture(state, host=host, presentation=presentation, semantic_choice=value.get("choice"))
+    # The envelope's structured association is an explicit orchestrator
+    # observation. Re-read its exact native source; never substitute the most
+    # recent assistant message or trust the supplied presentation body.
+    w.require(isinstance(value.get('presentation'), dict), 'invalid_evidence',
+              'Native presentation reference is missing.')
+    pinned = {'binding': value.get('binding'), 'reference': value['presentation'].get('reference'),
+              'native_proof': value.get('native_proof')}
+    if previous is not None:
+        pinned['binding'] = {**previous['binding'],
+            'scope_digest': w.binding(state, w.current(state)['packet'])['scope_digest']}
+    fresh = capture(state, host=host, presentation=pinned, semantic_choice=value.get("choice"))
     if previous is not None and fresh.get('status') == 'observed':
         # Accepting Plan may narrow the scope. Replaying its exact observation
         # retains the original scope authorization, never the newly narrowed one.

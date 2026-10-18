@@ -195,6 +195,12 @@ def scoped(c, s, tmp_path):
 def test_scoped_inputs_preserve_unaffected_native_results(tmp_path):
     c, s = setup(tmp_path, count=2, scoped_input=True, extra_inputs=['other.py'])
     s = scoped(c, s, tmp_path)
+    rows = json.loads((tmp_path/'.taskplane/scoped-tasks.json').read_text())['tasks']
+    for row in rows[:2]:
+        row['read_inputs'].extend(row['paths'])
+        (tmp_path / row['paths'][0]).write_text('Original owned source\n')
+    (tmp_path/'.taskplane/scoped-tasks.json').write_text(json.dumps({'tasks': rows}))
+    s = c.update_tasks(s['run'], s['revision'], '.taskplane/scoped-tasks.json')
     a = reserve(c, s, 'T0')
     launch(c, s, a, 'native-a'); consume(c, s, a['grant'], 'native-a')
     event = dict(session_id='native-a', call_id='ready', tool_name='exec_command',
@@ -209,11 +215,19 @@ def test_scoped_inputs_preserve_unaffected_native_results(tmp_path):
     for item, child in [(a, 'native-a'), (b, 'native-b')]:
         complete(c, s, item, child)
     state = c.report()
+    assert wr.result_valid(tmp_path, state, 'T0')
+    assert wr.result_valid(tmp_path, state, 'T1')
+    brief = wr.worker_session(tmp_path, state, state['workers'][a['grant']['grant_id']]).body
+    assert next(row for row in brief['inputs'] if row['path'] == 'T0.md')['status'] == 'available'
     (tmp_path/'input.py').write_text('value = 2\n')
     assert not wr.result_valid(tmp_path, state, 'T0')
+    with pytest.raises(w.Refusal, match='read dependencies'):
+        wr.worker_session(tmp_path, state, state['workers'][a['grant']['grant_id']])
     assert wr.result_valid(tmp_path, state, 'T1')
     state['revision'] += 1
     assert wr.result_valid(tmp_path, state, 'T1')  # Progress revision is not an input change.
+    (tmp_path/'T1.md').write_text('Unverified later output\n')
+    assert not wr.result_valid(tmp_path, state, 'T1')
 
 
 @pytest.mark.parametrize('fork', [None, 'all', '1'])
@@ -231,14 +245,15 @@ def test_spawn_requires_explicit_no_history(tmp_path, fork):
 
 
 
-def test_scoped_retries_need_a_concrete_reason(tmp_path):
+@pytest.mark.parametrize('reason', [None, '', '   '])
+def test_scoped_retries_need_a_concrete_reason(tmp_path, reason):
     c, s = setup(tmp_path, count=2, extra_inputs=['other.py'])
     s = scoped(c, s, tmp_path)
     first = reserve(c, s)
     c.worker(s['run'], 'abandon', revision=s['revision'], grant=first['grant']['grant_id'])
     with pytest.raises(w.Refusal, match='retry_reason'):
-        reserve(c, s)
-    second = reserve(c, s, retry_reason='Reservation abandoned before launch to correct the dispatch payload.')
+        reserve(c, s, retry_reason=reason)
+    second = reserve(c, s, retry_reason='Retry')
     assert second['grant']['attempt'] == 2
     counts = c.worker(s['run'], 'status')['counts']
     assert counts == {'tasks':1,'reserved':2,'launched':0,'retries':1,'failed':1}

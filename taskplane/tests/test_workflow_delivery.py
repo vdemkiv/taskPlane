@@ -1065,3 +1065,55 @@ def test_two_fresh_evaluate_timeouts_remain_unknown_until_both_checks_recover(tm
     for ref in timed_out:
         assert Store(tmp_path).resolve(ref)['result']['reason'] == 'timeout'
         assert reuse.inherited(tmp_path, ref, state=delivery.state)['status'] == 'miss'
+
+
+@pytest.mark.parametrize('form', ['const', 'let', 'direct_whitespace', 'structured'])
+@pytest.mark.parametrize('display', [None, 'Execution finished successfully.'])
+@requires_relay_reader
+def test_original_source_relay_accepts_equivalent_single_execution_wrappers(tmp_path, monkeypatch, form, display):
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, rows, rewrite = relay_fixture(tmp_path, monkeypatch)
+    call, result = rows[1]['payload'], rows[2]['payload']
+    args = call['input'].removeprefix('text(await tools.exec_command(').removesuffix('));')
+    if form in {'const', 'let'}:
+        call['input'] = f'{form} launchResult = await tools.exec_command({args}); text(launchResult);'
+    elif form == 'direct_whitespace':
+        call['input'] = f'  text ( await tools.exec_command ( {args} ) ) ; '
+    else:
+        call.update(type='function_call', name='functions.exec_command', arguments=args)
+        call.pop('input')
+        result.update(type='function_call_output')
+    if display is not None:
+        result['output'].insert(0, {'type': 'input_text', 'text': display})
+    rewrite()
+    accepted = decide(c, state, value)
+    assert accepted['decisions'][value['event_id']]['provenance']['relay'] == value['relay']
+
+
+@pytest.mark.parametrize('defect', ['extra_execution', 'unexposed_result', 'wrong_variable', 'computed_args',
+                                  'hidden_execution', 'ambiguous_result', 'duplicate_args'])
+@requires_relay_reader
+def test_original_source_relay_rejects_ambiguous_or_computed_execution(tmp_path, monkeypatch, defect):
+    from taskplane.tests.test_workflow_local import decide
+    c, state, value, rows, rewrite = relay_fixture(tmp_path, monkeypatch)
+    call, result = rows[1]['payload'], rows[2]['payload']
+    args = call['input'].removeprefix('text(await tools.exec_command(').removesuffix('));')
+    if defect == 'extra_execution':
+        call['input'] += call['input']
+    elif defect == 'unexposed_result':
+        call['input'] = f'const result = await tools.exec_command({args});'
+    elif defect == 'wrong_variable':
+        call['input'] = f'const result = await tools.exec_command({args}); text(other);'
+    elif defect == 'computed_args':
+        call['input'] = 'text(await tools.exec_command(getArguments()));'
+    elif defect == 'hidden_execution':
+        call['input'] = f'const result = await tools.exec_command({args}); text(result); await tools.exec_command({args});'
+    elif defect == 'duplicate_args':
+        call['input'] = 'text(await tools.exec_command(' + args[:-1] + ', "tty": true}));'
+    else:
+        result['output'].insert(0, dict(result['output'][0]))
+    rewrite()
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        decide(c, state, value)
+    assert c._path().read_bytes() == before

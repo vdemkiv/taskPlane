@@ -611,7 +611,7 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     previous = [r for r in rows.values() if r["task_id"] == task_id]
     retry_reason = request.get("retry_reason")
     if previous and ("read_inputs" in definition or any(is_launch_denial(r) for r in previous)):
-        w.require(isinstance(retry_reason, str) and 8 <= len(retry_reason.strip()) <= 512,
+        w.require(isinstance(retry_reason, str) and 0 < len(retry_reason.strip()) <= 512,
                   "invalid_evidence", "A repeated scoped task needs a concrete retry_reason before another attempt.")
     live = [r for r in rows.values() if r["state"] in LIVE]
     limit = capacity(request.get("capacity"), host=host)
@@ -690,8 +690,22 @@ def worker_session(workspace: Path, state: dict[str, Any], row: dict[str, Any]) 
     current(state, row)
     w.require(row.get("worker_id"), "scope_violation", "Native worker identity is not bound.")
     consumer = {k: row[k] for k in ("worker_id", "grant_id", "attempt", "task_id", "task_generation")}
-    return Brief(workspace, state, row["task_id"], consumer=consumer,
-                   snapshot=Store(workspace).resolve(row["snapshot"]))
+    frozen = Store(workspace).resolve(row["snapshot"])
+    session = Brief(workspace, state, row["task_id"], consumer=consumer, persist=False)
+    old = frozen.get("brief", {})
+    owned = set(row["paths"])
+    # Owned source references remain useful in the brief, but authorized output
+    # writes cannot invalidate their own attempt. Freeze only read dependencies.
+    def dependencies(inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [item for item in inputs if item.get("path") not in owned]
+    w.require(frozen.get("binding") == session.binding and frozen.get("task") == row["task_id"]
+              and old.get("task") == session.body["task"]
+              and dependencies(old.get("inputs", [])) == dependencies(session.body["inputs"])
+              and old.get("prerequisite_results") == session.body["prerequisite_results"],
+              "invalid_context", "Relevant task read dependencies or authority changed since preparation.")
+    session.reference = session.store.put("work-brief", session.body)
+    session.store.register(session.binding, [session.reference])
+    return session
 
 
 def admit_discovery(args: dict[str, Any]) -> None:

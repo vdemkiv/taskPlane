@@ -15,20 +15,77 @@ requires_native_reader = pytest.mark.skipif(not observations.supported_reader(),
 
 
 @pytest.mark.parametrize("reentry", [False, True])
-def test_literal_stop_missing_root_is_diagnostic_while_pretool_denies(reentry):
+@pytest.mark.parametrize("root_variable", ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"])
+@pytest.mark.parametrize("defect", ["unset", "stale", "missing_entrypoint", "entrypoint_directory",
+                                    "unreadable_entrypoint", "inaccessible_root",
+                                    "missing_interpreter", "failed_interpreter", "failed_runtime"])
+def test_literal_unavailable_runtime_keeps_stop_diagnostic_and_pretool_denied(
+        tmp_path, reentry, root_variable, defect):
     hooks = json.loads((Path(__file__).resolve().parents[2] / "hooks/hooks.json").read_text())["hooks"]
     env = {k: v for k, v in os.environ.items() if k not in {"CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"}}
+    root = tmp_path / "runtime with spaces"
+    entry = root / "taskplane/tp.py"
+    entry.parent.mkdir(parents=True)
+    # A real file which cannot initialize. Interpreter failures are separately
+    # injected below; no candidate runtime module is imported by these fixtures.
+    entry.write_text("raise SystemExit(2)\n")
+    env[root_variable] = str(root)
+    if defect == "unset":
+        env.pop(root_variable)
+    elif defect == "stale":
+        env[root_variable] = str(tmp_path / "nonexistent installed cache")
+    elif defect == "missing_entrypoint":
+        entry.unlink()
+    elif defect == "entrypoint_directory":
+        entry.unlink(); entry.mkdir()
+    elif defect == "unreadable_entrypoint":
+        entry.chmod(0)
+    elif defect == "inaccessible_root":
+        root.chmod(0)
+    elif defect in ("missing_interpreter", "failed_interpreter"):
+        binary = tmp_path / "bin"
+        binary.mkdir()
+        env["PATH"] = str(binary)
+        if defect == "failed_interpreter":
+            interpreter = binary / ("py.cmd" if os.name == "nt" else "python3")
+            interpreter.write_text("@exit /b 2\n" if os.name == "nt" else "#!/bin/sh\nexit 2\n")
+            interpreter.chmod(0o755)
     key = "commandWindows" if os.name == "nt" else "command"
-    for event, expected in (("Stop", 0), ("PreToolUse", 2)):
-        command = hooks[event][0]["hooks"][0][key]
-        completed = subprocess.run(command, shell=True, env=env, input=json.dumps({"stop_hook_active": reentry}),
-                                   capture_output=True, text=True, timeout=10)
-        assert completed.returncode == expected, completed.stderr
-        result = json.loads(completed.stdout)
-        if event == "Stop":
-            assert result.get("decision") != "block" and "diagnostic" in result["systemMessage"]
-        else:
-            assert result["decision"] == "block"
+    try:
+        for event in ("Stop", "PreToolUse"):
+            completed = subprocess.run(hooks[event][0]["hooks"][0][key], shell=True, env=env,
+                input=json.dumps({"stop_hook_active": reentry}), capture_output=True, text=True, timeout=10)
+            assert completed.returncode == 0, completed.stderr
+            result = json.loads(completed.stdout)
+            if event == "Stop":
+                assert result.get("decision") != "block" and "diagnostic" in result["systemMessage"]
+            else:
+                assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+                assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    finally:
+        root.chmod(0o755)
+        if entry.exists():
+            entry.chmod(0o755 if entry.is_dir() else 0o644)
+
+
+@pytest.mark.parametrize("root_variable", ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"])
+def test_literal_available_runtime_preserves_its_structured_response(tmp_path, root_variable):
+    hooks = json.loads((Path(__file__).resolve().parents[2] / "hooks/hooks.json").read_text())["hooks"]
+    root = tmp_path / "runtime with spaces"
+    entry = root / "taskplane/tp.py"
+    entry.parent.mkdir(parents=True)
+    entry.write_text('import json, sys\nprint(json.dumps({"runtime_action": sys.argv[1]}))\n')
+    env = {k: v for k, v in os.environ.items() if k not in {"CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"}}
+    env[root_variable] = str(root)
+    # Keep a stale lower-priority installation from overriding the current one.
+    if root_variable == "CLAUDE_PLUGIN_ROOT":
+        env["PLUGIN_ROOT"] = str(tmp_path / "stale fallback")
+    key = "commandWindows" if os.name == "nt" else "command"
+    for event, action in (("Stop", "session-verify"), ("PreToolUse", "screen")):
+        completed = subprocess.run(hooks[event][0]["hooks"][0][key], shell=True, env=env,
+            input="{}", capture_output=True, text=True, timeout=10)
+        assert completed.returncode == 0, completed.stderr
+        assert json.loads(completed.stdout) == {"runtime_action": action}
 
 
 def test_archived_capture_does_not_silently_migrate_its_binding():
