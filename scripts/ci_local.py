@@ -405,6 +405,7 @@ OPTIONAL_SKIP_RULES = [('test_claude_fork_input_transform.py',
    'test_reconcile_cli_uses_original_attempt_without_automatic_acceptance',
    'test_reconciliation_revalidates_cached_transform_against_original_span',
    'test_literal_notice_in_original_report_never_authorizes_removal',
+   'test_package_switch_refuses_mutation_and_preserves_original_native_proof',
    'test_exact_notice_without_observed_native_trigger_stays_blocked')),
  ('test_claude_interactive_recovery.py',
   'Requires native no-follow reads',
@@ -603,6 +604,11 @@ OPTIONAL_SKIP_RULES = [('test_claude_fork_input_transform.py',
   'no_binding',
   {},
   ('test_public_recovery_requires_receipt_and_preserves_original_provenance',)),
+ ('test_initialization_readiness.py',
+  'Restoration requires no-follow directory descriptors.',
+  'no_binding',
+  {},
+  ('test_restoration_completion_preserves_controller_without_accepting_phases',)),
  ('test_initialization_recovery_receipt.py',
   'Restoration requires no-follow directory descriptors; unsupported platforms fail closed.',
   'no_binding',
@@ -627,7 +633,8 @@ OPTIONAL_SKIP_RULES = [('test_claude_fork_input_transform.py',
    'test_large_old_history_does_not_block_recent_approval_or_enter_proof',
    'test_recent_unreadable_evidence_never_falls_back_to_an_older_approval',
    'test_reverse_reader_preserves_cross_chunk_records_and_stops_before_old_history',
-   'test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source')),
+   'test_approval_capacity_exhaustion_is_explicit_and_does_not_poison_source',
+   'test_native_capture_needs_orchestrator_semantic_candidate')),
  ('test_native_workflow_cli.py',
   'Exercises a host without Claude invocation transport',
   'claude_transport',
@@ -823,6 +830,18 @@ for _transport, _reason in (
 ):
     OPTIONAL_SKIP_RULES.append(('test_reopen_checkpoint_consent.py', _reason, 'no_binding',
         {'consent_transport': _transport}, ('test_sec01_reopen_transport_cannot_record_approval_or_continue',)))
+    for _parameter, _names in (
+        ('consent_transport', (
+            'test_sec01_transport_stale_or_foreign_binding_is_atomic',
+            'test_sec01_transport_proof_precedes_question_validation',
+            'test_sec01_exact_original_request_replay_is_idempotent',
+            'test_sec01_consumed_event_cannot_approve_a_later_checkpoint',
+            'test_sec01_conflicting_replay_is_refused_without_authority_mutation')),
+        ('transport', ('test_sec02_caller_text_cannot_replace_pinned_original_question',)),
+        ('consent_text_transport', ('test_sec01_current_phase_approval_can_continue_to_next_phase',)),
+    ):
+        OPTIONAL_SKIP_RULES.append(('test_delegated_checkpoint.py', _reason, 'no_binding',
+            {_parameter: _transport}, _names))
 
 OPTIONAL_SKIP_NODES = {}
 for _module, _reason, _predicate, _params, _names in OPTIONAL_SKIP_RULES:

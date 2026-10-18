@@ -11,7 +11,7 @@ from taskplane import claude_worker_observations as observations, flow, workflow
 from taskplane.tests.test_claude_interactive_recovery import Interactive
 from taskplane.tests.test_claude_worker_lifecycle import notification_record
 
-pytestmark = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
+requires_native_reader = pytest.mark.skipif(not observations.supported_reader(), reason='Requires native no-follow reads')
 
 
 @pytest.mark.parametrize("reentry", [False, True])
@@ -58,6 +58,7 @@ def delivered(host, *, defect=None):
     return event, peer, note
 
 
+@requires_native_reader
 def test_pre_handback_stop_reconciles_original_call_and_preserves_other_work(tmp_path, monkeypatch):
     host = Interactive(tmp_path, monkeypatch)
     host.launch(); host.ready()
@@ -90,6 +91,7 @@ def test_pre_handback_stop_reconciles_original_call_and_preserves_other_work(tmp
 
 @pytest.mark.parametrize('defect', ['version', 'missing_ack', 'runtime', 'foreign_stop', 'stop_path',
     'stop_after_ack', 'ack_after_completion', 'bad_digest', 'body', 'call', 'future', 'tampered_span'])
+@requires_native_reader
 def test_pre_handback_sequence_does_not_relax_identity_or_delivery(tmp_path, monkeypatch, defect):
     host = Interactive(tmp_path, monkeypatch)
     host.launch(); host.ready(); delivered(host, defect=defect)
@@ -124,6 +126,7 @@ def test_pre_handback_sequence_does_not_relax_identity_or_delivery(tmp_path, mon
     assert target.read_bytes() == before
 
 
+@requires_native_reader
 def test_same_launch_competing_no_report_remains_conflict(tmp_path, monkeypatch):
     host = Interactive(tmp_path, monkeypatch)
     host.launch(); host.ready(); delivered(host)

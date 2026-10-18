@@ -333,6 +333,27 @@ WINDOWS_CAPABILITY_CASES = [('test_native_worker_dispatch.py::test_claude_start_
  ('test_workspace_binding.py::test_setup_denies_structured_writes_or_unbound_children[Read-args1-child1]',
   'Strict workspace binding requires descriptor-relative no-follow directory operations',
   {}),
+ ('test_delegated_checkpoint.py::test_sec01_transport_stale_or_foreign_binding_is_atomic[observed-v2-run]',
+  'Accepting original-source relay evidence requires secure descriptor-relative reads',
+  {'consent_transport': 'observed-v2'}),
+ ('test_delegated_checkpoint.py::test_sec01_transport_stale_or_foreign_binding_is_atomic[native-capture-run]',
+  'Native no-follow reads unavailable',
+  {'consent_transport': 'native-capture'}),
+ ('test_delegated_checkpoint.py::test_sec02_caller_text_cannot_replace_pinned_original_question[native-capture]',
+  'Native no-follow reads unavailable',
+  {'transport': 'native-capture'}),
+ ('test_delegated_checkpoint.py::test_sec01_current_phase_approval_can_continue_to_next_phase[observed-v2]',
+  'Accepting original-source relay evidence requires secure descriptor-relative reads',
+  {'consent_text_transport': 'observed-v2'}),
+ ('test_claude_guarded_handback.py::test_package_switch_refuses_mutation_and_preserves_original_native_proof',
+  'Requires native no-follow reads',
+  {}),
+ ('test_initialization_readiness.py::test_restoration_completion_preserves_controller_without_accepting_phases',
+  'Restoration requires no-follow directory descriptors.',
+  {}),
+ ('test_native_approval_capture.py::test_native_capture_needs_orchestrator_semantic_candidate',
+  'Native no-follow reads unavailable',
+  {}),
  ('test_native_workflow_cli.py::test_both_native_routing_contexts_complete_seven_explicit_gates[claude]',
   'Successful Claude context transport requires macOS or Linux; refusal is tested separately',
   {'host': 'claude'})]
@@ -385,9 +406,15 @@ def test_unbound_or_untyped_symlink_case_is_never_optional(bound):
 
 
 @pytest.mark.parametrize('transport', ['observed-v1', 'observed-v3-direct', 'observed-v3-reaction', 'native-capture', None])
-def test_consent_transport_skip_cannot_exempt_other_transport(transport):
-    node, reason, _ = next(row for row in WINDOWS_CAPABILITY_CASES if row[0].startswith('test_reopen_checkpoint_consent.py::test_sec01_reopen_transport_cannot_record_approval_or_continue'))
-    record = optional_record('taskplane/tests/' + node, reason, platform='win32', parameters={'consent_transport': transport})
+@pytest.mark.parametrize('prefix', [
+    'test_reopen_checkpoint_consent.py::test_sec01_reopen_transport_cannot_record_approval_or_continue',
+    'test_delegated_checkpoint.py::test_sec01_transport_stale_or_foreign_binding_is_atomic[observed-v2',
+    'test_delegated_checkpoint.py::test_sec01_current_phase_approval_can_continue_to_next_phase',
+])
+def test_consent_transport_skip_cannot_exempt_other_transport(transport, prefix):
+    node, reason, params = next(row for row in WINDOWS_CAPABILITY_CASES if row[0].startswith(prefix))
+    record = optional_record('taskplane/tests/' + node, reason, platform='win32',
+                             parameters={next(iter(params)): transport})
     assert ci_local.test_verdict(record)['status'] == 'fail'
 
 
