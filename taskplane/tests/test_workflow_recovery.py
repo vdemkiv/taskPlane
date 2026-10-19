@@ -386,6 +386,23 @@ def test_recovery_controls_and_diagnostics_pass_through_declared_hook(tmp_path, 
         with pytest.raises(w.Refusal): c.guard(event, state["run"])
 
 
+def test_implicit_workspace_diagnosis_survives_unreadable_state(tmp_path):
+    c, _ = setup(tmp_path)
+    target = c._path()
+    target.write_text('{')
+    before = target.read_bytes()
+    event = runtime('flow', 'diagnose')
+    event.update(hook_event_name='PreToolUse', cwd=str(tmp_path), session_id='root')
+    assert flow.hook(event, governor=c).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
+    for blocked in (runtime('flow', 'start'), runtime('flow', 'repair'),
+                    runtime('flow', 'diagnose', '--run', 'foreign'),
+                    command('touch', 'app.py')):
+        blocked.update(hook_event_name='PreToolUse', cwd=str(tmp_path), session_id='root')
+        with pytest.raises(w.Refusal, match='Control state cannot be read'):
+            flow.hook(blocked, governor=c)
+    assert target.read_bytes() == before
+
+
 @pytest.mark.parametrize("phase", w.PHASES)
 def test_replacement_is_available_at_every_delivery_checkpoint(tmp_path, phase):
     c, state = setup(tmp_path)

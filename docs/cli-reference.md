@@ -2,7 +2,7 @@
 
 Use the actual loaded entrypoint, explicit selected workspace and relevant
 `--help`. Source, an extracted archive and an installed plugin are distinct.
-These commands describe the 2.34.3 candidate; an old-contract active run requires
+These commands describe the 2.34.4 candidate; an old-contract active run requires
 its original compatible runtime for mutation.
 
 ```sh

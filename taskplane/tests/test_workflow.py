@@ -70,6 +70,31 @@ def test_every_phase_requires_its_own_human_decision():
     assert len(s["decisions"]) == 7
 
 
+@pytest.mark.parametrize('repair_metadata', [False, True])
+def test_historical_plan_checks_do_not_break_ordinary_build_metadata(repair_metadata):
+    s = state()
+    for index, phase in enumerate(w.PHASES):
+        output = {'write_scope': []}
+        if phase == 'plan':
+            output['verification_strategy'] = {'checks': [
+                {'name': 'Historical check', 'status': 'pass', 'evidence': 'check.log'}]}
+        s = ready(s, output=output, manifest={}, source_manifest={}, context={})
+        s = w.decide(s, answer(s))
+        if index + 1 < len(w.PHASES):
+            s = w.advance(s, w.PHASES[index + 1])
+    s = w.finish(s)
+    build = next(stage for stage in s['visits'] if stage['phase'] == 'build')
+    if repair_metadata:
+        build['artifact_paths'].append('unapproved.log')
+    before = deepcopy(s)
+    if repair_metadata:
+        with pytest.raises(w.Refusal, match='Repair metadata requires identified Plan checks'):
+            w.validate_state(s)
+    else:
+        w.validate_state(s)
+    assert s == before
+
+
 @pytest.mark.parametrize("entry", w.ENTRY_PHASES)
 def test_standalone_acceptance_does_not_fabricate_predecessors(entry):
     s = accept(state(entry, True))
