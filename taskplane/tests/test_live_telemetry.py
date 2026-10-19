@@ -122,15 +122,24 @@ def test_terminal_sample_is_not_replaced_by_later_hook_usage(tmp_path):
     assert live.read(tmp_path, ended)['metadata']['closing_counter']['usage']['total_tokens'] == 150
 
 
-@pytest.mark.parametrize('damage', ['sessions', 'sample', 'metadata', 'counts', 'missing'])
+@pytest.mark.parametrize('damage', ['sessions', 'sample', 'metadata', 'counts', 'missing',
+    'measurement', 'measurement_sessions', 'measurement_row', 'measurement_usage', 'measurement_errors'])
 def test_malformed_advisory_shapes_preserve_admission_and_refusal(tmp_path, damage):
     import json
+    from taskplane.tests.test_usage_accounting import measured
     c, state = setup(tmp_path)
     value = live.empty(state)
     if damage == 'sessions': value['sessions'] = []
     elif damage == 'sample': value['sessions']['root'] = None
     elif damage == 'metadata': value['metadata'] = None
     elif damage == 'counts': value['recent_tools'] = 'many'
+    elif damage.startswith('measurement'):
+        value['measurement'] = measured(20)
+        if damage == 'measurement': value['measurement'] = ['invalid']
+        elif damage == 'measurement_sessions': value['measurement']['sessions'] = {'root': {}}
+        elif damage == 'measurement_row': value['measurement']['sessions'] = [None]
+        elif damage == 'measurement_usage': value['measurement']['sessions'][0]['usage'] = [20]
+        else: value['measurement']['sessions'][0]['errors'] = [None]
     else: del value['outcomes']
     live.path(tmp_path, state['run']).write_text(json.dumps(value))
     assert flow.hook(event(tmp_path), governor=c) == {}
@@ -138,6 +147,47 @@ def test_malformed_advisory_shapes_preserve_admission_and_refusal(tmp_path, dama
         flow.hook(event(tmp_path, tool_name='Write', tool_input={'path': 'outside.py'}), governor=c)
     assert failure.value.reason == 'scope_violation'
     assert flow.report(tmp_path, state['run'], governor=c)['evidence_errors']
+
+
+def test_saved_measurement_recovers_when_native_source_disappears(tmp_path, monkeypatch):
+    from taskplane import flow_usage
+    from taskplane.tests.test_usage_accounting import counts, measured
+    c, state = setup(tmp_path)
+    live.initialize(tmp_path, state, {'usage': counts(100), 'usage_status': 'observed'})
+    live.remember_measurement(tmp_path, state, measured(20), state['started_at'])
+    monkeypatch.setattr(flow_usage, '_codex_sessions', lambda *args: ([], 0))
+    view = flow.report(tmp_path, state['run'], governor=c)
+    assert view['tokens'] == counts(20)
+    assert view['sessions'][0]['status'].startswith('recorded')
+    assert view['workflow']['run'] == state['run']
+    assert not view['evidence_errors']
+
+
+def test_unexpected_native_reconciliation_failure_keeps_controller_report(tmp_path, monkeypatch):
+    c, state = setup(tmp_path)
+    def broken(*args, **kwargs):
+        raise AttributeError('Malformed optional native observation')
+    monkeypatch.setattr(flow, 'reconcile_usage', broken)
+    view = flow.report(tmp_path, state['run'], governor=c)
+    assert view['workflow']['run'] == state['run']
+    assert view['tokens'] is None
+    assert view['evidence_errors']
+    assert c.report(state['run'], diagnostics=False)['revision'] == state['revision']
+
+
+def test_failed_progress_storage_is_reported_without_mutating_authority(tmp_path, monkeypatch, capsys):
+    import json
+    c, state = setup(tmp_path)
+    before = c.report(state['run'], diagnostics=False)
+    def unavailable(*args, **kwargs):
+        raise OSError('Storage unavailable')
+    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
+    monkeypatch.setattr(live, 'progress', unavailable)
+    assert flow.main(['progress', '--note', 'Work delivered', '--workspace', str(tmp_path)], governor=c) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['workflow']['observation_errors']
+    assert c.report(state['run'], diagnostics=False) == before
+    assert not live.path(tmp_path, state['run']).exists()
 
 
 def test_unexpected_advisory_exception_cannot_replace_gate_result(tmp_path, monkeypatch):

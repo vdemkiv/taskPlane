@@ -605,7 +605,7 @@ def report(workspace: Path, run_id: str | None = None, *,
                        'at': closed_at, 'usage': None, 'usage_status': 'unavailable'}
     try:
         result.update(reconcile_usage(run, rows, governed, expected, closing=closing))
-    except (OSError, ValueError, TypeError, KeyError):
+    except Exception:
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
     measured_at = datetime.now(timezone.utc).isoformat()
     for measured in result.get("sessions", []):
@@ -1583,7 +1583,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                     live_telemetry.progress(workspace, state, args.action, args.note, artifacts,
                                             capture_attachments(workspace, artifacts))
                 except Exception:
-                    observation_errors.append('Progress recorded in controller; advisory telemetry unavailable.')
+                    observation_errors.append('Advisory progress could not be saved; workflow state is unchanged.')
         else:
             # Detailed history/graph/usage projections are explicit report work.
             result = report(workspace, args.run, governor=controller)
