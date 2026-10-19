@@ -205,8 +205,8 @@ def test_required_budget_uses_native_owned_intervals_without_optional_baseline(t
         observed.append(worker_runtime._retry_usage(tmp_path, state, {'binding': {'run': state['run']}}))
     assert observed[0] == observed[1] == observed[2]
     usage = observed[0]
-    if sys.platform not in ('darwin', 'linux'):
-        assert usage['coverage'] == 'unknown'  # Native discovery is unavailable, never invented.
+    if host == 'codex' and sys.platform not in ('darwin', 'linux'):
+        assert usage['coverage'] == 'unknown'  # Codex requires unsupported directory discovery here.
         return
     assert usage['coverage'] == 'complete' and usage['input'] + usage['output'] == total
     budget = results.new_budget({'run': state['run']}, {'schema': results.POLICY, 'token_cap': total}, runtime=runtime())
