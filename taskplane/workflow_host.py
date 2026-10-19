@@ -1129,6 +1129,22 @@ class Controller:
             self._write(target, db)
             return result
 
+    def _retain_repair_context(self, previous: dict[str, Any], updated: dict[str, Any]) -> None:
+        """Pin once at repair entry; current references avoid historical replay."""
+        from .context import Store
+        store = Store(self.workspace)
+        basis = store.put('scoped-repair-basis', previous)
+        for task_id, result in updated.get('task_results', {}).items():
+            updated.setdefault('retained_task_authority', {}).setdefault(task_id,
+                {'reference': basis, 'result_digest': primitives.content_fingerprint(result)})
+        updated['history'][-1]['repair_basis'] = basis
+        snapshot = evidence._verification_packet(previous).get('packet', {}).get('verification')
+        verification = store.put('repair-verification-basis', snapshot) if snapshot else None
+        updated.setdefault('request_provenance', {})['repair'] = {
+            'scope': deepcopy(updated['repair_scope']), 'verification_basis': verification,
+            'retained_results': deepcopy(updated.get('retained_task_authority', {})),
+            'rule': 'Retry only missing, failed or invalidated tasks and their affected checks; retain all unaffected results, evidence and approvals, without restarting earlier phases.'}
+
     def apply(self, action: str, run: str, *, expected_revision: int | None = None,
               output: str = "", tasks: str = "", phase: str = "", native_reference: str = "",
               assessment_json: str | None = None) -> dict[str, Any]:
@@ -1138,14 +1154,53 @@ class Controller:
         target = self._path()
         with primitives.file_lock(str(target)):
             db = self._read(target)
-            w.require(db["active"] == run or action == "finish" and run in db["runs"],
+            w.require(db["active"] == run or action == 'finish' and run in db['runs']
+                      or action == 'repair' and db['active'] is None and run in db['runs'],
                       "state_unavailable", "Mutation must address the bound active run.")
             s = db["runs"][run]
             revision_event = s.get('requirements_revisions', {}).get(s.get('active_requirements_revision'), {})
             w.require(action == 'retire' or revision_event.get('status') not in {'pending', 'aborted'},
                       'approval_required', 'Requirements revision is pending or aborted; resume it before phase mutations.')
+            if action != 'retire':
+                w.require(not s.get("retired"), "state_unavailable", "Retired workflows have no active grants.")
+                w.require(not s.get("superseded_by"), "state_unavailable",
+                          "This run was replaced; its evidence is historical and its grants are revoked.")
             if action != 'decide':
                 self._refresh_denials_locked(db, s)
+            if action == 'repair':
+                try:
+                    request = json.loads(native_reference)
+                except (TypeError, ValueError):
+                    raise w.Refusal('invalid_evidence', 'Repair needs a decision JSON object and affected task IDs.') from None
+                w.require(isinstance(request, dict) and isinstance(request.get('decision'), dict),
+                          'invalid_evidence', 'Repair needs the actual human decision and affected task IDs.')
+                previous = s.get('repair_scope', {}).get('direct_request')
+                if (previous and request['decision'].get('event_id') == previous['decision']['event_id']):
+                    verified = self.adapter.verify_decision_context(json.dumps(request['decision']),
+                        previous['decision']['binding'], {previous['decision']['event_id']: previous['decision']})
+                    w.require(verified == previous['decision'] and request.get('tasks') == previous['tasks']
+                              and expected_revision == verified['binding']['revision'],
+                              'stale_checkpoint', 'Conflicting repair retry; inspect the existing repair without restarting it.')
+                    self.adapter.before_action(s, 'repair')
+                    return deepcopy(s)
+                w.require(request['decision'].get('event_id') not in s['decisions'],
+                          'decision_binding', 'An earlier phase decision cannot authorize a new repair.')
+                packet = w.current(s).get('packet')
+                w.require(packet and expected_revision == s['revision'] and self.adapter.can_seal(s),
+                          'stale_checkpoint', 'Repair needs the current quiescent checkpoint.')
+                assert packet is not None
+                verified_repair = self.adapter.verify_decision_context(json.dumps(request['decision']),
+                    w.binding(s, packet), s['decisions'])
+                w.require(verified_repair.get('binding') == w.binding(s, packet),
+                          'decision_binding', 'Repair needs a decision bound to the current checkpoint.')
+                updated = w.repair(s, request.get('tasks'), verified_repair)
+                updated['repair_scope']['direct_request'] = {
+                    'decision': deepcopy(verified_repair), 'tasks': deepcopy(request['tasks'])}
+                self.adapter.before_action(s, 'repair')
+                self._retain_repair_context(s, updated)
+                db['runs'][run], db['active'] = updated, run
+                self._write(target, db)
+                return deepcopy(updated)
             if action == "retire":
                 w.require(self.adapter.profile == "native_workflow", "unsupported_authority",
                           "Protected run retirement requires its trusted owner.")
@@ -1167,9 +1222,6 @@ class Controller:
                 db["runs"][run], db["active"] = updated, None
                 self._write(target, db)
                 return deepcopy(updated)
-            w.require(not s.get("retired"), "state_unavailable", "Retired workflows have no active grants.")
-            w.require(not s.get("superseded_by"), "state_unavailable",
-                      "This run was replaced; its evidence is historical and its grants are revoked.")
             policy_request: dict[str, Any] = {}
             if action == "policy":
                 w.require(len(native_reference.encode()) <= 32768, "invalid_evidence", "Policy exceeds its size bound.")
@@ -1220,6 +1272,11 @@ class Controller:
             if action in ("advance", "finish", "submit", "auto-decide"):
                 w.require(self.adapter.can_seal(s),
                           "scope_violation", "Live tool processes must stop before sealing or revoking a phase grant.")
+            if action == 'advance' and phase == 'build' and self.adapter.profile == 'native_workflow':
+                from .worker_runtime import parent_readiness
+                w.require(parent_readiness(s)['status'] == 'ready', 'worker_readiness',
+                          'Build needs an admitted automatic pre/post hook pair for the current session and phase. '
+                          'Restore the configured hooks, run an admitted read, then retry; approvals are preserved.')
             operations: dict[str, Callable[[], dict[str, Any]]] = {
                 "submit": lambda: w.submit(s, evidence.seal(self.workspace, s, output, tasks)),
                 "decide": lambda: w.decide(s, verified),
@@ -1233,6 +1290,8 @@ class Controller:
                 updated = operations[action]()
             except (TypeError, KeyError, IndexError) as exc:
                 raise w.Refusal("invalid_evidence", f"Invalid phase evidence: {type(exc).__name__}") from None
+            if updated.get('repair_scope', {}).get('build_visit') != s.get('repair_scope', {}).get('build_visit'):
+                self._retain_repair_context(s, updated)
             if action == "advance":
                 prior_paths = set(s["scope"]["paths"].get(phase, []))
                 from .workflow_collision import sealed_paths
@@ -1601,6 +1660,21 @@ class Controller:
             state = workflow_retention.read(self.workspace, db, run)
             w.require(db["active"] is None and (state.get("finished") or state.get("retired")),
                       "scope_violation", "Follow-up observations require a closed run and no active grant.")
+            if state.get('finished') and not state.get('retired'):
+                from . import native_tool_guard
+                tool = event.get('tool_name') or event.get('tool')
+                args = event.get('tool_input', {})
+                observational = (tool in workflow_local.READ_TOOLS | workflow_local.QUESTION_TOOLS
+                    or native_tool_guard.read(str(tool), self.adapter.name)
+                    or workflow_local.readonly_command(event)
+                    or self.adapter.control_action(event, state)
+                    or workflow_local.Harness(self.workspace, self.root).dashboard_opener(event, state))
+                if tool == 'write_stdin' and isinstance(args, dict) and args.get('chars', '') in ('', '\x03'):
+                    self.adapter.guard_input(event, state)
+                    observational = True
+                w.require(observational, 'approval_required',
+                          'Completed Taskplane work has no mutation grant. Enter flow repair for the affected tasks '
+                          'or start the requested new flow; retained results and approvals stay intact.')
             row = self._admission(db, event, state, "observation_only")
             if row:
                 self._write(target, db)
@@ -1641,6 +1715,19 @@ class Controller:
             row.update(state="completed", completed_at=datetime.now(timezone.utc).isoformat())
             from .context_handoff import binding
             state = db["runs"].get(row["run"])
+            if (state and row.get('automatic') is True and event.get('taskplane_automatic_hook') is True
+                    and row.get('runtime') == event.get('taskplane_runtime_identity')
+                    == host_capabilities.runtime_identity()
+                    and row.get('binding') == binding(state)):
+                proof = {'run': state['run'], 'visit': w.current(state)['id'],
+                         'root': state['root'], 'workspace': str(self.workspace),
+                         'automatic': True, 'matched_call': row['call_id'], 'runtime': row['runtime']}
+                if row['principal'] == state['root']:
+                    state['parent_hook_readiness'] = proof
+                else:
+                    child = workers.find(state, row['principal'])
+                    if child:
+                        child['hook_readiness'] = proof
             self._write(target, db)
             return cast(dict[str, Any], deepcopy(row))
 
@@ -1761,7 +1848,7 @@ class Controller:
             if (harness.dashboard_opener(event, state) or harness.recovery_action(event, state)
                     or harness.recovery_setup(event, state)):
                 return
-            if tool in ("Bash", "exec_command") and workflow_local.opaque_command(event):
+            if tool in ("Bash", "exec_command") and workflow_local.readonly_command(event):
                 return
             if tool == "write_stdin" and args.get("chars", "") in ("", "\x03"):
                 record = state.get("observed_handles", {}).get(str(args.get("session_id", "")), {})
@@ -1786,6 +1873,20 @@ class Controller:
             if native_tool_guard.automation(event, self.adapter.name, state, root=worker is None):
                 return
         allowed = worker["paths"] if worker else w.phase_write_paths(state)
+        if worker is None:
+            definitions = evidence.context_tasks(state)
+            if stage['phase'] == 'build':
+                definitions = w.accepted_plan(state)['packet']['output']['task_dag']
+            assigned_elsewhere = {path for task in definitions
+                if task.get('phase', stage['phase']) == stage['phase'] and task.get('owner') != self.root
+                for path in task['paths']}
+            allowed = [path for path in allowed if path not in assigned_elsewhere]
+        if self.adapter.profile == 'native_workflow' and stage['phase'] == 'build':
+            readiness = workers.parent_readiness(state) if worker is None else workers.readiness(worker)
+            w.require(readiness['status'] == 'ready', 'worker_readiness',
+                      'Preventive hook admission is missing for this session and phase. '
+                      'Restore the configured pre/post hooks, run an admitted read, and retry only the pending action. '
+                      'Completed work and approvals are preserved.')
         if self.adapter.profile == 'native_workflow':
             from .workflow_collision import sealed_paths
             protected = sealed_paths(self.workspace, state)

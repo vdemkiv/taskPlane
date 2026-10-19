@@ -34,7 +34,7 @@ def test_new_fork_read_and_cli_ignore_parent_run_and_prior_misattribution(tmp_pa
     before = c._path().read_bytes()
     assert flow.observed_parent({}, 'fork') == 'root'  # History stays available for usage accounting.
     assert flow.independent_fork({}, 'fork')
-    selected, current = flow.select_controller(tmp_path, 'fork', 'root', legacy={'session': 'root'})
+    selected, current = flow.select_controller(tmp_path, 'fork', 'root')
     assert selected.root == selected.principal == 'fork' and not current.get('run')
     assert flow.main(['report', '--workspace', str(tmp_path)]) == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'no_workflow'

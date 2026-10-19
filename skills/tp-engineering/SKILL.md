@@ -22,5 +22,7 @@ covered which scope. One worker covering two lenses is one reviewer.
 See [native ownership](../tp-go/references/codex-native-dispatch.md).
 
 Present concrete Engineering findings/coverage for separate approval. A standalone
-review ends there unless the user authorizes the next work. No graph, dashboard,
-context receipt or presentation wording grammar is an acceptance prerequisite.
+review ends there unless the user authorizes the next work. Include source
+locations, severity and remaining risk with the findings and comparison against
+requirements; empty findings are valid. Show the milestone dashboard. No context
+receipt, verified rendering token or presentation wording grammar is required.

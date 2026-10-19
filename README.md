@@ -4,7 +4,7 @@ Plan, build and review software with Codex or Claude, keeping decisions and actu
 verification connected. Use full delivery, standalone Product/Design/Engineering,
 or a reusable workflow with fresh inputs.
 
-Candidate version: **2.34.1**. Source, extracted packages, installed runtimes and
+Candidate version: **2.34.3**. Source, extracted packages, installed runtimes and
 live host acceptance are separate observations. This candidate does not certify
 a loaded Codex/Claude update or publication.
 
@@ -45,9 +45,19 @@ invalidate affected work; unrelated documents or status revisions do not.
 Verification attempts/logs remain immutable, and later fail/unknown cannot fall
 back to an old pass. Remove obsolete tests/helpers/fixtures with removed code.
 
-Graphs, `.taskplane/dashboard.html` and telemetry are optional generated views.
-They help inspect work without authorizing or vetoing phase results. Missing
-usage is unknown, not zero. See [shared flow](skills/tp-go/references/shared-flow.md).
+Flow start and phase checkpoints publish `.taskplane/dashboard.html`; show the
+dashboard with the current phase result. Hooks check phase, approval and task
+ownership before supported actions. Typed DoR/DoD require actual evidence and
+accept equivalent wording. Retry only missing, failed or invalidated tasks and
+their affected checks; retain all unaffected results, evidence and approvals,
+without restarting earlier phases.
+
+Owned candidate hook source is editable. Agents must not disable, uninstall or
+bypass the live harness to get past a refusal. Test allowed and rejected actions
+on fresh Codex and Claude installations while preserving the live installation.
+Supported-path failures block completion; stronger host containment is a separate
+existing limitation. Advisory telemetry cannot change enforcement decisions;
+missing usage is unknown, not zero. See [shared flow](skills/tp-go/references/shared-flow.md).
 
 ## Install and update
 
@@ -62,7 +72,7 @@ Check the actual loaded installation with:
 python3 /actual/plugin/taskplane/tp.py version --verify
 ```
 
-Both host manifests use `2.34.1`. A source edit or archive does not update a
+Both host manifests use `2.34.3`. A source edit or archive does not update a
 running session. Preserve its original runtime and evidence; update/reload through
 the host between runs. Candidate active old-contract mutation refuses rather than
 silently migrating history. Installed caches are never modified by package build.
@@ -93,8 +103,8 @@ python3 scripts/package_claude.py
 python3 scripts/package_openai.py
 ```
 
-Packages go to `dist/taskplane-2.34.1.plugin` and
-`dist/taskplane-2.34.1-openai.zip`. Sidecars record source/dirty lineage and exact
+Packages go to `dist/taskplane-2.34.3.plugin` and
+`dist/taskplane-2.34.3-openai.zip`. Sidecars record source/dirty lineage and exact
 archive/member hashes at this package boundary. Building does not install or
 publish. Use actual targeted/combined check evidence and keep unavailable live
 host/platform acceptance explicit. See [CI coverage](docs/ci-performance.md).
@@ -107,3 +117,17 @@ force. [Security](docs/security.md) describes actual boundaries.
 [CLI](docs/cli-reference.md) · [State](docs/state-spec.md) ·
 [Changelog](CHANGELOG.md) · [Privacy](PRIVACY.md) · [Terms](TERMS.md) ·
 [Apache-2.0 license](LICENSE)
+
+### Telemetry and optional run records
+
+Active flow operations use workflow state and separate advisory
+`.taskplane/live-telemetry-<run-key>.json` aggregates. The analysis journal is
+never used to select a run, enforce a gate, count current activity, or record
+every hook. Its absence or failure does not change execution.
+
+After a run ends, optionally save a factual summary with
+`python3 taskplane/tp.py flow report --run RUN --record --note "Lesson learned" --full`.
+This creates one `.taskplane/run-record-<key>.json` analysis record; it neither
+reopens the run nor adds an approval phase. Runs need no journal entry. Existing
+legacy journals remain available only through explicit
+`flow report --history --run RUN --full` analysis.

@@ -13,7 +13,9 @@ help decide a consequential trade-off. Use diagrams or mockups when useful.
 Follow [the shared flow](../tp-go/references/shared-flow.md), reusing the matching
 run and accepted Product decisions. Root may integrate the design directly or
 use useful authorized scoped work; no separate designer or review quota is
-required. A graph and dashboard are optional views.
+required. Record authority boundaries, failure/recovery and graph impact; explain
+when no consequential alternative is needed. Keep current task decomposition and
+show the milestone dashboard without making its rendering an approval token.
 
 Present Design for its own approval. Design-only work stops there; acceptance
 does not approve unseen Plan or Build. Preserve an existing valid approval.

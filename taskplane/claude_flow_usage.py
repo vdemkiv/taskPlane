@@ -136,6 +136,10 @@ def sessions(run: dict[str, Any], events: list[dict[str, Any]],
     paths = []
     if explicit:
         paths.append(Path(explicit))
+    for child, transcript_path in run.get('native_children', {}).items():
+        known.add(child)
+        if transcript_path:
+            paths.append(Path(transcript_path))
     for event in events:
         if event.get('run') == run['run'] and event.get('child'):
             known.add(event['child'])

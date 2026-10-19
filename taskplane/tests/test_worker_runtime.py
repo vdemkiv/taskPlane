@@ -27,7 +27,8 @@ def setup(tmp_path, count=4, scoped_input=False, extra_inputs=()):
     (tmp_path/'tasks.json').write_text(json.dumps({'tasks':rows}))
     c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
     state = c.start(dict(scope=scope, entry='product', standalone=True, tasks='tasks.json', request_reference='fixture/request'))
-    return c, state
+    parent_pair(c)
+    return c, c.report(state['run'], diagnostics=False)
 
 
 def parent_pair(c):
@@ -41,6 +42,7 @@ def parent_pair(c):
 
 
 def reserve(c, s, task='T0', slots=5, **extra):
+    parent_pair(c)
     return c.worker(s['run'], 'prepare', revision=s['revision'], task=task,
                     request={'capacity':dict(host_slots=slots, includes_root=True, reference='fixture/capacity'), **extra})
 
@@ -146,8 +148,13 @@ def test_bound_host_alias_write_preserves_exact_scope_and_symlink_checks(tmp_pat
     from taskplane.tests.test_claude_flow import bound_workspace
     ws,_=bound_workspace(tmp_path,monkeypatch)
     c,s=setup(ws,count=1)
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name':'Write','tool_input':{'file_path':'/Users/fixture/farm-viewer/T0.md'}},s['run'])
+    prepared = reserve(c, s)
+    launch(c, s, prepared)
+    worker = consume(c, s, prepared['grant'], 'native-0')
     def write(path):
-        c.guard({'hook_event_name':'PreToolUse','tool_name':'Write','tool_input':{'file_path':path}},s['run'])
+        worker.guard({'hook_event_name':'PreToolUse','tool_name':'Write','tool_input':{'file_path':path}},s['run'])
     write('/Users/fixture/farm-viewer/T0.md')
     write(str(ws/'T0.md'))
     for path in ('/Users/fixture/farm-viewer-neighbor/T0.md',
@@ -170,6 +177,12 @@ def consume(c, s, row, child):
     worker = h.Controller(c.workspace, c.root, h.installed_adapter('codex'), principal=child)
     worker.worker(s['run'], 'claim', grant=row['grant_id'])
     context = worker.context(s['run'], task=row['task_id'])
+    from taskplane import flow
+    event = dict(hook_event_name='PreToolUse', host='codex', cwd=str(c.workspace),
+                 session_id=child, parent_session_id=c.root, call_id='fixture-read/'+row['grant_id'],
+                 tool_name='Read', tool_input={'file_path':'input.py'})
+    flow._hook(event, governor=worker)
+    flow._hook({**event, 'hook_event_name':'PostToolUse'}, governor=worker)
     return worker
 
 
@@ -181,6 +194,25 @@ def complete(c, s, prepared, child):
     return c.worker(s['run'], 'accept-result', revision=s['revision'], task=task,
                     grant=prepared['grant']['grant_id'], request=dict(outputs=[task+'.md'],
                     checks=[dict(name='Fixture verification', status='pass', evidence=task+'.md')]))
+
+
+def test_retained_worker_result_uses_selected_authority_without_reviving_old_grant(tmp_path):
+    c, state = setup(tmp_path, count=2)
+    prepared = reserve(c, state, task='T1')
+    launch(c, state, prepared, child='native-retained')
+    consume(c, state, prepared['grant'], 'native-retained')
+    complete(c, state, prepared, 'native-retained')
+    current = c.report()
+    result = current['task_results']['T1']
+    resumed = deepcopy(current)
+    resumed['visits'].append(w.visit('product'))
+    resumed['index'] = len(resumed['visits']) - 1
+    resumed['revision'] += 1
+    resumed['scope']['paths']['retro'].append('later-owned-result.json')
+    assert wr.native_result_valid(tmp_path, resumed, 'T1', result)
+    assert wr.result_valid(tmp_path, resumed, 'T1')
+    with pytest.raises(w.Refusal, match='old authority'):
+        wr.current(resumed, resumed['workers'][result['grant']])
 
 
 def scoped(c, s, tmp_path):

@@ -213,7 +213,7 @@ def test_claude_reused_worker_charges_only_current_messages(tmp_path, monkeypatc
                   message('current', agent='reused', at='2026-09-15T00:00:04Z')])
     flow.append(workspace, {'kind': 'hook', 'run': 'shared', 'session': 'root',
                             'child': 'reused', 'agent_transcript_path': str(child)})
-    report = flow.report(workspace)
+    report = flow.report(workspace, history=True)
     session = next(s for s in report['sessions'] if s['session'] == 'reused')
     assert session['usage']['total_tokens'] == 142
     assert session['native_usage']['total_tokens'] == 284

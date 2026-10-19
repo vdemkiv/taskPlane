@@ -6,6 +6,12 @@ prerequisites; there is no first-worker cohort, startup gate, lens quota or pare
 probe. This reference does not require delegation for a task that benefits from
 one integrated owner.
 
+Observe the automatic admitted parent pre/post pair before native preparation,
+and the worker's own pair before describing it as ready. An ordinary admitted
+read can establish this; no separate receipt, byte scan or startup probe is needed.
+Root and workers obey the same task ownership. Root cannot edit another task's
+files merely because its worker has not launched or has finished.
+
 ## Scope and identity
 
 Give each task a stable ID/generation, purpose, relevant input references, accepted
@@ -50,4 +56,7 @@ unavailable. Report the missing capability and preserve incomplete work.
 
 Fixtures validate local behavior; they do not certify a live loaded hook, bridge,
 process exit, Windows launcher or cross-host transfer. Candidate installation and
-host reload require separate authorization and actual observations.
+host reload need authorization and actual observations. Requested fresh-install
+verification authorizes disposable candidate test installations; preserve the
+user's live installation. Supported-path failures are defects. Record stronger
+host containment separately without claiming protection when hooks are not invoked.

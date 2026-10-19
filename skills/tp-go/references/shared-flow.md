@@ -67,26 +67,30 @@ unknown; it is not permission to declare a pass.
 
 | Phase | Useful result |
 | --- | --- |
-| Product | Outcome, material scope and observable acceptance criteria |
-| Design | Approach, interfaces, trade-offs, dependencies and validation map |
+| Product | Outcome, scope, criteria, exclusions, dependencies, task outline and relevant findings |
+| Design | Approach, material alternatives, interfaces/state, authority boundaries, failure/recovery, graph impact and validation map |
 | Plan | Executable task ownership, exact Build paths and meaningful checks |
 | Build | Actual changes, verification results and remaining gaps |
-| Evaluate | Criterion-by-criterion pass/fail/unknown with applicable evidence |
-| Engineering | Findings, actual review coverage and limitations |
+| Evaluate | Criterion-by-criterion pass/fail/unknown, source/test bindings, regression evidence and unresolved failures |
+| Engineering | Findings/severity/source locations, actual lens coverage, requirements comparison and remaining risk |
 | Retro | Accepted outcome, remaining owners and lessons |
 
 Submit the concrete current result and necessary identity/criteria/evidence/task
 metadata once. The runtime validates and seals atomically. Optional `prevalidate`
 uses the same validator; no prevalidation token or repeated ceremony is required.
 No universal graph, separate report/task packet or word-count heuristic applies.
-Plan may carry its DAG inline; later phases reuse the accepted task definitions.
+Plan may carry its DAG inline; other phases supply or reuse current task
+decomposition. Independent work has no artificial serial prerequisites. Keep one
+writer per file and transfer ownership explicitly when needed; documentation can
+follow each relevant completed change.
 `flow advance` can allocate the next output path when `--output` is omitted.
 Run/visit metadata paths are distinct from the Plan's exact production write scope.
 
-Show the concrete result in conversation with useful links and scope. The optional
-`.taskplane/dashboard.html` is a generated view, not approval authority. Opening
-or verifying its display is not required. Describe a queued open honestly.
-Graph, telemetry and measurement failures cannot veto a valid result.
+Show the concrete result and `.taskplane/dashboard.html` at flow start and phase
+checkpoints. Publication is automatic at lifecycle milestones; retry a failed
+publication without repeating the committed workflow action. Describe queued
+opening honestly. The dashboard is a view, not approval authority. Advisory
+telemetry and measurement failures cannot change an enforcement decision.
 
 ## Human intent and provenance
 
@@ -111,8 +115,19 @@ Ordinary reads/search/open remain available while sealed or stale, subject to
 host permissions. Structured mutations enforce approved phase/Plan, exact current
 owner/path, no traversal/symlink escape, no live-writer conflict and no writes over
 another run's sealed result. Tool names do not authorize messages or external
-mutations. Opaque shell effects rely on host permissions and later auditing; this
-is not complete pre-execution containment or an OS sandbox.
+mutations. Supported literal shell writes follow the same owned paths; ordinary
+reads remain available. Unknown executable effects are refused with a supported
+recovery instruction instead of receiving a blanket shell exemption. Legitimate
+in-scope shell work must remain usable. Matching automatic pre/post observations
+establish session hook readiness; a selected run or trusted install alone does not.
+
+Editing owned candidate hook source and tests is normal implementation work.
+Disabling, uninstalling, replacing or bypassing the active harness to get past a
+refusal is prohibited. Keep the live installation intact while testing separate
+candidates. Verify allowed and rejected actions in fresh Codex and Claude
+installations. A failed supported-path check is a defect. Stronger containment
+when a host does not invoke hooks is a separately documented existing limitation;
+do not claim that protection or create an infrastructure project for this change.
 
 [Native ownership](codex-native-dispatch.md) retains actual launch identity,
 attempt correlation and terminal/cancellation evidence. A message, wait success,
@@ -129,6 +144,13 @@ All later consumers use the newest applicable validated result; later fail/unkno
 must not expose an older pass as current success. Human acceptance of unknown does
 not turn it into pass. Fixtures and live installed-host results stay distinct.
 
+Retry only missing, failed or invalidated tasks and their affected checks; retain
+all unaffected results, evidence and approvals, without restarting earlier phases.
+Use the existing scoped repair route after acceptance or completion. Repair opens
+fresh affected results while preserving earlier approvals and immutable evidence.
+A bound human correction can reopen the currently approved Product, Design or
+Plan before implementation. Use scoped task repair for accepted implementation;
+retain prior decisions and do not restart unaffected earlier phases.
 Resume using the actual run and durable brief. Preserve failed attempts and known
 in-flight commands; retry only after a relevant changed condition. Retirement
 ends authority without approving pending work. Finish only after every required

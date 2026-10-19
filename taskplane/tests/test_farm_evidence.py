@@ -142,10 +142,12 @@ def test_generated_input_requires_producer_order(tmp_path):
 
 def test_native_new_plan_requires_typed_contract_but_legacy_remains_readable(tmp_path):
     state = state_for(tmp_path, "plan")
+    state["scope"]["execution_contract"] = None  # Explicit historical contract fixture.
     assert e.plan_preflight(tmp_path, state, {}, []) == {"status": "legacy_untyped"}
-    state["scope"]["execution_contract"] = "native-default/v1"
-    with pytest.raises(w.Refusal):
-        e.plan_preflight(tmp_path, state, {}, [])
+    for contract in ('ownership/v1', 'native-default/v1'):
+        state["scope"]["execution_contract"] = contract
+        with pytest.raises(w.Refusal):
+            e.plan_preflight(tmp_path, state, {}, [])
 
 
 def test_build_requires_exact_planned_packet_and_report(tmp_path):

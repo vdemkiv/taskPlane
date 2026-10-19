@@ -118,13 +118,6 @@ def test_finished_followup_is_observational_and_cannot_reopen_authority(tmp_path
         controller.guard({**observed, "tool_name": "Write", "tool_input": {"path": "product.json"}}, state["run"])
 
 
-def test_closed_latest_journal_selection_never_resurrects_replaced_run():
-    rows = [{"kind": "start", "run": "a", "session": "root"},
-            {"kind": "start", "run": "b", "session": "root", "replaces": "a"},
-            {"kind": "finish", "run": "b", "session": "root"}]
-    assert flow.active_run(rows, "root") is None
-
-
 def test_hook_pair_attribution_survives_finish_and_records_followup(tmp_path):
     import shlex
     import sys
@@ -143,10 +136,10 @@ def test_hook_pair_attribution_survives_finish_and_records_followup(tmp_path):
     followup = event(tmp_path, 'followup-call')
     flow.hook(followup, governor=controller)
     flow.hook({**followup, 'hook_event_name':'PostToolUse'}, governor=controller)
-    rows = [row for row in flow.read_events(tmp_path) if row.get('kind') == 'hook']
-    assert len(rows) == 4 and all(row['run'] == state['run'] for row in rows)
-    assert rows[1]['admission']['authority'] == 'phase_grant'
-    assert rows[-1]['admission']['authority'] == 'observation_only'
+    admissions = list(controller._read(controller._path())['admissions'].values())
+    assert any(row['authority'] == 'phase_grant' and row['state'] == 'completed' for row in admissions)
+    assert any(row['authority'] == 'observation_only' and row['state'] == 'completed' for row in admissions)
+    assert not any(row.get('kind') == 'hook' for row in flow.read_events(tmp_path))
     assert controller.report()['status'] == 'no_workflow'
 
 

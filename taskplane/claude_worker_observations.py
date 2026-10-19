@@ -68,7 +68,7 @@ MAX_LINE_BYTES = 256 * 1024
 MAX_RECORDS = 16384
 MAX_CANDIDATES = 64
 MAX_STATE_BYTES = 512 * 1024
-NOTIFICATION_VERSION = 3
+NOTIFICATION_VERSION = 4
 LEGACY_LAUNCH_CONFLICT = "Native launch disagrees with admitted parent, workspace or arguments"
 _DENIAL_BODY_BYTES = 1856
 _DENIAL_BODY_SHA256 = "e293470ef2aa8a4727c32ce61e79fc464558df203254586b47c215bd0d63a07d"
@@ -766,10 +766,10 @@ def _notification(row: Mapping[str, Any]) -> dict[str, Any] | None:
     """
     origin = {'kind': 'task-notification', 'producer': 'session-task'}
     supplied_origin = row.get('origin')
-    # 2.1.296 adds an opaque delivery-run ID to this native system envelope.
+    # Current hosts add an opaque delivery-run ID to this native system envelope.
     # Keep its bytes in the record hash; it neither grants authority nor names
     # the Taskplane run. All existing source/actor/call/child checks still apply.
-    current_origin = (row.get('version') == '2.1.296' and isinstance(supplied_origin, Mapping)
+    current_origin = (isinstance(supplied_origin, Mapping)
         and set(supplied_origin) == {'kind', 'producer', 'runId'}
         and all(supplied_origin.get(key) == value for key, value in origin.items())
         and isinstance(supplied_origin.get('runId'), str) and bool(_ID.fullmatch(supplied_origin['runId'])))
@@ -1152,7 +1152,8 @@ def observe_many(parent: str, attempts: Sequence[Mapping[str, Any]], event: Mapp
                 raise ValueError('Private legacy reobservation requires its dedicated API')
             # Older parsers may have scanned past a supported transcript-only
             # event. Re-scan once, preserving and revalidating pinned evidence.
-            if 'notification_version' not in state or type(state['notification_version']) is int and state['notification_version'] == 2:
+            if ('notification_version' not in state or type(state['notification_version']) is int
+                    and state['notification_version'] in {2, 3}):
                 state['notification_version'] = NOTIFICATION_VERSION
                 state['offset'] = 0
             elif (type(state['notification_version']) is not int

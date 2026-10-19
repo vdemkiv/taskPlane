@@ -75,14 +75,17 @@ def test_desktop_child_actor_guards_scope_and_records_actual_binding(tmp_path, m
                'tool_input':{'target':'/root', 'message':'Scoped progress'}})
     flow.hook({**event, 'hook_event_name':'PostToolUse', 'call_id':'own-write'})
     assert wr.readiness(c.report()['workers'][item['grant']['grant_id']])['status'] == 'ready'
-    rows = [r for r in flow.read_events(workspace) if r.get('kind') == 'hook']
-    assert all(r['session'] == 'native-0' for r in rows)
-    assert all(r['binding_observation']['principal'] == 'native-0' for r in rows)
-    assert next(r for r in rows if r['call_id'] == 'sibling-write')['outcome'] == 'denied'
-    assert next(r for r in rows if r['call_id'] == 'parent-progress')['outcome'] == 'admitted'
+    from taskplane import live_telemetry
+    value = live_telemetry.read(workspace, s)
+    assert set(value['sessions']) == {'native-0', 'root'}
+    assert value['outcomes']['denied'] >= 2
+    admissions = c._read(c._path())['admissions'].values()
+    assert any(r['principal'] == 'native-0' for r in admissions)
     root_event = {k:v for k,v in event.items() if k not in {'agent_id','agent_type'}}
-    flow.hook({**root_event, 'call_id':'root-write', 'tool_input':{'path':'T1.md'}})
-    assert flow.read_events(workspace)[-1]['binding_observation']['principal'] == 'root'
+    with pytest.raises(w.Refusal, match='outside'):
+        flow.hook({**root_event, 'call_id':'root-write', 'tool_input':{'path':'T1.md'}})
+    assert 'root' in live_telemetry.read(workspace, s)['sessions']
+
 
 
 @pytest.mark.parametrize('parent,extra', [
@@ -200,9 +203,9 @@ def test_claude_start_stop_contract_and_child_control_refusal(tmp_path, monkeypa
         tool_input={'path':'T0.md'}, transcript_path=str(parent))
     flow.hook(child_event)
     flow.hook({**child_event, 'hook_event_name':'PostToolUse'})
-    recorded=flow.read_events(tmp_path)[-1]
-    assert recorded['binding_observation']['principal']=='claude-child'
-    assert recorded['admission']['principal']=='claude-child'
+    from taskplane import live_telemetry
+    assert 'claude-child' in live_telemetry.read(tmp_path, s)['sessions']
+    assert any(r['principal'] == 'claude-child' for r in c._read(c._path())['admissions'].values())
     with pytest.raises(w.Refusal, match='outside'):
         flow.hook({**child_event, 'tool_use_id':'sibling-write', 'tool_input':{'path':'T1.md'}})
     engine=Path(w.__file__).with_name('tp.py')
@@ -395,7 +398,8 @@ def test_independently_bound_fork_uses_own_cli_and_hook_authority(tmp_path, monk
     observed = event['taskplane_observed_binding']
     assert observed['root'] == observed['principal'] == 'fork'
     if journal:
-        assert flow.read_events(tmp_path)[-1]['binding_observation']['root'] == 'fork'
+        from taskplane import live_telemetry
+        assert live_telemetry.read(tmp_path, own)['root'] == 'fork'
 
 
 def test_dual_bound_real_worker_keeps_parent_authority(tmp_path, monkeypatch, capsys):

@@ -1,7 +1,7 @@
 """Shared observations plus guarded workflow entry points.
 
-The workspace journal is never approval authority. Mandatory transitions use
-the protected workflow controller; optional usage observation stays advisory.
+Mandatory transitions use the workflow controller. Live observations stay
+advisory; journal records are explicit post-run analysis only.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import uuid
 from typing import Any, Callable, cast
 from taskplane import workflow, workflow_host, workflow_local, depgraph, workspace_binding, runtime_command
 from taskplane.context_delivery import observed
+from taskplane import live_telemetry, run_journal
 
 if __package__:
     from . import native_session_meter as _package_meter
@@ -195,27 +196,31 @@ def observed_parent(event: dict[str, Any], session: str) -> str | None:
     """Native history lineage, which alone does not establish a worker role."""
     records, _ = _native_metadata(event, session)
     parents = {str(row["parent_session_id"]) for row in records if row.get("parent_session_id")}
-    return next(iter(parents)) if len(parents) == 1 else None
+    if parents or records:
+        return next(iter(parents)) if len(parents) == 1 else None
+    # Host lifecycle observations are operational identity, not telemetry or journal history.
+    key = hashlib.sha256(session.encode()).hexdigest()[:32]
+    candidate = Path(os.environ.get('TASKPLANE_WORKSPACE') or event.get('cwd') or Path.cwd())
+    if not (candidate / '.taskplane' / ('native-parent-' + key + '.json')).exists():
+        return None
+    try:
+        workspace = workspace_binding.resolve_workspace(None, event=event)
+        target = storage.runtime_file(str(workspace), 'native-parent-' + key + '.json')
+        binding = json.loads(target.read_text(encoding='utf-8'))
+    except (FileNotFoundError, workspace_binding.MissingBinding):
+        return None
+    workflow.require(isinstance(binding, dict) and binding.get('schema') == 'taskplane.native-parent/v1'
+                     and binding.get('child') == session and binding.get('workspace') == str(workspace)
+                     and isinstance(binding.get('parent'), str),
+                     'scope_violation', 'Native parent observation is invalid.')
+    current = _controller(workspace, binding['parent'], event=event).report(diagnostics=False)
+    return binding['parent'] if current.get('run') == binding.get('run') else None
 
 
 def independent_fork(event: dict[str, Any], session: str) -> bool:
     records, complete = _native_metadata(event, session)
     return (complete and bool(records) and all(row["independent_fork"] for row in records)
             and len({row.get("parent_session_id") for row in records}) == 1)
-
-
-def active_run(rows: list[dict[str, Any]], session: str, parent: str | None = None, *,
-               inherit: bool = True) -> dict[str, Any] | None:
-    owners = ({session, parent} if inherit else {session}) - {None}
-    for row in reversed(rows) if inherit else ():
-        root = row.get("root")
-        if isinstance(root, str) and root and (row.get("session") in owners or (
-                row.get("event") == "SubagentStart" and row.get("child") in owners)):
-            owners.add(root)
-    closed = {row.get("run") for row in rows if row.get("kind") in {"finish", "retire"}}
-    selected = next((row for row in reversed(rows)
-                     if row.get("kind") == "start" and row.get("session") in owners), None)
-    return selected if selected and selected.get("run") not in closed else None
 
 
 def summarize(rows: list[dict[str, Any]], run: dict[str, Any]) -> dict[str, Any]:
@@ -309,7 +314,6 @@ def _controller(workspace: Path, root: str, profile: str = "native_workflow",
 @observed('controller-selection', stage='startup')
 def select_controller(workspace: Path, actor: str, parent: str | None, *,
                       profile: str = "native_workflow", event: dict[str, Any] | None = None,
-                      legacy: dict[str, Any] | None = None,
                       governor: workflow_host.Controller | None = None,
                       pending_start: bool = False,
                       diagnostics: bool = True) -> tuple[workflow_host.Controller, dict[str, Any]]:
@@ -337,11 +341,46 @@ def select_controller(workspace: Path, actor: str, parent: str | None, *,
         return own, own_state
     if inherited is not None and inherited_state.get("run"):
         return inherited, inherited_state
-    if legacy or inherited is not None:
-        fallback = _controller(workspace, str(legacy["session"] if legacy else parent),
-                               profile, event=event, principal=actor)
-        return fallback, fallback.report(diagnostics=diagnostics)
+    if inherited is not None:
+        return inherited, inherited_state
     return own, own_state
+
+
+def requested_report_controller(workspace: Path, actor: str, run: str, profile: str
+                                ) -> tuple[workflow_host.Controller, dict[str, Any]] | None:
+    """Locate an explicit native report in workflow stores, never the journal.
+
+    This discovery is confined to a user-requested report. Candidate identities
+    are hints only; the owning controller validates its complete store before use.
+    """
+    if profile != 'native_workflow':
+        return None
+    from . import workflow_retention
+    for candidate in sorted((workspace / '.taskplane').glob('workflow-*.json')):
+        if len(candidate.stem.removeprefix('workflow-')) != 32:
+            continue
+        try:
+            target = storage.runtime_file(str(workspace), candidate.name)
+            fd = os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+            with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                raw = stream.read(workflow_local.MAX_BYTES + 1)
+            if len(raw.encode()) > workflow_local.MAX_BYTES:
+                continue
+            hint = json.loads(raw)
+            if (not isinstance(hint, dict) or not isinstance(hint.get('root'), str)
+                    or run not in (hint.get('runs') or {}) and run not in (hint.get('archives') or {})):
+                continue
+            controller = _controller(workspace, hint['root'], profile, principal=actor)
+            if controller._path() != target:
+                continue
+            with primitives.file_lock(str(target)):
+                state = workflow_retention.read(workspace, controller._read(target), run)
+            return controller, state
+        except (OSError, ValueError, TypeError, workflow.Refusal):
+            continue
+    return None
 
 
 def usage_point(state: dict[str, Any], measurement: dict[str, Any], *,
@@ -453,7 +492,8 @@ def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict
                     expected: list[str] | tuple[str, ...] = (), *,
                     closing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Keep the same participant coverage in live and committed observations."""
-    workers = {r['worker_id'] for r in state.get('workers', {}).values() if r.get('worker_id')}
+    workers = ({r['worker_id'] for r in state.get('workers', {}).values() if r.get('worker_id')}
+               | set(run.get('native_children', {})))
     declared = set(expected) | workers
     for row in rows:
         if row.get('run') != run['run']:
@@ -471,36 +511,93 @@ def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict
 
 
 def report(workspace: Path, run_id: str | None = None, *,
-           governor: workflow_host.Controller | None = None) -> dict[str, Any] | None:
+           governor: workflow_host.Controller | None = None,
+           history: bool = False) -> dict[str, Any] | None:
+    if history:
+        return _report(workspace, run_id, governor=governor, history=True)
+    controller = governor or _controller(workspace, session_id({}))
+    # Authority reads must fail normally; only the derived report is optional.
+    governed = controller.report(run_id)
+    if not governed.get('visits'):
+        return None
+    active = controller.report() if run_id else governed
     captured_at = datetime.now(timezone.utc).isoformat()
-    rows = read_events(workspace)
-    workspace = workspace.resolve()
-    owner = governor.root if governor else session_id({})
-    run = next((r for r in reversed(rows) if r.get("kind") == "start"
-                and (r.get("run") == run_id if run_id else r.get("session") == owner)), None)
-    controller = governor or _controller(workspace, str(run["session"]) if run else session_id({}))
     try:
-        governed = controller.report(run_id or (str(run["run"]) if run else None))
-    except workflow.Refusal as exc:
-        governed = {**exc.result(), "authority_verified": False}
-    # Preserve the old journal-only advisory view, explicitly unverified. Native
-    # workflow journals always select by task or --run and never use this fallback.
-    legacy_only = (not any(r.get("kind") == "start" and r.get("hook_setup") == "host_adapter" for r in rows)
-                   and not any(Path(storage.tp_dir(str(workspace))).glob("workflow-*.json")))
-    if run_id is None and governor is None and legacy_only and not governed.get("visits"):
-        run = next((r for r in reversed(rows) if r.get("kind") == "start"), None)
-    if not run:
-        if not governed.get("visits"):
-            return None
-        # Rebuild a derived view after a durable decision/start but lost rendering.
-        # This does not fabricate a historical observation or human decision.
-        run = {"kind": "start", "run": governed["run"], "session": governed["root"],
-               "phase": governed["visits"][0]["phase"], "goal": governed.get("goal", ""),
-               "at": governed.get("started_at")}
-    result = summarize(rows, run)
+        return _report(workspace, run_id, governor=controller,
+                       governed=governed, active=active, captured_at=captured_at)
+    except Exception:
+        # Build a standalone view without retrying failed optional helpers or
+        # exposing a partially enriched result as a successful measurement.
+        stage = workflow.current(governed)
+        historical = bool(governed.get('finished') or active.get('run') != governed['run'])
+        return {'mode': 'advisory', 'owner': 'orchestrator', 'run': governed['run'],
+                'goal': governed.get('goal'), 'phase': governed['phase'], 'status': governed['status'],
+                'started_at': governed.get('started_at'), 'finished_at': governed.get('finished_at'),
+                'workflow': governed, 'historical': historical, 'dashboard': str(workspace.resolve() / DASHBOARD),
+                'milestones': [], 'tasks': [], 'reviews': [], 'artifacts': {}, 'graph': {},
+                'sessions': [], 'tokens': None, 'observed_tokens': None,
+                'token_coverage': {'measured_sessions': 0, 'unmeasured_sessions': 1,
+                                   'basis': 'Advisory report unavailable'},
+                'usage_measurement': {'status': 'unavailable', 'attempted_at': captured_at,
+                                      'measured_at': None, 'oldest_at': None, 'newest_at': None},
+                'evidence_errors': ['Advisory report unavailable; controller state remains authoritative.'],
+                'snapshot': {'schema': 'taskplane.dashboard-snapshot/v1', 'workspace': str(workspace),
+                    'root': governed['root'], 'run': governed['run'], 'phase': governed['phase'],
+                    'visit': stage['id'], 'revision': governed['revision'], 'historical': historical,
+                    'captured_at': captured_at, 'generated_at': captured_at,
+                    'measurement_status': 'unavailable', 'measurement_at': None}}
+
+
+def _report(workspace: Path, run_id: str | None = None, *,
+            governor: workflow_host.Controller | None = None, history: bool = False,
+            governed: dict[str, Any] | None = None, active: dict[str, Any] | None = None,
+            captured_at: str | None = None) -> dict[str, Any] | None:
+    """Project optional observations from already-read normal workflow state."""
+    captured_at = captured_at or datetime.now(timezone.utc).isoformat()
+    rows: list[dict[str, Any]] = []
+    aggregate = None
+    telemetry_error = None
+    if not history:
+        assert governor is not None and governed is not None and active is not None
+        controller = governor
+        try:
+            aggregate = live_telemetry.read(workspace, governed)
+        except Exception:
+            aggregate = live_telemetry.empty(governed)
+            telemetry_error = 'Advisory telemetry unavailable; controller state remains authoritative.'
+        run = aggregate['metadata']
+        if aggregate.get('measurement'):
+            rows = [{'kind': 'usage', 'run': governed['run'], 'session': governed['root'],
+                     'measurement': aggregate['measurement']}]
+    else:
+        rows = read_events(workspace)
+        workspace = workspace.resolve()
+        owner = governor.root if governor else session_id({})
+        run = next((r for r in reversed(rows) if r.get("kind") == "start"
+                    and (r.get("run") == run_id if run_id else r.get("session") == owner)), None)
+        controller = governor or _controller(workspace, str(run["session"]) if run else session_id({}))
+        try:
+            governed = controller.report(run_id or (str(run["run"]) if run else None))
+        except workflow.Refusal as exc:
+            governed = {**exc.result(), "authority_verified": False}
+        # Preserve the old journal-only advisory view, explicitly unverified. Native
+        # workflow journals always select by task or --run and never use this fallback.
+        legacy_only = (not any(r.get("kind") == "start" and r.get("hook_setup") == "host_adapter" for r in rows)
+                       and not any(Path(storage.tp_dir(str(workspace))).glob("workflow-*.json")))
+        if run_id is None and governor is None and legacy_only and not governed.get("visits"):
+            run = next((r for r in reversed(rows) if r.get("kind") == "start"), None)
+        if not run:
+            if not governed.get("visits"):
+                return None
+            # Rebuild a derived view after a durable decision/start but lost rendering.
+            # This does not fabricate a historical observation or human decision.
+            run = {"kind": "start", "run": governed["run"], "session": governed["root"],
+                   "phase": governed["visits"][0]["phase"], "goal": governed.get("goal", ""),
+                   "at": governed.get("started_at")}
+    result = live_telemetry.summary(aggregate, governed) if aggregate is not None else summarize(rows, run)
     result["dashboard"] = str(workspace.resolve() / DASHBOARD)
-    attachments: dict[str, Any] = {}
-    captured: dict[str, Any] = {}
+    attachments: dict[str, Any] = deepcopy(aggregate["artifacts"]) if aggregate is not None else {}
+    captured: dict[str, Any] = deepcopy(aggregate["captured"]) if aggregate is not None else {}
     for row in rows:
         if row.get("run") == run["run"]:
             incoming = row.get("artifacts") or {}
@@ -515,7 +612,7 @@ def report(workspace: Path, run_id: str | None = None, *,
     result["artifacts"] = attachments
     result["tasks"] = []
     result["reviews"] = []
-    result["evidence_errors"] = []
+    result["evidence_errors"] = [telemetry_error] if telemetry_error else []
     for key in ("tasks", "reviews"):
         if not attachments.get(key):
             continue
@@ -538,9 +635,15 @@ def report(workspace: Path, run_id: str | None = None, *,
     expected = [str(r["agent"]) for r in result["reviews"] if r.get("agent")]
     expected += [str(r["child"]) for r in rows if r.get("run") == run["run"] and r.get("child")]
     result["observed_tokens"] = result["tokens"]
+    closing = run.get('closing_counter') if aggregate is not None else None
+    if aggregate is not None and not closing:
+        closed_at = live_telemetry.closing_time(governed)
+        if closed_at:
+            closing = {'session': governed['root'], 'host': run.get('host', 'codex'),
+                       'at': closed_at, 'usage': None, 'usage_status': 'unavailable'}
     try:
-        result.update(reconcile_usage(run, rows, governed, expected))
-    except (OSError, ValueError, TypeError, KeyError):
+        result.update(reconcile_usage(run, rows, governed, expected, closing=closing))
+    except Exception:
         result["evidence_errors"].append("Native session reconciliation unavailable; showing hook observations")
     measured_at = datetime.now(timezone.utc).isoformat()
     for measured in result.get("sessions", []):
@@ -560,6 +663,11 @@ def report(workspace: Path, run_id: str | None = None, *,
             unmeasured_sessions=sum(s.get("usage") is None for s in delivery),
             partial_sessions=sum(s.get("status") != "measured" for s in delivery))
     result["usage_measurement"] = usage_measurement(result, measured_at)
+    if aggregate is not None:
+        try:
+            live_telemetry.remember_measurement(workspace, governed, result, captured_at)
+        except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+            result['evidence_errors'].append('Advisory measurement could not be retained.')
     result["evidence_previews"] = captured.get("evidence", {})
     result["review_coverage"] = governed.get("worker_status", {}).get("lens_coverage", [])
     for review in result["reviews"]:
@@ -572,7 +680,7 @@ def report(workspace: Path, run_id: str | None = None, *,
     if governed.get("visits"):
         result["phase"] = governed["phase"]
         result["status"] = governed["status"]
-        active = controller.report()
+        active = active if active is not None else controller.report()
         historical = bool(governed.get("finished") or active.get("run") != governed["run"])
         if historical and "reviews" not in captured:
             result["reviews"] = []
@@ -600,7 +708,7 @@ def report(workspace: Path, run_id: str | None = None, *,
             "graph_fingerprint": result["graph"]["fingerprint"], "historical": historical,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "captured_at": captured_at,
-            "observation_count": sum(r.get("run") == governed["run"] for r in rows),
+            "observation_count": aggregate["observation_count"] if aggregate is not None else sum(r.get("run") == governed["run"] for r in rows),
             "measurement_at": result["usage_measurement"]["measured_at"],
             "measurement_status": result["usage_measurement"]["status"],
             "measurement_oldest_at": result["usage_measurement"]["oldest_at"],
@@ -683,55 +791,25 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
     except workflow.Refusal:
         return {}  # A denied selection must not create a competing journal or session export.
     claude_flow_usage.bind_session(event)
-    rows = read_events(workspace)
-    if not rows:
+    state = event.get('_telemetry_state')
+    if not isinstance(state, dict) or not state.get('run'):
         return {}
     session = session_id(event)
     try:
         observation = counter(event, session)
     except (OSError, ValueError, TypeError, KeyError):
-        observation = {"usage": None, "usage_status": "unavailable"}
-    fork = independent_fork(event, session)
-    parent = None if fork else event.get("parent_session_id") or observation.get("parent") or observed_parent(event, session)
-    admission = event.get("taskplane_admission")
-    observed_binding = event.get("taskplane_observed_binding")
-    bound_root = observed_binding.get("root") if isinstance(observed_binding, dict) else None
-    run = ({"run": admission["run"], "session": admission["root"]} if isinstance(admission, dict)
-           else active_run(rows, bound_root, inherit=False) if isinstance(bound_root, str) and bound_root
-           else active_run(rows, session, parent, inherit=not fork))
-    if run is None:
-        selected = workflow_local.Harness(workspace, str(parent or session)).read().get("run")
-        run = next((r for r in reversed(rows) if r.get("kind") == "start" and r.get("run") == selected), None)
-    if run is None:
-        return {}
+        observation = {'usage': None, 'usage_status': 'unavailable'}
     name = str(event.get("hook_event_name") or "unknown")
     tool = str(event.get("tool_name") or event.get("tool") or "")[:120]
     action = hashlib.sha256(json.dumps(
         [tool, event.get("tool_input")], sort_keys=True).encode()).hexdigest()
-    row = {"kind": "hook", "run": run["run"], "root": run["session"],
-           "session": session, "event": name, "tool": tool, "action": action,
-           "call_id": str(event.get("tool_use_id") or event.get("call_id") or "")[:512] or None,
-           "outcome": outcome, "reason_category": reason,
-           "coverage": "identified" if event.get("tool_use_id") or event.get("call_id") else "approximate",
-           "host_reported_session": event.get("host_reported_session", session),
-           "environment_session": os.environ.get("CODEX_THREAD_ID"),
-           "identity_basis": event.get("identity_basis", "host event/session fallback"),
-           "identity_observation": {k: event[k][:200] for k in ("thread_id", "session_id", "parent_session_id", "agent_id",
-               "subagent_id", "agent_type", "parent_tool_call_id") if isinstance(event.get(k), str)},
-           "binding_observation": event.get("taskplane_observed_binding"),
-           "admission": admission,
-           "attribution": "paired" if admission else "unpaired",
-           "workspace_contract": event.get("taskplane_workspace_contract"),
-           **observation}
-    from .host_capabilities import runtime_identity
-    row['runtime_identity'] = runtime_identity()
-    if name in {"SubagentStart", "SubagentStop"} and event.get("agent_id"):
-        row["child"] = str(event["agent_id"])[:200]
-        if claude_session(event) and event.get("agent_transcript_path"):
-            row["agent_transcript_path"] = str(event["agent_transcript_path"])
-    before = summarize(rows, run)["advice"]
-    append(workspace, row)
-    advice = [item for item in summarize([*rows, row], run)["advice"] if item not in before]
+    row = {'session': session, 'event': name, 'tool': tool, 'action': action,
+           'call_id': str(event.get('tool_use_id') or event.get('call_id') or '')[:512] or None,
+           'outcome': outcome, **observation}
+    if name in {'SubagentStart', 'SubagentStop'}:
+        row.update(child=event.get('agent_id') or event.get('subagent_id'),
+                   agent_transcript_path=event.get('agent_transcript_path'))
+    advice = live_telemetry.observe(workspace, state, row)
     if advice and name in {"PreToolUse", "SessionStart"}:
         return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
                 "Taskplane advisory (continue delivery): " + " ".join(advice)}}
@@ -771,13 +849,18 @@ def _onboarding_read(event: dict[str, Any]) -> bool:
             'taskplane', *('taskplane:' + name for name in (*workflow_local.EXECUTION_ENTRIES, 'tp-status', 'tp-help'))}
     if tool not in {'Bash', 'exec_command'}:
         return False
-    if workflow_local.opaque_command(event):
+    if workflow_local.readonly_command(event):
         return True
     words = workflow_local.runtime_words(event)
     cwd = runtime_command.execution_directory(event, Path.cwd())
     if (runtime_command.installed(words, cwd, absolute=True)
             and words[2:] in (['version', '--verify'], ['help', '--md'])):
         return True
+    if (runtime_command.installed(words, cwd, absolute=True)
+            and words[2:4] == ['flow', 'activate']
+            and len(words) == 6 and words[4] == '--phase'
+            and words[5] in workflow_local.EXECUTION_ENTRIES):
+        return True  # Selection can explain missing binding without creating workflow state.
     # Compute the execution-side probe without admitting Python or shell scripts.
     # Host-side evidence must still be obtained independently by the caller.
     if ((words[:4] == ['shasum', '-a', '256', '--'] and len(words) == 5)
@@ -884,11 +967,9 @@ def _hook(event: dict[str, Any], *,
                          or name in {'PreToolUse', 'PostToolUse'} and _onboarding_read(event)):
                 return {'hookSpecificOutput': {'hookEventName': name, 'additionalContext': exc.guidance()}}
         raise
-    rows = read_events(workspace)
-    legacy = active_run(rows, session, None if fork else parent, inherit=not fork)
     try:
         controller, guarded = select_controller(workspace, session, parent, event=event,
-                                                legacy=legacy, governor=governor, diagnostics=False, pending_start=(
+                                                governor=governor, diagnostics=False, pending_start=(
                                                     (runtime_command.installed(words, cwd) and words[2:4] == ["flow", "start"])
                                                     or (event.get("tool_name") or event.get("tool")) == "write_stdin"))
     except (workflow.Refusal, OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
@@ -910,6 +991,17 @@ def _hook(event: dict[str, Any], *,
     event["host"] = controller.adapter.name
     event["taskplane_observed_binding"] = {"root": controller.root, "principal": controller.principal,
                                            "profile": controller.adapter.profile}
+    if (name == 'SubagentStart' and guarded.get('run')
+            and controller.principal == controller.root and isinstance(event.get('agent_id'), str)
+            and 0 < len(event['agent_id']) <= 200 and event['agent_id'] != controller.root):
+        child = event['agent_id']
+        key = hashlib.sha256(child.encode()).hexdigest()[:32]
+        primitives.atomic_json(storage.runtime_file(str(workspace), 'native-parent-' + key + '.json'),
+            {'schema': 'taskplane.native-parent/v1', 'workspace': str(workspace),
+             'parent': controller.root, 'child': child, 'run': guarded['run'],
+             'source': 'observed SubagentStart', 'observed_at': datetime.now(timezone.utc).isoformat()})
+    if guarded.get('run'):
+        event['_telemetry_state'] = live_telemetry.binding(guarded)
     event["taskplane_workspace_contract"] = ({k: contract[k] for k in ("project_id", "digest")}
                                              if contract else None)
     # Overwrite caller data with the package actually executing this automatic hook.
@@ -920,6 +1012,8 @@ def _hook(event: dict[str, Any], *,
         pair = controller.complete_admission(event)
         if pair:
             event["taskplane_admission"] = pair
+            prior_state = controller.report(pair['run'], diagnostics=False)
+            event['_telemetry_state'] = live_telemetry.binding(prior_state)
     harness = workflow_local.Harness(workspace, controller.root) if controller.adapter.profile == "native_workflow" and controller.principal == controller.root else None
     selected = workflow_local.execution_entry(event)
     startup_observed = False
@@ -954,7 +1048,7 @@ def _hook(event: dict[str, Any], *,
             if (event.get("tool_name") or event.get("tool")) in workflow_local.QUESTION_TOOLS:
                 harness.wait(guarded, "Native question requested; awaiting the user's response.")
     # Protected state is checked independently of the deletable workspace journal.
-    run = guarded.get("run") or (legacy or {}).get("run")
+    run = guarded.get("run")
     if guarded.get("workflow_available") and guarded.get("run"):
         if not startup_observed:
             controller.observe(event, str(run))
@@ -1010,7 +1104,9 @@ def _hook(event: dict[str, Any], *,
 
 def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = None,
          completion: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Observe all exits, including denials. Optional journaling never grants access."""
+    """Observe all exits, including denials. Advisory telemetry never grants access."""
+    event.pop('_telemetry_state', None)
+    event.pop('taskplane_observed_binding', None)
     event.pop('taskplane_admission', None)
     event.pop('taskplane_updated_input', None)
     event.pop('taskplane_claude_root_source', None)
@@ -1079,7 +1175,9 @@ def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = N
                 output = result.setdefault("hookSpecificOutput", {"hookEventName": event.get("hook_event_name")})
                 output["additionalContext"] = (output.get("additionalContext", "") + " " +
                     advice.get("hookSpecificOutput", {}).get("additionalContext", "")).strip()
-        except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+        except Exception:
+            # Only optional observation is inside this boundary. Gate exceptions
+            # above still propagate with their original decision and reason.
             pass
     return result
 
@@ -1168,7 +1266,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker"])
     parser.add_argument('--revision-mode', choices=['preview', 'begin', 'resume', 'abort'])
     parser.add_argument('--revision-request', help='Exact source-pinned requirements revision request')
     parser.add_argument('--revision-sha256')
@@ -1186,6 +1284,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--grant", default="")
     parser.add_argument("--worker-json", help="Bounded native capacity or result evidence JSON")
     parser.add_argument("--full", action="store_true", help="Explicit complete output; unbounded")
+    analysis = parser.add_mutually_exclusive_group()
+    analysis.add_argument('--history', action='store_true', help='Explicit legacy journal analysis; report only')
+    analysis.add_argument('--record', action='store_true', help='Optionally record an ended run for analysis; report only')
     parser.add_argument("--task", help="Current phase task ID for context selection")
     context_read = parser.add_mutually_exclusive_group()
     context_read.add_argument("--read", help="Read a current verified reference SHA-256")
@@ -1259,6 +1360,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             print(json.dumps(payload))  # Error summaries must not initialize a scratch context store.
         else:
             emit(payload, workspace, args.action, full=args.full or not compact)
+    if (args.history or args.record) and args.action != 'report':
+        parser.error('--history and --record apply only to flow report')
     if args.replace_run and args.action != "start":
         parser.error("--replace-run applies only to flow start")
     if (args.assessment is not None or args.assessment_json is not None) and args.action != "auto-decide":
@@ -1374,22 +1477,28 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             diagnostics['status'] = 'blocked' if diagnostics.get('workflow_error') else 'available'
             show(diagnostics)
             return 0
-        rows = read_events(workspace)
         session = session_id({})
-        fork = independent_fork({}, session)
-        run = active_run(rows, session, None if fork else counter({}, session).get("parent"), inherit=not fork)
-        if args.action in {"report", "attach"}:
-            run = next((r for r in reversed(rows) if r.get("kind") == "start"
-                        and (r.get("run") == args.run if args.run else r.get("session") == session)), None)
         parent = observed_parent({}, session)
-        if args.action == 'report' and args.run and run and run.get('session') != session and governor is None:
-            # Explicit history selection must not silently report the current
-            # conversation's own run or the source owner's newer active run.
-            controller = _controller(workspace, str(run['session']), args.profile, principal=session)
-            protected = controller.report(args.run)
-        else:
-            controller, protected = select_controller(workspace, session, parent, profile=args.profile,
-                                                      legacy=run, governor=governor, pending_start=args.action == "start")
+        if args.history:
+            show(report(workspace, args.run, governor=governor, history=True) or {})
+            return 0
+        controller, protected = select_controller(workspace, session, parent, profile=args.profile,
+                                                  governor=governor, pending_start=args.action == 'start')
+        if (args.action == 'report' and args.run and not args.record and not parent
+                and governor is None and args.run != protected.get('run')):
+            requested = requested_report_controller(workspace, session, args.run, args.profile)
+            if requested is not None:
+                controller, protected = requested
+        if args.record:
+            workflow.require(controller.principal == controller.root and args.run,
+                             'scope_violation', 'Select an ended run owned by this root for analysis recording.')
+            from . import workflow_retention
+            target = controller._path()
+            with primitives.file_lock(str(target)):
+                ended = workflow_retention.read(workspace, controller._read(target), args.run)
+            show(run_journal.record(workspace, ended, note=args.note))
+            return 0
+        run = live_telemetry.metadata(protected) if protected.get('run') else None
         if controller.principal != controller.root:
             if args.action == 'report' and args.run and not parent:
                 from . import workflow_continuation as continuation
@@ -1430,13 +1539,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                                         read=args.read, page=args.page if args.page is not None else 0, section=args.section)
             print(encode(context_result).decode("utf-8"))
             return 0
-        if protected.get("run") and (run is None or args.action not in {"report", "attach"}):
-            run = next((r for r in reversed(rows) if r.get("kind") == "start"
-                        and r.get("run") == protected["run"]), None) or {
-                            "kind": "start", "run": protected["run"], "session": protected["root"],
-                            "phase": protected["visits"][0]["phase"], "goal": protected.get("goal", ""),
-                            "at": protected.get("started_at")}
-        if args.run and args.action not in {"report", "attach"}:
+        if protected.get('run'):
+            run = live_telemetry.metadata(protected)
+        if args.run and args.action not in {"report", "attach", "repair"}:
             workflow.require(run and args.run == run["run"], "state_unavailable", "Run does not match the active binding.")
         artifacts: dict[str, Any] = {}
         for key in ("tasks", "reviews"):
@@ -1467,20 +1572,41 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         if args.action == "start":
             from . import workflow_evidence
             scope = workflow_evidence.object_file(workspace, args.scope) if args.scope else None
+            try:
+                baseline = counter({}, session)
+            except Exception:
+                baseline = {'usage': None, 'usage_status': 'unavailable'}
             state = controller.start({"entry": args.phase or "product", "standalone": args.standalone,
                 "goal": args.goal, "native_reference": args.native_event, "scope": scope,
                 "request_reference": args.request_reference, "tasks": args.tasks,
                 "replace_run": args.replace_run, "expected_revision": args.expected_revision})
-        elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide", "retire"}:
+            try:
+                live_telemetry.initialize(workspace, state, baseline)
+                if args.replace_run:
+                    live_telemetry.close(workspace, controller.report(args.replace_run, diagnostics=False), baseline)
+            except Exception:
+                observation_errors.append('Run started; advisory telemetry unavailable.')
+        elif args.action in {"submit", "decide", "advance", "finish", "repair", "policy", "auto-decide", "retire"}:
             target_run = args.run or protected.get("run")
             workflow.require(target_run, "state_unavailable", "No active workflow binding.")
             assert isinstance(target_run, str)
+            closing_observation = {'usage': None, 'usage_status': 'unavailable'}
+            if args.action in {'finish', 'retire'}:
+                try:
+                    closing_observation = counter({}, session)
+                except Exception:
+                    pass
             state = controller.apply(args.action, target_run, expected_revision=args.expected_revision,
                 output=(args.assessment if args.action == "auto-decide" else args.output) or "",
                 tasks=args.tasks or "", phase=args.phase, assessment_json=args.assessment_json,
                 native_reference=json.dumps({"request_reference": args.request_reference, "reason": args.note})
                     if args.action == "retire" else args.policy_json if args.action == "policy"
                     else args.decision_json if controller.adapter.profile == "native_workflow" else args.native_event)
+            if args.action in {'finish', 'retire'}:
+                try:
+                    live_telemetry.close(workspace, state, closing_observation)
+                except Exception:
+                    observation_errors.append('Run ended; advisory closing counter unavailable.')
             if harness and (state.get("finished") or state.get("retired")):
                 try:
                     harness.update(selected=False, waiting=None)
@@ -1496,19 +1622,29 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 state = controller.report(target_run, diagnostics=False)
                 workflow.require(not args.phase or args.phase == workflow.current(state)["phase"],
                                  "approval_required", "Progress does not advance a phase.")
-                append(workspace, {"kind": args.action, "run": target_run, "session": controller.root,
-                                   "note": args.note, "artifacts": artifacts,
-                                   "captured": capture_attachments(workspace, artifacts)})
+                try:
+                    live_telemetry.progress(workspace, state, args.action, args.note, artifacts,
+                                            capture_attachments(workspace, artifacts))
+                except Exception:
+                    observation_errors.append('Advisory progress could not be saved; workflow state is unchanged.')
         else:
             # Detailed history/graph/usage projections are explicit report work.
             result = report(workspace, args.run, governor=controller)
             show(result or controller.report(args.run))
             return 0
-        # One authoritative result; optional views cannot turn a committed action
-        # into failure or introduce mandatory dashboard/graph/usage work.
+        # Publish at lifecycle milestones, never on ordinary hook/tool events.
+        # A failed view cannot replace the already committed enforcement result.
+        if args.action in {'start', 'submit', 'decide', 'advance', 'finish', 'repair'}:
+            try:
+                publish_dashboard(workspace, state['run'], governor=controller,
+                                  checkpoint_required=args.action in {'submit', 'decide'})
+            except Exception:
+                observation_errors.append('Workflow action committed; dashboard publication needs retry.')
         state = {**state, "phase": workflow.current(state)["phase"],
                  "status": "retired" if state.get("retired") else "superseded" if state.get("superseded_by")
                  else "accepted" if state.get("finished") else workflow.current(state)["decision"]}
+        if observation_errors:
+            state['observation_errors'] = observation_errors
         print(json.dumps({"workflow": state, "status": state["status"],
                           "run": state["run"], "revision": state["revision"]}))
         return 0

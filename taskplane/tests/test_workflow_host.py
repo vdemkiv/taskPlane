@@ -190,7 +190,7 @@ def test_denial_recovery_partial_scan_stays_private_and_resumes(tmp_path, monkey
 
 
 @pytest.mark.parametrize('boundary', ['prepare', 'dispatch', 'write', 'update_tasks', 'prevalidate',
-                                    'submit', 'advance', 'finish', 'auto-decide', 'retire', 'replace', 'stop'])
+                                    'submit', 'advance', 'finish', 'repair', 'auto-decide', 'retire', 'replace', 'stop'])
 @pytest.mark.parametrize('defect', ['late_result', 'missing', 'partial'])
 def test_denial_mutable_boundaries_refresh_and_persist_before_refusal(tmp_path, monkeypatch, boundary, defect):
     from taskplane.tests.test_worker_runtime import recorded_denial
@@ -338,11 +338,8 @@ def controller(tmp_path, request=None):
 
 
 def submit(c, s):
-    phase = w.current(s)["phase"]
-    _, output, _ = prepare(c.workspace, phase)
-    output.update(run=s["run"], visit=w.current(s)["id"])
-    (c.workspace/(phase+".json")).write_text(json.dumps(output))
-    return c.apply("submit", s["run"], expected_revision=s["revision"], output=phase+".json", tasks="tasks.json")
+    from taskplane.tests.test_workflow_evidence import bound_output
+    return c.apply("submit", s["run"], expected_revision=s["revision"], output=bound_output(c, s), tasks="tasks.json")
 
 
 def native(host, s, key="human-event", **extra):

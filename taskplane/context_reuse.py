@@ -40,7 +40,8 @@ def _packet_context(workspace: Path, state: dict[str, Any],
     belong to their original visits, even when a later phase consumes the check.
     """
     stages = {stage["id"]: stage for stage in state["visits"][:state["index"] + 1]
-              if stage["phase"] in {"build", "evaluate"} and not stage.get("superseded")}
+              if stage["phase"] in {"build", "evaluate"} and (not stage.get("superseded")
+                  or stage['id'] in state.get('repair_scope', {}).get('prior_visits', []))}
     plan = w.accepted_plan(state)["packet"]["output"]
 
     def allowed(stage: dict[str, Any]) -> set[str]:
@@ -140,6 +141,8 @@ def _roles(workspace: Path, state: dict[str, Any], *, check_id: str,
             if not any(row["kind"] == "verification_history" for row in plan.get("build_outputs", [])):
                 histories = set(owner["paths"])
             logs = set(requirement["evidence_outputs"])
+            if len(stage.get('artifact_paths', [])) > 2:
+                histories = logs = set(stage.get('artifact_paths', []))
         else:
             histories = logs = set(state["scope"]["paths"].get("evaluate", []) + stage.get("artifact_paths", []))
         w.require(history in histories and (log is None or log in logs and log != history),
@@ -202,9 +205,13 @@ def _roles(workspace: Path, state: dict[str, Any], *, check_id: str,
         try:
             for row in attempts:
                 cid = row["check_id"]
-                w.require(cid in checks and row["run"] == state["run"] and row["visit"] == stage["id"],
+                producer = stages.get(row.get('visit'), {})
+                w.require(cid in checks and row["run"] == state["run"]
+                          and producer.get('phase') in {'build', 'evaluate'}
+                          and (row['visit'] == stage['id'] or row['visit'] in
+                               state.get('repair_scope', {}).get('prior_visits', [])),
                           "invalid_context", "Foreign metadata role.")
-                owned(cid, stage, relative, row["evidence"])
+                owned(cid, stage, relative, None)
                 record = store.resolve(row["record_ref"])
                 w.require(isinstance(record, dict)
                           and record.get("schema") == "taskplane.verification-record/v1",
@@ -221,7 +228,7 @@ def _roles(workspace: Path, state: dict[str, Any], *, check_id: str,
                 # A complete history alias preserves original record context.
                 # Both filenames need the same producing ownership; continuity
                 # and log integrity are independently checked at submission.
-                owned(cid, stage, context["history_path"], row["evidence"])
+                owned(cid, producer, context["history_path"], row["evidence"])
             metadata.add(relative)
             histories.add(relative)
             metadata.update(row["evidence"] for row in attempts)
@@ -537,7 +544,12 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
                   "invalid_context", "Typed checks need run, visit, check ID, kind, environment and log path.")
         assert history_path is not None and log_path is not None
         evidence.path(workspace, history_path)
-        w.require(history_path != log_path and not evidence.path(workspace, log_path).exists(),
+        assert state is not None
+        # A repair's current log is a projection. Every actual attempt/log body
+        # is still pinned immutably in Store and retained in the ordered history.
+        repair_projection = (w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit')
+                             and log_path in w.current(state).get('artifact_paths', []))
+        w.require(history_path != log_path and (repair_projection or not evidence.path(workspace, log_path).exists()),
                   "invalid_context", "Each attempt needs a new distinct declared log path.")
         assert state is not None and check_id is not None
         requirement: dict[str, Any] = next((row for row in w.accepted_plan(state)["packet"]["output"]

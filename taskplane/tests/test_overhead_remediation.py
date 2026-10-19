@@ -4,8 +4,9 @@ import json
 import pytest
 
 from taskplane import flow, workflow as w, workflow_host as h, workflow_evidence as e
-from taskplane.tests.test_workflow_evidence import prepare
+from taskplane.tests.test_workflow_evidence import prepare, bound_output
 from taskplane.tests.test_workflow_local import decision
+from taskplane.tests.test_worker_runtime import parent_pair
 
 
 def journey(workspace, host, capsys):
@@ -24,16 +25,19 @@ def journey(workspace, host, capsys):
             c.apply('finish',state['run'],expected_revision=state['revision'])
         assert c._path().read_bytes()==before
         if phase=='build':
-            assert state['scope']['paths']['build']==['app.py']
+            parent_pair(c)
+            state=c.report(diagnostics=False)
+            assert state['scope']['paths']['build']==initial['scope']['paths']['build']
             c.guard({'tool_name':'Write','tool_input':{'path':'app.py'}},state['run'])
             with pytest.raises(w.Refusal):
                 c.guard({'tool_name':'Write','tool_input':{'path':'unplanned.py'}},state['run'])
             (workspace/'app.py').write_text('value = 2  # implemented during approved Build\n')
         _,output,tasks=prepare(workspace,phase)
+        if phase=='build':
+            output=json.loads((workspace/bound_output(c,state)).read_text())
         output.update(run=state['run'],visit=w.current(state)['id'])
         for row in tasks['tasks']:
             row['owner']='root'
-            row['paths']=['app.py']
         if phase=='plan':
             output['ownership']={'T1':'root'}
             output['task_dag']=tasks['tasks']
@@ -41,22 +45,28 @@ def journey(workspace, host, capsys):
         output_path=(w.current(state)['artifact_paths'][0] if phase=='build' else state['scope']['paths'][phase][0])
         if phase=='build':
             c.guard({'tool_name':'Write','tool_input':{'path':output_path}},state['run'])
+        # Early decomposition is concrete; Plan's inline executable DAG is sufficient.
+        task_args=[]
+        if phase in ('product','design'):
+            task_path=phase+'-tasks.json'
+            (workspace/task_path).write_text(json.dumps(tasks))
+            task_args=['--tasks',task_path]
         if phase=='plan':
-            output['write_scope']=['app.py']
-        # Plan's inline DAG is sufficient; no separate task packet exists.
-        (workspace/'tasks.json').unlink(missing_ok=True)
+            (workspace/'tasks.json').unlink(missing_ok=True)
         (workspace/output_path).parent.mkdir(parents=True,exist_ok=True)
         (workspace/output_path).write_text(json.dumps(output))
-        # Missing optional graph/decomposition/dashboard cannot block submission.
-        (workspace/'.taskplane/knowledge/graph.json').unlink(missing_ok=True)
+        # Early views do not veto submission; typed checks retain their source context.
+        if phase in ('product','design'):
+            (workspace/'.taskplane/knowledge/graph.json').unlink(missing_ok=True)
         (workspace/'.taskplane/dashboard.html').unlink(missing_ok=True)
         assert flow.main(['submit','--workspace',str(workspace),'--run',state['run'],
-            '--expected-revision',str(state['revision']),'--output',output_path],governor=c)==0
+            '--expected-revision',str(state['revision']),'--output',output_path,*task_args],governor=c)==0
         capsys.readouterr()
         state=c.report(diagnostics=False)
+        assert (workspace/'.taskplane/dashboard.html').is_file()
         (workspace/'external-note.md').write_text('Unrelated external work')
         c.guard({'tool_name':'Read','tool_input':{'file_path':'external-note.md'}},state['run'])
-        c.guard({'tool_name':'exec_command','tool_input':{'cmd':'rg --files | head -20'}},state['run'])
+        c.guard({'tool_name':'exec_command','tool_input':{'cmd':'rg --files'}},state['run'])
         with pytest.raises(w.Refusal):
             c.guard({'tool_name':'Write','tool_input':{'path':phase+'.json'}},state['run'])
         assert c.context(state['run'])['schema']=='taskplane.brief/v1'
@@ -68,6 +78,7 @@ def journey(workspace, host, capsys):
         state=c.report(diagnostics=False)
         if phase!='retro':
             next_phase=w.PHASES[w.PHASES.index(phase)+1]
+            if next_phase=='build':parent_pair(c)
             assert flow.main(['advance','--workspace',str(workspace),'--run',state['run'],
                 '--expected-revision',str(state['revision']),'--phase',next_phase],governor=c)==0
             capsys.readouterr();state=c.report(diagnostics=False)

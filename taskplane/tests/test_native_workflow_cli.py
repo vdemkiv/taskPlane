@@ -21,10 +21,7 @@ ROOT=Path(__file__).resolve().parents[2]
 CLAUDE_TRANSPORT_SUPPORTED = os.name == 'posix' and sys.platform in {'linux', 'darwin'}
 
 
-def cli(workspace,host,*args,root=ROOT,code=0,environment=None,entry="flow"):
-    if entry == 'flow' and host == 'claude' and args[0] in {'context', 'submit'} and code == 0 and not CLAUDE_TRANSPORT_SUPPORTED:
-        pytest.skip('Successful Claude context transport requires macOS or Linux; refusal is tested separately')
-    workspace, root = Path(workspace).resolve(), Path(root).resolve()
+def fixture_environment(workspace, host, root, environment=None):
     env={k:v for k,v in os.environ.items() if not k.startswith(
         ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
     host_data=workspace.parent/(workspace.name+'-host-data')
@@ -41,6 +38,15 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None,entry="flow"):
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
     env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
                PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
+    return env
+
+
+def cli(workspace,host,*args,root=ROOT,code=0,environment=None,entry="flow"):
+    if entry == 'flow' and host == 'claude' and args[0] in {'context', 'submit'} and code == 0 and not CLAUDE_TRANSPORT_SUPPORTED:
+        pytest.skip('Successful Claude context transport requires macOS or Linux; refusal is tested separately')
+    workspace, root = Path(workspace).resolve(), Path(root).resolve()
+    env = fixture_environment(workspace, host, root, environment)
+    transcript = Path(env['CLAUDE_CONFIG_DIR'])/'projects/fixture/root.jsonl'
     # Match the declared Windows hook launcher; py -3 may select a different
     # installed interpreter from the one running pytest.
     python=['py','-3'] if os.name=='nt' else [str(Path(sys.executable).resolve())]
@@ -126,6 +132,7 @@ def handoff(workspace,host,root=ROOT):
 def create(workspace):
     workspace.mkdir(parents=True,exist_ok=True)
     initial,_,_=prepare(workspace)
+    initial['scope']['execution_contract'] = 'ownership/v1'
     (workspace/'build-check.txt').write_text('Fixture Build check passed')
     (workspace/'check.txt').write_text('Observed fixture check result')
     (workspace/'.taskplane/scope.json').write_text(json.dumps(initial['scope']))
@@ -168,11 +175,27 @@ def test_native_deactivate_only_uninitialized_engagement(tmp_path,host):
 
 
 def output(workspace,state,change=None):
-    phase=w.current(state)['phase']
-    _,out,_=prepare(workspace,phase)
-    out.update(run=state['run'],visit=w.current(state)['id'])
-    if change:out['route_change']=change
-    path=phase+'.json';(workspace/path).write_text(json.dumps(out))
+    from taskplane.tests.test_workflow_evidence import bound_output
+    selected = Path(state.get('runtime_identity', {}).get('root', ROOT))
+    # Capture with the same selected runtime, interpreter and isolated host
+    # environment as the actual hook. A pytest environment is different evidence.
+    source = ('import sys,json\nfrom pathlib import Path\nfrom copy import deepcopy\n'
+              'from types import SimpleNamespace\nsys.path.insert(0,sys.argv[1])\n'
+              'from taskplane import workflow as w,workflow_evidence as e\n'
+              + inspect.getsource(prepare) + '\n' + inspect.getsource(bound_output)
+              + '\npayload=json.load(sys.stdin)\nprint(bound_output(SimpleNamespace(workspace=Path.cwd()),payload))\n')
+    python = ['py', '-3'] if os.name == 'nt' else [str(Path(sys.executable).resolve())]
+    transcript = Path(workspace).parent/(Path(workspace).name+'-host-data')/'claude/projects/fixture/root.jsonl'
+    host = 'claude' if transcript.is_file() else 'codex'
+    env = fixture_environment(Path(workspace).resolve(), host, selected)
+    result = subprocess.run([*python, '-B', '-c', source, str(selected)], cwd=workspace, env=env,
+                            input=json.dumps(state), text=True, capture_output=True)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    path = result.stdout.strip()
+    if change:
+        out = json.loads((workspace/path).read_text())
+        out['route_change'] = change
+        (workspace/path).write_text(json.dumps(out))
     return path
 
 
@@ -230,6 +253,7 @@ def exercise(workspace,host,root=ROOT):
             state=cli(workspace,host,'finish','--expected-revision',str(state['revision']),root=root)['workflow']
     assert state['finished'] and len(state['decisions'])==7
     assert all(d['assurance']=='observed' for d in state['decisions'].values())
+    assert not (workspace/'.taskplane/flow-events.jsonl').exists()
     cli(workspace,host,'--run',state['run'],root=root,entry='dashboard')
     page=(workspace/'.taskplane/dashboard.html').read_text()
     assert 'Taskplane' in page and state['run'] in page
@@ -449,7 +473,7 @@ def test_native_start_needs_scope_and_never_upgrades_legacy_observations(tmp_pat
     from taskplane import flow
     flow.append(ws,{'kind':'start','run':'old','session':'root','phase':'retro'})
     flow.append(ws,{'kind':'finish','run':'old','session':'root','phase':'retro'})
-    assert cli(ws,'codex','report','--run','old')['status']=='legacy_unverified'
+    assert cli(ws,'codex','report','--history','--run','old')['status']=='legacy_unverified'
     state=cli(ws,'codex','start','--scope','.taskplane/scope.json','--request-reference','test/new')['workflow']
     assert state['run']!='old' and w.current(state)['phase']=='product' and state['decisions']=={}
 
@@ -528,10 +552,10 @@ def test_snapshot_run_selection_publication_and_captured_graph(tmp_path,monkeypa
     old=target.read_bytes()
     frozen={p:p.read_bytes() for p in (c.workspace/'.taskplane').glob('snapshot-*.html')}
     new=host.Controller(c.workspace,'other-task',host.installed_adapter('codex'))
-    other=new.start({'scope':s['scope'],'request_reference':'test/second-task'})
+    other=new.start({'scope':s['scope'],'goal':'second run','request_reference':'test/second-task'})
     flow.append(c.workspace,{'kind':'start','session':'other-task','run':other['run'],'phase':'product','at':other['started_at'],'goal':'second run'})
     # The current task remains on its own run, even with a later unrelated start.
-    assert flow.report(c.workspace)['run']==s['run']
+    assert flow.report(c.workspace, s['run'])['run']==s['run']
     detached=flow.publish_dashboard(c.workspace,other['run'],governor=new)
     assert detached!=target and target.read_bytes()==old
     selected=flow.publish_dashboard(c.workspace,other['run'],select=True,governor=new)
@@ -585,10 +609,8 @@ def exercise_dashboard_publication_order(c, state, *, select=False):
     """Delay an actual renderer while a newer same-revision snapshot publishes."""
     from threading import Event, Thread
     from unittest.mock import patch
-    from taskplane import flow, flow_dashboard
-    workspace=c.workspace;phase=w.current(state)['phase']
-    flow.append(workspace,{'kind':'start','run':state['run'],'session':state['root'],'phase':phase,
-                          'goal':'Publication ordering fixture','at':state['started_at']})
+    from taskplane import flow, flow_dashboard, live_telemetry
+    workspace=c.workspace
     older=flow.report(workspace,state['run'],governor=c);older['tokens']={'total_tokens':100}
     entered=Event();release=Event();errors=[];published=[]
     original_render=flow_dashboard.render
@@ -602,8 +624,7 @@ def exercise_dashboard_publication_order(c, state, *, select=False):
     with patch.object(flow_dashboard,'render',delayed):
         writer=Thread(target=old_writer);writer.start();assert entered.wait(10)
         try:
-            flow.append(workspace,{'kind':'progress','run':state['run'],'session':state['root'],'phase':phase,
-                                  'note':'Newer observation'})
+            live_telemetry.progress(workspace,state,'progress','Newer observation',{}, {})
             newer=flow.report(workspace,state['run'],governor=c);newer['tokens']={'total_tokens':200}
             assert older['snapshot']['revision']==newer['snapshot']['revision']
             target=flow.publish_dashboard(workspace,state['run'],governor=c,supplied=newer,select=True)
@@ -762,7 +783,8 @@ def test_measurement_clock_distinguishes_coverage(tmp_path,monkeypatch,case):
     if case=='missing':sessions[0].update(status='unavailable',usage=None,native_usage=None)
     if case=='reset':sessions[0]['native_usage']={'total_tokens':1}
     if case=='unknown_time':sessions=[session('root','recorded; native counter unavailable',None)]
-    flow.append(tmp_path,{'kind':'start','session':'root','run':state['run'],'phase':'product','at':state['started_at'],'usage':{'total_tokens':100},'hook_setup':'host_adapter'})
+    from taskplane import live_telemetry
+    live_telemetry.initialize(tmp_path, state, {'usage': {'total_tokens': 100}})
     monkeypatch.setattr(flow.flow_usage,'reconcile',lambda *_,**kw:{'sessions':deepcopy(sessions),'tokens':{'total_tokens':30},'token_coverage':{'discovery_errors':1 if case=='discovery' else 0}})
     result=flow.report(tmp_path,state['run'],governor=c)
     clock=result['usage_measurement']
@@ -831,7 +853,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     assert state['root']=='root' and w.current(state)['phase']==phase
     assert len(state['visits'])==(1 if standalone else 7)
     assert not state.get('approval_policy') and not state['decisions']
-    assert not (workspace/'.taskplane/dashboard.html').exists()
+    assert state['run'] in (workspace/'.taskplane/dashboard.html').read_text()
     patch='*** Begin Patch\n*** Update File: app.py\n@@\n-value = 1\n+value = 2\n*** End Patch'
     payload={'tool_name':'Write','tool_input':{'file_path':str(workspace/'app.py'),'content':'value=2'}} if host=='claude' else {
         'tool_name':'apply_patch','tool_input':{'command':patch}}

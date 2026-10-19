@@ -20,11 +20,8 @@ def cli(c, capsys, *args):
 
 
 def output(c, s):
-    phase = w.current(s)["phase"]
-    _, out, _ = prepare(c.workspace, phase)
-    out.update(run=s["run"], visit=w.current(s)["id"])
-    (c.workspace/(phase+".json")).write_text(json.dumps(out))
-    return phase+".json"
+    from taskplane.tests.test_workflow_evidence import bound_output
+    return bound_output(c, s)
 
 
 @pytest.mark.parametrize('kind', ['source', 'documentation'])
@@ -75,13 +72,15 @@ def test_progressive_delivery_extension_reaches_accepted_plan_and_scoped_build(t
     }
     for phase in [entry, "product", "design", "plan"]:
         output = {"schema": "taskplane.phase-output/v1", "run": state["run"],
-                  "phase": phase, "visit": w.current(state)["id"], "criteria": ["AC1"], **results[phase]}
+                  "phase": phase, "visit": w.current(state)["id"], "criteria": ["AC1"],
+                  **{field: 'Fixture phase analysis' for field in w.OUTPUT_FIELDS[phase]}, **results[phase]}
         if w.current(state)["id"] == state["visits"][0]["id"]:
             output["route_change"] = {"kind": "delivery", "scope": proposed}
         target = state["scope"]["paths"][phase][0]
         (tmp_path / target).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / target).write_text(json.dumps(output))
-        state = c.apply("submit", state["run"], expected_revision=state["revision"], output=target)
+        (tmp_path/'tasks.json').write_text(json.dumps({'tasks': [task]}))
+        state = c.apply("submit", state["run"], expected_revision=state["revision"], output=target, tasks='tasks.json')
         envelope = decision(state, event="fixture/" + w.current(state)["id"],
                             text="Yes, proceed with the reviewed result.")
         state = c.apply("decide", state["run"], expected_revision=state["revision"],
@@ -93,7 +92,12 @@ def test_progressive_delivery_extension_reaches_accepted_plan_and_scoped_build(t
             next_phase = "product"
         else:
             next_phase = w.PHASES[w.PHASES.index(phase) + 1]
+        if next_phase == 'build':
+            from taskplane.tests.test_worker_runtime import parent_pair
+            parent_pair(c)
         state = c.apply("advance", state["run"], expected_revision=state["revision"], phase=next_phase)
+        if next_phase == 'build':
+            parent_pair(c)
     assert w.current(state)["phase"] == "build"
     assert state["scope"]["paths"]["build"] == task["paths"]
     assert len(state["decisions"]) == 4
@@ -227,7 +231,7 @@ def test_dashboard_uses_protected_decision_even_without_journal(tmp_path, choice
 def test_legacy_finish_is_never_displayed_as_acceptance(tmp_path):
     flow.append(tmp_path, {"kind": "start", "run": "legacy", "session": "root", "phase": "product"})
     flow.append(tmp_path, {"kind": "finish", "run": "legacy", "session": "root", "phase": "retro", "note": "done"})
-    page = flow_dashboard.render(str(tmp_path), flow.report(tmp_path, "legacy"))
+    page = flow_dashboard.render(str(tmp_path), flow.report(tmp_path, "legacy", history=True))
     assert "Legacy observations are unverified" in page
     assert 'class="stage recorded"' not in page
 
@@ -299,11 +303,11 @@ def test_extended_routes_accept_changed_build_without_losing_history(tmp_path, r
     phases = w.PHASES if route == "delivery" else w.PHASES[3:]
     for phase in phases:
         s = c.apply("advance", original, expected_revision=s["revision"], phase=phase)
-        target = output(c, s)
         if phase == "build":
             (c.workspace/"app.py").write_text("value = 2 # accepted Build scope\n")
             from taskplane import depgraph
             depgraph.scan(str(c.workspace), decompose=True, strict=True)
+        target = output(c, s)
         s = c.apply("submit", original, expected_revision=s["revision"], output=target, tasks="tasks.json")
         key = native(host, s, key="new-"+phase)
         s = c.apply("decide", original, expected_revision=s["revision"], native_reference=key)
@@ -633,6 +637,109 @@ def test_original_source_relay_refuses_without_secure_file_support(tmp_path, mon
     assert c._path().read_bytes() == before
 
 
+def test_partial_repair_retains_unaffected_actual_check_and_task_result(tmp_path):
+    from copy import deepcopy
+    import sys
+    from taskplane import context_reuse as reuse, depgraph
+    from taskplane.context import Store
+    from taskplane.tests.test_workflow_evidence import prepare
+    from taskplane.tests.test_workflow_local import decision, decide
+    from taskplane.tests.test_worker_runtime import parent_pair
+
+    initial, _, _ = prepare(tmp_path)
+    initial['scope']['paths']['build'] += ['other.py', 'other.log']
+    (tmp_path/'other.py').write_text('value = 3\n')
+    definitions = [dict(id=key, phase='build', owner='root', dependencies=[],
+        paths=paths, read_inputs=[source], criteria=['AC1'], verification='Execute the assertion')
+        for key, source, paths in [
+            ('T1', 'app.py', ['app.py']), ('T2', 'other.py', ['other.py'])]]
+    definitions.append(dict(id='VERIFY', phase='build', owner='root', dependencies=['T1', 'T2'],
+        paths=[p for p in initial['scope']['paths']['build'] if p not in {'app.py', 'other.py'}],
+        read_inputs=['app.py', 'other.py'], criteria=['AC1'], verification='Run affected assertions'))
+    checks = [dict(id=key, name=key, task='VERIFY', kind='unit', environment='local', required=True,
+        criteria=['AC1'], source_inputs=[source], test_inputs=[],
+        command=[sys.executable, '-c', 'exec(open('+repr(source)+').read()); assert value == '+str(expected)],
+        evidence_outputs=[log]) for key, source, expected, log in [
+            ('A', 'app.py', 2, 'build-check.txt'), ('B', 'other.py', 3, 'other.log')]]
+    c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
+    state = c.start(dict(scope=initial['scope'], request_reference='fixture/narrow-repair'))
+    for phase in w.PHASES[:3]:
+        _, out, _ = prepare(tmp_path, phase)
+        out.update(run=state['run'], visit=w.current(state)['id'])
+        if phase == 'plan':
+            out.update(task_dag=definitions, ownership={row['id']: 'root' for row in definitions},
+                write_scope=initial['scope']['paths']['build'], acceptance_coverage={'AC1': ['T1', 'T2', 'VERIFY']},
+                integration_order=['T1', 'T2', 'VERIFY'], verification_strategy={
+                    'schema': 'taskplane.verification-strategy/v1', 'checks': checks})
+        (tmp_path/'tasks.json').write_text(json.dumps({'tasks': definitions}))
+        (tmp_path/(phase+'.json')).write_text(json.dumps(out))
+        state = c.apply('submit', state['run'], expected_revision=state['revision'],
+                        output=phase+'.json', tasks='tasks.json')
+        state = decide(c, state, decision(state, event='fixture/before/' + phase))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'],
+                        phase=w.PHASES[w.PHASES.index(phase)+1])
+    parent_pair(c)
+    state = c.report()
+
+    def attempt(check, history, log, target):
+        key = reuse.key(tmp_path, paths=check['source_inputs'], tests=[], criteria=['AC1'],
+            command=check['command'], tool='python', contract='fixture/v1', state=state,
+            check_id=check['id'], history_path=history, log_path=log, output_path=target)
+        reuse.run_check(tmp_path, key, producer='root', state=state, history_path=history,
+            run=state['run'], visit=w.current(state)['id'], check_id=check['id'],
+            kind='unit', environment='local', log_path=log)
+        row = json.loads((tmp_path/history).read_text())['attempts'][-1]
+        return dict(check_id=check['id'], name=check['id'], attempt_id=row['id'],
+                    status=row['status'], evidence=log)
+
+    _, out, _ = prepare(tmp_path, 'build')
+    out.update(run=state['run'], visit=w.current(state)['id'], known_gaps=['A needs repair'])
+    (tmp_path/'build.json').write_text(json.dumps(out))
+    (tmp_path/'build-check.txt').unlink()
+    rows = [attempt(check, 'checks.json', check['evidence_outputs'][0], 'build.json') for check in checks]
+    c.worker(state['run'], 'accept-result', revision=state['revision'], task='T2', request=dict(
+        outputs=['other.py'], checks=[dict(name='Actual assertion', status='pass', evidence='other.log')]))
+    state = c.report()
+    retained = deepcopy(state['task_results']['T2'])
+    out.update(verification_history='checks.json', build_checks=rows)
+    (tmp_path/'build.json').write_text(json.dumps(out))
+    (tmp_path/'tasks.json').write_text(json.dumps({'tasks': definitions}))
+    state = c.apply('submit', state['run'], expected_revision=state['revision'], output='build.json', tasks='tasks.json')
+    assert w.unmet_evidence(w.current(state)['packet']) == ['A']
+    with pytest.raises(w.Refusal, match='unmet: A'):
+        decide(c, state, decision(state, event='fixture/incomplete'))
+    state = c.apply('repair', state['run'], expected_revision=state['revision'],
+        native_reference=json.dumps(dict(tasks=['T1'], decision=decision(state, event='fixture/repair-A'))))
+    assert state['repair_scope']['tasks'] == ['T1', 'VERIFY'] and state['repair_scope']['checks'] == ['A']
+    assert state['task_results']['T2'] == retained
+    parent_pair(c)
+    state = c.report()
+    with pytest.raises(w.Refusal):
+        c.guard(dict(tool_name='Write', tool_input={'path': 'other.py'}), state['run'])
+    c.guard(dict(tool_name='Write', tool_input={'path': 'app.py'}), state['run'])
+    (tmp_path/'app.py').write_text('value = 2\n')
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    target, _, history, _ = w.current(state)['artifact_paths'][:4]
+    out.update(visit=w.current(state)['id'], known_gaps=[], verification_history=history)
+    (tmp_path/target).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path/target).write_text(json.dumps(out))
+    old = json.loads((tmp_path/'checks.json').read_text())
+    old['visit'] = w.current(state)['id']
+    (tmp_path/history).write_text(json.dumps(old))
+    log = next(p for p in w.current(state)['artifact_paths'] if '/check-' in p)
+    new_row = attempt(checks[0], history, log, target)
+    out['build_checks'] = [new_row, rows[1]]
+    (tmp_path/target).write_text(json.dumps(out))
+    state = c.apply('submit', state['run'], expected_revision=state['revision'], output=target, tasks='tasks.json')
+    assert not w.unmet_evidence(w.current(state)['packet'])
+    attempts = w.current(state)['packet']['verification']['history']['attempts']
+    assert [(row['check_id'], row['status']) for row in attempts] == [('A', 'fail'), ('B', 'pass'), ('A', 'pass')]
+    assert Store(tmp_path).resolve(attempts[1]['record_ref'])['status'] == 'pass'
+    assert state['task_results']['T2'] == retained
+    state = decide(c, state, decision(state, event='fixture/accept-repaired-A'))
+    assert w.current(state)['decision'] == 'approved'
+
+
 class _RealVerificationDelivery:
     """Public Controller fixture with real graph, keys and check subprocesses."""
 
@@ -676,6 +783,8 @@ class _RealVerificationDelivery:
         task = {'id': 'BUILD', 'phase': 'build', 'owner': 'root', 'dependencies': [],
                 'paths': scope['paths']['build'], 'read_inputs': scope['verification_inputs'],
                 'criteria': ['AC'], 'verification': 'Run the real assertion'}
+        self.task_path = 'tasks.json'
+        (workspace/self.task_path).write_text(json.dumps({'tasks': [task]}))
         command = 'exec(open("tests/check.py").read())'
         if check_delay:
             command = 'import time; time.sleep(' + repr(check_delay) + '); ' + command
@@ -705,7 +814,8 @@ class _RealVerificationDelivery:
     def draft(self, extra):
         phase = w.current(self.state)['phase']
         self.output = {'schema': 'taskplane.phase-output/v1', 'run': self.state['run'],
-                       'phase': phase, 'visit': w.current(self.state)['id'], 'criteria': ['AC'], **extra}
+                       'phase': phase, 'visit': w.current(self.state)['id'], 'criteria': ['AC'],
+                       **{field: 'Fixture phase analysis' for field in w.OUTPUT_FIELDS[phase]}, **extra}
         target = self.output_paths[phase]
         (self.workspace / target).write_text(json.dumps(self.output))
         return target
@@ -713,7 +823,7 @@ class _RealVerificationDelivery:
     def submit(self, extra):
         target = self.draft(extra)
         self.state = self.controller.apply('submit', self.state['run'],
-            expected_revision=self.state['revision'], output=target)
+            expected_revision=self.state['revision'], output=target, tasks=self.task_path)
         return self.state
 
     def decide(self, choice='approved'):
@@ -724,8 +834,13 @@ class _RealVerificationDelivery:
             expected_revision=self.state['revision'], native_reference=json.dumps(observed))
 
     def advance(self, phase):
+        if phase == 'build':
+            from taskplane.tests.test_worker_runtime import parent_pair
+            parent_pair(self.controller)
         self.state = self.controller.apply('advance', self.state['run'],
             expected_revision=self.state['revision'], phase=phase)
+        if phase == 'build':
+            parent_pair(self.controller)
 
     def key(self, check_id, history, log, *, output_path=None):
         from taskplane import context_reuse as reuse
