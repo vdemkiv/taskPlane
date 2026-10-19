@@ -21,7 +21,10 @@ loop. Those earlier layouts are historical, not current recovery instructions.
 The root key identifies the owning conversation/store, not a freely supplied
 worker principal. The controller owns ordered Product → Design → Plan → Build →
 Evaluate → Engineering → Retro visits and seven separate human decisions. A
-storage-generation counter is compare-and-swap transaction state; changing it
+retry budget uses the controller's run start time and owned worker identities
+with native interval evidence. Optional telemetry baselines and historical
+journals cannot supply required budget usage; missing native evidence stays unknown.
+A storage-generation counter is compare-and-swap transaction state; changing it
 does not make unrelated task inputs stale. Worker attempts retain actual native
 identity, relevant dependencies and observed completion/cancellation facts.
 

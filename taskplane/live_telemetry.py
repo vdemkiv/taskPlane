@@ -49,6 +49,28 @@ def read(workspace: Path, state: dict[str, Any]) -> dict[str, Any]:
     if (not isinstance(value, dict) or value.get('schema') != SCHEMA
             or any(value.get(k) != state[k] for k in ('workspace', 'root', 'run'))):
         raise ValueError('Live telemetry binding is invalid')
+    if (any(not isinstance(value.get(k), dict) for k in
+            ('metadata', 'sessions', 'actions', 'outcomes', 'artifacts', 'captured'))
+            or any(type(value.get(k)) is not int or value[k] < 0 for k in
+                   ('tool_calls', 'recent_tools', 'dispatches', 'observation_count'))
+            or type(value.get('approximate')) is not bool
+            or not isinstance(value.get('seen'), list) or not isinstance(value.get('milestones'), list)):
+        raise ValueError('Live telemetry aggregate is malformed')
+    if (value['metadata'].get('run') != state['run'] or value['metadata'].get('session') != state['root']
+            or value['metadata'].get('at') != state.get('started_at')
+            or not isinstance(value['metadata'].get('native_children', {}), dict)):
+        raise ValueError('Live telemetry metadata is foreign or malformed')
+    for sample in value['sessions'].values():
+        if not isinstance(sample, dict):
+            raise ValueError('Live telemetry session is malformed')
+        baseline, maximum = sample.get('baseline'), sample.get('maximum')
+        if baseline is None and maximum is None:
+            continue
+        if (not isinstance(baseline, dict) or not isinstance(maximum, dict) or set(baseline) != set(maximum)
+                or any(type(n) is not int or n < 0 for n in [*baseline.values(), *maximum.values()])):
+            raise ValueError('Live telemetry counters are malformed')
+    if any(type(n) is not int or n < 0 for k in ('actions', 'outcomes') for n in value[k].values()):
+        raise ValueError('Live telemetry counts are malformed')
     return value
 
 

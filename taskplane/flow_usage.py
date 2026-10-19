@@ -33,15 +33,18 @@ _LAST_REFRESH: dict[str, Any] = {}
 
 
 def _reader(run: dict[str, Any], roots: list[Path], cutoff: float | None,
-            host: str) -> meter.IncrementalUsageReader:
+            host: str, *, purpose: str = 'advisory', expected_root: str | None = None
+            ) -> meter.IncrementalUsageReader:
     key = meter.fingerprint({'host': host, 'root': run['session'], 'run': run.get('run'),
         'roots': [str(p) for p in roots], 'start': run.get('at'), 'end': cutoff,
-        'known': sorted(run.get('worker_sessions', []))})
+        'known': sorted(run.get('worker_sessions', [])), 'purpose': purpose,
+        'expected_root': expected_root})
     reader = _READERS.get(key)
     if reader is None:
         reader = meter.IncrementalUsageReader(host, run['session'], roots,
             start=_time(run.get('at')), end=cutoff, known=run.get('worker_sessions', []),
-            checkpoint=run.get('usage_checkpoint'))
+            checkpoint=run.get('usage_checkpoint') if purpose == 'advisory' else None,
+            expected_root=expected_root)
         _READERS[key] = reader
         # This is an advisory process cache, not an unbounded archive.
         if len(_READERS) > 16:
@@ -76,6 +79,41 @@ def _codex_sessions(run: dict[str, Any], cutoff: float | None,
                 session['usage'] = {k: native[k] - baseline[k] for k in baseline}
     errors = len(reader.state['discovery_errors']) + int(not result['fully_discovered'])
     return sessions, errors
+
+
+def owned_intervals(run: dict[str, Any]) -> dict[str, Any]:
+    """Read native interval evidence without advisory counters or saved samples.
+
+    The caller supplies controller-owned identities and start time. Native reader
+    boundary/lineage checks determine coverage; absent evidence stays unknown.
+    """
+    started = _time(run.get('at'))
+    if started is None:
+        raise ValueError('Owned accounting needs the controller run start time')
+    explicit = None
+    if run.get('host') == 'claude':
+        explicit = run.get('transcript_path') or claude.transcript(run['session'], {})
+        home = Path(os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
+        roots = [Path(explicit).with_suffix('') / 'subagents'] if explicit else [home / 'projects']
+        host = 'Claude'
+    else:
+        home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+        roots, host = [home / 'sessions', home / 'archived_sessions'], 'Codex'
+    reader = _reader(run, roots, None, host, purpose='required_budget',
+                     expected_root=run['session'] if explicit else None)
+    if explicit:
+        reader.add_file(Path(explicit), session=run['session'])
+    refresh = reader.refresh()
+    sessions = meter.run_sessions(refresh['sessions'], run['session'], run.get('worker_sessions', []),
+                                  start=started, end=None)
+    errors = len(reader.state['discovery_errors']) + int(not refresh['fully_discovered'])
+    delivery = [row for row in sessions if row.get('role') != 'host_approval_review']
+    return {'sessions': sessions, 'token_coverage': {
+        'unmeasured_sessions': sum(row.get('usage') is None for row in delivery)
+                               + int(not any(row.get('session') == run['session'] for row in delivery)),
+        'partial_sessions': sum(row.get('status') != 'measured' or bool(row.get('attribution_unknown'))
+                                for row in delivery),
+        'discovery_errors': errors, 'inventory_errors': refresh.get('inventory_errors', 0)}}
 
 
 def reconcile(run: dict[str, Any], events: list[dict[str, Any]],

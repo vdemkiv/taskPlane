@@ -459,10 +459,15 @@ def _retry_usage(workspace: Path, state: dict[str, Any], budget: dict[str, Any])
     if any(row.get('call_id') and not row.get('worker_id') for row in owned):
         return unknown
     try:
-        from . import flow
-        from . import live_telemetry
-        start = live_telemetry.read(workspace, state)['metadata']
-        measured = flow.reconcile_usage(start, [], state)
+        from . import flow, flow_usage
+        hosts = {row['host'] for row in records(state).values() if row.get('host')}
+        host = next(iter(hosts)) if len(hosts) == 1 else ('claude' if flow.claude_session({}) else 'codex')
+        run = {'run': state['run'], 'session': state['root'], 'at': state.get('started_at'),
+               'host': host, 'worker_sessions': sorted({row['worker_id'] for row in records(state).values()
+                                                       if row.get('worker_id')})}
+        if host == 'claude' and state.get('claude_transcript_source', {}).get('path'):
+            run['transcript_path'] = state['claude_transcript_source']['path']
+        measured = flow_usage.owned_intervals(run)
         coverage = measured['token_coverage']
         if any(coverage.get(key, 1) for key in ('unmeasured_sessions', 'partial_sessions', 'discovery_errors', 'inventory_errors')):
             return unknown

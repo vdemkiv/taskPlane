@@ -524,7 +524,7 @@ def report(workspace: Path, run_id: str | None = None, *,
             return None
         try:
             aggregate = live_telemetry.read(workspace, governed)
-        except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+        except Exception:
             aggregate = live_telemetry.empty(governed)
             telemetry_error = 'Advisory telemetry unavailable; controller state remains authoritative.'
         run = aggregate['metadata']
@@ -1132,7 +1132,9 @@ def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = N
                 output = result.setdefault("hookSpecificOutput", {"hookEventName": event.get("hook_event_name")})
                 output["additionalContext"] = (output.get("additionalContext", "") + " " +
                     advice.get("hookSpecificOutput", {}).get("additionalContext", "")).strip()
-        except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+        except Exception:
+            # Only optional observation is inside this boundary. Gate exceptions
+            # above still propagate with their original decision and reason.
             pass
     return result
 
@@ -1529,7 +1531,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             scope = workflow_evidence.object_file(workspace, args.scope) if args.scope else None
             try:
                 baseline = counter({}, session)
-            except (OSError, ValueError, TypeError, KeyError):
+            except Exception:
                 baseline = {'usage': None, 'usage_status': 'unavailable'}
             state = controller.start({"entry": args.phase or "product", "standalone": args.standalone,
                 "goal": args.goal, "native_reference": args.native_event, "scope": scope,
@@ -1539,7 +1541,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 live_telemetry.initialize(workspace, state, baseline)
                 if args.replace_run:
                     live_telemetry.close(workspace, controller.report(args.replace_run, diagnostics=False), baseline)
-            except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+            except Exception:
                 observation_errors.append('Run started; advisory telemetry unavailable.')
         elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide", "retire"}:
             target_run = args.run or protected.get("run")
@@ -1549,7 +1551,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             if args.action in {'finish', 'retire'}:
                 try:
                     closing_observation = counter({}, session)
-                except (OSError, ValueError, TypeError, KeyError):
+                except Exception:
                     pass
             state = controller.apply(args.action, target_run, expected_revision=args.expected_revision,
                 output=(args.assessment if args.action == "auto-decide" else args.output) or "",
@@ -1560,7 +1562,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             if args.action in {'finish', 'retire'}:
                 try:
                     live_telemetry.close(workspace, state, closing_observation)
-                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                except Exception:
                     observation_errors.append('Run ended; advisory closing counter unavailable.')
             if harness and (state.get("finished") or state.get("retired")):
                 try:
@@ -1580,7 +1582,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                 try:
                     live_telemetry.progress(workspace, state, args.action, args.note, artifacts,
                                             capture_attachments(workspace, artifacts))
-                except (OSError, ValueError, TypeError, KeyError, primitives.StateError):
+                except Exception:
                     observation_errors.append('Progress recorded in controller; advisory telemetry unavailable.')
         else:
             # Detailed history/graph/usage projections are explicit report work.

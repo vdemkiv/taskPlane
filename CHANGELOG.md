@@ -4,7 +4,8 @@
 
 - Remove analysis-journal reads, appends and full reductions from active hooks and flow control/status/progress.
 - Store live warning/count aggregates separately, using actual controller/admission identity and preserving gates.
-- Read native retry accounting from operational run metadata without a journal start prerequisite.
+- Read required retry accounting from controller-owned run/worker intervals and native evidence, independently of optional telemetry or journal baselines.
+- Isolate malformed advisory telemetry from the original hook admission/refusal and committed lifecycle outcomes.
 - Add explicit optional, idempotent ended-run analysis records and retain explicit legacy history reading.
 - Remove obsolete per-hook journal assumptions with their associated tests; preserve useful mixed-file regressions.
 - Update both host manifests and storage/CLI documentation.
