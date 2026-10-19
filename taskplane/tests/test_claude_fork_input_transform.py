@@ -70,18 +70,18 @@ def test_pretool_matching_uses_same_exact_conversion(tmp_path, monkeypatch):
     assert o.preflight_launch('parent', attempt, wrong, source=source)['status'] == 'conflict'
 
 
-@pytest.mark.parametrize('change', ['', 'human', 'origin', 'version', 'extra', 'missing_id'])
-def test_notification_delivery_run_id_is_metadata_not_authority(change):
+@pytest.mark.parametrize('version', ['2.1.296', '2.1.297', '2.1.302'])
+@pytest.mark.parametrize('change', ['', 'human', 'origin', 'extra', 'missing_id'])
+def test_notification_delivery_run_id_is_metadata_not_authority(change, version):
     body = ('<task-notification>\n<task-id>child-1</task-id>\n<tool-use-id>call-1</tool-use-id>\n'
             '<output-file>/native/output</output-file>\n<status>completed</status>\n'
             '<summary>Finished</summary>\n<result>' + o.NO_REPORT_RESULT + '</result>\n</task-notification>')
-    row = {'version': '2.1.296', 'type': 'user', 'isSidechain': False,
+    row = {'version': version, 'type': 'user', 'isSidechain': False,
            'origin': {'kind': 'task-notification', 'producer': 'session-task', 'runId': 'opaque-delivery-1'},
            'promptSource': 'system', 'turnOrigin': 'task_notification',
            'message': {'role': 'user', 'content': body}}
     if change == 'human': row.update(promptSource='user', turnOrigin='human')
     if change == 'origin': row['origin']['kind'] = 'human'
-    if change == 'version': row['version'] = '2.1.297'
     if change == 'extra': row['origin']['unknown'] = 'field'
     if change == 'missing_id': row['origin']['runId'] = ''
     result = o._notification(row)
