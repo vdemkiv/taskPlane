@@ -586,10 +586,8 @@ def exercise_dashboard_publication_order(c, state, *, select=False):
     """Delay an actual renderer while a newer same-revision snapshot publishes."""
     from threading import Event, Thread
     from unittest.mock import patch
-    from taskplane import flow, flow_dashboard
-    workspace=c.workspace;phase=w.current(state)['phase']
-    flow.append(workspace,{'kind':'start','run':state['run'],'session':state['root'],'phase':phase,
-                          'goal':'Publication ordering fixture','at':state['started_at']})
+    from taskplane import flow, flow_dashboard, live_telemetry
+    workspace=c.workspace
     older=flow.report(workspace,state['run'],governor=c);older['tokens']={'total_tokens':100}
     entered=Event();release=Event();errors=[];published=[]
     original_render=flow_dashboard.render
@@ -603,8 +601,7 @@ def exercise_dashboard_publication_order(c, state, *, select=False):
     with patch.object(flow_dashboard,'render',delayed):
         writer=Thread(target=old_writer);writer.start();assert entered.wait(10)
         try:
-            flow.append(workspace,{'kind':'progress','run':state['run'],'session':state['root'],'phase':phase,
-                                  'note':'Newer observation'})
+            live_telemetry.progress(workspace,state,'progress','Newer observation',{}, {})
             newer=flow.report(workspace,state['run'],governor=c);newer['tokens']={'total_tokens':200}
             assert older['snapshot']['revision']==newer['snapshot']['revision']
             target=flow.publish_dashboard(workspace,state['run'],governor=c,supplied=newer,select=True)

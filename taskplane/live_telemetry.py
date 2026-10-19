@@ -123,6 +123,13 @@ def observe(workspace: Path, state: dict[str, Any], row: dict[str, Any]) -> list
             value['seen'].append(key)
         else:
             value['approximate'] = True
+        if isinstance(row.get('child'), str) and row['child']:
+            child = row['child']
+            children = value['metadata'].setdefault('native_children', {})
+            children.setdefault(child, None)
+            if isinstance(row.get('agent_transcript_path'), str):
+                children[child] = row['agent_transcript_path']
+            value['sessions'].setdefault(child, {'baseline': None, 'maximum': None})
         if not any(state.get(k) for k in ('finished', 'retired', 'cancellation', 'superseded_by')):
             _sample(value, row['session'], row.get('usage'))
         if row['event'] == 'PreToolUse':
@@ -147,6 +154,8 @@ def progress(workspace: Path, state: dict[str, Any], kind: str, note: str,
     target = path(workspace, state['run'])
     with primitives.file_lock(str(target)):
         value = read(workspace, state)
+        value['observation_count'] += 1
+        value['last_observation_at'] = datetime.now(timezone.utc).isoformat()
         if kind == 'progress':
             value.update(recent_tools=0, actions={}, dispatches=0)
             value['milestones'].append({'phase': state['visits'][state['index']]['phase'],
@@ -175,12 +184,13 @@ def remember_measurement(workspace: Path, state: dict[str, Any], measurement: di
 
 
 def closing_time(state: dict[str, Any]) -> str | None:
-    if state.get('finished_at'):
-        return str(state['finished_at'])
-    if state.get('retired'):
-        return state['retired'].get('at')
-    return next((row.get('at') for row in reversed(state.get('history', []))
-                 if row.get('replaced_by') == state.get('superseded_by')), None)
+    stamp = state.get('finished_at')
+    if not stamp and state.get('retired'):
+        stamp = state['retired'].get('at')
+    if not stamp and state.get('superseded_by'):
+        stamp = next((row.get('at') for row in reversed(state.get('history', []))
+                      if row.get('replaced_by') == state['superseded_by']), None)
+    return stamp if isinstance(stamp, str) else None
 
 
 def close(workspace: Path, state: dict[str, Any], observation: dict[str, Any]) -> None:

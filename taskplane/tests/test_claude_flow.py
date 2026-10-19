@@ -334,7 +334,7 @@ def test_discovers_lens_counters_and_excludes_other_runs(tmp_path, monkeypatch):
     row = message(agent='other', at='2026-09-15T00:00:04Z')
     row['sessionId'] = 'unrelated'
     write(child.with_name('agent-other.jsonl'), [row])
-    report = flow.report(ws)
+    report = flow.report(ws, history=True)
     if sys.platform not in ('darwin', 'linux'):
         # The explicit root transcript remains readable; undiscovered workers
         # cannot be treated as absent or included in a complete total.
@@ -359,13 +359,13 @@ def test_finished_flow_includes_late_results_until_next_run(tmp_path, monkeypatc
     ws, path = setup(tmp_path, monkeypatch)
     flow.append(ws, {'kind': 'finish', 'run': 'shared', 'session': 'root', 'note': 'Done'})
     write(path, [message(), message('late', at='2026-09-15T00:00:05Z')])
-    assert flow.report(ws)['tokens']['total_tokens'] == 142
+    assert flow.report(ws, history=True)['tokens']['total_tokens'] == 142
     flow.append(ws, {'kind': 'start', 'run': 'next', 'session': 'root', 'at': '2026-09-15T00:00:06Z'})
     write(path, [message(), message('late', at='2026-09-15T00:00:05Z'),
                  message('next', at='2026-09-15T00:00:07Z')])
     write(path.with_suffix('') / 'subagents/agent-next.jsonl',
           [message(agent='next', at='2026-09-15T00:00:07Z')])
-    report = flow.report(ws, 'shared')
+    report = flow.report(ws, 'shared', history=True)
     assert report['tokens']['total_tokens'] == 142
     assert len(report['sessions']) == 1
 
@@ -393,26 +393,39 @@ def test_claude_binding_overrides_inherited_codex_session(tmp_path, monkeypatch)
     assert flow.session_id({}) == 'claude-session'
 
 
-def test_subagent_stop_retains_usage_without_private_content(tmp_path, monkeypatch, capsys):
-    ws, path = setup(tmp_path, monkeypatch)
+def test_subagent_stop_retains_usage_without_private_content(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from taskplane import live_telemetry as live, workflow_host
+    from taskplane.tests.test_workflow_evidence import prepare
+    ws = tmp_path / 'workspace'
+    ws.mkdir()
+    prepared, _, _ = prepare(ws)
+    controller = workflow_host.Controller(ws, 'root', workflow_host.installed_adapter('claude'))
+    state = controller.start({'scope': prepared['scope'], 'request_reference': 'fixture/native-child'})
+    started = datetime.fromisoformat(state['started_at'])
+    path = tmp_path / 'claude/projects/project/root.jsonl'
+    write(path, [message(at=(started - timedelta(seconds=1)).isoformat())])
+    monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID', 'root')
+    monkeypatch.setenv('TASKPLANE_CLAUDE_TRANSCRIPT', str(path))
+    live.initialize(ws, state, flow.counter({'host': 'claude', 'transcript_path': str(path)}, 'root'))
     child = tmp_path / 'custom/child.jsonl'
-    write(child, [message(agent='lens', at='2026-09-15T00:00:03Z')])
+    write(child, [message(agent='lens', at=(started + timedelta(seconds=1)).isoformat())])
     assert flow.hook({'hook_event_name': 'SubagentStop', 'session_id': 'root',
                       'cwd': str(ws), 'transcript_path': str(path), 'agent_id': 'lens',
-                      'agent_transcript_path': str(child), 'last_assistant_message': 'private content'}) == {}
+                      'agent_transcript_path': str(child), 'last_assistant_message': 'private content'},
+                     governor=controller) == {}
     (ws / 'reviews.json').write_text(json.dumps([{'agent': 'lens', 'lens': 'design'}]))
     artifacts = {'reviews': 'reviews.json'}
-    flow.append(ws, {'kind': 'attach', 'run': 'shared', 'session': 'root', 'artifacts': artifacts,
-                     'captured': flow.capture_attachments(ws, artifacts)})
-    report = flow.report(ws)
+    live.progress(ws, state, 'attach', '', artifacts, flow.capture_attachments(ws, artifacts))
+    report = flow.report(ws, state['run'], governor=controller)
     assert report['token_coverage']['unmeasured_sessions'] == 0
     assert report['tokens']['total_tokens'] == 142
-    assert 'private content' not in (ws / flow.JOURNAL).read_text()
-    flow.publish_dashboard(ws, 'shared', supplied=report)
+    assert not (ws / flow.JOURNAL).exists()
+    assert 'private content' not in live.path(ws, state['run']).read_text()
+    flow.publish_dashboard(ws, state['run'], governor=controller, supplied=report)
     assert 'Task decomposition' in (ws / flow.DASHBOARD).read_text()
-    flow.append(ws, {'kind': 'usage', 'run': 'shared', 'session': 'root', 'measurement': report})
     child.unlink()
-    assert flow.report(ws)['tokens']['total_tokens'] == 142
+    assert flow.report(ws, state['run'], governor=controller)['tokens']['total_tokens'] == 142
 
 
 def test_claude_hooks_prefer_current_plugin_over_stale_codex_launcher(tmp_path):

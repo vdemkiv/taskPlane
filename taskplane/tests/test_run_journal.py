@@ -40,6 +40,22 @@ def test_record_failure_does_not_modify_terminal_outcome(tmp_path, monkeypatch):
     assert json.dumps(state, sort_keys=True) == before
 
 
+def test_later_record_keeps_actual_finished_outcome_after_source_changes(tmp_path, capsys):
+    from taskplane.tests.test_workflow_local import submit, decide
+    c, state = setup(tmp_path, standalone=True)
+    state = decide(c, submit(c, state))
+    state = c.apply('finish', state['run'], expected_revision=state['revision'])
+    (tmp_path / 'app.py').write_text('value = 999\n')
+    assert c.report(state['run'], diagnostics=False).get('invalidation_pending')
+    before = c._path().read_bytes()
+    capsys.readouterr()
+    assert flow.main(['report', '--workspace', str(tmp_path), '--run', state['run'], '--record', '--full'],
+                     compact=True, governor=c) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['outcome'] == 'finished' and result['finished_at'] == state['finished_at']
+    assert c._path().read_bytes() == before
+
+
 @pytest.mark.parametrize('host', ['codex', 'claude'])
 def test_public_recording_is_post_run_optional_and_ignores_bad_legacy_journal(tmp_path, host):
     from taskplane.tests.test_native_workflow_cli import create, cli

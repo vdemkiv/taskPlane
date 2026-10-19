@@ -1,7 +1,7 @@
 """Shared observations plus guarded workflow entry points.
 
-The workspace journal is never approval authority. Mandatory transitions use
-the protected workflow controller; optional usage observation stays advisory.
+Mandatory transitions use the workflow controller. Live observations stay
+advisory; journal records are explicit post-run analysis only.
 """
 from __future__ import annotations
 
@@ -199,9 +199,12 @@ def observed_parent(event: dict[str, Any], session: str) -> str | None:
     if parents or records:
         return next(iter(parents)) if len(parents) == 1 else None
     # Host lifecycle observations are operational identity, not telemetry or journal history.
+    key = hashlib.sha256(session.encode()).hexdigest()[:32]
+    candidate = Path(os.environ.get('TASKPLANE_WORKSPACE') or event.get('cwd') or Path.cwd())
+    if not (candidate / '.taskplane' / ('native-parent-' + key + '.json')).exists():
+        return None
     try:
         workspace = workspace_binding.resolve_workspace(None, event=event)
-        key = hashlib.sha256(session.encode()).hexdigest()[:32]
         target = storage.runtime_file(str(workspace), 'native-parent-' + key + '.json')
         binding = json.loads(target.read_text(encoding='utf-8'))
     except (FileNotFoundError, workspace_binding.MissingBinding):
@@ -343,6 +346,43 @@ def select_controller(workspace: Path, actor: str, parent: str | None, *,
     return own, own_state
 
 
+def requested_report_controller(workspace: Path, actor: str, run: str, profile: str
+                                ) -> tuple[workflow_host.Controller, dict[str, Any]] | None:
+    """Locate an explicit native report in workflow stores, never the journal.
+
+    This discovery is confined to a user-requested report. Candidate identities
+    are hints only; the owning controller validates its complete store before use.
+    """
+    if profile != 'native_workflow':
+        return None
+    from . import workflow_retention
+    for candidate in sorted((workspace / '.taskplane').glob('workflow-*.json')):
+        if len(candidate.stem.removeprefix('workflow-')) != 32:
+            continue
+        try:
+            target = storage.runtime_file(str(workspace), candidate.name)
+            fd = os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
+            with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                raw = stream.read(workflow_local.MAX_BYTES + 1)
+            if len(raw.encode()) > workflow_local.MAX_BYTES:
+                continue
+            hint = json.loads(raw)
+            if (not isinstance(hint, dict) or not isinstance(hint.get('root'), str)
+                    or run not in (hint.get('runs') or {}) and run not in (hint.get('archives') or {})):
+                continue
+            controller = _controller(workspace, hint['root'], profile, principal=actor)
+            if controller._path() != target:
+                continue
+            with primitives.file_lock(str(target)):
+                state = workflow_retention.read(workspace, controller._read(target), run)
+            return controller, state
+        except (OSError, ValueError, TypeError, workflow.Refusal):
+            continue
+    return None
+
+
 def usage_point(state: dict[str, Any], measurement: dict[str, Any], *,
                 observed_at: str | None = None, previous_revision: int | None = None) -> dict[str, Any]:
     stage = workflow.current(state)
@@ -452,7 +492,8 @@ def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict
                     expected: list[str] | tuple[str, ...] = (), *,
                     closing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Keep the same participant coverage in live and committed observations."""
-    workers = {r['worker_id'] for r in state.get('workers', {}).values() if r.get('worker_id')}
+    workers = ({r['worker_id'] for r in state.get('workers', {}).values() if r.get('worker_id')}
+               | set(run.get('native_children', {})))
     declared = set(expected) | workers
     for row in rows:
         if row.get('run') != run['run']:
@@ -727,6 +768,9 @@ def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: s
     row = {'session': session, 'event': name, 'tool': tool, 'action': action,
            'call_id': str(event.get('tool_use_id') or event.get('call_id') or '')[:512] or None,
            'outcome': outcome, **observation}
+    if name in {'SubagentStart', 'SubagentStop'}:
+        row.update(child=event.get('agent_id') or event.get('subagent_id'),
+                   agent_transcript_path=event.get('agent_transcript_path'))
     advice = live_telemetry.observe(workspace, state, row)
     if advice and name in {"PreToolUse", "SessionStart"}:
         return {"hookSpecificOutput": {"hookEventName": name, "additionalContext":
@@ -1017,7 +1061,7 @@ def _hook(event: dict[str, Any], *,
 
 def hook(event: dict[str, Any], *, governor: workflow_host.Controller | None = None,
          completion: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Observe all exits, including denials. Optional journaling never grants access."""
+    """Observe all exits, including denials. Advisory telemetry never grants access."""
     event.pop('_telemetry_state', None)
     event.pop('taskplane_observed_binding', None)
     event.pop('taskplane_admission', None)
@@ -1395,10 +1439,18 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             return 0
         controller, protected = select_controller(workspace, session, parent, profile=args.profile,
                                                   governor=governor, pending_start=args.action == 'start')
+        if (args.action == 'report' and args.run and not args.record and not parent
+                and governor is None and args.run != protected.get('run')):
+            requested = requested_report_controller(workspace, session, args.run, args.profile)
+            if requested is not None:
+                controller, protected = requested
         if args.record:
             workflow.require(controller.principal == controller.root and args.run,
                              'scope_violation', 'Select an ended run owned by this root for analysis recording.')
-            ended = controller.report(args.run, diagnostics=False)
+            from . import workflow_retention
+            target = controller._path()
+            with primitives.file_lock(str(target)):
+                ended = workflow_retention.read(workspace, controller._read(target), args.run)
             show(run_journal.record(workspace, ended, note=args.note))
             return 0
         run = live_telemetry.metadata(protected) if protected.get('run') else None
