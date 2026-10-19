@@ -591,6 +591,8 @@ def test_engineering_coverage_survives_retro_transition_with_sealed_freshness(tm
     else:
         from taskplane.tests.test_workflow_local import decide
         c, s, out, rows = native_lens_fixture(tmp_path, serial=mode == 'serial')
+        from taskplane.tests.test_worker_runtime import parent_pair
+        parent_pair(c)
         s = c.apply('submit', s['run'], expected_revision=s['revision'], output='engineering.json', tasks='tasks.json')
         s = decide(c, s)
         # Give the pure transition fixture its declared next visit; no controller
@@ -935,6 +937,8 @@ def test_evaluate_history_alias_preserves_captured_attempts(tmp_path, monkeypatc
     scope['verification_inputs'] = ['app.py', 'test_app.py']
     controller = h.Controller(tmp_path, 'root', h.installed_adapter(host))
     state = controller.start({'scope': scope, 'request_reference': 'fixture/history-alias'})
+    from taskplane.tests.test_worker_runtime import parent_pair
+    parent_pair(controller)
     task = {'id': 'BUILD', 'phase': 'build', 'owner': 'root', 'dependencies': [],
             'paths': scope['paths']['build'], 'criteria': ['AC1'],
             'read_inputs': ['app.py', 'test_app.py'], 'verification': 'Run assertion'}

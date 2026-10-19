@@ -186,7 +186,8 @@ def _native_metadata(event: dict[str, Any], session: str) -> tuple[list[dict[str
                                and payload.get("source") in ("vscode", "cli")
                                and bool(payload.get("forked_from_id"))
                                and not payload.get("parent_thread_id"))
-                records.append({**metadata, "independent_fork": independent})
+                records.append({**metadata, "independent_fork": independent,
+                                "cwd": payload.get("cwd"), "source_path": str(candidate)})
         except (OSError, ValueError):
             complete = False
     return records, complete
@@ -432,9 +433,30 @@ def phase_usage(rows: list[dict[str, Any]], state: dict[str, Any],
 def record_scan(workspace: Path, graph: dict[str, Any]) -> None:
     primitives.atomic_json(storage.runtime_file(str(workspace), "graph-receipt.json"), {
         "schema": "taskplane.graph-receipt/v1", "workspace": str(workspace.resolve()),
-        "graph_digest": primitives.content_fingerprint(graph),
+        "graph_digest": primitives.content_fingerprint(graph), "status": "complete",
         "scanned_at": graph.get("meta", {}).get("scanned_at"),
         "source_revision": graph.get("meta", {}).get("scanned_head")})
+
+
+def refresh_scan(workspace: Path) -> None:
+    """Lifecycle-only derived refresh; failure never changes controller authority."""
+    try:
+        graph = depgraph.load(str(workspace))
+        quality = depgraph.scan_quality(graph)
+        if (quality.get('mode') == 'components' and not quality.get('degraded')
+                and depgraph.source_inputs_current(str(workspace), graph)):
+            record_scan(workspace, graph)
+            return
+        graph = depgraph.scan(str(workspace), decompose=True, strict=True)
+        record_scan(workspace, graph)
+    except (OSError, ValueError, TypeError, KeyError, primitives.StateError) as exc:
+        try:
+            primitives.atomic_json(storage.runtime_file(str(workspace), 'graph-receipt.json'), {
+                'schema': 'taskplane.graph-receipt/v1', 'workspace': str(workspace),
+                'status': 'failed', 'detail': str(exc)[:512],
+                'attempted_at': datetime.now(timezone.utc).isoformat()})
+        except (OSError, ValueError, primitives.StateError):
+            pass
 
 
 def capture_attachments(workspace: Path, artifacts: dict[str, Any]) -> dict[str, Any]:
@@ -457,6 +479,35 @@ def capture_attachments(workspace: Path, artifacts: dict[str, Any]) -> dict[str,
     return captured
 
 
+def phase_artifacts(workspace: Path, state: dict[str, Any], attachments: dict[str, Any]) -> list[dict[str, Any]]:
+    """Explicit phase outputs and evidence, with snapshot-time availability."""
+    rows: dict[str, dict[str, Any]] = {}
+    for visit in state.get('visits', []):
+        if visit.get('superseded'):
+            continue
+        packet = visit.get('packet') or {}
+        paths = [packet.get('output_path'), packet.get('context', {}).get('tasks_path'),
+                 *visit.get('artifact_paths', [])]
+        paths.extend(row.get('path') for row in packet.get('output', {}).get('artifacts', [])
+                     if isinstance(row, dict))
+        for path in paths:
+            if isinstance(path, str):
+                rows[path] = {'path': path, 'phase': visit['phase'], 'visit': visit['id'],
+                              'phase_decision': visit['decision']}
+    for path in attachments.get('evidence', []):
+        rows.setdefault(path, {'path': path, 'phase': 'attached'})
+    for path, row in rows.items():
+        try:
+            from .workflow_evidence import path as evidence_path
+            source = evidence_path(workspace, path)
+            row['status'] = 'available' if source.is_file() else 'missing'
+            if row['status'] == 'available':
+                row['href'] = source.as_uri()
+        except (OSError, ValueError, workflow.Refusal):
+            row['status'] = 'unavailable'
+    return list(rows.values())
+
+
 def _graph_view(workspace: Path, state: dict[str, Any], historical: bool) -> dict[str, Any]:
     packets = [v["packet"] for v in state.get("visits", []) if v.get("packet")]
     graph = deepcopy(packets[-1]["context"]["graph"]) if historical and packets else depgraph.load(str(workspace))
@@ -472,10 +523,13 @@ def _graph_view(workspace: Path, state: dict[str, Any], historical: bool) -> dic
              and receipt.get("graph_digest") == primitives.content_fingerprint(graph))
     current = bool(graph.get("modules")) and depgraph.source_inputs_current(str(workspace), graph)
     status = "at checkpoint" if historical and packets else "current" if bound and current and not quality.get("degraded") else "unverified or stale"
+    if not historical and receipt.get('status') == 'failed':
+        status = 'failed'
     return {"data": graph, "status": status, "workspace": str(workspace.resolve()),
             "receipt": receipt if bound else None, "source_inputs_current": current,
             "quality": quality, "fingerprint": primitives.content_fingerprint(graph),
-            "detail": "Historical sealed graph" if historical else "Workspace/input identity verified" if status == "current" else
+            "detail": receipt.get('detail', 'Scan failed; retry the supported scan.') if status == 'failed' else
+                      "Historical sealed graph" if historical else "Workspace/input identity verified" if status == "current" else
                       "Missing/foreign scan receipt, changed inputs or degraded scan; run graph scan --decompose --strict."}
 
 
@@ -687,19 +741,25 @@ def _report(workspace: Path, run_id: str | None = None, *,
             if attachments.get("reviews"):
                 result["evidence_errors"].append("Historical reviewer context was not captured; mutable file not reused.")
         stage = workflow.current(governed)
+        from . import workflow_evidence
+        observations = {t['id']: t for t in result['tasks'] if isinstance(t, dict) and 'id' in t}
+        result['tasks'] = deepcopy(workflow_evidence.context_tasks(governed))
         if stage.get("packet"):
             result["tasks"] = deepcopy(stage["packet"]["context"]["tasks"])
         for task in result["tasks"]:
+            observation = observations.get(task['id'])
+            if (observation and workflow_evidence.task_definitions([observation])
+                    == workflow_evidence.task_definitions([task])):
+                task.update({key: deepcopy(value) for key, value in observation.items()
+                             if key in workflow_evidence.TASK_OBSERVATIONS})
             candidates = [v for v in governed["visits"] if v["phase"] == task.get("phase") and not v.get("superseded")]
             if candidates:
                 visit = candidates[-1]
                 task["phase_decision"] = visit["decision"]
-                if visit["decision"] == "approved":
-                    task["status"] = "complete"
-                elif visit["packet"]:
-                    task["status"] = "ready_for_review" if visit["decision"] == "awaiting_human_approval" else visit["decision"]
+                task.setdefault('status', 'unverified')
         result["phase_usage"] = phase_usage(rows, governed, result)
         result["historical"] = historical
+        result['artifact_links'] = phase_artifacts(workspace, governed, attachments)
         result["graph"] = graph_view(workspace, governed, historical)
         result["snapshot"] = {"schema": "taskplane.dashboard-snapshot/v1", "workspace": str(workspace),
             "root": governed["root"], "run": governed["run"], "phase": governed["phase"], "visit": stage["id"],
@@ -786,7 +846,7 @@ def publish_dashboard(workspace: Path, run_id: str | None = None, *, output: Pat
 
 def _observe_hook(event: dict[str, Any], *, outcome: str = "observed", reason: str | None = None) -> dict[str, Any]:
     try:
-        workspace = workspace_binding.resolve_workspace(None, event=event)
+        workspace = workspace_binding.resolve_workspace(event.get('taskplane_execution_workspace'), event=event)
         workspace_binding.ensure(workspace)
     except workflow.Refusal:
         return {}  # A denied selection must not create a competing journal or session export.
@@ -916,6 +976,7 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
 def _hook(event: dict[str, Any], *,
          governor: workflow_host.Controller | None = None) -> dict[str, Any]:
     event.pop("taskplane_admission", None)
+    event.pop('taskplane_execution_workspace', None)
     # Legacy measurement is reconstructed only for existing legacy accounts.
     event.pop('taskplane_startup_entry', None)
     session = session_id(event)
@@ -954,7 +1015,8 @@ def _hook(event: dict[str, Any], *,
                 'additionalContext': 'Read-only runtime diagnostics do not create or validate workspace binding.'}}
     escape = runtime_command.reserved_directory_escape(words, event)
     try:
-        workspace = workspace_binding.resolve_workspace(escape, event=event)
+        workspace = (workspace_binding.resolve_workspace(escape, event=event) if escape is not None
+                     else runtime_command.hook_workspace(event, Path.cwd()))
         contract = workspace_binding.ensure(workspace)
     except workflow.Refusal as exc:
         incidental = Path(event.get("cwd") or os.getcwd())
@@ -963,7 +1025,9 @@ def _hook(event: dict[str, Any], *,
         invokes_runtime = len(words) > 2 and Path(words[1]).name == 'tp.py'
         if (not os.environ.get('TASKPLANE_WORKSPACE') and not workflow_local.execution_entry(event)
                 and not invokes_runtime and '.taskplane' not in incidental.parts
-                and '.taskplane' not in incidental.resolve().parts and not (incidental / '.taskplane').exists()):
+                and '.taskplane' not in incidental.resolve().parts and not (incidental / '.taskplane').exists()
+                and not runtime_command.mutation_targets(event)
+                and runtime_command.execution_directory(event, Path.cwd()) == incidental.resolve()):
             return {}
         if isinstance(exc, workspace_binding.MissingBinding) and governor is None:
             name = event.get('hook_event_name')
@@ -984,6 +1048,15 @@ def _hook(event: dict[str, Any], *,
             return {}  # The exact CLI still validates recovery identity/hash; no phase action is admitted.
         raise
     name = event.get("hook_event_name")
+    if not guarded.get('run') and name == 'PreToolUse':
+        from .workflow_collision import sealed_paths
+        protected = sealed_paths(workspace, {'root': session})
+        for value in runtime_command.mutation_targets(event):
+            absolute = Path(value) if Path(value).is_absolute() else cwd / value
+            relative = workspace_binding.relative_path(workspace, str(absolute))
+            workflow.require(relative not in protected, 'scope_violation',
+                             'Another active run owns this working or sealed path; preserve its work.')
+    event['taskplane_execution_workspace'] = str(workspace)
     if escape is not None:
         workflow.require(controller.adapter.profile == 'native_workflow'
                          and controller.principal == controller.root and not parent
@@ -1595,6 +1668,8 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             target_run = args.run or protected.get("run")
             workflow.require(target_run, "state_unavailable", "No active workflow binding.")
             assert isinstance(target_run, str)
+            if args.action == 'submit':
+                refresh_scan(workspace)
             closing_observation = {'usage': None, 'usage_status': 'unavailable'}
             if args.action in {'finish', 'retire'}:
                 try:
@@ -1639,8 +1714,11 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             return 0
         # Publish at lifecycle milestones, never on ordinary hook/tool events.
         # A failed view cannot replace the already committed enforcement result.
-        if args.action in {'start', 'submit', 'decide', 'advance', 'finish', 'repair'}:
+        if (args.action in {'start', 'submit', 'decide', 'advance', 'finish', 'repair'}
+                or args.action in {'progress', 'attach'} and (artifacts or args.update_context)):
             try:
+                if args.action != 'submit':
+                    refresh_scan(workspace)
                 publish_dashboard(workspace, state['run'], governor=controller,
                                   checkpoint_required=args.action in {'submit', 'decide'})
             except Exception:

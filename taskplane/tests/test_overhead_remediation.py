@@ -18,6 +18,7 @@ def journey(workspace, host, capsys):
         '--request-reference','fixture/actual-user-task'],governor=c)==0
     capsys.readouterr()
     state=c.report(diagnostics=False)
+    parent_pair(c)
     for phase in w.PHASES:
         assert w.current(state)['phase']==phase
         before=c._path().read_bytes()

@@ -14,6 +14,7 @@ import os
 import re
 from pathlib import Path
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -384,6 +385,76 @@ def git_identity(workspace: Path) -> dict[str, str] | None:
                 'subpath': str(workspace.relative_to(Path(parts[1]).resolve()))}
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
+
+
+def initialize_workspace(workspace: Path, root: str, host: str, scope: dict[str, Any]) -> dict[str, Any]:
+    """Inspect a new run's native Git destination; never provision or discard work."""
+    executable = shutil.which('git')
+    if not executable:
+        w.require(not (workspace / '.git').exists(), 'workspace_initialization',
+                  'Git is unavailable; select the intended native worktree before starting.')
+        return {'kind': 'folder', 'workspace': str(workspace), 'root': root}
+    environment = primitives.git_environment(Path(executable))
+    def git(*args: str, required: bool = True) -> str:
+        try:
+            result = subprocess.run([executable, '-C', str(workspace), *args],
+                                    capture_output=True, text=True, timeout=10, env=environment)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise w.Refusal('workspace_initialization', 'Git workspace inspection failed; preserve the destination.') from exc
+        w.require(not required or result.returncode == 0, 'workspace_initialization',
+                  'Git workspace identity is unavailable; select the intended clean native worktree.')
+        return result.stdout.strip() if result.returncode == 0 else ''
+    top = git('rev-parse', '--show-toplevel', required=False)
+    if not top:
+        w.require(not (workspace / '.git').exists(), 'workspace_initialization', 'Repository metadata is unreadable.')
+        return {'kind': 'folder', 'workspace': str(workspace), 'root': root}
+    w.require(Path(top).resolve() == workspace, 'workspace_initialization',
+              'Select the root of a dedicated linked native worktree, not a repository subfolder.')
+    common = git('rev-parse', '--path-format=absolute', '--git-common-dir')
+    directory = git('rev-parse', '--absolute-git-dir')
+    w.require(Path(common).resolve() != Path(directory).resolve() and (workspace / '.git').is_file(),
+              'workspace_initialization', 'New repository runs need a dedicated linked worktree. '
+              'Create/select one with the native host and execute this same task there before starting.')
+    # Ignore only untracked Taskplane-owned metadata; tracked edits are always dirty.
+    dirty = [line for line in git('status', '--porcelain=v1', '--untracked-files=normal').splitlines()
+             if line != '?? .taskplane/']
+    w.require(not dirty, 'workspace_initialization',
+              'The native worktree is dirty. Preserve its files and select a clean dedicated worktree.')
+    head = git('rev-parse', 'HEAD')
+    base = scope.get('base_revision') or scope.get('base_ref')
+    if base is None:
+        base = git('symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD', required=False)
+        if not base:
+            base = next((ref for ref in ('refs/remotes/origin/main', 'refs/remotes/origin/master')
+                         if git('rev-parse', '--verify', ref, required=False)), None)
+    w.require(isinstance(base, str) and base and not base.startswith('-'), 'workspace_initialization',
+              'Declare the intended base_ref or base_revision in the start scope when no remote default is known.')
+    assert isinstance(base, str)
+    expected = git('rev-parse', '--verify', base + '^{commit}')
+    w.require(head == expected, 'workspace_initialization',
+              'The worktree HEAD differs from the intended base; select the correct native worktree without resetting files.')
+    origin = git('remote', 'get-url', 'origin', required=False)
+    intended = scope.get('repository')
+    w.require(intended is None or intended in {origin, common}, 'workspace_initialization',
+              'The worktree belongs to a different intended repository.')
+    from .workflow_collision import sealed_paths
+    w.require(not sealed_paths(workspace, {'root': root}), 'workspace_initialization',
+              'Another active root owns this checkout. Select a dedicated native worktree; preserve the existing run.')
+    if host == 'codex':
+        from .flow import _native_metadata
+        rows, complete = _native_metadata({}, root)
+        w.require(complete and bool(rows) and all(isinstance(row.get('cwd'), str)
+                  and Path(row['cwd']).resolve() == workspace for row in rows),
+                  'workspace_initialization', 'The actual native Codex session is not verified in this worktree. '
+                  'Use the native task workspace control, then retry this same start; shell workdir and attachments are insufficient.')
+        native = {'host': host, 'root': root, 'workspace': str(workspace),
+                  'source': [row['source_path'] for row in rows]}
+    else:
+        from .workflow_continuation import native_root
+        native = {**native_root(root, workspace), 'host': host, 'root': root, 'workspace': str(workspace)}
+    return {'kind': 'git', 'workspace': str(workspace), 'root': root, 'common': common,
+            'git_directory': directory, 'origin': origin, 'head': head, 'base_ref': base,
+            'base_revision': expected, 'clean_at_start': True, 'native': native}
 
 
 WORKFLOW_OPTIONS = {
@@ -805,6 +876,10 @@ class LocalWorkflow:
             return False
         if not runtime_command.installed(words, cwd):
             return False
+        if words[2] == 'graph':
+            return (len(words) >= 6 and words[3] == '--workspace' and words[5] == 'scan'
+                    and Path(words[4]).is_absolute() and selected_workspace(words[4])
+                    and set(words[6:]) == {'--decompose', '--strict'} and len(words[6:]) == 2)
         if words[2] == "dashboard":
             # A sealed checkpoint can refresh its native view, never an arbitrary output.
             options = words[3:]
@@ -1351,8 +1426,8 @@ class Harness:
         if not state.get("visits"):
             return "Taskplane selected. Start the requested scoped workflow before implementation."
         stage = w.current(state)
-        if stage['phase'] == 'build' and self.readiness(state)['status'] != 'active':
-            return (f"Taskplane run {state['run']}, Build admission is pending. "
+        if self.readiness(state)['status'] != 'active':
+            return (f"Taskplane run {state['run']}, {stage['phase']} initialization is pending. "
                     'Restore the configured preventive pre/post hooks and complete an admitted read in this session. '
                     'Then retry only the pending work; completed work and approvals remain intact. '
                     'Do not disable or bypass the live harness.')

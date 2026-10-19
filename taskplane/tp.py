@@ -221,6 +221,13 @@ def main(argv: list[str] | None = None) -> int:
                 quality = depgraph.scan_quality(data)
                 if quality.get("degraded"):
                     result["graph_quality"] = quality
+                try:
+                    if flow.report(Path(workspace)) is not None:
+                        flow.publish_dashboard(Path(workspace), select=True)
+                except Exception as exc:
+                    # The scanner's result remains usable when a derived view
+                    # cannot publish; retry only the dashboard in that case.
+                    result['dashboard_status'] = 'unavailable: ' + str(exc)[:256]
                 print(json.dumps(result, indent=2))
                 return int(args.strict and bool(quality.get("degraded")))
             if args.action == "edge":

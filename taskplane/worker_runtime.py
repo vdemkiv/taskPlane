@@ -16,7 +16,7 @@ import sys
 from typing import Any, cast
 import uuid
 
-from . import workflow as w, workflow_evidence as e
+from . import primitives, workflow as w, workflow_evidence as e
 from .context import Store, digest
 from .context_handoff import Brief, binding
 
@@ -377,11 +377,18 @@ def parent_readiness(state: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(proof, dict):
         proof = {}
     current = w.current(state)
+    initialization = state.get('native_initialization')
+    valid_initialization = initialization is None or (
+        isinstance(initialization, dict)
+        and initialization.get('workspace') == state.get('workspace')
+        and initialization.get('root') == state.get('root')
+        and proof.get('initialization') == primitives.content_fingerprint(initialization))
     missing = [name for name, valid in (
         ('automatic admitted hook pair', proof.get('automatic') is True and bool(proof.get('matched_call'))),
         ('current run and phase', proof.get('run') == state.get('run') and proof.get('visit') == current['id']),
         ('current session and workspace', proof.get('root') == state.get('root') and proof.get('workspace') == state.get('workspace')),
         ('loaded runtime', proof.get('runtime') == runtime_identity()),
+        ('inspected initialization', valid_initialization),
     ) if not valid]
     return {'status': 'missing' if missing else 'ready', 'missing': missing,
             'reference': proof.get('matched_call'), 'assurance': 'observed automatic hooks; not host containment'}

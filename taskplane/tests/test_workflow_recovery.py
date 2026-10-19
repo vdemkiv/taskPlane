@@ -180,8 +180,9 @@ def test_clean_worktree_setup_requires_exact_observed_host_result(tmp_path):
     def git(*args):
         result=subprocess.run(['git','-C',str(source),*args],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
-    git('init');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Fixture')
     c,s=setup(source);s=submit(c,s);harness=local.Harness(source,'root')
+    # Existing folder runs can later need recovery from a shared repository.
+    git('init');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-m','Fixture')
     event={'tool_name':'mcp__codex_app__create_worktree','tool_input':{'name':'recovery-fixture'},'call_id':'create-1'}
     c.guard(event,s['run'])
     destination=tmp_path/'clean';git('worktree','add','--detach',str(destination),'HEAD')

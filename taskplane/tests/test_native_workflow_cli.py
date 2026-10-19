@@ -187,6 +187,9 @@ def output(workspace,state,change=None):
     python = ['py', '-3'] if os.name == 'nt' else [str(Path(sys.executable).resolve())]
     transcript = Path(workspace).parent/(Path(workspace).name+'-host-data')/'claude/projects/fixture/root.jsonl'
     host = 'claude' if transcript.is_file() else 'codex'
+    # Exercise the declared automatic read hook pair for this visit before
+    # its first checkpoint. These subprocess observations remain fixtures.
+    cli(workspace, host, 'report', root=selected)
     env = fixture_environment(Path(workspace).resolve(), host, selected)
     result = subprocess.run([*python, '-B', '-c', source, str(selected)], cwd=workspace, env=env,
                             input=json.dumps(state), text=True, capture_output=True)

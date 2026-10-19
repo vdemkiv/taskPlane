@@ -29,6 +29,12 @@ Each phase presents a concrete result and retains its own human approval.
 Ordinary contextual assent works; no exact phrase or question title is required.
 Grouping and automatic approval enrollment are deferred.
 
+New repository runs start in a clean dedicated linked worktree at the intended
+base, with the actual native session bound there. The first checkpoint requires
+an automatic admitted pre/post hook pair from that session and runtime. Missing
+readiness pauses the checkpoint; an admitted read can recover it without a new
+run. Existing initialized work keeps its scope and approvals across interruptions.
+
 Start with the goal, stable acceptance criteria, material boundaries and current
 output. Design chooses the approach; Plan fixes exact Build paths, ownership,
 relevant inputs, prerequisites and meaningful checks before implementation.

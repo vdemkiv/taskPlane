@@ -162,6 +162,8 @@ def test_flow_start_and_submit_publish_real_dashboard_but_progress_does_not(tmp_
     page = tmp_path/'.taskplane/dashboard.html'
     state = c.report()
     assert page.exists() and state['run'] in page.read_text()
+    from taskplane.tests.test_worker_runtime import parent_pair
+    parent_pair(c)
     output = json.loads((tmp_path/'product.json').read_text())
     output.update(run=state['run'], visit=workflow.current(state)['id'])
     (tmp_path/'product.json').write_text(json.dumps(output))

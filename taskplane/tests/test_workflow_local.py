@@ -276,6 +276,10 @@ def present(c, s):
 
 def submit(c,s, *, presentation=True):
     from taskplane.tests.test_workflow_evidence import bound_output
+    from taskplane.tests.test_worker_runtime import parent_pair
+    from taskplane.worker_runtime import parent_readiness
+    if s['index'] == 0 and parent_readiness(c.report(s['run'], diagnostics=False))['status'] != 'ready':
+        parent_pair(c)
     target = bound_output(c, s)
     submitted=c.apply("submit",s["run"],expected_revision=s["revision"],output=target,tasks="tasks.json")
     if presentation: present(c,submitted)
@@ -888,6 +892,8 @@ def task_observation_checkpoint(workspace, *, legacy=False, host="codex"):
     state['scope']['paths']['build'].append(task_path)
     c=h.Controller(workspace.resolve(),'root',h.installed_adapter(host))
     s=c.start({'scope':state['scope'],'request_reference':'test/EV-F02'})
+    from taskplane.tests.test_worker_runtime import parent_pair
+    parent_pair(c)
     raw_manifest=evidence.manifest
     for phase in ('product','design','plan','build'):
         _,out,tasks=prepare(workspace,phase)
@@ -1189,10 +1195,12 @@ def recovery_fixture(tmp_path):
     source = tmp_path/'source'; source.mkdir()
     def git(*args, cwd=source):
         subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True)
+    # A legacy folder run later became a shared repository. Recovery must
+    # remain available even though a new run in this checkout is now refused.
+    c, s = setup(source); s = submit(c, s)
     git('init', '-q')
     git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
         'commit', '-q', '--allow-empty', '-m', 'Fixture')
-    c, s = setup(source); s = submit(c, s)
     destination = tmp_path/'clean'
     git('worktree', 'add', '--detach', str(destination), 'HEAD')
     harness = local.Harness(source, 'root')

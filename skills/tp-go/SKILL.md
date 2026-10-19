@@ -16,6 +16,14 @@ prerequisites and meaningful checks. Do not demand all future filenames before
 Product. Implement only after Plan acceptance. Remove obsolete tests, fixtures,
 imports and CI references with removed code.
 
+Initialize in the actual native task workspace before presenting Product. New
+repository runs require a clean dedicated linked worktree and intended base.
+An admitted automatic pre/post pair must match the saved root/run/phase/runtime.
+If missing, complete an ordinary admitted read in that native workspace and retry
+the same checkpoint. Preserve existing work and decisions. Initial and relevant
+milestone scans use the existing decomposed graph cache; report failed or stale
+views explicitly. Task completion is separate from phase approval.
+
 Use a durable brief and follow relevant source/evidence references. No receipt,
 byte accounting, startup probe or full conversation replay is required. Delegate
 useful disjoint work when authorized; this skill authorizes such bounded native
