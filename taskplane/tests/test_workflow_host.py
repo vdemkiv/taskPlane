@@ -190,7 +190,7 @@ def test_denial_recovery_partial_scan_stays_private_and_resumes(tmp_path, monkey
 
 
 @pytest.mark.parametrize('boundary', ['prepare', 'dispatch', 'write', 'update_tasks', 'prevalidate',
-                                    'submit', 'advance', 'finish', 'auto-decide', 'retire', 'replace', 'stop'])
+                                    'submit', 'advance', 'finish', 'repair', 'auto-decide', 'retire', 'replace', 'stop'])
 @pytest.mark.parametrize('defect', ['late_result', 'missing', 'partial'])
 def test_denial_mutable_boundaries_refresh_and_persist_before_refusal(tmp_path, monkeypatch, boundary, defect):
     from taskplane.tests.test_worker_runtime import recorded_denial

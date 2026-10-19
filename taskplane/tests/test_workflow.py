@@ -245,6 +245,15 @@ def test_post_completion_repair_preserves_approvals_and_requires_new_affected_ac
         w.repair(s, ['unowned'], dict(human=True, automatic=False, choice='approved'))
 
 
+def test_superseded_run_cannot_enter_pure_repair():
+    state = ready(repair_fixture())
+    state['superseded_by'] = 'replacement-run'
+    before = deepcopy(state)
+    with pytest.raises(w.Refusal, match='This run was replaced'):
+        w.repair(state, ['A'], dict(human=True, automatic=False, choice='approved'))
+    assert state == before
+
+
 def test_completion_returns_only_unmet_required_evidence_without_consuming_approval():
     s = ready(state(), verification={'effective_checks': [
         dict(check_id='accepted', required=True, status='pass'),

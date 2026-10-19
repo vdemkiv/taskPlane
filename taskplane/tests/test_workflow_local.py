@@ -505,6 +505,57 @@ def test_scoped_repair_uses_controller_and_preserves_prior_approvals(tmp_path, c
     assert state['finished'] and (tmp_path/'app.py').read_text() == 'value = 2\n'
 
 
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_repair_needs_fresh_authority_and_retries_do_not_reopen_work(tmp_path, host):
+    c, state = supported_build(tmp_path, host)
+    state = submit(c, state)
+    old_approval = decision(state, event='fixture/build-only')
+    state = decide(c, state, old_approval)
+    before = c.report(state['run'], diagnostics=False)
+    with pytest.raises(w.Refusal, match='earlier phase decision'):
+        c.apply('repair', state['run'], expected_revision=state['revision'],
+                native_reference=json.dumps({'decision': old_approval, 'tasks': ['T1']}))
+    assert c.report(state['run'], diagnostics=False) == before
+
+    request = {'decision': decision(state, event='fixture/repair-request'), 'tasks': ['T1']}
+    repaired = c.apply('repair', state['run'], expected_revision=state['revision'],
+                       native_reference=json.dumps(request))
+    assert w.current(repaired)['phase'] == 'build'
+    assert len(repaired['visits']) == len(state['visits']) + 4
+    assert repaired['decisions'] == state['decisions']
+    assert repaired['visits'][:3] == state['visits'][:3]
+    # A lost response may be retried with the original revision and provenance.
+    retry = c.apply('repair', state['run'], expected_revision=state['revision'],
+                    native_reference=json.dumps(request))
+    assert retry == repaired
+    before = c.report(state['run'], diagnostics=False)
+    request['tasks'] = []
+    with pytest.raises(w.Refusal, match='Conflicting repair retry'):
+        c.apply('repair', state['run'], expected_revision=state['revision'],
+                native_reference=json.dumps(request))
+    assert c.report(state['run'], diagnostics=False) == before
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_repair_cannot_reactivate_a_superseded_run(tmp_path, host):
+    c, state = supported_build(tmp_path, host)
+    state = submit(c, state)
+    replacement = c.start({'replace_run': state['run'], 'expected_revision': state['revision'],
+        'request_reference': 'fixture/replacement', 'scope': state['scope'],
+        'entry': 'product', 'standalone': True, 'tasks': 'tasks.json'})
+    c.apply('retire', replacement['run'], expected_revision=replacement['revision'],
+        native_reference=json.dumps({'request_reference': 'fixture/end-replacement',
+                                     'reason': 'The replacement was ended.'}))
+    previous = c.report(state['run'], diagnostics=False)
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal, match='This run was replaced'):
+        c.apply('repair', state['run'], expected_revision=previous['revision'],
+            native_reference=json.dumps({'decision': decision(previous, event='fixture/invalid-repair'),
+                                         'tasks': ['T1']}))
+    assert c._path().read_bytes() == before
+    assert c.report().get('run') is None
+
+
 def test_local_profile_is_available_without_certifying_host(tmp_path):
     c,s=setup(tmp_path)
     report=c.report()

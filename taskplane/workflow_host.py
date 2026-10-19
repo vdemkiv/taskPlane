@@ -1158,6 +1158,15 @@ class Controller:
                       or action == 'repair' and db['active'] is None and run in db['runs'],
                       "state_unavailable", "Mutation must address the bound active run.")
             s = db["runs"][run]
+            revision_event = s.get('requirements_revisions', {}).get(s.get('active_requirements_revision'), {})
+            w.require(action == 'retire' or revision_event.get('status') not in {'pending', 'aborted'},
+                      'approval_required', 'Requirements revision is pending or aborted; resume it before phase mutations.')
+            if action != 'retire':
+                w.require(not s.get("retired"), "state_unavailable", "Retired workflows have no active grants.")
+                w.require(not s.get("superseded_by"), "state_unavailable",
+                          "This run was replaced; its evidence is historical and its grants are revoked.")
+            if action != 'decide':
+                self._refresh_denials_locked(db, s)
             if action == 'repair':
                 try:
                     request = json.loads(native_reference)
@@ -1165,23 +1174,33 @@ class Controller:
                     raise w.Refusal('invalid_evidence', 'Repair needs a decision JSON object and affected task IDs.') from None
                 w.require(isinstance(request, dict) and isinstance(request.get('decision'), dict),
                           'invalid_evidence', 'Repair needs the actual human decision and affected task IDs.')
+                previous = s.get('repair_scope', {}).get('direct_request')
+                if (previous and request['decision'].get('event_id') == previous['decision']['event_id']):
+                    verified = self.adapter.verify_decision_context(json.dumps(request['decision']),
+                        previous['decision']['binding'], {previous['decision']['event_id']: previous['decision']})
+                    w.require(verified == previous['decision'] and request.get('tasks') == previous['tasks']
+                              and expected_revision == verified['binding']['revision'],
+                              'stale_checkpoint', 'Conflicting repair retry; inspect the existing repair without restarting it.')
+                    self.adapter.before_action(s, 'repair')
+                    return deepcopy(s)
+                w.require(request['decision'].get('event_id') not in s['decisions'],
+                          'decision_binding', 'An earlier phase decision cannot authorize a new repair.')
                 packet = w.current(s).get('packet')
                 w.require(packet and expected_revision == s['revision'] and self.adapter.can_seal(s),
                           'stale_checkpoint', 'Repair needs the current quiescent checkpoint.')
                 assert packet is not None
                 verified_repair = self.adapter.verify_decision_context(json.dumps(request['decision']),
                     w.binding(s, packet), s['decisions'])
+                w.require(verified_repair.get('binding') == w.binding(s, packet),
+                          'decision_binding', 'Repair needs a decision bound to the current checkpoint.')
                 updated = w.repair(s, request.get('tasks'), verified_repair)
+                updated['repair_scope']['direct_request'] = {
+                    'decision': deepcopy(verified_repair), 'tasks': deepcopy(request['tasks'])}
                 self.adapter.before_action(s, 'repair')
                 self._retain_repair_context(s, updated)
                 db['runs'][run], db['active'] = updated, run
                 self._write(target, db)
                 return deepcopy(updated)
-            revision_event = s.get('requirements_revisions', {}).get(s.get('active_requirements_revision'), {})
-            w.require(action == 'retire' or revision_event.get('status') not in {'pending', 'aborted'},
-                      'approval_required', 'Requirements revision is pending or aborted; resume it before phase mutations.')
-            if action != 'decide':
-                self._refresh_denials_locked(db, s)
             if action == "retire":
                 w.require(self.adapter.profile == "native_workflow", "unsupported_authority",
                           "Protected run retirement requires its trusted owner.")
@@ -1203,9 +1222,6 @@ class Controller:
                 db["runs"][run], db["active"] = updated, None
                 self._write(target, db)
                 return deepcopy(updated)
-            w.require(not s.get("retired"), "state_unavailable", "Retired workflows have no active grants.")
-            w.require(not s.get("superseded_by"), "state_unavailable",
-                      "This run was replaced; its evidence is historical and its grants are revoked.")
             policy_request: dict[str, Any] = {}
             if action == "policy":
                 w.require(len(native_reference.encode()) <= 32768, "invalid_evidence", "Policy exceeds its size bound.")

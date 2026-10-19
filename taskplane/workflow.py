@@ -128,6 +128,8 @@ def repair(state: dict[str, Any], tasks: list[str], verified: dict[str, Any]) ->
     """Re-enter the existing Build route for an explicitly authorized task closure."""
     require(not state.get('cancellation') and not state.get('retired'), 'approval_required',
             'Cancelled or retired runs cannot regain write grants.')
+    require(not state.get('superseded_by'), 'state_unavailable',
+            'This run was replaced; its evidence is historical and its grants are revoked.')
     require(verified.get('human') is True and not verified.get('automatic')
             and verified.get('choice') in {'approved', 'changes_requested'},
             'approval_required', 'Repair requires the actual human request.')
