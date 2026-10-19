@@ -513,15 +513,53 @@ def reconcile_usage(run: dict[str, Any], rows: list[dict[str, Any]], state: dict
 def report(workspace: Path, run_id: str | None = None, *,
            governor: workflow_host.Controller | None = None,
            history: bool = False) -> dict[str, Any] | None:
+    if history:
+        return _report(workspace, run_id, governor=governor, history=True)
+    controller = governor or _controller(workspace, session_id({}))
+    # Authority reads must fail normally; only the derived report is optional.
+    governed = controller.report(run_id)
+    if not governed.get('visits'):
+        return None
+    active = controller.report() if run_id else governed
     captured_at = datetime.now(timezone.utc).isoformat()
+    try:
+        return _report(workspace, run_id, governor=controller,
+                       governed=governed, active=active, captured_at=captured_at)
+    except Exception:
+        # Build a standalone view without retrying failed optional helpers or
+        # exposing a partially enriched result as a successful measurement.
+        stage = workflow.current(governed)
+        historical = bool(governed.get('finished') or active.get('run') != governed['run'])
+        return {'mode': 'advisory', 'owner': 'orchestrator', 'run': governed['run'],
+                'goal': governed.get('goal'), 'phase': governed['phase'], 'status': governed['status'],
+                'started_at': governed.get('started_at'), 'finished_at': governed.get('finished_at'),
+                'workflow': governed, 'historical': historical, 'dashboard': str(workspace.resolve() / DASHBOARD),
+                'milestones': [], 'tasks': [], 'reviews': [], 'artifacts': {}, 'graph': {},
+                'sessions': [], 'tokens': None, 'observed_tokens': None,
+                'token_coverage': {'measured_sessions': 0, 'unmeasured_sessions': 1,
+                                   'basis': 'Advisory report unavailable'},
+                'usage_measurement': {'status': 'unavailable', 'attempted_at': captured_at,
+                                      'measured_at': None, 'oldest_at': None, 'newest_at': None},
+                'evidence_errors': ['Advisory report unavailable; controller state remains authoritative.'],
+                'snapshot': {'schema': 'taskplane.dashboard-snapshot/v1', 'workspace': str(workspace),
+                    'root': governed['root'], 'run': governed['run'], 'phase': governed['phase'],
+                    'visit': stage['id'], 'revision': governed['revision'], 'historical': historical,
+                    'captured_at': captured_at, 'generated_at': captured_at,
+                    'measurement_status': 'unavailable', 'measurement_at': None}}
+
+
+def _report(workspace: Path, run_id: str | None = None, *,
+            governor: workflow_host.Controller | None = None, history: bool = False,
+            governed: dict[str, Any] | None = None, active: dict[str, Any] | None = None,
+            captured_at: str | None = None) -> dict[str, Any] | None:
+    """Project optional observations from already-read normal workflow state."""
+    captured_at = captured_at or datetime.now(timezone.utc).isoformat()
     rows: list[dict[str, Any]] = []
     aggregate = None
     telemetry_error = None
     if not history:
-        controller = governor or _controller(workspace, session_id({}))
-        governed = controller.report(run_id)
-        if not governed.get('visits'):
-            return None
+        assert governor is not None and governed is not None and active is not None
+        controller = governor
         try:
             aggregate = live_telemetry.read(workspace, governed)
         except Exception:
@@ -642,7 +680,7 @@ def report(workspace: Path, run_id: str | None = None, *,
     if governed.get("visits"):
         result["phase"] = governed["phase"]
         result["status"] = governed["status"]
-        active = controller.report()
+        active = active if active is not None else controller.report()
         historical = bool(governed.get("finished") or active.get("run") != governed["run"])
         if historical and "reviews" not in captured:
             result["reviews"] = []

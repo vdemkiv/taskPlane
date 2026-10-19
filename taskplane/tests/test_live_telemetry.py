@@ -146,7 +146,9 @@ def test_malformed_advisory_shapes_preserve_admission_and_refusal(tmp_path, dama
     with pytest.raises(w.Refusal) as failure:
         flow.hook(event(tmp_path, tool_name='Write', tool_input={'path': 'outside.py'}), governor=c)
     assert failure.value.reason == 'scope_violation'
-    assert flow.report(tmp_path, state['run'], governor=c)['evidence_errors']
+    view = flow.report(tmp_path, state['run'], governor=c)
+    assert view['workflow']['run'] == state['run']
+    assert view['tokens'] is None
 
 
 def test_saved_measurement_recovers_when_native_source_disappears(tmp_path, monkeypatch):
@@ -161,6 +163,71 @@ def test_saved_measurement_recovers_when_native_source_disappears(tmp_path, monk
     assert view['sessions'][0]['status'].startswith('recorded')
     assert view['workflow']['run'] == state['run']
     assert not view['evidence_errors']
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_corrupt_saved_observation_keeps_report_and_dashboard_usable(tmp_path, monkeypatch, host):
+    import json
+    from taskplane import flow_usage, claude_flow_usage
+    c, state = setup(tmp_path)
+    before = c.report(state['run'], diagnostics=False)
+    value = live.empty(state)
+    value['metadata']['host'] = host
+    value['measurement'] = {'sessions': [{'session': 'root', 'agent': 'orchestrator',
+        'role': 'orchestrator', 'usage': None, 'native_usage': None,
+        'status': 'unavailable', 'measurement_source': []}]}
+    live.path(tmp_path, state['run']).write_text(json.dumps(value))
+    monkeypatch.setattr(flow_usage, '_codex_sessions', lambda *args: ([], 0))
+    monkeypatch.setattr(claude_flow_usage, 'sessions', lambda *args: ([], 0))
+    view = flow.report(tmp_path, state['run'], governor=c)
+    assert all(view['workflow'][key] == before[key] for key in
+               ('root', 'run', 'revision', 'phase', 'status', 'visits', 'decisions'))
+    assert (view['status'], view['phase']) == (before['status'], before['phase'])
+    assert view['tokens'] is None and view['sessions'] == []
+    assert view['usage_measurement']['status'] == 'unavailable'
+    assert view['evidence_errors']
+    assert flow.publish_dashboard(tmp_path, governor=c, supplied=view).is_file()
+    assert c.report(state['run'], diagnostics=False) == before
+
+
+@pytest.mark.parametrize('stage', ['summary', 'usage_measurement', 'remember_measurement', 'phase_usage', 'graph_view'])
+def test_optional_projection_failure_discards_partial_measurements(tmp_path, monkeypatch, stage):
+    from taskplane.tests.test_usage_accounting import measured
+    c, state = setup(tmp_path)
+    before = c.report(state['run'], diagnostics=False)
+    monkeypatch.setattr(flow, 'reconcile_usage', lambda *args, **kwargs: measured(20))
+    def broken(*args, **kwargs):
+        raise RuntimeError('Optional report projection failed')
+    owner = live if stage in {'summary', 'remember_measurement'} else flow
+    monkeypatch.setattr(owner, stage, broken)
+    view = flow.report(tmp_path, state['run'], governor=c)
+    assert view['workflow']['revision'] == before['revision']
+    assert view['tokens'] is None and view['sessions'] == []
+    assert view['usage_measurement']['status'] == 'unavailable'
+    assert view['evidence_errors']
+    assert c.report(state['run'], diagnostics=False) == before
+
+
+@pytest.mark.parametrize('failed_read', [1, 2])
+@pytest.mark.parametrize('kind', ['refusal', 'storage'])
+def test_authoritative_report_errors_are_not_advisory_failures(tmp_path, monkeypatch, failed_read, kind):
+    c, state = setup(tmp_path)
+    read = c.report
+    failure = w.Refusal('scope_violation', 'Controller denied the report') if kind == 'refusal' else OSError('Controller unavailable')
+    calls = 0
+    def authoritative(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == failed_read:
+            raise failure
+        return read(*args, **kwargs)
+    def forbidden(*args, **kwargs):
+        pytest.fail('Optional reporting started before authoritative reads completed')
+    monkeypatch.setattr(c, 'report', authoritative)
+    monkeypatch.setattr(live, 'read', forbidden)
+    with pytest.raises(type(failure)) as observed:
+        flow.report(tmp_path, state['run'], governor=c)
+    assert observed.value is failure
 
 
 def test_unexpected_native_reconciliation_failure_keeps_controller_report(tmp_path, monkeypatch):

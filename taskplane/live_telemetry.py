@@ -71,22 +71,6 @@ def read(workspace: Path, state: dict[str, Any]) -> dict[str, Any]:
             raise ValueError('Live telemetry counters are malformed')
     if any(type(n) is not int or n < 0 for k in ('actions', 'outcomes') for n in value[k].values()):
         raise ValueError('Live telemetry counts are malformed')
-    if 'measurement' in value:
-        measurement = value['measurement']
-        if not isinstance(measurement, dict) or not isinstance(measurement.get('sessions', []), list):
-            raise ValueError('Saved telemetry measurement is malformed')
-        for row in measurement.get('sessions', []):
-            if (not isinstance(row, dict)
-                    or any(k not in row for k in ('session', 'agent', 'role', 'usage', 'native_usage'))
-                    or any(row[k] is not None and not isinstance(row[k], str) for k in ('session', 'agent', 'role'))
-                    or not isinstance(row.get('errors', []), list)
-                    or any(not isinstance(error, str) for error in row.get('errors', []))):
-                raise ValueError('Saved telemetry session is malformed')
-            for key in ('usage', 'native_usage'):
-                counts = row[key]
-                if counts is not None and (not isinstance(counts, dict)
-                        or any(type(n) is not int or n < 0 for n in counts.values())):
-                    raise ValueError('Saved telemetry usage is malformed')
     return value
 
 
