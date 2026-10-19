@@ -1644,6 +1644,21 @@ class Controller:
             state = workflow_retention.read(self.workspace, db, run)
             w.require(db["active"] is None and (state.get("finished") or state.get("retired")),
                       "scope_violation", "Follow-up observations require a closed run and no active grant.")
+            if state.get('finished') and not state.get('retired'):
+                from . import native_tool_guard
+                tool = event.get('tool_name') or event.get('tool')
+                args = event.get('tool_input', {})
+                observational = (tool in workflow_local.READ_TOOLS | workflow_local.QUESTION_TOOLS
+                    or native_tool_guard.read(str(tool), self.adapter.name)
+                    or workflow_local.readonly_command(event)
+                    or self.adapter.control_action(event, state)
+                    or workflow_local.Harness(self.workspace, self.root).dashboard_opener(event, state))
+                if tool == 'write_stdin' and isinstance(args, dict) and args.get('chars', '') in ('', '\x03'):
+                    self.adapter.guard_input(event, state)
+                    observational = True
+                w.require(observational, 'approval_required',
+                          'Completed Taskplane work has no mutation grant. Enter flow repair for the affected tasks '
+                          'or start the requested new flow; retained results and approvals stay intact.')
             row = self._admission(db, event, state, "observation_only")
             if row:
                 self._write(target, db)

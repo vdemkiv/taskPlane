@@ -1048,6 +1048,32 @@ def test_completed_run_explicit_skill_invocation_still_requires_initialization(t
     assert harness.read()['selected'] and harness.read()['run'] is None
 
 
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('tool,args', [
+    ('Write', {'file_path': 'app.py', 'content': 'changed'}),
+    ('Edit', {'file_path': 'app.py', 'old_string': 'value = 1', 'new_string': 'value = 2'}),
+    ('apply_patch', {'patch': '*** Begin Patch\n*** Update File: app.py\n@@\n-value = 1\n+value = 2\n*** End Patch'}),
+    ('Bash', {'command': "printf 'changed' > app.py"}),
+    ('exec_command', {'cmd': "printf 'changed' > app.py"}),
+])
+def test_completed_run_followup_never_admits_mutation(tmp_path, host, tool, args):
+    from taskplane import flow
+    c, state = setup(tmp_path, standalone=True)
+    c.adapter.name = host
+    harness = local.Harness(tmp_path, c.root)
+    harness.bind(state)
+    state = decide(c, submit(c, state))
+    c.apply('finish', state['run'], expected_revision=state['revision'])
+    before = c._path().read_bytes()
+    event = {'cwd': str(tmp_path), 'session_id': 'root', 'hook_event_name': 'PreToolUse',
+             'tool_name': tool, 'tool_input': args, 'tool_use_id': 'actual-followup-call'}
+    with pytest.raises(w.Refusal, match='Enter flow repair'):
+        flow.hook(event, governor=c)
+    assert c._path().read_bytes() == before
+    assert c.report(state['run'], diagnostics=False)['finished']
+    assert not harness.read()['selected']
+
+
 def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     from taskplane import flow
     c,s=setup(tmp_path);harness=local.Harness(c.workspace,c.root)
