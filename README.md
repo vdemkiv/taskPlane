@@ -45,9 +45,19 @@ invalidate affected work; unrelated documents or status revisions do not.
 Verification attempts/logs remain immutable, and later fail/unknown cannot fall
 back to an old pass. Remove obsolete tests/helpers/fixtures with removed code.
 
-Graphs, `.taskplane/dashboard.html` and telemetry are optional generated views.
-They help inspect work without authorizing or vetoing phase results. Missing
-usage is unknown, not zero. See [shared flow](skills/tp-go/references/shared-flow.md).
+Flow start and phase checkpoints publish `.taskplane/dashboard.html`; show the
+dashboard with the current phase result. Hooks check phase, approval and task
+ownership before supported actions. Typed DoR/DoD require actual evidence and
+accept equivalent wording. Retry only missing, failed or invalidated tasks and
+their affected checks; retain all unaffected results, evidence and approvals,
+without restarting earlier phases.
+
+Owned candidate hook source is editable. Agents must not disable, uninstall or
+bypass the live harness to get past a refusal. Test allowed and rejected actions
+on fresh Codex and Claude installations while preserving the live installation.
+Supported-path failures block completion; stronger host containment is a separate
+existing limitation. Advisory telemetry cannot change enforcement decisions;
+missing usage is unknown, not zero. See [shared flow](skills/tp-go/references/shared-flow.md).
 
 ## Install and update
 

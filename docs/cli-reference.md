@@ -29,6 +29,7 @@ python3 /actual/plugin/taskplane/tp.py flow --help
 | `flow worker` | Actual scoped native preparation/claim/status/result/recovery operations |
 | `flow inspect`, `flow diagnose` | Focused evidence/state diagnosis |
 | `flow recover`, `flow resume` | Supported provenance-preserving recovery/continuation |
+| `flow repair` | Re-enter Build for approved existing tasks after acceptance/completion, preserving unaffected history |
 | `flow revise` | Explicit authorized material requirements revision |
 | `flow retire`, `flow deactivate` | End obsolete authority without accepting pending work |
 | `flow present`, `flow wait` | Optional presentation/wait observations, not approval authority |
@@ -47,11 +48,30 @@ filenames before Product.
 
 Submission uses the current `--output` and any concrete task/evidence inputs
 required by that result. No prevalidation token, receipt, universal report packet,
-graph, dashboard display or substantive-word-count ceremony is required.
-`--tasks` is optional: Plan may define its DAG inline, and later phases reuse
-accepted task definitions. `flow advance` allocates the next phase's output path
+graph rescan, verified dashboard display or substantive-word-count ceremony is required.
+Current task decomposition is required: supply `--tasks`, define the Plan DAG
+inline, or reuse accepted current task context. `flow advance` allocates the next phase's output path
 when `--output` is omitted. Exact run/visit metadata paths do not widen the Plan's
 production write scope.
+
+Flow start and checkpoint actions publish the dashboard. Show its link/open result
+with the concrete phase result; a queued open is not a verified display. Publication
+failure calls for a view retry, not replay of the committed workflow action.
+
+Build admission requires a matching automatic pre/post hook observation for the
+current session and phase. Supported shell reads remain available; literal owned
+file operations and Plan-declared verification commands follow the same task scope
+as structured edits. Unknown executable effects have no blanket shell exemption.
+Do not disable live enforcement to get past a refusal. Editing owned candidate
+hook source and testing separate installations remain normal implementation work.
+
+`flow repair --run RUN --expected-revision REVISION --decision-json JSON` takes
+an object containing `decision` (the existing observed human-decision envelope)
+and `tasks` (affected approved Build task IDs). The controller checks the actual
+human provenance, task closure and quiescence, then opens fresh governed results.
+It does not create a new framework or restart Product/Design/Plan.
+Retry only missing, failed or invalidated tasks and their affected checks; retain
+all unaffected results, evidence and approvals, without restarting earlier phases.
 
 ## Brief and relevant freshness
 

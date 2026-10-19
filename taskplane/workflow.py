@@ -11,13 +11,13 @@ from .primitives import content_fingerprint
 PHASES = ("product", "design", "plan", "build", "evaluate", "engineering", "retro")
 ENTRY_PHASES = ("product", "design", "engineering")
 OUTPUT_FIELDS = {
-    "product": ("scope", "acceptance_criteria"),
-    "design": ("approach", "acceptance_test_map"),
+    "product": ("scope", "acceptance_criteria", "non_goals", "dependencies", "task_outline", "finding_references"),
+    "design": ("approach", "alternatives", "interfaces_and_state", "authority_boundaries", "failure_and_recovery", "graph_impact", "acceptance_test_map"),
     "plan": ("task_dag", "ownership", "write_scope", "acceptance_coverage", "verification_strategy", "integration_order"),
     "build": ("change_inventory", "task_acceptance_map", "build_checks", "known_gaps"),
-    "evaluate": ("criterion_results",),
-    "engineering": ("findings", "lens_coverage", "requirements_comparison"),
-    "retro": ("accepted_outcome", "actual_verification"),
+    "evaluate": ("criterion_results", "source_test_fingerprints", "regression_evidence", "unknowns_and_failures"),
+    "engineering": ("findings", "severity", "lens_coverage", "source_locations", "requirements_comparison", "remaining_risk"),
+    "retro": ("accepted_outcome", "actual_verification", "deferred_items_and_owners", "lessons"),
 }
 BINDING_FIELDS = ("workspace", "root", "run", "visit", "checkpoint", "revision",
                   "manifest_digest", "scope_digest")
@@ -104,8 +104,82 @@ def current(state: dict[str, Any]) -> dict[str, Any]:
 def phase_write_paths(state: dict[str, Any]) -> list[str]:
     """Production writes follow Plan; current root result metadata is separate."""
     stage = current(state)
-    return list(dict.fromkeys([*state["scope"]["paths"][stage["phase"]],
-                               *stage.get("artifact_paths", [])]))
+    paths = state["scope"]["paths"][stage["phase"]]
+    repair = state.get('repair_scope')
+    if repair and stage['id'] in repair.get('visits', [repair.get('build_visit')]):
+        sealed: set[str] = set()
+        for prior in state['visits']:
+            packet = prior.get('packet') or {}
+            sealed.update(path for path in (packet.get('output_path'), packet.get('context', {}).get('tasks_path')) if path)
+            sealed.update(packet.get('verification', {}).get('files', []))
+            sealed.update(ref['path'] for ref in packet.get('output', {}).get('artifacts', []))
+        paths = [path for path in paths if path not in sealed
+                 and (stage['phase'] != 'build' or path in repair['paths'])]
+    return list(dict.fromkeys([*paths, *stage.get("artifact_paths", [])]))
+
+
+def unmet_evidence(packet: dict[str, Any]) -> list[str]:
+    """Identify only unsatisfied mandatory evidence, without comparing prose."""
+    checks = packet.get('verification', {}).get('effective_checks', [])
+    return [row['check_id'] for row in checks if row.get('required', True) and row.get('status') != 'pass']
+
+
+def repair(state: dict[str, Any], tasks: list[str], verified: dict[str, Any]) -> dict[str, Any]:
+    """Re-enter the existing Build route for an explicitly authorized task closure."""
+    require(not state.get('cancellation') and not state.get('retired'), 'approval_required',
+            'Cancelled or retired runs cannot regain write grants.')
+    require(verified.get('human') is True and not verified.get('automatic')
+            and verified.get('choice') in {'approved', 'changes_requested'},
+            'approval_required', 'Repair requires the actual human request.')
+    plan = accepted_plan(state)['packet']['output']
+    strategy = plan.get('verification_strategy')
+    require(isinstance(strategy, dict) and strategy.get('schema') == 'taskplane.verification-strategy/v1',
+            'invalid_evidence', 'Scoped repair requires the existing typed Plan and evidence contract.')
+    definitions = {row['id']: row for row in plan['task_dag'] if row.get('phase') == 'build'}
+    require(isinstance(tasks, list) and tasks and all(isinstance(key, str) and key in definitions for key in tasks),
+            'scope_violation', 'Repair must name existing approved Build tasks.')
+    affected = set(tasks)
+    while True:
+        paths = {path for key in affected for path in definitions[key]['paths']}
+        expanded = affected | {key for key, row in definitions.items()
+            if set(row.get('dependencies', [])) & affected or set(row.get('read_inputs', [])) & paths}
+        if expanded == affected:
+            break
+        affected = expanded
+    s = deepcopy(state)
+    # Keep accepted packets, decisions and unaffected results. Existing check
+    # keys determine which historical evidence can still be reused.
+    s['history'].append({'repair_request': deepcopy(verified), 'tasks': sorted(affected)})
+    for previous in s['visits']:
+        if previous['phase'] in PHASES[3:]:
+            previous['superseded'] = True
+    fresh = [visit(phase) for phase in PHASES[3:]]
+    s['visits'].extend(fresh)
+    s['index'] = len(s['visits']) - len(PHASES[3:])
+    stage = s['visits'][s['index']]
+    checks = strategy.get('checks', [])
+    for renewed in fresh:
+        prefix = f".taskplane/runs/{s['run']}/{renewed['id']}/{renewed['phase']}"
+        renewed['artifact_paths'] = [prefix + '/output.json', prefix + '/tasks.json',
+                                    prefix + '/verification.json', prefix + '/report.md']
+        for check in checks:
+            label = content_fingerprint(check['id'])[:16]
+            renewed['artifact_paths'].append(prefix + '/check-' + label + '.log')
+    s['repair_scope'] = {'tasks': sorted(affected), 'paths': sorted(paths),
+        'checks': [row['id'] for row in checks
+                   if set(row.get('source_inputs', []) + row.get('test_inputs', [])) & paths],
+        'build_visit': stage['id'], 'visits': [v['id'] for v in fresh],
+        'prior_visits': [v['id'] for v in state['visits']],
+        'retained_results': sorted(set(s.get('task_results', {})) - affected)}
+    for key in affected:
+        s.get('task_results', {}).pop(key, None)
+        s.get('retained_task_authority', {}).pop(key, None)
+        s.setdefault('task_epochs', {})[key] = s.get('task_epochs', {}).get(key, 0) + 1
+    s['finished'] = False
+    s.pop('finished_at', None)
+    s.pop('parent_hook_readiness', None)
+    s['revision'] += 1
+    return s
 
 
 def accepted_plan(state: dict[str, Any]) -> dict[str, Any]:
@@ -130,6 +204,7 @@ def validate_state(state: dict[str, Any]) -> None:
             and type(state["finished"]) is bool,
             "state_unavailable", "Invalid protected state fields.")
     ids = set()
+    plan_checks: list[dict[str, Any]] = []
     for stage in state["visits"]:
         require(isinstance(stage, dict) and isinstance(stage.get("id"), str) and stage["id"]
                 and stage["id"] not in ids and stage.get("phase") in PHASES
@@ -139,9 +214,13 @@ def validate_state(state: dict[str, Any]) -> None:
                 and type(stage.get("superseded")) is bool and "packet" in stage,
                 "state_unavailable", "Invalid protected visit.")
         if "artifact_paths" in stage:
-            prefix = f".taskplane/runs/{state['run']}/{stage['id']}/build"
-            require(state.get("schema") == "taskplane.workflow/v2" and stage["phase"] == "build"
-                    and stage["artifact_paths"] == [prefix + "/output.json", prefix + "/tasks.json"],
+            prefix = f".taskplane/runs/{state['run']}/{stage['id']}/{stage['phase']}"
+            standard = [prefix + '/output.json', prefix + '/tasks.json']
+            repair_artifacts = [*standard, prefix + '/verification.json', prefix + '/report.md',
+                *(prefix + '/check-' + content_fingerprint(check['id'])[:16] + '.log' for check in plan_checks)]
+            require(state.get("schema") == "taskplane.workflow/v2" and stage["phase"] in PHASES[3:]
+                    and (stage['phase'] == 'build' and stage["artifact_paths"] == standard
+                         or stage["artifact_paths"] == repair_artifacts),
                     "state_unavailable", "Invalid current Build result metadata paths.")
         ids.add(stage["id"])
         packet = stage["packet"]
@@ -152,6 +231,9 @@ def validate_state(state: dict[str, Any]) -> None:
                 and packet.get("visit") == stage["id"] and isinstance(packet.get("checkpoint"), str)
                 and all(isinstance(packet.get(k), dict) for k in ("manifest", "source_manifest", "context", "output")),
                 "state_unavailable", "Invalid protected packet.")
+        if stage['phase'] == 'plan':
+            strategy = packet['output'].get('verification_strategy')
+            plan_checks = strategy.get('checks', []) if isinstance(strategy, dict) else []
         if stage["decision"] in ("approved", "changes_requested", "rejected", "cancelled"):
             require(any(isinstance(d, dict) and approval.decision_authorized(state, d)
                         and d.get("choice") == stage["decision"] and isinstance(d.get("binding"), dict)
@@ -247,7 +329,8 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
     require(not state.get("cancellation") and not state["finished"],
             "approval_required", "An ended run cannot receive new checkpoint decisions.")
     require((stage["decision"] == "awaiting_human_approval"
-             or stage["decision"] == "approved" and choice == "cancelled") and stage["packet"],
+             or stage["decision"] == "approved" and (choice == 'cancelled'
+                 or stage['phase'] in PHASES[:3] and choice in {'changes_requested', 'rejected'})) and stage["packet"],
             "approval_required", "Submit the current stage's evidence before requesting a decision.")
     expected = binding(state, stage["packet"])
     require(verified.get("binding") == expected, "stale_checkpoint",
@@ -256,6 +339,8 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
             "invalid_evidence", "Unknown human decision.")
     if choice == "approved":
         route_eligibility(state, stage["packet"].get("route_change"))
+        missing = unmet_evidence(stage['packet'])
+        require(not missing, 'invalid_evidence', 'Required evidence remains unmet: ' + ', '.join(missing))
     s = deepcopy(state)
     stage = s["visits"][s["index"]]
     stage["decision"] = choice
@@ -295,6 +380,19 @@ def decide(state: dict[str, Any], verified: dict[str, Any]) -> dict[str, Any]:
             require(kind == "repair" and stage["phase"] in ("evaluate", "engineering"),
                     "invalid_evidence", "Only evaluation or review can propose a scoped repair.")
             plan = accepted_plan(s)
+            strategy = plan['packet']['output'].get('verification_strategy')
+            if isinstance(strategy, dict) and strategy.get('schema') == 'taskplane.verification-strategy/v1':
+                definitions = plan['packet']['output']['task_dag']
+                requested = change.get('tasks')
+                if requested is None:
+                    unmet_ids = set(unmet_evidence(stage['packet']))
+                    requested = sorted({row['task'] for row in strategy['checks'] if row['id'] in unmet_ids})
+                    if not requested:
+                        requested = [row['id'] for row in definitions if row.get('phase') == 'build']
+                s['history'].append({'route_change': deepcopy(change), 'event_id': event_id})
+                repaired = repair(s, requested, verified)
+                repaired['index'] = s['index']
+                return repaired
             plan_index = next(i for i, v in enumerate(s["visits"]) if v["id"] == plan["id"])
             require(any(v["phase"] == "build" and not v["superseded"]
                         and v["decision"] == "approved" and v["packet"]
@@ -327,7 +425,7 @@ def advance(state: dict[str, Any], phase: str, *, output_path: str | None = None
     s["index"] = next_index
     if phase == "build" and s.get("schema") == "taskplane.workflow/v2":
         prefix = f".taskplane/runs/{s['run']}/{s['visits'][next_index]['id']}/build"
-        artifacts = [prefix + "/output.json", prefix + "/tasks.json"]
+        artifacts = s['visits'][next_index].get('artifact_paths') or [prefix + "/output.json", prefix + "/tasks.json"]
         if output_path:
             require(output_path in s["scope"]["paths"][phase] or output_path in artifacts,
                     "scope_violation", "Build output must be planned or use the current result namespace.")

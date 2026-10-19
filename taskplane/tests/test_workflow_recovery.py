@@ -165,12 +165,12 @@ def test_diagnosis_walk_and_output_are_bounded(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('stale',[False,True])
-def test_only_exact_taskplane_native_administration_passes_seal(tmp_path,stale):
+def test_plugin_uninstall_cannot_bypass_sealed_or_stale_enforcement(tmp_path,stale):
     c,s=setup(tmp_path);s=submit(c,s)
     if stale:(tmp_path/'product.json').write_text('{}')
     event={'tool_name':'mcp__codex_app__uninstall_plugin','tool_input':{'plugin':'taskplane@openai-curated-remote'}}
-    c.guard(event,s['run'])
-    for args in ({'plugin':'another-plugin'},{'plugin':'taskplane','command':'arbitrary'},{'plugin':['taskplane']}):
+    for args in (event['tool_input'], {'plugin':'taskplane'}, {'plugin':'another-plugin'},
+                 {'plugin':'taskplane','command':'arbitrary'}, {'plugin':['taskplane']}):
         with pytest.raises(w.Refusal):c.guard({**event,'tool_input':args},s['run'])
 
 
@@ -369,10 +369,8 @@ def test_recovery_controls_and_diagnostics_pass_through_declared_hook(tmp_path, 
                 "--expected-revision", str(state["revision"]), "--scope", ".taskplane/bootstrap/new-scope.json",
                 "--request-reference", "conversation/new-run"),
         runtime("flow", "--help"), runtime("version"), runtime("flow", "diagnose", "--workspace", str(tmp_path)),
-        {"tool_name": "mcp__codex_app__uninstall_plugin", "tool_input": {"plugin": "taskplane"}},
         command("cat", str(Path(h.__file__).parents[1] / "docs/cli-reference.md")),
         command("rg", "-n", "recovery", "taskplane"), command("pwd"),
-        command("python3", "-c", "print('opaque')"),
         {"tool_name": "apply_patch", "tool_input": {"input":
             "*** Begin Patch\n*** Add File: .taskplane/bootstrap/new-scope.json\n+{}\n*** End Patch"}},
     ]
@@ -382,7 +380,9 @@ def test_recovery_controls_and_diagnostics_pass_through_declared_hook(tmp_path, 
         assert result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
     assert not c.report()["decisions"]
     for event in [{"tool_name": "Write", "tool_input": {"path": "app.py"}},
-                  {"tool_name": "Write", "tool_input": {"path": ".taskplane/bootstrap/../../app.py"}}]:
+                  {"tool_name": "Write", "tool_input": {"path": ".taskplane/bootstrap/../../app.py"}},
+                  {"tool_name": "mcp__codex_app__uninstall_plugin", "tool_input": {"plugin": "taskplane"}},
+                  command("python3", "-c", "print('opaque')")]:
         with pytest.raises(w.Refusal): c.guard(event, state["run"])
 
 
@@ -442,7 +442,7 @@ def exercise_declared_recovery(workspace, root, entry="product"):
                 str(state["revision"]))["workflow"]
     assert run("diagnose")["limits"]["source_files"] == 20000
     assert hook("PreToolUse", tool_name="mcp__codex_app__uninstall_plugin",
-                tool_input={"plugin":"taskplane"}).get("hookSpecificOutput",{}).get("permissionDecision") != "deny"
+                tool_input={"plugin":"taskplane"})["hookSpecificOutput"]["permissionDecision"] == "deny"
     # The exact incident: an upload and Finder metadata appear after sealing.
     (workspace / "dist").mkdir()
     (workspace / "dist/upload.zip").write_bytes(b"user requested upload")

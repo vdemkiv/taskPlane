@@ -82,7 +82,8 @@ def test_desktop_child_actor_guards_scope_and_records_actual_binding(tmp_path, m
     admissions = c._read(c._path())['admissions'].values()
     assert any(r['principal'] == 'native-0' for r in admissions)
     root_event = {k:v for k,v in event.items() if k not in {'agent_id','agent_type'}}
-    flow.hook({**root_event, 'call_id':'root-write', 'tool_input':{'path':'T1.md'}})
+    with pytest.raises(w.Refusal, match='outside'):
+        flow.hook({**root_event, 'call_id':'root-write', 'tool_input':{'path':'T1.md'}})
     assert 'root' in live_telemetry.read(workspace, s)['sessions']
 
 

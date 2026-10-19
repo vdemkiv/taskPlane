@@ -822,7 +822,7 @@ class LocalWorkflow:
         if words[2] == "workflow":
             action, _ = workflow_command(self.workspace, event, state)
             return action in {"catalog", "validate", "preview", "check"}
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "report", "diagnose", "recover", "resume", "inspect", "prevalidate", "context", "revise", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "submit", "progress", "report", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -834,14 +834,52 @@ class LocalWorkflow:
         words = runtime_words(event)
         if len(words) >= 3 and words[2] == "workflow":
             workflow_command(self.workspace, event, state, allowed=paths)
+            return
         verify_workflow(self.workspace, state)
-        # Host permissions apply; inventory audits opaque command effects.
+        if readonly_command(event):
+            return
+        if w.current(state)['phase'] == 'build':
+            plan = w.accepted_plan(state)['packet']['output']
+            definitions = {row['id']: row for row in plan['task_dag']}
+            strategy = plan.get('verification_strategy')
+            checks = strategy.get('checks', []) if isinstance(strategy, dict) else []
+            for check in checks:
+                owner = definitions[check['task']]
+                # These are the executable checks already reviewed in Plan,
+                # not an exemption for arbitrary interpreter/shell code.
+                if (words == check['command'] and set(owner['paths']) <= set(paths)
+                        and runtime_command.execution_directory(event, self.workspace) == self.workspace):
+                    return
+        # Extend the existing literal-command admission rather than treating all
+        # shell execution as a read. Unknown code is not a declared write set.
+        targets = shell_write_paths(event)
+        w.require(targets is not None, 'scope_violation',
+                  'Shell effects are not declared by a supported literal command. '
+                  'Use a structured edit or a supported command on owned task files; '
+                  'do not disable hooks to proceed.')
+        assert targets is not None
+        cwd = runtime_command.execution_directory(event, self.workspace)
+        from .workspace_binding import relative_path
+        for value in targets:
+            target = Path(value)
+            absolute = target if target.is_absolute() else cwd / target
+            try:
+                relative = relative_path(self.workspace, str(absolute))
+            except ValueError:
+                raise w.Refusal('scope_violation', f'Shell write is outside this workspace: {value}') from None
+            resolved = evidence.path(self.workspace, relative)
+            w.require(not (words and words[0] in {'cp', 'mv'} and resolved.is_dir()),
+                      'scope_violation', 'Scoped copy/move needs literal owned files, not directory effects.')
+            w.require(relative in paths, 'scope_violation', f'Shell write is outside this task: {relative}')
 
     def guard_input(self, event: dict[str, Any], state: dict[str, Any]) -> None:
         args = event.get("tool_input", {})
         handle = str(args.get("session_id", ""))
         record = state["observed_handles"].get(handle)
         safe_input = args.get("chars", "") in ("", "\x03")
+        w.require(safe_input, 'scope_violation',
+                  'Interactive code has no declared task write set. Start a supported scoped command instead; '
+                  'polling and interruption remain available.')
         w.require(record is not None and record["state"] == "running"
                   and record["visit"] == w.current(state)["id"]
                   and record["revision"] <= state["revision"]
@@ -880,7 +918,7 @@ class LocalWorkflow:
                         "worker_id": previous.get("worker_id") if previous else (
                             (event.get("thread_id") or event.get("session_id"))
                             if (event.get("thread_id") or event.get("session_id")) != state["root"] else None),
-                        "read_only": previous.get("read_only", False) if previous else opaque_command(event),
+                        "read_only": previous.get("read_only", False) if previous else readonly_command(event),
                         "control": previous.get("control", False) if previous else self.control_action(event, state)}
 
 
@@ -988,7 +1026,7 @@ def workflow_diagnostic_event(workspace: Path, event: dict[str, Any], state: dic
     from . import worker_runtime
     if tool in worker_runtime.STATUS | worker_runtime.WAIT | worker_runtime.INTERRUPT:
         return True  # The existing worker adapter still checks target and operation.
-    if tool in READ_TOOLS | QUESTION_TOOLS or opaque_command(event):
+    if tool in READ_TOOLS | QUESTION_TOOLS or readonly_command(event):
         return True
     if Harness(workspace, state["root"]).dashboard_opener(event, state):
         return True
@@ -1011,9 +1049,65 @@ def workflow_diagnostic_event(workspace: Path, event: dict[str, Any], state: dic
         "report", "diagnose", "inspect", "recover", "resume", "retire", "start", "wait", "present", "decide"}
 
 
-def opaque_command(event: dict[str, Any]) -> bool:
-    """Host-permitted shell, with cooperative effect coverage disclosed separately."""
-    return (event.get("tool_name") or event.get("tool")) in {"Bash", "exec_command"}
+def readonly_command(event: dict[str, Any]) -> bool:
+    """Existing bounded diagnostic grammar; no execution helpers or shell effects."""
+    words = command_words(event)
+    if words in (['pwd'], ['date'], ['date', '-u'], ['date', '-Iseconds'], ['gh', 'auth', 'status']):
+        return True
+    if words and words[0] in {'cat', 'ls'}:
+        return all(not word.startswith('-') or words[0] == 'ls'
+                   and word in {'-l', '-a', '-la', '-al', '-d', '-ld', '-1'} for word in words[1:])
+    if words[:2] == ['git', 'status']:
+        return all(word in {'--short', '--porcelain', '--porcelain=v1', '-uno', '--branch'} for word in words[2:])
+    if words[:2] == ['sed', '-n'] and len(words) >= 4:
+        return bool(re.fullmatch(r'\d+(?:,\d+)?p', words[2])) and all(not x.startswith('-') for x in words[3:])
+    if not words or words[0] != 'rg':
+        return False
+    flags = {'-n', '--line-number', '-l', '--files-with-matches', '--files', '--hidden',
+             '-i', '--ignore-case', '-F', '--fixed-strings', '-S', '--smart-case',
+             '--no-heading', '--no-messages', '--count', '-c', '--no-ignore', '--no-ignore-vcs'}
+    values = {'-g', '--glob', '-t', '--type', '-m', '--max-count', '-e', '--regexp',
+              '-A', '--after-context', '-B', '--before-context', '-C', '--context'}
+    index = 1
+    while index < len(words):
+        word = words[index]
+        if word == '--':
+            return True
+        if word in values:
+            index += 1
+            if index >= len(words):
+                return False
+        elif word.startswith('-') and word not in flags:
+            return False
+        index += 1
+    return len(words) > 1
+
+
+def shell_write_paths(event: dict[str, Any]) -> list[str] | None:
+    """Recognize finite literal file operations; never infer arbitrary code effects."""
+    words = command_words(event)
+    if words and words[0] in {'touch', 'rm', 'cp', 'mv'}:
+        args = words[1:]
+        if args[:1] == ['--']:
+            args = args[1:]
+        if not args or any(word.startswith('-') for word in args):
+            return None
+        if words[0] in {'touch', 'rm'}:
+            return args
+        if len(args) != 2:
+            return None
+        return args if words[0] == 'mv' else args[1:]
+    args = event.get('tool_input', {})
+    command = args.get('cmd', args.get('command', ''))
+    if not isinstance(command, str):
+        return None
+    match = re.fullmatch(r'(.*?)\s+(>>|>)\s*(.+)', command)
+    if match:
+        prefix = command_words({'tool_input': {'cmd': match[1]}})
+        target = command_words({'tool_input': {'cmd': match[3]}})
+        if prefix and prefix[0] in {'echo', 'printf'} and len(target) == 1:
+            return target
+    return None
 
 
 def bootstrap_write(workspace: Path, event: dict[str, Any], state: dict[str, Any]) -> bool:
@@ -1243,27 +1337,35 @@ class Harness:
         self.update(waiting={'binding': self.binding(state), 'reason': reason.strip()})
 
     def readiness(self, state: dict[str, Any]) -> dict[str, Any]:
+        from .worker_runtime import parent_readiness
         terminal = any(state.get(key) for key in ("finished", "retired", "cancellation"))
-        return {"status": "inactive" if terminal or not self.read().get("selected") else "active" if state.get("visits") else "initialization_required",
+        proof = parent_readiness(state) if state.get('visits') and not terminal else None
+        return {"status": "inactive" if terminal or not self.read().get("selected") else
+                "active" if proof and proof['status'] == 'ready' else
+                "initialization_pending" if state.get("visits") else "initialization_required",
                 "run_created": bool(state.get("visits")), "binding": self.binding(state),
+                "parent_hook": proof,
                 "assurance": "observed; not host authentication"}
 
     def guidance(self, state: dict[str, Any]) -> str:
         if not state.get("visits"):
             return "Taskplane selected. Start the requested scoped workflow before implementation."
         stage = w.current(state)
+        if stage['phase'] == 'build' and self.readiness(state)['status'] != 'active':
+            return (f"Taskplane run {state['run']}, Build admission is pending. "
+                    'Restore the configured preventive pre/post hooks and complete an admitted read in this session. '
+                    'Then retry only the pending work; completed work and approvals remain intact. '
+                    'Do not disable or bypass the live harness.')
         return (f"Taskplane run {state['run']}, current phase {stage['phase']}. "
                 "Read the durable brief and relevant references, complete useful phase evidence, "
-                "then present that result for its separate human decision. Dashboards and telemetry are optional.")
+                "then present that result for its separate human decision with the current dashboard. "
+                "Use required DoR/DoD evidence and task ownership; advisory telemetry cannot change enforcement.")
 
     def recovery_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
         tool = event.get('tool_name') or event.get('tool')
         args = event.get('tool_input', {})
         if not isinstance(args, dict):
             return False
-        if tool in {'mcp__codex_app__uninstall_plugin', 'mcp__codex_app.uninstall_plugin'}:
-            return (set(args) == {'plugin'} and isinstance(args['plugin'], str)
-                    and args['plugin'].casefold() in {'taskplane', 'taskplane@openai-curated-remote'})
         identity = event.get('tool_use_id') or event.get('call_id')
         if not isinstance(identity, str) or not 0 < len(identity) <= 512:
             return False
@@ -1403,7 +1505,7 @@ class Harness:
 
     def bootstrap_command(self, event: dict[str, Any]) -> bool:
         words = runtime_words(event)
-        if opaque_command(event):
+        if readonly_command(event):
             return True
         try:
             cwd = runtime_command.validate_workdir(words, event, self.workspace)
@@ -1422,7 +1524,7 @@ class Harness:
                 return False
         except (w.Refusal, OSError, ValueError):
             return False
-        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'recover', 'resume', 'wait'})
+        return ((words[2] == 'flow' and len(words) > 3 and words[3] in {'activate', 'deactivate', 'start', 'report', 'diagnose', 'recover', 'repair', 'resume', 'wait'})
                 or words[2] == 'graph' and 'scan' in words[3:]
                 or words[2:4] == ['review', 'start'])
 

@@ -24,6 +24,13 @@ completion and cancellation requirements without a fan-out default.
 
 Submit the useful result once, present it in the conversation, and wait for its
 actual approval. Ordinary contextual assent is enough; ambiguous intent needs
-clarification. Optional graph, dashboard and telemetry never authorize or veto a
-phase. Report actual checks and limitations, preserve failed/unknown attempts,
+clarification. Publish and show the dashboard at flow start and phase checkpoints;
+its rendering is not approval authority. Hooks check the active phase, approvals
+and owned task paths before supported actions. Required typed DoR/DoD evidence
+must pass before acceptance; equivalent substantive wording is valid.
+Retry only missing, failed or invalidated tasks and their affected checks; retain
+all unaffected results, evidence and approvals, without restarting earlier phases.
+Candidate hook source is editable within its task. Never disable, uninstall or
+bypass the live harness to get past a refusal. Preserve the journal improvement.
+Report actual checks and limitations, preserve failed/unknown attempts,
 and finish only after Retro approval.

@@ -1,5 +1,7 @@
 """N06/N08/N09/N10/N12 and P10 exercise artifact and source binding."""
 import json
+import sys
+from pathlib import Path
 from copy import deepcopy
 import pytest
 from taskplane import workflow as w, workflow_evidence as e
@@ -11,15 +13,19 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
     scope = {"criteria": ["AC1"], "paths": {p: [p+".json"] for p in w.PHASES},
              "verification_inputs": ["app.py"]}
     scope["paths"]["build"].append("app.py")
+    scope['paths']['build'] += ['build-check.txt', 'checks.json']
     s = w.new_state(str(tmp_path), "root", "run", scope)
+    # This low-level fixture also exercises readable historical untyped packets.
+    # New controller runs normalize their contract to ownership/v1 separately.
+    s['scope']['execution_contract'] = None
     s["index"] = w.PHASES.index(phase)
     graph = tmp_path/".taskplane/knowledge"
     graph.mkdir(parents=True, exist_ok=True)
     (tmp_path/".taskplane/dashboard.html").write_text("<html>Shared dashboard</html>")
     if not (tmp_path/"app.py").exists():
         (tmp_path/"app.py").write_text("value = 1\n")
-    tasks = {"tasks": [{"id": "T1", "phase": "build", "dependencies": [], "paths": ["build.json", "app.py"],
-                        "owner": "primary", "verification": "Observe behavior", "criteria": ["AC1"]}]}
+    tasks = {"tasks": [{"id": "T1", "phase": "build", "dependencies": [], "paths": scope['paths']['build'],
+                        "owner": "root", "read_inputs": ['app.py'], "verification": "Observe behavior", "criteria": ["AC1"]}]}
     (tmp_path/"tasks.json").write_text(json.dumps(tasks))
     out = {"schema": "taskplane.phase-output/v1", "run": "run", "phase": phase,
            "visit": w.current(s)["id"], "criteria": ["AC1"],
@@ -29,8 +35,14 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
     if phase == "design":
         out["acceptance_test_map"] = {"AC1": "Exercise the native decision boundary"}
     if phase == "plan":
-        out.update(write_scope=["build.json", "app.py"], acceptance_coverage={"AC1": ["T1"]},
+        out.update(write_scope=scope['paths']['build'], acceptance_coverage={"AC1": ["T1"]},
                    task_dag=tasks["tasks"], ownership={"T1": "primary"}, integration_order=["T1"])
+        out['ownership'] = {'T1': 'root'}
+        out['verification_strategy'] = {'schema': e.VERIFICATION_STRATEGY, 'checks': [dict(
+            id='fixture', name='Application assertion', task='T1', kind='unit', environment='local',
+            required=True, criteria=['AC1'], source_inputs=['app.py'], test_inputs=[],
+            command=[sys.executable, '-c', 'exec(open("app.py").read()); assert isinstance(value, int)'],
+            evidence_outputs=['build-check.txt'])]}
     if phase == "build":
         (tmp_path/"build-check.txt").write_text("Fixture Build check passed")
         out.update(change_inventory=["app.py"], task_acceptance_map={"AC1": ["T1"]},
@@ -46,6 +58,9 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
         # Unit evidence fixtures also carry a real accepted Plan packet. Controllers
         # use their own stored history; prepare's state is never injected into them.
         plan_state, _, _ = prepare(tmp_path, "plan")
+        historical = json.loads((tmp_path/'plan.json').read_text())
+        historical['verification_strategy'] = 'Historical untyped verification'
+        (tmp_path/'plan.json').write_text(json.dumps(historical))
         plan_state = w.submit(plan_state, e.seal(tmp_path, plan_state, "plan.json", "tasks.json"))
         plan_state = w.decide(plan_state, {"event_id": "fixture-plan", "human": True, "automatic": False,
                                           "choice": "approved", "binding": w.binding(plan_state, w.current(plan_state)["packet"])})
@@ -53,6 +68,67 @@ def prepare(tmp_path, phase="product", *, plan_fixture=False):
         s["decisions"] = plan_state["decisions"]
     depgraph.scan(str(tmp_path), decompose=True, strict=True)
     return s, out, tasks
+
+
+def bound_output(controller, state):
+    """Fixture output for a new run, with actual typed check evidence at Build."""
+    phase = w.current(state)['phase']
+    repairing = w.current(state)['id'] in state.get('repair_scope', {}).get('visits', [])
+    target, history = phase+'.json', 'checks.json'
+    if repairing:
+        target, _, history, _ = w.current(state)['artifact_paths'][:4]
+        plan = w.accepted_plan(state)['packet']['output']
+        output = {'schema': 'taskplane.phase-output/v1', 'phase': phase, 'criteria': state['scope']['criteria'],
+                  **{field: 'Fixture phase analysis' for field in w.OUTPUT_FIELDS[phase]}}
+        if phase == 'build':
+            output.update(change_inventory=['app.py'], task_acceptance_map=plan['acceptance_coverage'],
+                          known_gaps=[], build_checks=[])
+        elif phase == 'evaluate':
+            output['criterion_results'] = {criterion: dict(status='pass', evidence='check.txt', explanation='Actual checks passed')
+                                           for criterion in state['scope']['criteria']}
+        elif phase == 'engineering':
+            output.update(findings=[], lens_coverage=[dict(lens='quality', reviewer='root', rationale='Reviewed affected work')],
+                          requirements_comparison={criterion: 'Matches affected behavior' for criterion in state['scope']['criteria']})
+        prior = next((v['packet'].get('verification', {}).get('history') for v in reversed(state['visits'])
+                      if v.get('packet') and v['decision'] == 'approved' and v['packet'].get('verification', {}).get('history')), None)
+        if prior and phase == 'build':
+            captured = {**deepcopy(prior), 'visit': w.current(state)['id']}
+            (controller.workspace/history).parent.mkdir(parents=True, exist_ok=True)
+            (controller.workspace/history).write_text(json.dumps(captured))
+    else:
+        _, output, _ = prepare(controller.workspace, phase)
+    output.update(run=state['run'], visit=w.current(state)['id'])
+    (controller.workspace/target).parent.mkdir(parents=True, exist_ok=True)
+    (controller.workspace/target).write_text(json.dumps(output))
+    if phase == 'build':
+        from taskplane import context_reuse as reuse
+        from taskplane.context import Store
+        plan = w.accepted_plan(state)['packet']['output']
+        checks = plan.get('verification_strategy', {}).get('checks', [])
+        if checks:
+            rows = []
+            for check in checks:
+                log = check['evidence_outputs'][0]
+                if repairing:
+                    from taskplane.primitives import content_fingerprint
+                    log = str(Path(target).parent / ('check-'+content_fingerprint(check['id'])[:16]+'.log'))
+                if not (controller.workspace/history).exists():
+                    # Discard only the unverified placeholder emitted by prepare.
+                    (controller.workspace/log).unlink(missing_ok=True)
+                provenance = reuse.key(controller.workspace, paths=check['source_inputs'], tests=check['test_inputs'],
+                    criteria=check['criteria'], command=check['command'], tool='python', contract='fixture/v1',
+                    state=state, check_id=check['id'], history_path=history, log_path=log,
+                    output_path=target)
+                reference = reuse.run_check(controller.workspace, provenance, producer='root', state=state,
+                    history_path=history, run=state['run'], visit=w.current(state)['id'],
+                    check_id=check['id'], kind=check['kind'], environment=check['environment'], log_path=log)
+                record = Store(controller.workspace).resolve(reference)
+                attempt = json.loads((controller.workspace/history).read_text())['attempts'][-1]
+                rows.append(dict(check_id=check['id'], name=check['name'], attempt_id=attempt['id'],
+                                 status=record['status'], evidence=log))
+            output.update(verification_history=history, build_checks=rows)
+    (controller.workspace/target).write_text(json.dumps(output))
+    return target
 
 
 @pytest.mark.parametrize("phase", w.PHASES)
@@ -71,6 +147,45 @@ def test_all_phase_outputs_require_their_own_evidence(tmp_path, phase):
         (tmp_path/(phase+".json")).write_text(json.dumps(broken))
         with pytest.raises(w.Refusal):
             e.seal(tmp_path, s, phase+".json", "tasks.json")
+
+
+@pytest.mark.parametrize('phase,field', [
+    ('product', 'non_goals'), ('product', 'dependencies'), ('product', 'task_outline'),
+    ('product', 'finding_references'), ('design', 'alternatives'), ('design', 'interfaces_and_state'),
+    ('design', 'authority_boundaries'), ('design', 'failure_and_recovery'), ('design', 'graph_impact'),
+    ('evaluate', 'source_test_fingerprints'), ('evaluate', 'regression_evidence'), ('evaluate', 'unknowns_and_failures'),
+    ('engineering', 'severity'), ('engineering', 'source_locations'), ('engineering', 'remaining_risk'),
+    ('retro', 'deferred_items_and_owners'), ('retro', 'lessons'),
+])
+def test_removed_obligations_cannot_shrink_with_the_validator_constant(tmp_path, phase, field):
+    state, output, _ = prepare(tmp_path, phase)
+    output.pop(field, None)
+    (tmp_path/(phase+'.json')).write_text(json.dumps(output))
+    with pytest.raises(w.Refusal, match=field):
+        e.seal(tmp_path, state, phase+'.json', 'tasks.json')
+
+
+def test_new_ownership_plan_requires_typed_mandatory_evidence(tmp_path):
+    state, output, _ = prepare(tmp_path, 'plan')
+    state['scope']['execution_contract'] = 'ownership/v1'
+    output['verification_strategy'] = 'We ran everything successfully'
+    (tmp_path/'plan.json').write_text(json.dumps(output))
+    with pytest.raises(w.Refusal, match='typed verification'):
+        e.seal(tmp_path, state, 'plan.json', 'tasks.json')
+    state, output, _ = prepare(tmp_path, 'plan')
+    output['verification_strategy']['checks'][0]['required'] = False
+    (tmp_path/'plan.json').write_text(json.dumps(output))
+    with pytest.raises(w.Refusal, match='AC1'):
+        e.seal(tmp_path, state, 'plan.json', 'tasks.json')
+
+
+def test_phase_content_accepts_equivalent_wording_but_needs_decomposition(tmp_path):
+    state, output, _ = prepare(tmp_path, 'design')
+    output['interfaces_and_state'] = 'The same API and existing durable workflow state remain authoritative.'
+    (tmp_path/'design.json').write_text(json.dumps(output))
+    assert e.seal(tmp_path, state, 'design.json', 'tasks.json')['phase'] == 'design'
+    with pytest.raises(w.Refusal, match='task decomposition'):
+        e.seal(tmp_path, state, 'design.json', '')
 
 
 def test_cycle_missing_prerequisite_uncovered_criterion(tmp_path):
@@ -831,9 +946,11 @@ def test_evaluate_history_alias_preserves_captured_attempts(tmp_path, monkeypatc
     def submit(extra, filename):
         output = {'schema': 'taskplane.phase-output/v1', 'run': state['run'],
                   'visit': w.current(state)['id'], 'phase': w.current(state)['phase'],
-                  'criteria': ['AC1'], **extra}
+                  'criteria': ['AC1'],
+                  **{field: 'Fixture phase analysis' for field in w.OUTPUT_FIELDS[w.current(state)['phase']]}, **extra}
         (tmp_path / filename).write_text(json.dumps(output))
-        return controller.apply('submit', state['run'], expected_revision=state['revision'], output=filename)
+        (tmp_path/'tasks.json').write_text(json.dumps({'tasks': [task]}))
+        return controller.apply('submit', state['run'], expected_revision=state['revision'], output=filename, tasks='tasks.json')
 
     def decide(choice='approved'):
         observed = human_decision(state, candidate=choice, event='fixture/' + str(state['revision']))
@@ -849,6 +966,9 @@ def test_evaluate_history_alias_preserves_captured_attempts(tmp_path, monkeypatc
     ]:
         state = submit(extra, phase + '.json')
         state = decide()
+        if phase == 'plan':
+            from taskplane.tests.test_worker_runtime import parent_pair
+            parent_pair(controller)
         state = controller.apply('advance', state['run'], expected_revision=state['revision'],
                                  phase=w.PHASES[w.PHASES.index(phase) + 1])
 

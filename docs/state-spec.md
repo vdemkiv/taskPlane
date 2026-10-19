@@ -16,7 +16,9 @@ loop. Those earlier layouts are historical, not current recovery instructions.
 | `live-telemetry-<run-key>.json` | Advisory operational aggregates and counter baselines; separate from gates and analysis records |
 | `run-record-<key>.json` | Optional summaries written only after a run ends; no gate authority or live consumer |
 | `flow-events.jsonl` | Legacy historical analysis input, never an active-flow dependency |
-| `knowledge/graph.json`, dashboard and usage snapshots | Optional observations and generated views; not phase authority |
+| `knowledge/graph.json`, dashboard and usage snapshots | Reusable source context and generated views; dashboard publication occurs at flow milestones, not ordinary hooks |
+| `parent_hook_readiness` / worker `hook_readiness` | Admitted automatic pre/post observation for the current session/run/phase/runtime; not a host-containment certificate |
+| `repair_scope` | Existing approved task closure, affected checks and fresh result namespace; unaffected results and decisions remain retained |
 
 The root key identifies the owning conversation/store, not a freely supplied
 worker principal. The controller owns ordered Product → Design → Plan → Build →
@@ -27,6 +29,18 @@ journals cannot supply required budget usage; missing native evidence stays unkn
 A storage-generation counter is compare-and-swap transaction state; changing it
 does not make unrelated task inputs stale. Worker attempts retain actual native
 identity, relevant dependencies and observed completion/cancellation facts.
+
+Required typed evidence blocks acceptance when missing, failed or unknown and
+reports the unmet check IDs. Substantive equivalent wording is accepted. An
+explicit scoped repair can re-enter Build after acceptance or completion, using
+fresh result paths and retained immutable evidence. Retry only missing, failed or
+invalidated tasks and their affected checks; retain all unaffected results,
+evidence and approvals, without restarting earlier phases.
+
+The supported Codex/Claude hook paths are the enforcement scope. Their failing
+checks are defects; stronger containment when a host never invokes hooks remains
+a separate existing limitation. Candidate source changes do not alter the live
+installation. Disabling the active harness to bypass a refusal is prohibited.
 
 ## Durability and recovery
 

@@ -849,13 +849,18 @@ def _onboarding_read(event: dict[str, Any]) -> bool:
             'taskplane', *('taskplane:' + name for name in (*workflow_local.EXECUTION_ENTRIES, 'tp-status', 'tp-help'))}
     if tool not in {'Bash', 'exec_command'}:
         return False
-    if workflow_local.opaque_command(event):
+    if workflow_local.readonly_command(event):
         return True
     words = workflow_local.runtime_words(event)
     cwd = runtime_command.execution_directory(event, Path.cwd())
     if (runtime_command.installed(words, cwd, absolute=True)
             and words[2:] in (['version', '--verify'], ['help', '--md'])):
         return True
+    if (runtime_command.installed(words, cwd, absolute=True)
+            and words[2:4] == ['flow', 'activate']
+            and len(words) == 6 and words[4] == '--phase'
+            and words[5] in workflow_local.EXECUTION_ENTRIES):
+        return True  # Selection can explain missing binding without creating workflow state.
     # Compute the execution-side probe without admitting Python or shell scripts.
     # Host-side evidence must still be obtained independently by the caller.
     if ((words[:4] == ['shasum', '-a', '256', '--'] and len(words) == 5)
@@ -1261,7 +1266,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker"])
     parser.add_argument('--revision-mode', choices=['preview', 'begin', 'resume', 'abort'])
     parser.add_argument('--revision-request', help='Exact source-pinned requirements revision request')
     parser.add_argument('--revision-sha256')
@@ -1536,7 +1541,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             return 0
         if protected.get('run'):
             run = live_telemetry.metadata(protected)
-        if args.run and args.action not in {"report", "attach"}:
+        if args.run and args.action not in {"report", "attach", "repair"}:
             workflow.require(run and args.run == run["run"], "state_unavailable", "Run does not match the active binding.")
         artifacts: dict[str, Any] = {}
         for key in ("tasks", "reviews"):
@@ -1581,7 +1586,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                     live_telemetry.close(workspace, controller.report(args.replace_run, diagnostics=False), baseline)
             except Exception:
                 observation_errors.append('Run started; advisory telemetry unavailable.')
-        elif args.action in {"submit", "decide", "advance", "finish", "policy", "auto-decide", "retire"}:
+        elif args.action in {"submit", "decide", "advance", "finish", "repair", "policy", "auto-decide", "retire"}:
             target_run = args.run or protected.get("run")
             workflow.require(target_run, "state_unavailable", "No active workflow binding.")
             assert isinstance(target_run, str)
@@ -1627,8 +1632,14 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             result = report(workspace, args.run, governor=controller)
             show(result or controller.report(args.run))
             return 0
-        # One authoritative result; optional views cannot turn a committed action
-        # into failure or introduce mandatory dashboard/graph/usage work.
+        # Publish at lifecycle milestones, never on ordinary hook/tool events.
+        # A failed view cannot replace the already committed enforcement result.
+        if args.action in {'start', 'submit', 'decide', 'advance', 'finish', 'repair'}:
+            try:
+                publish_dashboard(workspace, state['run'], governor=controller,
+                                  checkpoint_required=args.action in {'submit', 'decide'})
+            except Exception:
+                observation_errors.append('Workflow action committed; dashboard publication needs retry.')
         state = {**state, "phase": workflow.current(state)["phase"],
                  "status": "retired" if state.get("retired") else "superseded" if state.get("superseded_by")
                  else "accepted" if state.get("finished") else workflow.current(state)["decision"]}

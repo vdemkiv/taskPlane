@@ -21,10 +21,7 @@ ROOT=Path(__file__).resolve().parents[2]
 CLAUDE_TRANSPORT_SUPPORTED = os.name == 'posix' and sys.platform in {'linux', 'darwin'}
 
 
-def cli(workspace,host,*args,root=ROOT,code=0,environment=None,entry="flow"):
-    if entry == 'flow' and host == 'claude' and args[0] in {'context', 'submit'} and code == 0 and not CLAUDE_TRANSPORT_SUPPORTED:
-        pytest.skip('Successful Claude context transport requires macOS or Linux; refusal is tested separately')
-    workspace, root = Path(workspace).resolve(), Path(root).resolve()
+def fixture_environment(workspace, host, root, environment=None):
     env={k:v for k,v in os.environ.items() if not k.startswith(
         ('CODEX_', 'CLAUDE_', 'TASKPLANE_', 'PLUGIN_ROOT'))}
     host_data=workspace.parent/(workspace.name+'-host-data')
@@ -41,6 +38,15 @@ def cli(workspace,host,*args,root=ROOT,code=0,environment=None,entry="flow"):
     env['CODEX_THREAD_ID' if host=='codex' else 'TASKPLANE_CLAUDE_SESSION_ID']='root'
     env.update(PLUGIN_ROOT=str(root),CLAUDE_PLUGIN_ROOT=str(root),
                PATH=str(Path(sys.executable).parent)+os.pathsep+os.environ['PATH'])
+    return env
+
+
+def cli(workspace,host,*args,root=ROOT,code=0,environment=None,entry="flow"):
+    if entry == 'flow' and host == 'claude' and args[0] in {'context', 'submit'} and code == 0 and not CLAUDE_TRANSPORT_SUPPORTED:
+        pytest.skip('Successful Claude context transport requires macOS or Linux; refusal is tested separately')
+    workspace, root = Path(workspace).resolve(), Path(root).resolve()
+    env = fixture_environment(workspace, host, root, environment)
+    transcript = Path(env['CLAUDE_CONFIG_DIR'])/'projects/fixture/root.jsonl'
     # Match the declared Windows hook launcher; py -3 may select a different
     # installed interpreter from the one running pytest.
     python=['py','-3'] if os.name=='nt' else [str(Path(sys.executable).resolve())]
@@ -126,6 +132,7 @@ def handoff(workspace,host,root=ROOT):
 def create(workspace):
     workspace.mkdir(parents=True,exist_ok=True)
     initial,_,_=prepare(workspace)
+    initial['scope']['execution_contract'] = 'ownership/v1'
     (workspace/'build-check.txt').write_text('Fixture Build check passed')
     (workspace/'check.txt').write_text('Observed fixture check result')
     (workspace/'.taskplane/scope.json').write_text(json.dumps(initial['scope']))
@@ -168,11 +175,27 @@ def test_native_deactivate_only_uninitialized_engagement(tmp_path,host):
 
 
 def output(workspace,state,change=None):
-    phase=w.current(state)['phase']
-    _,out,_=prepare(workspace,phase)
-    out.update(run=state['run'],visit=w.current(state)['id'])
-    if change:out['route_change']=change
-    path=phase+'.json';(workspace/path).write_text(json.dumps(out))
+    from taskplane.tests.test_workflow_evidence import bound_output
+    selected = Path(state.get('runtime_identity', {}).get('root', ROOT))
+    # Capture with the same selected runtime, interpreter and isolated host
+    # environment as the actual hook. A pytest environment is different evidence.
+    source = ('import sys,json\nfrom pathlib import Path\nfrom copy import deepcopy\n'
+              'from types import SimpleNamespace\nsys.path.insert(0,sys.argv[1])\n'
+              'from taskplane import workflow as w,workflow_evidence as e\n'
+              + inspect.getsource(prepare) + '\n' + inspect.getsource(bound_output)
+              + '\npayload=json.load(sys.stdin)\nprint(bound_output(SimpleNamespace(workspace=Path.cwd()),payload))\n')
+    python = ['py', '-3'] if os.name == 'nt' else [str(Path(sys.executable).resolve())]
+    transcript = Path(workspace).parent/(Path(workspace).name+'-host-data')/'claude/projects/fixture/root.jsonl'
+    host = 'claude' if transcript.is_file() else 'codex'
+    env = fixture_environment(Path(workspace).resolve(), host, selected)
+    result = subprocess.run([*python, '-B', '-c', source, str(selected)], cwd=workspace, env=env,
+                            input=json.dumps(state), text=True, capture_output=True)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    path = result.stdout.strip()
+    if change:
+        out = json.loads((workspace/path).read_text())
+        out['route_change'] = change
+        (workspace/path).write_text(json.dumps(out))
     return path
 
 
@@ -830,7 +853,7 @@ def exercise_harness_entry(workspace,host,phase='engineering',root=ROOT,*,prompt
     assert state['root']=='root' and w.current(state)['phase']==phase
     assert len(state['visits'])==(1 if standalone else 7)
     assert not state.get('approval_policy') and not state['decisions']
-    assert not (workspace/'.taskplane/dashboard.html').exists()
+    assert state['run'] in (workspace/'.taskplane/dashboard.html').read_text()
     patch='*** Begin Patch\n*** Update File: app.py\n@@\n-value = 1\n+value = 2\n*** End Patch'
     payload={'tool_name':'Write','tool_input':{'file_path':str(workspace/'app.py'),'content':'value=2'}} if host=='claude' else {
         'tool_name':'apply_patch','tool_input':{'command':patch}}

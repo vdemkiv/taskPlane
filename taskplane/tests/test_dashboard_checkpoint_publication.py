@@ -148,3 +148,46 @@ def test_collection_preserves_required_pair_bytes(fixture):
     result = snapshots.collect(root, max_pairs=0, now=time.time() + 120)
     assert result["removed_pairs"] == 0
     assert before == {str(p): p.read_bytes() for p in paths}
+
+
+def test_flow_start_and_submit_publish_real_dashboard_but_progress_does_not(tmp_path, capsys):
+    from taskplane import workflow_host as h
+    from taskplane.tests.test_workflow_evidence import prepare
+    initial, _, _ = prepare(tmp_path)
+    (tmp_path/'scope.json').write_text(json.dumps(initial['scope']))
+    c = h.Controller(tmp_path, 'root', h.installed_adapter('codex'))
+    assert flow.main(['start', '--workspace', str(tmp_path), '--scope', 'scope.json',
+                      '--request-reference', 'fixture/dashboard-start'], governor=c) == 0
+    capsys.readouterr()
+    page = tmp_path/'.taskplane/dashboard.html'
+    state = c.report()
+    assert page.exists() and state['run'] in page.read_text()
+    output = json.loads((tmp_path/'product.json').read_text())
+    output.update(run=state['run'], visit=workflow.current(state)['id'])
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    assert flow.main(['submit', '--workspace', str(tmp_path), '--run', state['run'],
+                      '--expected-revision', str(state['revision']), '--output', 'product.json',
+                      '--tasks', 'tasks.json'], governor=c) == 0
+    capsys.readouterr()
+    checkpoint = workflow.current(c.report())['packet']['checkpoint']
+    assert any('checkpoint/'+checkpoint in pair['pins'] for pair in catalog(tmp_path)['pairs'].values())
+    modified = page.stat().st_mtime_ns
+    assert flow.main(['progress', '--workspace', str(tmp_path), '--note', 'Still working'], governor=c) == 0
+    assert page.stat().st_mtime_ns == modified
+
+
+def test_dashboard_failure_preserves_committed_phase_result(tmp_path, capsys, monkeypatch):
+    from taskplane.tests.test_workflow_local import setup
+    c, state = setup(tmp_path)
+    output = json.loads((tmp_path/'product.json').read_text())
+    output.update(run=state['run'], visit=workflow.current(state)['id'])
+    (tmp_path/'product.json').write_text(json.dumps(output))
+    def unavailable(*args, **kwargs):
+        raise OSError('Fixture dashboard unavailable')
+    monkeypatch.setattr(flow, 'publish_dashboard', unavailable)
+    assert flow.main(['submit', '--workspace', str(tmp_path), '--run', state['run'],
+                      '--expected-revision', str(state['revision']), '--output', 'product.json',
+                      '--tasks', 'tasks.json'], governor=c) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['workflow']['observation_errors']
+    assert workflow.current(c.report())['decision'] == 'awaiting_human_approval'

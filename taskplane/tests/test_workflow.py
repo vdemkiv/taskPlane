@@ -192,3 +192,83 @@ def test_repeated_repairs_reuse_accepted_plan_scope_and_fresh_build_lineage():
         assert w.accepted_plan(s)["id"] == plan_id
         assert s["scope"]["paths"]["build"] == []
         assert not w.current(s)["superseded"]
+
+
+def repair_fixture():
+    s = state()
+    for phase in ('design', 'plan'):
+        s = w.advance(accept(s), phase)
+    tasks = [dict(id=key, phase='build', owner='root', dependencies=[], paths=[source, log],
+                  read_inputs=[source], criteria=['AC1'])
+             for key, source, log in [('A', 'a.py', 'a.log'), ('B', 'b.py', 'b.log')]]
+    checks = [dict(id='CHECK-'+row['id'], task=row['id'], source_inputs=[row['paths'][0]], test_inputs=[])
+              for row in tasks]
+    plan = dict(write_scope=[p for row in tasks for p in row['paths']], task_dag=tasks,
+                verification_strategy={'schema': 'taskplane.verification-strategy/v1', 'checks': checks})
+    s = ready(s, output=plan)
+    s = w.decide(s, answer(s))
+    s = w.advance(s, 'build')
+    s['task_results'] = {'A': {'accepted': 'a-result'}, 'B': {'accepted': 'b-result'}}
+    return s
+
+
+def test_partial_repair_only_reopens_affected_tasks_and_keeps_accepted_work():
+    s = repair_fixture()
+    s = ready(s)
+    earlier = deepcopy(s['visits'][:3])
+    decisions = deepcopy(s['decisions'])
+    result = w.repair(s, ['A'], dict(event_id='human-repair', human=True, automatic=False, choice='changes_requested'))
+    assert result['visits'][:3] == earlier and result['decisions'] == decisions
+    assert result['repair_scope']['tasks'] == ['A']
+    assert result['repair_scope']['checks'] == ['CHECK-A']
+    assert result['task_results'] == {'B': s['task_results']['B']}
+    assert 'a.py' in w.phase_write_paths(result) and 'b.py' not in w.phase_write_paths(result)
+    assert w.current(result)['phase'] == 'build' and w.current(result)['decision'] == 'not_requested'
+
+
+def test_post_completion_repair_preserves_approvals_and_requires_new_affected_acceptance():
+    s = repair_fixture()
+    for phase in w.PHASES[4:]:
+        s = w.advance(accept(s), phase)
+    s = w.finish(accept(s))
+    accepted = deepcopy(s['visits'])
+    repaired = w.repair(s, ['A'], dict(event_id='human-fix', human=True, automatic=False, choice='approved'))
+    assert repaired['visits'][:3] == accepted[:3]
+    for old, retained in zip(accepted[3:], repaired['visits'][3:len(accepted)], strict=True):
+        assert retained['packet'] == old['packet'] and retained['decision'] == old['decision']
+        assert retained['superseded']
+    assert not repaired['finished'] and w.current(repaired)['phase'] == 'build'
+    assert repaired['task_results']['B'] == s['task_results']['B']
+    with pytest.raises(w.Refusal, match='human acceptance'):
+        w.finish(repaired)
+    with pytest.raises(w.Refusal, match='approved Build tasks'):
+        w.repair(s, ['unowned'], dict(human=True, automatic=False, choice='approved'))
+
+
+def test_completion_returns_only_unmet_required_evidence_without_consuming_approval():
+    s = ready(state(), verification={'effective_checks': [
+        dict(check_id='accepted', required=True, status='pass'),
+        dict(check_id='missing', status='unknown'),
+        dict(check_id='failed', required=True, status='fail'),
+        dict(check_id='advisory', required=False, status='fail'),
+    ]})
+    before = deepcopy(s)
+    assert w.unmet_evidence(w.current(s)['packet']) == ['missing', 'failed']
+    with pytest.raises(w.Refusal, match='missing, failed'):
+        w.decide(s, answer(s))
+    assert s == before
+
+
+def test_bound_human_correction_reopens_only_the_approved_current_phase():
+    s = state()
+    for phase in ('design', 'plan'):
+        s = w.advance(accept(s), phase)
+    s = accept(s)
+    earlier = deepcopy(s['visits'][:2])
+    decisions = deepcopy(s['decisions'])
+    corrected = w.decide(s, answer(s, choice='changes_requested', event_id='human-plan-correction'))
+    assert corrected['visits'][:2] == earlier
+    assert all(corrected['decisions'][key] == value for key, value in decisions.items())
+    assert w.current(corrected)['phase'] == 'plan' and w.current(corrected)['decision'] == 'changes_requested'
+    with pytest.raises(w.Refusal, match='approval'):
+        w.advance(corrected, 'build')

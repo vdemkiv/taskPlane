@@ -131,6 +131,35 @@ def retained_authority(workspace: Path, state: dict[str, Any], task_id: str,
     transitions = [event for field in ('context_upgrades', 'context_rollbacks')
                    for event in state.get(field, {}).values()
                    if event['prior_revision'] >= result.get('accepted_revision', 0)]
+    row = state.get('workers', {}).get(result.get('grant'))
+    if not events and not transitions and row and row.get('binding') != binding(state):
+        frozen = Store(workspace).resolve(row['snapshot'])
+        saved_scope = frozen.get('scope') if isinstance(frozen, dict) else None
+        prior_visit = next((i for i, stage in enumerate(state['visits'])
+                            if stage['id'] == row['binding']['visit']), None)
+        if (isinstance(saved_scope, dict) and prior_visit is not None
+                and frozen.get('binding') == row['binding']
+                and frozen.get('brief', {}).get('task') == definition):
+            # Reconstruct only the selected worker's original read authority.
+            # Actual execution always checks the current state and still refuses
+            # this old grant. No journal or historical state search is involved.
+            basis = dict(state, scope=saved_scope, index=prior_visit,
+                         task_generation=row['task_generation'])
+            basis['task_context'] = {'visit': row['binding']['visit'], 'tasks': [definition]}
+            return basis
+    retained = state.get('retained_task_authority', {}).get(task_id)
+    if not events and not transitions and retained:
+        # A plain task repair does not change requirements or invalidate an
+        # unrelated worker's original authority. result_valid still checks the
+        # current task inputs, outputs and dependency results below this call.
+        if retained.get('result_digest') != digest(result):
+            return None
+        basis = Store(workspace).resolve(retained['reference'])
+        if (isinstance(basis, dict) and basis.get('run') == state['run']
+                and basis.get('task_results', {}).get(task_id) == result
+                and digest(task(basis, task_id)) == digest(definition)):
+            return basis
+        return None
     if not events and not transitions:
         return state
     if e.changed(workspace, state) is not None:
@@ -337,6 +366,27 @@ def path_conflict(candidate: dict[str, Any], other: dict[str, Any]) -> bool:
     return bool(writes & (other_writes | other_reads) or reads & other_writes)
 
 
+def parent_readiness(state: dict[str, Any]) -> dict[str, Any]:
+    """Current automatic hook observations, not independent host containment.
+
+    Reuse the latest admitted pair for this visit. Progress revisions do not
+    invalidate it, and this check never replays the journal or audits members.
+    """
+    from .host_capabilities import runtime_identity
+    proof = state.get('parent_hook_readiness') or {}
+    if not isinstance(proof, dict):
+        proof = {}
+    current = w.current(state)
+    missing = [name for name, valid in (
+        ('automatic admitted hook pair', proof.get('automatic') is True and bool(proof.get('matched_call'))),
+        ('current run and phase', proof.get('run') == state.get('run') and proof.get('visit') == current['id']),
+        ('current session and workspace', proof.get('root') == state.get('root') and proof.get('workspace') == state.get('workspace')),
+        ('loaded runtime', proof.get('runtime') == runtime_identity()),
+    ) if not valid]
+    return {'status': 'missing' if missing else 'ready', 'missing': missing,
+            'reference': proof.get('matched_call'), 'assurance': 'observed automatic hooks; not host containment'}
+
+
 def readiness(row: dict[str, Any]) -> dict[str, Any]:
     if (row.get("state") in {"cancel_requested", "interrupted", "failed", "result_pending", "accepted"}
             or row.get("terminal_status") or row.get("revoked_at")
@@ -345,6 +395,8 @@ def readiness(row: dict[str, Any]) -> dict[str, Any]:
                 "basis": "Terminal or cancelled attempts have no execution permission."}
     missing = [label for label, valid in (("native identity", bool(row.get("worker_id"))),
                                         ("observed claim", bool(row.get("claimed_at"))),
+                                        ("automatic hook pair", row.get('hook_readiness', {}).get('automatic') is True
+                                         and row.get('hook_readiness', {}).get('runtime') == row.get('expected_runtime')),
                                         ("no identity conflict", not row.get("identity_conflict"))) if not valid]
     return {"status": "ready" if not missing else "pending", "missing": missing,
             "basis": "Observed native identity and current attempt."}
@@ -591,6 +643,8 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
             host: str | None = None) -> dict[str, Any]:
     from .workflow_write_guard import require_runtime
     require_runtime(state)
+    w.require(parent_readiness(state)['status'] == 'ready', 'worker_readiness',
+              'Observe an admitted automatic parent pre/post hook pair before preparing a worker; preserve existing work.')
     w.require(not state.get('dispatch_paused'), 'approval_required',
               'New worker dispatch is paused for requirements review.')
     from . import workspace_binding
@@ -607,6 +661,8 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     paths = definition["paths"]
     w.require(paths and set(paths) <= set(state["scope"]["paths"][stage["phase"]]),
               "scope_violation", "Worker task exceeds accepted phase paths.")
+    w.require(set(paths) <= set(w.phase_write_paths(state)), 'scope_violation',
+              'Task is outside this scoped repair; unaffected work retains its accepted result.')
     for p in paths:
         e.path(workspace, p)
     rows = records(state)
@@ -632,7 +688,7 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
     session = Brief(workspace, state, task_id)
     from .host_capabilities import runtime_identity
     # Preserve immutable content in the bounded object store, never the control DB.
-    frozen = session.store.put("worker-input-snapshot", session.frozen)
+    frozen = session.store.put("worker-input-snapshot", {**session.frozen, 'scope': deepcopy(state['scope'])})
     row = {"grant_id": key, "root": state["root"], "run": state["run"], "binding": binding(state),
            "workspace": str(workspace),
            "task_id": task_id, "task_digest": digest(definition), "task_generation": state.get("task_generation", 0),
@@ -1824,6 +1880,7 @@ def accept_result(workspace: Path, state: dict[str, Any], task_id: str, request:
               'task_epoch': state.get('task_epochs', {}).get(task_id, 0),
               'requirements_epochs': {c: state.get('criterion_epochs', {}).get(c, 0) for c in e.task_criteria(definition)}}
     state.setdefault("task_results", {})[task_id] = result
+    state.get('retained_task_authority', {}).pop(task_id, None)
     if row:
         row["state"] = "accepted"
     return result

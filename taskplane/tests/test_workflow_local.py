@@ -20,7 +20,9 @@ def setup(workspace, *, entry="product", standalone=False):
     c=h.Controller(workspace,"root",h.installed_adapter("codex"))
     s=c.start({"scope":state["scope"],"request_reference":"conversation/user-1",
                "entry":entry,"standalone":standalone})
-    return c,s
+    from taskplane.tests.test_worker_runtime import parent_pair
+    parent_pair(c)
+    return c,c.report(s['run'], diagnostics=False)
 
 
 def displaced_database(tmp_path, *, approved=False):
@@ -273,11 +275,9 @@ def present(c, s):
 
 
 def submit(c,s, *, presentation=True):
-    phase=w.current(s)["phase"]
-    _,out,_=prepare(c.workspace,phase)
-    out.update(run=s["run"],visit=w.current(s)["id"])
-    (c.workspace/(phase+".json")).write_text(json.dumps(out))
-    submitted=c.apply("submit",s["run"],expected_revision=s["revision"],output=phase+".json",tasks="tasks.json")
+    from taskplane.tests.test_workflow_evidence import bound_output
+    target = bound_output(c, s)
+    submitted=c.apply("submit",s["run"],expected_revision=s["revision"],output=target,tasks="tasks.json")
     if presentation: present(c,submitted)
     return submitted
 
@@ -338,7 +338,96 @@ def decision(s, *, text="Approved", event="message-1", candidate="approved"):
 
 
 def decide(c,s,value=None):
-    return c.apply("decide",s["run"],expected_revision=s["revision"],native_reference=json.dumps(value or decision(s)))
+    result = c.apply("decide",s["run"],expected_revision=s["revision"],native_reference=json.dumps(value or decision(s)))
+    stage = w.current(result)
+    if stage['decision'] == 'approved' and (stage['phase'] == 'plan' or stage.get('packet', {}).get('route_change')):
+        from taskplane.tests.test_worker_runtime import parent_pair
+        from taskplane.worker_runtime import parent_readiness
+        if parent_readiness(result)['status'] != 'ready':
+            parent_pair(c)
+    return result
+
+
+def supported_build(tmp_path, host):
+    from taskplane.tests.test_worker_runtime import parent_pair
+    initial, _, _ = prepare(tmp_path)
+    c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
+    state = c.start({'scope': initial['scope'], 'request_reference': 'fixture/supported-build'})
+    for phase in ('design', 'plan', 'build'):
+        state = submit(c, state)
+        state = decide(c, state, decision(state, event='fixture/accept/' + str(state['revision'])))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=phase)
+    parent_pair(c)
+    return c, c.report(state['run'], diagnostics=False)
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('tool,key', [('Bash', 'command'), ('exec_command', 'cmd')])
+def test_supported_shell_allows_owned_effects_and_refuses_unowned_effects(tmp_path, host, tool, key):
+    import subprocess
+    c, state = supported_build(tmp_path, host)
+    owned = {'tool_name': tool, 'cwd': str(tmp_path), 'tool_input': {key: 'echo candidate > app.py'}}
+    c.guard(owned, state['run'])
+    completed = subprocess.run(owned['tool_input'][key], shell=True, cwd=tmp_path, check=False)
+    assert completed.returncode == 0 and (tmp_path/'app.py').read_text().strip() == 'candidate'
+    for command in ['touch sibling.py', 'printf denied > sibling.py', 'rm ../outside.py',
+                    'python -c "open(\"sibling.py\",\"w\").write(\"bad\")"',
+                    'touch app.py; touch sibling.py']:
+        with pytest.raises(w.Refusal):
+            c.guard({'tool_name': tool, 'cwd': str(tmp_path), 'tool_input': {key: command}}, state['run'])
+    assert not (tmp_path/'sibling.py').exists()
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_hook_readiness_and_structured_scope_are_required_before_build_writes(tmp_path, host):
+    c, state = supported_build(tmp_path, host)
+    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    with pytest.raises(w.Refusal, match='outside'):
+        c.guard({'tool_name': 'Write', 'tool_input': {'path': 'sibling.py'}}, state['run'])
+    # Missing setup is checked outside the tool hook at the Build transition.
+    broken = deepcopy(state)
+    broken.pop('parent_hook_readiness', None)
+    with pytest.raises(w.Refusal, match='Preventive hook admission'):
+        c._guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, broken)
+    broken = deepcopy(state)
+    broken['parent_hook_readiness']['root'] = 'another-session'
+    assert local.Harness(tmp_path, 'root').readiness(broken)['status'] != 'active'
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_candidate_hook_source_is_editable_but_live_uninstall_has_no_recovery_escape(tmp_path, host):
+    c, state = supported_build(tmp_path, host)
+    # app.py represents the candidate source owned by this accepted task.
+    c.guard({'tool_name': 'Edit', 'tool_input': {'file_path': 'app.py'}}, state['run'])
+    uninstall = {'tool_name': 'mcp__codex_app__uninstall_plugin', 'tool_input': {'plugin': 'taskplane'}}
+    assert not local.Harness(tmp_path, 'root').recovery_action(uninstall, state)
+    with pytest.raises(w.Refusal):
+        c.guard(uninstall, state['run'])
+    for target in ('../live/hooks.json', '../live/taskplane/tp.py'):
+        with pytest.raises(w.Refusal):
+            c.guard({'tool_name': 'Write', 'tool_input': {'path': target}}, state['run'])
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_missing_hooks_block_build_transition_outside_the_preventive_hook(tmp_path, host):
+    from taskplane.tests.test_worker_runtime import parent_pair
+    initial, _, _ = prepare(tmp_path)
+    c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
+    state = c.start({'scope': initial['scope'], 'request_reference': 'fixture/missing-hooks'})
+    for phase in ('design', 'plan'):
+        state = submit(c, state)
+        state = decide(c, state, decision(state, event='fixture/phase/'+phase))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=phase)
+    state = submit(c, state)
+    state = c.apply('decide', state['run'], expected_revision=state['revision'],
+        native_reference=json.dumps(decision(state, event='fixture/accept-plan')))
+    before = deepcopy(state['decisions'])
+    with pytest.raises(w.Refusal, match='Build needs an admitted automatic'):
+        c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
+    assert c.report()['decisions'] == before and w.current(c.report())['decision'] == 'approved'
+    parent_pair(c)
+    state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
+    assert w.current(state)['phase'] == 'build'
 
 
 def test_plain_repair_approval_reopens_build_and_preserves_history(tmp_path):
@@ -366,6 +455,54 @@ def test_plain_repair_approval_reopens_build_and_preserves_history(tmp_path):
     assert w.current(repaired)['phase'] == 'build'
     assert w.current(repaired)['id'] != previous_build['id']
     assert w.current(repaired)['decision'] == 'not_requested'
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_scoped_repair_uses_controller_and_preserves_prior_approvals(tmp_path, completed):
+    from taskplane.tests.test_worker_runtime import parent_pair
+    from taskplane.tests.test_workflow_evidence import bound_output
+    c, state = setup(tmp_path)
+    for phase in w.PHASES:
+        if phase == 'build' and not completed:
+            state = submit(c, state)
+            break
+        state = submit(c, state)
+        state = decide(c, state, decision(state, event='fixture/initial/' + phase))
+        if phase != 'retro':
+            state = c.apply('advance', state['run'], expected_revision=state['revision'],
+                            phase=w.PHASES[w.PHASES.index(phase) + 1])
+        else:
+            state = c.apply('finish', state['run'], expected_revision=state['revision'])
+    original = deepcopy(state)
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal) as malformed:
+        c.apply('repair', state['run'], expected_revision=state['revision'], native_reference='{')
+    assert malformed.value.reason == 'invalid_evidence' and c._path().read_bytes() == before
+    request = {'decision': decision(state, event='fixture/scoped-repair'), 'tasks': ['T1']}
+    state = c.apply('repair', state['run'], expected_revision=state['revision'],
+                    native_reference=json.dumps(request))
+    assert not state['finished'] and w.current(state)['phase'] == 'build'
+    assert state['repair_scope']['tasks'] == ['T1']
+    assert all(state['decisions'][key] == value for key, value in original['decisions'].items())
+    for phase in ('product', 'design', 'plan'):
+        before = next(v for v in original['visits'] if v['phase'] == phase)
+        assert next(v for v in state['visits'] if v['id'] == before['id']) == before
+    with pytest.raises(w.Refusal, match='Preventive hook admission'):
+        c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    parent_pair(c)
+    state = c.report()
+    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    (tmp_path/'app.py').write_text('value = 2\n')
+    for phase in w.PHASES[3:]:
+        target = bound_output(c, state)
+        state = c.apply('submit', state['run'], expected_revision=state['revision'],
+                        output=target, tasks='tasks.json')
+        state = decide(c, state, decision(state, event='fixture/repaired/' + phase))
+        if phase != 'retro':
+            state = c.apply('advance', state['run'], expected_revision=state['revision'],
+                            phase=w.PHASES[w.PHASES.index(phase) + 1])
+    state = c.apply('finish', state['run'], expected_revision=state['revision'])
+    assert state['finished'] and (tmp_path/'app.py').read_text() == 'value = 2\n'
 
 
 def test_local_profile_is_available_without_certifying_host(tmp_path):
@@ -703,6 +840,9 @@ def task_observation_checkpoint(workspace, *, legacy=False, host="codex"):
     raw_manifest=evidence.manifest
     for phase in ('product','design','plan','build'):
         _,out,tasks=prepare(workspace,phase)
+        if phase == 'build':
+            from taskplane.tests.test_workflow_evidence import bound_output
+            out = json.loads((workspace/bound_output(c, s)).read_text())
         tasks['tasks'][0]['paths'].append(task_path)
         (workspace/task_path).write_text(json.dumps(tasks))
         out.update(run=s['run'],visit=w.current(s)['id'])
@@ -813,7 +953,7 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     run=s['run']
     for i,phase in enumerate(w.PHASES):
         result=flow.hook(event,governor=c)
-        assert phase in result['hookSpecificOutput']['additionalContext']
+        assert phase in result['hookSpecificOutput']['additionalContext'].casefold()
         assert c.context(run)['binding']['visit'] == w.current(c.report())['id']
         assert run in result['hookSpecificOutput']['additionalContext']
         assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'

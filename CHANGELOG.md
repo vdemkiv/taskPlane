@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — restore existing flow enforcement
+
+- Restore required phase content, task decomposition, typed verification selection and automatic hook-pair readiness.
+- Publish dashboards at lifecycle milestones without restoring ordinary journal scans.
+- Remove the root shell exemption and Taskplane uninstall recovery exception; preserve supported owned shell operations and candidate hook edits.
+- Require mandatory evidence before acceptance and add bounded repair through the existing workflow controller, retaining unaffected results and approvals.
+- Keep live installations unchanged. Candidate verification and actual fresh-installed Codex/Claude checks are reported separately; stronger host containment remains a documented limitation.
+
 ## 2.34.2 — separate runtime telemetry from post-run analysis
 
 - Remove analysis-journal reads, appends and full reductions from active hooks and flow control/status/progress.

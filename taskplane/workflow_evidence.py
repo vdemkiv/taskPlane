@@ -383,7 +383,7 @@ def plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
 def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
                     tasks: list[dict[str, Any]]) -> dict[str, Any]:
     """Plan checks after the public caller authenticated its workflow binding."""
-    strict = (state["scope"].get("execution_contract") == "native-default/v1"
+    strict = (state["scope"].get("execution_contract") in {"native-default/v1", "ownership/v1"}
               or state["scope"].get("planning_contract") == w.PLANNING_CONTRACT or typed_plan(output))
     if not strict:
         return {"status": "legacy_untyped"}
@@ -472,12 +472,19 @@ def _plan_preflight(root: Path, state: dict[str, Any], output: dict[str, Any],
             path(root, relative)
             w.require(owners.get(relative) == task["id"], "invalid_evidence",
                       "Every verification log/output must be owned by its checking task.")
+    covered = {criterion for check in strategy['checks'] if check['required'] for criterion in check['criteria']}
+    w.require(set(state['scope']['criteria']) <= covered, 'invalid_evidence',
+              'Required verification is missing for criteria: ' + ', '.join(sorted(set(state['scope']['criteria']) - covered)))
     return {"status": "validated", "checks": sorted(ids), "outputs": deepcopy(outputs)}
 
 
 def validate_build_outputs(root: Path, state: dict[str, Any], output: dict[str, Any], output_path: str) -> None:
     plan = _plan(state)
     if not typed_plan(plan):
+        return
+    if w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit'):
+        w.require(output_path in w.current(state).get('artifact_paths', []), 'scope_violation',
+                  'Repair output must use its fresh result namespace; accepted evidence is immutable.')
         return
     rows = plan.get("build_outputs", [])
     packets = [row["path"] for row in rows if row["kind"] == "packet"]
@@ -856,8 +863,10 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     declared_histories = {row["path"] for row in plan.get("build_outputs", []) if row["kind"] == "verification_history"}
     if not declared_histories:
         declared_histories = set(plan["write_scope"])
+    if w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit'):
+        declared_histories = set(w.current(state).get('artifact_paths', []))
     if phase == "evaluate" and not inherited:
-        declared_histories = set(state["scope"]["paths"].get("evaluate", []))
+        declared_histories = set(state["scope"]["paths"].get("evaluate", []) + w.current(state).get('artifact_paths', []))
     w.require(isinstance(history_path, str) and history_path in declared_histories,
               "invalid_evidence", "Verification history must name a planned output or the current Evaluate's owned output.")
     assert isinstance(history_path, str)
@@ -866,7 +875,8 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
               and history.get("coverage") == "declared_producer" and isinstance(history.get("attempts"), list),
               "invalid_evidence", "Verification history has foreign binding, schema or coverage.")
     visits = {visit["id"] for visit in state["visits"][:state["index"] + 1]
-              if visit["phase"] in {"build", "evaluate"} and not visit.get("superseded")}
+              if visit["phase"] in {"build", "evaluate"} and (not visit.get("superseded")
+                  or visit['id'] in state.get('repair_scope', {}).get('prior_visits', []))}
     current_visit = predecessor.get("id") if inherited else w.current(state)["id"]
     w.require(history.get("visit") == current_visit, "invalid_evidence", "Verification history belongs to a different producing visit.")
     attempts = history["attempts"]
@@ -882,6 +892,7 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
     latest: dict[str, dict[str, Any]] = {}
     files = [history_path]
     refs: list[dict[str, Any]] = []
+    last_log_use = {row.get('evidence'): row.get('id') for row in attempts if isinstance(row, dict)}
     for sequence, attempt in enumerate(attempts, 1):
         w.require(isinstance(attempt, dict) and isinstance(attempt.get("id"), str) and attempt["id"]
                   and attempt["id"] not in seen and attempt.get("sequence") == sequence
@@ -909,6 +920,8 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
         producer = next(visit for visit in state["visits"] if visit["id"] == attempt["visit"])
         declared_logs = (state["scope"]["paths"].get("evaluate", [])
                          if producer["phase"] == "evaluate" else requirement["evidence_outputs"])
+        declared_logs = [*declared_logs, *(relative for relative in producer.get('artifact_paths', [])
+                                          if '/check-' in relative and relative.endswith('.log'))]
         w.require(log_path in declared_logs and attempt.get("log_ref") == record.get("log_ref")
                   and record.get("log_path") == log_path, "invalid_evidence", "Attempt log is not its declared immutable evidence.")
         log = store.resolve(attempt["log_ref"])
@@ -917,11 +930,13 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
                   "invalid_evidence", "Immutable attempt log is invalid.")
         # Missing historical files can be recovered from the pinned immutable
         # body. An existing edited path must not masquerade as the old log.
-        if path(root, log_path).exists():
+        if last_log_use.get(log_path) == attempt['id'] and path(root, log_path).exists():
             w.require(read(root, log_path) == log["text"].encode(), "invalid_evidence", "A captured verification log was edited.")
             files.append(log_path)
         refs.extend([attempt["record_ref"], attempt["log_ref"]])
-        if attempt["visit"] == current_visit:
+        retained = (phase == 'build' and w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit')
+                    and attempt['check_id'] not in state['repair_scope']['checks'])
+        if attempt["visit"] == current_visit or retained:
             latest[attempt["check_id"]] = {**deepcopy(attempt), "_record": record}
     selected: list[dict[str, Any]] = []
     final_rows = (predecessor.get("packet", {}).get("output", {}).get("build_checks", [])
@@ -951,7 +966,9 @@ def validate_verification(root: Path, state: dict[str, Any], output: dict[str, A
                     prior.update(status="unknown", reason="Inherited verification lacks an immutable record.")
                 selected.append(prior)
                 continue
-            selected.append({"check_id": check_id, "status": "unknown", "reason": "Required check has no current attempt."})
+            selected.append({"check_id": check_id, "status": "unknown", "required": requirement['required'],
+                             "criteria": deepcopy(requirement['criteria']),
+                             "reason": "Check has no current attempt."})
             continue
         claim = final.get(check_id)
         w.require((claim is None and phase == "evaluate" and not inherited) or claim is not None and claim.get("attempt_id") == attempt["id"]
@@ -1083,8 +1100,8 @@ def prevalidate(root: Path, state: dict[str, Any], output_path: str, tasks_path:
         tasks = task_dag({"tasks": output.get("task_dag")}, criteria)
     else:
         tasks = context_tasks(state)
-        if tasks:
-            tasks = task_dag({"tasks": tasks}, criteria)
+        w.require(tasks, "invalid_evidence", f"{phase} needs current task decomposition; supply tasks or reuse accepted task context.")
+        tasks = task_dag({"tasks": tasks}, criteria)
     from .workflow_local import verify_workflow
     verify_workflow(root, state, tasks=tasks,
                     build_paths=output.get("write_scope") if phase == "plan" else None)
@@ -1227,6 +1244,9 @@ def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) ->
         packet = stage["packet"]
         for field in ("manifest", "source_manifest"):
             before = packet[field]
+            repair = state.get('repair_scope', {})
+            if field == 'source_manifest' and stage['id'] in repair.get('prior_visits', []):
+                before = {relative: value for relative, value in before.items() if relative not in repair['paths']}
             if field == "source_manifest" and stage["phase"] in {"product", "design", "plan"}:
                 # An accepted Plan explicitly authorizes downstream source edits.
                 # Preserve the requirements/design output and original snapshot,
