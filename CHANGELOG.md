@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.34.4 — preserve historical state during hook startup
+
+- Read ordinary historical Build metadata without requiring typed check IDs from legacy Plan records.
+- Keep repair metadata validation strict and report malformed check identities as a structured refusal.
+- Keep read-only diagnosis reachable from the current workspace when control state is unreadable.
+- Preserve saved run records and approvals; no state migration or journal replay is required.
+
 ## 2.34.3 — restore existing flow enforcement
 
 - Restore required phase content, task decomposition, typed verification selection and automatic hook-pair readiness.

@@ -218,11 +218,16 @@ def validate_state(state: dict[str, Any]) -> None:
         if "artifact_paths" in stage:
             prefix = f".taskplane/runs/{state['run']}/{stage['id']}/{stage['phase']}"
             standard = [prefix + '/output.json', prefix + '/tasks.json']
-            repair_artifacts = [*standard, prefix + '/verification.json', prefix + '/report.md',
-                *(prefix + '/check-' + content_fingerprint(check['id'])[:16] + '.log' for check in plan_checks)]
+            ordinary = stage['phase'] == 'build' and stage['artifact_paths'] == standard
+            repair_artifacts: list[str] = []
+            if not ordinary:
+                require(isinstance(plan_checks, list) and all(isinstance(check, dict)
+                        and isinstance(check.get('id'), str) and check['id'] for check in plan_checks),
+                        'state_unavailable', 'Repair metadata requires identified Plan checks.')
+                repair_artifacts = [*standard, prefix + '/verification.json', prefix + '/report.md',
+                    *(prefix + '/check-' + content_fingerprint(check['id'])[:16] + '.log' for check in plan_checks)]
             require(state.get("schema") == "taskplane.workflow/v2" and stage["phase"] in PHASES[3:]
-                    and (stage['phase'] == 'build' and stage["artifact_paths"] == standard
-                         or stage["artifact_paths"] == repair_artifacts),
+                    and (ordinary or stage["artifact_paths"] == repair_artifacts),
                     "state_unavailable", "Invalid current Build result metadata paths.")
         ids.add(stage["id"])
         packet = stage["packet"]

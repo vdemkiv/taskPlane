@@ -892,6 +892,11 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
     if options.count('--full') > 1:
         return False
     options = [value for value in options if value != '--full']
+    if words[3] == 'diagnose' and not options:
+        try:
+            return runtime_command.resolve_selection(str(cwd), event, workspace) == workspace
+        except (workflow.Refusal, OSError, ValueError):
+            return False
     required = {'--workspace'}
     if words[3] == 'recover':
         required |= ({'--recovery-request', '--expected-sha256', '--recovery-mode'}
