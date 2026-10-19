@@ -111,7 +111,7 @@ def bound_output(controller, state):
                 log = check['evidence_outputs'][0]
                 if repairing:
                     from taskplane.primitives import content_fingerprint
-                    log = str(Path(target).parent / ('check-'+content_fingerprint(check['id'])[:16]+'.log'))
+                    log = (Path(target).parent / ('check-'+content_fingerprint(check['id'])[:16]+'.log')).as_posix()
                 if not (controller.workspace/history).exists():
                     # Discard only the unverified placeholder emitted by prepare.
                     (controller.workspace/log).unlink(missing_ok=True)
