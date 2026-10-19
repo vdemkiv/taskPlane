@@ -12,7 +12,11 @@ loop. Those earlier layouts are historical, not current recovery instructions.
 | Verified committed import record and `recovery-v1/` originals | Alternative authentic import initialization provenance; never a fabricated ordinary marker |
 | Accepted result files and immutable objects/logs | Concrete phase/check history and relevant evidence references |
 | Durable brief/references | Restart context, current work and missing inputs; no attention/delivery receipt |
-| `flow-events.jsonl`, `knowledge/graph.json`, dashboard and usage snapshots | Optional observations and generated views; not phase authority |
+| `native-parent-<actor-key>.json` | Run-bound host lifecycle parent observations used when native metadata is not yet available; operational identity, never journal data |
+| `live-telemetry-<run-key>.json` | Advisory operational aggregates and counter baselines; separate from gates and analysis records |
+| `run-record-<key>.json` | Optional summaries written only after a run ends; no gate authority or live consumer |
+| `flow-events.jsonl` | Legacy historical analysis input, never an active-flow dependency |
+| `knowledge/graph.json`, dashboard and usage snapshots | Optional observations and generated views; not phase authority |
 
 The root key identifies the owning conversation/store, not a freely supplied
 worker principal. The controller owns ordered Product → Design → Plan → Build →

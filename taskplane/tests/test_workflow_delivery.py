@@ -227,7 +227,7 @@ def test_dashboard_uses_protected_decision_even_without_journal(tmp_path, choice
 def test_legacy_finish_is_never_displayed_as_acceptance(tmp_path):
     flow.append(tmp_path, {"kind": "start", "run": "legacy", "session": "root", "phase": "product"})
     flow.append(tmp_path, {"kind": "finish", "run": "legacy", "session": "root", "phase": "retro", "note": "done"})
-    page = flow_dashboard.render(str(tmp_path), flow.report(tmp_path, "legacy"))
+    page = flow_dashboard.render(str(tmp_path), flow.report(tmp_path, "legacy", history=True))
     assert "Legacy observations are unverified" in page
     assert 'class="stage recorded"' not in page
 

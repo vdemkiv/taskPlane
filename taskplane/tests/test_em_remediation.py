@@ -72,7 +72,7 @@ def test_torn_journal_and_short_writes_preserve_finish(tmp_path, monkeypatch):
     real_write = os.write
     monkeypatch.setattr(flow.os, "write", lambda fd, data: real_write(fd, data[:7]))
     flow.append(tmp_path, {"kind": "finish", "run": "repair", "session": "root", "note": "Done"})
-    report = flow.report(tmp_path)
+    report = flow.report(tmp_path, history=True)
     assert report["observation_status"] == "finished"
     assert report["status"] == "legacy_unverified"
     assert report["outcome"] == "Done"
@@ -171,7 +171,7 @@ def test_resumed_thread_measurement_uses_one_explicit_logical_baseline(tmp_path,
             'timestamp': '2026-09-01T00:00:07Z', 'payload': {'thread_id': 'root',
             'thread_token_usage': {'input_tokens': 210, 'cached_input_tokens': 0,
                                   'output_tokens': 10, 'total_tokens': 220}}}) + '\n')
-    report = flow.report(workspace)
+    report = flow.report(workspace, history=True)
     if sys.platform not in ('darwin', 'linux'):
         assert report['tokens'] is None
         assert not report['usage_refresh']['fully_discovered']

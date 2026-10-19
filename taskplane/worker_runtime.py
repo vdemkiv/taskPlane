@@ -460,12 +460,9 @@ def _retry_usage(workspace: Path, state: dict[str, Any], budget: dict[str, Any])
         return unknown
     try:
         from . import flow
-        events = flow.read_events(workspace)
-        start = next((event for event in reversed(events) if event.get('kind') == 'start'
-                      and event.get('run') == state['run'] and event.get('session') == state['root']), None)
-        if start is None:
-            return unknown
-        measured = flow.reconcile_usage(start, events, state)
+        from . import live_telemetry
+        start = live_telemetry.read(workspace, state)['metadata']
+        measured = flow.reconcile_usage(start, [], state)
         coverage = measured['token_coverage']
         if any(coverage.get(key, 1) for key in ('unmeasured_sessions', 'partial_sessions', 'discovery_errors', 'inventory_errors')):
             return unknown

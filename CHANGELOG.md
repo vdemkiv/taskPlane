@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.34.2 — separate runtime telemetry from post-run analysis
+
+- Remove analysis-journal reads, appends and full reductions from active hooks and flow control/status/progress.
+- Store live warning/count aggregates separately, using actual controller/admission identity and preserving gates.
+- Read native retry accounting from operational run metadata without a journal start prerequisite.
+- Add explicit optional, idempotent ended-run analysis records and retain explicit legacy history reading.
+- Remove obsolete per-hook journal assumptions with their associated tests; preserve useful mixed-file regressions.
+- Update both host manifests and storage/CLI documentation.
+
+Candidate verification is recorded separately; this entry does not claim live host acceptance.
+
 ## 2.34.1 — hook and approval boundary repairs
 
 - Make unavailable or failed hook launches diagnostic at Stop and structured denials at PreToolUse, including stale populated runtime paths.

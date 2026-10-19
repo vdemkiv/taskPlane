@@ -56,7 +56,7 @@ def test_discovers_unhooked_lenses_and_retains_final_usage(tmp_path,monkeypatch,
     with (sessions/'lens.jsonl').open('a') as stream:
         stream.write(json.dumps(latest) + '\n')
     before=(ws/flow.JOURNAL).read_bytes()
-    r=flow.report(ws)
+    r=flow.report(ws, history=True)
     supported_inventory = sys.platform in ('darwin', 'linux')
     if supported_inventory:
         assert r['tokens']['total_tokens']==430
@@ -72,7 +72,7 @@ def test_discovers_unhooked_lenses_and_retains_final_usage(tmp_path,monkeypatch,
     assert (ws/flow.JOURNAL).read_bytes()==before # reports never mutate evidence
     flow.append(ws, {'kind': 'usage', 'run': 'shared', 'session': 'root', 'measurement': r})
     (sessions/'lens.jsonl').unlink()
-    recovered=flow.report(ws)
+    recovered=flow.report(ws, history=True)
     lens = next(s for s in recovered['sessions'] if s['agent']=='/root/lens')
     if supported_inventory:
         assert recovered['tokens']['total_tokens']==430
@@ -90,12 +90,12 @@ def test_missing_reviewer_is_unknown_not_zero_and_artifacts_are_run_scoped(tmp_p
     (ws/'reviews.json').write_text(json.dumps([{'lens':'qa','agent':'/root/missing'}]))
     attach_view_inputs(ws, reviews='reviews.json')
     capsys.readouterr()
-    r=flow.report(ws)
+    r=flow.report(ws, history=True)
     assert r['token_coverage']['unmeasured_sessions']==1
     assert next(s for s in r['sessions'] if s['agent']=='/root/missing')['usage'] is None
     flow.append(ws,{'kind':'start','run':'other','session':'other-root','goal':'Other','at':'2026-09-02T00:00:00Z'})
-    assert flow.report(ws)['reviews']==[]
-    assert len(flow.report(ws,'shared')['reviews'])==1
+    assert flow.report(ws, history=True)['reviews']==[]
+    assert len(flow.report(ws,'shared', history=True)['reviews'])==1
     outside=tmp_path/'outside.md';outside.write_text('private')
     flow.main(['attach','--workspace',str(ws),'--run','shared','--evidence','../outside.md'])
     assert json.loads(capsys.readouterr().out)['status']=='blocked'
@@ -133,7 +133,7 @@ def test_dashboard_renders_multiple_review_evidence_paths_from_immutable_snapsho
     (ws/'reviews.json').write_text(json.dumps({'reviews':[
         {'lens':'quality','agent':'root','evidence':['one.md','two.md']}]}))
     attach_view_inputs(ws, reviews='reviews.json', evidence=['one.md', 'two.md'])
-    result = flow.report(ws)
+    result = flow.report(ws, history=True)
     flow.publish_dashboard(ws, 'shared', supplied=result)
     assert not any('dashboard refresh' in error for error in result['evidence_errors'])
     page=(ws/flow.DASHBOARD).read_text()
@@ -157,7 +157,7 @@ def test_dashboard_displays_shared_tasks_lenses_stages_graph_and_escaped_evidenc
     attach_view_inputs(ws, tasks='tasks.json', reviews='reviews.json', evidence=['review.md'])
     capsys.readouterr()
     depgraph.save(str(ws),{'modules':{'src':{'kind':'module','files':1},'cli':{'kind':'module','files':1}},'edges':[{'from':'cli','to':'src','kind':'imports'}]})
-    page=dashboard.report_widget(str(ws))
+    page=flow.publish_dashboard(ws, supplied=flow.report(ws, history=True)).read_text()
     assert 'no active loop' not in page and 'no active tasks' not in page
     assert all(x in page for x in ['T1','T2','/root/lens','Real finding fixed','Product passed; original dashboard failed'])
     assert '<script>alert' not in page and '&lt;script&gt;' in page
@@ -198,7 +198,7 @@ def test_unsequenced_host_records_are_advisory_only(tmp_path):
 
 @pytest.mark.parametrize("thread_environment", [True, False])
 def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,monkeypatch,thread_environment):
-    ws,sessions,_=setup_run(tmp_path,monkeypatch)
+    ws,sessions,run=setup_run(tmp_path,monkeypatch)
     monkeypatch.setenv('CLAUDE_PLUGIN_ROOT','/installed/taskplane')
     for key in ('CLAUDECODE','TASKPLANE_CLAUDE_SESSION_ID','CLAUDE_SESSION_ID'):
         monkeypatch.delenv(key,raising=False)
@@ -211,11 +211,14 @@ def test_codex_compatibility_plugin_root_keeps_native_hook_counters(tmp_path,mon
     assert not flow.claude_session(event)
     if thread_environment:assert not flow.claude_session({})
     assert flow._controller(ws,'root',event=event).adapter.name == 'codex'
-    assert flow._observe_hook(event)=={}
-    observed=flow.read_events(ws)[-1]
-    assert observed['kind']=='hook' and observed.get('host')!='claude'
-    assert observed['usage_status']=='observed' and observed['usage']['total_tokens']==140
-    assert flow.report(ws)['tokens']['total_tokens']==40
+    from taskplane.tests.test_workflow_local import setup
+    from taskplane import live_telemetry
+    _, state = setup(ws)
+    live_telemetry.initialize(ws, state, {'usage': run['usage']})
+    observed = flow.counter(event, 'root')
+    assert observed['usage_status'] == 'observed' and observed['usage']['total_tokens'] == 140
+    assert flow._observe_hook({**event, '_telemetry_state': state}) == {}
+    assert live_telemetry.summary(live_telemetry.read(ws, state), state)['tokens']['total_tokens'] == 40
     # An explicit host identity remains stronger than inherited environment.
     assert flow.claude_session({'host':'claude'})
     monkeypatch.setenv('TASKPLANE_CLAUDE_SESSION_ID','nested-claude')

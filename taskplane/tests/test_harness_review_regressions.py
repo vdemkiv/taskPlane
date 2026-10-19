@@ -132,13 +132,6 @@ def exercise_child_lineage(root):
         unrelated = {k: v for k, v in child.items() if k not in ('transcript_path', 'parent_session_id')}
         unrelated['thread_id'] = 'unrelated'
         assert flow.hook(unrelated).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
-    # A child-start event without an ID must not attach a finished root to an
-    # unrelated open run through a missing root/child value in older journal rows.
-    rows = [{'kind': 'start', 'run': 'foreign-run', 'session': 'foreign'},
-            {'kind': 'hook', 'event': 'SubagentStart', 'root': 'foreign', 'session': 'foreign'},
-            {'kind': 'start', 'run': 'closed-run', 'session': 'root'},
-            {'kind': 'finish', 'run': 'closed-run', 'session': 'root'}]
-    assert flow.active_run(rows, 'root') is None
     # A native task may itself have been forked, then start its own workflow.
     # Deleting its advisory journal must not redirect that active binding.
     workspace = root/'own-active-run'
@@ -288,9 +281,10 @@ def test_child_outcome_does_not_require_usage_counter(tmp_path,monkeypatch):
     monkeypatch.setattr(flow,'observed_parent',lambda *_:'root')
     event=dict(cwd=str(tmp_path),thread_id='child',hook_event_name='PreToolUse',tool_name='Write',call_id='child-denial',tool_input={'path':'app.py'})
     with pytest.raises(w.Refusal): flow.hook(event)
-    rows=[r for r in flow.read_events(tmp_path) if r.get('call_id')=='child-denial']
-    assert len(rows)==1 and rows[0]['session']=='child' and rows[0]['outcome']=='denied'
-    assert rows[0]['usage'] is None
+    from taskplane import live_telemetry
+    value = live_telemetry.read(tmp_path, s)
+    assert 'child' in value['sessions'] and value['outcomes']['denied'] == 1
+    assert value['sessions']['child']['baseline'] is None
 
 
 def test_parent_keyed_hook_uses_only_verified_native_child_environment(monkeypatch):
@@ -315,11 +309,12 @@ def test_denials_early_returns_and_journal_failure_keep_original_decision(tmp_pa
     with pytest.raises(w.Refusal): flow.hook(event,governor=c)
     flow.hook({**event,'tool_name':'Read','call_id':'read'},governor=c)
     flow.hook(dict(cwd=str(tmp_path),thread_id='root',hook_event_name='Stop'),governor=c)
-    rows=[r for r in flow.read_events(tmp_path) if r.get('kind')=='hook']
-    assert [(r.get('call_id'),r['outcome']) for r in rows[:2]] == [('deny','denied'),('read','admitted')]
-    assert any(r['event']=='Stop' for r in rows)
-    def fail(*args,**kwargs): raise OSError('optional journal unavailable')
-    monkeypatch.setattr(flow,'append',fail)
+    from taskplane import live_telemetry
+    value = live_telemetry.read(tmp_path, s)
+    assert value['outcomes']['denied'] == 1 and value['outcomes']['admitted'] == 1
+    assert value['observation_count'] == 3
+    def fail(*args,**kwargs): raise OSError('optional telemetry unavailable')
+    monkeypatch.setattr(live_telemetry,'observe',fail)
     with pytest.raises(w.Refusal,match='outside'): flow.hook(event,governor=c)
 
 

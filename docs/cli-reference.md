@@ -2,7 +2,7 @@
 
 Use the actual loaded entrypoint, explicit selected workspace and relevant
 `--help`. Source, an extracted archive and an installed plugin are distinct.
-These commands describe the 2.34.1 candidate; an old-contract active run requires
+These commands describe the 2.34.2 candidate; an old-contract active run requires
 its original compatible runtime for mutation.
 
 ```sh
@@ -16,7 +16,9 @@ python3 /actual/plugin/taskplane/tp.py flow --help
 | Operation | Purpose |
 | --- | --- |
 | `flow start` | Create the authorized full or standalone route from goal/scope/current output |
-| `flow report` | Inspect current run, phase, pending decision, useful tasks/blockers |
+| `flow report` | Inspect workflow state and separate live telemetry without journal access |
+| `flow report --history --run RUN --full` | Explicit analysis of retained legacy journal history |
+| `flow report --record --run RUN --note TEXT --full` | Optionally save one factual analysis record after a run ends |
 | `flow context` | Read durable current/task brief and relevant references |
 | `flow attach` | Publish current task definitions under existing authority |
 | `flow submit` | Validate and atomically seal concrete current output |

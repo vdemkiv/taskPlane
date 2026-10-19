@@ -230,6 +230,7 @@ def exercise(workspace,host,root=ROOT):
             state=cli(workspace,host,'finish','--expected-revision',str(state['revision']),root=root)['workflow']
     assert state['finished'] and len(state['decisions'])==7
     assert all(d['assurance']=='observed' for d in state['decisions'].values())
+    assert not (workspace/'.taskplane/flow-events.jsonl').exists()
     cli(workspace,host,'--run',state['run'],root=root,entry='dashboard')
     page=(workspace/'.taskplane/dashboard.html').read_text()
     assert 'Taskplane' in page and state['run'] in page
@@ -449,7 +450,7 @@ def test_native_start_needs_scope_and_never_upgrades_legacy_observations(tmp_pat
     from taskplane import flow
     flow.append(ws,{'kind':'start','run':'old','session':'root','phase':'retro'})
     flow.append(ws,{'kind':'finish','run':'old','session':'root','phase':'retro'})
-    assert cli(ws,'codex','report','--run','old')['status']=='legacy_unverified'
+    assert cli(ws,'codex','report','--history','--run','old')['status']=='legacy_unverified'
     state=cli(ws,'codex','start','--scope','.taskplane/scope.json','--request-reference','test/new')['workflow']
     assert state['run']!='old' and w.current(state)['phase']=='product' and state['decisions']=={}
 
@@ -528,10 +529,10 @@ def test_snapshot_run_selection_publication_and_captured_graph(tmp_path,monkeypa
     old=target.read_bytes()
     frozen={p:p.read_bytes() for p in (c.workspace/'.taskplane').glob('snapshot-*.html')}
     new=host.Controller(c.workspace,'other-task',host.installed_adapter('codex'))
-    other=new.start({'scope':s['scope'],'request_reference':'test/second-task'})
+    other=new.start({'scope':s['scope'],'goal':'second run','request_reference':'test/second-task'})
     flow.append(c.workspace,{'kind':'start','session':'other-task','run':other['run'],'phase':'product','at':other['started_at'],'goal':'second run'})
     # The current task remains on its own run, even with a later unrelated start.
-    assert flow.report(c.workspace)['run']==s['run']
+    assert flow.report(c.workspace, s['run'])['run']==s['run']
     detached=flow.publish_dashboard(c.workspace,other['run'],governor=new)
     assert detached!=target and target.read_bytes()==old
     selected=flow.publish_dashboard(c.workspace,other['run'],select=True,governor=new)
@@ -762,7 +763,8 @@ def test_measurement_clock_distinguishes_coverage(tmp_path,monkeypatch,case):
     if case=='missing':sessions[0].update(status='unavailable',usage=None,native_usage=None)
     if case=='reset':sessions[0]['native_usage']={'total_tokens':1}
     if case=='unknown_time':sessions=[session('root','recorded; native counter unavailable',None)]
-    flow.append(tmp_path,{'kind':'start','session':'root','run':state['run'],'phase':'product','at':state['started_at'],'usage':{'total_tokens':100},'hook_setup':'host_adapter'})
+    from taskplane import live_telemetry
+    live_telemetry.initialize(tmp_path, state, {'usage': {'total_tokens': 100}})
     monkeypatch.setattr(flow.flow_usage,'reconcile',lambda *_,**kw:{'sessions':deepcopy(sessions),'tokens':{'total_tokens':30},'token_coverage':{'discovery_errors':1 if case=='discovery' else 0}})
     result=flow.report(tmp_path,state['run'],governor=c)
     clock=result['usage_measurement']

@@ -30,8 +30,14 @@ are separate user-authored fields and are stored as provided, within size limits
 
 Derived runtime observations are workspace-local under `.taskplane/`:
 
-- `flow-events.jsonl` stores run lifecycle, goals, notes, artifact references,
-  hook metadata, session identities and usage measurements.
+- `flow-events.jsonl` is retained historical analysis input. Active runs do not
+  read or append to it.
+- `live-telemetry-<run-key>.json` stores separate advisory activity/outcome
+  aggregates, hashed duplicate/action identities, native counter baselines,
+  progress notes and explicitly attached references/previews. It has no gate authority.
+- Optional `run-record-<key>.json` files summarize ended runs for later analysis.
+  They are created only when requested, never required before or during a run,
+  and contain run identity, goal, outcome, phase result references and a supplied note.
 - `knowledge/graph.json` and optional graph-cache files store derived file
   identities, dependencies, components and recorded relationships.
 - `review-source.json` stores the selected source inventory and, for a diff
