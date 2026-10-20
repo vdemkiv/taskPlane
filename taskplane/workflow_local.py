@@ -1284,6 +1284,183 @@ def bootstrap_write(workspace: Path, event: dict[str, Any], state: dict[str, Any
     return True
 
 
+def _runtime_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _exchange_runtime(first: Path, second: Path) -> None:
+    """Publish an entire compatible repair without an absent-runtime interval."""
+    import ctypes
+    w.require(sys.platform == 'darwin', 'unsupported_authority',
+              'Atomic runtime repair is unavailable on this platform; use the host plugin updater.')
+    library = ctypes.CDLL(None, use_errno=True)
+    call = library.renamex_np
+    call.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+    call.restype = ctypes.c_int
+    if call(os.fsencode(first), os.fsencode(second), 2) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def recover_runtime(controller: Any, request_path: str, checksum: str, *, mode: str) -> dict[str, Any]:
+    """Explicit compatible repair, never a shell exemption or a version upgrade.
+
+    The observed user request is separate from phase approval. Candidate modules
+    must already belong to the accepted Build Plan; hooks, launchers, manifests,
+    skills and controller bytes are preserved. No candidate code is executed by
+    this operation. The next normal invocation loads the repaired modules.
+    """
+    import tempfile
+    from contextlib import nullcontext
+    w.require(mode in {'inspect', 'apply'} and controller.principal == controller.root
+              and controller.adapter.profile == PROFILE, 'unsupported_authority',
+              'Runtime recovery requires the owning native root.')
+    w.require(re.fullmatch(r'[0-9a-f]{64}', checksum) is not None,
+              'invalid_evidence', 'Runtime recovery needs the exact request SHA-256.')
+    workspace = controller.workspace
+    relative = Path(request_path)
+    w.require(not relative.is_absolute() and '..' not in relative.parts
+              and relative.as_posix().startswith('.taskplane/bootstrap/'),
+              'scope_violation', 'Select a workspace bootstrap repair request.')
+    raw = evidence.read(workspace, request_path)
+    w.require(len(raw) <= 65536 and hashlib.sha256(raw).hexdigest() == checksum,
+              'stale_checkpoint', 'Runtime repair request changed or exceeds its bound.')
+    try:
+        request = _relay_json(raw)
+    except DecisionRefusal:
+        raise w.Refusal('invalid_evidence', 'Runtime repair request must be a unique, finite JSON object.') from None
+    w.require(set(request) == {'schema', 'binding', 'request_reference', 'files'}
+              and request['schema'] == 'taskplane.runtime-repair/v1'
+              and isinstance(request['request_reference'], str)
+              and 0 < len(request['request_reference'].strip()) <= 512,
+              'invalid_evidence', 'Runtime repair needs a bounded explicit user request reference.')
+    files = request['files']
+    w.require(isinstance(files, dict) and 0 < len(files) <= 32,
+              'invalid_evidence', 'Runtime repair needs one to 32 exact module replacements.')
+    runtime = _runtime_root()
+    w.require(runtime != workspace and not workspace.is_relative_to(runtime), 'unsupported_authority',
+              'Use a separate installed bundle; a source checkout cannot repair itself.')
+
+    def inventory(bundle: Path) -> dict[str, str]:
+        result: dict[str, str] = {}
+        total = 0
+        for directory, folders, names in os.walk(bundle, followlinks=False):
+            parent = Path(directory)
+            w.require(not parent.is_symlink() and all(not (parent / name).is_symlink() for name in folders),
+                      'scope_violation', 'Runtime directories must not be symlinks.')
+            folders[:] = sorted(name for name in folders if name != '__pycache__')
+            for name in sorted(names):
+                target = parent / name
+                info = target.lstat()
+                w.require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1,
+                          'scope_violation', 'Runtime files must be regular, singly linked files.')
+                total += info.st_size
+                w.require(len(result) < MAX_SOURCE_FILES and total <= MAX_SOURCE_BYTES,
+                          'invalid_evidence', 'Runtime repair inventory exceeds its bound.')
+                result[target.relative_to(bundle).as_posix()] = hashlib.sha256(target.read_bytes()).hexdigest()
+        return result
+
+    target = controller._path()
+    runtime_lock = (primitives.file_lock(str(runtime.parent / '.taskplane-runtime-repair'), timeout=5)
+                    if mode == 'apply' else nullcontext())
+    with controller._locked(target), runtime_lock:
+        db = controller._read(target)
+        state = db['runs'].get(db['active'])
+        w.require(state is not None and request['binding'] == {
+            'workspace': str(workspace), 'root': controller.root, 'run': state['run'],
+            'revision': state['revision'], 'visit': w.current(state)['id'],
+            'runtime': str(runtime)}, 'stale_checkpoint', 'Runtime repair binding is not current.')
+        stage = w.current(state)
+        w.require(stage['phase'] == 'build' and stage['packet'] is None
+                  and not state.get('retired') and not state.get('finished'),
+                  'approval_required', 'Runtime repair requires an open, approved-Plan Build.')
+        controller.adapter.before_action(state, 'runtime-repair')
+        w.require(controller.adapter.can_seal(state), 'state_unavailable',
+                  'Join or interrupt known work before runtime repair.')
+        plan_paths = {path for row in w.accepted_plan(state)['packet']['output']['task_dag']
+                      for path in row['paths']}
+        before = inventory(runtime)
+        host_manifest = '.codex-plugin/plugin.json' if controller.adapter.name == 'codex' else '.claude-plugin/plugin.json'
+        w.require({'hooks/hooks.json', host_manifest, 'taskplane/tp.py', 'taskplane/workflow_local.py'} <= before.keys(),
+                  'state_unavailable', 'Required installed hook, host manifest, launcher or repair guard is missing.')
+        replacements: dict[str, bytes] = {}
+        for name, pins in files.items():
+            path = Path(name)
+            w.require(len(path.parts) == 2 and path.parts[0] == 'taskplane'
+                      and re.fullmatch(r'[a-z][a-z0-9_]*\.py', path.name) is not None
+                      and name not in {'taskplane/tp.py', 'taskplane/workflow_local.py'}
+                      and name in plan_paths and name in before,
+                      'scope_violation', 'Repair only existing Plan-owned modules; keep the launcher and repair guard fixed.')
+            w.require(isinstance(pins, dict) and set(pins) == {'current_sha256', 'candidate_sha256'}
+                      and all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
+                              for value in pins.values()), 'invalid_evidence', 'Invalid runtime file hash pins.')
+            candidate = evidence.read(workspace, name)
+            w.require(len(candidate) <= 4 * 1024 * 1024
+                      and hashlib.sha256(candidate).hexdigest() == pins['candidate_sha256']
+                      and before[name] == pins['current_sha256'],
+                      'stale_checkpoint', 'Candidate or installed runtime file changed: ' + name)
+            try:
+                compile(candidate, name, 'exec', dont_inherit=True)
+            except (SyntaxError, ValueError):
+                raise w.Refusal('invalid_evidence', 'Candidate module does not compile: ' + name) from None
+            replacements[name] = candidate
+        result = {'schema': 'taskplane.runtime-repair-result/v1', 'status': 'inspected',
+                  'binding': request['binding'], 'request_sha256': checksum,
+                  'request_reference': request['request_reference'], 'files': files,
+                  'approvals_changed': False, 'hooks_changed': False, 'version_upgrade': False}
+        if mode == 'inspect':
+            return result
+        w.require(sys.platform == 'darwin', 'unsupported_authority',
+                  'Atomic runtime repair is unavailable on this platform; use the host plugin updater.')
+        control_before = target.read_bytes()
+        audit = request_path + '.result.json'
+        from .workflow_collision import sealed_paths
+        w.require(audit not in sealed_paths(workspace, state), 'scope_violation',
+                  'Runtime repair cannot overwrite another result or owner.')
+        w.require(not evidence.write_path(workspace, audit).exists(), 'scope_violation',
+                  'Preserve the previous repair outcome; select a fresh request path for a retry.')
+        staged = Path(tempfile.mkdtemp(prefix='.taskplane-runtime-repair-', dir=runtime.parent))
+        swapped = False
+        try:
+            shutil.copytree(runtime, staged, dirs_exist_ok=True, symlinks=True,
+                            ignore=shutil.ignore_patterns('__pycache__'))
+            for name, candidate in replacements.items():
+                output = staged / name
+                mode_bits = output.stat().st_mode & 0o777
+                output.chmod(mode_bits | 0o200)
+                with output.open('wb') as stream:
+                    stream.write(candidate)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                output.chmod(mode_bits)
+            expected = {**before, **{name: hashlib.sha256(data).hexdigest()
+                                     for name, data in replacements.items()}}
+            w.require(inventory(staged) == expected and inventory(runtime) == before
+                      and target.read_bytes() == control_before, 'stale_checkpoint',
+                      'Runtime, candidate staging or controller changed before publication.')
+            # Ensure the audit destination is usable before publication. This is
+            # an outcome artifact, not another authority or phase decision.
+            primitives.atomic_json(workspace / audit, {**result, 'status': 'prepared', 'backup': str(staged)})
+            _exchange_runtime(runtime, staged)
+            swapped = True
+            primitives._fsync_directory(str(runtime.parent))
+            w.require(inventory(runtime) == expected and target.read_bytes() == control_before,
+                      'state_unavailable', 'Runtime repair failed its publication integrity check.')
+            result.update(status='repaired', backup=str(staged), audit=audit)
+            primitives.atomic_json(workspace / audit, result)
+        except BaseException:
+            if swapped:
+                _exchange_runtime(runtime, staged)
+                primitives._fsync_directory(str(runtime.parent))
+                primitives.atomic_json(workspace / audit, {**result, 'status': 'rolled_back', 'backup': str(staged)})
+            else:
+                shutil.rmtree(staged)
+                if (workspace / audit).exists():
+                    primitives.atomic_json(workspace / audit, {**result, 'status': 'not_applied'})
+            raise
+        return result
+
+
 def execution_entry(event: dict[str, Any]) -> str | None:
     """Recognize explicit execution selection, never arbitrary mentions or approval."""
     args = event.get('tool_input', {})

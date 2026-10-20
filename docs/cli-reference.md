@@ -41,6 +41,41 @@ result. Explicit optional automatic policies remain supported through `flow poli
 and `flow auto-decide`, with their scope, conditions, assessments and stop phases.
 Approving a checkpoint does not enroll a policy or accept a future phase.
 
+### Compatible runtime recovery
+
+When an explicitly authorized local repair is needed during an open Build, use
+the installed runtime's `flow recover --runtime-repair` operation. Do not send an
+opaque repair helper to Terminal to get around an agent-side refusal. Diagnose
+the actual installed capability first; an older runtime cannot gain a new command
+just because its candidate source was edited. Use the host plugin updater when
+the installed version lacks this operation. This is distinct from approving Build
+or installing a new release.
+
+The request is a hash-pinned JSON file under `.taskplane/bootstrap/`. Its schema
+is `taskplane.runtime-repair/v1`; `binding` contains the exact `workspace`, `root`,
+`run`, `revision`, `visit` and absolute installed `runtime` path. Include the actual
+user repair `request_reference`, and `files`, a map from each existing Plan-owned
+`taskplane/module.py` to its `current_sha256` and `candidate_sha256`. The reference
+is cooperative observation of consent, not independent human authentication.
+
+```sh
+python3 /actual/plugin/taskplane/tp.py flow recover --workspace /actual/workspace \
+  --runtime-repair .taskplane/bootstrap/repair.json --expected-sha256 REQUEST_SHA256 \
+  --recovery-mode inspect
+```
+
+After explicit authorization of the concrete local repair, `--recovery-mode apply`
+uses the same pinned request. No separate phase decision is inferred. Known work
+must be quiescent; hashes and current binding must still match. The operation
+compiles candidate bytes without executing them, stages a complete copy and uses
+an atomic macOS directory exchange with rollback on failed publication or audit.
+The old bundle remains as a backup, and the request's `.result.json` records the
+outcome. Other platforms refuse apply and require the host updater. Hooks,
+manifests, launchers, the repair guard, skills, version labels and controller bytes
+are preserved. This operation supports compatible module repairs, not a contract
+migration or release upgrade. Candidate code still requires its normal checks;
+syntax validation alone does not establish behavioral compatibility.
+
 Use `--workspace PATH`, `--run RUN` and actual current revision where the selected
 operation requires it. Start uses `--goal`, `--scope`, `--request-reference` and,
 for supported standalone routes, `--standalone --phase PHASE`. A scope identifies

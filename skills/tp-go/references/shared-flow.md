@@ -41,7 +41,7 @@ Execution workdirs and literal absolute targets are resolved before unselected
 fallback. Conflicting governed roots refuse a mutation; normal reads remain usable.
 
 New runs use `taskplane.workflow/v2`, `brief/v1` and `ownership/v1`. Keep the loaded
-runtime fixed for an active run. Candidate source, packages and installed caches
+runtime contract fixed for an active run. Candidate source, packages and installed caches
 are separate copies. Old-contract runs remain historical/readable and require
 their original compatible runtime for mutation. Never silently migrate an active
 run or transfer its approvals to a new one.
@@ -151,7 +151,13 @@ establish session hook readiness; a selected run or trusted install alone does n
 
 Editing owned candidate hook source and tests is normal implementation work.
 Disabling, uninstalling, replacing or bypassing the active harness to get past a
-refusal is prohibited. Keep the live installation intact while testing separate
+refusal is prohibited. Do not ask the user to execute a refused repair helper in
+Terminal. For an explicitly authorized compatible module repair, use the actual
+installed runtime's `flow recover --runtime-repair` operation with a pinned
+request; preserve its hooks, launcher, repair guard, manifests and controller
+authority. Never infer repair authorization from phase approval. If the loaded
+runtime lacks that operation, report the capability gap and use the host plugin
+updater; candidate source cannot grant itself live admission. Keep the live installation intact while testing separate
 candidates. Verify allowed and rejected actions in fresh Codex and Claude
 installations. A failed supported-path check is a defect. Stronger containment
 when a host does not invoke hooks is a separately documented existing limitation;

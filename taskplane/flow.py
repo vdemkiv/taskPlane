@@ -971,7 +971,9 @@ def _state_admin(event: dict[str, Any], workspace: Path) -> bool:
             return False
     required = {'--workspace'}
     if words[3] == 'recover':
-        required |= ({'--recovery-request', '--expected-sha256', '--recovery-mode'}
+        required |= ({'--runtime-repair', '--expected-sha256', '--recovery-mode'}
+                     if '--runtime-repair' in options else
+                     {'--recovery-request', '--expected-sha256', '--recovery-mode'}
                      if '--recovery-request' in options else
                      {'--recover-from', '--expected-sha256', '--run', '--expected-revision', '--request-reference'})
     if len(options) != len(required) * 2 or set(options[::2]) != required:
@@ -1419,6 +1421,7 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser.add_argument("--recover-from", help="Exact adjacent numbered workflow copy; recover only")
     parser.add_argument("--expected-sha256", help="Expected recovery copy or import request SHA-256")
     parser.add_argument("--recovery-request", help="Absolute hash-pinned state import request file")
+    parser.add_argument("--runtime-repair", help="Workspace bootstrap request for a compatible, explicitly authorized runtime repair")
     parser.add_argument("--recovery-mode", choices=["inspect", "apply"], help="Preview or apply a same-root state import")
     parser.add_argument("--evidence", action="append", default=[])
     parser.add_argument("--changed", action="append", default=[])
@@ -1440,12 +1443,16 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
         parser.error('resume options apply only to flow resume')
     if args.action != 'recover' and args.recover_from is not None:
         parser.error('--recover-from applies only to flow recover')
-    if args.action != 'recover' and (args.expected_sha256 is not None or args.recovery_request is not None or args.recovery_mode is not None):
+    if args.action != 'recover' and (args.expected_sha256 is not None or args.recovery_request is not None
+                                   or args.runtime_repair is not None or args.recovery_mode is not None):
         parser.error('recovery options apply only to flow recover')
+    if args.runtime_repair is not None and (args.recovery_request is not None or args.recover_from is not None
+                                          or args.run is not None or args.expected_revision is not None):
+        parser.error('select one runtime repair, state import or numbered-copy recovery')
     if args.recovery_request is not None and (args.recover_from is not None or args.run is not None or args.expected_revision is not None):
         parser.error('select a pinned import request or an adjacent numbered copy, not both')
-    if args.recovery_mode is not None and args.recovery_request is None:
-        parser.error('--recovery-mode requires --recovery-request')
+    if args.recovery_mode is not None and args.recovery_request is None and args.runtime_repair is None:
+        parser.error('--recovery-mode requires --recovery-request or --runtime-repair')
     if args.task is not None and args.action not in {"context", "worker"}:
         parser.error("--task applies to context or worker")
     if any(value is not None for value in (args.read, args.section, args.page)) and args.action != "context":
@@ -1554,7 +1561,15 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             workflow.require(not observed_parent({}, session) or independent_fork({}, session),
                              'scope_violation', 'Native children cannot restore workflow state.')
             controller = governor or _controller(workspace, session, args.profile)
-            if args.recovery_request is not None:
+            if args.runtime_repair is not None:
+                try:
+                    repaired = workflow_local.recover_runtime(controller, args.runtime_repair,
+                        args.expected_sha256 or '', mode=args.recovery_mode or 'inspect')
+                except (OSError, primitives.StateError) as exc:
+                    raise workflow.Refusal('state_unavailable',
+                        'Runtime recovery did not complete; inspect the preserved outcome and backup: ' + str(exc)) from None
+                print(json.dumps(repaired))
+            elif args.recovery_request is not None:
                 from . import state_import
                 imported = state_import.recover(controller, args.recovery_request, args.expected_sha256 or '',
                                                 mode=args.recovery_mode or 'inspect')
@@ -1566,6 +1581,11 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
             return 0
         if args.action == "diagnose":
             diagnostics = workflow_local.diagnose(workspace)
+            diagnostics['runtime_recovery'] = {
+                'operation': 'flow recover --runtime-repair REQUEST --expected-sha256 SHA256 --recovery-mode inspect|apply',
+                'request_schema': 'taskplane.runtime-repair/v1', 'available': sys.platform == 'darwin',
+                'scope': 'Existing Plan-owned modules in an open quiescent Build; preserve hooks, launcher, repair guard and manifests.',
+                'fallback': 'Use the host plugin updater if this installed runtime lacks the operation; do not execute a repair helper outside the hook gate.'}
             diagnostic_controller = governor or _controller(workspace, session_id({}), args.profile)
             try:
                 state = diagnostic_controller.report()

@@ -391,6 +391,158 @@ def supported_build(tmp_path, host):
     return c, c.report(state['run'], diagnostics=False)
 
 
+def runtime_repair_fixture(tmp_path, monkeypatch, host='codex'):
+    """A real approved Plan/controller and a separate installed-layout fixture."""
+    import hashlib
+    from taskplane.tests import test_workflow_evidence as fixtures
+    original = fixtures.prepare
+    module = 'taskplane/context_reuse.py'
+    def prepared(workspace, phase='product', **kwargs):
+        state, output, tasks = original(workspace, phase, **kwargs)
+        if module not in state['scope']['paths']['build']:
+            state['scope']['paths']['build'].append(module)
+        if phase == 'plan':
+            if module not in output['write_scope']:
+                output['write_scope'].append(module)
+            (workspace/'plan.json').write_text(json.dumps(output))
+            (workspace/'tasks.json').write_text(json.dumps(tasks))
+        return state, output, tasks
+    monkeypatch.setattr(fixtures, 'prepare', prepared)
+    initial, _, _ = prepared(tmp_path)
+    candidate = tmp_path/module
+    candidate.parent.mkdir()
+    candidate.write_text('value = "repaired"\n')
+    c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
+    state = c.start({'scope': initial['scope'], 'request_reference': 'fixture/repair-start'})
+    for phase in ('design', 'plan', 'build'):
+        state = submit(c, state)
+        state = decide(c, state, decision(state, event='fixture/repair-accept/' + str(state['revision'])))
+        state = c.apply('advance', state['run'], expected_revision=state['revision'], phase=phase)
+    assert module in w.accepted_plan(state)['packet']['output']['task_dag'][0]['paths']
+    runtime = tmp_path/'installed'
+    manifest = '.codex-plugin/plugin.json' if host == 'codex' else '.claude-plugin/plugin.json'
+    for name, content in {module: 'value = "original"\n', 'hooks/hooks.json': '{}',
+                          manifest: '{"version":"fixture"}',
+                          'taskplane/workflow_local.py': '# fixed repair guard\n',
+                          'taskplane/tp.py': '# fixed launcher\n'}.items():
+        path = runtime/name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    monkeypatch.setattr(local, '_runtime_root', lambda: runtime)
+    request = {'schema': 'taskplane.runtime-repair/v1', 'binding': {
+        'workspace': str(tmp_path), 'root': c.root, 'run': state['run'], 'revision': state['revision'],
+        'visit': w.current(state)['id'], 'runtime': str(runtime)},
+        'request_reference': 'conversation/explicit-local-repair', 'files': {module: {
+        'current_sha256': hashlib.sha256((runtime/module).read_bytes()).hexdigest(),
+        'candidate_sha256': hashlib.sha256(candidate.read_bytes()).hexdigest()}}}
+    relative = '.taskplane/bootstrap/runtime-repair.json'
+    path = tmp_path/relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    def save():
+        path.write_text(json.dumps(request))
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    return c, state, runtime, request, relative, save
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+def test_supported_runtime_recovery_inspects_without_running_candidate_or_changing_authority(tmp_path, monkeypatch, host):
+    from taskplane import flow
+    import shlex, sys
+    from pathlib import Path
+    c, state, runtime, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch, host)
+    checksum = save()
+    before = c._path().read_bytes()
+    words = [sys.executable, str(Path(flow.__file__).with_name('tp.py')), 'flow', 'recover',
+             '--workspace', str(tmp_path), '--runtime-repair', relative,
+             '--expected-sha256', checksum, '--recovery-mode', 'inspect']
+    event = {'hook_event_name': 'PreToolUse', 'cwd': str(tmp_path), 'session_id': 'root',
+             'tool_name': 'exec_command' if host == 'codex' else 'Bash',
+             'tool_input': {'cmd' if host == 'codex' else 'command': shlex.join(words)}}
+    assert flow._state_admin(event, tmp_path)
+    assert flow.main(words[3:], governor=c) == 0
+    assert c._path().read_bytes() == before
+    assert (runtime/'taskplane/context_reuse.py').read_text() == 'value = "original"\n'
+    assert not (tmp_path/(relative+'.result.json')).exists()
+    assert not list(tmp_path.glob('.taskplane-runtime-repair-*'))
+
+
+@pytest.mark.parametrize('bad', ['hash', 'revision', 'root', 'runtime', 'source', 'installed',
+                                'unowned', 'launcher', 'guard', 'symlink', 'hardlink', 'running', 'child',
+                                'syntax', 'prior-audit', 'missing-hooks'])
+def test_runtime_repair_refuses_drift_and_unowned_effects_before_staging(tmp_path, monkeypatch, bad):
+    import hashlib
+    c, state, runtime, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch)
+    module = 'taskplane/context_reuse.py'
+    if bad in {'revision', 'root', 'runtime'}:
+        request['binding'][bad] = 'foreign'
+    elif bad == 'source': (tmp_path/module).write_text('value = "drift"\n')
+    elif bad == 'installed': (runtime/module).write_text('value = "drift"\n')
+    elif bad in {'unowned', 'launcher', 'guard'}:
+        name = {'unowned': 'taskplane/other.py', 'launcher': 'taskplane/tp.py',
+                'guard': 'taskplane/workflow_local.py'}[bad]
+        request['files'] = {name: request['files'][module]}
+    elif bad == 'symlink':
+        (runtime/'unsafe').symlink_to(tmp_path/'app.py')
+    elif bad == 'hardlink':
+        os.link(runtime/module, runtime/'alias')
+    elif bad == 'running': monkeypatch.setattr(c.adapter, 'can_seal', lambda state: False)
+    elif bad == 'child': c.principal = 'child'
+    elif bad == 'syntax':
+        (tmp_path/module).write_text('invalid syntax !!!')
+        request['files'][module]['candidate_sha256'] = hashlib.sha256((tmp_path/module).read_bytes()).hexdigest()
+    elif bad == 'prior-audit': (tmp_path/(relative+'.result.json')).write_text('preserve previous outcome')
+    elif bad == 'missing-hooks': (runtime/'hooks/hooks.json').unlink()
+    checksum = save()
+    if bad == 'hash': checksum = hashlib.sha256(b'different').hexdigest()
+    before = c._path().read_bytes()
+    with pytest.raises(w.Refusal):
+        local.recover_runtime(c, relative, checksum, mode='apply')
+    assert c._path().read_bytes() == before
+    assert not list(tmp_path.glob('.taskplane-runtime-repair-*'))
+    if bad == 'prior-audit':
+        assert (tmp_path/(relative+'.result.json')).read_text() == 'preserve previous outcome'
+    else:
+        assert not (tmp_path/(relative+'.result.json')).exists()
+
+
+@pytest.mark.parametrize('failure', [None, 'swap', 'audit'])
+def test_runtime_repair_atomic_publication_and_rollback_preserve_fixed_files(tmp_path, monkeypatch, failure):
+    import sys
+    c, state, runtime, request, relative, save = runtime_repair_fixture(tmp_path, monkeypatch)
+    checksum = save()
+    before = c._path().read_bytes()
+    protected = {p.relative_to(runtime): p.read_bytes() for p in runtime.rglob('*') if p.is_file()}
+    if sys.platform != 'darwin':
+        with pytest.raises(w.Refusal, match='host plugin updater'):
+            local.recover_runtime(c, relative, checksum, mode='apply')
+        assert c._path().read_bytes() == before
+        return
+    if failure == 'swap':
+        def failed(*args): raise OSError('fixture swap failure')
+        monkeypatch.setattr(local, '_exchange_runtime', failed)
+    if failure == 'audit':
+        original = local.primitives.atomic_json
+        def failed_audit(path, value):
+            if value.get('status') == 'repaired': raise OSError('fixture audit failure')
+            return original(path, value)
+        monkeypatch.setattr(local.primitives, 'atomic_json', failed_audit)
+    if failure:
+        with pytest.raises(OSError, match='fixture'):
+            local.recover_runtime(c, relative, checksum, mode='apply')
+        for name, raw in protected.items(): assert (runtime/name).read_bytes() == raw
+        if failure == 'audit':
+            assert json.loads((tmp_path/(relative+'.result.json')).read_text())['status'] == 'rolled_back'
+    else:
+        result = local.recover_runtime(c, relative, checksum, mode='apply')
+        assert result['status'] == 'repaired' and result['approvals_changed'] is False
+        assert (runtime/'taskplane/context_reuse.py').read_bytes() == (tmp_path/'taskplane/context_reuse.py').read_bytes()
+        for name, raw in protected.items():
+            if name.as_posix() != 'taskplane/context_reuse.py': assert (runtime/name).read_bytes() == raw
+        from pathlib import Path
+        assert (Path(result['backup'])/'taskplane/context_reuse.py').read_bytes() == protected[Path('taskplane/context_reuse.py')]
+    assert c._path().read_bytes() == before
+
+
 @pytest.mark.parametrize('host', ['codex', 'claude'])
 @pytest.mark.parametrize('tool,key', [('Bash', 'command'), ('exec_command', 'cmd')])
 def test_supported_shell_allows_owned_effects_and_refuses_unowned_effects(tmp_path, host, tool, key):
