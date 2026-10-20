@@ -1323,12 +1323,14 @@ def seal(root: Path, state: dict[str, Any], output_path: str, tasks_path: str) -
 
 
 @observed('source-audit')
-def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False) -> tuple[str, str] | None:
+def changed(root: Path, state: dict[str, Any], *, skip_current: bool = False,
+            require_current: bool = False) -> tuple[str, str] | None:
     for stage in state["visits"]:
         # A native negative decision reopens this visit for correction. Its old
-        # packet remains history; protected-host revocation semantics stay intact.
+        # packet remains history; accepting that packet again must still compare
+        # its frozen inputs. Protected-host revocation semantics stay intact.
         editable = stage["id"] == w.current(state)["id"] and (
-            skip_current or state.get("profile") == "native_workflow"
+            skip_current or not require_current and state.get("profile") == "native_workflow"
             and stage["decision"] in ("changes_requested", "rejected"))
         if stage["superseded"] or stage["decision"] == "stale" or not stage["packet"] or editable:
             continue

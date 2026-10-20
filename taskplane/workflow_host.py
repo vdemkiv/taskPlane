@@ -1392,7 +1392,8 @@ class Controller:
             # still block approvals/transitions, but cannot veto the user's correction.
             if negative and replay:
                 return w.decide(s, verified)
-            drift = None if negative else evidence.changed(self.workspace, s, skip_current=action == "submit")
+            drift = None if negative else evidence.changed(self.workspace, s, skip_current=action == "submit",
+                                                          require_current=action == "decide")
             if drift:
                 db["runs"][run] = w.invalidate(s, *drift)
                 self._write(target, db)
