@@ -1,5 +1,6 @@
 """Incidental hook cwd cannot erase actual governed execution scope."""
 import uuid
+import shlex
 
 import pytest
 
@@ -37,7 +38,7 @@ def test_incidental_cwd_still_protects_execution_workspace(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("host,tool,key", [("codex", "exec_command", "cmd"), ("claude", "Bash", "command")])
 def test_owned_absolute_shell_target_and_conflicting_roots(tmp_path, monkeypatch, host, tool, key):
-    work = tmp_path / "governed"
+    work = tmp_path / "governed workspace"
     work.mkdir()
     supported_build(work, host)
     outside = tmp_path / "outside"
@@ -45,12 +46,12 @@ def test_owned_absolute_shell_target_and_conflicting_roots(tmp_path, monkeypatch
     monkeypatch.setattr(flow, "observed_parent", lambda *args: None)
     event = {"hook_event_name": "PreToolUse", "cwd": str(outside),
              "session_id": "root", "call_id": "fixture-" + uuid.uuid4().hex,
-             "tool_name": tool, "tool_input": {key: "touch " + str(work / "app.py")}}
+             "tool_name": tool, "tool_input": {key: "touch " + shlex.quote(str(work / "app.py"))}}
     assert not denied(event)
-    other = tmp_path / "other"
+    other = tmp_path / "other workspace"
     other.mkdir()
     setup(other)
-    event["tool_input"][key] += " " + str(other / "product.json")
+    event["tool_input"][key] += " " + shlex.quote(str(other / "product.json"))
     assert denied(event)
 
 

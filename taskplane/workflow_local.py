@@ -415,8 +415,25 @@ def initialize_workspace(workspace: Path, root: str, host: str, scope: dict[str,
     w.require(Path(common).resolve() != Path(directory).resolve() and (workspace / '.git').is_file(),
               'workspace_initialization', 'New repository runs need a dedicated linked worktree. '
               'Create/select one with the native host and execute this same task there before starting.')
+    # Compare checkout bytes using its effective line-ending rules. The closed
+    # inspection environment otherwise drops Windows' global core.autocrlf and
+    # reports a freshly checked-out CRLF file as modified. Read only these data
+    # settings; routing, executable helpers and other global config stay excluded.
+    config_environment = {k: v for k, v in os.environ.items()
+                          if k not in {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'}}
+    normalization = []
+    for setting in ('core.autocrlf', 'core.eol'):
+        try:
+            configured = subprocess.run([executable, '-C', str(workspace), 'config', '--get', setting],
+                                        capture_output=True, text=True, timeout=10, env=config_environment)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise w.Refusal('workspace_initialization', 'Git line-ending configuration is unavailable.') from exc
+        w.require(configured.returncode in {0, 1}, 'workspace_initialization',
+                  'Git line-ending configuration is unavailable.')
+        if configured.returncode == 0:
+            normalization.extend(['-c', setting + '=' + configured.stdout.strip()])
     # Ignore only untracked Taskplane-owned metadata; tracked edits are always dirty.
-    dirty = [line for line in git('status', '--porcelain=v1', '--untracked-files=normal').splitlines()
+    dirty = [line for line in git(*normalization, 'status', '--porcelain=v1', '--untracked-files=normal').splitlines()
              if line != '?? .taskplane/']
     w.require(not dirty, 'workspace_initialization',
               'The native worktree is dirty. Preserve its files and select a clean dedicated worktree.')

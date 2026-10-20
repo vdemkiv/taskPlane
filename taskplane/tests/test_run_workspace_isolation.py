@@ -70,8 +70,14 @@ def native_fixture(work, host, root="root", *, native_workspace=None):
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])
-def test_clean_native_worktree_and_dirty_idempotent_resume(tmp_path, host):
+@pytest.mark.parametrize("global_crlf", [False, True])
+def test_clean_native_worktree_and_dirty_idempotent_resume(tmp_path, monkeypatch, host, global_crlf):
+    if global_crlf:
+        config = tmp_path / 'global.gitconfig'
+        config.write_text('[core]\n autocrlf = true\n')
+        monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(config))
     _, work = repository(tmp_path)
+    assert git(work, 'status', '--porcelain') == ''
     native_fixture(work, host)
     c = h.Controller(work, "root", h.installed_adapter(host))
     if host == "claude":
@@ -89,6 +95,10 @@ def test_clean_native_worktree_and_dirty_idempotent_resume(tmp_path, host):
     assert resumed["run"] == state["run"] and resumed["revision"] == state["revision"]
     assert resumed["native_initialization"] == identity
     assert (work / "app.py").read_text() == "authorized work remains\n"
+    native_fixture(work, host, root='another-root')
+    another = h.Controller(work, 'another-root', h.installed_adapter(host))
+    with pytest.raises(w.Refusal, match='dirty'):
+        another.start(request())
 
 
 @pytest.mark.parametrize("host", ["codex", "claude"])

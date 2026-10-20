@@ -10,7 +10,7 @@ python3 /actual/plugin/taskplane/tp.py version --verify
 python3 /actual/plugin/taskplane/tp.py --help
 ```
 
-Both candidate manifests use `2.34.4`. Keep loaded skills, hooks and runtime on the
+Both candidate manifests use `2.34.5`. Keep loaded skills, hooks and runtime on the
 same installation. Building archives or editing source does not reload an active
 session. Use supported host reload/new-session behavior and preserve the old
 runtime/evidence. Do not overwrite an installed cache during an active run.
