@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.34.6 — stabilization candidate
+## 2.34.6 — stabilization and workflow recovery
 
 - Protect controller metadata and exact task ownership; preserve literal shell quoting and reject multiply-linked write targets.
 - Preserve verification retries and select the complete newest history, including retained repair evidence; require eligible inputs before inherited reuse.

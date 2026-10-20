@@ -4,7 +4,7 @@ Plan, build and review software with Codex or Claude, keeping decisions and actu
 verification connected. Use full delivery, standalone Product/Design/Engineering,
 or a reusable workflow with fresh inputs.
 
-Candidate version: **2.34.5**. Source, extracted packages, installed runtimes and
+Version: **2.34.6**. Source, extracted packages, installed runtimes and
 live host acceptance are separate observations. This candidate does not certify
 a loaded Codex/Claude update or publication.
 
@@ -81,7 +81,7 @@ Check the actual loaded installation with:
 python3 /actual/plugin/taskplane/tp.py version --verify
 ```
 
-Both host manifests use `2.34.5`. A source edit or archive does not update a
+Both host manifests use `2.34.6`. A source edit or archive does not update a
 running session. Preserve its original runtime and evidence; update/reload through
 the host between runs. Candidate active old-contract mutation refuses rather than
 silently migrating history. Installed caches are never modified by package build.
