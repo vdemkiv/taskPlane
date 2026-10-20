@@ -3,7 +3,7 @@
 | Fact/action | Authority or required evidence |
 | --- | --- |
 | Requested outcome and material scope | Actual user's instruction and preserved decisions |
-| Current phase approval | Actual human response targeting the concrete unchanged result, owning conversation, chronology and replay checks |
+| Current phase approval | Actual human response targeting the unchanged result, or an explicitly authorized run-bound automatic policy assessment; provenance, chronology, scope, stop and replay checks apply |
 | Semantic interpretation | Orchestrator's contextual candidate with full original response; not a Python wording language |
 | Build writes | Accepted Plan, exact current owner/path, relevant prerequisites, path/symlink/collision checks |
 | Worker identity | Actual native launch/lineage and attempt-correlated child observation |
@@ -14,8 +14,9 @@
 
 Seven phases each require separate approval. Loading a skill, constructing a
 result, granting a worker, completing a task, showing a dashboard or accepting an
-honest unknown does not accept another phase or create a pass. No automatic
-approval enrollment is part of new-run delivery.
+honest unknown does not accept another phase or create a pass. Manual mode is the
+default. Optional automatic mode requires explicit policy enrollment; ordinary
+assent approves only the presented phase and never authorizes future phases.
 
 Native workflow is cooperative local enforcement, not independent authentication,
 OS isolation, host-wide protection or complete shell-effect classification.

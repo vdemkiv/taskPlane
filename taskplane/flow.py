@@ -760,6 +760,9 @@ def _report(workspace: Path, run_id: str | None = None, *,
                 visit = candidates[-1]
                 task["phase_decision"] = visit["decision"]
                 task.setdefault('status', 'unverified')
+            from . import worker_runtime
+            if task['id'] in governed.get('task_results', {}) and worker_runtime.result_valid(workspace, governed, task['id']):
+                task['status'] = 'completed'
         result["phase_usage"] = phase_usage(rows, governed, result)
         result["historical"] = historical
         result['artifact_links'] = phase_artifacts(workspace, governed, attachments)
@@ -1355,7 +1358,12 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("action", choices=["start", "progress", "finish", "report", "attach",
                                            "submit", "decide", "advance", "policy", "auto-decide", "hook",
-                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker"])
+                                           "activate", "deactivate", "present", "wait", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "retire", "worker", "verify"])
+    parser.add_argument('--check-id')
+    parser.add_argument('--history-path')
+    parser.add_argument('--log-path')
+    parser.add_argument('--check-timeout', type=float, default=120)
+    parser.add_argument('--coverage-json')
     parser.add_argument('--revision-mode', choices=['preview', 'begin', 'resume', 'abort'])
     parser.add_argument('--revision-request', help='Exact source-pinned requirements revision request')
     parser.add_argument('--revision-sha256')
@@ -1414,6 +1422,9 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
     except ValueError as exc:
         parser.error(str(exc))
     args = parser.parse_args(arguments)
+    if args.action != 'verify' and any(value is not None for value in
+            (args.check_id, args.history_path, args.log_path, args.coverage_json)):
+        parser.error('check options apply only to flow verify')
     if args.action != 'revise' and any(value is not None for value in
             (args.revision_mode, args.revision_request, args.revision_sha256, args.revision_note)):
         parser.error('revision options apply only to flow revise')
@@ -1612,6 +1623,19 @@ def main(argv: list[str] | None = None, *, compact: bool = False,
                       if args.action == "inspect" else controller.prevalidate(args.run,
                           revision=args.expected_revision, output=args.output or "", tasks=args.tasks or ""))
             show(recovery_read)
+            return 0
+        if args.action == 'verify':
+            workflow.require(args.run and args.check_id and args.history_path and args.log_path,
+                             'invalid_evidence', 'Verification needs run, check ID and exact history/log outputs.')
+            workflow.require(len((args.coverage_json or '{}').encode()) <= 16384,
+                             'invalid_evidence', 'Coverage details exceed 16 KiB.')
+            coverage = json.loads(args.coverage_json or '{}')
+            workflow.require(isinstance(coverage, dict), 'invalid_evidence', 'Coverage details must be an object.')
+            verification_result = controller.verify(args.run, revision=args.expected_revision, check_id=args.check_id,
+                history=args.history_path, log=args.log_path, timeout=args.check_timeout, coverage=coverage)
+            # Like worker results, this bounded observation is not a phase
+            # state and must not be rendered as an approval summary.
+            print(json.dumps(verification_result))
             return 0
         if args.action == "worker":
             from .context import encode

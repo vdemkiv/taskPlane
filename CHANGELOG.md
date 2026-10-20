@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.34.6 — stabilization candidate
+
+- Protect controller metadata and exact task ownership; preserve literal shell quoting and reject multiply-linked write targets.
+- Preserve verification retries and select the complete newest history, including retained repair evidence; require eligible inputs before inherited reuse.
+- Recover pending requirement revisions in the same run, conservatively expand unknown graph coverage, and validate repair selections before sealing.
+- Publish complete durable context objects, reconcile snapshot capacity, bound advisory locks, and terminate timed-out check descendants.
+- Reconcile accepted task progress, keep graph labels readable and keyboard focus visible, and preserve Unicode labels.
+- Correct contributor, lens, evaluation and package instructions. Preserve explicit optional automatic approval with manual approval as the default.
+
+Candidate verification, platform CI and installed-host acceptance remain separate evidence.
+
 ## 2.34.5 — isolated startup and simpler hook recovery
 
 - Start new repository runs in clean dedicated worktrees, verify native initialization, and preserve working ownership across runs.

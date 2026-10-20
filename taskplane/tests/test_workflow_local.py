@@ -12,6 +12,32 @@ def binding_runtime_available():
             and hasattr(os, 'O_NOFOLLOW'))
 
 
+@pytest.mark.parametrize('command', ['wc -l source.py', 'head -25 source.py', 'tail -n 45 source.py',
+    'git diff --no-ext-diff --no-textconv --name-only', 'rg -n --max-columns 15000 value source.py'])
+def test_literal_diagnostic_reads_remain_available(command):
+    assert local.readonly_command({'tool_input': {'cmd': command}})
+
+
+@pytest.mark.parametrize('command', ['touch report{,.backup}.txt', 'touch report*.txt',
+    'tail -n 4 source.py > stolen.txt', 'git diff --output=stolen.txt', 'head source.py; touch stolen.txt'])
+def test_expanding_or_mutating_shell_is_not_a_read_or_literal_write(command):
+    event = {'tool_input': {'cmd': command}}
+    assert not local.readonly_command(event)
+    assert local.shell_write_paths(event) is None
+
+
+def test_quoted_brace_filename_is_literal():
+    assert local.shell_write_paths({'tool_input': {'cmd': "touch 'report{,.backup}.txt'"}}) == ['report{,.backup}.txt']
+
+
+@pytest.mark.parametrize('command,expected', [
+    ('git add -- app.py tests/check.py', ['app.py', 'tests/check.py']),
+    ("git commit --only --message 'Fix the owned source' -- app.py", ['app.py']),
+    ('git add -A', None), ('git commit --amend --no-edit', None), ('git reset --hard', None)])
+def test_scoped_git_has_only_literal_reviewed_targets(command, expected):
+    assert local.shell_write_paths({'tool_input': {'cmd': command}}) == expected
+
+
 def setup(workspace, *, entry="product", standalone=False):
     workspace=workspace.resolve()
     state, _, _=prepare(workspace)
@@ -383,19 +409,22 @@ def test_supported_shell_allows_owned_effects_and_refuses_unowned_effects(tmp_pa
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_hook_readiness_and_structured_scope_are_required_before_build_writes(tmp_path, host):
+def test_structured_scope_stays_enforced_when_callback_coverage_is_missing(tmp_path, host):
     c, state = supported_build(tmp_path, host)
     c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
     with pytest.raises(w.Refusal, match='outside'):
         c.guard({'tool_name': 'Write', 'tool_input': {'path': 'sibling.py'}}, state['run'])
-    # Missing setup is checked outside the tool hook at the Build transition.
+    # Missing callback observations do not replace or veto exact root ownership.
     broken = deepcopy(state)
     broken.pop('parent_hook_readiness', None)
-    with pytest.raises(w.Refusal, match='Preventive hook admission'):
-        c._guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, broken)
+    c._guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, broken)
+    with pytest.raises(w.Refusal, match='outside'):
+        c._guard({'tool_name': 'Write', 'tool_input': {'path': 'sibling.py'}}, broken)
     broken = deepcopy(state)
     broken['parent_hook_readiness']['root'] = 'another-session'
-    assert local.Harness(tmp_path, 'root').readiness(broken)['status'] != 'active'
+    observation = local.Harness(tmp_path, 'root').readiness(broken)
+    assert observation['status'] == 'active'
+    assert observation['parent_hook']['status'] == 'missing'
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
@@ -413,7 +442,7 @@ def test_candidate_hook_source_is_editable_but_live_uninstall_has_no_recovery_es
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
-def test_missing_hooks_block_build_transition_outside_the_preventive_hook(tmp_path, host):
+def test_missing_callbacks_preserve_approved_build_transition(tmp_path, host):
     from taskplane.tests.test_worker_runtime import parent_pair
     initial, _, _ = prepare(tmp_path)
     c = h.Controller(tmp_path, 'root', h.installed_adapter(host))
@@ -426,12 +455,12 @@ def test_missing_hooks_block_build_transition_outside_the_preventive_hook(tmp_pa
     state = c.apply('decide', state['run'], expected_revision=state['revision'],
         native_reference=json.dumps(decision(state, event='fixture/accept-plan')))
     before = deepcopy(state['decisions'])
-    with pytest.raises(w.Refusal, match='Build needs an admitted automatic'):
-        c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
-    assert c.report()['decisions'] == before and w.current(c.report())['decision'] == 'approved'
-    parent_pair(c)
     state = c.apply('advance', state['run'], expected_revision=state['revision'], phase='build')
     assert w.current(state)['phase'] == 'build'
+    assert state['decisions'] == before
+    assert local.Harness(tmp_path,'root').readiness(state)['parent_hook']['status'] == 'missing'
+    parent_pair(c)
+    assert local.Harness(tmp_path,'root').readiness(c.report())['parent_hook']['status'] == 'ready'
 
 
 def test_plain_repair_approval_reopens_build_and_preserves_history(tmp_path):
@@ -491,8 +520,8 @@ def test_scoped_repair_uses_controller_and_preserves_prior_approvals(tmp_path, c
     for phase in ('product', 'design', 'plan'):
         before = next(v for v in original['visits'] if v['phase'] == phase)
         assert next(v for v in state['visits'] if v['id'] == before['id']) == before
-    with pytest.raises(w.Refusal, match='Preventive hook admission'):
-        c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    assert local.Harness(tmp_path,'root').readiness(state)['parent_hook']['status'] == 'missing'
+    c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
     parent_pair(c)
     state = c.report()
     c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])

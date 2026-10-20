@@ -80,7 +80,7 @@ def atomic_json(path: str | os.PathLike[str], value: object, *,
             pass
 
 
-def lock_file(handle: BinaryIO) -> None:
+def lock_file(handle: BinaryIO, *, blocking: bool = True) -> None:
     try:
         import fcntl
     except ImportError:  # Windows
@@ -90,9 +90,9 @@ def lock_file(handle: BinaryIO) -> None:
             handle.write(b"\0")
             handle.flush()
         handle.seek(0)
-        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK" if blocking else "LK_NBLCK"), 1)
     else:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
 
 
 def unlock_file(handle: BinaryIO) -> None:
@@ -122,7 +122,7 @@ class StateError(RuntimeError):
 
 
 @_contextlib.contextmanager
-def file_lock(path: str) -> Iterator[None]:
+def file_lock(path: str, *, blocking: bool = True, timeout: float | None = None) -> Iterator[None]:
     """Hold the native exclusive lock, or refuse before entering the body.
 
     Native locks release when the owning handle/process exits. Directory ages
@@ -137,7 +137,20 @@ def file_lock(path: str) -> Iterator[None]:
         lf = os.fdopen(descriptor, "a+b")
         if not stat.S_ISREG(os.fstat(lf.fileno()).st_mode):
             raise OSError("state lock must be a regular file")
-        lock_file(lf)
+        if timeout is not None:
+            deadline = _time.monotonic() + timeout
+            while True:
+                try:
+                    lock_file(lf, blocking=False)
+                    break
+                except OSError:
+                    if _time.monotonic() >= deadline:
+                        raise
+                    _time.sleep(min(.005, max(0, deadline - _time.monotonic())))
+        elif blocking:
+            lock_file(lf)
+        else:
+            lock_file(lf, blocking=False)
     except (ImportError, OSError) as exc:
         if lf is not None:
             lf.close()

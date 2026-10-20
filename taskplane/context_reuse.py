@@ -9,7 +9,8 @@ from copy import deepcopy
 import os
 from pathlib import Path
 import platform
-import subprocess
+import signal
+import subprocess as _subprocess
 import sys
 import uuid
 from typing import Any, Callable
@@ -138,6 +139,12 @@ def _roles(workspace: Path, state: dict[str, Any], *, check_id: str,
             owner = tasks[requirement["task"]]
             histories = {row["path"] for row in plan.get("build_outputs", [])
                          if row["kind"] == "verification_history" and row["task"] == owner["id"]}
+            if owner['owner'] in {'root', state['root']}:
+                # Root tasks may share one declared root-owned collector. This
+                # appends evidence, not acceptance of the collector task.
+                histories.update(row['path'] for row in plan.get('build_outputs', [])
+                    if row['kind'] == 'verification_history'
+                    and tasks[row['task']]['owner'] in {'root', state['root']})
             if not any(row["kind"] == "verification_history" for row in plan.get("build_outputs", [])):
                 histories = set(owner["paths"])
             logs = set(requirement["evidence_outputs"])
@@ -155,7 +162,9 @@ def _roles(workspace: Path, state: dict[str, Any], *, check_id: str,
     history_sources: list[tuple[str, dict[str, Any]]] = []
     metadata = {row["path"] for row in plan.get("build_outputs", [])}
     metadata.update(p for row in checks.values() for p in row["evidence_outputs"])
-    own = set(check["evidence_outputs"])
+    # Generated artifacts may also be real source inputs. Only the selected
+    # history and log below have an exclusive verification-metadata role.
+    own: set[str] = set()
     if history_path is not None:
         owned(check_id, producer, history_path, log_path)
         histories.add(history_path)
@@ -517,11 +526,50 @@ def lookup(store: Store, reference: dict[str, Any], current: dict[str, Any]) -> 
     prior = store.resolve(reference)
     w.require(isinstance(prior, dict) and prior.get("schema") == "taskplane.verification-record/v1",
               "invalid_context", "Invalid verification record.")
-    eligible = (current.get("eligible") is True and same_inputs(prior.get("key", {}), current)
-                and prior.get("status") == "pass" and prior.get("result", {}).get("returncode") == 0)
+    eligible = reusable(prior, current)
     return {"status": "reused" if eligible else "miss", "prior_status": prior.get("status"),
             "producer": prior.get("producer"), "findings": prior.get("findings", []),
             "evidence_ref": reference, "key_digest": current.get("digest"), "approval": "not_transferred"}
+
+
+def reusable(prior: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Every reuse consumer requires both covered inputs and actual success."""
+    return (current.get('eligible') is True and same_inputs(prior.get('key', {}), current)
+            and prior.get('status') == 'pass' and prior.get('result', {}).get('returncode') == 0)
+
+
+def _execute(command: list[str], workspace: Path, timeout: float) -> _subprocess.CompletedProcess[str]:
+    """Own the check's process group so a timeout cannot leave writers behind."""
+    process = _subprocess.Popen(command, cwd=workspace, stdout=_subprocess.PIPE, stderr=_subprocess.PIPE,
+        text=True, start_new_session=os.name != 'nt',
+        creationflags=getattr(_subprocess, 'CREATE_NEW_PROCESS_GROUP', 0) if os.name == 'nt' else 0,
+        env={name: os.environ[name] for name in ENVIRONMENT if name in os.environ})
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except _subprocess.TimeoutExpired:
+        if os.name == 'nt':
+            _subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, timeout=10, check=False)
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        stdout, stderr = process.communicate(timeout=10)
+        raise _subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from None
+    return _subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+class _CheckProcess:
+    """Keep check-runner injection local instead of patching global subprocess."""
+
+    @staticmethod
+    def run(command: list[str], workspace: Path, timeout: float) -> _subprocess.CompletedProcess[str]:
+        return _execute(command, workspace, timeout)
+
+
+# Retain the existing check injection seam; cleanup always uses the real stdlib.
+subprocess = _CheckProcess()
 
 
 def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
@@ -529,7 +577,7 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
               run: str | None = None, visit: str | None = None, check_id: str | None = None,
               kind: str | None = None, environment: str | None = None,
               log_path: str | None = None, coverage_details: dict[str, Any] | None = None,
-              state: dict[str, Any] | None = None) -> dict[str, Any]:
+              state: dict[str, Any] | None = None, current_projection: bool = False) -> dict[str, Any]:
     """Execute once, preserving fail/unknown attempts before returning their ref.
 
     Typed callers explicitly bind run/visit and owned history/log paths. There is
@@ -545,9 +593,12 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
         assert history_path is not None and log_path is not None
         evidence.path(workspace, history_path)
         assert state is not None
-        # A repair's current log is a projection. Every actual attempt/log body
+        # An unsealed CLI/repair current log is a projection. Every actual attempt/log body
         # is still pinned immutably in Store and retained in the ordered history.
-        repair_projection = (w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit')
+        w.require(not current_projection or w.current(state)['decision'] in
+                  {'not_requested', 'changes_requested', 'rejected'},
+                  'invalid_context', 'A sealed attempt log cannot become a current projection.')
+        repair_projection = (current_projection or w.current(state)['id'] == state.get('repair_scope', {}).get('build_visit')
                              and log_path in w.current(state).get('artifact_paths', []))
         w.require(history_path != log_path and (repair_projection or not evidence.path(workspace, log_path).exists()),
                   "invalid_context", "Each attempt needs a new distinct declared log path.")
@@ -579,15 +630,13 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
                 raise w.Refusal("invalid_context", "Verification inputs changed before execution.")
             result["reason"] = "input_drift_before_execution"
         else:
-            completed = subprocess.run(provenance["command"], cwd=workspace, capture_output=True,
-                text=True, timeout=timeout, check=False,
-                env={name: os.environ[name] for name in ENVIRONMENT if name in os.environ})
+            completed = subprocess.run(provenance['command'], workspace, timeout)
             result.update(returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
             status = "pass" if completed.returncode == 0 else "fail"
             if not same_inputs(current(), provenance):
                 status = "unknown"
                 result["reason"] = "input_drift_during_execution"
-    except subprocess.TimeoutExpired as exc:
+    except _subprocess.TimeoutExpired as exc:
         def decoded(value: Any) -> str:
             return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
         result.update(reason="timeout", timeout=timeout, stdout=decoded(exc.stdout), stderr=decoded(exc.stderr))
@@ -618,6 +667,28 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
                   and history.get("coverage") == "declared_producer" and isinstance(history.get("attempts"), list),
                   "invalid_context", "Cannot append to a foreign verification history.")
         attempts = history["attempts"]
+        # The publication lock also orders attempts across alternative declared
+        # history paths. Carry their complete prefix before appending.
+        assert state is not None
+        plan = w.accepted_plan(state)['packet']['output']
+        declared = [row['path'] for row in plan.get('build_outputs', []) if row['kind'] == 'verification_history']
+        candidates = declared or plan['write_scope']
+        for candidate in candidates:
+            if candidate == history_path or not evidence.path(workspace, candidate).is_file():
+                continue
+            try:
+                other = evidence.object_file(workspace, candidate)
+            except w.Refusal:
+                if candidate in declared:
+                    raise
+                continue
+            if (other.get('schema') == evidence.VERIFICATION_HISTORY and other.get('run') == run
+                    and other.get('visit') == visit):
+                prior = other.get('attempts', [])
+                shorter, longer = sorted((attempts, prior), key=len)
+                w.require(longer[:len(shorter)] == shorter, 'invalid_context', 'Conflicting verification histories cannot discard observations.')
+                attempts = deepcopy(longer)
+        history['attempts'] = attempts
         w.require(all(isinstance(row, dict) and row.get("sequence") == number
                       for number, row in enumerate(attempts, 1)),
                   "invalid_context", "Existing verification history sequence is corrupt.")
@@ -628,11 +699,15 @@ def run_check(workspace: Path, provenance: dict[str, Any], *, producer: str,
         log_target.parent.mkdir(parents=True, exist_ok=True)
         # Exclusive creation protects old failure evidence, including races with
         # another producer. Only the owning task should append this history.
-        fd = os.open(log_target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
+        if repair_projection:
+            primitives.atomic_json(log_target, result, indent=None, ensure_ascii=False)
+            raw = evidence.read(workspace, log_path)
+        else:
+            fd = os.open(log_target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
         log_ref = store.put("verification-log", {"path": log_path, "encoding": "utf-8",
                             "text": raw.decode(), "sha256": hashlib.sha256(raw).hexdigest()})
         ref = record(store, provenance, status=status, producer=producer, result=result,

@@ -10,8 +10,9 @@ using the explicitly selected project and actual loaded Claude runtime. Preserve
 storage, command and worker location restrictions; a connected folder alone does
 not establish local execution.
 
-Claude and Codex share the compact workflow contract and seven separate human
-approvals. Use durable briefs and relevant references, with no receipt or startup
+Claude and Codex share the compact workflow contract and seven separate phase
+decisions. Human approval is the default; optional automatic mode requires explicit
+run-bound policy authorization, scoped conditions and stop phases. Use durable briefs and relevant references, with no receipt or startup
 accounting. Actual native identity, launch, terminal completion and unresolved
 cancellation remain observable facts. Missing counters are unknown.
 

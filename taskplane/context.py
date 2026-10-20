@@ -129,18 +129,20 @@ class Store:
             if target.exists():
                 w.require(self._bytes(key) == raw, "invalid_context", "Immutable context was altered.")
             else:
-                # Exclusive create avoids replacing a concurrent immutable object.
-                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                # A killed writer may leave a temporary object, never a partial
+                # canonical digest. The native lock serializes publishers.
+                import tempfile
+                fd, temporary = tempfile.mkstemp(prefix='.context-', dir=target.parent)
                 try:
                     with os.fdopen(fd, "wb") as stream:
                         count("write")
                         stream.write(raw)
                         stream.flush()
                         os.fsync(stream.fileno())
-                except BaseException:
-                    target.unlink(missing_ok=True)
-                    raise
+                    os.replace(temporary, target)
+                    primitives._fsync_directory(str(target.parent))
+                finally:
+                    Path(temporary).unlink(missing_ok=True)
         self._constructed[key] = (value, len(raw))
         return {"schema": REFERENCE_SCHEMA, "kind": kind, "sha256": key,
                 "bytes": len(raw), "source_key": source_key}

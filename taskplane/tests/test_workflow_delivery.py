@@ -639,7 +639,7 @@ def test_original_source_relay_refuses_without_secure_file_support(tmp_path, mon
     assert c._path().read_bytes() == before
 
 
-def test_partial_repair_retains_unaffected_actual_check_and_task_result(tmp_path):
+def test_partial_repair_retains_unaffected_task_but_requires_covered_check(tmp_path):
     from copy import deepcopy
     import sys
     from taskplane import context_reuse as reuse, depgraph
@@ -734,13 +734,14 @@ def test_partial_repair_retains_unaffected_actual_check_and_task_result(tmp_path
     out['build_checks'] = [new_row, rows[1]]
     (tmp_path/target).write_text(json.dumps(out))
     state = c.apply('submit', state['run'], expected_revision=state['revision'], output=target, tasks='tasks.json')
-    assert not w.unmet_evidence(w.current(state)['packet'])
+    assert w.unmet_evidence(w.current(state)['packet']) == ['B']
     attempts = w.current(state)['packet']['verification']['history']['attempts']
     assert [(row['check_id'], row['status']) for row in attempts] == [('A', 'fail'), ('B', 'pass'), ('A', 'pass')]
     assert Store(tmp_path).resolve(attempts[1]['record_ref'])['status'] == 'pass'
+    assert Store(tmp_path).resolve(attempts[1]['record_ref'])['key']['eligible'] is False
     assert state['task_results']['T2'] == retained
-    state = decide(c, state, decision(state, event='fixture/accept-repaired-A'))
-    assert w.current(state)['decision'] == 'approved'
+    with pytest.raises(w.Refusal, match='unmet: B'):
+        decide(c, state, decision(state, event='fixture/accept-repaired-A'))
 
 
 class _RealVerificationDelivery:

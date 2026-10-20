@@ -16,18 +16,18 @@ def invocation_transport(record: dict[str, Any]) -> Any:
 def revision_preview(workspace: Path, state: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     """Compute a complete conservative closure from accepted interfaces and graph.
 
-    This function is read-only. Missing mappings or graph coverage refuse a
-    selective change instead of treating an unobserved dependency as absent.
+    This function is read-only. Missing mappings or graph coverage expand the
+    affected closure instead of treating an unobserved dependency as absent.
     """
     from . import workflow_evidence as e, depgraph, worker_runtime as workers
     fields = {'schema', 'request_id', 'request_reference', 'run', 'expected_revision',
               'expected_generation', 'scope_digest', 'requirements_digest', 'plan_digest',
               'changes', 'affected_artifacts', 'scope_amendment', 'reason', 'return_phase'}
     w.require(isinstance(request, dict) and set(request) == fields and len(encode(request)) <= 262144
-              and request['schema'] == REVISION_SCHEMA and request['return_phase'] == 'product'
+              and request['schema'] == REVISION_SCHEMA and request['return_phase'] in {'product', 'plan'}
               and all(isinstance(request[k], str) and 0 < len(request[k].strip()) <= limit
                       for k, limit in [('request_id', 128), ('request_reference', 512), ('reason', 2048)]),
-              'invalid_evidence', 'A bounded typed revision needs the actual human request, exact changes and Product return.')
+              'invalid_evidence', 'A bounded typed revision needs the actual human request, exact changes and Product or Plan return.')
     w.require(request['run'] == state['run'] and type(request['expected_revision']) is int
               and type(request['expected_generation']) is int and request['expected_revision'] == state['revision']
               and request['expected_generation'] == state.get('storage_generation', 0)
@@ -47,18 +47,29 @@ def revision_preview(workspace: Path, state: dict[str, Any], request: dict[str, 
     assert product is not None
     original = {row['id']: row for row in product['packet']['output']['acceptance_criteria']}
     changes = request['changes']
-    w.require(isinstance(changes, dict) and changes and set(changes) <= set(original)
+    plan_only = request['return_phase'] == 'plan'
+    w.require(isinstance(changes, dict) and (changes == {} if plan_only else bool(changes))
+              and set(changes) <= set(original)
               and all(isinstance(row, dict) and row.get('id') == key and e.substantive(row.get('statement'))
                       and row != original[key] for key, row in changes.items()),
-              'invalid_evidence', 'Changes must name existing criteria with exact replacement requirements.')
+              'invalid_evidence', 'Product changes need exact replacement criteria; a Plan amendment must leave requirements unchanged.')
     new_scope = deepcopy(request['scope_amendment'] or state['scope'])
     e.valid_scope(workspace, new_scope)
     w.require(new_scope['criteria'] == state['scope']['criteria'], 'scope_violation',
               'A selective revision must preserve the full criterion register.')
+    if plan_only:
+        preserved = deepcopy(new_scope)
+        for phase in ('plan', 'build'):
+            preserved['paths'][phase] = deepcopy(state['scope']['paths'][phase])
+        w.require(preserved == state['scope']
+                  and set(new_scope['paths']['build']) != set(state['scope']['paths']['build']),
+                  'scope_violation', 'A Plan-only amendment may change only Plan outputs and exact Build paths; '
+                  'Product, Design and all other scope boundaries remain accepted.')
     historical = {p for visit in state['visits'] if visit.get('packet')
                   for p in visit['packet']['manifest']}
-    w.require(all(not set(new_scope['paths'][phase]) & historical for phase in ('product', 'design', 'plan')),
-              'scope_violation', 'Specify fresh Product, Design and Plan output paths; sealed history cannot be overwritten.')
+    renewal = ['plan'] if plan_only else ['product', 'design', 'plan']
+    w.require(all(not set(new_scope['paths'][phase]) & historical for phase in renewal),
+              'scope_violation', 'Specify fresh outputs for renewed phases; sealed history cannot be overwritten.')
     definitions = {row['id']: row for row in plan['packet']['output']['task_dag']}
     w.require(definitions and all('read_inputs' in row for row in definitions.values()),
               'invalid_evidence', 'Selective closure is unknown: every accepted task needs explicit read interfaces.')
@@ -81,12 +92,15 @@ def revision_preview(workspace: Path, state: dict[str, Any], request: dict[str, 
               'stale_checkpoint', 'Affected artifacts must be current exact accepted-scope references.')
     graph = depgraph.load(str(workspace))
     quality = depgraph.scan_quality(graph)
-    w.require(graph.get('meta', {}).get('graph_scan_quality') and not quality['degraded']
+    graph_complete = bool(graph.get('meta', {}).get('graph_scan_quality') and not quality['degraded']
               and quality.get('mode') == 'components'
               and graph.get('meta', {}).get('source_coverage', {}).get('complete') is True
               and graph.get('meta', {}).get('module_confidence') != 'low'
-              and depgraph.source_inputs_current(str(workspace), graph),
-              'invalid_evidence', 'Selective closure is unknown: a complete current source graph is required.')
+              and depgraph.source_inputs_current(str(workspace), graph))
+    if not graph_complete:
+        # Unknown source edges expand the closure to every approved task. They
+        # cannot veto a human correction or authorize selective reuse.
+        graph = {'modules': {}, 'edges': [], 'meta': {'coverage': 'unknown'}}
     module_ids = depgraph.declared_module_ids(graph)
     def module(path: str) -> str:
         return path if path in graph['modules'] else depgraph.module_of(path, module_ids)
@@ -103,7 +117,13 @@ def revision_preview(workspace: Path, state: dict[str, Any], request: dict[str, 
                       and Path(p).suffix in {'.json', '.jsonl', '.md', '.txt', '.log'}
                       and p not in source_paths}
     affected = {key for criterion in changes for key in coverage[criterion]}
+    # Newly added paths have no accepted task owner yet. A Plan amendment must
+    # rebind every Build task rather than infer selective reuse from that gap.
+    if plan_only or not graph_complete:
+        affected = set(definitions)
     files = set(artifacts)
+    if plan_only:
+        files.update(set(new_scope['paths']['build']) ^ set(state['scope']['paths']['build']))
     modules: set[str] = set()
     # Fixed point includes downstream task dependencies, read interfaces,
     # shared writers, reverse source edges and the accepted integration checks.
@@ -126,7 +146,9 @@ def revision_preview(workspace: Path, state: dict[str, Any], request: dict[str, 
             break
     unknown = [p for p in files if e.path(workspace, p).exists()
                and module(p) not in graph['modules'] and p not in data_artifacts]
-    w.require(not unknown, 'invalid_evidence', 'Selective closure is unknown for existing paths: ' + ', '.join(sorted(unknown)[:10]))
+    if unknown:
+        affected = set(definitions)
+        files.update(p for row in definitions.values() for p in row['paths'])
     artifact_manifest = e.manifest(workspace, sorted(files & data_artifacts), allow_missing=True)
     affected_criteria = {c for key in affected for c in e.task_criteria(definitions[key])}
     renewed = sorted(set(changes))
@@ -136,11 +158,12 @@ def revision_preview(workspace: Path, state: dict[str, Any], request: dict[str, 
         'criteria': renewed, 'affected_criteria': sorted(affected_criteria), 'tasks': sorted(affected),
         'files': sorted(files), 'modules': sorted(modules), 'graph_digest': digest(graph),
         'artifact_manifest': artifact_manifest,
+        'graph_coverage': 'complete' if graph_complete and not unknown else 'unknown; all tasks affected',
         'checks': sorted(check['id'] for check in checks if check['task'] in affected
                          or set(check['criteria']) & set(changes)),
         'affected_grants': sorted(key for key, row in workers.records(state).items() if row['task_id'] in affected),
         'retained_results': sorted(key for key in state.get('task_results', {}) if key not in affected),
-        'approvals_requiring_renewal': ['product', 'design', 'plan'], 'scope': new_scope,
+        'approvals_requiring_renewal': renewal, 'scope': new_scope,
         'requirements': [deepcopy(changes.get(key, value)) for key, value in original.items()],
         'status': 'preview', 'approvals_created': 0}
     return {**result, 'preview_digest': digest(result)}
@@ -188,7 +211,7 @@ def validate_control_history(state: dict[str, Any]) -> None:
                   and event.get('request_digest') == digest(event['request'])
                   and isinstance(event.get('preview'), dict) and isinstance(event.get('result'), dict)
                   and type(event.get('opened')) is bool and isinstance(event.get('history'), list)
-                  and event.get('status') in {'pending', 'review', 'aborted', 'completed'},
+                  and event.get('status') in {'pending', 'review', 'aborted', 'completed', 'superseded'},
                   'state_unavailable', 'Invalid requirements revision event.')
         preview = event['preview']; result = event['result']
         w.require(preview.get('request_digest') == event['request_digest']
@@ -199,7 +222,7 @@ def validate_control_history(state: dict[str, Any]) -> None:
                   and result.get('status') == event['status'] and result.get('approvals_created') == 0
                   and (event['status'] not in {'review', 'completed'} or event['opened']),
                   'state_unavailable', 'Requirements revision proof or status is inconsistent.')
-        if event['status'] != 'completed':
+        if event['status'] not in {'completed', 'superseded'}:
             pending.append(key)
     active = state.get('active_requirements_revision')
     w.require((not pending and active is None) or (pending == [active] and state.get('dispatch_paused') is True),

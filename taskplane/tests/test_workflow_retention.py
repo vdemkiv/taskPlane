@@ -104,6 +104,19 @@ def _assert_collection_safety(result):
         assert not result["changed_references"]
 
 
+def test_selected_optional_snapshot_counts_against_collection_target(tmp_path, monkeypatch):
+    if not snapshots.supports_collection():
+        pytest.skip('Native safe snapshot collection unavailable')
+    monkeypatch.setattr(snapshots, 'LEASE_SECONDS', 0)
+    monkeypatch.setattr(snapshots, 'MAX_PAIRS', 2)
+    model = _snapshot_model(tmp_path, 'selected-at-capacity')
+    selected = snapshots.publish_pair(tmp_path, model, 'selected', select=True)
+    _publish(tmp_path, 'expired')
+    newest = _publish(tmp_path, 'replacement')
+    assert selected.exists() and newest.exists()
+    assert len(list((tmp_path / '.taskplane').glob('snapshot-*.html'))) == 2
+
+
 def test_snapshot_stable_store_collects_only_owned_pair(tmp_path):
     pair = _publish(tmp_path, "collectible")
     root = tmp_path / ".taskplane"

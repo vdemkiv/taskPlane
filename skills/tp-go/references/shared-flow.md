@@ -4,8 +4,10 @@
 
 Use the selected project, actual loaded runtime and existing matching run. Full
 delivery is Product → Design → Plan → Build → Evaluate → Engineering → Retro.
-Each concrete result requires a separate human approval before advancing.
-Grouping and automatic approval enrollment are not part of this contract.
+Each concrete result requires a separate decision before advancing. Manual
+approval is the default. Explicitly authorized automatic mode uses the existing
+run-bound policy, scoped conditions, stop phases and evidence-backed assessments.
+One human phase approval never enrolls a policy or approves future checkpoints.
 Standalone Product, Design and Engineering retain their requested entry/ending.
 A review/design request never grants implementation authority.
 
@@ -26,11 +28,11 @@ For each new repository run, use a clean dedicated linked Git worktree at the
 intended repository and base. Start scope may state `repository`, `base_ref` or
 `base_revision`; otherwise the known origin default supplies the base. Verify the
 actual native session location, not only a command workdir or attached checkout.
-The saved initialization and automatic admitted pre/post pair must match before
-the first submission or positive decision. An ordinary admitted read establishes
-the pair; missing readiness keeps the same run pending with a supported recovery
-instruction. Idempotent continuation does not require a working checkout to be
-clean again.
+Saved initialization must match the native workspace. Automatic admitted pre/post
+pairs report callback coverage independently; missing callbacks cannot veto root
+submission, human acceptance or an approved Build, and require no session restart.
+Native worker dispatch retains its own readiness requirements. Idempotent
+continuation does not require a working checkout to be clean again.
 
 Working scope and task/worker paths are claimed before submission. Another active
 root cannot acquire or write them. Transfer needs a quiescent explicit release or

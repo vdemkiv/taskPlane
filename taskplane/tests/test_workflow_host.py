@@ -8,6 +8,62 @@ from taskplane import workflow as w, workflow_host as h
 from taskplane.tests.test_workflow_evidence import prepare
 
 
+def test_real_session_can_write_its_root_alias_task(tmp_path):
+    prepare(tmp_path)
+    root = '01a1562b-7dcb-7800-a25b-2306c7711fd9'
+    task = dict(id='PRODUCT', phase='product', owner='root', execution='root',
+                dependencies=[], paths=['product.json'], criteria=['AC1'], verification='Review Product')
+    (tmp_path / 'tasks.json').write_text(json.dumps({'tasks': [task]}))
+    controller = h.Controller(tmp_path, root, h.installed_adapter('codex'))
+    state = controller.start({'scope': {'criteria': ['AC1'], 'paths': {'product': ['product.json']}},
+        'request_reference': 'fixture/root-alias', 'entry': 'product', 'standalone': True, 'tasks': 'tasks.json'})
+    controller.guard({'tool_name': 'Write', 'tool_input': {'path': 'product.json'}}, state['run'])
+    with pytest.raises(w.Refusal):
+        controller.guard({'tool_name': 'Write', 'tool_input': {'path': 'outside.json'}}, state['run'])
+
+
+@pytest.mark.parametrize('compact', [False, True])
+def test_verify_cli_runs_only_an_owned_accepted_check_and_retains_its_record(tmp_path, capsys, monkeypatch, compact):
+    from taskplane import flow, workflow_evidence
+    from taskplane.context import Store
+    from taskplane.tests.test_workflow_delivery import _RealVerificationDelivery
+    delivery = _RealVerificationDelivery(tmp_path, 'codex')
+    controller, state = delivery.controller, delivery.state
+    monkeypatch.setenv('CODEX_THREAD_ID', 'root')
+    check = w.accepted_plan(state)['packet']['output']['verification_strategy']['checks'][0]
+    before = controller.report(diagnostics=False)
+    argv = ['verify', '--workspace', str(tmp_path), '--run', state['run'],
+            '--expected-revision', str(state['revision']), '--check-id', check['id'],
+            '--history-path', delivery.history, '--log-path', delivery.logs['primary'][0]]
+    assert flow.main(argv, governor=controller, compact=compact) == 0
+    observed = json.loads(capsys.readouterr().out)
+    assert observed['status'] == 'pass' and observed['approval'] == 'not_granted'
+    assert observed['root'] == state['root'] and observed['revision'] == state['revision']
+    assert observed['workspace'] == str(tmp_path.resolve()) and observed['visit'] == w.current(state)['id']
+    record = Store(tmp_path).resolve(observed['record_ref'])
+    assert record['key']['command'] == check['command']
+    assert workflow_evidence.object_file(tmp_path, delivery.history)['attempts'][0]['record_ref'] == observed['record_ref']
+    (tmp_path / 'pkg/app.py').write_text('value = 300\n')
+    assert flow.main(argv, governor=controller, compact=compact) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'fail'
+    (tmp_path / 'pkg/app.py').write_text('value = 3\n')
+    assert flow.main(argv, governor=controller, compact=compact) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'pass'
+    attempts = workflow_evidence.object_file(tmp_path, delivery.history)['attempts']
+    assert [row['status'] for row in attempts] == ['pass', 'fail', 'pass']
+    assert len({row['id'] for row in attempts}) == 3
+    after = controller.report(diagnostics=False)
+    assert after['revision'] == before['revision'] and after['decisions'] == before['decisions']
+    bad = [*argv]
+    bad[bad.index('--log-path') + 1] = 'outside.log'
+    assert flow.main(bad, governor=controller) == 2
+    assert not (tmp_path / 'outside.log').exists()
+    capsys.readouterr()
+    with pytest.raises(w.Refusal, match='existing accepted Plan check'):
+        controller.verify(state['run'], revision=state['revision'], check_id='invented',
+                          history=delivery.history, log=delivery.logs['primary'][0])
+
+
 def test_denial_controller_recovery_regression(tmp_path, monkeypatch):
     from taskplane.tests.test_worker_runtime import denied_launch
     from taskplane import claude_worker_observations as observations

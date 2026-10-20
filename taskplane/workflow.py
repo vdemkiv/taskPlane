@@ -133,13 +133,8 @@ def repair(state: dict[str, Any], tasks: list[str], verified: dict[str, Any]) ->
     require(verified.get('human') is True and not verified.get('automatic')
             and verified.get('choice') in {'approved', 'changes_requested'},
             'approval_required', 'Repair requires the actual human request.')
-    plan = accepted_plan(state)['packet']['output']
-    strategy = plan.get('verification_strategy')
-    require(isinstance(strategy, dict) and strategy.get('schema') == 'taskplane.verification-strategy/v1',
-            'invalid_evidence', 'Scoped repair requires the existing typed Plan and evidence contract.')
-    definitions = {row['id']: row for row in plan['task_dag'] if row.get('phase') == 'build'}
-    require(isinstance(tasks, list) and tasks and all(isinstance(key, str) and key in definitions for key in tasks),
-            'scope_violation', 'Repair must name existing approved Build tasks.')
+    plan, definitions = repair_selection(state, tasks)
+    strategy = plan['verification_strategy']
     affected = set(tasks)
     while True:
         paths = {path for key in affected for path in definitions[key]['paths']}
@@ -169,7 +164,7 @@ def repair(state: dict[str, Any], tasks: list[str], verified: dict[str, Any]) ->
             renewed['artifact_paths'].append(prefix + '/check-' + label + '.log')
     s['repair_scope'] = {'tasks': sorted(affected), 'paths': sorted(paths),
         'checks': [row['id'] for row in checks
-                   if set(row.get('source_inputs', []) + row.get('test_inputs', [])) & paths],
+                   if row.get('task') in tasks or set(row.get('source_inputs', []) + row.get('test_inputs', [])) & paths],
         'build_visit': stage['id'], 'visits': [v['id'] for v in fresh],
         'prior_visits': [v['id'] for v in state['visits']],
         'retained_results': sorted(set(s.get('task_results', {})) - affected)}
@@ -182,6 +177,18 @@ def repair(state: dict[str, Any], tasks: list[str], verified: dict[str, Any]) ->
     s.pop('parent_hook_readiness', None)
     s['revision'] += 1
     return s
+
+
+def repair_selection(state: dict[str, Any], tasks: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Pure route validation shared by sealing, approval and execution."""
+    plan = accepted_plan(state)['packet']['output']
+    strategy = plan.get('verification_strategy')
+    require(isinstance(strategy, dict) and strategy.get('schema') == 'taskplane.verification-strategy/v1',
+            'invalid_evidence', 'Scoped repair requires the existing typed Plan and evidence contract.')
+    definitions = {row['id']: row for row in plan['task_dag'] if row.get('phase') == 'build'}
+    require(isinstance(tasks, list) and bool(tasks) and all(isinstance(key, str) and key in definitions for key in tasks),
+            'scope_violation', 'Repair must name existing approved Build tasks.')
+    return plan, definitions
 
 
 def accepted_plan(state: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +294,8 @@ def route_eligibility(state: dict[str, Any], change: Any) -> None:
         require(stage["phase"] in {"evaluate", "engineering"}, "invalid_evidence",
                 "Only evaluation or review can propose a scoped repair.")
         plan = accepted_plan(state)
+        if change.get('tasks') is not None:
+            repair_selection(state, change['tasks'])
         position = next(i for i, v in enumerate(state["visits"]) if v["id"] == plan["id"])
         require(any(v["phase"] == "build" and not v["superseded"] and v["decision"] == "approved"
                     and v["packet"] for v in state["visits"][position + 1:state["index"]]),

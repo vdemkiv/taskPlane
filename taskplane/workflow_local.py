@@ -821,8 +821,27 @@ class LocalWorkflow:
         if relayed:
             relay, question = _verified_decision_relay(value, expected, run)
         legacy_replay = event_id in prior and not prior[event_id].get("provenance", {}).get("recorded_at")
+        delayed_product = None
+        if isinstance(presentation, dict) and 'content_binding' in presentation:
+            # A delivered human approval may precede submission when a transport
+            # failure delayed an unchanged first Product result. Bind its actual
+            # content, scope and tasks rather than fabricate later timestamps or
+            # ask the human to repeat the same decision. This grants no Build.
+            packet = stage.get('packet') or {}
+            expected_content = {
+                'output': primitives.content_fingerprint(packet.get('output')),
+                'scope': primitives.content_fingerprint(run.get('scope')),
+                'tasks': primitives.content_fingerprint(evidence.task_definitions(
+                    packet.get('context', {}).get('tasks', []))),
+            }
+            _require_decision(not relayed and native_proof is None and stage.get('phase') == 'product'
+                              and run.get('index') == 0 and not run.get('history')
+                              and presentation['content_binding'] == expected_content,
+                              'decision_binding', 'Delayed Product approval must match its unchanged output, scope and tasks.')
+            delayed_product = expected_content
         if not legacy_replay:
-            _require_decision(timestamp(run.get("started_at")) <= timestamp(stage.get("submitted_at")) <= observed
+            checkpoint_time = timestamp(presentation.get('at')) if delayed_product else timestamp(stage.get('submitted_at'))
+            _require_decision(timestamp(run.get("started_at")) <= checkpoint_time <= observed
                       <= timestamp(recorded_at), "decision_chronology",
                       "Decision must follow run and checkpoint submission and cannot be in the future.")
         if value.get("choice") == "cancelled" and event_id not in prior:
@@ -839,7 +858,7 @@ class LocalWorkflow:
         assert isinstance(presentation, dict)
         if value.get("checkpoint_explicit") is not True:
             _require_decision(timestamp(presentation.get("at")) < observed, "decision_chronology", "Response precedes presentation.")
-            if not legacy_replay:
+            if not legacy_replay and not delayed_product:
                 _require_decision(timestamp(stage.get("submitted_at")) <= timestamp(presentation.get("at")),
                           "decision_chronology", "Presentation precedes checkpoint submission.")
         else:
@@ -859,6 +878,9 @@ class LocalWorkflow:
                     "checkpoint_explicit": value.get("checkpoint_explicit", False)}}
         if not legacy_replay:
             result["provenance"].update(recorded_at=recorded_at, chronology="verified/v1")
+        if delayed_product:
+            result['provenance']['presentation']['content_binding'] = delayed_product
+            result['provenance']['chronology'] = 'content-bound-product/v1'
         if native_proof is not None:
             result['provenance']['native_proof'] = deepcopy(native_proof)
         if relayed:
@@ -914,7 +936,7 @@ class LocalWorkflow:
         if words[2] == "workflow":
             action, _ = workflow_command(self.workspace, event, state)
             return action in {"catalog", "validate", "preview", "check"}
-        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "submit", "progress", "report", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "worker", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
+        if len(words) < 4 or words[2] != "flow" or words[3] not in {"start", "submit", "progress", "report", "diagnose", "recover", "repair", "resume", "inspect", "prevalidate", "context", "revise", "worker", "verify", "attach", "decide", "advance", "finish", "retire", "policy", "auto-decide", "activate", "deactivate", "present", "wait"}:
             return False
         # An exact control command still goes through the Controller checks.
         try:
@@ -943,26 +965,16 @@ class LocalWorkflow:
                 if (stage['id'] == repair.get('build_visit')
                         and owner['id'] in repair.get('tasks', [])
                         and check['id'] in repair.get('checks', [])):
-                    # Only declared result metadata moves to the repair visit.
-                    # A sealed or otherwise unavailable source path must still
-                    # prevent a command from claiming its original write set.
-                    metadata = {row['path'] for row in plan.get('build_outputs', [])}
-                    metadata.update(path for row in checks for path in row['evidence_outputs'])
-                    for prior in state['visits']:
-                        packet = prior.get('packet') or {}
-                        metadata.update(path for path in (
-                            packet.get('output_path'), packet.get('context', {}).get('tasks_path'),
-                            packet.get('verification', {}).get('history_path')) if path)
-                    # Input files remain required even if a previous packet
-                    # also referenced them as an artifact.
-                    metadata.difference_update(path for row in checks
-                        for path in row.get('source_inputs', []) + row.get('test_inputs', []))
-                    required_paths -= metadata - set(w.phase_write_paths(state))
-                    required_paths.update(stage.get('artifact_paths', []))
+                    # Use the same repair projection as preparation and result
+                    # acceptance; one worker never acquires all phase metadata.
+                    from . import worker_runtime
+                    required_paths = set(worker_runtime.task(state, owner['id'])['paths'])
                 # These are the executable checks already reviewed in Plan,
                 # not an exemption for arbitrary interpreter/shell code.
                 if (words == check['command'] and required_paths <= set(paths)
                         and runtime_command.execution_directory(event, self.workspace) == self.workspace):
+                    for relative in required_paths:
+                        evidence.write_path(self.workspace, relative)
                     return
         # Extend the existing literal-command admission rather than treating all
         # shell execution as a read. Unknown code is not a declared write set.
@@ -981,7 +993,7 @@ class LocalWorkflow:
                 relative = relative_path(self.workspace, str(absolute))
             except ValueError:
                 raise w.Refusal('scope_violation', f'Shell write is outside this workspace: {value}') from None
-            resolved = evidence.path(self.workspace, relative)
+            resolved = evidence.write_path(self.workspace, relative)
             w.require(not (words and words[0] in {'cp', 'mv'} and resolved.is_dir()),
                       'scope_violation', 'Scoped copy/move needs literal owned files, not directory effects.')
             w.require(relative in paths, 'scope_violation', f'Shell write is outside this task: {relative}')
@@ -1058,7 +1070,7 @@ def command_words(event: dict[str, Any]) -> list[str]:
             continue
         if char == '\\':
             escaped = True
-        elif char in '$`\n\r':
+        elif char in '$`\n\r' or not quote and char in '{}*?[':
             return []  # No expansions/substitutions or unquoted command separators.
         elif char == '"':
             quote = '' if quote == '"' else '"'
@@ -1173,6 +1185,16 @@ def readonly_command(event: dict[str, Any]) -> bool:
                    and word in {'-l', '-a', '-la', '-al', '-d', '-ld', '-1'} for word in words[1:])
     if words[:2] == ['git', 'status']:
         return all(word in {'--short', '--porcelain', '--porcelain=v1', '-uno', '--branch'} for word in words[2:])
+    if words[:2] == ['git', 'diff']:
+        return all(word in {'--name-only', '--stat', '--check', '--cached', '--staged', '--no-ext-diff', '--no-textconv', '--'}
+                   or not word.startswith('-') for word in words[2:]) and '--no-ext-diff' in words and '--no-textconv' in words
+    if words and words[0] in {'wc', 'head', 'tail'}:
+        args = words[1:]
+        if words[0] == 'wc':
+            return bool(args) and all(not word.startswith('-') or word in {'-l', '-c', '-w'} for word in args)
+        if len(args) >= 3 and args[0] in {'-n', '-c'} and args[1].isdigit():
+            return all(not word.startswith('-') for word in args[2:])
+        return bool(args) and all(not word.startswith('-') or bool(re.fullmatch(r'-\d+', word)) for word in args)
     if words[:2] == ['sed', '-n'] and len(words) >= 4:
         return bool(re.fullmatch(r'\d+(?:,\d+)?p', words[2])) and all(not x.startswith('-') for x in words[3:])
     if not words or words[0] != 'rg':
@@ -1181,7 +1203,7 @@ def readonly_command(event: dict[str, Any]) -> bool:
              '-i', '--ignore-case', '-F', '--fixed-strings', '-S', '--smart-case',
              '--no-heading', '--no-messages', '--count', '-c', '--no-ignore', '--no-ignore-vcs'}
     values = {'-g', '--glob', '-t', '--type', '-m', '--max-count', '-e', '--regexp',
-              '-A', '--after-context', '-B', '--before-context', '-C', '--context'}
+              '-A', '--after-context', '-B', '--before-context', '-C', '--context', '--max-columns'}
     index = 1
     while index < len(words):
         word = words[index]
@@ -1200,6 +1222,11 @@ def readonly_command(event: dict[str, Any]) -> bool:
 def shell_write_paths(event: dict[str, Any]) -> list[str] | None:
     """Recognize finite literal file operations; never infer arbitrary code effects."""
     words = command_words(event)
+    if words[:3] == ['git', 'add', '--']:
+        return words[3:] if words[3:] and all(not p.startswith('-') for p in words[3:]) else None
+    if (words[:4] == ['git', 'commit', '--only', '--message'] and len(words) > 6
+            and words[5] == '--' and words[4].strip()):
+        return words[6:] if all(not p.startswith('-') for p in words[6:]) else None
     if words and words[0] in {'touch', 'rm', 'cp', 'mv'}:
         args = words[1:]
         if args[:1] == ['--']:
@@ -1455,8 +1482,7 @@ class Harness:
         terminal = any(state.get(key) for key in ("finished", "retired", "cancellation"))
         proof = parent_readiness(state) if state.get('visits') and not terminal else None
         return {"status": "inactive" if terminal or not self.read().get("selected") else
-                "active" if proof and proof['status'] == 'ready' else
-                "initialization_pending" if state.get("visits") else "initialization_required",
+                "active" if state.get("visits") else "initialization_required",
                 "run_created": bool(state.get("visits")), "binding": self.binding(state),
                 "parent_hook": proof,
                 "assurance": "observed; not host authentication"}
@@ -1465,15 +1491,15 @@ class Harness:
         if not state.get("visits"):
             return "Taskplane selected. Start the requested scoped workflow before implementation."
         stage = w.current(state)
-        if self.readiness(state)['status'] != 'active':
-            return (f"Taskplane run {state['run']}, {stage['phase']} initialization is pending. "
-                    'Restore the configured preventive pre/post hooks and complete an admitted read in this session. '
-                    'Then retry only the pending work; completed work and approvals remain intact. '
-                    'Do not disable or bypass the live harness.')
+        readiness = self.readiness(state)
+        callback_note = (' Automatic hook coverage has not been observed for this phase; '
+                         'controller phase checks remain active and native workers retain their readiness requirements.'
+                         if (readiness.get('parent_hook') or {}).get('status') != 'ready' else '')
         return (f"Taskplane run {state['run']}, current phase {stage['phase']}. "
                 "Read the durable brief and relevant references, complete useful phase evidence, "
                 "then present that result for its separate human decision with the current dashboard. "
-                "Use required DoR/DoD evidence and task ownership; advisory telemetry cannot change enforcement.")
+                "Use required DoR/DoD evidence and task ownership; advisory telemetry cannot change enforcement."
+                + callback_note)
 
     def recovery_action(self, event: dict[str, Any], state: dict[str, Any]) -> bool:
         tool = event.get('tool_name') or event.get('tool')

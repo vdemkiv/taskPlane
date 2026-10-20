@@ -27,10 +27,10 @@ New repository work requires a clean dedicated linked worktree at the intended
 base. Use the host's workspace selection to execute the actual native chat there;
 a worktree attachment or a shell workdir alone does not move it. Declare
 `repository`, `base_ref` or `base_revision` in the start scope when needed.
-Dirty/shared/foreign destinations are refused without deleting files. After
-start, perform an ordinary admitted read so the automatic pre/post pair matches
-this run, visit, workspace and loaded runtime before the first phase review.
-If readiness is missing, retry this checkpoint after that read; keep prior work.
+Dirty/shared/foreign destinations are refused without deleting files. Automatic
+hook coverage is observed for the current run, visit, workspace and runtime.
+Missing callback observations remain visible but do not block root checkpoints
+or require restarting the session. Native workers retain their readiness checks.
 
 Start with goal, stable criteria, material boundaries and current output.
 Plan later fixes exact Build ownership/paths/checks. Present each concrete phase

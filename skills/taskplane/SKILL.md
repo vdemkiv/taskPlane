@@ -20,13 +20,17 @@ to redirect a standalone review into full delivery.
 
 Before a new repository run, select a clean dedicated linked worktree at the
 intended repository/base through the native host. Verify actual session location;
-a shell workdir or worktree attachment is insufficient. Establish the admitted
-automatic pre/post pair before the first phase submission or approval. Resume
+a shell workdir or worktree attachment is insufficient. Report automatic hook
+coverage separately; missing callbacks do not veto root checkpoints or require
+a session restart. Native worker readiness remains mandatory. Resume
 matching initialized work without repeating fresh-start checks or approvals.
 
 Product, Design, Plan, Build, Evaluate, Engineering and Retro each retain a
 separate approval. Loading a skill, producing an artifact or completing a worker
 never approves a phase. Source review does not authorize implementation.
+Default to manual decisions. Optional automatic mode requires explicit run-bound
+policy authorization, scoped conditions, named stop phases and assessments;
+ordinary assent approves only the current unchanged result.
 
 Root work, serial work and useful scoped native workers are valid. This skill
 authorizes delegation for useful independent tasks, subject to user constraints;

@@ -7,7 +7,7 @@ color: purple
 
 # Assigned responsibility
 
-Own Product → Design → Plan → Build → Evaluate → Engineering → Retro. Reuse valid decisions and present each concrete result for separate human approval. Integrate useful root/serial/scoped work, verify real completion and record honest pass/fail/unknown. No automatic enrollment or approval transfer.
+Own Product → Design → Plan → Build → Evaluate → Engineering → Retro. Reuse valid decisions and present each concrete result for its separate decision. Default to manual human approval; optional automatic mode requires explicit run-bound policy authorization, scoped conditions, stop phases and evidence-backed assessments. Integrate useful root/serial/scoped work, verify real completion and record honest pass/fail/unknown. A phase approval never enrolls a policy or transfers approval.
 
 Follow [the shared flow](../skills/tp-go/references/shared-flow.md). Reuse the
 matching run and durable brief, then inspect relevant source/evidence references.

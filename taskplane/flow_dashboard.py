@@ -167,11 +167,13 @@ def revision_details(authority: dict[str, Any]) -> str:
                          {'prepared', 'launch_pending', 'bootstrapping', 'running', 'unknown', 'cancel_requested'}]
         html += '<p><strong>'+_e(key)+' · '+_e(status)+'</strong></p>'
         html += '<p>'+_e(event['request']['reason'])+'</p>'
-        html += '<p>Changed criteria: '+_e(', '.join(proposal['criteria']))+' · Affected tasks: '+_e(', '.join(proposal['tasks']))+'</p>'
+        html += '<p>Changed criteria: '+_e(', '.join(proposal['criteria']) or 'none')+' · Affected tasks: '+_e(', '.join(proposal['tasks']))+'</p>'
         html += '<p>Pending affected workers: '+_e(len(remaining))+'. '
         html += ('New work is paused.' if authority.get('active_requirements_revision') == key
                  else 'Review completed; retained results still require current evidence.')+'</p>'
-        html += '<p class="muted">Earlier decisions remain historical. Returning to Product creates no approval.</p>'
+        html += ('<p class="muted">Product and Design remain accepted. Plan review creates no approval.</p>'
+                 if event['request']['return_phase'] == 'plan' else
+                 '<p class="muted">Earlier decisions remain historical. Returning to Product creates no approval.</p>')
         html += '<p>'+_e(event['result']['next_action'])+'</p>'
     return html+'</div>'
 
@@ -327,7 +329,7 @@ def sections(ws: str, m: dict[str, Any]) -> list[tuple[str, str]]:
         plan += '<div class="task-chain">'+''.join(f'<span>{_e(t.get("id"))} ← {_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "No prerequisites")}</span>' for t in tasks)+'</div>'
         plan += '<div class="table-wrap"><table><thead><tr><th>Task</th><th>Owner / phase</th><th>Depends on</th><th>State</th><th>Execution / verification</th></tr></thead><tbody>'
         for t in tasks:
-            timing=f'{t.get("started_at") or "Not started"} → {t.get("completed_at") or "Not completed"}'
+            timing=f'{t.get("started_at") or "Unknown start time"} → {t.get("completed_at") or "Unknown completion time"}'
             plan += f'<tr><td><strong>{_e(t.get("id"))}</strong><br>{_e(t.get("title"))}</td><td>{_e(t.get("owner") or "Unassigned")}<br>{_e(t.get("phase") or "Unspecified")}</td><td>{_e(", ".join(t.get("dependencies",t.get("deps",[]))) or "—")}</td><td>{_e(t.get("status","unverified"))}<br><span class="muted">Phase decision: {_e(t.get("phase_decision", "not_requested"))}</span></td><td><span class="muted">{_e(timing)}</span><br><code>{_e(t.get("verification","Not recorded"))}</code>'
             if t.get('premature_completed_at'):
                 plan += '<br><span class="muted">Earlier completion corrected; history retained in task evidence.</span>'

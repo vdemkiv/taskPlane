@@ -92,7 +92,18 @@ def task(state: dict[str, Any], task_id: str) -> dict[str, Any]:
     found = next((r for r in rows if r["id"] == task_id), None)
     w.require(found is not None, "invalid_evidence", "Unknown run-bound task.")
     assert found is not None
-    return dict(e.task_definitions([found])[task_id])
+    definition = dict(e.task_definitions([found])[task_id])
+    stage = w.current(state)
+    repair = state.get('repair_scope', {})
+    if stage['id'] == repair.get('build_visit') and task_id in repair.get('tasks', []):
+        allowed = set(w.phase_write_paths(state))
+        definition['paths'] = [p for p in definition['paths'] if p in allowed]
+        plan = w.accepted_plan(state)['packet']['output']
+        for check in plan.get('verification_strategy', {}).get('checks', []):
+            if check['task'] == task_id and check['id'] in repair['checks']:
+                suffix = '/check-' + primitives.content_fingerprint(check['id'])[:16] + '.log'
+                definition['paths'].extend(p for p in stage.get('artifact_paths', []) if p.endswith(suffix))
+    return definition
 
 
 def read_input_manifest(workspace: Path, session: Brief, owned_paths: list[str]) -> dict[str, Any]:
@@ -665,13 +676,13 @@ def prepare(workspace: Path, state: dict[str, Any], task_id: str, request: dict[
               "approval_required", "Worker needs an unsealed current phase task.")
     w.require(all(result_valid(workspace, state, d) for d in definition["dependencies"]),
               "scope_violation", "Task prerequisites need verified accepted results.")
-    paths = definition["paths"]
-    w.require(paths and set(paths) <= set(state["scope"]["paths"][stage["phase"]]),
+    paths = list(definition['paths'])
+    w.require(paths and set(paths) <= set(w.phase_write_paths(state)),
               "scope_violation", "Worker task exceeds accepted phase paths.")
     w.require(set(paths) <= set(w.phase_write_paths(state)), 'scope_violation',
               'Task is outside this scoped repair; unaffected work retains its accepted result.')
     for p in paths:
-        e.path(workspace, p)
+        e.write_path(workspace, p)
     rows = records(state)
     previous = [r for r in rows.values() if r["task_id"] == task_id]
     retry_reason = request.get("retry_reason")

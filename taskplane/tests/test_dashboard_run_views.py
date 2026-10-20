@@ -6,6 +6,17 @@ from taskplane.tests.test_workflow_local import setup, decide, submit
 from taskplane.tests.test_workflow_evidence import bound_output
 
 
+def test_accepted_native_result_is_completed_without_inventing_timestamps(tmp_path):
+    from taskplane.tests.test_native_acceptance_persistence import accepted_fixture
+    controller, state, _ = accepted_fixture(tmp_path)
+    view = flow.report(tmp_path, state['run'], governor=controller)
+    task = next(row for row in view['tasks'] if row['id'] == 'T0')
+    assert task['status'] == 'completed'
+    html = flow_dashboard.render(str(tmp_path), view)
+    assert 'Unknown start time' in html or task.get('started_at')
+    assert task.get('phase_decision') != 'approved'
+
+
 def test_unfinished_task_not_completed_by_phase_approval(tmp_path):
     c, state = setup(tmp_path)
     target = bound_output(c, state)

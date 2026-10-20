@@ -24,6 +24,25 @@ def fixture(tmp_path):
     return options
 
 
+def test_same_unknown_dependency_fingerprint_cannot_be_reused(tmp_path):
+    from taskplane.context_reuse import reusable
+    prior = {'key': {'eligible': False, 'coverage': 'unknown'}, 'status': 'pass', 'result': {'returncode': 0}}
+    assert not reusable(prior, deepcopy(prior['key']))
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX process-group assertion; Windows uses taskkill tree cleanup')
+def test_timeout_kills_descendant_before_it_can_write(tmp_path):
+    import time
+    from taskplane.context_reuse import _execute
+    child = "import time; from pathlib import Path; time.sleep(.7); Path('late.txt').write_text('escaped')"
+    command = [sys.executable, '-c', 'import subprocess,sys,time; subprocess.Popen([sys.executable,"-c",' + repr(child) + ']); time.sleep(10)']
+    import subprocess
+    with pytest.raises(subprocess.TimeoutExpired):
+        _execute(command, tmp_path, .2)
+    time.sleep(.8)
+    assert not (tmp_path / 'late.txt').exists()
+
+
 def test_actual_check_reuse_and_unrelated_edit(tmp_path):
     options = fixture(tmp_path)
     before = key(tmp_path, **options)
@@ -321,6 +340,94 @@ def semantic_attempt(tmp_path, state, check, options, *, history='pkg/history.js
         check_id=check['id'], kind=check['kind'], environment=check['environment'])
     assert Store(tmp_path).resolve(reference)['status'] == 'pass'
     return reference
+
+
+def test_latest_unknown_in_alternate_declared_history_cannot_reveal_old_pass(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    plan['build_outputs'] = [{'kind': 'verification_history', 'path': p, 'task': 'BUILD'}
+                            for p in ['pkg/history-a.json', 'pkg/history-b.json']]
+    check['command'] = options['command'] = [sys.executable, '-c', 'import time; time.sleep(.1)']
+    first = semantic_attempt(tmp_path, state, check, options, history='pkg/history-a.json')
+    provenance = key(tmp_path, **options, state=state, check_id=check['id'],
+                     history_path='pkg/history-b.json', log_path='pkg/check-2.log')
+    second = run_check(tmp_path, provenance, producer='root', timeout=.01, state=state,
+        history_path='pkg/history-b.json', log_path='pkg/check-2.log', run=state['run'],
+        visit=w.current(state)['id'], check_id=check['id'], kind=check['kind'], environment=check['environment'])
+    assert Store(tmp_path).resolve(first)['status'] == 'pass'
+    assert Store(tmp_path).resolve(second)['status'] == 'unknown'
+    with pytest.raises(w.Refusal, match='newest verification history'):
+        evidence.validate_verification(tmp_path, state, {'verification_history': 'pkg/history-a.json'})
+
+
+def test_root_check_can_append_to_declared_root_collector_without_accepting_it(tmp_path):
+    state, plan, check, options = semantic_contract(tmp_path)
+    task = plan['task_dag'][0]
+    task['paths'].remove('pkg/history.json')
+    collector = {'id': 'COLLECT', 'phase': 'build', 'owner': state['root'], 'dependencies': ['BUILD'],
+                 'paths': ['pkg/history.json'], 'read_inputs': [], 'criteria': ['AC1'],
+                 'verification': 'Collect the actual immutable attempts'}
+    plan['task_dag'].append(collector)
+    plan['build_outputs'][0]['task'] = 'COLLECT'
+    reference = semantic_attempt(tmp_path, state, check, options)
+    assert Store(tmp_path).resolve(reference)['status'] == 'pass'
+    assert not state.get('task_results')
+    collector['owner'] = 'planned-native/other'
+    with pytest.raises(w.Refusal, match='exact producing owner'):
+        key(tmp_path, **options, state=state, check_id=check['id'],
+            history_path='pkg/history.json', log_path='pkg/check-2.log')
+
+
+def test_repair_retry_preserves_both_immutable_logs_and_selects_new_result(tmp_path):
+    state, _, check, options = semantic_contract(tmp_path)
+    check['command'] = options['command'] = [sys.executable, '-c', 'import time; time.sleep(.05)']
+    state = w.repair(state, ['BUILD'], {'human': True, 'automatic': False, 'choice': 'approved'})
+    history = w.current(state)['artifact_paths'][2]
+    log = next(p for p in w.current(state)['artifact_paths'] if p.endswith('.log'))
+    references = []
+    for timeout in (.001, 10):
+        provenance = key(tmp_path, **options, state=state, check_id=check['id'], history_path=history, log_path=log)
+        references.append(run_check(tmp_path, provenance, producer='root', timeout=timeout, state=state,
+            history_path=history, log_path=log, run=state['run'], visit=w.current(state)['id'],
+            check_id=check['id'], kind=check['kind'], environment=check['environment']))
+    records = [Store(tmp_path).resolve(ref) for ref in references]
+    assert [row['status'] for row in records] == ['unknown', 'pass']
+    assert records[0]['log_ref'] != records[1]['log_ref']
+    assert len(json.loads((tmp_path / history).read_text())['attempts']) == 2
+
+
+def test_native_repair_task_uses_fresh_owned_evidence_projection(tmp_path):
+    from taskplane import worker_runtime
+    state, plan, _, _ = semantic_contract(tmp_path)
+    plan['task_dag'][0]['owner'] = 'planned-native/verifier'
+    state['visits'][2]['packet']['context'] = {'tasks': plan['task_dag']}
+    old_log, old_history = 'pkg/check-1.log', 'pkg/history.json'
+    state['visits'][state['index']]['packet'] = {'output_path': 'pkg/build.json',
+        'verification': {'files': [old_log, old_history]}, 'context': {}}
+    state = w.repair(state, ['BUILD'], {'human': True, 'automatic': False, 'choice': 'approved'})
+    definition = worker_runtime.task(state, 'BUILD')
+    assert old_log not in definition['paths'] and old_history not in definition['paths']
+    assert any('/check-' in p and p.endswith('.log') for p in definition['paths'])
+    assert set(definition['paths']) <= set(w.phase_write_paths(state))
+
+
+@pytest.mark.parametrize('declared_read', [False, True])
+def test_generated_check_artifact_consumed_as_source_stays_fingerprinted(tmp_path, declared_read):
+    state, plan, check, options = semantic_contract(tmp_path)
+    relative = 'pkg/generated.md'
+    (tmp_path / relative).write_text('3')
+    (tmp_path / 'pkg/app.py').write_text(f'value = int(open({relative!r}).read())\n')
+    plan['task_dag'][0]['paths'].append(relative)
+    plan['write_scope'].append(relative)
+    check['evidence_outputs'].append(relative)
+    if declared_read:
+        plan['task_dag'][0]['read_inputs'].append(relative)
+    depgraph.scan(str(tmp_path), decompose=True, strict=True)
+    reference = semantic_attempt(tmp_path, state, check, options)
+    captured = Store(tmp_path).resolve(reference)
+    assert relative in captured['key']['files']
+    assert inherited(tmp_path, reference, state=state)['status'] == 'reused'
+    (tmp_path / relative).write_text('400')
+    assert inherited(tmp_path, reference, state=state)['status'] == 'miss'
 
 
 @pytest.mark.parametrize('read_role', ['source', 'test', 'task_read'])

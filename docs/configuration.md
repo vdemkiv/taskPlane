@@ -7,6 +7,13 @@ not restore receipt/startup/fan-out or automatic approval defaults.
 
 ## Workspace and host observations
 
+Approval mode is run-bound controller policy, not an environment switch. Manual
+mode is the default. `flow policy` records an actual explicit human authorization
+with allowed phases, stop phases and conditions; `flow auto-decide` evaluates the
+current unchanged checkpoint against that policy and its required evidence. A
+normal phase approval does not enroll policy. Host permissions and authorization
+for publication, installation, merge or release remain separate.
+
 | Setting | Meaning |
 | --- | --- |
 | `TASKPLANE_WORKSPACE` | Explicit selected execution root; supplied workspace selectors must agree with its supported binding/alias |

@@ -1,7 +1,9 @@
 # Host-native workflow surfaces
 
 Codex and Claude share one workflow contract, durable brief, scoped ownership and
-seven separate human approvals. The actual loaded runtime and host adapter matter;
+seven separate phase decisions. Manual human approval is the default; explicit
+optional automatic policies retain scoped conditions, stop phases and assessments.
+The actual loaded runtime and host adapter matter;
 a version label, edited checkout or package archive does not prove loaded hooks.
 
 Present concrete results in the conversation with useful artifact links. Dashboard,
