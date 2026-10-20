@@ -1119,12 +1119,9 @@ def _hook(event: dict[str, Any], *,
             # A host-injected stop continuation is not a new human reply.
             # Tool calls while preparing the handoff also must not erase it.
             prompt = event.get('prompt', '')
-            correction = harness.read().get('stop_correction') or {}
-            continuation = isinstance(prompt, str) and (
-                re.match(r'^\s*<hook_prompt(?:\s|>)', prompt)
-                or prompt.strip() == correction.get('reason'))
+            continuation = isinstance(prompt, str) and re.match(r'^\s*<hook_prompt(?:\s|>)', prompt)
             if not continuation:
-                harness.update(waiting=None, stop_correction=None)
+                harness.update(waiting=None)
         if guarded.get("visits") and not guarded.get("finished"):
             harness.bind(guarded)
         elif harness.read().get("run") and not guarded.get("run"):

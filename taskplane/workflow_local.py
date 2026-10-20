@@ -1731,6 +1731,7 @@ class Harness:
                 and ('threadId' not in args or isinstance(args['threadId'], str)))
 
     def stop(self, event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        """Describe unfinished work without creating a second transition gate."""
         data = self.read()
         if not data.get('selected') or state.get('finished') or state.get('status') == 'cancelled':
             return {}
@@ -1742,14 +1743,8 @@ class Harness:
         elif state.get('invalidation_pending'):
             reason = 'Taskplane evidence is stale; resolve the current phase before reporting completion.'
         elif w.current(state)['decision'] in {'not_requested', 'changes_requested', 'rejected', 'stale'}:
-            reason = 'Taskplane phase evidence is not submitted. Present the current phase result for its separate human decision.'
+            stage = w.current(state)
+            reason = f"Taskplane {stage['phase']} is {stage['decision']}; the workflow remains open."
         else:
             return {}
-        # Some hosts omit stop_hook_active when replaying the corrective prompt.
-        # Remember the binding locally; this is engagement state, not approval.
-        binding = self.binding(state)
-        correction = data.get('stop_correction') or {}
-        if event.get('stop_hook_active') or correction.get('binding') == binding:
-            return {'systemMessage': reason}
-        self.update(stop_correction={'binding': binding, 'reason': reason})
-        return {'decision': 'block', 'reason': reason}
+        return {'systemMessage': reason}

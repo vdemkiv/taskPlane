@@ -22,8 +22,10 @@ Claude while preserving the user's scope and existing decisions.
    fall back to old pass. Human acceptance does not change observed check status.
 9. Preserve durable atomic/CAS state, native locking and authentic import/recovery
    provenance. Native lock failure refuses before entering a critical section.
-10. Keep diagnostic Stop fallback nonblocking while preserving actual mutation
-    denials. Keep candidate packages, installed hosts and live acceptance distinct.
+10. Keep Stop advisory, including missing or stale phase evidence. Ending a turn
+    does not accept or advance a phase; the controller enforces those actions and
+    actual mutations. Do not maintain a second Stop retry or approval ledger.
+    Keep candidate packages, installed hosts and live acceptance distinct.
 
 Reviews/design do not implement. Remove obsolete tests/fixtures/callers with
 removed machinery and retain valuable behavior. Unknown evidence remains visible

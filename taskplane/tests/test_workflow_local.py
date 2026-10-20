@@ -967,7 +967,7 @@ def test_legacy_task_manifest_remains_strict_without_rewriting_acceptance(tmp_pa
 
 
 @pytest.mark.parametrize('entry',['taskplane','tp-go','tp-tag','tp-build','tp-product','tp-design','tp-engineering','tp-northstar'])
-def test_execution_selection_requires_harness_before_writes_and_completion(tmp_path,entry):
+def test_execution_selection_guards_writes_without_forcing_continuation(tmp_path,entry):
     from taskplane import flow
     event={'cwd':str(tmp_path),'session_id':'root','hook_event_name':'PreToolUse',
            'tool_name':'Skill','tool_input':{'skill':'taskplane:'+entry}}
@@ -977,7 +977,7 @@ def test_execution_selection_requires_harness_before_writes_and_completion(tmp_p
         flow.hook(event|{'tool_name':'Write','tool_input':{'file_path':str(tmp_path/'app.py'),'content':'x'}})
     assert refused.value.reason == 'scope_violation'
     stopped=flow.hook(event|{'hook_event_name':'Stop'})
-    assert stopped['decision']=='block' and stopped['reason']
+    assert stopped.get('systemMessage') and 'decision' not in stopped
     assert 'decision' not in flow.hook(event|{'hook_event_name':'Stop','stop_hook_active':True})
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
@@ -1009,7 +1009,7 @@ def test_execution_prompt_arms_session_bound_gate(tmp_path,prompt):
     assert local.Harness(tmp_path,'root').read()['selected']
     assert result['hookSpecificOutput']['additionalContext']
     assert flow.hook({'cwd':str(tmp_path),'session_id':'unrelated','hook_event_name':'Stop'})=={}
-    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook({'cwd':str(tmp_path),'session_id':'root','hook_event_name':'Stop'}).get('systemMessage')
 
 
 def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
@@ -1022,7 +1022,7 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
         assert phase in result['hookSpecificOutput']['additionalContext'].casefold()
         assert c.context(run)['binding']['visit'] == w.current(c.report())['id']
         assert run in result['hookSpecificOutput']['additionalContext']
-        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+        assert flow.hook(event|{'hook_event_name':'Stop'},governor=c).get('systemMessage')
         s=submit(c,s)
         page=flow.publish_dashboard(c.workspace,s['run'],governor=c,select=True)
         harness=local.Harness(c.workspace,c.root)
@@ -1034,7 +1034,7 @@ def test_harness_resume_reuses_every_phase_and_releases_finished_run(tmp_path):
     assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)=={}
     selected=flow.hook(event|{'hook_event_name':'UserPromptSubmit','prompt':'Use taskplane to review the next change.'},governor=c)
     assert selected['hookSpecificOutput']['additionalContext']
-    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c)['decision']=='block'
+    assert flow.hook(event|{'hook_event_name':'Stop'},governor=c).get('systemMessage')
 
 
 @pytest.mark.parametrize('bad',['source','metadata','escape','symlink'])
@@ -1159,25 +1159,34 @@ def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
 
 
 @pytest.mark.parametrize('host', ['codex', 'claude'])
-@pytest.mark.parametrize('wrapped', [False, True])
-def test_stop_continuation_without_host_flag_only_blocks_once(tmp_path, host, wrapped):
+def test_stop_is_advisory_without_retry_state_or_phase_authority(tmp_path, host):
     from taskplane import flow
     c, state = setup(tmp_path)
     c.adapter.name = host
     harness = local.Harness(tmp_path, c.root)
     harness.bind(state)
-    before = c._path().read_bytes()
+    controller_before = c._path().read_bytes()
+    harness_before = harness.path.read_bytes()
+    # Missing evidence, failed review, and stale evidence all permit a handoff.
+    for status in ('not_requested', 'changes_requested', 'rejected', 'stale'):
+        pending = deepcopy(state)
+        w.current(pending)['decision'] = status
+        for event in ({}, {'stop_hook_active': True}):
+            result = harness.stop(event, pending)
+            assert result.get('systemMessage') and 'decision' not in result
+    stale = deepcopy(state)
+    stale['invalidation_pending'] = True
+    assert 'stale' in harness.stop({}, stale)['systemMessage']
+    assert harness.path.read_bytes() == harness_before
     event = {'cwd': str(tmp_path), 'session_id': c.root, 'host': host}
-    first = flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)
-    assert first['decision'] == 'block'
-    prompt = ('<hook_prompt hook_run_id="stop:12">' + first['reason'] + '</hook_prompt>'
-              if wrapped else first['reason'])
-    flow.hook(event | {'hook_event_name': 'UserPromptSubmit',
-        'prompt': prompt}, governor=c)
-    assert 'decision' not in flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)
-    flow.hook(event | {'hook_event_name': 'UserPromptSubmit', 'prompt': 'Please continue the repair.'}, governor=c)
-    assert flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)['decision'] == 'block'
-    assert c._path().read_bytes() == before
+    for _ in range(3):
+        result = flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)
+        assert result.get('systemMessage') and 'decision' not in result
+    with pytest.raises(w.Refusal):
+        c.apply('advance', state['run'], expected_revision=state['revision'], phase='design')
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name': 'Write', 'tool_input': {'file_path': 'app.py'}}, state['run'])
+    assert c._path().read_bytes() == controller_before
 
 
 def test_wait_survives_read_tools_and_automatic_stop_continuation(tmp_path):
@@ -1212,7 +1221,7 @@ def test_bare_execution_directive_keeps_its_requested_route(tmp_path,prompt,entr
     flow.hook(event)
     harness=local.Harness(tmp_path,'root')
     assert harness.read()['entry']==entry
-    assert flow.hook(event|{'hook_event_name':'Stop'})['decision']=='block'
+    assert flow.hook(event|{'hook_event_name':'Stop'}).get('systemMessage')
     assert not list((tmp_path/'.taskplane').glob('workflow-*.json'))
 
 

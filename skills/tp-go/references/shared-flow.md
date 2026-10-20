@@ -114,6 +114,9 @@ checkpoints. Publication is automatic at lifecycle milestones; retry a failed
 publication without repeating the committed workflow action. Describe queued
 opening honestly. The dashboard is a view, not approval authority. Advisory
 telemetry and measurement failures cannot change an enforcement decision.
+Stop only reports unfinished work; it never forces another turn or stores retry
+state. Submission, acceptance, advancement and writes retain their controller
+checks. Ending a turn does not complete or approve the workflow.
 
 ## Human intent and provenance
 
