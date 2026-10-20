@@ -120,8 +120,15 @@ def hook_workspace(event: dict[str, Any], fallback: Path) -> Path:
     def containing(path: Path) -> Path | None:
         for number, parent in enumerate([path, *path.parents]):
             w.require(number < 64, 'scope_violation', 'Workspace target ancestry exceeds its safe bound.')
-            if (parent / '.taskplane').exists():
-                return parent
+            store = parent / '.taskplane'
+            if store.is_symlink() or store.exists() and not store.is_dir():
+                return parent  # The binding validator reports the unsafe store.
+            if store.is_dir():
+                for count, entry in enumerate(store.iterdir(), 1):
+                    w.require(count <= workspace_binding.MAX_FILES, 'scope_violation',
+                              'Workspace store inventory exceeds its safe bound.')
+                    if not entry.name.endswith('.lock'):
+                        return parent
         return None
     selected = (resolve_selection(explicit, event, fallback)
                 if explicit is not None or os.environ.get('TASKPLANE_WORKSPACE') else

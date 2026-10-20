@@ -522,7 +522,7 @@ def _missing_binding(root: Path) -> NoReturn:
                 # Canonical stores, initialization markers, restoration copies and
                 # archive indexes all belong to controller history. No JSON needs
                 # to be trusted or loaded to rule out first-run onboarding.
-                if entry.name.startswith("workflow-"):
+                if entry.name.startswith("workflow-") and not entry.name.endswith('.lock'):
                     _fail("Existing workflow state has no workspace binding; preserve existing state and "
                           "restore the original binding before resuming. Use workspace inspect to diagnose; "
                           "normal first-run bind/start cannot recover an active or unverified history.")

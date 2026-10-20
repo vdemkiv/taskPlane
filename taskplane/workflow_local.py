@@ -920,9 +920,31 @@ class LocalWorkflow:
             checks = strategy.get('checks', []) if isinstance(strategy, dict) else []
             for check in checks:
                 owner = definitions[check['task']]
+                required_paths = set(owner['paths'])
+                stage = w.current(state)
+                repair = state.get('repair_scope', {})
+                if (stage['id'] == repair.get('build_visit')
+                        and owner['id'] in repair.get('tasks', [])
+                        and check['id'] in repair.get('checks', [])):
+                    # Only declared result metadata moves to the repair visit.
+                    # A sealed or otherwise unavailable source path must still
+                    # prevent a command from claiming its original write set.
+                    metadata = {row['path'] for row in plan.get('build_outputs', [])}
+                    metadata.update(path for row in checks for path in row['evidence_outputs'])
+                    for prior in state['visits']:
+                        packet = prior.get('packet') or {}
+                        metadata.update(path for path in (
+                            packet.get('output_path'), packet.get('context', {}).get('tasks_path'),
+                            packet.get('verification', {}).get('history_path')) if path)
+                    # Input files remain required even if a previous packet
+                    # also referenced them as an artifact.
+                    metadata.difference_update(path for row in checks
+                        for path in row.get('source_inputs', []) + row.get('test_inputs', []))
+                    required_paths -= metadata - set(w.phase_write_paths(state))
+                    required_paths.update(stage.get('artifact_paths', []))
                 # These are the executable checks already reviewed in Plan,
                 # not an exemption for arbitrary interpreter/shell code.
-                if (words == check['command'] and set(owner['paths']) <= set(paths)
+                if (words == check['command'] and required_paths <= set(paths)
                         and runtime_command.execution_directory(event, self.workspace) == self.workspace):
                     return
         # Extend the existing literal-command admission rather than treating all
@@ -1723,5 +1745,11 @@ class Harness:
             reason = 'Taskplane phase evidence is not submitted. Present the current phase result for its separate human decision.'
         else:
             return {}
-        # One corrective continuation, never a forced loop while the user waits.
-        return {'systemMessage': reason} if event.get('stop_hook_active') else {'decision': 'block', 'reason': reason}
+        # Some hosts omit stop_hook_active when replaying the corrective prompt.
+        # Remember the binding locally; this is engagement state, not approval.
+        binding = self.binding(state)
+        correction = data.get('stop_correction') or {}
+        if event.get('stop_hook_active') or correction.get('binding') == binding:
+            return {'systemMessage': reason}
+        self.update(stop_correction={'binding': binding, 'reason': reason})
+        return {'decision': 'block', 'reason': reason}

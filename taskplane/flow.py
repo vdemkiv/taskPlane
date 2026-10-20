@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import stat
 import time
@@ -743,7 +744,9 @@ def _report(workspace: Path, run_id: str | None = None, *,
         stage = workflow.current(governed)
         from . import workflow_evidence
         observations = {t['id']: t for t in result['tasks'] if isinstance(t, dict) and 'id' in t}
-        result['tasks'] = deepcopy(workflow_evidence.context_tasks(governed))
+        authoritative_tasks = workflow_evidence.context_tasks(governed)
+        if authoritative_tasks:
+            result['tasks'] = deepcopy(authoritative_tasks)
         if stage.get("packet"):
             result["tasks"] = deepcopy(stage["packet"]["context"]["tasks"])
         for task in result["tasks"]:
@@ -1007,7 +1010,8 @@ def _hook(event: dict[str, Any], *,
                 raise workflow.Refusal('scope_violation', str(exc)) from None
     if governor is None and _workspace_admin(event):
         return {}  # The administration command still validates proof and active-state recovery.
-    if (governor is None and event.get('hook_event_name') in {'PreToolUse', 'PostToolUse'}
+    if (event.get('hook_event_name') in {'PreToolUse', 'PostToolUse'}
+            and (governor is None or governor.principal == governor.root)
             and not any(event.get(k) for k in ('parent_session_id', 'agent_id', 'subagent_id'))
             and runtime_command.installed(words, cwd, absolute=True)
             and words[2:] in (['version', '--verify'], ['help', '--md'])):
@@ -1108,9 +1112,16 @@ def _hook(event: dict[str, Any], *,
             selection_reference = str(event.get("tool_use_id") or event.get("call_id") or event.get("turn_id") or
                             "observed/" + hashlib.sha256(json.dumps(event, sort_keys=True).encode()).hexdigest())[:512]
             harness.select(selected, selection_reference, guarded)
-        elif name == "UserPromptSubmit" or name == "PreToolUse":
-            if harness.read().get("waiting"):
-                harness.update(waiting=None)
+        elif name == "UserPromptSubmit":
+            # A host-injected stop continuation is not a new human reply.
+            # Tool calls while preparing the handoff also must not erase it.
+            prompt = event.get('prompt', '')
+            correction = harness.read().get('stop_correction') or {}
+            continuation = isinstance(prompt, str) and (
+                re.match(r'^\s*<hook_prompt(?:\s|>)', prompt)
+                or prompt.strip() == correction.get('reason'))
+            if not continuation:
+                harness.update(waiting=None, stop_correction=None)
         if guarded.get("visits") and not guarded.get("finished"):
             harness.bind(guarded)
         elif harness.read().get("run") and not guarded.get("run"):

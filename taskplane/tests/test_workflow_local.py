@@ -496,6 +496,15 @@ def test_scoped_repair_uses_controller_and_preserves_prior_approvals(tmp_path, c
     parent_pair(c)
     state = c.report()
     c.guard({'tool_name': 'Write', 'tool_input': {'path': 'app.py'}}, state['run'])
+    import shlex
+    check = w.accepted_plan(state)['packet']['output']['verification_strategy']['checks'][0]
+    event = {'tool_name': 'exec_command', 'tool_input': {
+        'cmd': shlex.join(check['command']), 'workdir': str(tmp_path)}}
+    c.guard(event, state['run'])
+    with pytest.raises(w.Refusal):
+        c.guard({'tool_name': 'Write', 'tool_input': {'path': check['evidence_outputs'][0]}}, state['run'])
+    with pytest.raises(w.Refusal):
+        c.adapter.guard_command(event, state, [p for p in w.phase_write_paths(state) if p != 'app.py'])
     (tmp_path/'app.py').write_text('value = 2\n')
     for phase in w.PHASES[3:]:
         target = bound_output(c, state)
@@ -1147,6 +1156,46 @@ def test_harness_handoff_and_wait_cannot_cross_bindings(tmp_path):
     assert 'decision' not in harness.stop({},changed)
     raw=harness.read();raw['workspace']='foreign';harness.path.write_text(json.dumps(raw))
     with pytest.raises(w.Refusal,match='identity'):harness.read()
+
+
+@pytest.mark.parametrize('host', ['codex', 'claude'])
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_stop_continuation_without_host_flag_only_blocks_once(tmp_path, host, wrapped):
+    from taskplane import flow
+    c, state = setup(tmp_path)
+    c.adapter.name = host
+    harness = local.Harness(tmp_path, c.root)
+    harness.bind(state)
+    before = c._path().read_bytes()
+    event = {'cwd': str(tmp_path), 'session_id': c.root, 'host': host}
+    first = flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)
+    assert first['decision'] == 'block'
+    prompt = ('<hook_prompt hook_run_id="stop:12">' + first['reason'] + '</hook_prompt>'
+              if wrapped else first['reason'])
+    flow.hook(event | {'hook_event_name': 'UserPromptSubmit',
+        'prompt': prompt}, governor=c)
+    assert 'decision' not in flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)
+    flow.hook(event | {'hook_event_name': 'UserPromptSubmit', 'prompt': 'Please continue the repair.'}, governor=c)
+    assert flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)['decision'] == 'block'
+    assert c._path().read_bytes() == before
+
+
+def test_wait_survives_read_tools_and_automatic_stop_continuation(tmp_path):
+    from taskplane import flow
+    c, state = setup(tmp_path)
+    harness = local.Harness(tmp_path, c.root)
+    harness.bind(state)
+    harness.wait(c.report(), 'Awaiting the reported repair decision')
+    expected = harness.read()['waiting']
+    event = {'cwd': str(tmp_path), 'session_id': c.root}
+    flow.hook(event | {'hook_event_name': 'PreToolUse', 'tool_name': 'Read',
+        'tool_input': {'file_path': str(tmp_path / 'app.py')}}, governor=c)
+    flow.hook(event | {'hook_event_name': 'UserPromptSubmit',
+        'prompt': '<hook_prompt hook_run_id="stop:12">Continue</hook_prompt>'}, governor=c)
+    assert harness.read()['waiting'] == expected
+    assert 'waiting for user input' in flow.hook(event | {'hook_event_name': 'Stop'}, governor=c)['systemMessage']
+    flow.hook(event | {'hook_event_name': 'UserPromptSubmit', 'prompt': 'Proceed with changes'}, governor=c)
+    assert harness.read()['waiting'] is None
 
 
 @pytest.mark.parametrize('prompt,entry',[

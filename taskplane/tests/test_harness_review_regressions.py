@@ -131,6 +131,8 @@ def exercise_child_lineage(root):
         assert local.Harness(workspace, 'review-child').read() == {}
         unrelated = {k: v for k, v in child.items() if k not in ('transcript_path', 'parent_session_id')}
         unrelated['thread_id'] = 'unrelated'
+        refused(lambda: flow.hook(unrelated), 'scope_violation')
+        unrelated['tool_input'] = {'path': 'unclaimed.txt'}
         assert flow.hook(unrelated).get('hookSpecificOutput', {}).get('permissionDecision') != 'deny'
     # A native task may itself have been forked, then start its own workflow.
     # Deleting its advisory journal must not redirect that active binding.

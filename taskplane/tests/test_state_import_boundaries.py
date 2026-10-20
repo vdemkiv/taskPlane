@@ -19,6 +19,7 @@ from taskplane.tests.test_ordinary_checkpoint_reply import ordinary
 from taskplane.tests.test_state_import import invoke, lost, pin, tree
 from taskplane.tests.test_workflow_evidence import prepare
 from taskplane.tests.test_workflow_local import decide, present, submit
+from taskplane.tests.test_worker_runtime import parent_pair
 
 
 @pytest.mark.parametrize("boundary", ["mkdir", "child_fsync", "parent_fsync", "write", "file_fsync", "link", "receipt"])
@@ -262,6 +263,7 @@ def test_committed_import_retains_provenance_without_external_backup(lost):
     shutil.rmtree(Path(proof["path"]).parent)
     restored = c.report()
     assert restored["run"] == state["run"] and restored["decisions"] == {}
+    parent_pair(c)
     accepted = decide(c, restored, approval)
     assert accepted["decisions"][approval["event_id"]]["provenance"]["relay"] == approval["relay"]
     assert (retained / "request.json").read_bytes() == expected_request
@@ -374,6 +376,7 @@ def test_recovered_product_approval_does_not_accept_submitted_design(lost):
     result = invoke(lost, "apply")
     restored = c.report()
     product = deepcopy(w.current(restored))
+    parent_pair(c)
     restored = decide(c, restored, approval)
     present(c, restored)
     design = c.apply("advance", restored["run"], expected_revision=restored["revision"], phase="design")
@@ -430,6 +433,7 @@ def test_normalized_task_artifact_gets_precise_unsupported_shape_before_writes(t
                             "phase": "product", "visit": w.current(state)["id"],
                             "criteria": ["AC1"], "tasks": ["T1"]}]
     (root / "product.json").write_text(json.dumps(output))
+    parent_pair(c)
     state = c.apply("submit", state["run"], expected_revision=state["revision"],
                     output="product.json", tasks="tasks.json")
     packet = w.current(state)["packet"]
